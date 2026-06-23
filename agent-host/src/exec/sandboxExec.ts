@@ -35,8 +35,11 @@ export interface SandboxApiClient {
   readonly mode: "k8s-exec" | "direct";
 }
 
-/** Resolves a SandboxRef to a pod-exec client (Kubernetes exec API). */
-export declare function connectSandbox(ref: SandboxRef): Promise<SandboxApiClient>;
+/**
+ * Resolves a SandboxRef to a pod-exec client (Kubernetes exec API).
+ * Implemented in ./k8sExec.ts; re-exported here as the public seam.
+ */
+export { connectSandbox } from "./k8sExec.js";
 
 /** Constructs an ExecBackend bound to one sandbox. */
 export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {

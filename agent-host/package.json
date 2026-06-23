@@ -13,11 +13,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
     "@zed-industries/agent-client-protocol": "^0.4.5"
   },
   "devDependencies": {
+    "@types/node": "^22.10.5",
     "typescript": "^5.7.2",
-    "vitest": "^3.0.5",
-    "@types/node": "^22.10.5"
+    "vitest": "^3.0.5"
   }
 }
