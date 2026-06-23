@@ -5,24 +5,30 @@
  * Per conversation:
  *   - ServiceAccount sandbox-{id}     (unique broker identity)
  *   - Sandbox conv-{id}               (SA + workspace PVC + broker token volume)
- * Suspend/resume flip spec.operatingMode (controller drops/recreates the Pod,
- * keeps PVCs). Destroy deletes the Sandbox + SA.
+ * Suspend/resume flip spec.replicas (0/1) on the v1alpha1 Sandbox (controller
+ * drops/recreates the Pod, keeps PVCs). Destroy deletes the Sandbox + SA.
  *
  * The conversation-state PVC (Goose state + event log) is mounted by the
  * agent-host itself and is managed separately (see ConversationStore).
  */
 
+import { existsSync } from "node:fs";
+
 import {
   KubeConfig,
   CoreV1Api,
   CustomObjectsApi,
+  setHeaderOptions,
+  PatchStrategy,
 } from "@kubernetes/client-node";
 
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
 
 const GROUP = "agents.x-k8s.io";
-const VERSION = "v1beta1";
+// agent-sandbox v0.4.x serves v1alpha1, where suspend/resume is `spec.replicas`
+// (0 = suspended, 1 = running) — there is no operatingMode field yet.
+const VERSION = "v1alpha1";
 const PLURAL = "sandboxes";
 const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
 
@@ -48,24 +54,34 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   const sandboxName = (id: string) => `conv-${id}`;
   const saName = (id: string) => `sandbox-${id}`;
 
-  const setMode = async (ref: SandboxRef, mode: "Running" | "Suspended") => {
-    await custom.patchNamespacedCustomObject({
-      group: GROUP,
-      version: VERSION,
-      namespace: ref.namespace,
-      plural: PLURAL,
-      name: ref.name,
-      body: { spec: { operatingMode: mode } },
-    });
+  // v1alpha1: replicas 0 = suspended (pod dropped, PVCs kept), 1 = running.
+  // A plain-object body negotiates application/merge-patch+json.
+  const setReplicas = async (ref: SandboxRef, replicas: 0 | 1) => {
+    await custom.patchNamespacedCustomObject(
+      {
+        group: GROUP,
+        version: VERSION,
+        namespace: ref.namespace,
+        plural: PLURAL,
+        name: ref.name,
+        body: { spec: { replicas } },
+      },
+      setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+    );
   };
 
   return {
     async create(id: string): Promise<SandboxRef> {
-      // 1. per-conversation ServiceAccount (broker identity)
-      await core.createNamespacedServiceAccount({
-        namespace: ns,
-        body: { metadata: { name: saName(id), namespace: ns } },
-      });
+      // 1. per-conversation ServiceAccount (broker identity). Idempotent:
+      // tolerate an SA left behind by a prior run (AlreadyExists / 409).
+      await core
+        .createNamespacedServiceAccount({
+          namespace: ns,
+          body: { metadata: { name: saName(id), namespace: ns } },
+        })
+        .catch((e: { code?: number }) => {
+          if (e?.code !== 409) throw e;
+        });
 
       // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
       const name = sandboxName(id);
@@ -81,11 +97,11 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     },
 
     async suspend(ref: SandboxRef): Promise<void> {
-      await setMode(ref, "Suspended");
+      await setReplicas(ref, 0);
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
-      await setMode(ref, "Running");
+      await setReplicas(ref, 1);
       return ref;
     },
 
@@ -122,7 +138,7 @@ function sandboxManifest(
     kind: "Sandbox",
     metadata: { name, namespace, labels: { [SANDBOX_NAME_LABEL]: name } },
     spec: {
-      operatingMode: "Running",
+      replicas: 1,
       podTemplate: {
         metadata: { labels: { [SANDBOX_NAME_LABEL]: name } },
         spec: {
@@ -132,6 +148,7 @@ function sandboxManifest(
             {
               name: "sandbox",
               image,
+              imagePullPolicy: "IfNotPresent",
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },
@@ -170,9 +187,11 @@ function sandboxManifest(
 
 function defaultKubeConfig(): KubeConfig {
   const kc = new KubeConfig();
-  try {
+  // In-cluster only when the projected SA token is actually present; otherwise
+  // loadFromCluster() yields a broken config (invalid URL) instead of throwing.
+  if (existsSync("/var/run/secrets/kubernetes.io/serviceaccount/token")) {
     kc.loadFromCluster();
-  } catch {
+  } else {
     kc.loadFromDefault();
   }
   return kc;

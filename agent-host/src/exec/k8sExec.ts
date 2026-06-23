@@ -8,6 +8,7 @@
  */
 
 import { Writable, Readable, PassThrough } from "node:stream";
+import { existsSync } from "node:fs";
 
 import { KubeConfig, Exec, CoreV1Api, type V1Status } from "@kubernetes/client-node";
 
@@ -157,10 +158,9 @@ function shellQuote(s: string): string {
 
 function defaultKubeConfig(): KubeConfig {
   const kc = new KubeConfig();
-  // In-cluster when running as the agent-host pod; falls back to local kubeconfig.
-  try {
+  if (existsSync("/var/run/secrets/kubernetes.io/serviceaccount/token")) {
     kc.loadFromCluster();
-  } catch {
+  } else {
     kc.loadFromDefault();
   }
   return kc;

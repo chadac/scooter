@@ -71,6 +71,34 @@
             platform-manifests = platform.config.kubernetes.resultYAML;
           };
 
+          # Dev shell: everything needed to build, test (Tier 1-3), and drive a
+          # local cluster. `nix develop`.
+          devShells.default = pkgs.mkShell {
+            packages = with pkgs; [
+              # JS toolchain (agent-host + ui + tests)
+              nodejs_22
+              # cluster tooling — local k8s + control
+              kubectl
+              kind
+              k3d
+              kubernetes-helm
+              # image plumbing
+              skopeo
+              # the ACP agent the agent-host spawns
+              goose-cli
+              # misc used by scripts/tests
+              jq
+              yq-go
+              just
+            ];
+            shellHook = ''
+              echo "kubenix-agent-sandbox dev shell"
+              echo "  just            — task runner (test-quick, test, test-cluster, ...)"
+              echo "  goose: $(command -v goose >/dev/null && goose --version 2>/dev/null | head -1 || echo absent)"
+              export GOOSE_BIN="$(command -v goose || true)"
+            '';
+          };
+
           # Expose the image builder so consumers can customize
           # (extra skills, extra packages).
           legacyPackages = {

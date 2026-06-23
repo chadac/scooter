@@ -55,9 +55,10 @@ const provider = (): ClusterProvider =>
 
 // Map a CRD/core "kind" to its REST coordinates. Extend as tests need.
 const RESOURCES: Record<string, { group: string; version: string; plural: string; core?: boolean }> = {
-  Sandbox: { group: "agents.x-k8s.io", version: "v1beta1", plural: "sandboxes" },
-  SandboxWarmPool: { group: "extensions.agents.x-k8s.io", version: "v1beta1", plural: "sandboxwarmpools" },
-  SandboxClaim: { group: "extensions.agents.x-k8s.io", version: "v1beta1", plural: "sandboxclaims" },
+  // agent-sandbox v0.4.x serves v1alpha1.
+  Sandbox: { group: "agents.x-k8s.io", version: "v1alpha1", plural: "sandboxes" },
+  SandboxWarmPool: { group: "extensions.agents.x-k8s.io", version: "v1alpha1", plural: "sandboxwarmpools" },
+  SandboxClaim: { group: "extensions.agents.x-k8s.io", version: "v1alpha1", plural: "sandboxclaims" },
   ServiceAccount: { group: "", version: "v1", plural: "serviceaccounts", core: true },
   PersistentVolumeClaim: { group: "", version: "v1", plural: "persistentvolumeclaims", core: true },
 };

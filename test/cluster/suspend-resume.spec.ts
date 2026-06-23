@@ -17,10 +17,20 @@ const maybe = clusterTestsEnabled() ? describe : describe.skip;
 const NS = "agent-sandbox-test";
 const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
 const SELECTOR = (id: string) => `agents.x-k8s.io/sandbox-name=conv-${id}`;
-const readyP = (s: { status?: { conditions?: Array<{ type: string; status: string }> } }) =>
-  !!s.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True");
-const suspendedP = (s: { status?: { conditions?: Array<{ type: string; status: string }> } }) =>
-  !!s.status?.conditions?.some((c) => c.type === "Suspended" && c.status === "True");
+type SandboxStatus = {
+  status?: { conditions?: Array<{ type: string; status: string; message?: string }> };
+};
+const cond = (s: SandboxStatus, type: string) =>
+  s.status?.conditions?.find((c) => c.type === type);
+const readyP = (s: SandboxStatus) => {
+  const c = cond(s, "Ready");
+  // Running-ready: Ready=True without the "replicas is 0" suspend message.
+  return c?.status === "True" && !/replicas is 0/i.test(c.message ?? "");
+};
+// v1alpha1 has no Suspended condition; suspension shows as the pod gone
+// (Ready message notes "replicas is 0"). Detect that instead.
+const suspendedP = (s: SandboxStatus) =>
+  /replicas is 0|pod does not exist/i.test(cond(s, "Ready")?.message ?? "");
 
 maybe("suspend / resume workspace persistence", () => {
   let cluster: Cluster;

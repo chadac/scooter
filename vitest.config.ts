@@ -24,6 +24,9 @@ export default defineConfig({
           environment: "node",
           testTimeout: 240_000,
           hookTimeout: 240_000,
+          // Cluster specs share one namespace's resources — run them
+          // sequentially to avoid cross-spec races.
+          fileParallelism: false,
         },
       },
     ],
