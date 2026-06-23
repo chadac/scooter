@@ -16,7 +16,7 @@ let
   cfg = config.agentSandbox;
 in
 {
-  imports = [ kubenix.modules.k8s ];
+  imports = [ kubenix.modules.k8s ./broker.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -93,6 +93,7 @@ in
               containers.agent-host = {
                 name = "agent-host";
                 image = cfg.agentHostImage;
+                imagePullPolicy = "IfNotPresent";
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
                   { name = "PORT"; value = "8080"; }

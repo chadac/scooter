@@ -35,6 +35,11 @@
           # modules. See services/broker/ + docs/BROKER.md.
           broker = pkgs.callPackage ./services/broker { };
 
+          # Broker OCI image.
+          brokerImage = import ./pkgs/broker-image {
+            inherit pkgs lib n2c broker;
+          };
+
           # Layered agent skills (markdown; frontmatter + body). See skills/.
           skillsDir = ./skills;
 
@@ -57,6 +62,11 @@
               agentSandbox = {
                 agentHostImage = "agent-host:latest";
                 sandboxImage = "agent-sandbox-nix:latest";
+                broker = {
+                  enable = true;
+                  image = "agent-broker:latest";
+                  testProvider = true; # whoami provider for the credential e2e
+                };
               };
             };
           };
@@ -70,6 +80,9 @@
 
             # nix build .#sandbox-image  ->  generic OCI sandbox (runtime + Nix)
             sandbox-image = sandboxImage.image;
+
+            # nix build .#broker-image  ->  broker OCI image
+            broker-image = brokerImage.image;
 
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             platform-manifests = platform.config.kubernetes.resultYAML;

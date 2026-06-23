@@ -1,49 +1,73 @@
 /**
- * Tier 2 — broker credential flow (POST-PoC; gated additionally on broker).
+ * Tier 2 — broker credential flow (IRSA / per-conversation identity).
  *
- * Proves the pod authenticates to the broker with its projected SA token and a
- * credentialed action succeeds; wrong audience is rejected. RED.
+ * Proves the full credential path on a real cluster: a per-conversation Sandbox
+ * pod, with its projected broker-audience SA token, calls the broker via the
+ * in-pod `agent-broker` shim; the broker validates the token with K8s
+ * TokenReview and confirms the caller's identity is sandbox-{conversationId}.
+ *
+ * This is the cluster half of the UI-driven credential test — the same path a
+ * `!agent-broker test/whoami` message exercises end to end.
+ *
+ * Gated: RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 (needs the broker deployed with
+ * its `test` provider enabled). Provisioner sets BROKER_URL + projects the
+ * broker token (mirrors modules/conversation.nix).
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
+import { createK8sProvisioner } from "../../services/agent-host/src/session/k8sProvisioner.js";
+import type { SandboxProvisioner } from "../../services/agent-host/src/session/manager.js";
+import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const enabled = clusterTestsEnabled() && process.env.RUN_BROKER_TESTS === "1";
 const maybe = enabled ? describe : describe.skip;
 
-maybe("broker credential flow", () => {
+const NS = process.env.BROKER_NS ?? "agent-sandbox";
+const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
+const SELECTOR = (id: string) => `agents.x-k8s.io/sandbox-name=conv-${id}`;
+const ready = (s: { status?: { conditions?: Array<{ type: string; status: string }> } }) =>
+  !!s.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True");
+
+maybe("broker credential flow (IRSA)", () => {
   let cluster: Cluster;
-  const id = "test-broker1";
+  let provisioner: SandboxProvisioner;
+  let ref: SandboxRef;
+  const id = "brkr01";
 
   beforeAll(async () => {
-    cluster = await withCluster({ installController: true, namespace: "agent-sandbox-test" });
-    await cluster.apply({ __broker: true });
-    await cluster.apply({ __conversation: id });
-    await cluster.waitFor("Sandbox", `conv-${id}`, (s: any) =>
-      s.status?.conditions?.some((c: any) => c.type === "Ready" && c.status === "True"), 180_000);
+    cluster = await withCluster({ namespace: NS });
+    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    ref = await provisioner.create(id);
+    await cluster.waitFor("Sandbox", `conv-${id}`, ready, 180_000, NS);
+  }, 240_000);
+
+  afterAll(async () => {
+    await provisioner?.destroy(ref).catch(() => {});
   });
 
-  it("the pod's SA token (broker audience) is accepted by the broker", async () => {
-    // git-credential-broker shim hits /git-credentials with the projected token
-    const { stdout, exitCode } = await cluster.exec(`sandbox=conv-${id}`, [
-      "sh", "-c",
-      "curl -sf -H \"Authorization: Bearer $(cat /var/run/secrets/broker/token)\" \"$BROKER_URL/git-credentials\"",
-    ]);
+  it("the broker authenticates the pod as its per-conversation identity", async () => {
+    // `agent-broker test/whoami` reads the projected SA token and hits the
+    // broker, which does a real TokenReview.
+    const { stdout, exitCode } = await cluster.exec(
+      SELECTOR(id),
+      ["agent-broker", "test/whoami"],
+      NS,
+    );
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("x-access-token");
+    const identity = JSON.parse(stdout);
+    expect(identity.conversation_id).toBe(id);
+    expect(identity.namespace).toBe(NS);
+    expect(identity.service_account).toBe(`system:serviceaccount:${NS}:sandbox-${id}`);
   });
 
-  it("scopes the credential to this conversation's identity (sandbox-{id})", async () => {
-    // The broker should resolve identity from the SA username sandbox-{id}.
-    // Asserted via broker logs / a scoped credential. (impl detail)
-    expect(true).toBe(true); // placeholder assertion shape
-  });
-
-  it("rejects a token minted for the wrong audience", async () => {
-    const { exitCode } = await cluster.exec(`sandbox=conv-${id}`, [
-      "sh", "-c",
-      "curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer bogus' \"$BROKER_URL/git-credentials\" | grep -q 401",
-    ]);
-    expect(exitCode).toBe(0);
+  it("rejects a request with no/garbage token", async () => {
+    const { stdout } = await cluster.exec(
+      SELECTOR(id),
+      ["sh", "-c", "curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer bogus' \"$BROKER_URL/test/whoami\""],
+      NS,
+    );
+    expect(stdout.trim()).toBe("401");
   });
 });
