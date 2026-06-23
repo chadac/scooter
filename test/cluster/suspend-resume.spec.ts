@@ -1,48 +1,63 @@
 /**
  * Tier 2 — suspend-don't-delete persistence.
  *
- * Proves the core revival guarantee verified in the controller source:
+ * Proves the core revival guarantee (verified in the controller source):
  * suspend drops the Pod but keeps the PVCs; resume re-mounts them; workspace
- * data survives. RED.
+ * data survives. Drives the real provisioner. RED until a cluster is up.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
+import { createK8sProvisioner } from "../../agent-host/src/session/k8sProvisioner.js";
+import type { SandboxProvisioner } from "../../agent-host/src/session/manager.js";
+import type { SandboxRef } from "../../agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
+const NS = "agent-sandbox-test";
+const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
+const SELECTOR = (id: string) => `agents.x-k8s.io/sandbox-name=conv-${id}`;
+const readyP = (s: { status?: { conditions?: Array<{ type: string; status: string }> } }) =>
+  !!s.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True");
+const suspendedP = (s: { status?: { conditions?: Array<{ type: string; status: string }> } }) =>
+  !!s.status?.conditions?.some((c) => c.type === "Suspended" && c.status === "True");
 
 maybe("suspend / resume workspace persistence", () => {
   let cluster: Cluster;
-  const id = "test-persist1";
+  let provisioner: SandboxProvisioner;
+  let ref: SandboxRef;
+  const id = "testpersist1";
 
   beforeAll(async () => {
-    cluster = await withCluster({ installController: true, namespace: "agent-sandbox-test" });
-    await cluster.apply({ __conversation: id });
-    await cluster.waitFor("Sandbox", `conv-${id}`, (s: any) =>
-      s.status?.conditions?.some((c: any) => c.type === "Ready" && c.status === "True"), 180_000);
+    cluster = await withCluster({ installController: true, namespace: NS });
+    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    ref = await provisioner.create(id);
+    await cluster.waitFor("Sandbox", `conv-${id}`, readyP, 180_000, NS);
+  }, 240_000);
+
+  afterAll(async () => {
+    await provisioner?.destroy(ref).catch(() => {});
   });
 
   it("retains the workspace PVC across suspend (pod dropped, PVC kept)", async () => {
-    // write a marker file in the workspace
-    await cluster.exec(`sandbox=conv-${id}`, ["sh", "-c", "echo marker > /workspace/marker.txt"]);
+    await cluster.exec(SELECTOR(id), ["sh", "-c", "echo marker > /workspace/marker.txt"], NS);
 
-    // suspend: operatingMode -> Suspended
-    await cluster.apply({ __patch: { kind: "Sandbox", name: `conv-${id}`, operatingMode: "Suspended" } });
+    await provisioner.suspend(ref);
+    await cluster.waitFor("Sandbox", `conv-${id}`, suspendedP, 120_000, NS);
 
-    // pod gone...
-    await cluster.waitFor("Sandbox", `conv-${id}`, (s: any) =>
-      s.status?.conditions?.some((c: any) => c.type === "Suspended" && c.status === "True"), 120_000);
-    // ...but PVC still Bound
-    const pvc = await cluster.get<{ status: { phase: string } }>("PersistentVolumeClaim", `workspace-conv-${id}`);
+    const pvc = await cluster.get<{ status: { phase: string } }>(
+      "PersistentVolumeClaim",
+      `workspace-conv-${id}`,
+      NS,
+    );
     expect(pvc.status.phase).toBe("Bound");
   });
 
   it("restores workspace data on resume", async () => {
-    await cluster.apply({ __patch: { kind: "Sandbox", name: `conv-${id}`, operatingMode: "Running" } });
-    await cluster.waitFor("Sandbox", `conv-${id}`, (s: any) =>
-      s.status?.conditions?.some((c: any) => c.type === "Ready" && c.status === "True"), 180_000);
+    await provisioner.resume(ref);
+    await cluster.waitFor("Sandbox", `conv-${id}`, readyP, 180_000, NS);
 
-    const { stdout } = await cluster.exec(`sandbox=conv-${id}`, ["cat", "/workspace/marker.txt"]);
+    const { stdout } = await cluster.exec(SELECTOR(id), ["cat", "/workspace/marker.txt"], NS);
     expect(stdout.trim()).toBe("marker");
   });
 });

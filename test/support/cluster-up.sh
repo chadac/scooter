@@ -120,11 +120,18 @@ import_images() {
 # 4. Platform manifests (namespace, RBAC, agent-host) from kubenix.
 # ---------------------------------------------------------------------------
 apply_platform() {
-  kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
-  log "rendering + applying kubenix platform manifests..."
-  # TODO (impl): once modules/ render a manifest set, e.g.
-  #   nix build "$REPO_ROOT#platform-manifests" && kubectl apply -f result
-  log "WARN: platform manifests not wired yet (modules/ still sketched); namespace only"
+  guard_local_context
+  log "rendering kubenix platform manifests..."
+  local manifests
+  manifests="$(cd "$REPO_ROOT" && nix build .#platform-manifests --no-link --print-out-paths 2>/dev/null || true)"
+  if [ -z "$manifests" ]; then
+    log "WARN: platform manifest render failed; creating namespace only"
+    kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
+    return
+  fi
+  log "applying platform manifests ($manifests)"
+  kubectl apply -f "$manifests"
+  kubectl -n "$NAMESPACE" rollout status deploy/agent-host --timeout=120s || true
 }
 
 main() {

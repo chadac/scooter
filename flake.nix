@@ -34,14 +34,28 @@
           # Layered agent skills (markdown; frontmatter + body). See skills/.
           skillsDir = ./skills;
 
-          # Generic Nix sandbox image: agent-sandbox runtime contract (:8888) +
-          # overlay /nix store + lazy shims + skills. NO agent/host baked in.
+          # Generic Nix sandbox image: plain Nix env + overlay /nix store +
+          # skills. No in-pod server (exec via K8s API). NO agent baked in.
           sandboxImage = import ./pkgs/sandbox-image {
             inherit pkgs lib n2c skillsDir;
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
           ui = pkgs.callPackage ./ui { };
+
+          # Render the platform manifests (namespace, agent-host Deployment +
+          # RBAC) with kubenix. `nix build .#platform-manifests` -> a YAML file.
+          platform = kubenix.evalModules.${system} {
+            module = { kubenix, ... }: {
+              imports = [ ./modules/platform.nix ];
+              kubenix.project = "agent-sandbox";
+              kubernetes.version = "1.31";
+              agentSandbox = {
+                agentHostImage = "agent-host:latest";
+                sandboxImage = "agent-sandbox-nix:latest";
+              };
+            };
+          };
         in
         {
           packages = {
@@ -52,6 +66,9 @@
 
             # nix build .#sandbox-image  ->  generic OCI sandbox (runtime + Nix)
             sandbox-image = sandboxImage.image;
+
+            # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
+            platform-manifests = platform.config.kubernetes.resultYAML;
           };
 
           # Expose the image builder so consumers can customize

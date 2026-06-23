@@ -1,29 +1,42 @@
 /**
  * Tier 2 — per-conversation cold Sandbox provisioning against a real cluster.
  *
- * Proves the kubenix conversation shape (modules/conversation.nix) actually
- * reconciles: unique SA, PVC(s), pod Ready, :8888 reachable. RED.
+ * Drives the REAL provisioner (createK8sProvisioner) — the production code path
+ * the agent-host uses — and asserts the cluster reconciles it: unique SA,
+ * workspace PVC bound, Sandbox pod Ready, exec-able, broker token projected.
  *
- * Gated: RUN_CLUSTER_TESTS=1. Uses the fake-acp-agent sandbox image variant.
+ * Gated: RUN_CLUSTER_TESTS=1.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
+import { createK8sProvisioner } from "../../agent-host/src/session/k8sProvisioner.js";
+import type { SandboxProvisioner } from "../../agent-host/src/session/manager.js";
+import type { SandboxRef } from "../../agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
+const NS = "agent-sandbox-test";
+const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
 
 maybe("cold Sandbox per conversation", () => {
   let cluster: Cluster;
-  const id = "test-abc123";
+  let provisioner: SandboxProvisioner;
+  let ref: SandboxRef;
+  const id = "testabc123";
 
   beforeAll(async () => {
-    cluster = await withCluster({ installController: true, namespace: "agent-sandbox-test" });
-    // Apply the per-conversation resources (mkConversation { id }).
-    await cluster.apply({ __conversation: id }); // placeholder: real manifest at impl
+    cluster = await withCluster({ installController: true, namespace: NS });
+    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    ref = await provisioner.create(id);
+  }, 60_000);
+
+  afterAll(async () => {
+    await provisioner?.destroy(ref).catch(() => {});
   });
 
   it("creates a unique ServiceAccount sandbox-{id}", async () => {
-    const sa = await cluster.waitFor("ServiceAccount", `sandbox-${id}`, () => true);
+    const sa = await cluster.waitFor("ServiceAccount", `sandbox-${id}`, () => true, 30_000, NS);
     expect(sa).toBeTruthy();
   });
 
@@ -32,6 +45,8 @@ maybe("cold Sandbox per conversation", () => {
       "PersistentVolumeClaim",
       `workspace-conv-${id}`,
       (p) => p.status?.phase === "Bound",
+      120_000,
+      NS,
     );
     expect(pvc.status.phase).toBe("Bound");
   });
@@ -42,17 +57,22 @@ maybe("cold Sandbox per conversation", () => {
       `conv-${id}`,
       (s) => !!s.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True"),
       180_000,
+      NS,
     );
-    // Commands reach the pod via the K8s exec API, not HTTP.
-    const { stdout, exitCode } = await cluster.exec(`sandbox=conv-${id}`, ["echo", "ready"]);
+    const { stdout, exitCode } = await cluster.exec(
+      `agents.x-k8s.io/sandbox-name=conv-${id}`,
+      ["echo", "ready"],
+      NS,
+    );
     expect(exitCode).toBe(0);
     expect(stdout.trim()).toBe("ready");
   });
 
   it("projects a broker-audience SA token into the pod", async () => {
     const { stdout, exitCode } = await cluster.exec(
-      `sandbox=conv-${id}`,
+      `agents.x-k8s.io/sandbox-name=conv-${id}`,
       ["cat", "/var/run/secrets/broker/token"],
+      NS,
     );
     expect(exitCode).toBe(0);
     expect(stdout.length).toBeGreaterThan(0);
