@@ -7,7 +7,5 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
-    "//": "Design stage. Expected: @assistant-ui/react, @assistant-ui/react-ag-ui (or the AG-UI runtime), react."
-  }
+  "dependencies": {}
 }

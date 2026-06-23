@@ -1,9 +1,8 @@
 /**
  * Session manager — owns conversation lifecycle in the agent-host.
  *
- * Design stage: interfaces only. Topology-agnostic: hosts N sessions (N goose
- * processes) per host pod now; one-per-pod later is a deployment change, not an
- * interface change.
+ * Topology-agnostic: hosts N sessions (N goose processes) per host pod now;
+ * one-per-pod later is a deployment change, not an interface change.
  *
  * Per conversation it ties together:
  *   - a Sandbox (cold, per-conversation SA + 2 PVCs)        -> provisioner
@@ -35,12 +34,14 @@ export interface ConversationStore {
   gooseStatePath(id: SessionId): string;
 }
 
+export type ConversationStatus = "running" | "suspended" | "ended";
+
 export interface Conversation {
   readonly id: SessionId;
   readonly threadId: ThreadId;
   readonly sandbox: SandboxRef;
-  readonly bridge: SessionBridge;
-  readonly status: "running" | "suspended" | "ended";
+  readonly bridge?: SessionBridge;
+  readonly status: ConversationStatus;
 }
 
 export interface SessionManager {
@@ -56,9 +57,102 @@ export interface SessionManager {
   get(id: SessionId): Conversation | undefined;
 }
 
+/** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
+export type BridgeFactory = (args: {
+  conversationId: SessionId;
+  sandbox: SandboxRef;
+}) => SessionBridge | undefined;
+
 export interface SessionManagerDeps {
   provisioner: SandboxProvisioner;
   store: ConversationStore;
+  /** Optional: how to build a bridge per conversation. Omitted in unit tests
+   *  that only assert lifecycle/provisioning. */
+  bridgeFactory?: BridgeFactory;
 }
 
-export declare function createSessionManager(deps: SessionManagerDeps): SessionManager;
+interface Entry {
+  id: SessionId;
+  threadId: ThreadId;
+  sandbox: SandboxRef;
+  bridge?: SessionBridge;
+  status: ConversationStatus;
+}
+
+let convCounter = 0;
+
+export function createSessionManager(deps: SessionManagerDeps): SessionManager {
+  const { provisioner, store, bridgeFactory } = deps;
+  const entries = new Map<SessionId, Entry>();
+
+  const toConversation = (e: Entry): Conversation => ({
+    id: e.id,
+    threadId: e.threadId,
+    sandbox: e.sandbox,
+    bridge: e.bridge,
+    status: e.status,
+  });
+
+  const wireEventLog = (e: Entry) => {
+    if (!e.bridge) return;
+    e.bridge.onEvent((event) => {
+      void store.appendEvent(e.id, event);
+    });
+  };
+
+  return {
+    async start(threadId) {
+      const id: SessionId = `conv${(convCounter += 1)}`;
+      const sandbox = await provisioner.create(id);
+      const bridge = bridgeFactory?.({ conversationId: id, sandbox });
+      const entry: Entry = { id, threadId, sandbox, bridge, status: "running" };
+      entries.set(id, entry);
+      wireEventLog(entry);
+      await bridge?.start();
+      return toConversation(entry);
+    },
+
+    async revive(id) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      entry.sandbox = await provisioner.resume(entry.sandbox);
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox }) ?? entry.bridge;
+      entry.status = "running";
+      wireEventLog(entry);
+      await entry.bridge?.start();
+      // Event-log replay to a reattaching UI is driven by the AG-UI server's
+      // onAttach handler reading store.readEvents(id); nothing to do here.
+      return toConversation(entry);
+    },
+
+    async prompt(id, text) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      if (entry.status !== "running") await this.revive(id);
+      await entry.bridge?.prompt({ threadId: entry.threadId, text });
+    },
+
+    async suspend(id) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      await entry.bridge?.stop();
+      await provisioner.suspend(entry.sandbox);
+      entry.bridge = undefined;
+      entry.status = "suspended";
+    },
+
+    async end(id) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      await entry.bridge?.stop();
+      await provisioner.destroy(entry.sandbox);
+      entry.bridge = undefined;
+      entry.status = "ended";
+    },
+
+    get(id) {
+      const entry = entries.get(id);
+      return entry ? toConversation(entry) : undefined;
+    },
+  };
+}

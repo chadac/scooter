@@ -1,20 +1,52 @@
 /**
  * Fake agent-sandbox runtime API — in-memory implementation of the :8888
  * contract, for Tier 1 ExecBackend tests.
- *
- * Design stage: test-double spec.
  */
 
+import type { ExecRequest, ExecResult } from "../../src/types.js";
 import type { SandboxApiClient } from "../../src/exec/sandboxExec.js";
 
 export interface FakeSandboxApi extends SandboxApiClient {
-  /** Seed / inspect the fake filesystem. */
   setFile(path: string, content: string): void;
   getFile(path: string): string | undefined;
-  /** Record of commands the ExecBackend forwarded. */
   readonly executed: Array<{ command: string; args: string[] }>;
-  /** Make the next execute() return a canned result. */
-  whenExecute(handler: (command: string, args: string[]) => { stdout: string; stderr: string; exitCode: number }): void;
+  whenExecute(
+    handler: (command: string, args: string[]) => ExecResult,
+  ): void;
 }
 
-export declare function createFakeSandboxApi(): FakeSandboxApi;
+export function createFakeSandboxApi(): FakeSandboxApi {
+  const files = new Map<string, string>();
+  const executed: Array<{ command: string; args: string[] }> = [];
+  let handler: (command: string, args: string[]) => ExecResult = () => ({
+    stdout: "",
+    stderr: "",
+    exitCode: 0,
+  });
+
+  return {
+    mode: "direct",
+    executed,
+    setFile(path, content) {
+      files.set(path, content);
+    },
+    getFile(path) {
+      return files.get(path);
+    },
+    whenExecute(h) {
+      handler = h;
+    },
+    async execute(req: ExecRequest): Promise<ExecResult> {
+      executed.push({ command: req.command, args: req.args });
+      return handler(req.command, req.args);
+    },
+    async download(path: string): Promise<string> {
+      const content = files.get(path);
+      if (content === undefined) throw new Error(`no such file: ${path}`);
+      return content;
+    },
+    async upload(path: string, content: string): Promise<void> {
+      files.set(path, content);
+    },
+  };
+}

@@ -1,10 +1,9 @@
 /**
  * ACP <-> AG-UI bridge — the core of the agent-host.
  *
- * Design stage: interfaces only. Implementation maps ACP session/update
- * notifications to AG-UI events (see docs/DESIGN.md §4c) and routes ACP
- * client methods (terminal/*, fs/*, session/request_permission) to the
- * ExecBackend (agent-sandbox SDK) / permission UI.
+ * Maps ACP session/update notifications to AG-UI events (docs/DESIGN.md §4c)
+ * and routes ACP client methods (terminal/*, fs/*, session/request_permission)
+ * to the ExecBackend (agent-sandbox SDK) / permission UI.
  *
  * Note: this interface is UNCHANGED by the agent-outside inversion — only the
  * ExecBackend implementation flipped (local-OS -> agent-sandbox SDK), a sign
@@ -14,9 +13,11 @@
 import type {
   SessionId,
   RunId,
+  ThreadId,
   SessionConfig,
   ExecBackend,
 } from "./types.js";
+import type { AcpClient, SessionUpdate } from "./acp/client.js";
 
 // AG-UI event union (subset used here; full set per AG-UI spec).
 export type AguiEvent =
@@ -34,8 +35,6 @@ export type AguiEvent =
   | { type: "REASONING_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "REASONING_END"; messageId: string };
 
-import type { ThreadId } from "./types.js";
-
 /** A user prompt entering the run (maps to ACP session/prompt). */
 export interface PromptInput {
   threadId: ThreadId;
@@ -46,10 +45,10 @@ export interface PromptInput {
  * Drives one ACP session and emits AG-UI events.
  *
  * Lifecycle:
- *   start()    -> spawn agent, ACP initialize + session/new
+ *   start()    -> ACP initialize + session/new
  *   prompt()   -> ACP session/prompt, stream AG-UI events via onEvent
  *   cancel()   -> ACP session/cancel
- *   stop()     -> tear down agent process
+ *   stop()     -> tear down the agent
  */
 export interface SessionBridge {
   readonly sessionId: SessionId;
@@ -66,7 +65,176 @@ export interface SessionBridge {
 export interface BridgeDeps {
   config: SessionConfig;
   exec: ExecBackend;
+  /**
+   * Pre-connected ACP client. In production the session manager spawns
+   * `goose acp` and builds this; tests inject an in-process fake.
+   */
+  acpClient: AcpClient;
 }
 
-/** Factory — constructs a SessionBridge from its dependencies. */
-export declare function createSessionBridge(deps: BridgeDeps): SessionBridge;
+let runCounter = 0;
+let idCounter = 0;
+const nextId = (prefix: string) => `${prefix}-${(idCounter += 1)}`;
+
+export function createSessionBridge(deps: BridgeDeps): SessionBridge {
+  const { acpClient } = deps;
+  const sessionId = `sess-${(idCounter += 1)}`;
+  const listeners = new Set<(event: AguiEvent) => void>();
+  let acpSessionId: string | undefined;
+  let started = false;
+
+  const emit = (event: AguiEvent) => {
+    for (const cb of listeners) cb(event);
+  };
+
+  // Per-run mutable mapping state for translating ACP updates -> AG-UI events.
+  interface RunState {
+    runId: RunId;
+    // The currently-open assistant text message, if any.
+    openText?: string;
+    // The currently-open reasoning message, if any.
+    openReasoning?: string;
+    // tool_call_id -> the messageId we attribute its result to.
+    toolMessage: Map<string, string>;
+  }
+
+  const closeOpenText = (st: RunState) => {
+    if (st.openText) {
+      emit({ type: "TEXT_MESSAGE_END", messageId: st.openText });
+      st.openText = undefined;
+    }
+  };
+  const closeOpenReasoning = (st: RunState) => {
+    if (st.openReasoning) {
+      emit({ type: "REASONING_END", messageId: st.openReasoning });
+      st.openReasoning = undefined;
+    }
+  };
+
+  const handleUpdate = (st: RunState, u: SessionUpdate) => {
+    switch (u.sessionUpdate) {
+      case "agent_message_chunk": {
+        // Reasoning and text are distinct streams; close reasoning first.
+        closeOpenReasoning(st);
+        if (!st.openText) {
+          st.openText = nextId("msg");
+          emit({ type: "TEXT_MESSAGE_START", messageId: st.openText, role: "assistant" });
+        }
+        emit({
+          type: "TEXT_MESSAGE_CONTENT",
+          messageId: st.openText,
+          delta: blockText(u.content),
+        });
+        break;
+      }
+      case "agent_thought_chunk": {
+        closeOpenText(st);
+        if (!st.openReasoning) {
+          st.openReasoning = nextId("reason");
+          emit({ type: "REASONING_START", messageId: st.openReasoning });
+        }
+        emit({
+          type: "REASONING_MESSAGE_CONTENT",
+          messageId: st.openReasoning,
+          delta: blockText(u.content),
+        });
+        break;
+      }
+      case "plan": {
+        closeOpenText(st);
+        const mid = nextId("reason");
+        emit({ type: "REASONING_START", messageId: mid });
+        emit({ type: "REASONING_MESSAGE_CONTENT", messageId: mid, delta: JSON.stringify(u.entries) });
+        emit({ type: "REASONING_END", messageId: mid });
+        break;
+      }
+      case "tool_call": {
+        closeOpenText(st);
+        closeOpenReasoning(st);
+        emit({ type: "TOOL_CALL_START", toolCallId: u.toolCallId, toolCallName: u.title });
+        if (u.rawInput !== undefined) {
+          emit({ type: "TOOL_CALL_ARGS", toolCallId: u.toolCallId, delta: JSON.stringify(u.rawInput) });
+        }
+        emit({ type: "TOOL_CALL_END", toolCallId: u.toolCallId });
+        st.toolMessage.set(u.toolCallId, nextId("msg"));
+        break;
+      }
+      case "tool_call_update": {
+        const messageId = st.toolMessage.get(u.toolCallId) ?? nextId("msg");
+        emit({
+          type: "TOOL_CALL_RESULT",
+          toolCallId: u.toolCallId,
+          messageId,
+          content: typeof u.content === "string" ? u.content : JSON.stringify(u.content ?? ""),
+        });
+        break;
+      }
+    }
+  };
+
+  return {
+    sessionId,
+
+    async start() {
+      if (started) return;
+      await acpClient.initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+          terminal: true,
+        },
+      });
+      const { sessionId: sid } = await acpClient.newSession({ cwd: deps.config.cwd });
+      acpSessionId = sid;
+      started = true;
+    },
+
+    async prompt(input: PromptInput): Promise<RunId> {
+      if (!started || !acpSessionId) await this.start();
+      const runId = `run-${(runCounter += 1)}`;
+      const st: RunState = { runId, toolMessage: new Map() };
+
+      emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
+
+      const unsub = acpClient.onSessionUpdate((_sid, u) => handleUpdate(st, u));
+      try {
+        const { stopReason } = await acpClient.prompt({
+          sessionId: acpSessionId!,
+          prompt: [{ type: "text", text: input.text }],
+        });
+        closeOpenText(st);
+        closeOpenReasoning(st);
+        if (stopReason === "error") {
+          emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
+        } else {
+          emit({ type: "RUN_FINISHED", runId });
+        }
+      } catch (err) {
+        closeOpenText(st);
+        closeOpenReasoning(st);
+        emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+      } finally {
+        unsub();
+      }
+      return runId;
+    },
+
+    async cancel(_runId: RunId) {
+      if (acpSessionId) await acpClient.cancel(acpSessionId);
+    },
+
+    async stop() {
+      await acpClient.close();
+      started = false;
+    },
+
+    onEvent(cb) {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
+
+function blockText(content: { type: string; text?: string } | { type: "text"; text: string }): string {
+  return "text" in content && typeof content.text === "string" ? content.text : "";
+}

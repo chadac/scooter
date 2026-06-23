@@ -11,6 +11,7 @@ import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
 import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
+import { acpClientFromTransport } from "../fakes/acpClientFromTransport.js";
 
 const collect = (bridge: ReturnType<typeof createSessionBridge>) => {
   const events: AguiEvent[] = [];
@@ -31,6 +32,7 @@ describe("ACP -> AG-UI bridge", () => {
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
       exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
     });
     const events = collect(bridge);
 
@@ -55,9 +57,11 @@ describe("ACP -> AG-UI bridge", () => {
       { finish: { stopReason: "end_turn" } },
     ]);
 
+    const bExec = createSandboxExecBackend(createFakeSandboxApi());
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
-      exec: createSandboxExecBackend(createFakeSandboxApi()),
+      exec: bExec,
+      acpClient: acpClientFromTransport(agent.transport, bExec),
     });
     const events = collect(bridge);
 
@@ -77,9 +81,11 @@ describe("ACP -> AG-UI bridge", () => {
       { emit: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking..." } } },
       { finish: { stopReason: "end_turn" } },
     ]);
+    const bExec = createSandboxExecBackend(createFakeSandboxApi());
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
-      exec: createSandboxExecBackend(createFakeSandboxApi()),
+      exec: bExec,
+      acpClient: acpClientFromTransport(agent.transport, bExec),
     });
     const events = collect(bridge);
     await bridge.start();
@@ -90,9 +96,11 @@ describe("ACP -> AG-UI bridge", () => {
   it("emits RUN_ERROR when the agent errors", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([{ finish: { stopReason: "error" } }]);
+    const bExec = createSandboxExecBackend(createFakeSandboxApi());
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
-      exec: createSandboxExecBackend(createFakeSandboxApi()),
+      exec: bExec,
+      acpClient: acpClientFromTransport(agent.transport, bExec),
     });
     const events = collect(bridge);
     await bridge.start();

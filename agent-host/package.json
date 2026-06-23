@@ -12,13 +12,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "//": "Design stage — concrete deps pinned at implementation. Expected:",
-    "//acp": "@agentclientprotocol/sdk (ACP client over stdio)",
-    "//agui": "@ag-ui/core, @ag-ui/encoder (AG-UI event types + SSE/WS encoding)",
-    "//sandbox": "agent-sandbox TS client OR a thin fetch wrapper over the router"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "//": "typescript, vitest, @types/node pinned at implementation."
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5",
+    "@types/node": "^22.10.5"
   }
 }
