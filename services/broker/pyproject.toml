@@ -22,3 +22,6 @@ agent-broker = "broker.core.app:main"
 
 [tool.setuptools.packages.find]
 include = ["broker*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

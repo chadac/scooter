@@ -21,7 +21,11 @@ python3Packages.buildPythonApplication {
     pyjwt
   ];
 
-  nativeCheckInputs = with python3Packages; [ pytestCheckHook ];
+  nativeCheckInputs = with python3Packages; [
+    pytestCheckHook
+    pytest-asyncio
+    cryptography
+  ];
   pythonImportsCheck = [ "broker.core.app" ];
 
   meta.description = "Extensible credential broker for kubenix-agent-manager";
