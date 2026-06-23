@@ -30,9 +30,13 @@ test-unit:
     npm install
     npm test
 
-# Tier 2 — cluster tests against a real Kubernetes (fake ACP agent).
+# Tier 2 — ALL cluster tests against real Kubernetes (provision, suspend/resume,
+# broker IRSA, webhooks spawn). Per-test names print (verbose reporter).
 test-cluster: cluster-up
-    RUN_CLUSTER_TESTS=1 CLUSTER_PROVIDER={{cluster_provider}} npm run test:cluster
+    RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 RUN_WEBHOOKS_TESTS=1 \
+      CLUSTER_PROVIDER={{cluster_provider}} \
+      BROKER_NS=agent-sandbox PLATFORM_NS=agent-sandbox \
+      npm run test:cluster
 
 # Tier 3 — Playwright E2E through the UI (fake ACP agent).
 test-e2e:
@@ -42,9 +46,10 @@ test-e2e:
 test-e2e-real:
     RUN_REAL_GOOSE=1 npm run test:e2e -- real-goose
 
-# Broker credential-flow cluster tests (post-PoC; needs broker deployed).
+# Just the broker IRSA cluster tests.
 test-broker: cluster-up
-    RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 CLUSTER_PROVIDER={{cluster_provider}} npm run test:cluster -- broker
+    RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 BROKER_NS=agent-sandbox \
+      CLUSTER_PROVIDER={{cluster_provider}} npm run test:cluster -- broker
 
 # THE full suite — run this to confirm everything works.
 # Tier 1 always; Tier 2 + Tier 3 require a cluster (started by their recipes).

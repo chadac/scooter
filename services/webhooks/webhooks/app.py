@@ -16,6 +16,7 @@ from .handlers.github import router as github_router
 from .handlers.gitlab import router as gitlab_router
 from .handlers.jira import router as jira_router
 from .handlers.slack import router as slack_router
+from .handlers.test import router as test_router
 from .agent_host_client import resolve_sandbox_to_conversation
 
 logging.basicConfig(
@@ -40,6 +41,7 @@ app.include_router(github_router)
 app.include_router(gitlab_router)
 app.include_router(jira_router)
 app.include_router(slack_router)
+app.include_router(test_router)
 
 
 @app.get("/health")

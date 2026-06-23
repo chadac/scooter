@@ -38,6 +38,15 @@ export interface Cluster {
     command: string[],
     namespace?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /**
+   * Run a curl from inside the cluster (a throwaway curl pod) against an
+   * in-cluster URL. Returns the response body. For hitting Services whose pods
+   * lack a shell/curl (the minimal nix images).
+   */
+  curlInCluster(
+    url: string,
+    opts?: { method?: string; body?: string; headers?: string[]; timeoutMs?: number },
+  ): Promise<string>;
 }
 
 export interface ClusterFixtureOptions {
@@ -154,5 +163,46 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
       });
       return { stdout, stderr, exitCode };
     },
+
+    async curlInCluster(url, opts = {}) {
+      const args = ["-sS", "-m", String(Math.ceil((opts.timeoutMs ?? 30_000) / 1000))];
+      if (opts.method) args.push("-X", opts.method);
+      for (const h of opts.headers ?? []) args.push("-H", h);
+      if (opts.body !== undefined) args.push("-d", opts.body);
+      args.push(url);
+
+      const podName = `curltest-${Math.abs(hashStr(url + (opts.body ?? "")))}`;
+      // Run a throwaway curl pod; --restart=Never + --rm so it cleans up.
+      const out = await kubectl([
+        "run", podName,
+        "-n", namespace,
+        "--rm", "-i", "--restart=Never",
+        "--image=curlimages/curl:latest",
+        "--command", "--",
+        "curl", ...args,
+      ]);
+      // strip the trailing "pod ... deleted" line kubectl appends
+      return out.replace(/pod "[^"]+" deleted.*$/s, "").trim();
+    },
   };
+}
+
+function hashStr(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+import { execFile } from "node:child_process";
+
+function kubectl(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("kubectl", args, { maxBuffer: 8 << 20 }, (err, stdout, stderr) => {
+      // `kubectl run --rm` exits non-zero on a non-zero container exit even when
+      // we got output; prefer stdout when present.
+      if (stdout) resolve(stdout);
+      else if (err) reject(new Error(stderr || err.message));
+      else resolve(stdout);
+    });
+  });
 }

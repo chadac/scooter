@@ -31,6 +31,11 @@
           # See services/agent-host/.
           agentHost = pkgs.callPackage ./services/agent-host { };
 
+          # agent-host OCI image.
+          agentHostImageBuilder = import ./pkgs/agent-host-image {
+            inherit pkgs lib n2c agentHost;
+          };
+
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules. See services/broker/ + docs/BROKER.md.
           broker = pkgs.callPackage ./services/broker { };
@@ -38,6 +43,11 @@
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
           webhooks = pkgs.callPackage ./services/webhooks { };
+
+          # Webhooks OCI image.
+          webhooksImage = import ./pkgs/webhooks-image {
+            inherit pkgs lib n2c webhooks;
+          };
 
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
@@ -66,10 +76,16 @@
               agentSandbox = {
                 agentHostImage = "agent-host:latest";
                 sandboxImage = "agent-sandbox-nix:latest";
+                fakeAgent = true; # dummy agent for cluster e2e (no model needed)
                 broker = {
                   enable = true;
                   image = "agent-broker:latest";
                   testProvider = true; # whoami provider for the credential e2e
+                };
+                webhooks = {
+                  enable = true;
+                  image = "agent-webhooks:latest";
+                  testWebhook = true; # /webhooks/test for the spawn e2e
                 };
               };
             };
@@ -87,6 +103,12 @@
 
             # nix build .#broker-image  ->  broker OCI image
             broker-image = brokerImage.image;
+
+            # nix build .#webhooks-image  ->  webhooks OCI image
+            webhooks-image = webhooksImage.image;
+
+            # nix build .#agent-host-image  ->  agent-host OCI image
+            agent-host-image = agentHostImageBuilder.image;
 
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             platform-manifests = platform.config.kubernetes.resultYAML;

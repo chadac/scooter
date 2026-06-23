@@ -9,6 +9,9 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // Always print per-test names + pass/fail (so a single run shows exactly
+    // what failed — no need to re-run with --reporter=verbose).
+    reporters: process.env.CI ? ["default"] : ["verbose"],
     projects: [
       {
         test: {

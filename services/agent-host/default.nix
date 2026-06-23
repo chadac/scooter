@@ -1,21 +1,22 @@
-{ lib, buildNpmPackage, nodejs, ... }:
+{ lib, buildNpmPackage, nodejs, makeWrapper, goose-cli, ... }:
 
-# Design stage: build stub. Implementation builds the TypeScript agent-host
-# into a node app and wraps it with `goose` on PATH (the ACP agent it spawns).
-#
-# buildNpmPackage {
-#   pname = "agent-host";
-#   version = "0.0.0";
-#   src = ./.;
-#   npmDepsHash = lib.fakeHash;   # pin at implementation
-#   nativeBuildInputs = [ nodejs ];
-#   # goose is provided at runtime via the deployment, not bundled here.
-# }
+# Builds the agent-host TypeScript app (tsc -> dist/) into a node application,
+# with `goose` (the ACP agent) wrapped onto PATH.
 
 buildNpmPackage {
   pname = "agent-host";
   version = "0.0.0";
   src = ./.;
-  npmDepsHash = lib.fakeHash;
-  dontNpmBuild = true; # placeholder until sources + lockfile exist
+
+  npmDepsHash = "sha256-TjwFZpL+H5fvEnZcju6eYC9TvDpy56st7RbOa3l6Lqw=";
+
+  nativeBuildInputs = [ makeWrapper ];
+
+  # `npm run build` (tsc) emits dist/; bin agent-host -> dist/index.js.
+  postInstall = ''
+    wrapProgram $out/bin/agent-host \
+      --prefix PATH : ${lib.makeBinPath [ goose-cli nodejs ]}
+  '';
+
+  meta.description = "agent-host — runs goose ACP per conversation, ACP<->AG-UI";
 }

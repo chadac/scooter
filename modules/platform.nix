@@ -16,7 +16,7 @@ let
   cfg = config.agentSandbox;
 in
 {
-  imports = [ kubenix.modules.k8s ./broker.nix ];
+  imports = [ kubenix.modules.k8s ./broker.nix ./webhooks.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -38,6 +38,11 @@ in
       type = types.int;
       default = 1;
       description = "agent-host replicas (one host pod runs many goose sessions).";
+    };
+    fakeAgent = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Run the dummy ACP agent (GOOSE_BIN=fake) — for cluster e2e.";
     };
   };
 
@@ -100,7 +105,10 @@ in
                   { name = "NAMESPACE"; value = cfg.namespace; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
-                ];
+                ] ++ lib.optional cfg.fakeAgent
+                  # Run the bundled dummy ACP agent (no model/cluster) — for the
+                  # spawn-from-webhook + UI e2e on the cluster.
+                  { name = "GOOSE_BIN"; value = "fake"; };
                 volumeMounts = [{ name = "state"; mountPath = "/var/lib/agent-host"; }];
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
               };

@@ -56,6 +56,9 @@ class WebhooksSettings(BaseSettings):
     # Shared API key for internal relay endpoints
     relay_api_key: str = ""
 
+    # Test webhook (/webhooks/test) for e2e — OFF in prod.
+    test_webhook_enabled: bool = False
+
     # Trigger pattern
     mention_pattern: str = "@agent"
 
