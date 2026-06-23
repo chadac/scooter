@@ -20,7 +20,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "agent-webhooks:latest";
+      default = "${cfg.registryPrefix}agent-webhooks:latest";
+      defaultText = literalExpression ''"''${registryPrefix}agent-webhooks:latest"'';
       description = "OCI ref of the webhooks image.";
     };
     testWebhook = mkOption {
@@ -65,7 +66,7 @@ in
               containers.agent-webhooks = {
                 name = "agent-webhooks";
                 image = wcfg.image;
-                imagePullPolicy = "IfNotPresent";
+                imagePullPolicy = cfg.pullPolicy;
                 command = [ "agent-webhooks" ];
                 ports = [{ containerPort = 8080; name = "http"; }];
                 env = [

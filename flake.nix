@@ -163,6 +163,11 @@
         # kubenix modules: SandboxTemplate / SandboxWarmPool / Sandbox generators
         # (+ gateway/broker/webhooks Deployments, post-PoC). See modules/.
         kubenixModules.agentSandbox = ./modules;
+        # The full platform module (agent-host Deployment + broker + webhooks +
+        # RBAC). Import this into a host flake's kubenix eval to deploy the
+        # platform. `default` is the conventional entry point.
+        kubenixModules.platform = ./modules/platform.nix;
+        kubenixModules.default = ./modules/platform.nix;
       };
     };
 }

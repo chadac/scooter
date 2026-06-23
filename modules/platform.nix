@@ -24,14 +24,36 @@ in
       default = "agent-sandbox";
       description = "Namespace for the platform + sandboxes.";
     };
+    registryPrefix = mkOption {
+      type = types.str;
+      default = "";
+      example = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myorg/";
+      description = ''
+        Registry/repository prefix prepended to the default image names
+        (agent-host, agent-broker, agent-webhooks, agent-sandbox-nix). Empty =
+        bare local names (`agent-host:latest`) for kind/k3s where images are
+        side-loaded. Set to an ECR/registry prefix (WITH trailing slash) for a
+        real cluster. Per-image options below override this entirely.
+      '';
+    };
+    pullPolicy = mkOption {
+      type = types.enum [ "Always" "IfNotPresent" "Never" ];
+      default = "IfNotPresent";
+      description = ''
+        imagePullPolicy for the platform Deployments. IfNotPresent suits
+        side-loaded kind/k3s images; Always suits a registry-backed cluster.
+      '';
+    };
     agentHostImage = mkOption {
       type = types.str;
-      default = "agent-host:latest";
+      default = "${cfg.registryPrefix}agent-host:latest";
+      defaultText = literalExpression ''"''${registryPrefix}agent-host:latest"'';
       description = "OCI ref of the agent-host image.";
     };
     sandboxImage = mkOption {
       type = types.str;
-      default = "agent-sandbox-nix:latest";
+      default = "${cfg.registryPrefix}agent-sandbox-nix:latest";
+      defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-nix:latest"'';
       description = "OCI ref of the generic Nix sandbox image.";
     };
     replicas = mkOption {
@@ -109,7 +131,7 @@ in
               containers.agent-host = {
                 name = "agent-host";
                 image = cfg.agentHostImage;
-                imagePullPolicy = "IfNotPresent";
+                imagePullPolicy = cfg.pullPolicy;
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
                   { name = "PORT"; value = "8080"; }

@@ -23,7 +23,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "agent-broker:latest";
+      default = "${cfg.registryPrefix}agent-broker:latest";
+      defaultText = literalExpression ''"''${registryPrefix}agent-broker:latest"'';
       description = "OCI ref of the broker image.";
     };
     testProvider = mkOption {
@@ -75,7 +76,7 @@ in
               containers.agent-broker = {
                 name = "agent-broker";
                 image = bcfg.image;
-                imagePullPolicy = "IfNotPresent";
+                imagePullPolicy = cfg.pullPolicy;
                 command = [ "agent-broker" ];
                 ports = [{ containerPort = 8080; name = "http"; }];
                 env = [
