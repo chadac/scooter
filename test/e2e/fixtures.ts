@@ -35,6 +35,14 @@ export class Chat {
   }
 
   async send(text: string) {
+    // Wait until the composer is idle (no run in progress) — assistant-ui shows
+    // a Send button when idle and a Cancel/Stop button while running. Sending
+    // mid-run is dropped, so block until Send is available.
+    await this.page
+      .getByRole("button", { name: /send/i })
+      .first()
+      .waitFor({ state: "visible", timeout: 30_000 })
+      .catch(() => {});
     const input = this.input();
     await input.click();
     await input.fill(text);

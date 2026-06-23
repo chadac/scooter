@@ -20,6 +20,7 @@ import { createFileConversationStore } from "./session/fileStore.js";
 import { createSessionBridge } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
+import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import type { SandboxRef } from "./types.js";
 
 export interface AgentHostConfig {
@@ -124,10 +125,13 @@ export async function main(
   // --- helpers ---
 
   function makeBridge(conversationId: string, sandbox: SandboxRef, cfg: AgentHostConfig) {
-    // Exec resolves the pod-exec client on first use; the ACP client (goose) is
-    // created by the factory the bridge calls on first start(). Both are async,
-    // handled cleanly by the bridge's async start() — no facade shims.
-    const exec = createSandboxExecBackend(deferredSandboxApi(sandbox));
+    // In fake mode there is no pod, so the agent's tool calls run as local
+    // subprocesses; in cluster mode they exec into the sandbox pod via the K8s
+    // exec API (resolved on first use). The ACP client (goose) is created by the
+    // factory the bridge calls on first start().
+    const exec = createSandboxExecBackend(
+      config.fakeSandbox ? createLocalSandboxApiClient() : deferredSandboxApi(sandbox),
+    );
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/etc/agent-sandbox/skills", agent: cfg.agent, sandbox },
       exec,

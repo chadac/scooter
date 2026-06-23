@@ -59,26 +59,41 @@ class FakeAgent implements Agent {
     await u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Planning a response…" } });
     await sleep(300);
 
-    // 2. a tool call + result (so the UI renders tool-call cards)
+    // 2. a REAL tool call: createTerminal routes back through the bridge's ACP
+    // client -> ExecBackend (local subprocess in fake mode; pod exec in cluster
+    // mode). This exercises the actual exec chain end to end, not a narration.
+    let cmdOutput = "";
     await u({
       sessionUpdate: "tool_call",
       toolCallId: "call_1",
       title: "run: echo",
       kind: "execute",
       status: "pending",
-      rawInput: { command: `echo ${userText}` },
+      rawInput: { command: "echo", args: [userText] },
     } as never);
-    await sleep(300);
+    try {
+      const term = await this.conn.createTerminal({
+        sessionId,
+        command: "echo",
+        args: [userText],
+      });
+      await term.waitForExit();
+      const out = await term.currentOutput();
+      cmdOutput = out.output ?? "";
+      await term.release();
+    } catch (e) {
+      cmdOutput = `exec error: ${String(e)}`;
+    }
     await u({
       sessionUpdate: "tool_call_update",
       toolCallId: "call_1",
       status: "completed",
-      content: [{ type: "content", content: { type: "text", text: userText } }],
+      content: [{ type: "content", content: { type: "text", text: cmdOutput } }],
     } as never);
     await sleep(200);
 
-    // 3. the reply (streamed in chunks), echoing the prompt
-    const reply = `🤖 (dummy agent) You said: "${userText}". This is a fake response so you can test the UI and leave review notes — no model needed.`;
+    // 3. the reply (streamed), echoing the command output (proves exec ran)
+    const reply = `🤖 (dummy agent) ran echo and got: "${cmdOutput.trim()}". (fake mode — real exec chain exercised, no model needed.)`;
     for (const word of reply.split(" ")) {
       await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
       await sleep(40);

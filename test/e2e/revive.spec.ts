@@ -17,12 +17,12 @@ test.describe("conversation persistence (UI)", () => {
   test("history is restored after switching away and back", async ({ chat, page }) => {
     await chat.open();
     await chat.send("remember this message");
-    await chat.waitForReply(/You said/i);
+    await chat.waitForReply(/dummy agent/i);
 
     // Start a new conversation, then return to the first via the sidebar.
     await page.locator('[data-testid="new-session"]').click();
     await chat.send("a different conversation");
-    await chat.waitForReply(/You said/i);
+    await chat.waitForReply(/dummy agent/i);
 
     await page.locator(sidebar.item).first().click();
     await expect(chat.userMessages().first()).toContainText(/remember this message/i, {

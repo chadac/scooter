@@ -64,9 +64,11 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
       const outputCbs = new Set<(chunk: string) => void>();
       const id = `term-${Math.abs(hashRef(req))}`;
       let exit: { exitCode: number } | undefined;
+      let buffered = ""; // retain output for subscribers that attach after exec
 
       const exitPromise = api.execute(req).then((res): { exitCode: number } => {
         const chunk = res.stdout + (res.stderr ? res.stderr : "");
+        buffered += chunk;
         for (const cb of outputCbs) cb(chunk);
         exit = { exitCode: res.exitCode };
         return exit;
@@ -76,6 +78,9 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
         id,
         onOutput(cb) {
           outputCbs.add(cb);
+          // Replay output that already arrived before this subscriber attached
+          // (spawn starts executing immediately; callers subscribe afterwards).
+          if (buffered) cb(buffered);
         },
         async waitForExit() {
           return exit ?? (await exitPromise);

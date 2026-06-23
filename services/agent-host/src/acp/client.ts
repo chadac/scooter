@@ -149,6 +149,11 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
         env: Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])),
       });
       terminals.set(handle.id, handle);
+      // Accumulate streamed output so terminalOutput()/currentOutput() can read it.
+      terminalBuffers.set(handle.id, "");
+      handle.onOutput((chunk) => {
+        terminalBuffers.set(handle.id, (terminalBuffers.get(handle.id) ?? "") + chunk);
+      });
       return { terminalId: handle.id };
     },
 
