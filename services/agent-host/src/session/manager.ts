@@ -42,6 +42,8 @@ export interface Conversation {
   readonly sandbox: SandboxRef;
   readonly bridge?: SessionBridge;
   readonly status: ConversationStatus;
+  readonly title: string;
+  readonly createdAt: number;
 }
 
 export interface SessionManager {
@@ -57,6 +59,10 @@ export interface SessionManager {
   end(id: SessionId): Promise<void>;
 
   get(id: SessionId): Conversation | undefined;
+  /** All conversations, newest first. */
+  list(): Conversation[];
+  /** Set a conversation's title (e.g. agent-assigned). */
+  setTitle(id: SessionId, title: string): void;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -79,6 +85,8 @@ interface Entry {
   sandbox: SandboxRef;
   bridge?: SessionBridge;
   status: ConversationStatus;
+  title: string;
+  createdAt: number;
 }
 
 /** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
@@ -98,6 +106,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     sandbox: e.sandbox,
     bridge: e.bridge,
     status: e.status,
+    title: e.title,
+    createdAt: e.createdAt,
   });
 
   const wireEventLog = (e: Entry) => {
@@ -115,7 +125,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const id: SessionId = threadId;
       const sandbox = await provisioner.create(shortId(threadId));
       const bridge = bridgeFactory?.({ conversationId: id, sandbox });
-      const entry: Entry = { id, threadId, sandbox, bridge, status: "running" };
+      const entry: Entry = {
+        id, threadId, sandbox, bridge, status: "running",
+        title: "New chat", createdAt: nowMs(),
+      };
       entries.set(id, entry);
       wireEventLog(entry);
       // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
@@ -178,5 +191,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const entry = entries.get(id);
       return entry ? toConversation(entry) : undefined;
     },
+
+    list() {
+      return [...entries.values()]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(toConversation);
+    },
+
+    setTitle(id, title) {
+      const entry = entries.get(id);
+      if (entry) entry.title = title;
+    },
   };
+}
+
+/** Wall-clock ms. Wrapped so it's mockable / avoids new Date() in pure code. */
+function nowMs(): number {
+  return Date.now();
 }

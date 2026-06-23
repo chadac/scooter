@@ -103,14 +103,27 @@ async def _run_and_collect(payload: dict) -> str:
 
 
 async def get_conversation_status(conversation_id: str) -> str | None:
-    """Status of a conversation. The agent-host doesn't expose a status API yet;
-    a finished spawn is the terminal state for now."""
-    # TODO: agent-host conversation status endpoint (for live status_monitor).
-    return None
+    """Status of a conversation via the agent-host management API."""
+    base = settings.agent_host_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/conversations/{conversation_id}")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json().get("status")
+    except httpx.HTTPError:
+        logger.warning("status fetch failed for %s", conversation_id)
+        return None
 
 
 async def get_conversation_statuses(conversation_ids: list[str]) -> dict[str, str]:
-    return {}
+    out: dict[str, str] = {}
+    for cid in conversation_ids:
+        status = await get_conversation_status(cid)
+        if status:
+            out[cid] = status
+    return out
 
 
 async def resolve_sandbox_to_conversation(sandbox_or_conv_id: str) -> str | None:

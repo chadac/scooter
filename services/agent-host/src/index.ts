@@ -13,6 +13,7 @@
  */
 
 import { createAguiServer } from "./agui/server.js";
+import { createManagementApi } from "./api/management.js";
 import { createSessionManager } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import type { SandboxProvisioner } from "./session/manager.js";
@@ -113,6 +114,21 @@ export async function main(
   server.onAttach(async (sessionId, conn) => {
     for await (const event of store.readEvents(sessionId)) conn.send(event);
   });
+
+  // Management REST API (conversation CRUD + lifecycle + history), mounted on
+  // the same server. /agui stays the AG-UI streaming transport.
+  server.use(
+    createManagementApi({
+      sessions,
+      store,
+      server,
+      answerPermission: async (sessionId, toolCallId, optionId) => {
+        // Permission answering is wired through the bridge in a later pass;
+        // the route exists so the API surface is complete.
+        console.warn("[agent-host] permission answer not yet wired", { sessionId, toolCallId, optionId });
+      },
+    }),
+  );
 
   await server.listen(config.port);
   // eslint-disable-next-line no-console

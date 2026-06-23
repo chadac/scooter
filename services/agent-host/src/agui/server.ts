@@ -16,6 +16,7 @@ import type { BaseEvent } from "@ag-ui/core";
 
 import type { AguiEvent } from "../bridge.js";
 import type { SessionId, ThreadId } from "../types.js";
+import type { Router } from "../http/router.js";
 
 /** A user prompt arriving from the UI (AG-UI RunAgentInput, subset). */
 export interface RunAgentInput {
@@ -39,6 +40,11 @@ export interface AguiServer {
   broadcast(sessionId: SessionId, event: AguiEvent): void;
   /** Replay the persisted event log to a newly-attached connection. */
   onAttach(handler: (sessionId: SessionId, conn: AguiConnection) => Promise<void>): void;
+  /** Mount a management router; tried before the built-in AG-UI routes. */
+  use(router: Router): void;
+  /** Attach an SSE response to a session's persistent event stream (for the
+   *  management API's GET .../events). Returns once replay (onAttach) is done. */
+  subscribeSSE(sessionId: SessionId, res: ServerResponse): Promise<void>;
 }
 
 /** Our internal AguiEvent IS a BaseEvent once `type` is the discriminator. */
@@ -61,9 +67,28 @@ export function createAguiServer(): AguiServer {
     | undefined;
 
   let server: Server | undefined;
+  let mountedRouter: Router | undefined;
 
   const write = (res: ServerResponse, event: AguiEvent) => {
     res.write(encoder.encodeSSE(toBaseEvent(event)));
+  };
+
+  const subscribeSSE = async (sessionId: SessionId, res: ServerResponse): Promise<void> => {
+    res.writeHead(200, {
+      "Content-Type": encoder.getContentType(),
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    let set = connections.get(sessionId);
+    if (!set) connections.set(sessionId, (set = new Set()));
+    set.add(res);
+    res.req.on("close", () => set!.delete(res));
+    const conn: AguiConnection = {
+      sessionId,
+      send: (e) => write(res, e),
+      close: () => res.end(),
+    };
+    await attachHandler?.(sessionId, conn); // replay the event log
   };
 
   // Connections opened via POST /agui are run-scoped: they close when the run
@@ -94,6 +119,9 @@ export function createAguiServer(): AguiServer {
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean);
+
+    // Management API (mounted router) is tried first.
+    if (mountedRouter && (await mountedRouter.handle(req, res))) return;
 
     // GET /healthz  -> readiness probe
     if (req.method === "GET" && parts[0] === "healthz") {
@@ -203,5 +231,9 @@ export function createAguiServer(): AguiServer {
     onAttach(handler) {
       attachHandler = handler;
     },
+    use(router) {
+      mountedRouter = router;
+    },
+    subscribeSSE,
   };
 }

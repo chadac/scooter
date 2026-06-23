@@ -85,8 +85,28 @@ pod") compose exactly, with no in-pod server.
   `fs/write_text_file`, `terminal/create|output|wait_for_exit|kill|release`.
   **Serviced via the Kubernetes exec API** (see §4d).
 
-### 4b. AG-UI (agent-host ⇄ browser) — streaming events (SSE or WS, TBD)
+### 4b. AG-UI (agent-host ⇄ browser) — streaming events (SSE)
 Lifecycle, text, tool-call, reasoning, state events (see §4c mapping).
+
+`POST /agui` is the assistant-ui HttpAgent transport (RunAgentInput → SSE).
+Alongside it, the agent-host exposes a **management REST API** (a tiny node:http
+router; the AG-UI router is tried first, then `/agui`):
+
+```
+GET    /conversations                  list (id, title, status, createdAt, sandbox)
+POST   /conversations                  create {threadId?, title?}
+GET    /conversations/:id              get + status
+DELETE /conversations/:id              end (destroy sandbox)
+POST   /conversations/:id/suspend|resume
+POST   /conversations/:id/messages     prompt/follow-up {text}
+GET    /conversations/:id/events       SSE stream (persistent)
+GET    /conversations/:id/history      the AG-UI event log
+POST   /conversations/:id/permission/:toolCallId  {optionId}
+GET    /healthz
+```
+
+The webhooks service uses this API (status polling); the UI uses `/agui` +
+`/conversations` for the sidebar.
 
 ### 4c. ACP → AG-UI mapping (≈ 1:1)
 
