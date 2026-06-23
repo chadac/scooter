@@ -2,42 +2,36 @@
  * UI client — the reusable "general library" wrapping assistant-ui's native
  * AG-UI runtime, pointed at the agent-host (NOT at an LLM provider).
  *
- * Design stage: interfaces only. The AG-UI stream originates in the agent-host
- * and arrives here directly (SSE/WS), so this is a thin transport + runtime
- * adapter; assistant-ui renders the events (messages, tool calls, reasoning).
+ * The agent-host exposes the standard AG-UI HttpAgent protocol at POST /agui:
+ * a RunAgentInput in, an SSE stream of AG-UI events out. So we just construct
+ * an @ag-ui/client HttpAgent against it; assistant-ui's useAgUiRuntime renders
+ * the events (messages, tool calls, reasoning) with no custom transport code.
  */
 
-export interface AgentHostClientConfig {
-  /** Base URL of the agent-host AG-UI server. */
+import { HttpAgent } from "@ag-ui/client";
+
+export interface AgentHostConfig {
+  /** Base URL of the agent-host (e.g. http://localhost:8080). */
   baseUrl: string;
   /** Auth token for the agent-host, if any. */
   token?: string;
 }
 
-export interface ConversationHandle {
-  readonly threadId: string;
-  /** Submit a user prompt (POST /sessions/:id/prompt). */
-  send(text: string): Promise<void>;
-  /** Answer a pending tool-permission request. */
-  approve(toolCallId: string, optionId: string): Promise<void>;
-  suspend(): Promise<void>;
-  /** Subscribe to the AG-UI event stream (drives assistant-ui). */
-  subscribe(): EventSource | WebSocket;
+/** Build an AG-UI agent bound to the agent-host's /agui endpoint. */
+export function createAgentHostAgent(config: AgentHostConfig): HttpAgent {
+  return new HttpAgent({
+    url: `${config.baseUrl.replace(/\/$/, "")}/agui`,
+    headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+  });
 }
 
-export interface AgentHostClient {
-  /** Start a new conversation. */
-  start(): Promise<ConversationHandle>;
-  /** Re-attach to an existing conversation (replays the event log). */
-  attach(threadId: string): Promise<ConversationHandle>;
-  /** List conversations (for history/logs view). */
-  list(): Promise<Array<{ threadId: string; status: string; title?: string }>>;
+/** List existing conversations (for the sessions/history view). */
+export async function listSessions(
+  config: AgentHostConfig,
+): Promise<Array<{ threadId: string; status: string; title?: string }>> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/sessions`, {
+    headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+  });
+  if (!res.ok) return [];
+  return res.json();
 }
-
-export declare function createAgentHostClient(config: AgentHostClientConfig): AgentHostClient;
-
-/**
- * Build an assistant-ui runtime from a ConversationHandle.
- * (Wraps assistant-ui's AG-UI runtime; implementation at impl stage.)
- */
-export declare function useAgentSandboxRuntime(handle: ConversationHandle): unknown;

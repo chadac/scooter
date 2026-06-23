@@ -190,14 +190,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     },
 
     async prompt(input: PromptInput): Promise<RunId> {
-      if (!started || !acpSessionId) await this.start();
       const runId = `run-${(runCounter += 1)}`;
       const st: RunState = { runId, toolMessage: new Map() };
 
+      // Emit RUN_STARTED before any awaiting so the UI sees the run begin even
+      // if agent startup is slow or fails (e.g. goose needs a model provider).
       emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
 
       const unsub = acpClient.onSessionUpdate((_sid, u) => handleUpdate(st, u));
       try {
+        if (!started || !acpSessionId) await this.start();
         const { stopReason } = await acpClient.prompt({
           sessionId: acpSessionId!,
           prompt: [{ type: "text", text: input.text }],

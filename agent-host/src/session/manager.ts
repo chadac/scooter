@@ -51,6 +51,8 @@ export interface SessionManager {
   revive(id: SessionId): Promise<Conversation>;
   /** Forward a user prompt into the conversation's goose session. */
   prompt(id: SessionId, text: string): Promise<void>;
+  /** Find-or-start the conversation for an AG-UI thread, then prompt it. */
+  promptByThread(threadId: ThreadId, text: string): Promise<void>;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
 
@@ -79,7 +81,12 @@ interface Entry {
   status: ConversationStatus;
 }
 
-let convCounter = 0;
+/** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
+function shortId(threadId: string): string {
+  let h = 0;
+  for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) | 0;
+  return Math.abs(h).toString(36);
+}
 
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const { provisioner, store, bridgeFactory } = deps;
@@ -102,13 +109,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   return {
     async start(threadId) {
-      const id: SessionId = `conv${(convCounter += 1)}`;
-      const sandbox = await provisioner.create(id);
+      // The conversation id IS the thread id, so AG-UI events broadcast/persist
+      // under the same key the UI subscribes by. The sandbox (k8s) name uses a
+      // short DNS-safe hash of it.
+      const id: SessionId = threadId;
+      const sandbox = await provisioner.create(shortId(threadId));
       const bridge = bridgeFactory?.({ conversationId: id, sandbox });
       const entry: Entry = { id, threadId, sandbox, bridge, status: "running" };
       entries.set(id, entry);
       wireEventLog(entry);
-      await bridge?.start();
+      // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
+      // on its ACP newSession. bridge.prompt() lazily starts on first use, after
+      // emitting RUN_STARTED, so the UI always sees the run begin.
       return toConversation(entry);
     },
 
@@ -130,6 +142,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       if (entry.status !== "running") await this.revive(id);
       await entry.bridge?.prompt({ threadId: entry.threadId, text });
+    },
+
+    async promptByThread(threadId, text) {
+      // Find the conversation for this thread, or start one on first prompt.
+      let entry = [...entries.values()].find((e) => e.threadId === threadId);
+      if (!entry) {
+        const conv = await this.start(threadId);
+        entry = entries.get(conv.id)!;
+      } else if (entry.status !== "running") {
+        await this.revive(entry.id);
+      }
+      await entry.bridge?.prompt({ threadId, text });
     },
 
     async suspend(id) {

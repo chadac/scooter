@@ -75,7 +75,8 @@ export async function main(config: AgentHostConfig = configFromEnv()): Promise<(
   // (SessionManager already persists them to the store via its own wiring.)
 
   server.onPrompt(async (sessionId, input) => {
-    await sessions.prompt(sessionId, input.text);
+    // sessionId here is the AG-UI threadId; find-or-start the conversation.
+    await sessions.promptByThread(sessionId, input.text);
   });
 
   server.onAttach(async (sessionId, conn) => {
@@ -191,4 +192,12 @@ function lazyAcpClient(
       if (realPromise) await (await realPromise).close();
     },
   };
+}
+
+// Entry point: when run directly (node dist/index.js), start the service.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error("[agent-host] fatal:", err);
+    process.exit(1);
+  });
 }

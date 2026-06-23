@@ -66,10 +66,21 @@ export function createAguiServer(): AguiServer {
     res.write(encoder.encodeSSE(toBaseEvent(event)));
   };
 
+  // Connections opened via POST /agui are run-scoped: they close when the run
+  // ends. The persistent GET /sessions/:id/events connections stay open.
+  const runScoped = new WeakSet<ServerResponse>();
+
   const broadcast = (sessionId: SessionId, event: AguiEvent) => {
     const set = connections.get(sessionId);
     if (!set) return;
-    for (const res of set) write(res, event);
+    const terminal = event.type === "RUN_FINISHED" || event.type === "RUN_ERROR";
+    for (const res of set) {
+      write(res, event);
+      if (terminal && runScoped.has(res)) {
+        set.delete(res);
+        res.end();
+      }
+    }
   };
 
   const readBody = (req: IncomingMessage): Promise<string> =>
@@ -83,6 +94,44 @@ export function createAguiServer(): AguiServer {
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean);
+
+    // GET /healthz  -> readiness probe
+    if (req.method === "GET" && parts[0] === "healthz") {
+      res.writeHead(200, { "Content-Type": "application/json" }).end('{"status":"ok"}');
+      return;
+    }
+
+    // POST /agui  -> the standard AG-UI HttpAgent protocol: accept a
+    // RunAgentInput and stream this run's AG-UI events back over SSE. This is
+    // what @ag-ui/client HttpAgent (used by assistant-ui) talks to.
+    if (req.method === "POST" && parts[0] === "agui") {
+      const input = JSON.parse((await readBody(req)) || "{}") as {
+        threadId: string;
+        runId?: string;
+        messages?: Array<{ role: string; content?: string }>;
+      };
+      const sessionId = input.threadId;
+      res.writeHead(200, {
+        "Content-Type": encoder.getContentType(),
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+
+      // Subscribe this response to the session's events for the duration of the
+      // run; unsubscribe when the run completes.
+      let set = connections.get(sessionId);
+      if (!set) connections.set(sessionId, (set = new Set()));
+      set.add(res);
+      runScoped.add(res);
+      req.on("close", () => set!.delete(res));
+
+      // The latest user message is the prompt text.
+      const lastUser = [...(input.messages ?? [])].reverse().find((m) => m.role === "user");
+      const text = lastUser?.content ?? "";
+      await promptHandler?.(sessionId, { threadId: sessionId, text });
+      // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
+      return;
+    }
 
     // GET /sessions/:id/events  -> SSE subscription
     if (req.method === "GET" && parts[0] === "sessions" && parts[2] === "events") {
