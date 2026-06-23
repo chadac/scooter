@@ -1,31 +1,58 @@
-{ pkgs, lib, n2c, skillsDir, ... }:
+{ pkgs, lib, n2c, skillsDir, extraSkillsDirs ? [ ], extraPackages ? [ ], ... }:
 
 # Generic Nix sandbox image — the "body".
 #
 # There is NO in-pod server. The agent-host drives this pod via the Kubernetes
 # exec API (like upstream examples/sandboxed-tools), so the image just needs a
-# Nix-powered environment that stays alive and is exec-able.
+# Nix-powered environment that stays alive and is exec-able, with:
+#   - a populated /nix store + initialized DB so `nix profile install` works
+#   - skills available to the commands the agent-host runs
+#   - the overlay-store entrypoint (writable /nix/store at runtime)
 #
-# Patterns lifted from ../../../openhands-nix/pkgs/images:
-#   - overlay /nix store (read-only base + writable overlayfs upper)
-#   - lazy package shims (download big tools on first use)
-#   - skills injected so they're available to commands run in the sandbox
+# Layered for cache efficiency (system / nix / app), patterns lifted from
+# ../../../openhands-nix/pkgs/images.
 #
 # This image contains NO agent and NO agent-host — those run outside.
-#
-# Design stage: structure + inputs/outputs only; layers are sketched, not built.
 
 let
   # Container entrypoint: overlay-store setup, then `sleep infinity`.
   entrypoint = pkgs.writeShellApplication {
     name = "sandbox-entrypoint";
-    runtimeInputs = [ pkgs.nix pkgs.cacert pkgs.coreutils ];
+    runtimeInputs = [ pkgs.nix pkgs.cacert pkgs.coreutils pkgs.util-linux ];
     text = builtins.readFile ./entrypoint.sh;
   };
 
-  basePackages = with pkgs; [ bashInteractive coreutils git curl jq gnutar gzip nix cacert ];
+  # System tools available by default inside the sandbox.
+  systemPackages = with pkgs; [
+    bashInteractive coreutils findutils gnugrep gnused gawk
+    git curl jq gnutar gzip util-linux
+  ];
 
-  # systemLayer / nixLayer / appLayer would be n2c.buildLayer calls here.
+  allPackages = systemPackages ++ extraPackages;
+
+  # rootfs: non-package files baked into the image (skills, dirs).
+  rootfs = pkgs.runCommand "sandbox-rootfs" { } ''
+    mkdir -p $out/workspace
+    # Skills (base + any extra dirs), available to exec'd commands.
+    mkdir -p $out/etc/agent-sandbox/skills
+    ${lib.concatMapStringsSep "\n"
+      (d: "cp ${d}/*.md $out/etc/agent-sandbox/skills/ 2>/dev/null || true")
+      ((lib.toList skillsDir) ++ extraSkillsDirs)}
+  '';
+
+  # /bin (and ssl/share) populated from the package set.
+  rootBinEnv = pkgs.buildEnv {
+    name = "sandbox-root-env";
+    paths = allPackages;
+    pathsToLink = [ "/bin" "/etc/ssl" "/share" ];
+  };
+
+  # Layer 1: system tools — change rarely.
+  systemLayer = n2c.buildLayer { deps = allPackages ++ [ pkgs.cacert ]; };
+  # Layer 2: nix itself — the package manager the agent uses in-pod.
+  nixLayer = n2c.buildLayer { deps = [ pkgs.nix ]; };
+  # Layer 3: app — entrypoint (thin, changes most).
+  appLayer = n2c.buildLayer { deps = [ entrypoint ]; };
 in
 {
   inherit entrypoint;
@@ -34,22 +61,24 @@ in
   image = n2c.buildImage {
     name = "agent-sandbox-nix";
     tag = "latest";
-    # initializeNixDatabase = true;
-    # maxLayers = 80;
-    # layers = [ systemLayer nixLayer appLayer ];
-    copyToRoot = pkgs.buildEnv {
-      name = "sandbox-root";
-      paths = basePackages ++ [ entrypoint ];
-      pathsToLink = [ "/bin" ];
-    };
+
+    # Populate /nix/var/nix DB so `nix profile install` works at runtime.
+    initializeNixDatabase = true;
+    maxLayers = 80;
+
+    layers = [ systemLayer nixLayer appLayer ];
+    copyToRoot = [ rootfs rootBinEnv ];
+
     config = {
       Entrypoint = [ "${entrypoint}/bin/sandbox-entrypoint" ];
-      # Skills available to commands the agent-host execs in the sandbox.
-      Env = [ "SKILLS_DIR=/etc/agent-sandbox/skills" ];
+      Env = [
+        "SKILLS_DIR=/etc/agent-sandbox/skills"
+        "PATH=/bin:/usr/bin"
+        "NIX_PATH=nixpkgs=${pkgs.path}"
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+      ];
       WorkingDir = "/workspace";
       # No ExposedPorts: the pod is driven via the K8s exec API, not HTTP.
     };
-    # Skills baked in (markdown; consumers can layer extra via extraSkillsDirs).
-    # cp ${skillsDir}/*.md -> /etc/agent-sandbox/skills/  (in a layer)
   };
 }
