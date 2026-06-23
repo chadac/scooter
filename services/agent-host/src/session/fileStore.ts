@@ -6,7 +6,7 @@
  * gooseStatePath(id). A richer store (indexing, compaction) can come later.
  */
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
@@ -33,6 +33,13 @@ export function createFileConversationStore(root: string): ConversationStore {
       for (const line of data.split("\n")) {
         if (line.trim()) yield JSON.parse(line) as AguiEvent;
       }
+    },
+
+    async recordActivity(id, at) {
+      await ensureDir(id);
+      // Last-activity marker — small, overwritten; queryable by an external
+      // lifecycle manager that mounts the same PVC.
+      await writeFile(join(root, id, "activity.json"), JSON.stringify({ lastActivityAt: at }), "utf8");
     },
 
     gooseStatePath(id) {

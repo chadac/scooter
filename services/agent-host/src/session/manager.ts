@@ -32,6 +32,9 @@ export interface ConversationStore {
   readEvents(id: SessionId): AsyncIterable<AguiEvent>;
   /** Path on the conversation-state PVC where goose session data lives. */
   gooseStatePath(id: SessionId): string;
+  /** Persist last-activity (ms epoch) so it survives restarts and is queryable
+   *  by an external lifecycle manager. Optional. */
+  recordActivity?(id: SessionId, at: number): Promise<void>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";
@@ -44,6 +47,8 @@ export interface Conversation {
   readonly status: ConversationStatus;
   readonly title: string;
   readonly createdAt: number;
+  /** ms epoch of the last prompt or agent event. Drives idle-suspend. */
+  readonly lastActivityAt: number;
 }
 
 export interface SessionManager {
@@ -63,6 +68,13 @@ export interface SessionManager {
   list(): Conversation[];
   /** Set a conversation's title (e.g. agent-assigned). */
   setTitle(id: SessionId, title: string): void;
+  /**
+   * Suspend conversations that have been idle (no prompt/event) longer than
+   * idleMs. Native-friendly: the agent-host owns the activity signal, so it
+   * does this itself; the activity metadata is exposed so an external
+   * controller could take over. Returns the ids suspended.
+   */
+  sweepIdle(idleMs: number, now?: number): Promise<SessionId[]>;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -87,6 +99,7 @@ interface Entry {
   status: ConversationStatus;
   title: string;
   createdAt: number;
+  lastActivityAt: number;
 }
 
 /** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
@@ -108,11 +121,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     status: e.status,
     title: e.title,
     createdAt: e.createdAt,
+    lastActivityAt: e.lastActivityAt,
   });
+
+  const touch = (e: Entry) => {
+    e.lastActivityAt = nowMs();
+    void store.recordActivity?.(e.id, e.lastActivityAt);
+  };
 
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
     e.bridge.onEvent((event) => {
+      e.lastActivityAt = nowMs(); // agent events count as activity
       void store.appendEvent(e.id, event);
     });
   };
@@ -127,7 +147,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const bridge = bridgeFactory?.({ conversationId: id, sandbox });
       const entry: Entry = {
         id, threadId, sandbox, bridge, status: "running",
-        title: "New chat", createdAt: nowMs(),
+        title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(),
       };
       entries.set(id, entry);
       wireEventLog(entry);
@@ -153,6 +173,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async prompt(id, text) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
+      touch(entry);
       if (entry.status !== "running") await this.revive(id);
       await entry.bridge?.prompt({ threadId: entry.threadId, text });
     },
@@ -166,6 +187,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       } else if (entry.status !== "running") {
         await this.revive(entry.id);
       }
+      touch(entry);
       await entry.bridge?.prompt({ threadId, text });
     },
 
@@ -201,6 +223,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     setTitle(id, title) {
       const entry = entries.get(id);
       if (entry) entry.title = title;
+    },
+
+    async sweepIdle(idleMs, now = nowMs()) {
+      const suspended: SessionId[] = [];
+      for (const entry of entries.values()) {
+        if (entry.status !== "running") continue;
+        if (now - entry.lastActivityAt < idleMs) continue;
+        try {
+          await this.suspend(entry.id);
+          suspended.push(entry.id);
+        } catch {
+          /* best-effort; a failed suspend is retried next sweep */
+        }
+      }
+      return suspended;
     },
   };
 }

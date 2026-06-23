@@ -177,6 +177,27 @@ sandbox.
 
 ### 5b. Per-conversation PVCs
 
+### 5c. Idle lifecycle (auto-suspend) — kube-native, agent-host-managed
+
+Suspend-don't-delete only pays off if *something* suspends idle conversations.
+We deliberately did **not** add a separate polling/lifecycle service:
+
+- The **agent-host owns the activity signal** (it sees every prompt and every
+  agent event), so it self-manages: a periodic sweep (`SessionManager.sweepIdle`,
+  default every 60 s) suspends any **running** conversation idle longer than
+  `IDLE_SUSPEND_MS` (default 30 min; `0` disables). Suspend = drop the pod, keep
+  the PVCs — the same path as a manual suspend.
+- **Activity is exposed and persisted** so an external controller *can* take over
+  if needed: the management API view carries `lastActivityAt`/`idleMs`/`ageMs`,
+  and `recordActivity` writes `activity.json` onto the conversation-state PVC
+  (queryable by mounting the same volume).
+- **TTL/expiry stays fully native**: the agent-sandbox controller's
+  `shutdownTime`/`shutdownPolicy` fields reconcile pod teardown/Sandbox deletion
+  at a deadline — no app code needed for hard expiry.
+
+⇒ idle-suspend is in-process (no extra Deployment), but the data needed to lift
+it into a standalone controller later is already on the wire and on disk.
+
 ## 6. Components (Design-stage; interfaces only)
 
 1. **`agent-host/`** (TypeScript; was `wrapper/`) — runs `goose acp` per

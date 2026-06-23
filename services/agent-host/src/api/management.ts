@@ -24,14 +24,19 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore } from "../session/manager.js";
 import type { AguiServer } from "../agui/server.js";
 
-/** Public (JSON-safe) view of a conversation — omits the in-memory bridge. */
-function view(c: Conversation) {
+/** Public (JSON-safe) view of a conversation — omits the in-memory bridge.
+ *  Exposes activity metadata (lastActivityAt, idleMs, ageMs) so the UI and any
+ *  external lifecycle manager can reason about idleness. */
+function view(c: Conversation, now = Date.now()) {
   return {
     id: c.id,
     threadId: c.threadId,
     status: c.status,
     title: c.title,
     createdAt: c.createdAt,
+    lastActivityAt: c.lastActivityAt,
+    idleMs: Math.max(0, now - c.lastActivityAt),
+    ageMs: Math.max(0, now - c.createdAt),
     sandbox: { name: c.sandbox.name, namespace: c.sandbox.namespace },
   };
 }

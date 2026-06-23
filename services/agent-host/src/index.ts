@@ -32,6 +32,10 @@ export interface AgentHostConfig {
   statePath: string;
   /** ACP agent launch (goose). */
   agent: { command: string; args: string[]; env: Record<string, string> };
+  /** Idle-suspend: suspend conversations idle longer than this (ms). 0 = off. */
+  idleSuspendMs: number;
+  /** How often the idle sweep runs (ms). */
+  idleSweepIntervalMs: number;
 }
 
 export interface AgentHostConfigExtra {
@@ -48,6 +52,9 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest",
     statePath: process.env.STATE_PATH ?? "/var/lib/agent-host/conversations",
+    // Default: suspend after 30 min idle, sweep every minute. 0 disables.
+    idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
+    idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
     fakeSandbox: process.env.FAKE_SANDBOX === "1" || useFakeAgent,
     agent: useFakeAgent
       ? { command: process.execPath, args: [fakeAgentPath], env: {} }
@@ -134,7 +141,22 @@ export async function main(
   // eslint-disable-next-line no-console
   console.log(`[agent-host] listening on :${config.port}`);
 
+  // Idle-suspend sweep — kube-native-friendly: the agent-host owns the activity
+  // signal, so it suspends idle conversations itself (drops the pod, keeps the
+  // PVCs). Activity metadata is exposed via the API + persisted so an external
+  // lifecycle controller could take over. 0 disables.
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+  if (config.idleSuspendMs > 0) {
+    sweepTimer = setInterval(() => {
+      void sessions.sweepIdle(config.idleSuspendMs).then((ids) => {
+        if (ids.length) console.log(`[agent-host] idle-suspended ${ids.length}:`, ids);
+      });
+    }, config.idleSweepIntervalMs);
+    sweepTimer.unref?.();
+  }
+
   return async () => {
+    if (sweepTimer) clearInterval(sweepTimer);
     await server.close();
   };
 

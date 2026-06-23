@@ -44,6 +44,17 @@ in
       default = false;
       description = "Run the dummy ACP agent (GOOSE_BIN=fake) — for cluster e2e.";
     };
+
+    idleSuspendMs = mkOption {
+      type = types.int;
+      default = 30 * 60 * 1000;
+      description = ''
+        Idle window before the agent-host auto-suspends a conversation (drops
+        the sandbox pod, keeps the PVCs). The agent-host owns the activity
+        signal, so it self-manages lifecycle; activity metadata is still
+        exposed via the management API for an external controller. 0 disables.
+      '';
+    };
   };
 
   config = {
@@ -105,6 +116,7 @@ in
                   { name = "NAMESPACE"; value = cfg.namespace; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
+                  { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ] ++ lib.optional cfg.fakeAgent
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
