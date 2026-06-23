@@ -1,0 +1,24 @@
+[project]
+name = "kubenix-agent-manager-broker"
+version = "0.0.0"
+description = "Extensible credential broker for kubenix-agent-manager sandboxes"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "httpx",
+  "pydantic",
+  "pydantic-settings",
+  "kubernetes",   # TokenReview
+  "pyjwt[crypto]", # GitHub App JWT
+]
+
+[project.scripts]
+agent-broker = "broker.core.app:main"
+
+# External packages can contribute provider modules via this entry-point group.
+[project.entry-points."agent_broker.providers"]
+# example = "my_pkg.providers:my_provider"
+
+[tool.setuptools.packages.find]
+include = ["broker*"]
