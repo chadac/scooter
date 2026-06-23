@@ -36,17 +36,17 @@ maybe("cold Sandbox per conversation", () => {
     expect(pvc.status.phase).toBe("Bound");
   });
 
-  it("brings the Sandbox pod to Ready with :8888 reachable", async () => {
+  it("brings the Sandbox pod to Ready and is exec-able (no in-pod server)", async () => {
     await cluster.waitFor<{ status: { conditions: Array<{ type: string; status: string }> } }>(
       "Sandbox",
       `conv-${id}`,
       (s) => !!s.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True"),
       180_000,
     );
-    const fwd = await cluster.portForward(`sandbox=conv-${id}`, 8888);
-    const res = await fetch(`${fwd.url}/`);
-    expect(res.ok).toBe(true);
-    fwd.close();
+    // Commands reach the pod via the K8s exec API, not HTTP.
+    const { stdout, exitCode } = await cluster.exec(`sandbox=conv-${id}`, ["echo", "ready"]);
+    expect(exitCode).toBe(0);
+    expect(stdout.trim()).toBe("ready");
   });
 
   it("projects a broker-audience SA token into the pod", async () => {

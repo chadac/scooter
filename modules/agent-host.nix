@@ -9,7 +9,9 @@
 #
 # RBAC: the agent-host's SA needs to create/patch/delete Sandboxes,
 # ServiceAccounts (sandbox-{id}), and PVCs in cfg.namespace (it provisions the
-# per-conversation resources from ./conversation.nix at runtime).
+# per-conversation resources from ./conversation.nix at runtime), AND
+# `create pods/exec` (+ get pods) — exec is how the ExecBackend runs the agent's
+# commands in the sandbox pod (no in-pod server).
 
 let
   inherit (lib) mkOption types;

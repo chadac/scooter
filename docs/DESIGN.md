@@ -10,9 +10,9 @@ A Nix-powered agent platform layered over the upstream Kubernetes
 
 agent-sandbox provides a **fleet of pre-warmed, generic, isolated execution
 environments** (pods) — body-for-rent — with lifecycle, warm pools,
-suspend/resume, a per-pod runtime contract (`/execute` + files on :8888), a
-router, and Go/Python client SDKs. It does **not** provide an agent loop, a
-conversation model, or a UI.
+suspend/resume, and Go/Python client SDKs. Commands reach a pod via the
+Kubernetes exec API (no in-pod server required). It does **not** provide an
+agent loop, a conversation model, or a UI.
 
 This project supplies those, using off-the-shelf standards:
 
@@ -21,9 +21,9 @@ This project supplies those, using off-the-shelf standards:
 - **UI seam:** the **AG-UI** protocol, consumed natively by **assistant-ui**.
 - **Glue:** an **agent-host** service that runs the agent **outside** the
   sandbox, bridges ACP ⇄ AG-UI, and services the agent's tool actions by
-  calling the **agent-sandbox API** against the session's pod.
-- **Nix:** a *generic* sandbox image — agent-sandbox runtime contract + Nix
-  (overlay /nix store, lazy shims, skills available to commands).
+  running commands in the session's pod via the **Kubernetes exec API**.
+- **Nix:** a *generic* sandbox image — a plain Nix environment (overlay /nix
+  store, lazy shims, skills available to commands); no in-pod server.
 - **kubenix:** modules generating `SandboxTemplate` / `SandboxWarmPool` /
   `Sandbox`.
 
@@ -52,13 +52,13 @@ OpenHands bundled three concerns; agent-sandbox replaces only #3.
    ├─ ACP client methods (terminal/*, fs/*) ──────────┐
    └─ conversation-state PVC (Goose session + log)     │  (the agent's actions)
                                                        ▼
-                              agent-sandbox SDK  ──►  Sandbox pod (the body)
-                                (/execute, /upload,       ├─ :8888 runtime contract
-                                 /download, files)        ├─ Nix: overlay store + skills
-                                                          └─ workspace PVC
+                              K8s exec API  ──────►  Sandbox pod (the body)
+                              (pods/exec; no             ├─ plain generic Nix image
+                               in-pod server)            │   (overlay store + skills)
+                                                         └─ workspace PVC
         ▲
  agent-sandbox controller
-   (Sandbox CRD, warm pools, suspend = drop Pod / keep PVCs, router)
+   (Sandbox CRD, warm pools, suspend = drop Pod / keep PVCs)
 ```
 
 **Why outside:** agent-sandbox is designed for the agent to live elsewhere and
@@ -68,11 +68,12 @@ pools. Outside-the-pod restores generic interchangeable pods, lets the AG-UI
 stream reach the browser directly, and decouples brain lifecycle from body
 lifecycle.
 
-**The ACP↔agent-sandbox snap:** in ACP the agent calls *client methods*
-(`terminal/*`, `fs/*`) on its host to act. The agent-host services those by
-calling the agent-sandbox API into the session's pod. ACP ("agent asks host to
-run things") + agent-sandbox ("host runs things in a remote pod") compose
-exactly.
+**The ACP↔exec snap:** in ACP the agent calls *client methods* (`terminal/*`,
+`fs/*`) on its host to act. The agent-host services those by running the command
+in the session's pod via the **Kubernetes exec API** — the same mechanism
+upstream `examples/sandboxed-tools` uses for the agent-outside pattern. ACP
+("agent asks host to run things") + K8s exec ("host runs things in a remote
+pod") compose exactly, with no in-pod server.
 
 ## 4. Protocol seams
 
@@ -82,7 +83,7 @@ exactly.
   `tool_call_update`, `plan`, thoughts.
 - Agent → host client methods: `session/request_permission`, `fs/read_text_file`,
   `fs/write_text_file`, `terminal/create|output|wait_for_exit|kill|release`.
-  **Serviced via the agent-sandbox SDK.**
+  **Serviced via the Kubernetes exec API** (see §4d).
 
 ### 4b. AG-UI (agent-host ⇄ browser) — streaming events (SSE or WS, TBD)
 Lifecycle, text, tool-call, reasoning, state events (see §4c mapping).
@@ -100,9 +101,13 @@ Lifecycle, text, tool-call, reasoning, state events (see §4c mapping).
 | turn complete | `RunFinished` |
 | agent error | `RunError` |
 
-### 4d. agent-sandbox runtime contract (agent-host ⇄ pod, via SDK/router)
-`POST /execute`, `POST /upload`, `GET /download/{p}`, `GET /list/{p}`,
-`GET /exists/{p}` on :8888. This is the ExecBackend's transport.
+### 4d. Exec transport (agent-host ⇄ pod, Kubernetes exec API)
+The `ExecBackend` runs commands in the session's pod via the Kubernetes
+**pods/exec** subresource (SPDY/WebSocket), not an in-pod HTTP server — matching
+upstream `examples/sandboxed-tools`. `run`/`spawn` exec the command and collect
+stdout/stderr/exit; `readTextFile`/`writeTextFile` exec `cat`/a writer (or
+tar-stream). Requires `create pods/exec` RBAC on the agent-host SA. The sandbox
+image is therefore a plain generic Nix image with no server.
 
 ## 5. Session lifecycle & persistence
 
@@ -159,8 +164,8 @@ sandbox.
    agent-sandbox SDK; AG-UI server to the browser; mounts/owns the
    conversation-state PVC. Topology-agnostic: N goose procs per host pod now,
    1-per-pod later.
-2. **`pkgs/sandbox-image/`** — *generic* Nix image: agent-sandbox runtime
-   contract (:8888) + overlay /nix store + lazy shims + skills. No agent.
+2. **`pkgs/sandbox-image/`** — *generic* Nix image: plain Nix env + overlay
+   /nix store + lazy shims + skills. No agent, no in-pod server (exec via K8s).
 3. **`modules/`** — kubenix: `SandboxTemplate` (with two volumeClaimTemplates),
    `SandboxWarmPool`, `Sandbox`; agent-host Deployment; (post-PoC) broker,
    webhooks.

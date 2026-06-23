@@ -1,17 +1,15 @@
 /**
  * Shared types for the agent-host.
  *
- * Design stage: interfaces and I/O only. No implementation.
- *
  * The agent-host runs OUTSIDE the sandbox. Per conversation it spawns a
  * `goose acp` process and bridges three boundaries:
  *   - ACP (JSON-RPC/stdio) to Goose                            -> ./acp/
  *   - AG-UI (streaming events) to the browser                  -> ./agui/
  *   - exec: the agent's terminal/* + fs/* actions are serviced -> ./exec/
- *     by calling the agent-sandbox API against the session's pod
+ *     by running commands in the session's pod via the K8s exec API
  *
- * The sandbox image itself is generic (agent-sandbox runtime + Nix); it does
- * NOT contain Goose or this host.
+ * The sandbox image itself is a plain generic Nix image (no in-pod server); it
+ * does NOT contain Goose or this host.
  */
 
 // ---------------------------------------------------------------------------

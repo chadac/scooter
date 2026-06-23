@@ -1,16 +1,18 @@
 /**
- * SDK-backed ExecBackend — services ACP terminal/* and fs/* by calling the
- * agent-sandbox API against the session's pod.
+ * ExecBackend — services ACP terminal/* and fs/* by running commands in the
+ * session's sandbox pod via the **Kubernetes exec API** (pods/exec subresource),
+ * the same mechanism upstream examples/sandboxed-tools uses. There is no in-pod
+ * HTTP server.
  *
- * Maps:
- *   ExecBackend.run          -> agent-sandbox POST /execute
- *   ExecBackend.readTextFile -> GET /download/{path}
- *   ExecBackend.writeTextFile-> POST /upload
- *   ExecBackend.spawn        -> streamed /execute (incremental output)
+ * Maps (all over `kubectl exec`-equivalent):
+ *   ExecBackend.run          -> exec the command, collect stdout/stderr/exit
+ *   ExecBackend.readTextFile -> exec `cat <path>` (or tar stream)
+ *   ExecBackend.writeTextFile-> exec a writer (tar-in / `tee <path>`)
+ *   ExecBackend.spawn        -> exec with streamed stdout
  *
- * `connectSandbox` (resolving a SandboxRef to a real SandboxApiClient over the
- * router) is implemented at the cluster-integration stage; the unit tier injects
- * a fake SandboxApiClient directly.
+ * `connectSandbox` resolves a SandboxRef to a pod-exec client (needs pods/exec
+ * RBAC on the agent-host SA); implemented at the cluster-integration stage. The
+ * unit tier injects a fake SandboxApiClient directly.
  */
 
 import type {
@@ -21,15 +23,19 @@ import type {
   TerminalHandle,
 } from "../types.js";
 
-/** Thin client over the agent-sandbox router for one sandbox. */
+/**
+ * Thin exec client for one sandbox pod. Production impl wraps the Kubernetes
+ * pods/exec API; tests inject a fake.
+ */
 export interface SandboxApiClient {
   execute(req: ExecRequest, signal?: AbortSignal): Promise<ExecResult>;
   download(path: string): Promise<string>;
   upload(path: string, content: string): Promise<void>;
-  readonly mode: "gateway" | "port-forward" | "in-cluster" | "direct";
+  /** How the exec stream is reached. "k8s-exec" in production. */
+  readonly mode: "k8s-exec" | "direct";
 }
 
-/** Resolves a SandboxRef to a connected SandboxApiClient (via the router). */
+/** Resolves a SandboxRef to a pod-exec client (Kubernetes exec API). */
 export declare function connectSandbox(ref: SandboxRef): Promise<SandboxApiClient>;
 
 /** Constructs an ExecBackend bound to one sandbox. */
