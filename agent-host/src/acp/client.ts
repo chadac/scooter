@@ -1,16 +1,31 @@
 /**
- * ACP client — speaks JSON-RPC 2.0 over stdio to a `goose acp` subprocess.
+ * ACP client — drives a `goose acp` subprocess over JSON-RPC 2.0 / stdio,
+ * built on the official @zed-industries/agent-client-protocol SDK.
  *
- * Design stage: interfaces only. The agent-host is the ACP *client*; Goose is
- * the ACP *agent*. We call agent methods; Goose calls our client methods
- * (which we service via the ExecBackend / permission UI).
+ * The agent-host is the ACP *client*; Goose is the ACP *agent*. We call agent
+ * methods (initialize, session/new, session/prompt, session/cancel). Goose calls
+ * our client methods (fs/*, terminal/*, session/request_permission), which we
+ * service via the ExecBackend / permission handler.
  *
- * Spec: https://agentclientprotocol.com  (camelCase props, snake_case discriminators)
+ * This module exposes a small `AcpClient` facade over the SDK so the bridge
+ * stays decoupled from SDK types (and so tests can inject an in-process fake).
  */
+
+import { spawn } from "node:child_process";
+import { Readable, Writable } from "node:stream";
+
+import {
+  ClientSideConnection,
+  ndJsonStream,
+  type Agent,
+  type Client,
+  type Stream,
+} from "@zed-industries/agent-client-protocol";
+import type * as schema from "@zed-industries/agent-client-protocol";
 
 import type { ExecBackend } from "../types.js";
 
-// --- Agent methods we invoke (host -> agent) --------------------------------
+// --- Facade types (kept stable for the bridge + fake) -----------------------
 
 export interface InitializeParams {
   protocolVersion: number;
@@ -18,21 +33,17 @@ export interface InitializeParams {
 }
 
 export interface ClientCapabilities {
-  /** We service fs/read_text_file + fs/write_text_file. */
   fs: { readTextFile: boolean; writeTextFile: boolean };
-  /** We service terminal/* methods. */
   terminal: boolean;
 }
 
 export interface NewSessionParams {
   cwd: string;
-  /** MCP servers / builtins to advertise, if any. */
   mcpServers?: unknown[];
 }
 
 export interface PromptParams {
   sessionId: string;
-  /** Content blocks (text, resource links, etc.). */
   prompt: ContentBlock[];
 }
 
@@ -40,16 +51,13 @@ export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "resource_link"; uri: string };
 
-// --- Agent notifications we receive (agent -> host) -------------------------
-
+/** Normalized session/update variants the bridge consumes. */
 export type SessionUpdate =
   | { sessionUpdate: "agent_message_chunk"; content: ContentBlock }
+  | { sessionUpdate: "agent_thought_chunk"; content: ContentBlock }
   | { sessionUpdate: "tool_call"; toolCallId: string; title: string; rawInput?: unknown }
   | { sessionUpdate: "tool_call_update"; toolCallId: string; status: string; content?: unknown }
-  | { sessionUpdate: "plan"; entries: unknown[] }
-  | { sessionUpdate: "agent_thought_chunk"; content: ContentBlock };
-
-// --- Client methods Goose invokes on us (agent -> host) ---------------------
+  | { sessionUpdate: "plan"; entries: unknown[] };
 
 export interface PermissionRequest {
   sessionId: string;
@@ -57,32 +65,21 @@ export interface PermissionRequest {
   options: Array<{ optionId: string; name: string; kind: string }>;
 }
 
-/**
- * The ACP transport + session. One AcpClient drives one Goose process.
- *
- * Client methods (fs/*, terminal/*) are routed to `exec`; permission requests
- * are surfaced via onPermissionRequest for the UI to answer.
- */
 export interface AcpClient {
   initialize(params: InitializeParams): Promise<{ protocolVersion: number }>;
   newSession(params: NewSessionParams): Promise<{ sessionId: string }>;
   prompt(params: PromptParams): Promise<{ stopReason: string }>;
   cancel(sessionId: string): Promise<void>;
 
-  /** Subscribe to streamed session/update notifications. */
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
-
-  /** Called when Goose requests permission for a tool call. */
   onPermissionRequest(
     handler: (req: PermissionRequest) => Promise<{ optionId: string }>,
   ): void;
 
-  /** Terminate the underlying process. */
   close(): Promise<void>;
 }
 
 export interface AcpClientDeps {
-  /** Spawned `goose acp` process I/O is wired here. */
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -91,4 +88,176 @@ export interface AcpClientDeps {
 }
 
 /** Spawns `goose acp` and returns a connected ACP client. */
-export declare function createAcpClient(deps: AcpClientDeps): Promise<AcpClient>;
+export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
+  const child = spawn(deps.command, deps.args, {
+    stdio: ["pipe", "pipe", "inherit"],
+    env: { ...process.env, ...deps.env },
+  });
+
+  // Adapt the child's Node stdio to the Web streams ndJsonStream expects.
+  const toAgent = Writable.toWeb(child.stdin) as WritableStream<Uint8Array>;
+  const fromAgent = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
+  const stream: Stream = ndJsonStream(toAgent, fromAgent);
+
+  const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
+  let permissionHandler:
+    | ((req: PermissionRequest) => Promise<{ optionId: string }>)
+    | undefined;
+
+  // Our Client implementation: what Goose calls back into.
+  const makeClient = (_agent: Agent): Client => ({
+    async sessionUpdate(params: schema.SessionNotification): Promise<void> {
+      const norm = normalizeUpdate(params);
+      if (norm) for (const cb of updateCbs) cb(params.sessionId, norm);
+    },
+
+    async requestPermission(
+      params: schema.RequestPermissionRequest,
+    ): Promise<schema.RequestPermissionResponse> {
+      if (!permissionHandler) {
+        return { outcome: { outcome: "cancelled" } };
+      }
+      const { optionId } = await permissionHandler({
+        sessionId: params.sessionId,
+        toolCallId: params.toolCall.toolCallId,
+        options: params.options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
+      });
+      return { outcome: { outcome: "selected", optionId } };
+    },
+
+    async readTextFile(
+      params: schema.ReadTextFileRequest,
+    ): Promise<schema.ReadTextFileResponse> {
+      const content = await deps.exec.readTextFile(params.path);
+      return { content };
+    },
+
+    async writeTextFile(
+      params: schema.WriteTextFileRequest,
+    ): Promise<schema.WriteTextFileResponse> {
+      await deps.exec.writeTextFile(params.path, params.content);
+      return {};
+    },
+
+    async createTerminal(
+      params: schema.CreateTerminalRequest,
+    ): Promise<schema.CreateTerminalResponse> {
+      const handle = deps.exec.spawn({
+        command: params.command,
+        args: params.args ?? [],
+        cwd: params.cwd ?? undefined,
+        env: Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])),
+      });
+      terminals.set(handle.id, handle);
+      return { terminalId: handle.id };
+    },
+
+    async terminalOutput(
+      params: schema.TerminalOutputRequest,
+    ): Promise<schema.TerminalOutputResponse> {
+      const buf = terminalBuffers.get(params.terminalId) ?? "";
+      return { output: buf, truncated: false };
+    },
+
+    async waitForTerminalExit(
+      params: schema.WaitForTerminalExitRequest,
+    ): Promise<schema.WaitForTerminalExitResponse> {
+      const handle = terminals.get(params.terminalId);
+      if (!handle) return { exitCode: 1 };
+      const { exitCode } = await handle.waitForExit();
+      return { exitCode };
+    },
+
+    async releaseTerminal(
+      params: schema.ReleaseTerminalRequest,
+    ): Promise<schema.ReleaseTerminalResponse | void> {
+      await terminals.get(params.terminalId)?.release();
+      terminals.delete(params.terminalId);
+      terminalBuffers.delete(params.terminalId);
+    },
+
+    async killTerminal(
+      params: schema.KillTerminalCommandRequest,
+    ): Promise<schema.KillTerminalResponse | void> {
+      await terminals.get(params.terminalId)?.kill();
+    },
+  });
+
+  // Terminal bookkeeping: accumulate streamed output for terminalOutput().
+  const terminals = new Map<string, ReturnType<ExecBackend["spawn"]>>();
+  const terminalBuffers = new Map<string, string>();
+
+  const conn = new ClientSideConnection(makeClient, stream);
+
+  await conn.initialize({
+    protocolVersion: 1,
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+      terminal: true,
+    },
+  });
+
+  return {
+    async initialize(_params) {
+      return { protocolVersion: 1 };
+    },
+    async newSession(params) {
+      const res = await conn.newSession({ cwd: params.cwd, mcpServers: [] });
+      return { sessionId: res.sessionId };
+    },
+    async prompt(params) {
+      const res = await conn.prompt({
+        sessionId: params.sessionId,
+        prompt: params.prompt as schema.ContentBlock[],
+      });
+      return { stopReason: res.stopReason };
+    },
+    async cancel(sessionId) {
+      await conn.cancel({ sessionId });
+    },
+    onSessionUpdate(cb) {
+      updateCbs.add(cb);
+      return () => updateCbs.delete(cb);
+    },
+    onPermissionRequest(handler) {
+      permissionHandler = handler;
+    },
+    async close() {
+      child.kill();
+    },
+  };
+}
+
+/** Maps the SDK's SessionNotification.update to our normalized SessionUpdate. */
+function normalizeUpdate(params: schema.SessionNotification): SessionUpdate | undefined {
+  const u = params.update;
+  switch (u.sessionUpdate) {
+    case "agent_message_chunk":
+      return { sessionUpdate: "agent_message_chunk", content: toContentBlock(u.content) };
+    case "agent_thought_chunk":
+      return { sessionUpdate: "agent_thought_chunk", content: toContentBlock(u.content) };
+    case "tool_call":
+      return {
+        sessionUpdate: "tool_call",
+        toolCallId: u.toolCallId,
+        title: u.title,
+        rawInput: u.rawInput,
+      };
+    case "tool_call_update":
+      return {
+        sessionUpdate: "tool_call_update",
+        toolCallId: u.toolCallId,
+        status: u.status ?? "completed",
+        content: u.content,
+      };
+    case "plan":
+      return { sessionUpdate: "plan", entries: u.entries ?? [] };
+    default:
+      return undefined; // ignore user_message_chunk, mode/command updates
+  }
+}
+
+function toContentBlock(content: schema.ContentBlock): ContentBlock {
+  if (content.type === "text") return { type: "text", text: content.text };
+  return { type: "text", text: "" };
+}
