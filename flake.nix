@@ -31,6 +31,10 @@
           # See services/agent-host/.
           agentHost = pkgs.callPackage ./services/agent-host { };
 
+          # Credential broker (Python/FastAPI): extensible provider/transport
+          # modules. See services/broker/ + docs/BROKER.md.
+          broker = pkgs.callPackage ./services/broker { };
+
           # Layered agent skills (markdown; frontmatter + body). See skills/.
           skillsDir = ./skills;
 
@@ -61,7 +65,7 @@
           packages = {
             default = sandboxImage.image;
 
-            inherit agentHost ui;
+            inherit agentHost ui broker;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
 
             # nix build .#sandbox-image  ->  generic OCI sandbox (runtime + Nix)

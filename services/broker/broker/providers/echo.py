@@ -4,20 +4,18 @@ testing, driven through the UI.
 It carries no real secret. Its `whoami` transport authenticates the caller (the
 SAME per-conversation SA-token / TokenReview path every real provider uses) and
 returns the validated Identity, plus records the call. A dummy-agent
-conversation can hit `/test/whoami` and the test asserts the broker confirmed
-the right identity (conversation_id / service account / IRSA) — proving the full
-UI -> agent -> pod -> broker -> back round-trip.
+conversation can hit `/test/whoami` (via the in-pod `agent-broker` shim) and the
+test asserts the broker confirmed the right identity (conversation_id / service
+account / IRSA) — proving the full UI -> agent -> pod -> broker -> back trip.
 
-This is a real, shippable provider (gated to test/dev by config), so adding new
-end-to-end credential tests later is just "have the agent call /test/...".
-
-Design stage: factory + recorder shape only.
+Enabled only when config.test_provider_enabled (off in prod).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..config import settings
 from ..core.registry import register_provider
 from ..core.types import Identity, Provider
 from ..transports.whoami import WhoAmI
@@ -30,7 +28,7 @@ class CallRecorder:
     calls: list[Identity] = field(default_factory=list)
 
     def record(self, identity: Identity) -> None:
-        ...
+        self.calls.append(identity)
 
 
 # Shared recorder the WhoAmI transport writes to and tests can read.
@@ -44,6 +42,5 @@ def echo() -> Provider:
         name="test",
         transports=[WhoAmI(recorder=recorder)],
         credential=None,  # no secret; whoami delivers none
-        # config.test_provider_enabled — OFF in prod; on for dev/e2e.
-        enabled=False,
+        enabled=settings.test_provider_enabled,
     )

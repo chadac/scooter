@@ -4,15 +4,18 @@ Modules self-register via @register_provider on import; external packages can
 also contribute via the "agent_broker.providers" entry-point group. The core
 discovers all registered providers at startup. Adding a provider never edits
 the core.
-
-Design stage: interfaces only.
 """
 
 from __future__ import annotations
 
+import importlib
+import logging
+import pkgutil
 from typing import Callable
 
 from .types import Provider
+
+logger = logging.getLogger(__name__)
 
 # A provider factory: builds a Provider (reads its own config/secrets).
 ProviderFactory = Callable[[], Provider]
@@ -22,20 +25,48 @@ _REGISTRY: dict[str, ProviderFactory] = {}
 
 
 def register_provider(factory: ProviderFactory) -> ProviderFactory:
-    """Decorator: register a provider factory under its returned name.
+    """Decorator: register a provider factory.
 
-    Usage:
-        @register_provider
-        def github() -> Provider: ...
+    Keyed by the factory's __name__ (the provider's module name); the built
+    Provider carries its own `name` for routing.
     """
-    ...
+    _REGISTRY[factory.__name__] = factory
+    return factory
+
+
+def _import_builtin_providers() -> None:
+    """Import every module under broker.providers so their @register_provider
+    decorators run."""
+    from .. import providers
+
+    for mod in pkgutil.iter_modules(providers.__path__):
+        importlib.import_module(f"{providers.__name__}.{mod.name}")
+
+
+def _load_entrypoint_providers() -> None:
+    """Load providers contributed by external packages."""
+    try:
+        from importlib.metadata import entry_points
+    except ImportError:  # pragma: no cover
+        return
+    for ep in entry_points(group="agent_broker.providers"):
+        try:
+            ep.load()  # importing registers via @register_provider
+        except Exception:  # pragma: no cover
+            logger.exception("failed loading provider entry-point %s", ep.name)
 
 
 def discover_providers() -> list[Provider]:
-    """Build all registered + entry-point providers, filtered to enabled ones.
-
-    1. import the built-in providers package (triggers @register_provider)
-    2. load "agent_broker.providers" entry-points (external modules)
-    3. instantiate each factory, drop disabled ones
-    """
-    ...
+    """Build all registered + entry-point providers, keeping enabled ones."""
+    _import_builtin_providers()
+    _load_entrypoint_providers()
+    providers: list[Provider] = []
+    for name, factory in _REGISTRY.items():
+        try:
+            provider = factory()
+        except Exception:
+            logger.exception("provider factory %s failed; skipping", name)
+            continue
+        if provider.enabled:
+            providers.append(provider)
+    return providers

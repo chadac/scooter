@@ -6,18 +6,16 @@ the validated Identity to the caller. Delivers no real credential.
 
 Purpose: end-to-end proof that a call reached the broker AND that the broker
 authenticated the caller as the expected per-conversation identity (IRSA / SA).
-Used by the dummy-agent e2e credential test.
-
-Design stage: interface only.
+Used by the dummy-agent e2e credential test (`agent-broker test/whoami`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from ..core.types import AuthDependency, Provider, Transport
+from ..core.types import AuthDependency, Identity, Provider, Transport
 
 
 @dataclass
@@ -26,8 +24,17 @@ class WhoAmI(Transport):
     name: str = "whoami"
 
     def routes(self, provider: Provider, authed: AuthDependency) -> APIRouter:
-        """Mount GET /whoami: identity = await authed(request);
-        recorder.record(identity); return identity as JSON
-        {conversation_id, namespace, service_account}.
-        """
-        ...
+        router = APIRouter()
+        recorder = self.recorder
+
+        @router.get("/whoami")
+        async def whoami(identity: Identity = Depends(authed)) -> dict[str, str]:
+            if recorder is not None and hasattr(recorder, "record"):
+                recorder.record(identity)  # type: ignore[attr-defined]
+            return {
+                "conversation_id": identity.conversation_id,
+                "namespace": identity.namespace,
+                "service_account": identity.service_account,
+            }
+
+        return router

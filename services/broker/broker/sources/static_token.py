@@ -1,10 +1,4 @@
-"""Static token credential source — a PAT / bot token from config.
-
-The simplest source: a fixed secret injected as a bearer/header. Used as the
-GitHub PAT fallback, GitLab PRIVATE-TOKEN, Slack bot token.
-
-Design stage: interface only.
-"""
+"""Static token credential source — a PAT / bot token from config."""
 
 from __future__ import annotations
 
@@ -20,4 +14,5 @@ class StaticTokenSource(CredentialSource):
     header_name: str | None = None     # for kind="header" (e.g. PRIVATE-TOKEN)
 
     async def get(self, identity: Identity) -> Credential:
-        ...
+        meta = {"header_name": self.header_name} if self.header_name else {}
+        return Credential(kind=self.kind, value=self.token, meta=meta)

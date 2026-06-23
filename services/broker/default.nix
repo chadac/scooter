@@ -1,21 +1,28 @@
 { lib, python3Packages, ... }:
 
-# The credential broker (Python/FastAPI). Design stage: build stub.
-#
-# python3Packages.buildPythonApplication {
-#   pname = "agent-broker"; version = "0.0.0"; src = ./.;
-#   pyproject = true;
-#   dependencies = with python3Packages; [
-#     fastapi uvicorn httpx pydantic pydantic-settings kubernetes pyjwt
-#   ];
-#   pythonImportsCheck = [ "broker.core.app" ];
-# }
+# The credential broker (Python/FastAPI). Extensible provider/transport modules;
+# see docs/BROKER.md.
 
 python3Packages.buildPythonApplication {
   pname = "agent-broker";
   version = "0.0.0";
   src = ./.;
   pyproject = true;
-  doCheck = false; # placeholder until deps + impl exist
-  nativeBuildInputs = [ python3Packages.setuptools ];
+
+  build-system = [ python3Packages.setuptools ];
+
+  dependencies = with python3Packages; [
+    fastapi
+    uvicorn
+    httpx
+    pydantic
+    pydantic-settings
+    kubernetes
+    pyjwt
+  ];
+
+  nativeCheckInputs = with python3Packages; [ pytestCheckHook ];
+  pythonImportsCheck = [ "broker.core.app" ];
+
+  meta.description = "Extensible credential broker for kubenix-agent-manager";
 }

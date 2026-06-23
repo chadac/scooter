@@ -34,3 +34,8 @@ class BrokerSettings(BaseSettings):
 
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
+
+    port: int = 8080
+
+
+settings = BrokerSettings()

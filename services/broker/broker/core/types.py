@@ -53,7 +53,14 @@ class Credential:
 
     def inject(self, headers: dict[str, str]) -> dict[str, str]:
         """Apply this credential to outbound request headers (for http-proxy)."""
-        ...
+        if self.kind == "bearer":
+            headers["Authorization"] = f"Bearer {self.value}"
+        elif self.kind == "header":
+            name = self.meta.get("header_name", "Authorization")
+            headers[name] = self.value
+        elif self.kind == "basic":
+            headers["Authorization"] = f"Basic {self.value}"
+        return headers
 
 
 @runtime_checkable

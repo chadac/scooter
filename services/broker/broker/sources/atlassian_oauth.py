@@ -20,4 +20,5 @@ class AtlassianOAuthSource(CredentialSource):
     cloud_id: str
 
     async def get(self, identity: Identity) -> Credential:
-        ...
+        # TODO: lift client-credentials flow from openhands-nix jira.py.
+        raise NotImplementedError("AtlassianOAuthSource not implemented yet")
