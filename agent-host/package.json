@@ -1,0 +1,24 @@
+{
+  "name": "@kubenix-agent-sandbox/agent-host",
+  "version": "0.0.0",
+  "description": "Runs an ACP agent (Goose) per conversation outside the sandbox; bridges ACP<->AG-UI; execs via the agent-sandbox API.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "agent-host": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "//": "Design stage — concrete deps pinned at implementation. Expected:",
+    "//acp": "@agentclientprotocol/sdk (ACP client over stdio)",
+    "//agui": "@ag-ui/core, @ag-ui/encoder (AG-UI event types + SSE/WS encoding)",
+    "//sandbox": "agent-sandbox TS client OR a thin fetch wrapper over the router"
+  },
+  "devDependencies": {
+    "//": "typescript, vitest, @types/node pinned at implementation."
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "kubenix-agent-sandbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Nix-powered agent platform over the Kubernetes agent-sandbox controller.",
+  "workspaces": [
+    "agent-host",
+    "ui"
+  ],
+  "scripts": {
+    "test": "vitest run --project agent-host",
+    "test:cluster": "vitest run --project cluster",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "//": "Design/Tests stage. Pinned at implementation: vitest, @playwright/test, typescript, @types/node."
+  }
+}
