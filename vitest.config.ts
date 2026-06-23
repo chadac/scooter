@@ -13,7 +13,7 @@ export default defineConfig({
       {
         test: {
           name: "agent-host",
-          include: ["agent-host/test/contract/**/*.spec.ts"],
+          include: ["services/agent-host/test/contract/**/*.spec.ts"],
           environment: "node",
         },
       },

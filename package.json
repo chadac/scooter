@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Nix-powered agent platform over the Kubernetes agent-sandbox controller.",
   "workspaces": [
-    "agent-host",
+    "services/agent-host",
     "ui"
   ],
   "scripts": {

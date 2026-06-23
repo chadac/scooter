@@ -22,7 +22,7 @@ export default defineConfig({
     {
       // agent-host in fake mode: no cluster, no model.
       command:
-        "node agent-host/dist/index.js",
+        "node services/agent-host/dist/index.js",
       env: { PORT: "8080", GOOSE_BIN: "fake", STATE_PATH: "/tmp/agent-host-e2e" },
       port: 8080,
       reuseExistingServer: !process.env.CI,

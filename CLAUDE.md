@@ -56,7 +56,7 @@ Rules of thumb:
 
 ## Test tiers (see docs/TESTING.md)
 
-- **Tier 1 — contract** (`agent-host/test/contract/`): the seams against fakes
+- **Tier 1 — contract** (`services/agent-host/test/contract/`): the seams against fakes
   (fake ACP agent, fake sandbox API). The `bridge.spec.ts` ACP→AG-UI mapping is
   the highest-value test. Deterministic.
 - **Tier 2 — cluster** (`test/cluster/`): provisioning, suspend/resume PVC
@@ -84,12 +84,12 @@ Rules of thumb:
 | Path | What |
 |------|------|
 | `flake.nix` | sandbox image, agent-host, ui, agent (goose) |
-| `agent-host/` | TS: ACP⇄AG-UI bridge, session manager, SDK exec backend |
+| `services/agent-host/` | TS: ACP⇄AG-UI bridge, session manager, SDK exec backend |
 | `pkgs/sandbox-image/` | generic Nix sandbox image (no in-pod server; exec via K8s API) |
 | `modules/` | kubenix: per-conversation Sandbox, agent-host, warm pool |
 | `ui/` | assistant-ui frontend + AG-UI client library |
 | `test/` | Tier 2 cluster + Tier 3 e2e + fixtures/fakes |
-| `agent-host/test/` | Tier 1 contract tests |
+| `services/agent-host/test/` | Tier 1 contract tests |
 | `docs/` | `DESIGN.md`, `TESTING.md` |
 
 ## Reference

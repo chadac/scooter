@@ -38,7 +38,7 @@ agent-sandbox controller: warm pools · suspend(=drop Pod, keep PVCs)/resume
 | Path | What |
 |------|------|
 | `flake.nix` | Nix entry: sandbox image, agent-host, ui, agent (goose) |
-| `agent-host/` | TypeScript: ACP⇄AG-UI bridge, session manager, SDK exec backend |
+| `services/agent-host/` | TypeScript: ACP⇄AG-UI bridge, session manager, SDK exec backend |
 | `pkgs/sandbox-image/` | Generic Nix sandbox image + runtime-server (`:8888` contract) |
 | `modules/` | kubenix: per-conversation cold Sandbox (SA + 2 PVCs), agent-host, warm pool |
 | `ui/` | assistant-ui frontend + reusable AG-UI client library |

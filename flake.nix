@@ -28,8 +28,8 @@
 
           # agent-host (TypeScript): runs `goose acp` per conversation OUTSIDE the
           # sandbox; ACP<->AG-UI bridge; exec serviced via the agent-sandbox API.
-          # See agent-host/.
-          agentHost = pkgs.callPackage ./agent-host { };
+          # See services/agent-host/.
+          agentHost = pkgs.callPackage ./services/agent-host { };
 
           # Layered agent skills (markdown; frontmatter + body). See skills/.
           skillsDir = ./skills;

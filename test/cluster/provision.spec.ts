@@ -11,9 +11,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
-import { createK8sProvisioner } from "../../agent-host/src/session/k8sProvisioner.js";
-import type { SandboxProvisioner } from "../../agent-host/src/session/manager.js";
-import type { SandboxRef } from "../../agent-host/src/types.js";
+import { createK8sProvisioner } from "../../services/agent-host/src/session/k8sProvisioner.js";
+import type { SandboxProvisioner } from "../../services/agent-host/src/session/manager.js";
+import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
 const NS = "agent-sandbox-test";
