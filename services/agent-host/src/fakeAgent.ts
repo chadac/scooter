@@ -55,45 +55,58 @@ class FakeAgent implements Agent {
     const u = (update: Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"]) =>
       this.conn.sessionUpdate({ sessionId, update });
 
+    // A "!<command>" message is a test directive: run <command> verbatim in the
+    // sandbox (real exec path) and report its output. Anything else gets a
+    // friendly echo. The ! mechanism is the e2e test harness — it lets a UI
+    // conversation drive arbitrary sandbox commands (incl. `agent-broker
+    // test/whoami` to verify broker/IRSA auth).
+    const isCommand = userText.startsWith("!");
+    const command = isCommand ? userText.slice(1).trim() : `echo ${userText}`;
+
     // 1. a thought
     await u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Planning a response…" } });
     await sleep(300);
 
-    // 2. a REAL tool call: createTerminal routes back through the bridge's ACP
-    // client -> ExecBackend (local subprocess in fake mode; pod exec in cluster
-    // mode). This exercises the actual exec chain end to end, not a narration.
+    // 2. a REAL tool call: createTerminal -> bridge ACP client -> ExecBackend
+    // (local subprocess in fake mode; pod exec in cluster mode). We run the
+    // command through `sh -c` so it behaves like a shell line.
     let cmdOutput = "";
+    let exitCode = 0;
     await u({
       sessionUpdate: "tool_call",
       toolCallId: "call_1",
-      title: "run: echo",
+      title: `run: ${command}`,
       kind: "execute",
       status: "pending",
-      rawInput: { command: "echo", args: [userText] },
+      rawInput: { command },
     } as never);
     try {
       const term = await this.conn.createTerminal({
         sessionId,
-        command: "echo",
-        args: [userText],
+        command: "sh",
+        args: ["-c", command],
       });
-      await term.waitForExit();
+      const exit = await term.waitForExit();
+      exitCode = exit.exitCode ?? 0;
       const out = await term.currentOutput();
       cmdOutput = out.output ?? "";
       await term.release();
     } catch (e) {
       cmdOutput = `exec error: ${String(e)}`;
+      exitCode = 1;
     }
     await u({
       sessionUpdate: "tool_call_update",
       toolCallId: "call_1",
-      status: "completed",
+      status: exitCode === 0 ? "completed" : "failed",
       content: [{ type: "content", content: { type: "text", text: cmdOutput } }],
     } as never);
     await sleep(200);
 
-    // 3. the reply (streamed), echoing the command output (proves exec ran)
-    const reply = `🤖 (dummy agent) ran echo and got: "${cmdOutput.trim()}". (fake mode — real exec chain exercised, no model needed.)`;
+    // 3. the reply (streamed), reporting the command output (proves exec ran)
+    const reply = isCommand
+      ? `🤖 (dummy agent) ran \`${command}\` (exit ${exitCode}):\n${cmdOutput.trim() || "(no output)"}`
+      : `🤖 (dummy agent) ran echo: "${cmdOutput.trim()}". (fake mode — real exec chain exercised, no model needed.)`;
     for (const word of reply.split(" ")) {
       await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
       await sleep(40);

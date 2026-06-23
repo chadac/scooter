@@ -21,15 +21,25 @@ test.describe("conversation happy path", () => {
     await expect(chat.userMessages().first()).toContainText(/review the auth module/i);
   });
 
-  test("a tool call runs a real command and shows its output", async ({ chat }) => {
+  test("!cmd runs a real sandbox command and shows its output", async ({ chat }) => {
     await chat.open();
-    await chat.send("zxcvbnm-marker");
+    // The "!" prefix runs the rest as a bash command in the sandbox via the
+    // REAL exec path (ACP createTerminal -> bridge -> ExecBackend; local
+    // subprocess in fake mode, pod exec in cluster mode). This is the e2e
+    // command harness — `!agent-broker test/whoami` rides the same path to
+    // verify broker/IRSA auth in cluster mode.
+    await chat.send("!echo zxcvbnm-marker");
 
-    // The dummy agent makes a REAL createTerminal call (ACP -> bridge ->
-    // ExecBackend -> local `echo` in fake mode), so its output flows back.
     await expect(chat.toolCalls().first()).toBeVisible({ timeout: 30_000 });
-    // The reply echoes the command output — proving the exec chain ran.
+    // The command output (echo's result) flows back into the reply.
     await expect(chat.assistantMessages().last()).toContainText(/zxcvbnm-marker/i, { timeout: 30_000 });
+  });
+
+  test("!cmd evaluates shell (not a literal echo of the message)", async ({ chat }) => {
+    await chat.open();
+    await chat.send("!echo $((6 * 7))");
+    // Proves the command runs in a shell — output is 42, not the literal text.
+    await expect(chat.assistantMessages().last()).toContainText(/\b42\b/, { timeout: 30_000 });
   });
 
   test("refresh (re-run) completes without an error", async ({ chat, page }) => {

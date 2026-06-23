@@ -22,13 +22,21 @@ let
     text = builtins.readFile ./entrypoint.sh;
   };
 
+  # agent-broker: thin curl wrapper for calling the credential broker with the
+  # pod's projected SA token (so `agent-broker test/whoami` Just Works).
+  agentBroker = pkgs.writeShellApplication {
+    name = "agent-broker";
+    runtimeInputs = [ pkgs.curl pkgs.coreutils ];
+    text = builtins.readFile ./agent-broker.sh;
+  };
+
   # System tools available by default inside the sandbox.
   systemPackages = with pkgs; [
     bashInteractive coreutils findutils gnugrep gnused gawk
     git curl jq gnutar gzip util-linux
   ];
 
-  allPackages = systemPackages ++ extraPackages;
+  allPackages = systemPackages ++ [ agentBroker ] ++ extraPackages;
 
   # rootfs: non-package files baked into the image (skills, dirs).
   rootfs = pkgs.runCommand "sandbox-rootfs" { } ''
