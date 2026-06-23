@@ -1,4 +1,4 @@
-# kubenix-agent-sandbox task runner.
+# kubenix-agent-manager task runner.
 # `just` with no args lists recipes. See docs/TESTING.md for the test strategy.
 
 # Cluster provider for Tier 2/3 (existing | k3s | kind | minikube | k3d)

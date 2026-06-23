@@ -1,4 +1,4 @@
-# kubenix-agent-sandbox
+# kubenix-agent-manager
 
 A Nix-powered agent platform layered over the Kubernetes
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) controller.

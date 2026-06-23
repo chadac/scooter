@@ -1,5 +1,5 @@
 {
-  "name": "@kubenix-agent-sandbox/agent-host",
+  "name": "@kubenix-agent-manager/agent-host",
   "version": "0.0.0",
   "description": "Runs an ACP agent (Goose) per conversation outside the sandbox; bridges ACP<->AG-UI; execs via the agent-sandbox API.",
   "type": "module",

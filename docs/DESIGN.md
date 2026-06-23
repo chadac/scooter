@@ -1,4 +1,4 @@
-# kubenix-agent-sandbox — Design
+# kubenix-agent-manager — Design
 
 > Status: **Design stage** (boilerplate / interfaces; no implementation yet).
 > Follows the PoC process: Research → **Design** → Tests → Review → Implementation.

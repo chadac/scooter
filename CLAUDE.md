@@ -1,4 +1,4 @@
-# CLAUDE.md — kubenix-agent-sandbox
+# CLAUDE.md — kubenix-agent-manager
 
 Guidance for working in this repo. Read `docs/DESIGN.md` and `docs/TESTING.md`
 before making changes.

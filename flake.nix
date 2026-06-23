@@ -95,7 +95,7 @@
               just
             ];
             shellHook = ''
-              echo "kubenix-agent-sandbox dev shell"
+              echo "kubenix-agent-manager dev shell"
               echo "  just            — task runner (test-quick, test, test-cluster, ...)"
               echo "  goose: $(command -v goose >/dev/null && goose --version 2>/dev/null | head -1 || echo absent)"
               export GOOSE_BIN="$(command -v goose || true)"

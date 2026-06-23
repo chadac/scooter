@@ -1,5 +1,5 @@
 {
-  "name": "@kubenix-agent-sandbox/ui",
+  "name": "@kubenix-agent-manager/ui",
   "version": "0.0.0",
   "description": "Conversation UI (assistant-ui + AG-UI runtime) for agent sandbox sessions, plus a reusable AG-UI client library.",
   "type": "module",

@@ -1,4 +1,4 @@
-# Platform manifests — the long-lived deployment of kubenix-agent-sandbox.
+# Platform manifests — the long-lived deployment of kubenix-agent-manager.
 #
 # Renders: namespace, the agent-host Deployment + Service, and the RBAC the
 # agent-host needs to (a) provision per-conversation Sandboxes/SAs/PVCs and

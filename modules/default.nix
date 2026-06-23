@@ -1,6 +1,6 @@
 { config, lib, ... }:
 
-# kubenix module entry for kubenix-agent-sandbox.
+# kubenix module entry for kubenix-agent-manager.
 #
 # Design stage: option signatures + resource shapes only (no rendered values
 # committed yet). Generates the agent-sandbox CRs and platform Deployments.
