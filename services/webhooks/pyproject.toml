@@ -1,0 +1,24 @@
+[project]
+name = "kubenix-agent-manager-webhooks"
+version = "0.0.0"
+description = "Spawn agent conversations from GitHub/GitLab/Jira/Slack threads"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "httpx",
+  "pydantic",
+  "pydantic-settings",
+  "sqlalchemy",
+  "aiosqlite",   # default dev store; asyncpg for Postgres in prod
+  "pyjwt[crypto]", # GitHub App token minting for posting responses
+]
+
+[project.scripts]
+agent-webhooks = "webhooks.app:main"
+
+[tool.setuptools.packages.find]
+include = ["webhooks*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

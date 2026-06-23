@@ -35,6 +35,10 @@
           # modules. See services/broker/ + docs/BROKER.md.
           broker = pkgs.callPackage ./services/broker { };
 
+          # Webhooks (Python/FastAPI): spawn agent conversations from
+          # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
+          webhooks = pkgs.callPackage ./services/webhooks { };
+
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
             inherit pkgs lib n2c broker;
@@ -75,7 +79,7 @@
           packages = {
             default = sandboxImage.image;
 
-            inherit agentHost ui broker;
+            inherit agentHost ui broker webhooks;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
 
             # nix build .#sandbox-image  ->  generic OCI sandbox (runtime + Nix)
