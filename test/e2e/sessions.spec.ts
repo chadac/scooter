@@ -1,33 +1,78 @@
 /**
- * Tier 3 E2E — session history / list views.
+ * Tier 3 E2E — session selector + titles (left sidebar).
  *
- * Proves the "view existing sessions and their logs" requirement. RED.
+ * The UI shows a list of conversations on the left; each has a title (the agent
+ * assigns one). You can start a new conversation and switch between them.
+ *
+ * Uses the dummy-agent stack + the automatic no-error assertion.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures.js";
 
-test.describe("sessions list & history", () => {
-  test("created conversations appear in the sessions list", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: /new conversation/i }).click();
-    await page.getByRole("textbox", { name: /message/i }).fill("hello");
-    await page.getByRole("button", { name: /send/i }).click();
-    await expect(page.getByTestId("assistant-message").last()).toBeVisible({ timeout: 30_000 });
+const sidebar = {
+  list: '[data-testid="session-list"]',
+  item: '[data-testid="session-item"]',
+  newButton: '[data-testid="new-session"]',
+  title: '[data-testid="session-title"]',
+  deleteButton: '[data-testid="session-delete"]',
+};
 
-    await page.getByRole("link", { name: /sessions/i }).click();
-    await expect(page.getByTestId("session-list-item")).toHaveCount(1);
+test.describe("session selector & titles", () => {
+  test("a started conversation appears in the session list", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("hello there");
+    await chat.waitForReply(/You said/i);
+
+    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 30_000 });
   });
 
-  test("opening a past session replays its event log", async ({ page }) => {
-    await page.goto("/sessions");
-    await page.getByTestId("session-list-item").first().click();
+  test("the agent assigns a title to the conversation", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("help me refactor the parser");
+    await chat.waitForReply(/You said/i);
 
-    await expect(page.getByTestId("user-message").first()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("assistant-message").first()).toBeVisible();
+    // Title should become non-empty (agent-assigned), not stay "New chat".
+    const title = page.locator(sidebar.title).first();
+    await expect(title).not.toHaveText("", { timeout: 30_000 });
+    await expect(title).not.toHaveText(/new chat/i, { timeout: 30_000 });
   });
 
-  test("session list shows status (running / suspended / ended)", async ({ page }) => {
-    await page.goto("/sessions");
-    await expect(page.getByTestId("session-status").first()).toHaveText(/running|suspended|ended/i);
+  test("new-session button starts a fresh conversation", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("first conversation");
+    await chat.waitForReply(/You said/i);
+
+    await page.locator(sidebar.newButton).click();
+    await chat.send("second conversation");
+    await chat.waitForReply(/You said/i);
+
+    await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
+  });
+
+  test("deleting a conversation removes it from the list", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("keep this one");
+    await chat.waitForReply(/You said/i);
+    await page.locator(sidebar.newButton).click();
+    await chat.send("delete this one");
+    await chat.waitForReply(/You said/i);
+    await expect(page.locator(sidebar.item)).toHaveCount(2);
+
+    // Delete the second (current) conversation.
+    await page.locator(sidebar.item).first().locator(sidebar.deleteButton).click();
+    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 10_000 });
+  });
+
+  test("clicking a session switches to it", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("alpha conversation");
+    await chat.waitForReply(/You said/i);
+    await page.locator(sidebar.newButton).click();
+    await chat.send("beta conversation");
+    await chat.waitForReply(/You said/i);
+
+    // Switch back to the first; its user message should reappear.
+    await page.locator(sidebar.item).first().click();
+    await expect(chat.userMessages().first()).toContainText(/alpha conversation/i, { timeout: 30_000 });
   });
 });

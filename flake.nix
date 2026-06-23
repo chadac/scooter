@@ -86,6 +86,9 @@
               skopeo
               # the ACP agent the agent-host spawns
               goose-cli
+              # e2e: Nix-wrapped Playwright browsers (the downloaded ones fail
+              # on NixOS — missing libglib etc.)
+              playwright-driver.browsers
               # misc used by scripts/tests
               jq
               yq-go
@@ -96,6 +99,9 @@
               echo "  just            — task runner (test-quick, test, test-cluster, ...)"
               echo "  goose: $(command -v goose >/dev/null && goose --version 2>/dev/null | head -1 || echo absent)"
               export GOOSE_BIN="$(command -v goose || true)"
+              # Point Playwright at the Nix browsers + skip its host-req validation.
+              export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+              export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
             '';
           };
 

@@ -1,62 +1,58 @@
 /**
- * AG-UI runtime provider — connects assistant-ui to our agent-host.
+ * AG-UI runtime provider — connects assistant-ui to our agent-host, keyed by the
+ * currently-selected session (sessionStore). Switching sessions in the sidebar
+ * re-points the HttpAgent at that thread.
  *
  * The agent-host exposes the standard AG-UI HttpAgent protocol at /agui
- * (POST RunAgentInput -> SSE stream of AG-UI events). So this is the blessed
- * assistant-ui AG-UI wiring (HttpAgent -> useAgUiRuntime), pointed at the
- * agent-host instead of a generic agent URL. Adapted from the official
- * `with-ag-ui` example (Next.js) to plain Vite/React.
+ * (POST RunAgentInput -> SSE AG-UI events). Blessed wiring: HttpAgent ->
+ * useAgUiRuntime, adapted from the official with-ag-ui example to Vite/React.
  */
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { AssistantRuntimeProvider, type ThreadMessage } from "@assistant-ui/react";
+import { useEffect, useMemo, type ReactNode } from "react";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { HttpAgent } from "@ag-ui/client";
 import { useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 
-type StoredThread = { id: string; messages: readonly ThreadMessage[] };
+import { sessionStore, useSessions } from "./sessions.js";
 
 const AGENT_URL = `${(import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "")}/agui`;
 
 export function RuntimeProvider({ children }: Readonly<{ children: ReactNode }>) {
-  const threadsRef = useRef<Map<string, StoredThread>>(new Map());
-  const [currentThreadId, setCurrentThreadId] = useState<string>(() => {
-    const id = crypto.randomUUID();
-    threadsRef.current.set(id, { id, messages: [] });
-    return id;
-  });
+  const { currentId } = useSessions();
 
   const agent = useMemo(
-    () =>
-      new HttpAgent({
-        url: AGENT_URL,
-        threadId: currentThreadId,
-        headers: { Accept: "text/event-stream" },
-      }),
-    [currentThreadId],
+    () => new HttpAgent({ url: AGENT_URL, threadId: currentId, headers: { Accept: "text/event-stream" } }),
+    [currentId],
   );
 
   const threadListAdapter = useMemo(
     () => ({
-      threadId: currentThreadId,
+      threadId: currentId,
       onSwitchToNewThread: async () => {
-        const id = crypto.randomUUID();
-        threadsRef.current.set(id, { id, messages: [] });
-        setCurrentThreadId(id);
+        sessionStore.newSession();
       },
       onSwitchToThread: async (threadId: string) => {
-        const thread = threadsRef.current.get(threadId);
-        if (!thread) throw new Error(`Thread ${threadId} not found`);
-        setCurrentThreadId(threadId);
-        return { messages: thread.messages };
+        sessionStore.switchTo(threadId);
+        return { messages: [] };
       },
     }),
-    [currentThreadId],
+    [currentId],
   );
 
-  const runtime = useAgUiRuntime({
-    agent,
-    adapters: { threadList: threadListAdapter },
-  });
+  const runtime = useAgUiRuntime({ agent, adapters: { threadList: threadListAdapter } });
+
+  // Derive the session title from the first user message of the current thread.
+  useEffect(() => {
+    return runtime.thread.subscribe(() => {
+      const msgs = runtime.thread.getState().messages;
+      const firstUser = msgs.find((m) => m.role === "user");
+      const text = firstUser?.content
+        ?.map((c) => ("text" in c ? c.text : ""))
+        .join(" ")
+        .trim();
+      if (text) sessionStore.titleFromFirstMessage(currentId, text);
+    });
+  }, [runtime, currentId]);
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }

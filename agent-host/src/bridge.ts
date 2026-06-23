@@ -21,8 +21,10 @@ import type { AcpClient, SessionUpdate } from "./acp/client.js";
 
 // AG-UI event union (subset used here; full set per AG-UI spec).
 export type AguiEvent =
+  // RUN_STARTED and RUN_FINISHED both REQUIRE threadId per the AG-UI schema —
+  // the @ag-ui/client validates incoming events and rejects a missing threadId.
   | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId }
-  | { type: "RUN_FINISHED"; runId: RunId; result?: unknown }
+  | { type: "RUN_FINISHED"; threadId: ThreadId; runId: RunId; result?: unknown }
   | { type: "RUN_ERROR"; message: string; code?: string }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
@@ -31,8 +33,12 @@ export type AguiEvent =
   | { type: "TOOL_CALL_ARGS"; toolCallId: string; delta: string }
   | { type: "TOOL_CALL_END"; toolCallId: string }
   | { type: "TOOL_CALL_RESULT"; toolCallId: string; messageId: string; content: string }
+  // AG-UI reasoning sequence: START -> MESSAGE_START -> MESSAGE_CONTENT(s) ->
+  // MESSAGE_END -> END. The client rejects MESSAGE_CONTENT without MESSAGE_START.
   | { type: "REASONING_START"; messageId: string }
+  | { type: "REASONING_MESSAGE_START"; messageId: string; role: "reasoning" }
   | { type: "REASONING_MESSAGE_CONTENT"; messageId: string; delta: string }
+  | { type: "REASONING_MESSAGE_END"; messageId: string }
   | { type: "REASONING_END"; messageId: string };
 
 /** A user prompt entering the run (maps to ACP session/prompt). */
@@ -106,6 +112,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   };
   const closeOpenReasoning = (st: RunState) => {
     if (st.openReasoning) {
+      emit({ type: "REASONING_MESSAGE_END", messageId: st.openReasoning });
       emit({ type: "REASONING_END", messageId: st.openReasoning });
       st.openReasoning = undefined;
     }
@@ -132,6 +139,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         if (!st.openReasoning) {
           st.openReasoning = nextId("reason");
           emit({ type: "REASONING_START", messageId: st.openReasoning });
+          emit({ type: "REASONING_MESSAGE_START", messageId: st.openReasoning, role: "reasoning" });
         }
         emit({
           type: "REASONING_MESSAGE_CONTENT",
@@ -144,7 +152,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         closeOpenText(st);
         const mid = nextId("reason");
         emit({ type: "REASONING_START", messageId: mid });
+        emit({ type: "REASONING_MESSAGE_START", messageId: mid, role: "reasoning" });
         emit({ type: "REASONING_MESSAGE_CONTENT", messageId: mid, delta: JSON.stringify(u.entries) });
+        emit({ type: "REASONING_MESSAGE_END", messageId: mid });
         emit({ type: "REASONING_END", messageId: mid });
         break;
       }
@@ -209,7 +219,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         if (stopReason === "error") {
           emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
         } else {
-          emit({ type: "RUN_FINISHED", runId });
+          emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
         }
       } catch (err) {
         closeOpenText(st);

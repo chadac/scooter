@@ -21,6 +21,7 @@
 import { createAguiServer } from "./agui/server.js";
 import { createSessionManager } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
+import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { createSessionBridge } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
@@ -37,25 +38,60 @@ export interface AgentHostConfig {
   agent: { command: string; args: string[]; env: Record<string, string> };
 }
 
-export function configFromEnv(): AgentHostConfig {
+export interface AgentHostConfigExtra {
+  /** Skip real Sandbox provisioning (local UI testing with the dummy agent). */
+  fakeSandbox: boolean;
+}
+
+export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
+  // GOOSE_BIN=fake runs the bundled dummy ACP agent (no model, no AWS).
+  const useFakeAgent = process.env.GOOSE_BIN === "fake";
+  const fakeAgentPath = new URL("./fakeAgent.js", import.meta.url).pathname;
   return {
     port: Number(process.env.PORT ?? 8080),
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest",
     statePath: process.env.STATE_PATH ?? "/var/lib/agent-host/conversations",
-    agent: {
-      command: process.env.GOOSE_BIN ?? "goose",
-      args: ["acp"],
-      env: {},
-    },
+    fakeSandbox: process.env.FAKE_SANDBOX === "1" || useFakeAgent,
+    agent: useFakeAgent
+      ? { command: process.execPath, args: [fakeAgentPath], env: {} }
+      : { command: process.env.GOOSE_BIN ?? "goose", args: ["acp"], env: bedrockEnv() },
   };
 }
 
-export async function main(config: AgentHostConfig = configFromEnv()): Promise<() => Promise<void>> {
-  const provisioner = createK8sProvisioner({
-    namespace: config.namespace,
-    sandboxImage: config.sandboxImage,
-  });
+/** No-op provisioner for local UI testing (no cluster). */
+function createNoopProvisioner(): SandboxProvisioner {
+  return {
+    async create(id) {
+      return { name: `fake-${id}`, namespace: "local" };
+    },
+    async suspend() {},
+    async resume(ref) {
+      return ref;
+    },
+    async destroy() {},
+  };
+}
+
+/** Pass AWS/Bedrock config through to goose if present. */
+function bedrockEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of [
+    "GOOSE_PROVIDER", "GOOSE_MODEL",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  ]) {
+    if (process.env[k]) out[k] = process.env[k]!;
+  }
+  return out;
+}
+
+export async function main(
+  config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
+): Promise<() => Promise<void>> {
+  const provisioner = config.fakeSandbox
+    ? createNoopProvisioner()
+    : createK8sProvisioner({ namespace: config.namespace, sandboxImage: config.sandboxImage });
   const store = createFileConversationStore(config.statePath);
   const server = createAguiServer();
 

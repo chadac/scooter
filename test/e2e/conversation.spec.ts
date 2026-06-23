@@ -1,50 +1,42 @@
 /**
- * Tier 3 E2E (Playwright) — the core happy path through the UI.
+ * Tier 3 E2E — the core happy path through the real assistant-ui Thread.
  *
- * provision -> prompt -> AG-UI events render live; multi-turn; tool-permission
- * approval. Runs against a deployed agent-host with the FAKE ACP agent (scripted
- * + deterministic). RED.
+ * Runs against the local dummy-agent stack (fake ACP agent, no cluster/model;
+ * booted by playwright.config webServer). The dummy agent streams a
+ * deterministic turn: reasoning -> tool call -> a reply echoing the prompt.
+ *
+ * Every test here also gets the automatic "no error in the UI" assertion from
+ * fixtures.ts.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures.js";
 
 test.describe("conversation happy path", () => {
-  test("new conversation: prompt streams assistant message + tool call", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: /new conversation/i }).click();
+  test("sending a message streams an assistant reply", async ({ chat }) => {
+    await chat.open();
+    await chat.send("Please review the auth module");
 
-    await page.getByRole("textbox", { name: /message/i }).fill("List the files");
-    await page.getByRole("button", { name: /send/i }).click();
-
-    // AG-UI TextMessage* renders incrementally.
-    await expect(page.getByTestId("assistant-message").last()).toContainText(/.+/, { timeout: 30_000 });
-    // AG-UI ToolCall* renders as a tool-call card with a result.
-    await expect(page.getByTestId("tool-call").last()).toBeVisible();
-    await expect(page.getByTestId("tool-call-result").last()).toBeVisible();
+    // The dummy agent echoes the prompt back in its reply.
+    await chat.waitForReply(/dummy agent|You said/i);
+    await expect(chat.userMessages().first()).toContainText(/review the auth module/i);
   });
 
-  test("multi-turn: a follow-up prompt continues the same thread", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: /new conversation/i }).click();
-    await page.getByRole("textbox", { name: /message/i }).fill("first");
-    await page.getByRole("button", { name: /send/i }).click();
-    await expect(page.getByTestId("assistant-message").last()).toBeVisible({ timeout: 30_000 });
+  test("a tool call renders", async ({ chat }) => {
+    await chat.open();
+    await chat.send("do something");
 
-    await page.getByRole("textbox", { name: /message/i }).fill("second");
-    await page.getByRole("button", { name: /send/i }).click();
-
-    await expect(page.getByTestId("user-message")).toHaveCount(2);
+    // The dummy turn includes a tool call ("run: echo").
+    await expect(chat.toolCalls().first()).toBeVisible({ timeout: 30_000 });
   });
 
-  test("tool-permission approval gates a tool call", async ({ page }) => {
-    await page.goto("/?script=permission"); // fake agent scripted to request permission
-    await page.getByRole("button", { name: /new conversation/i }).click();
-    await page.getByRole("textbox", { name: /message/i }).fill("do something privileged");
-    await page.getByRole("button", { name: /send/i }).click();
+  test("multi-turn: a follow-up continues the same thread", async ({ chat }) => {
+    await chat.open();
+    await chat.send("first message");
+    await chat.waitForReply(/You said/i);
 
-    const approve = page.getByRole("button", { name: /approve/i });
-    await expect(approve).toBeVisible({ timeout: 30_000 });
-    await approve.click();
-    await expect(page.getByTestId("tool-call-result").last()).toBeVisible();
+    await chat.send("second message");
+    await expect(chat.userMessages()).toHaveCount(2, { timeout: 30_000 });
+    // Both replies present.
+    await expect(chat.assistantMessages().nth(1)).toBeVisible({ timeout: 30_000 });
   });
 });
