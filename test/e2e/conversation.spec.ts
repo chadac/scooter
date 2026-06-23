@@ -29,6 +29,21 @@ test.describe("conversation happy path", () => {
     await expect(chat.toolCalls().first()).toBeVisible({ timeout: 30_000 });
   });
 
+  test("refresh (re-run) completes without an error", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("review this");
+    await chat.waitForReply(/You said/i);
+
+    // Hover the assistant message to reveal the action bar, then click Refresh.
+    await page.locator(".aui-md").first().hover();
+    const refresh = page.getByRole("button", { name: /refresh/i }).first();
+    await refresh.click();
+
+    // A second reply renders; the auto no-error fixture asserts no AGUIError
+    // ("Cannot send 'RUN_FINISHED' while text messages are still active").
+    await chat.waitForReply(/You said/i);
+  });
+
   test("multi-turn: a follow-up continues the same thread", async ({ chat }) => {
     await chat.open();
     await chat.send("first message");

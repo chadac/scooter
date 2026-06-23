@@ -72,10 +72,12 @@ export interface BridgeDeps {
   config: SessionConfig;
   exec: ExecBackend;
   /**
-   * Pre-connected ACP client. In production the session manager spawns
-   * `goose acp` and builds this; tests inject an in-process fake.
+   * The ACP client, or an async factory that creates one on first start().
+   * Tests inject a ready in-process fake; production passes a factory that
+   * spawns `goose acp` lazily (so the connection isn't established until the
+   * first prompt). A factory avoids the brittle sync/async adapter shims.
    */
-  acpClient: AcpClient;
+  acpClient: AcpClient | (() => Promise<AcpClient>);
 }
 
 let runCounter = 0;
@@ -83,15 +85,23 @@ let idCounter = 0;
 const nextId = (prefix: string) => `${prefix}-${(idCounter += 1)}`;
 
 export function createSessionBridge(deps: BridgeDeps): SessionBridge {
-  const { acpClient } = deps;
   const sessionId = `sess-${(idCounter += 1)}`;
   const listeners = new Set<(event: AguiEvent) => void>();
   let acpSessionId: string | undefined;
   let started = false;
+  // The run currently receiving ACP updates (set during prompt()).
+  let currentRun: RunState | undefined;
+  // Resolved on first start(); a ready client or the result of the factory.
+  let acpClient: AcpClient | undefined =
+    typeof deps.acpClient === "function" ? undefined : deps.acpClient;
 
   const emit = (event: AguiEvent) => {
     for (const cb of listeners) cb(event);
   };
+
+  // Flush pending stream notifications (a macrotask) so late session/update
+  // events are handled before we finish a run.
+  const drain = () => new Promise<void>((r) => setTimeout(r, 0));
 
   // Per-run mutable mapping state for translating ACP updates -> AG-UI events.
   interface RunState {
@@ -102,6 +112,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     openReasoning?: string;
     // tool_call_id -> the messageId we attribute its result to.
     toolMessage: Map<string, string>;
+    // Set once the run is finishing: late updates are ignored so we never
+    // reopen a message after RUN_FINISHED.
+    ended?: boolean;
   }
 
   const closeOpenText = (st: RunState) => {
@@ -119,6 +132,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   };
 
   const handleUpdate = (st: RunState, u: SessionUpdate) => {
+    if (st.ended) return; // never reopen a message after the run is finishing
     switch (u.sessionUpdate) {
       case "agent_message_chunk": {
         // Reasoning and text are distinct streams; close reasoning first.
@@ -187,6 +201,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     async start() {
       if (started) return;
+      if (!acpClient) {
+        acpClient = await (deps.acpClient as () => Promise<AcpClient>)();
+      }
       await acpClient.initialize({
         protocolVersion: 1,
         clientCapabilities: {
@@ -196,6 +213,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       });
       const { sessionId: sid } = await acpClient.newSession({ cwd: deps.config.cwd });
       acpSessionId = sid;
+      // Subscribe to updates ONCE for the lifetime of the session and route
+      // them to the current run. Avoids per-prompt subscribe/unsubscribe (which
+      // mis-wired updates across runs).
+      acpClient.onSessionUpdate((_sid, u) => {
+        if (currentRun) handleUpdate(currentRun, u);
+      });
       started = true;
     },
 
@@ -207,13 +230,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // if agent startup is slow or fails (e.g. goose needs a model provider).
       emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
 
-      const unsub = acpClient.onSessionUpdate((_sid, u) => handleUpdate(st, u));
       try {
         if (!started || !acpSessionId) await this.start();
-        const { stopReason } = await acpClient.prompt({
+        currentRun = st; // route session/update notifications to this run
+        const { stopReason } = await acpClient!.prompt({
           sessionId: acpSessionId!,
           prompt: [{ type: "text", text: input.text }],
         });
+        // The ACP prompt response can resolve before the final session/update
+        // notifications have been dispatched. Drain a macrotask so trailing
+        // text/reasoning chunks are processed (their messages opened) BEFORE we
+        // close them and emit RUN_FINISHED — the AG-UI client rejects
+        // RUN_FINISHED while a message is still open.
+        await drain();
+        st.ended = true; // stop routing further late updates into this run
         closeOpenText(st);
         closeOpenReasoning(st);
         if (stopReason === "error") {
@@ -222,21 +252,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
         }
       } catch (err) {
+        st.ended = true;
         closeOpenText(st);
         closeOpenReasoning(st);
         emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
       } finally {
-        unsub();
+        if (currentRun === st) currentRun = undefined;
       }
       return runId;
     },
 
     async cancel(_runId: RunId) {
-      if (acpSessionId) await acpClient.cancel(acpSessionId);
+      if (acpSessionId && acpClient) await acpClient.cancel(acpSessionId);
     },
 
     async stop() {
-      await acpClient.close();
+      if (acpClient) await acpClient.close();
       started = false;
     },
 

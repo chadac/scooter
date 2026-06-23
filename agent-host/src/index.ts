@@ -1,12 +1,6 @@
 /**
  * agent-host entry point — composes the whole service.
  *
- * KNOWN ROUGH EDGE (cleanup pending): the bridge takes a sync-constructed
- * AcpClient + ExecBackend, but production construction (spawn goose, connect
- * pod-exec) is async. The lazy* facades below bridge that gap. The cleaner fix
- * is to make BridgeDeps accept async factories invoked in start(); deferred so
- * we don't churn bridge.ts/bridge.spec.ts while green. Tracked for a refactor.
- *
  *   AguiServer (SSE) <-- browser
  *      | onPrompt    -> SessionManager.prompt
  *      | onPermission-> bridge permission answer
@@ -130,27 +124,19 @@ export async function main(
   // --- helpers ---
 
   function makeBridge(conversationId: string, sandbox: SandboxRef, cfg: AgentHostConfig) {
-    let connected = false;
-    // The bridge needs an ExecBackend + AcpClient; both require async setup.
-    // We lazily connect on first start() via a deferred ACP client wrapper.
+    // Exec resolves the pod-exec client on first use; the ACP client (goose) is
+    // created by the factory the bridge calls on first start(). Both are async,
+    // handled cleanly by the bridge's async start() — no facade shims.
     const exec = createSandboxExecBackend(deferredSandboxApi(sandbox));
-    // The real AcpClient is created when the bridge starts; until then it is a
-    // thin async-initializing facade. For simplicity we connect eagerly here.
     const bridge = createSessionBridge({
-      config: {
-        cwd: "/workspace",
-        skillsDir: "/etc/agent-sandbox/skills",
-        agent: cfg.agent,
-        sandbox,
-      },
+      config: { cwd: "/workspace", skillsDir: "/etc/agent-sandbox/skills", agent: cfg.agent, sandbox },
       exec,
-      // acpClient is created on demand the first time start() runs.
-      acpClient: lazyAcpClient(cfg, exec, () => (connected = true)),
+      acpClient: () =>
+        createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: cfg.agent.env, exec }),
     });
 
     // Mirror bridge events to UI subscribers.
     bridge.onEvent((event) => server.broadcast(conversationId, event));
-    void connected;
     return bridge;
   }
 }
@@ -176,59 +162,6 @@ function deferredSandboxApi(sandbox: SandboxRef) {
   };
 }
 
-/**
- * An AcpClient facade that spawns `goose acp` lazily on first interaction.
- * Implemented in acp/client.ts as createAcpClient; here we adapt its async
- * construction to the synchronous AcpClient the bridge expects.
- */
-function lazyAcpClient(
-  cfg: AgentHostConfig,
-  exec: ReturnType<typeof createSandboxExecBackend>,
-  onConnect: () => void,
-): import("./acp/client.js").AcpClient {
-  let realPromise: Promise<import("./acp/client.js").AcpClient> | undefined;
-  const ensure = () =>
-    (realPromise ??= createAcpClient({
-      command: cfg.agent.command,
-      args: cfg.agent.args,
-      env: cfg.agent.env,
-      exec,
-    }).then((c) => {
-      onConnect();
-      return c;
-    }));
-
-  const pendingUpdateCbs: Array<(s: string, u: never) => void> = [];
-  let pendingPermission: Parameters<import("./acp/client.js").AcpClient["onPermissionRequest"]>[0] | undefined;
-
-  return {
-    async initialize(params) {
-      return (await ensure()).initialize(params);
-    },
-    async newSession(params) {
-      const c = await ensure();
-      for (const cb of pendingUpdateCbs) c.onSessionUpdate(cb as never);
-      if (pendingPermission) c.onPermissionRequest(pendingPermission);
-      return c.newSession(params);
-    },
-    async prompt(params) {
-      return (await ensure()).prompt(params);
-    },
-    async cancel(sessionId) {
-      return (await ensure()).cancel(sessionId);
-    },
-    onSessionUpdate(cb) {
-      pendingUpdateCbs.push(cb as never);
-      return () => {};
-    },
-    onPermissionRequest(handler) {
-      pendingPermission = handler;
-    },
-    async close() {
-      if (realPromise) await (await realPromise).close();
-    },
-  };
-}
 
 // Entry point: when run directly (node dist/index.js), start the service.
 if (import.meta.url === `file://${process.argv[1]}`) {

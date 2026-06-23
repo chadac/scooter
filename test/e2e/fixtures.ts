@@ -99,9 +99,9 @@ test.afterEach(async ({ page, consoleErrors }) => {
     throw new Error(`UI leaked validation error text:\n${leaked.join("\n")}`);
   }
 
-  // 3. No AG-UI/schema errors in the console.
+  // 3. No AG-UI/schema/agent errors in the console.
   const aguiErrors = consoleErrors.filter((e) =>
-    /invalid_type|threadId|Required|zod|AG-?UI/i.test(e),
+    /invalid_type|threadId|Required|zod|AG-?UI|Agent execution failed|still active|Cannot send/i.test(e),
   );
   if (aguiErrors.length) {
     throw new Error(`AG-UI console errors:\n${aguiErrors.join("\n")}`);
