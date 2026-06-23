@@ -5,11 +5,13 @@
  * bootstrap a local cluster. Cluster-agnostic by design (we don't lock to
  * minikube), but a local provider is provided first.
  *
- *   CLUSTER_PROVIDER = existing | kind | minikube | k3d   (default: existing)
+ *   CLUSTER_PROVIDER = existing | k3s | kind | minikube | k3d   (default: k3s)
  *   RUN_CLUSTER_TESTS = 1  to enable Tier 2 at all
+ *
+ * k3s is the project default for local testing.
  */
 
-export type ClusterProvider = "existing" | "kind" | "minikube" | "k3d";
+export type ClusterProvider = "existing" | "k3s" | "kind" | "minikube" | "k3d";
 
 export interface Cluster {
   readonly provider: ClusterProvider;

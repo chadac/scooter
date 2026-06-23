@@ -1,8 +1,8 @@
 # kubenix-agent-sandbox task runner.
 # `just` with no args lists recipes. See docs/TESTING.md for the test strategy.
 
-# Cluster provider for Tier 2/3 (existing | kind | minikube | k3d)
-cluster_provider := env_var_or_default("CLUSTER_PROVIDER", "kind")
+# Cluster provider for Tier 2/3 (existing | k3s | kind | minikube | k3d)
+cluster_provider := env_var_or_default("CLUSTER_PROVIDER", "k3s")
 
 default:
     @just --list

@@ -13,6 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ag-ui/core": "^0.0.57",
+    "@ag-ui/encoder": "^0.0.57",
     "@kubernetes/client-node": "^1.4.0",
     "@zed-industries/agent-client-protocol": "^0.4.5"
   },

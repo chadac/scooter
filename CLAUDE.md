@@ -16,10 +16,14 @@ the agent-outside inversion, the two-PVC persistence model, and broker auth.
 
 ## Status
 
-This is built via a staged PoC process: Research → Design → **Tests** →
-Review → Implementation. We are at the **Tests** stage: interfaces + a red,
-integration-focused test suite exist; almost nothing is implemented yet. Nix
-derivation bodies and TypeScript modules are stubs (`throw` / `declare`).
+This is built via a staged PoC process: Research → Design → Tests →
+**Implementation**. The agent-host TypeScript is being implemented seam-by-seam
+and **Tier 1 contract tests are green (12/12)**. Done so far: ACP↔AG-UI bridge,
+ExecBackend (K8s exec API), SessionManager, real ACP client (spawns `goose
+acp`), K8s SandboxProvisioner, AG-UI SSE server, file-backed ConversationStore,
+and index.ts wiring. Still to do: the UI, the local cluster fixture
+(`test/support/cluster-up.sh`, k3s), and turning Tier 2/3 green. Nix image +
+kubenix modules are still partly sketched. See `docs/DESIGN.md`.
 
 ## ALWAYS run the tests
 
@@ -58,7 +62,7 @@ Rules of thumb:
 - **Tier 2 — cluster** (`test/cluster/`): provisioning, suspend/resume PVC
   persistence, warm-pool latency, broker auth — on a real cluster with the
   **fake ACP agent** image. Gated `RUN_CLUSTER_TESTS=1`. Cluster-agnostic
-  (`CLUSTER_PROVIDER=existing|kind|minikube|k3d`; default `kind`).
+  (`CLUSTER_PROVIDER=existing|k3s|kind|minikube|k3d`; default `k3s`).
 - **Tier 3 — E2E** (`test/e2e/`, Playwright): the UI through the whole stack.
   Mostly fake agent; one real-Goose spec (`RUN_REAL_GOOSE=1`).
 
@@ -81,7 +85,7 @@ Rules of thumb:
 |------|------|
 | `flake.nix` | sandbox image, agent-host, ui, agent (goose) |
 | `agent-host/` | TS: ACP⇄AG-UI bridge, session manager, SDK exec backend |
-| `pkgs/sandbox-image/` | generic Nix sandbox image + `:8888` runtime server |
+| `pkgs/sandbox-image/` | generic Nix sandbox image (no in-pod server; exec via K8s API) |
 | `modules/` | kubenix: per-conversation Sandbox, agent-host, warm pool |
 | `ui/` | assistant-ui frontend + AG-UI client library |
 | `test/` | Tier 2 cluster + Tier 3 e2e + fixtures/fakes |

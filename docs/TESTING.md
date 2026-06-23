@@ -5,7 +5,7 @@
 
 The risk in this project is **seam integration**, not unit logic. So tests are
 integration-weighted, in three tiers, **cluster-agnostic** (any Kubernetes;
-local kind/minikube/k3d path provided first).
+local k3s path provided first; k3s is the default).
 
 ## Tiers
 
@@ -72,7 +72,7 @@ model key) to prove the actual binary integrates.
 npm -w agent-host test
 
 # Tier 2 (needs a cluster)
-RUN_CLUSTER_TESTS=1 CLUSTER_PROVIDER=kind npm run test:cluster
+RUN_CLUSTER_TESTS=1 CLUSTER_PROVIDER=k3s npm run test:cluster
 
 # Tier 3 (needs a deployed stack)
 npm run test:e2e
