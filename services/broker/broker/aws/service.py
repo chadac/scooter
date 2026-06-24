@@ -246,6 +246,10 @@ class PermissionService:
             swept.append(req.request_id)
         return swept
 
+    async def list_for_conversation(self, conversation_id: str) -> list[PermissionRequest]:
+        """The caller's own requests (isolation)."""
+        return await self._store.list_for_conversation(conversation_id)
+
     async def query_audit(self, **filters) -> list[PermissionRequest]:
         return await self._store.query_audit(**filters)
 

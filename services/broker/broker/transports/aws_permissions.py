@@ -122,6 +122,15 @@ class AwsPermissions(Transport):
                 raise HTTPException(status_code=400, detail={"errors": e.reasons})
             return _request_view(req)
 
+        # --- agent: list own requests (isolated) ---------------------------
+        # Registered BEFORE /aws/{request_id} so "requests" isn't captured as an id.
+        @router.get("/aws/requests")
+        async def list_requests(identity: Identity = Depends(authed), target_account: str | None = None):
+            reqs = await _svc().list_for_conversation(identity.conversation_id)
+            if target_account:
+                reqs = [r for r in reqs if r.target_account == target_account]
+            return {"requests": [_request_view(r) for r in reqs]}
+
         # --- agent: status / refresh / revoke (isolated) -------------------
         @router.get("/aws/{request_id}")
         async def status(request_id: str, identity: Identity = Depends(authed)):

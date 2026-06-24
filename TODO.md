@@ -67,14 +67,27 @@ Running list of work items. Newest asks at the top of each section. See
         define the contract. Decisions: full port MINUS Slack, in-conversation
         approval via the AG-UI interrupt mechanism, pluggable admin auth, store on
         the SHARED Postgres (agent-webhooks-db, separate `broker` DB).
-  - [ ] Stage 4 review (with the user), then Stage 5 implementation: fill
-        iam/store/service to turn the 10 red tests green, then the transport +
-        the agent entry point (skill → /aws/request) + the interrupt seam
-        (agent-host raises the approval interrupt) + e2e.
+  - [x] Stage 5 CORE done (commits 948ac2a, c13b773, 25cdcb5): store (SQLAlchemy
+        async, shared Postgres), service (full lifecycle + cred cache), iam (boto3,
+        cross-account assume + boundary + chained STS), policy, cli render,
+        transport routes, the @register_provider factory + app lifespan wiring.
+        39 AWS tests green (policy 19 + service 10 + cli 3 + iam-moto 4 +
+        transport 3). The credential-helper entry point design is in the doc.
+  - [ ] Stage 5 REMAINING: sandbox cli mains (credentials_main credential_process
+        helper + cli_main request CLI) + the entrypoint that renders ~/.aws/config
+        from the account ConfigMap; the broker→agent-host notify (raise the
+        approval interrupt); modules/broker.nix wiring (enable, mount the accounts
+        ConfigMap + DB secret, the IRSA assume-role perm); a cluster e2e.
   - [ ] EXTERNAL (deployer/AWS): per target account, the `agent-token-broker-base`
         role + `agent-broker-permission-boundary` policy (trust = our broker IRSA
         + ExternalId); the broker IRSA needs sts:AssumeRole on those. Account
         registry as broker config.
+  - [ ] CLEANUP (pre-existing, not AWS-specific): the broker test suite has
+        global-singleton isolation fragility — the test/echo provider's mount
+        depends on settings-singleton timing (its _mounts_ test fails at baseline);
+        tests pass individually + per-AWS-file but the FULL suite in one process
+        pollutes. Make provider mounting read settings at factory time (or a
+        per-test settings fixture) so `just`/CI run the whole suite clean.
 
 - [ ] **Storage consolidation onto a single store.** We have several stores: the
   webhooks mapping DB (`agent-webhooks-db` Postgres), the agent-host conversation

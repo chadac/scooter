@@ -20,6 +20,10 @@ dependencies = [
 
 [project.scripts]
 agent-broker = "broker.core.app:main"
+# Sandbox-side AWS tools (shipped in the sandbox image, call the broker with the
+# pod's SA token). credential_process helper + the request CLI.
+scooter-aws-credentials = "broker.aws.cli:_credentials_entry"
+scooter-aws = "broker.aws.cli:_cli_entry"
 
 # External packages can contribute provider modules via this entry-point group.
 [project.entry-points."agent_broker.providers"]
