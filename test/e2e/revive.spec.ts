@@ -24,9 +24,12 @@ test.describe("conversation persistence (UI)", () => {
     await chat.send("a different conversation");
     await chat.waitForReply(/dummy agent/i);
 
-    await page.locator(sidebar.item).first().click();
-    await expect(chat.userMessages().first()).toContainText(/remember this message/i, {
+    // Return to the FIRST conversation by its title (not positional .first(),
+    // which is the newest = the second conversation).
+    await page.locator(sidebar.item).filter({ hasText: /remember this message/i }).first().click();
+    await expect(chat.userMessages().filter({ hasText: /remember this message/i })).toHaveCount(1, {
       timeout: 30_000,
     });
+    await expect(chat.userMessages().filter({ hasText: /a different conversation/i })).toHaveCount(0);
   });
 });

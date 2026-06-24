@@ -14,6 +14,7 @@
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { createAguiServer } from "./agui/server.js";
 import { createManagementApi } from "./api/management.js";
@@ -66,16 +67,24 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
   // GOOSE_BIN=fake runs the bundled dummy ACP agent (no model, no AWS).
   const useFakeAgent = process.env.GOOSE_BIN === "fake";
   const fakeAgentPath = new URL("./fakeAgent.js", import.meta.url).pathname;
+  const fakeSandbox = process.env.FAKE_SANDBOX === "1" || useFakeAgent;
+  // In prod the k8s manifest mounts /var/lib/... (a writable emptyDir/PVC). In
+  // fake/local mode those paths aren't writable, so default to an OS temp dir so
+  // the local e2e stack is self-contained (env still overrides either way).
+  const defaultStatePath = fakeSandbox
+    ? join(tmpdir(), "agent-host", "conversations")
+    : "/var/lib/agent-host/conversations";
+  const defaultScratchPath = fakeSandbox ? join(tmpdir(), "agent-scratch") : "/var/lib/agent-scratch";
   return {
     port: Number(process.env.PORT ?? 8080),
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest",
-    statePath: process.env.STATE_PATH ?? "/var/lib/agent-host/conversations",
-    scratchPath: process.env.SCRATCH_PATH ?? "/var/lib/agent-scratch",
+    statePath: process.env.STATE_PATH ?? defaultStatePath,
+    scratchPath: process.env.SCRATCH_PATH ?? defaultScratchPath,
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
-    fakeSandbox: process.env.FAKE_SANDBOX === "1" || useFakeAgent,
+    fakeSandbox,
     model: process.env.GOOSE_MODEL,
     availableModels: (process.env.AGENT_AVAILABLE_MODELS ?? "")
       .split(",")

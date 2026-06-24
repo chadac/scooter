@@ -8,6 +8,8 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import type { ExecRequest, ExecResult } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
@@ -17,8 +19,13 @@ export function createLocalSandboxApiClient(): SandboxApiClient {
 
   const run = (req: ExecRequest): Promise<ExecResult> =>
     new Promise((resolve) => {
+      // The ACP client maps the agent's cwd to the sandbox's /workspace, which
+      // does NOT exist on the local agent-host filesystem in fake mode — spawn
+      // would fail with ENOENT on the cwd. Fall back to a real, writable dir so
+      // the fake exec chain still runs the command.
+      const cwd = req.cwd && existsSync(req.cwd) ? req.cwd : tmpdir();
       const child = spawn(req.command, req.args, {
-        cwd: req.cwd,
+        cwd,
         env: { ...process.env, ...req.env },
         shell: false,
       });

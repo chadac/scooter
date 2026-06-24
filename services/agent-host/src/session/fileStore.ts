@@ -6,7 +6,7 @@
  * gooseStatePath(id). A richer store (indexing, compaction) can come later.
  */
 
-import { appendFile, mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
@@ -18,10 +18,24 @@ export function createFileConversationStore(root: string): ConversationStore {
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
   const ensureDir = (id: SessionId) => mkdir(join(root, id), { recursive: true });
 
+  // Per-conversation write chain: appendEvent is fired-and-forgotten (void) for
+  // a burst of events (e.g. a user prompt's START/CONTENT/END), so concurrent
+  // awaits on appendFile would land in non-deterministic order and SCRAMBLE the
+  // log (END before START) — which breaks history replay on switch/revive.
+  // Serialize all appends per conversation so on-disk order == emission order.
+  const writeChains = new Map<SessionId, Promise<void>>();
+
   return {
-    async appendEvent(id, event) {
-      await ensureDir(id);
-      await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
+    appendEvent(id, event) {
+      const prev = writeChains.get(id) ?? Promise.resolve();
+      const next = prev
+        .catch(() => {}) // a prior failure must not break the chain
+        .then(async () => {
+          await ensureDir(id);
+          await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
+        });
+      writeChains.set(id, next);
+      return next;
     },
 
     async *readEvents(id): AsyncIterable<AguiEvent> {
@@ -46,6 +60,13 @@ export function createFileConversationStore(root: string): ConversationStore {
     async saveMeta(meta: ConversationMeta) {
       await ensureDir(meta.id);
       await writeFile(metaPath(meta.id), JSON.stringify(meta), "utf8");
+    },
+
+    /** Permanently remove a conversation's persisted state (meta + event log +
+     *  activity + goose state) so an ended/deleted conversation does NOT come
+     *  back on the next hydrate(). */
+    async removeConversation(id: SessionId) {
+      await rm(join(root, id), { recursive: true, force: true });
     },
 
     /** Scan the state dir and rebuild conversation metadata so the list survives

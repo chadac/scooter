@@ -13,18 +13,29 @@
  * developer extension enabled. Combined with the client capabilities we
  * advertise on initialize (fs + terminal), goose then routes every shell/file
  * tool call to our ACP handlers -> the sandbox.
+ *
+ * IMPORTANT — `available_tools` (allowlist): goose's AcpTools only REDIRECTS
+ * read/write/edit/shell to the ACP client; `tree` and `read_image` fall through
+ * to goose's LOCAL developer impl (std::fs in the agent-host pod, not the
+ * sandbox) — so a `tree`/list would show the wrong filesystem. We restrict the
+ * developer extension to ONLY the sandbox-routed tools via available_tools, so
+ * the agent uses `shell` (ls/find) for listing — which goes to the sandbox.
+ * (Empty available_tools = all tools; a non-empty list is an allowlist.)
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Write goose's config.yaml under `home` (its $HOME), enabling developer. */
+/** The developer-extension tools that goose's AcpTools redirects to the ACP
+ *  client (the sandbox): read/write/edit/shell. Excludes tree + read_image,
+ *  which AcpTools does NOT redirect (they'd run locally in the agent-host pod). */
+const SANDBOX_ROUTED_TOOLS = ["read", "write", "edit", "shell"];
+
+/** Write goose's config.yaml under `home` (its $HOME), enabling developer with
+ *  only the sandbox-routed tools available. */
 export function writeGooseConfig(home: string): void {
   const dir = join(home, ".config", "goose");
   mkdirSync(dir, { recursive: true });
-  // Minimal config: enable the bundled developer extension. goose then exposes
-  // its shell/edit/read/write tools, which its ACP server redirects to the
-  // client (our sandbox exec) because the developer extension is enabled.
   const yaml = [
     "extensions:",
     "  developer:",
@@ -33,6 +44,10 @@ export function writeGooseConfig(home: string): void {
     "    name: developer",
     "    display_name: Developer",
     "    timeout: 300",
+    // Allowlist -> only the tools goose's AcpTools redirects to the sandbox.
+    // tree/read_image are omitted so the agent can't run them locally.
+    "    available_tools:",
+    ...SANDBOX_ROUTED_TOOLS.map((t) => `      - ${t}`),
     "",
   ].join("\n");
   writeFileSync(join(dir, "config.yaml"), yaml, "utf8");

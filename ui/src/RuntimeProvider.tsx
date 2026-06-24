@@ -65,16 +65,27 @@ function ConversationRuntime({
   // stores the conversation as AG-UI events; fold them to messages and seed the
   // thread via reset(). Without this, switching to / closing into a conversation
   // shows a blank thread instead of its prior turns.
+  //
+  // CRITICAL: only reset while the thread is still EMPTY. The runtime is
+  // remounted per-conversation (parent's key={currentId}), so this runs once on
+  // mount — but the load is async, and if the user has meanwhile started sending
+  // in this thread, the live stream owns the messages. Resetting then would wipe
+  // an in-progress reply. So we no-op if the thread already has messages.
   useEffect(() => {
     let cancelled = false;
     loadHistory({ baseUrl: BASE_URL }, conversationId).then((history) => {
       if (cancelled || history.length === 0) return;
+      // Only seed when the thread is still empty (freshly switched-to). If the
+      // user has already started sending here, the live stream owns the messages
+      // and resetting would wipe an in-progress reply.
+      if (runtime.thread.getState().messages.length > 0) return;
       runtime.thread.reset(fromAgUiMessages(history));
     });
     return () => {
       cancelled = true;
     };
-  }, [runtime, conversationId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   // Derive the session title from the first user message of the current thread.
   useEffect(() => {

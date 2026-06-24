@@ -124,37 +124,39 @@ test.describe("session selector & titles", () => {
     chat,
     page,
   }) => {
+    // Distinct, non-overlapping message texts so substring (`hasText`) matchers
+    // are unambiguous (e.g. "alpha-one" is not a substring of "alpha-two").
     await chat.open();
     // Conversation A.
-    await chat.send("message in A");
+    await chat.send("alpha-one");
     await chat.waitForReply(/dummy agent/i);
     // New conversation B, send there.
     await page.locator(sidebar.newButton).click();
-    await chat.send("message in B");
+    await chat.send("bravo-one");
     await chat.waitForReply(/dummy agent/i);
     await expect(page.locator(sidebar.item)).toHaveCount(2);
 
     // Back to A: its message must still be there (the reported resume bug —
     // sending in B must not lose A's messages).
-    await page.locator(sidebar.item).filter({ hasText: /message in A/i }).first().click();
-    await expect(chat.userMessages().filter({ hasText: /message in A/i })).toHaveCount(1, {
+    await page.locator(sidebar.item).filter({ hasText: /alpha-one/i }).first().click();
+    await expect(chat.userMessages().filter({ hasText: /alpha-one/i })).toHaveCount(1, {
       timeout: 30_000,
     });
-    await expect(chat.userMessages().filter({ hasText: /message in B/i })).toHaveCount(0);
+    await expect(chat.userMessages().filter({ hasText: /bravo-/i })).toHaveCount(0);
 
     // Send a SECOND message in A; both A messages present, B's still absent.
-    await chat.send("second message in A");
+    await chat.send("alpha-two");
     await chat.waitForReply(/dummy agent/i);
-    await expect(chat.userMessages().filter({ hasText: /message in A/i })).toHaveCount(1);
-    await expect(chat.userMessages().filter({ hasText: /second message in A/i })).toHaveCount(1);
-    await expect(chat.userMessages().filter({ hasText: /message in B/i })).toHaveCount(0);
+    await expect(chat.userMessages().filter({ hasText: /alpha-one/i })).toHaveCount(1);
+    await expect(chat.userMessages().filter({ hasText: /alpha-two/i })).toHaveCount(1);
+    await expect(chat.userMessages().filter({ hasText: /bravo-/i })).toHaveCount(0);
 
     // And B still has only its own message when we switch back.
-    await page.locator(sidebar.item).filter({ hasText: /message in B/i }).first().click();
-    await expect(chat.userMessages().filter({ hasText: /message in B/i })).toHaveCount(1, {
+    await page.locator(sidebar.item).filter({ hasText: /bravo-one/i }).first().click();
+    await expect(chat.userMessages().filter({ hasText: /bravo-one/i })).toHaveCount(1, {
       timeout: 30_000,
     });
-    await expect(chat.userMessages().filter({ hasText: /message in A/i })).toHaveCount(0);
+    await expect(chat.userMessages().filter({ hasText: /alpha-/i })).toHaveCount(0);
   });
 
   test("conversations survive a page refresh (loaded from the server)", async ({ chat, page }) => {
@@ -173,5 +175,36 @@ test.describe("session selector & titles", () => {
     await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
     await expect(page.locator(sidebar.title).filter({ hasText: /persisted conversation one/i })).toHaveCount(1);
     await expect(page.locator(sidebar.title).filter({ hasText: /persisted conversation two/i })).toHaveCount(1);
+  });
+
+  test("a FRESH first visit is populated with the server's existing sessions", async ({
+    chat,
+    page,
+    request,
+    baseURL,
+  }) => {
+    // Seed conversations on the SERVER directly (no UI), as if a previous
+    // user/session had created them. The server (agent-host) is the source of
+    // truth; a brand-new browser visit must show them.
+    const base = baseURL ?? "http://localhost:5173";
+    const r1 = await request.post(`${base}/conversations`, {
+      data: { threadId: `seeded-one-${Date.now()}`, title: "Seeded session one" },
+    });
+    const r2 = await request.post(`${base}/conversations`, {
+      data: { threadId: `seeded-two-${Date.now()}`, title: "Seeded session two" },
+    });
+    expect(r1.ok() && r2.ok(), "seeding /conversations failed").toBeTruthy();
+
+    // First visit with NO carried-over local state — a fresh page load.
+    await chat.open();
+
+    // The sidebar must be populated from the server on first visit.
+    await expect(page.locator(sidebar.title).filter({ hasText: /Seeded session one/i })).toHaveCount(
+      1,
+      { timeout: 30_000 },
+    );
+    await expect(page.locator(sidebar.title).filter({ hasText: /Seeded session two/i })).toHaveCount(
+      1,
+    );
   });
 });

@@ -50,6 +50,9 @@ export interface ConversationStore {
   /** Reconstruct all persisted conversations (for the list after a restart).
    *  Optional. */
   listConversations?(): Promise<ConversationMeta[]>;
+  /** Permanently remove a conversation's persisted state so an ended/deleted
+   *  conversation does not reappear on the next hydrate(). Optional. */
+  removeConversation?(id: SessionId): Promise<void>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";
@@ -168,13 +171,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
-    e.bridge.onEvent((event) => {
-      e.lastActivityAt = nowMs(); // agent events count as activity
-      void store.appendEvent(e.id, event);
-    });
-    // Persist-only events (e.g. the user's own prompt) go to the log but are not
-    // broadcast — so the durable history is complete without the live UI showing
-    // a duplicate of the message it just sent.
+    // Persist via the onPersist channel ONLY. The bridge's emit() fires BOTH the
+    // broadcast (onEvent) and persist (onPersist) listener sets, and persist-only
+    // events (the user's own prompt) fire onPersist alone — so onPersist sees
+    // EVERY event that should be logged, exactly once. Subscribing to onEvent too
+    // would double-log every broadcast event (bloated, replay-confusing history).
     e.bridge.onPersist((event) => {
       e.lastActivityAt = nowMs();
       void store.appendEvent(e.id, event);
@@ -259,6 +260,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await provisioner.destroy(entry.sandbox);
       entry.bridge = undefined;
       entry.status = "ended";
+      // Delete-don't-tombstone: drop it from the in-memory list AND remove its
+      // persisted state, so it neither shows in GET /conversations nor returns
+      // on the next hydrate(). (Suspend, not end, is the durable handle.)
+      entries.delete(id);
+      await store.removeConversation?.(id);
     },
 
     get(id) {

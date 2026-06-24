@@ -93,7 +93,10 @@ describe("SessionManager", () => {
     await sessions.end(conv.id);
 
     expect(provisioner.destroy).toHaveBeenCalledOnce();
-    expect(sessions.get(conv.id)?.status).toBe("ended");
+    // Delete-don't-tombstone: an ended conversation is GC'd from the list (and
+    // its persisted state removed), so it no longer resolves.
+    expect(sessions.get(conv.id)).toBeUndefined();
+    expect(sessions.list()).toHaveLength(0);
   });
 
   it("conversations survive a restart (file store hydrate)", async () => {
@@ -120,6 +123,29 @@ describe("SessionManager", () => {
       expect(alpha?.title).toBe("Refactor the parser"); // persisted title
       expect(alpha?.status).toBe("suspended"); // resumable, not live
       expect(restored.find((c) => c.id === "beta")).toBeTruthy();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ended conversations do NOT come back after a restart (persisted state removed)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      await m1.start("keep");
+      const gone = await m1.start("gone");
+      await m1.end(gone.id);
+      expect(m1.list().map((c) => c.id)).toEqual(["keep"]); // gone is GC'd now
+
+      // A fresh process hydrates from disk: the ended conversation must be gone,
+      // not resurrected as a "suspended" tombstone.
+      const m2 = createSessionManager({
+        provisioner: fakeProvisioner(),
+        store: createFileConversationStore(root),
+      });
+      await m2.hydrate();
+      expect(m2.list().map((c) => c.id)).toEqual(["keep"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

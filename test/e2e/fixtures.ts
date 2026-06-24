@@ -59,8 +59,10 @@ export class Chat {
     return this.page.locator(sel.toolCall);
   }
 
-  /** Wait for an assistant reply containing `re` (default: any non-empty). */
-  async waitForReply(re: RegExp = /\S/, timeout = 30_000) {
+  /** Wait for an assistant reply containing `re` (default: any non-empty).
+   *  Generous timeout: a freshly-created conversation lazily spawns its bridge
+   *  on the first prompt, so the very first reply can be slower than later ones. */
+  async waitForReply(re: RegExp = /\S/, timeout = 45_000) {
     await expect(this.page.getByText(re).first()).toBeVisible({ timeout });
   }
 }
@@ -69,6 +71,10 @@ type Fixtures = {
   chat: Chat;
   /** Accumulates console errors for the no-error assertion. */
   consoleErrors: string[];
+  /** Auto: wipes server + client conversation state before each test so the
+   *  shared (single-process) webServer doesn't leak conversations between tests
+   *  and break absolute-count assertions. */
+  cleanState: void;
 };
 
 export const test = base.extend<Fixtures>({
@@ -80,6 +86,49 @@ export const test = base.extend<Fixtures>({
     page.on("pageerror", (e) => errors.push(String(e)));
     await use(errors);
   },
+
+  // Runs automatically (auto: true) before every test: the e2e webServer is one
+  // long-lived agent-host process whose conversation list is persisted + hydrated,
+  // so without a reset each test would see the previous tests' conversations.
+  cleanState: [
+    async ({ request, context, baseURL }, use) => {
+      const base = baseURL ?? "http://localhost:5173";
+      // 1. Server: delete every known conversation, then POLL until the list is
+      //    actually empty. The delete + sandbox-destroy is async server-side, so
+      //    proceeding immediately races the next test's first /conversations
+      //    fetch (which would merge leftovers in). Poll to a true clean slate.
+      for (let i = 0; i < 50; i++) {
+        const res = await request.get(`${base}/conversations`);
+        if (!res.ok()) break;
+        const convs = (await res.json()) as Array<{ id: string }>;
+        if (convs.length === 0) break;
+        await Promise.all(convs.map((c) => request.delete(`${base}/conversations/${c.id}`)));
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // Let the server settle after the destroys (bridge stop + sandbox teardown)
+      // so the next test's first prompt starts a clean, unstalled conversation.
+      await new Promise((r) => setTimeout(r, 300));
+      // 2. Client: clear persisted sessions on the origin. The server is empty
+      //    now (polled above), so loading the app to establish the origin can't
+      //    re-merge anything. Use a throwaway page, then close it and give its
+      //    AG-UI/SSE connection a beat to tear down so it doesn't race the next
+      //    test's first prompt against the shared single-process agent-host.
+      const blank = await context.newPage();
+      await blank.goto(base);
+      await blank.evaluate(() => {
+        try {
+          window.localStorage.clear();
+          window.sessionStorage.clear();
+        } catch {
+          /* storage unavailable — non-fatal */
+        }
+      });
+      await blank.close();
+      await new Promise((r) => setTimeout(r, 300));
+      await use();
+    },
+    { auto: true },
+  ],
 
   chat: async ({ page }, use) => {
     await use(new Chat(page));
