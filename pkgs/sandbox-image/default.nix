@@ -39,6 +39,29 @@ let
     text = builtins.readFile ./git-credential-broker.sh;
   };
 
+  # The AWS request CLI + credential_process helper. ONE source of truth: the
+  # broker package's cli.py (self-contained, stdlib-only) is embedded verbatim,
+  # so the sandbox tools never drift from the broker contract.
+  scooterAwsCli = pkgs.writeTextFile {
+    name = "scooter_aws_cli.py";
+    destination = "/lib/scooter_aws_cli.py";
+    text = builtins.readFile ../../services/broker/broker/aws/cli.py;
+  };
+  scooterAws = pkgs.writeShellApplication {
+    name = "scooter-aws";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      exec python3 -c 'import runpy,sys; m=runpy.run_path("${scooterAwsCli}/lib/scooter_aws_cli.py"); sys.exit(m["cli_main"](sys.argv[1:]))' "$@"
+    '';
+  };
+  scooterAwsCredentials = pkgs.writeShellApplication {
+    name = "scooter-aws-credentials";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      exec python3 -c 'import runpy,sys; m=runpy.run_path("${scooterAwsCli}/lib/scooter_aws_cli.py"); sys.exit(m["credentials_main"](sys.argv[1:]))' "$@"
+    '';
+  };
+
   # System tools available by default inside the sandbox.
   # cacert MUST be here (not only in the layer) so rootBinEnv links its
   # /etc/ssl/certs/ca-bundle.crt — without it HTTPS (git clone, curl) fails with
@@ -47,9 +70,13 @@ let
   systemPackages = with pkgs; [
     bashInteractive coreutils findutils gnugrep gnused gawk
     git curl jq gnutar gzip util-linux cacert
+    # AWS: the CLI (uses the credential_process helper) + python3 for the tools.
+    awscli2 python3
   ];
 
-  allPackages = systemPackages ++ [ agentBroker gitCredentialBroker ] ++ extraPackages;
+  allPackages = systemPackages
+    ++ [ agentBroker gitCredentialBroker scooterAws scooterAwsCredentials ]
+    ++ extraPackages;
 
   # rootfs: non-package files baked into the image (skills, dirs).
   rootfs = pkgs.runCommand "sandbox-rootfs" { } ''

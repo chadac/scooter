@@ -46,9 +46,23 @@ configure_git_broker() {
     fi
 }
 
+configure_aws() {
+    # Render ~/.aws/config from the mounted account registry: one
+    # [profile <name>] per enabled account, each wired to the credential_process
+    # helper. AWS_ACCOUNTS_FILE points at the mounted ConfigMap (accounts.json).
+    local accts="${AWS_ACCOUNTS_FILE:-/etc/agent-sandbox/aws/accounts.json}"
+    if [ -r "$accts" ] && command -v scooter-aws-credentials >/dev/null 2>&1; then
+        mkdir -p "$HOME/.aws"
+        if scooter-aws-credentials --render-config "$accts" > "$HOME/.aws/config" 2>/dev/null; then
+            echo "[entrypoint] rendered ~/.aws/config from $accts"
+        fi
+    fi
+}
+
 main() {
     setup_overlay_store || true
     configure_git_broker
+    configure_aws
     export PATH="$HOME/.nix-profile/bin:$PATH"
     echo "[entrypoint] ready; idling (driven via kubectl exec)"
     # Keep PID 1 alive; the pod is driven entirely via `kubectl exec`.

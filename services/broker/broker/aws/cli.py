@@ -79,10 +79,22 @@ def credentials_main(argv: list[str] | None = None) -> int:
     Resolves <profile> -> the conversation's most recent ACTIVE request for it.
     Active: print the credential_process JSON, return 0. Otherwise: write a
     verbose, actionable error to stderr and return 1 (fail closed). No cache.
+
+    Also `--render-config <accounts.json>`: print ~/.aws/config from the registry
+    (used by the sandbox entrypoint — keeps the render in one place).
     """
     ap = argparse.ArgumentParser(prog="scooter-aws-credentials")
-    ap.add_argument("--profile", required=True)
+    ap.add_argument("--profile")
+    ap.add_argument("--render-config", help="print ~/.aws/config from an accounts.json registry")
     args = ap.parse_args(argv)
+
+    if args.render_config:
+        with open(args.render_config) as f:
+            registry = json.load(f)
+        sys.stdout.write(render_aws_config(registry, helper_path="scooter-aws-credentials"))
+        return 0
+    if not args.profile:
+        ap.error("--profile is required")
     profile = args.profile
 
     # Find an active request for this profile/account. (List endpoint is the
