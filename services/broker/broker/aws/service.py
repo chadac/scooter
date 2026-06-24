@@ -1,8 +1,8 @@
 """Permission service — orchestrates the request lifecycle.
 
-DESIGN BOILERPLATE. The transport (routes) is thin; this holds the logic so it's
-testable against a fake IAM provisioner + in-memory store. Wires together:
-policy guardrails + store + IamProvisioner + the in-memory credential cache.
+The transport (routes) is thin; this holds the logic, testable against a fake
+IamProvisioner + a SQLite store. Wires policy guardrails + store + IamProvisioner
++ the in-memory credential cache.
 
 Lifecycle (see models.RequestStatus):
   request()  -> validate (3 layers) -> create inline policy eagerly -> store pending
@@ -16,11 +16,18 @@ Lifecycle (see models.RequestStatus):
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
+from . import policy
 from .iam import IamProvisioner
 from .models import PermissionRequest, RequestStatus, RiskLevel, StsCredentials
 from .store import PermissionStore
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -51,13 +58,25 @@ class PermissionService:
         account_registry: dict[str, dict],
         config: ServiceConfig,
     ) -> None:
-        raise NotImplementedError
+        self._store = store
+        self._iam = iam
+        self._registry = account_registry
+        self._config = config
+        # request_id -> StsCredentials. In-memory only; never persisted.
+        self._creds: dict[str, StsCredentials] = {}
 
     # --- account discovery -------------------------------------------------
     async def accounts(self) -> dict[str, dict]:
-        """Enabled accounts + their bounds, so the agent learns its limits
-        before crafting a policy. (allowed_policy summarized, not raw secrets.)"""
-        raise NotImplementedError
+        out: dict[str, dict] = {}
+        for name, acct in self._registry.items():
+            if not acct.get("enabled", False):
+                continue
+            out[name] = {
+                "account_id": acct.get("account_id"),
+                "allowed_policy": acct.get("allowed_policy"),
+                "allowed_managed_policies": acct.get("allowed_managed_policies", []),
+            }
+        return out
 
     # --- request (agent) ---------------------------------------------------
     async def request(
@@ -71,42 +90,165 @@ class PermissionService:
         conversation_url: str | None = None,
         parent_request_id: str | None = None,
     ) -> PermissionRequest:
-        """Validate (account enabled; managed ARNs allowlisted; inline policy
-        through all 3 guardrail layers), classify risk, eagerly create the inline
-        policy (so errors surface now), store `pending`. Raises RequestError on
-        any guardrail failure (nothing is provisioned)."""
-        raise NotImplementedError
+        managed_policy_arns = managed_policy_arns or []
+        acct = self._registry.get(target_account)
+        if acct is None or not acct.get("enabled", False):
+            raise RequestError([f"Account '{target_account}' is not available"])
+        if policy_document is None and not managed_policy_arns:
+            raise RequestError(["Must supply policy_document and/or managed_policy_arns"])
+
+        # Managed-policy ARNs must be allowlisted for the account.
+        allowed_managed = set(acct.get("allowed_managed_policies", []))
+        for arn in managed_policy_arns:
+            if arn not in allowed_managed:
+                raise RequestError([f"Managed policy '{arn}' is not allowed for this account"])
+
+        risk = RiskLevel.LOW
+        summary = ""
+        if policy_document is not None:
+            errors = policy.validate_policy(policy_document, target_account)
+            allowed_policy = acct.get("allowed_policy") or {"Statement": [{"Action": ["*"], "Resource": ["*"]}]}
+            errors += policy.validate_policy_within_bounds(policy_document, allowed_policy)
+            if errors:
+                raise RequestError(errors)
+            risk = policy.classify_risk(policy_document, target_account)
+            summary = policy.summarize_policy(policy_document)
+
+        request_id = uuid.uuid4().hex[:12]
+        # Eagerly create the inline policy so policy errors surface before approval.
+        policy_arn = None
+        if policy_document is not None:
+            policy_arn = self._iam.create_dynamic_policy(
+                target_account=target_account, request_id=request_id, policy_document=policy_document
+            )
+
+        req = PermissionRequest(
+            request_id=request_id,
+            conversation_id=conversation_id,
+            target_account=target_account,
+            justification=justification,
+            status=RequestStatus.PENDING,
+            risk_level=risk,
+            policy_document=policy_document,
+            managed_policy_arns=managed_policy_arns,
+            policy_summary=summary,
+            conversation_url=conversation_url,
+            parent_request_id=parent_request_id,
+            requested_at=_now(),
+            iam_policy_arn=policy_arn,
+        )
+        await self._store.insert(req)
+        return req
 
     # --- approve / deny (approver) ----------------------------------------
     async def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
-        """pending → approved → (provision dynamic role + cache creds) → active.
-        Sets role_expires_at = now + role_ttl_hours. On IAM failure → error."""
-        raise NotImplementedError
+        req = await self._store.get(request_id)
+        if req is None:
+            raise RequestError([f"Unknown request '{request_id}'"])
+        if req.status != RequestStatus.PENDING:
+            raise RequestError([f"Request is {req.status.value}, not pending"])
+
+        approved_at = _now()
+        role_expires_at = (
+            datetime.now(timezone.utc) + timedelta(hours=self._config.role_ttl_hours)
+        ).isoformat()
+        duration = self._duration_for(req.risk_level)
+        try:
+            role_arn, creds = self._iam.create_dynamic_role(
+                target_account=req.target_account,
+                request_id=req.request_id,
+                policy_arn=req.iam_policy_arn,
+                managed_policy_arns=req.managed_policy_arns,
+                duration_seconds=duration,
+            )
+        except Exception as exc:  # provisioning failed -> error state
+            await self._store.update(
+                request_id, status=RequestStatus.ERROR, approved_at=approved_at,
+                approved_by=approver, deny_reason=f"provisioning failed: {exc}",
+            )
+            raise RequestError([f"IAM provisioning failed: {exc}"]) from exc
+
+        self._creds[request_id] = creds
+        await self._store.update(
+            request_id,
+            status=RequestStatus.ACTIVE,
+            approved_at=approved_at,
+            approved_by=approver,
+            iam_role_arn=role_arn,
+            role_expires_at=role_expires_at,
+            credentials_issued_at=approved_at,
+            expires_at=creds.expires_at,
+        )
+        return await self._store.get(request_id)  # type: ignore[return-value]
 
     async def deny(self, *, request_id: str, approver: str, reason: str | None = None) -> PermissionRequest:
-        """pending → denied; deletes the eagerly-created inline policy."""
-        raise NotImplementedError
+        req = await self._store.get(request_id)
+        if req is None:
+            raise RequestError([f"Unknown request '{request_id}'"])
+        if req.iam_policy_arn:
+            self._iam.delete_dynamic_policy(target_account=req.target_account, policy_arn=req.iam_policy_arn)
+        await self._store.update(
+            request_id, status=RequestStatus.DENIED, denied_at=_now(),
+            denied_by=approver, deny_reason=reason,
+        )
+        return await self._store.get(request_id)  # type: ignore[return-value]
 
     # --- retrieve / refresh / revoke (agent) -------------------------------
-    async def status(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials | None]:
-        """The request (isolated to its conversation) + cached creds iff active."""
-        raise NotImplementedError
+    async def status(
+        self, *, request_id: str, conversation_id: str
+    ) -> tuple[PermissionRequest | None, StsCredentials | None]:
+        req = await self._store.get_for_conversation(request_id, conversation_id)
+        if req is None:
+            return None, None
+        creds = self._creds.get(request_id) if req.status == RequestStatus.ACTIVE else None
+        return req, creds
 
     async def refresh(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials]:
-        """Re-assume the live role for fresh creds (within role TTL). Fails if the
-        role TTL has passed (re-approval required)."""
-        raise NotImplementedError
+        req = await self._store.get_for_conversation(request_id, conversation_id)
+        if req is None:
+            raise RequestError([f"Unknown request '{request_id}'"])
+        if req.status != RequestStatus.ACTIVE or not req.iam_role_arn:
+            raise RequestError(["Request is not active"])
+        if req.role_expires_at and req.role_expires_at <= _now():
+            raise RequestError(["Role TTL has passed — request again"])
+        creds = self._iam.assume_dynamic_role(
+            target_account=req.target_account, role_arn=req.iam_role_arn,
+            request_id=req.request_id, duration_seconds=self._duration_for(req.risk_level),
+        )
+        self._creds[request_id] = creds
+        await self._store.update(request_id, credentials_issued_at=_now(), expires_at=creds.expires_at)
+        return req, creds
 
     async def revoke(self, *, request_id: str, conversation_id: str) -> PermissionRequest:
-        """Self-revoke: tear down role+policy, clear cached creds, → revoked."""
-        raise NotImplementedError
+        req = await self._store.get_for_conversation(request_id, conversation_id)
+        if req is None:
+            raise RequestError([f"Unknown request '{request_id}'"])
+        if req.iam_role_arn:
+            self._iam.delete_dynamic_role(
+                target_account=req.target_account, role_arn=req.iam_role_arn, policy_arn=req.iam_policy_arn,
+            )
+        elif req.iam_policy_arn:
+            self._iam.delete_dynamic_policy(target_account=req.target_account, policy_arn=req.iam_policy_arn)
+        self._creds.pop(request_id, None)
+        await self._store.update(request_id, status=RequestStatus.REVOKED, revoked_at=_now())
+        return await self._store.get(request_id)  # type: ignore[return-value]
 
     # --- lifecycle sweep (background) -------------------------------------
     async def sweep_expired(self) -> list[str]:
-        """Tear down roles past role_expires_at, → expired. Returns the swept
-        request_ids. Called on an interval by the broker."""
-        raise NotImplementedError
+        swept: list[str] = []
+        for req in await self._store.list_expired_active(_now()):
+            if req.iam_role_arn:
+                self._iam.delete_dynamic_role(
+                    target_account=req.target_account, role_arn=req.iam_role_arn, policy_arn=req.iam_policy_arn,
+                )
+            self._creds.pop(req.request_id, None)
+            await self._store.update(req.request_id, status=RequestStatus.EXPIRED)
+            swept.append(req.request_id)
+        return swept
 
     def _duration_for(self, risk: RiskLevel) -> int:
-        """STS cred lifetime by risk (config)."""
-        raise NotImplementedError
+        return {
+            RiskLevel.LOW: self._config.duration_low,
+            RiskLevel.MEDIUM: self._config.duration_medium,
+            RiskLevel.HIGH: self._config.duration_high,
+        }[risk]

@@ -54,4 +54,13 @@ def render_aws_config(account_registry: dict[str, dict], *, helper_path: str = "
     sandbox start from the account ConfigMap — no static keys, single source of
     truth with the broker's registry.
     """
-    raise NotImplementedError
+    blocks: list[str] = []
+    for name, acct in account_registry.items():
+        if not acct.get("enabled", False):
+            continue
+        lines = [f"[profile {name}]", f"credential_process = {helper_path} --profile {name}"]
+        region = acct.get("region")
+        if region:
+            lines.append(f"region = {region}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + ("\n" if blocks else "")

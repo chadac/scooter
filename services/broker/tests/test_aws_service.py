@@ -170,7 +170,7 @@ async def test_sweep_expires_past_ttl(tmp_path):
     req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
     await svc.approve(request_id=req.request_id, approver="a")
     # Force the role TTL into the past, then sweep.
-    svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00Z")  # type: ignore[attr-defined]
+    await svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00Z")  # type: ignore[attr-defined]
     swept = await svc.sweep_expired()
     assert req.request_id in swept
     got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
