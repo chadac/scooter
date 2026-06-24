@@ -148,7 +148,9 @@ function sandboxManifest(
             {
               name: "sandbox",
               image,
-              imagePullPolicy: "IfNotPresent",
+              // Always pull so a re-pushed :latest sandbox image is picked up
+              // (IfNotPresent would keep a node's stale cached image).
+              imagePullPolicy: "Always",
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },
