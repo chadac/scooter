@@ -115,23 +115,77 @@ revoke/deny tear down immediately.
   by the same SA-token/identity path); a future admin UI/Slack flow plugs a
   different check in.
 
+## Agent entry point — AWS credential_process helper + a request CLI
+
+The agent does NOT curl the broker directly. Instead the sandbox image ships two
+small Python tools (auth = the pod's projected SA token at
+`/var/run/secrets/broker/token` + `BROKER_URL`, exactly like `agent-broker.sh`):
+
+1. **`scooter-aws-credentials` — an AWS `credential_process` helper.** Profile-
+   aware. `~/.aws/config` is GENERATED at sandbox start from a ConfigMap of
+   accounts, one `[profile <name>]` per account, each with
+   `credential_process = scooter-aws-credentials --profile <name>`. When the
+   agent runs `aws --profile <name> …` (or boto3 with that profile), the CLI
+   invokes the helper, which:
+     - maps `<name>` → target account → the conversation's currently-ACTIVE
+       permission request for that account (via the broker), and
+     - if active, prints the AWS credential_process JSON
+       (`{"Version":1,"AccessKeyId","SecretAccessKey","SessionToken","Expiration"}`).
+     - if NOT active (no grant yet / still pending / denied / expired), exits
+       non-zero with a **verbose, actionable error** to stderr explaining exactly
+       how to request access (the `scooter-aws request …` command, with the
+       profile name and a policy hint). NO caching — fetch fresh each call so a
+       just-approved grant works immediately and an expired one fails closed.
+   This is design seam #2's answer: the helper's own error IS the "how to get
+   unblocked" message; the agent reads it and acts.
+
+2. **`scooter-aws` — the request CLI.** `scooter-aws request --profile <name>
+   --policy <file|inline> [--managed <arn>] --justification "…"` → broker
+   `POST /aws/request`; also `status <id>`, `accounts`, `revoke <id>`. A skill
+   tells the agent: "to use AWS, run a command under `aws --profile <name>`; if
+   it says access isn't granted, request it with `scooter-aws request …` and
+   wait for approval." So the agent discovers the need NATURALLY (a failed AWS
+   call) and requests via the CLI/skill.
+
+**`~/.aws/config` generation.** The account ConfigMap (the registry, profile-
+named) is mounted into the sandbox; an entrypoint step renders
+`~/.aws/config` with a `[profile <name>]` + `credential_process` line per
+enabled account. (No static keys anywhere.) The same registry the broker
+validates against drives the profiles the agent sees — single source of truth.
+
 ## Approval flow (in-conversation, the chosen default)
 
-1. Agent calls a `request_aws_access` action (or POSTs the broker
-   `/aws/request`) with `{target_account, policy_document/managed_policy_arns,
-   justification}`. The broker validates (3 guardrail layers), eagerly creates
-   the inline policy, stores the request `pending`, and returns a `request_id`.
-2. The agent-host surfaces it as an **AG-UI interrupt** in the conversation
-   (account + policy summary + risk + justification; options: Approve / Deny).
-   The run BLOCKS (the agent is waiting on the broker request anyway).
-3. The user picks Approve → the agent-host tells the broker
-   `POST /aws/{id}/approve` (carrying the approver's identity); the broker
-   provisions the dynamic role and flips to `active`.
-4. The agent polls `GET /aws/{id}` → gets STS creds when `active`, and continues.
-   Deny → the agent gets a denial and proceeds without the access.
+1. The agent runs `scooter-aws request --profile <name> …` (prompted by the
+   skill after an `aws --profile <name> …` call failed with the helper's
+   verbose "not granted" error). The CLI → broker `POST /aws/request`; the broker
+   validates (3 guardrail layers), eagerly creates the inline policy, stores
+   `pending`, returns the `request_id`. The CLI prints "requested; waiting for
+   approval (id …)".
+2. **Raising the interrupt (seam #2).** The agent-host needs to surface the
+   pending request as an AG-UI interrupt. Two options:
+   (a) **Broker → agent-host notify.** On `POST /aws/request`, the broker calls
+       an agent-host webhook (`POST /conversations/:id/aws-request` with the
+       request summary), keyed by conversation_id; the agent-host raises the
+       interrupt. Clean separation; the broker is the source of truth.
+   (b) **Agent-reported.** The `scooter-aws request` CLI emits a marker the
+       bridge detects (like the `<title>` marker) → the agent-host raises the
+       interrupt from the agent's own output. No broker→host coupling, but the
+       request summary/risk must come from the agent (less trustworthy) or a
+       follow-up fetch.
+   → LIKELY (a): the broker already has the validated request + risk + policy
+   summary; a notify webhook to the agent-host (same cluster, conversation_id
+   known) is the cleanest, and keeps the approval UI server-driven.
+3. The agent-host renders the interrupt (account + policy summary + risk +
+   justification; options Approve / Deny). User picks Approve → agent-host calls
+   broker `POST /aws/{id}/approve` (approver identity); broker provisions + →
+   `active`. Deny → `POST /aws/{id}/deny`.
+4. Meanwhile the agent (or its next `aws --profile <name>` call) gets creds: the
+   credential_process helper now returns active STS creds. The agent proceeds.
+   (The agent can also poll `scooter-aws status <id>`.)
 
-This reuses the interrupt round-trip (RUN_FINISHED outcome=interrupt → resume)
-end to end; the broker is the system of record for the request + creds.
+This reuses the interrupt round-trip (RUN_FINISHED outcome=interrupt → resume);
+the broker is the system of record for the request + creds; the credential helper
+makes AWS access transparent once granted.
 
 ## TODO (deferred)
 
