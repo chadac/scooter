@@ -144,7 +144,11 @@ in
   };
 
   config = lib.mkIf wcfg.enable {
-    kubernetes.resources = {
+    # mkMerge (NOT `//`): the postgres block reuses the `deployments`/`services`
+    # keys, and a shallow `//` would CLOBBER the app's deployment/service with the
+    # DB's. mkMerge deep-merges so both survive.
+    kubernetes.resources = lib.mkMerge [
+    {
       serviceAccounts.agent-webhooks = {
         metadata = { name = "agent-webhooks"; namespace = cfg.namespace; };
       };
@@ -217,7 +221,8 @@ in
           ports = [{ port = 8080; targetPort = "http"; name = "http"; }];
         };
       };
-    } // lib.optionalAttrs wcfg.postgres.enable {
+    }
+    (lib.mkIf wcfg.postgres.enable {
       # Durable mapping store: a single-replica Postgres backed by a PVC, so the
       # PR/Slack <-> conversation mappings survive pod/node churn. The app reads
       # DB_PASSWORD from the same secret used here.
@@ -279,7 +284,8 @@ in
           ports = [{ port = 5432; targetPort = "pg"; name = "pg"; }];
         };
       };
-    } // lib.optionalAttrs wcfg.ingress.enable {
+    })
+    (lib.mkIf wcfg.ingress.enable {
       # DNS-only companion Ingress: external-dns runs --source=ingress (NOT the
       # Traefik IngressRoute CRD), so the standard Ingress is what registers the
       # hostname in Route53. The IngressRoute below does the actual routing+TLS.
@@ -302,7 +308,8 @@ in
           }];
         };
       };
-    };
+    })
+    ];
 
     # Public ingress (opt-in). Traefik IngressRoute is a CRD → kubernetes.objects.
     # NO middlewares: providers sign their requests, so this route is
