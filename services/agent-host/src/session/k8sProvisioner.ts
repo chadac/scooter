@@ -159,6 +159,12 @@ function sandboxManifest(
                   value: `http://agent-broker.${namespace}.svc.cluster.local:8080`,
                 },
                 { name: "BROKER_TOKEN_PATH", value: "/var/run/secrets/broker/token" },
+                // git config --global (entrypoint) + the agent's exec'd git
+                // commands must agree on $HOME so the broker credential helper is
+                // configured for both. The image has no /etc/passwd, so HOME
+                // would default to "/" (often read-only) — pin it to the
+                // writable workspace volume.
+                { name: "HOME", value: "/workspace" },
               ],
             },
           ],

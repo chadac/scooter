@@ -50,6 +50,10 @@ let
             env = [
               { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
               { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
+              # git config --global + exec'd git commands must share $HOME so the
+              # broker credential helper is configured for both (image has no
+              # /etc/passwd -> HOME would be "/"). Pin to the writable workspace.
+              { name = "HOME"; value = "/workspace"; }
             ];
           }];
           volumes = [{
