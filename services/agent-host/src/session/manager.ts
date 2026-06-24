@@ -178,15 +178,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     void store.recordActivity?.(e.id, e.lastActivityAt);
   };
 
-  const saveMeta = (e: Entry) => {
-    void store.saveMeta?.({
+  // Returns the persist promise so callers that must guarantee durability (e.g.
+  // start(), before returning to the caller) can await it; fire-and-forget
+  // callers (setTitle) just ignore it.
+  const saveMeta = (e: Entry): Promise<void> =>
+    store.saveMeta?.({
       id: e.id,
       threadId: e.threadId,
       title: e.title,
       createdAt: e.createdAt,
       lastActivityAt: e.lastActivityAt,
-    });
-  };
+    }) ?? Promise.resolve();
 
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
@@ -215,7 +217,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       wireEventLog(entry);
-      saveMeta(entry); // persist so the conversation list survives a restart
+      // Await the persist so a started conversation is durable before we return
+      // (a crash right after start() must not lose it; and hydrate() in another
+      // process must see it). setTitle stays fire-and-forget.
+      await saveMeta(entry);
       // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
       // on its ACP newSession. bridge.prompt() lazily starts on first use, after
       // emitting RUN_STARTED, so the UI always sees the run begin.

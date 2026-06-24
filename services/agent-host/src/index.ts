@@ -173,7 +173,11 @@ export async function main(
     bridgeFactory: ({ conversationId, sandbox, model }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
-      return makeBridge(conversationId, sandbox, config, model);
+      const bridge = makeBridge(conversationId, sandbox, config, model);
+      // The agent titles the conversation by emitting <title>…</title> as its
+      // first action; the bridge extracts it -> set it on the conversation.
+      bridge.onTitle((title) => sessions.setTitle(conversationId, title));
+      return bridge;
     },
   });
 

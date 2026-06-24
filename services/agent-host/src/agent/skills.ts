@@ -33,6 +33,13 @@ export function identityPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
     `your shell commands run. Packages are managed with Nix (see the skills`,
     `below if present). Be concise and act directly — run commands to inspect and`,
     `change the workspace rather than guessing.`,
+    // Conversation titling: the host extracts a <title>…</title> marker from the
+    // very start of your reply and uses it to name the conversation, then strips
+    // it from what the user sees.
+    `At the very START of your FIRST reply in a conversation, emit a concise`,
+    `(3–6 word) title for the task wrapped in a <title> tag, e.g.`,
+    `"<title>Fix the login redirect</title>". Put it before anything else and do`,
+    `it only once, on the first reply. The tag is hidden from the user.`,
     id.persona ?? "",
   ]
     .filter(Boolean)

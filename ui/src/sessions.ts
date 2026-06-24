@@ -135,11 +135,21 @@ export const sessionStore = {
     if (sessions.length === 0) sessions = [...byId.values()];
     sessions.sort((a, b) => b.createdAt - a.createdAt);
 
-    // If the current selection was a pristine placeholder we just dropped (or is
-    // otherwise gone), land on the newest real conversation.
+    // SELECTION-NEUTRAL: never change currentId here. The merge runs on a
+    // background poll, so reassigning the selection would fight an in-flight
+    // user switchTo()/newSession() (a read-modify-write race that dropped the
+    // just-selected thread's view). Selection is owned by switchTo/newSession.
+    // Only keep currentId valid if it vanished entirely from the list.
     const currentId = sessions.some((s) => s.id === state.currentId)
       ? state.currentId
-      : sessions[0].id;
+      : (sessions[0]?.id ?? state.currentId);
+
+    // No-op if nothing actually changed (same ids+titles+order+selection). The
+    // periodic merge poll calls this every few seconds; without this guard every
+    // poll would setState -> re-render -> churn the runtime even when idle.
+    const sig = (ss: Session[], cur: string) =>
+      cur + "|" + ss.map((s) => `${s.id}:${s.title}`).join("|");
+    if (sig(sessions, currentId) === sig(state.sessions, state.currentId)) return;
 
     setState({ sessions, currentId });
   },

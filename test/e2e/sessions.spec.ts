@@ -31,10 +31,14 @@ test.describe("session selector & titles", () => {
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
 
-    // Title should become non-empty (agent-assigned), not stay "New chat".
+    // The agent titles the conversation (via a <title> marker it emits first,
+    // extracted server-side). The sidebar reflects it (within the merge poll).
     const title = page.locator(sidebar.title).first();
-    await expect(title).not.toHaveText("", { timeout: 30_000 });
     await expect(title).not.toHaveText(/new chat/i, { timeout: 30_000 });
+    await expect(title).toHaveText(/refactor the parser/i, { timeout: 30_000 });
+    // The raw marker must never leak into the displayed title or the chat body.
+    await expect(title).not.toHaveText(/<title>/i);
+    await expect(chat.assistantMessages().filter({ hasText: /<title>/i })).toHaveCount(0);
   });
 
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {

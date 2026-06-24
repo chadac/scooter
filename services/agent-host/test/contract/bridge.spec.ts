@@ -79,6 +79,39 @@ describe("ACP -> AG-UI bridge", () => {
     expect(userContent?.delta).toBe("hi");
   });
 
+  it("extracts an agent-emitted <title> marker and strips it from the shown text", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      // The agent's first action: emit the title marker, then its real reply.
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "<title>Fix the parser</title>" } } },
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "On it." } } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const titles: string[] = [];
+    bridge.onTitle((t) => titles.push(t));
+    const broadcast = collect(bridge);
+
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "please fix the parser" });
+
+    // The title is reported once, marker text removed.
+    expect(titles).toEqual(["Fix the parser"]);
+    // The displayed assistant text contains the reply but NOT the marker.
+    const shown = broadcast
+      .filter((e): e is { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string } => e.type === "TEXT_MESSAGE_CONTENT")
+      .map((e) => e.delta)
+      .join("");
+    expect(shown).toBe("On it.");
+    expect(shown).not.toContain("<title>");
+  });
+
   it("maps tool_call + tool_call_update to ToolCall start/args/result", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([

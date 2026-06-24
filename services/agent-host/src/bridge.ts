@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import type { AcpClient, SessionUpdate } from "./acp/client.js";
 import { debug } from "./debug.js";
+import { createTitleExtractor } from "./agent/titleMarker.js";
 
 // AG-UI event union (subset used here; full set per AG-UI spec).
 export type AguiEvent =
@@ -72,6 +73,10 @@ export interface SessionBridge {
    *  duplicate it; we still need it in the durable log for history replay). The
    *  store subscribes here too. */
   onPersist(cb: (event: AguiEvent) => void): () => void;
+  /** Subscribe to an agent-assigned title. The agent emits a <title>…</title>
+   *  marker (its first action) in its message stream; the bridge extracts it,
+   *  strips it from the displayed text, and fires this once per title. */
+  onTitle(cb: (title: string) => void): () => void;
 }
 
 export interface BridgeDeps {
@@ -102,6 +107,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
 
   const persistListeners = new Set<(event: AguiEvent) => void>();
+  const titleListeners = new Set<(title: string) => void>();
+
+  // Extracts a <title>…</title> marker from the assistant's streamed text. One
+  // per bridge (per conversation): the agent emits the marker as its first
+  // action, and we only report the first title (the extractor self-guards).
+  const titleExtractor = createTitleExtractor();
+  const emitTitle = (title: string) => {
+    if (title) for (const cb of titleListeners) cb(title);
+  };
 
   const emit = (event: AguiEvent) => {
     // Broadcast subscribers (UI) AND persist subscribers (store) both see live
@@ -154,6 +168,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       case "agent_message_chunk": {
         // Reasoning and text are distinct streams; close reasoning first.
         closeOpenReasoning(st);
+        // Run the chunk through the title extractor: an agent-emitted
+        // <title>…</title> marker is pulled out (-> onTitle) and stripped from
+        // the text the user sees.
+        const { text, title } = titleExtractor.push(blockText(u.content));
+        if (title !== undefined) emitTitle(title);
+        if (text.length === 0) break; // marker-only chunk -> nothing to show
         if (!st.openText) {
           st.openText = nextId("msg");
           emit({ type: "TEXT_MESSAGE_START", messageId: st.openText, role: "assistant" });
@@ -161,7 +181,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         emit({
           type: "TEXT_MESSAGE_CONTENT",
           messageId: st.openText,
-          delta: blockText(u.content),
+          delta: text,
         });
         break;
       }
@@ -311,6 +331,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     onPersist(cb) {
       persistListeners.add(cb);
       return () => persistListeners.delete(cb);
+    },
+    onTitle(cb) {
+      titleListeners.add(cb);
+      return () => titleListeners.delete(cb);
     },
   };
 }

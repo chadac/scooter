@@ -32,6 +32,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 class FakeAgent implements Agent {
   constructor(private conn: AgentSideConnection) {}
 
+  /** Sessions that have already received their first prompt — used to emit the
+   *  <title> marker only on the FIRST reply, like the real agent's first action. */
+  private titled = new Set<string>();
+
   async initialize(_p: InitializeRequest): Promise<InitializeResponse> {
     return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
   }
@@ -102,6 +106,19 @@ class FakeAgent implements Agent {
       content: [{ type: "content", content: { type: "text", text: cmdOutput } }],
     } as never);
     await sleep(200);
+
+    // First reply in a session: emit a <title> marker as the agent's first
+    // action (the host extracts + strips it). Derived from the user's request so
+    // the title is meaningful + assertable in tests.
+    if (!this.titled.has(sessionId)) {
+      this.titled.add(sessionId);
+      const titleText = (isCommand ? command : userText).slice(0, 40).trim();
+      await u({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `<title>${titleText}</title>` },
+      });
+      await sleep(40);
+    }
 
     // 3. the reply (streamed), reporting the command output (proves exec ran)
     const reply = isCommand
