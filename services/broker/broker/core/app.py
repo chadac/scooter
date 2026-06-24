@@ -7,6 +7,7 @@ transport's routes under the provider's prefix. No per-provider code here.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -18,13 +19,26 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="kubenix-agent-manager broker")
+    providers = list(discover_providers())
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Run providers' async startup hooks (e.g. open a DB, start a sweep).
+        for p in providers:
+            if p.on_startup is not None:
+                await p.on_startup()
+        yield
+        for p in providers:
+            if p.on_shutdown is not None:
+                await p.on_shutdown()
+
+    app = FastAPI(title="kubenix-agent-manager broker", lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    for provider in discover_providers():
+    for provider in providers:
         for transport in provider.transports:
             app.include_router(
                 transport.routes(provider, authed=authenticate),

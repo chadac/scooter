@@ -246,6 +246,9 @@ class PermissionService:
             swept.append(req.request_id)
         return swept
 
+    async def query_audit(self, **filters) -> list[PermissionRequest]:
+        return await self._store.query_audit(**filters)
+
     def _duration_for(self, risk: RiskLevel) -> int:
         return {
             RiskLevel.LOW: self._config.duration_low,

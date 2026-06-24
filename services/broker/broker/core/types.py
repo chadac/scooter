@@ -113,3 +113,7 @@ class Provider:
     # secret. Transports that need one assert it at mount time.
     credential: CredentialSource | None = None
     enabled: bool = True
+    # Optional async startup/shutdown hooks (e.g. open a DB, start a sweep task).
+    # Run by the app's lifespan. Default: no-ops.
+    on_startup: Callable[[], Awaitable[None]] | None = None
+    on_shutdown: Callable[[], Awaitable[None]] | None = None
