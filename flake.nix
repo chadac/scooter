@@ -33,7 +33,7 @@
 
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {
-            inherit pkgs lib n2c agentHost;
+            inherit pkgs lib n2c agentHost agent; # agent (goose) for its own layer
           };
 
           # Credential broker (Python/FastAPI): extensible provider/transport
