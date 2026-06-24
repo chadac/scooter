@@ -19,6 +19,11 @@ python3Packages.buildPythonApplication {
     pydantic-settings
     kubernetes
     pyjwt
+    # AWS permissions broker
+    boto3
+    sqlalchemy
+    asyncpg
+    aiosqlite
   ];
 
   nativeCheckInputs = with python3Packages; [

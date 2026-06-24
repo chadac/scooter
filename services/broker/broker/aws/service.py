@@ -54,13 +54,13 @@ class PermissionService:
         raise NotImplementedError
 
     # --- account discovery -------------------------------------------------
-    def accounts(self) -> dict[str, dict]:
+    async def accounts(self) -> dict[str, dict]:
         """Enabled accounts + their bounds, so the agent learns its limits
         before crafting a policy. (allowed_policy summarized, not raw secrets.)"""
         raise NotImplementedError
 
     # --- request (agent) ---------------------------------------------------
-    def request(
+    async def request(
         self,
         *,
         conversation_id: str,
@@ -78,31 +78,31 @@ class PermissionService:
         raise NotImplementedError
 
     # --- approve / deny (approver) ----------------------------------------
-    def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
+    async def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
         """pending → approved → (provision dynamic role + cache creds) → active.
         Sets role_expires_at = now + role_ttl_hours. On IAM failure → error."""
         raise NotImplementedError
 
-    def deny(self, *, request_id: str, approver: str, reason: str | None = None) -> PermissionRequest:
+    async def deny(self, *, request_id: str, approver: str, reason: str | None = None) -> PermissionRequest:
         """pending → denied; deletes the eagerly-created inline policy."""
         raise NotImplementedError
 
     # --- retrieve / refresh / revoke (agent) -------------------------------
-    def status(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials | None]:
+    async def status(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials | None]:
         """The request (isolated to its conversation) + cached creds iff active."""
         raise NotImplementedError
 
-    def refresh(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials]:
+    async def refresh(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials]:
         """Re-assume the live role for fresh creds (within role TTL). Fails if the
         role TTL has passed (re-approval required)."""
         raise NotImplementedError
 
-    def revoke(self, *, request_id: str, conversation_id: str) -> PermissionRequest:
+    async def revoke(self, *, request_id: str, conversation_id: str) -> PermissionRequest:
         """Self-revoke: tear down role+policy, clear cached creds, → revoked."""
         raise NotImplementedError
 
     # --- lifecycle sweep (background) -------------------------------------
-    def sweep_expired(self) -> list[str]:
+    async def sweep_expired(self) -> list[str]:
         """Tear down roles past role_expires_at, → expired. Returns the swept
         request_ids. Called on an interval by the broker."""
         raise NotImplementedError

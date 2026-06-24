@@ -69,9 +69,13 @@ revoke/deny tear down immediately.
 
 2. **Where the store + IAM live.** The reference is one FastAPI app. Here the
    broker is the natural home (it already holds credentials + per-conversation
-   identity). Store = SQLite on a PVC (like the webhooks store we just did) or
-   Postgres. → LIKELY: broker, SQLite-on-PVC to start (single replica), with the
-   same DB-durability lessons from the webhooks store.
+   identity). Store = **the EXISTING Postgres** (`agent-webhooks-db` in the
+   `agent-manager` namespace) — the broker runs in the same namespace so it
+   reaches `agent-webhooks-db.agent-manager.svc.cluster.local:5432` over cluster
+   DNS. Use a SEPARATE database (`broker`) on that instance so the two services
+   don't collide, with the same DSN-from-components + secretKeyRef pattern the
+   webhooks store uses (SQLAlchemy/asyncpg). No second Postgres pod. (SQLite
+   stays the local/dev default.) See the storage-consolidation TODO below.
 
 3. **Admin identity.** How does an approver authenticate? The reference uses ALB
    OIDC (JumpCloud). We have basic-auth on the chat ingress + (for webhooks) no
@@ -131,6 +135,16 @@ end to end; the broker is the system of record for the request + creds.
 
 ## TODO (deferred)
 
+- **Storage consolidation onto a single store.** We now have (or will have)
+  several stores: the webhooks mapping DB (`agent-webhooks-db` Postgres), the
+  agent-host conversation state (PVC, JSONL event log + meta), and this AWS
+  permissions store. Consolidate onto ONE shared Postgres where it makes sense:
+  the broker AWS store + the webhooks store share the same Postgres instance
+  (different databases) as a first step. Longer-term, evaluate moving the
+  agent-host conversation store onto Postgres too (vs. the per-conversation PVC),
+  so there's one durable backend to operate/back up. The
+  rename-`agent-webhooks-db`-to-something-neutral (it's becoming a shared DB, not
+  webhooks-specific) is part of this.
 - **Slack approval/notification.** Post the request to a channel and allow
   approve via a link or interactive buttons. The reference is notification-only
   over Slack (real approve is its web UI); we'd add either a link to a

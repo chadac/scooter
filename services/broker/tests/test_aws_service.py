@@ -13,9 +13,9 @@ from __future__ import annotations
 import pytest
 
 from broker.aws.iam import IamProvisioner
-from broker.aws.models import PermissionRequest, RequestStatus, StsCredentials
+from broker.aws.models import RequestStatus, StsCredentials
 from broker.aws.service import PermissionService, ServiceConfig, RequestError
-from broker.aws.store import PermissionStore
+from broker.aws.store import PermissionStore, StoreConfig
 
 
 # --- fakes ----------------------------------------------------------------
@@ -64,9 +64,11 @@ REGISTRY = {
 READ = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}]}
 
 
-def make_service(tmp_path):
-    store = PermissionStore(str(tmp_path / "broker.db"))
-    store.init()
+async def make_service(tmp_path):
+    cfg = StoreConfig()
+    cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"  # local SQLite for tests
+    store = PermissionStore(cfg)
+    await store.init()
     svc = PermissionService(
         store=store,
         iam=FakeIam(),
@@ -77,100 +79,100 @@ def make_service(tmp_path):
 
 
 # --- request -------------------------------------------------------------
-def test_request_creates_pending(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="read a file", policy_document=READ)
+async def test_request_creates_pending(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="read a file", policy_document=READ)
     assert req.status == RequestStatus.PENDING
     assert req.request_id
     assert req.conversation_id == "c1"
     assert req.iam_policy_arn  # inline policy created eagerly
 
 
-def test_request_rejects_blocked_action(tmp_path):
-    svc = make_service(tmp_path)
+async def test_request_rejects_blocked_action(tmp_path):
+    svc = await make_service(tmp_path)
     bad = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:CreateRole", "Resource": "*"}]}
     with pytest.raises(RequestError):
-        svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=bad)
+        await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=bad)
 
 
-def test_request_rejects_out_of_bounds(tmp_path):
-    svc = make_service(tmp_path)
+async def test_request_rejects_out_of_bounds(tmp_path):
+    svc = await make_service(tmp_path)
     # prod only allows s3:Get*; a PutObject is out of bounds.
     put = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::b/*"}]}
     with pytest.raises(RequestError):
-        svc.request(conversation_id="c1", target_account="prod", justification="x", policy_document=put)
+        await svc.request(conversation_id="c1", target_account="prod", justification="x", policy_document=put)
 
 
-def test_request_rejects_disabled_account(tmp_path):
-    svc = make_service(tmp_path)
+async def test_request_rejects_disabled_account(tmp_path):
+    svc = await make_service(tmp_path)
     with pytest.raises(RequestError):
-        svc.request(conversation_id="c1", target_account="off", justification="x", policy_document=READ)
+        await svc.request(conversation_id="c1", target_account="off", justification="x", policy_document=READ)
 
 
 # --- approve -> active + creds ------------------------------------------
-def test_approve_provisions_and_activates(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
-    approved = svc.approve(request_id=req.request_id, approver="alice@x")
+async def test_approve_provisions_and_activates(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    approved = await svc.approve(request_id=req.request_id, approver="alice@x")
     assert approved.status == RequestStatus.ACTIVE
     assert approved.iam_role_arn
     assert approved.approved_by == "alice@x"
     assert approved.role_expires_at
 
-    got, creds = svc.status(request_id=req.request_id, conversation_id="c1")
+    got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert got.status == RequestStatus.ACTIVE
     assert creds is not None and creds.session_token
 
 
-def test_deny_marks_denied_and_removes_policy(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
-    denied = svc.deny(request_id=req.request_id, approver="alice@x", reason="nope")
+async def test_deny_marks_denied_and_removes_policy(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    denied = await svc.deny(request_id=req.request_id, approver="alice@x", reason="nope")
     assert denied.status == RequestStatus.DENIED
     # No creds available on a denied request.
-    _, creds = svc.status(request_id=req.request_id, conversation_id="c1")
+    _, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert creds is None
 
 
 # --- isolation -----------------------------------------------------------
-def test_cross_conversation_isolation(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
-    svc.approve(request_id=req.request_id, approver="a")
+async def test_cross_conversation_isolation(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
     # Another conversation cannot read c1's request/creds.
-    got, creds = svc.status(request_id=req.request_id, conversation_id="c2")
+    got, creds = await svc.status(request_id=req.request_id, conversation_id="c2")
     assert got is None or creds is None
 
 
 # --- refresh + revoke ----------------------------------------------------
-def test_refresh_mints_new_creds(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
-    svc.approve(request_id=req.request_id, approver="a")
-    _, c1 = svc.status(request_id=req.request_id, conversation_id="c1")
-    _, c2 = svc.refresh(request_id=req.request_id, conversation_id="c1")
+async def test_refresh_mints_new_creds(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    _, c1 = await svc.status(request_id=req.request_id, conversation_id="c1")
+    _, c2 = await svc.refresh(request_id=req.request_id, conversation_id="c1")
     assert c2.session_token and c2.session_token != c1.session_token
 
 
-def test_revoke_tears_down(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
-    svc.approve(request_id=req.request_id, approver="a")
-    revoked = svc.revoke(request_id=req.request_id, conversation_id="c1")
+async def test_revoke_tears_down(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    revoked = await svc.revoke(request_id=req.request_id, conversation_id="c1")
     assert revoked.status == RequestStatus.REVOKED
-    _, creds = svc.status(request_id=req.request_id, conversation_id="c1")
+    _, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert creds is None
 
 
 # --- expiry sweep --------------------------------------------------------
-def test_sweep_expires_past_ttl(tmp_path):
-    svc = make_service(tmp_path)
-    req = svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
-    svc.approve(request_id=req.request_id, approver="a")
+async def test_sweep_expires_past_ttl(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
     # Force the role TTL into the past, then sweep.
     svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00Z")  # type: ignore[attr-defined]
-    swept = svc.sweep_expired()
+    swept = await svc.sweep_expired()
     assert req.request_id in swept
-    got, creds = svc.status(request_id=req.request_id, conversation_id="c1")
+    got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert got.status == RequestStatus.EXPIRED
     assert creds is None

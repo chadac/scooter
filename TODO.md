@@ -54,19 +54,36 @@ Running list of work items. Newest asks at the top of each section. See
         came from Slack (tracked in the webhooks store), also post the request +
         options to the Slack thread so the user can respond there. Separate path.
 
-- [ ] **Broker permissions / approval system.** Today the broker is
-  passthrough (any holder of a conversation's SA token can use any enabled
-  provider route). Add a permissions model where an agent can *request expanded
-  permissions* (e.g. a new provider, a write scope, a specific repo) and the
-  user *approves them in the UI*. Needs: a request representation, an approval
-  UI surface (likely reusing the permission/approval round-trip), and broker
-  enforcement keyed on what's been granted per conversation. Bigger design —
-  spec it out (research → design → tests → impl) before building.
-  REFERENCE: the OpenHands AWS permissions broker in
-  `~/code/gitlab.com/x.studio/devops/itops-infra/` (kubernetes/ + terraform/)
-  PROVISIONS IAM ROLES dynamically instead of static passthrough — mirror that
-  dynamic-provisioning pattern. The permission system may be dynamic, not a
-  fixed grant list.
+- [~] **Broker permissions / approval system (AWS).** PoC stages 1-3 DONE
+  (commits dc5b56c, 73ed00c). Dynamic, approval-gated AWS access — an agent
+  requests a scoped IAM policy, a human approves, the broker provisions a
+  short-lived dynamic IAM role (cross-account assume-role + ExternalId +
+  permission boundary + chained STS) and vends ephemeral STS creds. Ported from
+  the OpenHands agent-token-broker (`~/code/gitlab.com/x.studio/devops/itops-infra/`).
+  See docs/AWS_PERMISSIONS_BROKER.md.
+  - [x] Research + design + red-first tests: `broker/aws/` (models, policy [the
+        security core, FULLY ported — 19 guardrail tests GREEN], iam/store/service
+        boilerplate, aws-permissions transport). 10 lifecycle tests RED-first
+        define the contract. Decisions: full port MINUS Slack, in-conversation
+        approval via the AG-UI interrupt mechanism, pluggable admin auth, store on
+        the SHARED Postgres (agent-webhooks-db, separate `broker` DB).
+  - [ ] Stage 4 review (with the user), then Stage 5 implementation: fill
+        iam/store/service to turn the 10 red tests green, then the transport +
+        the agent entry point (skill → /aws/request) + the interrupt seam
+        (agent-host raises the approval interrupt) + e2e.
+  - [ ] EXTERNAL (deployer/AWS): per target account, the `agent-token-broker-base`
+        role + `agent-broker-permission-boundary` policy (trust = our broker IRSA
+        + ExternalId); the broker IRSA needs sts:AssumeRole on those. Account
+        registry as broker config.
+
+- [ ] **Storage consolidation onto a single store.** We have several stores: the
+  webhooks mapping DB (`agent-webhooks-db` Postgres), the agent-host conversation
+  state (PVC: JSONL event log + meta), and the new AWS permissions store.
+  Step 1 (in progress): the AWS broker store reuses the SAME Postgres instance as
+  webhooks (separate `broker` database) — no second Postgres pod. Step 2: rename
+  `agent-webhooks-db` to a neutral shared name (it's no longer webhooks-specific).
+  Step 3 (evaluate): move the agent-host conversation store onto Postgres too, so
+  there's ONE durable backend to operate/back up.
 
 - [ ] **Show linked resources in the chat UI.** We already track conversation ↔
   external-resource links (`ConversationMap` / `ResourceLink`: github PR/issue,
