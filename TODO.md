@@ -64,18 +64,18 @@ Running list of work items. Newest asks at the top of each section. See
   agent-host on create — there's already a `/conversations/link` route), and a
   collapsible UI component.
 
-- [ ] **Conversation titling is weak.** The first thing an agent does on a new
-  conversation should be to assign a title (right now titles are derived from
-  the first user message client-side, or stay "New chat"). Likely needs a new
-  agent tool (e.g. `set_conversation_title`) that calls the agent-host
-  management API (`setTitle`) so the agent — not just the UI heuristic — names
-  the conversation meaningfully.
+- [x] **Conversation titling — agent-assigned.** DONE (commit 8089cd3). The
+  agent emits a `<title>…</title>` marker as its first action; the bridge
+  extracts it (streaming-split-safe), strips it from the shown text, and calls
+  setTitle. Identity prompt instructs it; fakeAgent exercises it; the UI's 10s
+  merge poll surfaces it without a refresh. Also fixed a latent durability bug
+  (start() now awaits saveMeta). 53/53 Tier 1.
 
-- [ ] **UI emptiness during agent-host restart.** For ~30–60s while the
-  agent-host pod cycles (deploy, node consolidation), a fresh tab shows an empty
-  sidebar (no server to fetch from). The localStorage cache softens it for an
-  existing tab. A retry-with-backoff on the initial `loadConversations` would
-  paper over it.
+- [~] **UI emptiness during agent-host restart.** PARTLY addressed by the new 10s
+  `loadConversations` poll (commit 8089cd3) — a fresh tab repopulates within 10s
+  once the server is back. A retry-with-backoff on the *initial* load would still
+  make the very-first paint snappier during a restart, but the poll covers the
+  worst of it now.
 
 ## External (provider config — outside the cluster)
 
@@ -89,6 +89,9 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Done (recent)
 
+- [x] Conversation titling: agent-assigned via a <title> marker the bridge
+      extracts + strips (commit 8089cd3).
+- [x] Durable webhooks mapping store (Postgres), deployed + verified.
 - [x] Webhooks: GitHub + Slack providers wired, Traefik ingress at
       scooter.example.com, `!scooter` / `scooter` triggers (commit 3da8187,
       deployed + externally verified).
