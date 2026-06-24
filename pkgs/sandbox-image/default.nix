@@ -40,9 +40,13 @@ let
   };
 
   # System tools available by default inside the sandbox.
+  # cacert MUST be here (not only in the layer) so rootBinEnv links its
+  # /etc/ssl/certs/ca-bundle.crt — without it HTTPS (git clone, curl) fails with
+  # "unable to get local issuer certificate" (SSL_CERT_FILE points at a path the
+  # symlink tree never created).
   systemPackages = with pkgs; [
     bashInteractive coreutils findutils gnugrep gnused gawk
-    git curl jq gnutar gzip util-linux
+    git curl jq gnutar gzip util-linux cacert
   ];
 
   allPackages = systemPackages ++ [ agentBroker gitCredentialBroker ] ++ extraPackages;
