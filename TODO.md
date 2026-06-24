@@ -73,11 +73,19 @@ Running list of work items. Newest asks at the top of each section. See
         transport routes, the @register_provider factory + app lifespan wiring.
         39 AWS tests green (policy 19 + service 10 + cli 3 + iam-moto 4 +
         transport 3). The credential-helper entry point design is in the doc.
-  - [ ] Stage 5 REMAINING: sandbox cli mains (credentials_main credential_process
-        helper + cli_main request CLI) + the entrypoint that renders ~/.aws/config
-        from the account ConfigMap; the broker→agent-host notify (raise the
-        approval interrupt); modules/broker.nix wiring (enable, mount the accounts
-        ConfigMap + DB secret, the IRSA assume-role perm); a cluster e2e.
+  - [x] Stage 5 CODE COMPLETE (commits fea94dc, b524216, c5cc90f): cli mains
+        (credential_process helper + request CLI, --render-config); broker→host
+        notify → bridge.raiseInterrupt (standalone AG-UI interrupt) → InterruptPanel
+        → resolveAwsRequest → broker approve/deny; modules/broker.nix aws.* wiring
+        (enable, accounts ConfigMap, DB secret, IRSA SA annotation, env);
+        sandbox image ships scooter-aws + scooter-aws-credentials (embeds the
+        broker cli.py) + awscli2/python3, renders ~/.aws/config at entrypoint.
+        56/56 agent-host Tier 1, 41 broker tests green; sandbox image builds.
+  - [ ] Stage 5 REMAINING: deployment config (enable broker.aws with the
+        account registry + brokerPrincipalArn + DB secret) + build/push the broker
+        + sandbox images + apply; a cluster e2e proving the full chain. Mount the
+        accounts ConfigMap into the sandbox (conversation template) + set
+        AWS_ACCOUNTS_FILE. GATED on the EXTERNAL AWS IAM below.
   - [ ] EXTERNAL (deployer/AWS): per target account, the `agent-token-broker-base`
         role + `agent-broker-permission-boundary` policy (trust = our broker IRSA
         + ExternalId); the broker IRSA needs sts:AssumeRole on those. Account
