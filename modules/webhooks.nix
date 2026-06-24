@@ -77,6 +77,53 @@ in
       description = "Name of a Secret (same namespace) envFrom-mounted for provider creds.";
     };
 
+    # --- Durable mapping store (Postgres) ----------------------------------
+    # The PR/Slack <-> conversation mapping (ConversationMap) MUST survive a pod
+    # restart, or follow-up comments spawn a new conversation instead of resuming
+    # and status-back-posting stops. Default SQLite-on-emptyDir is ephemeral;
+    # enable this to run a Postgres pod (PVC-backed) and point DSN at it.
+    postgres = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Run a Postgres pod (PVC-backed) for the durable mapping store.";
+      };
+      image = mkOption {
+        type = types.str;
+        default = "postgres:16-alpine";
+        description = "Postgres image.";
+      };
+      database = mkOption {
+        type = types.str;
+        default = "webhooks";
+        description = "Database name.";
+      };
+      user = mkOption {
+        type = types.str;
+        default = "webhooks";
+        description = "Database user.";
+      };
+      passwordSecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name."; };
+            key = mkOption { type = types.str; default = "password"; description = "Key holding the password."; };
+          };
+        };
+        description = "Secret + key supplying the Postgres password (shared by the DB and the app DSN).";
+      };
+      storage = mkOption {
+        type = types.str;
+        default = "1Gi";
+        description = "PVC size for the Postgres data volume.";
+      };
+      storageClass = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "PVC storageClassName (null = cluster default).";
+      };
+    };
+
     ingress = {
       enable = mkOption {
         type = types.bool;
@@ -123,16 +170,31 @@ in
                     name = "AGENT_HOST_URL";
                     value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
                   }
-                  # SQLite store under an emptyDir (single replica). Postgres DSN
-                  # via DSN env for multi-replica.
-                  { name = "DSN"; value = "sqlite+aiosqlite:////data/webhooks.db"; }
                   { name = "TEST_WEBHOOK_ENABLED"; value = lib.boolToString wcfg.testWebhook; }
                   { name = "GITHUB_ENABLED"; value = lib.boolToString wcfg.githubEnabled; }
                   { name = "GITLAB_ENABLED"; value = lib.boolToString wcfg.gitlabEnabled; }
                   { name = "SLACK_ENABLED"; value = lib.boolToString wcfg.slackEnabled; }
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
-                ];
+                ] ++ (if wcfg.postgres.enable then [
+                  # Durable Postgres store. The DSN is assembled app-side from
+                  # these components so the password comes from a secretKeyRef
+                  # (never a full connection string in the manifest).
+                  { name = "DB_HOST"; value = "agent-webhooks-db.${cfg.namespace}.svc.cluster.local"; }
+                  { name = "DB_PORT"; value = "5432"; }
+                  { name = "DB_NAME"; value = wcfg.postgres.database; }
+                  { name = "DB_USER"; value = wcfg.postgres.user; }
+                  {
+                    name = "DB_PASSWORD";
+                    valueFrom.secretKeyRef = {
+                      inherit (wcfg.postgres.passwordSecret) name key;
+                    };
+                  }
+                ] else [
+                  # Ephemeral SQLite on the emptyDir (dev / single-pod, lost on
+                  # restart). Enable postgres for durability.
+                  { name = "DSN"; value = "sqlite+aiosqlite:////data/webhooks.db"; }
+                ]);
                 # Provider signing secrets / tokens come from a Secret whose keys
                 # match the GITHUB_WEBHOOK_SECRET / SLACK_* env var names.
                 envFrom = lib.optionals (wcfg.secretName != "") [
@@ -153,6 +215,68 @@ in
         spec = {
           selector.app = "agent-webhooks";
           ports = [{ port = 8080; targetPort = "http"; name = "http"; }];
+        };
+      };
+    } // lib.optionalAttrs wcfg.postgres.enable {
+      # Durable mapping store: a single-replica Postgres backed by a PVC, so the
+      # PR/Slack <-> conversation mappings survive pod/node churn. The app reads
+      # DB_PASSWORD from the same secret used here.
+      persistentVolumeClaims.agent-webhooks-db = {
+        metadata = { name = "agent-webhooks-db"; namespace = cfg.namespace; };
+        spec = {
+          accessModes = [ "ReadWriteOnce" ];
+          resources.requests.storage = wcfg.postgres.storage;
+        } // lib.optionalAttrs (wcfg.postgres.storageClass != null) {
+          storageClassName = wcfg.postgres.storageClass;
+        };
+      };
+
+      deployments.agent-webhooks-db = {
+        metadata = { name = "agent-webhooks-db"; namespace = cfg.namespace; };
+        spec = {
+          replicas = 1;
+          # Recreate (not RollingUpdate): a single RWO PVC can't be mounted by
+          # two pods, so the old pod must fully release it before the new one.
+          strategy.type = "Recreate";
+          selector.matchLabels.app = "agent-webhooks-db";
+          template = {
+            metadata.labels.app = "agent-webhooks-db";
+            spec = {
+              containers.postgres = {
+                name = "postgres";
+                image = wcfg.postgres.image;
+                ports = [{ containerPort = 5432; name = "pg"; }];
+                env = [
+                  { name = "POSTGRES_DB"; value = wcfg.postgres.database; }
+                  { name = "POSTGRES_USER"; value = wcfg.postgres.user; }
+                  {
+                    name = "POSTGRES_PASSWORD";
+                    valueFrom.secretKeyRef = {
+                      inherit (wcfg.postgres.passwordSecret) name key;
+                    };
+                  }
+                  # Keep PGDATA in a subdir so the volume's lost+found doesn't
+                  # collide with initdb.
+                  { name = "PGDATA"; value = "/var/lib/postgresql/data/pgdata"; }
+                ];
+                volumeMounts = [{ name = "data"; mountPath = "/var/lib/postgresql/data"; }];
+                readinessProbe.exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
+                livenessProbe.exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
+              };
+              volumes = [{
+                name = "data";
+                persistentVolumeClaim.claimName = "agent-webhooks-db";
+              }];
+            };
+          };
+        };
+      };
+
+      services.agent-webhooks-db = {
+        metadata = { name = "agent-webhooks-db"; namespace = cfg.namespace; };
+        spec = {
+          selector.app = "agent-webhooks-db";
+          ports = [{ port = 5432; targetPort = "pg"; name = "pg"; }];
         };
       };
     } // lib.optionalAttrs wcfg.ingress.enable {

@@ -10,7 +10,8 @@ dependencies = [
   "pydantic",
   "pydantic-settings",
   "sqlalchemy",
-  "aiosqlite",   # default dev store; asyncpg for Postgres in prod
+  "aiosqlite",   # default dev store (SQLite)
+  "asyncpg",     # Postgres driver for the durable mapping store (prod)
   "pyjwt[crypto]", # GitHub App token minting for posting responses
 ]
 

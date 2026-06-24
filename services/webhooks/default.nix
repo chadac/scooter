@@ -20,6 +20,7 @@ python3Packages.buildPythonApplication {
     pydantic-settings
     sqlalchemy
     aiosqlite
+    asyncpg
     pyjwt
   ];
 

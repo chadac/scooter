@@ -4,19 +4,39 @@ import hmac
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class DatabaseSettings(BaseSettings):
-    """Conversation-mapping store. SQLite by default (dev); set DSN to Postgres
-    (postgresql+asyncpg://...) for multi-replica."""
+    """Conversation-mapping store. SQLite by default (dev). For a durable
+    Postgres store, either set DSN directly (postgresql+asyncpg://...) OR provide
+    DB_PASSWORD (+ optionally DB_HOST/DB_USER/DB_NAME/DB_PORT) and the DSN is
+    assembled — so the password can come from a k8s secretKeyRef without baking a
+    full connection string (with the password) into the manifest."""
 
     dsn: str = "sqlite+aiosqlite:////tmp/webhooks.db"
-    db_host: str = "local"  # informational, for logging
+    db_host: str = "local"  # also informational, for logging
+    db_port: int = 5432
+    db_user: str = "webhooks"
+    db_password: str = ""  # set (e.g. via secretKeyRef) -> Postgres DSN assembled
+    db_name: str = "webhooks"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
+
+    @model_validator(mode="after")
+    def _assemble_dsn(self) -> "DatabaseSettings":
+        # If a password is provided and DSN wasn't explicitly set to Postgres,
+        # build the asyncpg DSN from the components. (A DSN that already names a
+        # driver wins — explicit override.)
+        if self.db_password and not self.dsn.startswith("postgresql"):
+            self.dsn = (
+                f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+                f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            )
+        return self
 
 
 class WebhooksSettings(BaseSettings):
