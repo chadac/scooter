@@ -30,13 +30,22 @@ let
     text = builtins.readFile ./agent-broker.sh;
   };
 
+  # git-credential-broker: git credential helper that vends HTTPS git creds from
+  # the broker (per-request, short-lived). Name MUST be git-credential-broker so
+  # `git config credential.helper broker` resolves to it. See entrypoint.sh.
+  gitCredentialBroker = pkgs.writeShellApplication {
+    name = "git-credential-broker";
+    runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
+    text = builtins.readFile ./git-credential-broker.sh;
+  };
+
   # System tools available by default inside the sandbox.
   systemPackages = with pkgs; [
     bashInteractive coreutils findutils gnugrep gnused gawk
     git curl jq gnutar gzip util-linux
   ];
 
-  allPackages = systemPackages ++ [ agentBroker ] ++ extraPackages;
+  allPackages = systemPackages ++ [ agentBroker gitCredentialBroker ] ++ extraPackages;
 
   # rootfs: non-package files baked into the image (skills, dirs).
   rootfs = pkgs.runCommand "sandbox-rootfs" { } ''
