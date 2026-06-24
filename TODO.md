@@ -5,22 +5,30 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## In progress
 
-- [ ] **Chat-window reliability — live SSE + integrity checksum.**
+- [~] **Chat-window reliability — live SSE + integrity checksum.** SERVER DONE +
+  CLIENT lib done; UI reconciliation works in isolation but is flaky in the
+  shared-server e2e suite — needs a better render primitive before it lands.
   Bug: a webhook-spawned (or other-tab) conversation's agent reply doesn't show
-  in an open UI window until refresh. Root cause: the UI only uses the
-  HttpAgent `POST /agui` (run-scoped — streams only runs *it* starts) + a
-  one-shot `loadHistory` snapshot. It never subscribes to the persistent
-  `GET /conversations/:id/events` SSE (which replays history AND stays open for
-  live events).
-  - [x] Rolling integrity checksum module + contract tests (`integrity.ts`,
-        commit 857d49d). `checksum_n = sha256(checksum_{n-1} || canonical(event_n))`.
-  - [ ] Server: store becomes checksum authority; expose checksum on history +
-        on the live `/events` stream (enriched envelope on the dedicated SSE,
-        NOT on the @ag-ui events — the @ag-ui/client validates and would reject
-        extra fields).
-  - [ ] UI: subscribe to the live `/events` SSE for the selected conversation;
-        track the rolling checksum; on a `prevChecksum` mismatch, refetch
-        history until the chains agree (self-heal).
+  in an open UI window until refresh — the UI only streamed runs IT started.
+  - [x] Rolling integrity checksum module + tests (`integrity.ts`, 857d49d).
+  - [x] Server: store is the checksum authority (readEventsWithChecksum +
+        onAppend, folded in write order); GET /history returns the checksum;
+        new GET /conversations/:id/events.integrity replays + streams live with
+        checksums (plain JSON SSE, not @ag-ui-encoded). 404 on unknown conv so
+        the client stops reconnecting. (commits 77ef7f5, b712f20, 9cf97aa, 58c3844)
+        + nginx /agui+/conversations made SSE-safe (no buffering). 45/45 Tier 1.
+  - [x] integrityStream.ts client (subscribe, fold, checksum self-heal). VERIFIED
+        live against the real stack: every event link_ok, message present.
+  - [ ] **UI reconciliation is the open part.** Wiring the integrity stream into
+        RuntimeProvider via full `runtime.thread.reset()` works in a single e2e
+        run (the live-stream.spec test passes in isolation — the reported bug IS
+        fixed) but FLAKES in the full shared-webServer suite: reset() per-update
+        fights assistant-ui's own render, and each open page holds a long-lived
+        SSE that stresses the single-process test server. NEXT: use assistant-ui's
+        incremental `import()`/`append()` API instead of full reset(), so we
+        apply deltas rather than rebuilding the thread each update. The
+        RuntimeProvider + live-stream.spec + cleanState changes are left
+        UNCOMMITTED pending that (server side is committed + solid).
 
 - [x] **Durable webhooks mapping store (Postgres).** DONE — deployed + verified.
   The PR/Slack ↔ conversation mapping was SQLite on an emptyDir (wiped on every
