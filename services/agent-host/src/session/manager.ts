@@ -14,6 +14,15 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { SessionBridge, AguiEvent } from "../bridge.js";
 
+/** An event plus the rolling integrity checksum through it. `prevChecksum` is
+ *  the chain value before this event (so a client links each event to the one
+ *  before); `checksum` is the value through and including it. */
+export interface ChecksummedEvent {
+  event: AguiEvent;
+  prevChecksum: string;
+  checksum: string;
+}
+
 /** Provisions / suspends / resumes the per-conversation Sandbox. */
 export interface SandboxProvisioner {
   /** Cold-create a Sandbox: SA sandbox-{id}, workspace + conversation PVCs. */
@@ -39,6 +48,11 @@ export interface ConversationMeta {
 export interface ConversationStore {
   appendEvent(id: SessionId, event: AguiEvent): Promise<void>;
   readEvents(id: SessionId): AsyncIterable<AguiEvent>;
+  /** Like readEvents, but each item carries the rolling integrity checksum
+   *  through that event (and the previous one) so a streaming client can verify
+   *  the chain. Computed deterministically from the persisted log order, so it
+   *  survives a restart. Optional (in-memory test stores may skip it). */
+  readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
   /** Path on the conversation-state PVC where goose session data lives. */
   gooseStatePath(id: SessionId): string;
   /** Persist last-activity (ms epoch) so it survives restarts and is queryable

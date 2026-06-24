@@ -10,8 +10,9 @@ import { appendFile, mkdir, readFile, writeFile, readdir, rm } from "node:fs/pro
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
-import type { ConversationStore, ConversationMeta } from "./manager.js";
+import type { ConversationStore, ConversationMeta, ChecksummedEvent } from "./manager.js";
 import type { SessionId } from "../types.js";
+import { EMPTY_CHECKSUM, chainNext } from "../agui/integrity.js";
 
 export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
@@ -47,6 +48,15 @@ export function createFileConversationStore(root: string): ConversationStore {
       }
       for (const line of data.split("\n")) {
         if (line.trim()) yield JSON.parse(line) as AguiEvent;
+      }
+    },
+
+    async *readEventsWithChecksum(id): AsyncIterable<ChecksummedEvent> {
+      let prev = EMPTY_CHECKSUM;
+      for await (const event of this.readEvents(id)) {
+        const checksum = chainNext(prev, event);
+        yield { event, prevChecksum: prev, checksum };
+        prev = checksum;
       }
     },
 
