@@ -38,12 +38,30 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
-- [ ] **ACP-expanding tools — agent-presented option dropdown.** Give the agent
-  a tool to present a set of choices to the user as a dropdown/select in the UI,
-  and block until the user picks. Maps to an ACP request → AG-UI custom event →
-  assistant-ui renders a select → the choice posts back (similar plumbing to the
-  existing permission round-trip: `POST /conversations/:id/permission/:toolCallId`).
-  Likely a new AG-UI custom event type + a UI widget + a bridge tool handler.
+- [~] **ACP-expanding tools — agent-presented option dropdown.** SERVER DONE
+  (commit ec74448): goose's ACP session/request_permission is now a real blocking
+  round-trip — bridge emits PERMISSION_REQUEST {toolCallId,title,options}, blocks
+  the run, answerPermission(toolCallId,optionId) resolves it (selected|cancelled).
+  Reuses request_permission (carries rich/long asks via toolCall content + _meta,
+  e.g. AWS perms). 2 contract tests, 55/55 Tier 1.
+  - [ ] **UI is the open part.** KEY FINDING: don't invent a custom event/side
+        channel. assistant-ui's react-ag-ui has a NATIVE interrupt mechanism —
+        a run ends with `RUN_FINISHED { outcome: { outcome: "interrupt",
+        interrupts: Interrupt[] } }` (each Interrupt: id, reason
+        "confirmation"|"input_required"|"tool_call", message, responseSchema,
+        metadata) → populates `runtime.unstable_getPendingInterrupts()`; the UI
+        renders a response and calls `runtime.unstable_submitInterruptResponses(
+        [{interruptId, status:"resolved"|"cancelled", payload}])`, which resumes
+        the run via the next RunAgentInput's per-interrupt responses.
+        NEXT: reshape the server flow to ride this — when the agent calls
+        request_permission, end the run as an interrupt (not a custom event), and
+        accept the resume on the next /agui call instead of the bespoke
+        answerPermission POST. Then render inline buttons from
+        getPendingInterrupts. This is assistant-ui-internals-heavy (like the
+        parked integrity-UI work) — do it carefully, test-first.
+  - [ ] Slack-surfacing of permission requests (deferred): when a conversation
+        came from Slack (tracked in the webhooks store), also post the request +
+        options to the Slack thread so the user can respond there. Separate path.
 
 - [ ] **Broker permissions / approval system.** Today the broker is
   passthrough (any holder of a conversation's SA token can use any enabled
@@ -53,6 +71,11 @@ Running list of work items. Newest asks at the top of each section. See
   UI surface (likely reusing the permission/approval round-trip), and broker
   enforcement keyed on what's been granted per conversation. Bigger design —
   spec it out (research → design → tests → impl) before building.
+  REFERENCE: the OpenHands AWS permissions broker in
+  `~/code/gitlab.com/x.studio/devops/itops-infra/` (kubernetes/ + terraform/)
+  PROVISIONS IAM ROLES dynamically instead of static passthrough — mirror that
+  dynamic-provisioning pattern. The permission system may be dynamic, not a
+  fixed grant list.
 
 - [ ] **Show linked resources in the chat UI.** We already track conversation ↔
   external-resource links (`ConversationMap` / `ResourceLink`: github PR/issue,
