@@ -203,6 +203,28 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 204, json: null };
   });
 
+  // External resource links (the GitHub PR / Slack thread a conversation came
+  // from). The webhooks service POSTs them on create; the UI GETs them for the
+  // linked-resources panel.
+  r.get("/conversations/:id/links", async (ctx) => {
+    const links = (await store.listLinks?.(ctx.params.id)) ?? [];
+    return { json: { links } };
+  });
+
+  r.post("/conversations/:id/links", async (ctx) => {
+    const body = await ctx.body<{ source?: string; resourceType?: string; url?: string; title?: string }>();
+    if (!body.source || !body.resourceType) {
+      return { status: 400, json: { error: "source and resourceType required" } };
+    }
+    await store.addLink?.(ctx.params.id, {
+      source: body.source,
+      resourceType: body.resourceType,
+      url: body.url,
+      title: body.title,
+    });
+    return { status: 201, json: { ok: true } };
+  });
+
   // The broker calls this when an agent requests AWS access: raise an in-
   // conversation approval interrupt (Approve / Deny). The user's pick routes back
   // to the broker (approve/deny) via deps.resolveAwsRequest.

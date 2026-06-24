@@ -11,7 +11,7 @@ import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { createManagementApi } from "../../src/api/management.js";
-import type { Conversation, SessionManager, ConversationStore } from "../../src/session/manager.js";
+import type { Conversation, SessionManager, ConversationStore, ConversationLink } from "../../src/session/manager.js";
 import type { AguiServer } from "../../src/agui/server.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
@@ -58,12 +58,19 @@ function fakeSessions(): SessionManager {
 }
 
 function fakeStore(events: AguiEvent[]): ConversationStore {
+  const links = new Map<string, ConversationLink[]>();
   return {
     appendEvent: async () => {},
     async *readEvents() {
       yield* events;
     },
     gooseStatePath: (id) => `/state/${id}`,
+    async addLink(id, link) {
+      links.set(id, [...(links.get(id) ?? []), link]);
+    },
+    async listLinks(id) {
+      return links.get(id) ?? [];
+    },
   };
 }
 
@@ -184,6 +191,26 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerPermission: async () => {} });
     const { json } = await call(api, "GET", "/conversations/c1/history");
     expect((json as any).events).toHaveLength(2);
+  });
+
+  it("POST then GET /conversations/:id/links round-trips an external link", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const post = await call(api, "POST", "/conversations/c1/links", {
+      source: "github",
+      resourceType: "pull_request",
+      url: "https://github.com/example-org/example-app/pull/203",
+      title: "example-org/example-app #203",
+    });
+    expect(post.status).toBe(201);
+    const { json } = await call(api, "GET", "/conversations/c1/links");
+    expect((json as any).links).toHaveLength(1);
+    expect((json as any).links[0]).toMatchObject({ source: "github", resourceType: "pull_request" });
+  });
+
+  it("POST /conversations/:id/links rejects a missing source/type", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "POST", "/conversations/c1/links", { url: "x" });
+    expect(status).toBe(400);
   });
 
   it("DELETE /conversations/:id ends it", async () => {

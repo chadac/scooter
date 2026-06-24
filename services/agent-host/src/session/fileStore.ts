@@ -10,13 +10,14 @@ import { appendFile, mkdir, readFile, writeFile, readdir, rm } from "node:fs/pro
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
-import type { ConversationStore, ConversationMeta, ChecksummedEvent } from "./manager.js";
+import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
 import type { SessionId } from "../types.js";
 import { EMPTY_CHECKSUM, chainNext } from "../agui/integrity.js";
 
 export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
+  const linksPath = (id: SessionId) => join(root, id, "links.json");
   const ensureDir = (id: SessionId) => mkdir(join(root, id), { recursive: true });
 
   // Per-conversation write chain: appendEvent is fired-and-forgotten (void) for
@@ -110,6 +111,22 @@ export function createFileConversationStore(root: string): ConversationStore {
     async saveMeta(meta: ConversationMeta) {
       await ensureDir(meta.id);
       await writeFile(metaPath(meta.id), JSON.stringify(meta), "utf8");
+    },
+
+    async addLink(id: SessionId, link: ConversationLink) {
+      await ensureDir(id);
+      const existing = await this.listLinks!(id);
+      const key = (l: ConversationLink) => `${l.source}|${l.resourceType}|${l.url ?? l.title ?? ""}`;
+      if (existing.some((l) => key(l) === key(link))) return; // dedup
+      await writeFile(linksPath(id), JSON.stringify([...existing, link]), "utf8");
+    },
+
+    async listLinks(id: SessionId): Promise<ConversationLink[]> {
+      try {
+        return JSON.parse(await readFile(linksPath(id), "utf8")) as ConversationLink[];
+      } catch {
+        return [];
+      }
     },
 
     /** Permanently remove a conversation's persisted state (meta + event log +

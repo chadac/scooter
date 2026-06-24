@@ -7,6 +7,7 @@
  */
 
 import { sessionStore, useSessions } from "./sessions.js";
+import { LinkedResources } from "./LinkedResources.js";
 
 export function Sidebar() {
   const { sessions, currentId } = useSessions();
@@ -54,6 +55,9 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+      {/* The current conversation's external resources (GitHub PR / Slack thread
+          / …), collapsible. Hidden when there are none. */}
+      <LinkedResources />
     </aside>
   );
 }

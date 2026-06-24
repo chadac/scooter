@@ -102,6 +102,30 @@ async def _run_and_collect(payload: dict) -> str:
     return "".join(text_parts).strip()
 
 
+async def push_link(
+    conversation_id: str,
+    *,
+    source: str,
+    resource_type: str,
+    url: str | None = None,
+    title: str | None = None,
+) -> bool:
+    """Record an external resource link (the PR/issue/thread this conversation
+    came from) on the agent-host, so the UI's linked-resources panel can show it.
+    Best-effort — a failure must not break the webhook flow."""
+    base = settings.agent_host_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{base}/conversations/{conversation_id}/links",
+                json={"source": source, "resourceType": resource_type, "url": url, "title": title},
+            )
+            return resp.status_code in (200, 201)
+    except httpx.HTTPError:
+        logger.warning("push_link failed for %s (%s/%s)", conversation_id, source, resource_type)
+        return False
+
+
 async def get_conversation_status(conversation_id: str) -> str | None:
     """Status of a conversation via the agent-host management API."""
     base = settings.agent_host_url.rstrip("/")

@@ -99,6 +99,25 @@ describe("SessionManager", () => {
     expect(sessions.list()).toHaveLength(0);
   });
 
+  it("the file store dedups + persists external resource links", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      await store1.addLink!("c1", { source: "github", resourceType: "pull_request", url: "https://gh/pr/1", title: "PR #1" });
+      // Same link again -> deduped.
+      await store1.addLink!("c1", { source: "github", resourceType: "pull_request", url: "https://gh/pr/1", title: "PR #1" });
+      await store1.addLink!("c1", { source: "slack", resourceType: "thread", title: "#eng thread" });
+      expect(await store1.listLinks!("c1")).toHaveLength(2);
+
+      // A fresh store over the same dir sees the persisted links (survive restart).
+      const store2 = createFileConversationStore(root);
+      const links = await store2.listLinks!("c1");
+      expect(links.map((l) => l.source).sort()).toEqual(["github", "slack"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("conversations survive a restart (file store hydrate)", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {

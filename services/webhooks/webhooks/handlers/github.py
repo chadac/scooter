@@ -17,7 +17,7 @@ from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
-from ..agent_host_client import conversation_url, create_conversation, send_message
+from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..responses.github import post_github_comment, update_github_comment
 from .. import status_monitor
 
@@ -306,6 +306,14 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
         await db.store_conversation("github", res_type, res_id, conv_id)
         conv_link = conversation_url(conv_id)
+
+        # Surface the originating PR/issue in the UI's linked-resources panel.
+        gh_kind = "pull" if res_type == "pull_request" else "issues"
+        await push_link(
+            conv_id, source="github", resource_type=res_type,
+            url=f"https://github.com/{owner}/{repo_name}/{gh_kind}/{issue_number}",
+            title=f"{owner}/{repo_name} #{issue_number}",
+        )
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("github", res_type, res_id)

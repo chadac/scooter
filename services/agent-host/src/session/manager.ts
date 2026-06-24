@@ -44,6 +44,20 @@ export interface ConversationMeta {
   lastActivityAt: number;
 }
 
+/** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
+ *  MR, Slack thread, Jira ticket) — pushed by the webhooks service and shown in
+ *  the UI's linked-resources panel. */
+export interface ConversationLink {
+  /** "github" | "gitlab" | "slack" | "jira" | … (drives the icon). */
+  source: string;
+  /** "pull_request" | "issue" | "merge_request" | "thread" | "ticket" | … */
+  resourceType: string;
+  /** A clickable URL to the resource (when known). */
+  url?: string;
+  /** A short human label (e.g. "example-org/example-app #203", "#eng-help thread"). */
+  title?: string;
+}
+
 /** Durable conversation store (event log replay + goose state pointer). */
 export interface ConversationStore {
   appendEvent(id: SessionId, event: AguiEvent): Promise<void>;
@@ -72,6 +86,10 @@ export interface ConversationStore {
   /** Permanently remove a conversation's persisted state so an ended/deleted
    *  conversation does not reappear on the next hydrate(). Optional. */
   removeConversation?(id: SessionId): Promise<void>;
+  /** Record an external resource link for a conversation (deduped). Optional. */
+  addLink?(id: SessionId, link: ConversationLink): Promise<void>;
+  /** The conversation's external resource links (for the UI panel). Optional. */
+  listLinks?(id: SessionId): Promise<ConversationLink[]>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";

@@ -35,6 +35,32 @@ export interface ConversationView {
   lastActivityAt: number;
 }
 
+/** An external resource a conversation is linked to (GET /conversations/:id/links). */
+export interface ConversationLink {
+  source: string;       // "github" | "gitlab" | "slack" | "jira" | …
+  resourceType: string; // "pull_request" | "issue" | "thread" | …
+  url?: string;
+  title?: string;
+}
+
+/** Load a conversation's external resource links (the PR/issue/thread it came
+ *  from) for the linked-resources panel. */
+export async function loadLinks(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<ConversationLink[]> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/links`,
+      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) return [];
+    return ((await res.json()) as { links?: ConversationLink[] }).links ?? [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Load ALL conversations from the agent-host so the sidebar survives a page
  * refresh and every conversation is listed/searchable (not just the ones this

@@ -18,7 +18,7 @@ from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import require_relay_key, settings
-from ..agent_host_client import conversation_url, create_conversation, send_message
+from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..responses.slack import (
     add_slack_reaction,
     get_bot_user_id,
@@ -277,6 +277,12 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
         await db.store_conversation("slack", "thread", res_id, conv_id)
         conv_link = conversation_url(conv_id)
+
+        # Surface the originating Slack thread in the UI's linked-resources panel.
+        await push_link(
+            conv_id, source="slack", resource_type="thread",
+            title=f"{channel} thread",
+        )
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("slack", "thread", res_id)
