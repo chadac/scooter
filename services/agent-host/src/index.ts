@@ -32,8 +32,13 @@ export interface AgentHostConfig {
   port: number;
   namespace: string;
   sandboxImage: string;
-  /** Path on the conversation-state PVC where event logs / goose state live. */
+  /** Durable conversation state: the AG-UI event log (history/replay). On a PVC
+   *  so it survives agent-host restarts. */
   statePath: string;
+  /** Ephemeral scratch for the agent process: goose's per-conversation cwd
+   *  (sessions DB + .goosehints). The real work execs into the sandbox, so this
+   *  is throwaway — an emptyDir, NOT the durable PVC. */
+  scratchPath: string;
   /** ACP agent launch (goose). */
   agent: { command: string; args: string[]; env: Record<string, string> };
   /** Default model (GOOSE_MODEL) and the models offered for per-conversation
@@ -65,6 +70,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest",
     statePath: process.env.STATE_PATH ?? "/var/lib/agent-host/conversations",
+    scratchPath: process.env.SCRATCH_PATH ?? "/var/lib/agent-scratch",
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
@@ -218,7 +224,11 @@ export async function main(
     // ACP newSession hangs). The agent's *tool calls* still exec into the
     // sandbox via the ExecBackend. Give goose a per-conversation scratch dir on
     // the state volume.
-    const cwd = join(config.statePath, conversationId, "agent-cwd");
+    // goose's per-conversation cwd is EPHEMERAL scratch (sessions DB +
+    // .goosehints) — the agent's real file/terminal work execs into the sandbox
+    // via the ExecBackend, not here. So it lives under scratchPath (an emptyDir),
+    // NOT the durable state PVC. (The durable event log stays on statePath.)
+    const cwd = join(config.scratchPath, conversationId, "agent-cwd");
     mkdirSync(cwd, { recursive: true });
     // Inject the agent identity (Scooter) + skills as goose's .goosehints in its
     // cwd. Re-read on every conversation start, so editing the skills ConfigMap

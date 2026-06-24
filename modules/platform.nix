@@ -271,11 +271,15 @@ in
                   { name = "PORT"; value = "8080"; }
                   { name = "NAMESPACE"; value = cfg.namespace; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # Durable: the AG-UI event log (history) on the PVC.
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
-                  # goose persists its sessions DB + config under $HOME; the image
-                  # default ("/") is unwritable, which stalls `goose acp`'s
-                  # session/new. Point it at the writable state volume.
-                  { name = "HOME"; value = "/var/lib/agent-host/home"; }
+                  # Ephemeral scratch (emptyDir): goose's per-conversation cwd +
+                  # $HOME (sessions DB + .goosehints). The agent's real work execs
+                  # into the SANDBOX, so none of this is durable — keeping it off
+                  # the PVC avoids the SELinux/fsGroup subdir-context problems an
+                  # EBS volume hits, and the image's "/" default is unwritable.
+                  { name = "SCRATCH_PATH"; value = "/var/lib/agent-scratch"; }
+                  { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                   # Agent identity + skills: the agent-host writes these into the
                   # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
@@ -298,7 +302,10 @@ in
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; };
                 volumeMounts = [
+                  # Durable history (PVC).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
+                  # Ephemeral agent scratch (emptyDir): goose cwd + $HOME.
+                  { name = "scratch"; mountPath = "/var/lib/agent-scratch"; }
                   # The image's /tmp is read-only (nix store). goose needs a
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
@@ -307,9 +314,10 @@ in
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
               };
-              # Conversation-state PVC (Goose state + AG-UI event logs) + writable /tmp.
+              # Durable event-log PVC + ephemeral scratch/tmp emptyDirs.
               volumes = [
                 { name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }
+                { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
               ] ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; };
