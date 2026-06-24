@@ -159,6 +159,19 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Done (recent)
 
+- [x] **Deployed to the dev cluster** (2026-06-24): storage rename (agent-shared-db) +
+      new ui/agent-host/webhooks images (content-tagged, forced via `kubectl set
+      image`). Created `broker` DB on the new shared Postgres; deleted the orphaned
+      old `agent-webhooks-db` PVC/Deployment/Service. AWS broker held OFF at apply
+      time (IAM not imported yet — see memory `aws-broker-iam-import-approach`);
+      config keeps `aws.enable = true` as the intended end state. All 5 platform
+      pods healthy; chat.dev (401 auth-gated) + scooter.dev/webhooks (405 on GET)
+      both serving. Surfaced + fixed a real bug: **agent-host now uses Recreate
+      strategy** (commit 4278e3c) — the default RollingUpdate deadlocked on the RWO
+      agent-host-state PVC (Multi-Attach), new pod stuck ContainerCreating ~10min.
+      deployment commit 73d409c; broker image NOT rebuilt (its image build is blocked
+      by the pre-existing test-isolation failures — separate CLEANUP item).
+
 - [x] Agent option dropdown: AG-UI interrupt round-trip + InterruptPanel UI
       (commit 74b0566) — first assistant-ui UI feature landed green.
 - [x] Conversation titling: agent-assigned via a <title> marker the bridge
