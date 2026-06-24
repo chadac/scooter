@@ -22,14 +22,15 @@ const conv = (over: Partial<Conversation> = {}): Conversation => ({
   status: "running",
   title: "Hello",
   createdAt: 1000,
+  lastActivityAt: 1000,
   ...over,
 });
 
 function fakeSessions(): SessionManager {
   const store = new Map<string, Conversation>([["c1", conv()]]);
   return {
-    start: vi.fn(async (threadId) => {
-      const c = conv({ id: threadId, threadId, status: "running", title: "New chat" });
+    start: vi.fn(async (threadId, model) => {
+      const c = conv({ id: threadId, threadId, status: "running", title: "New chat", model });
       store.set(threadId, c);
       return c;
     }),
@@ -52,6 +53,7 @@ function fakeSessions(): SessionManager {
       const c = store.get(id);
       if (c) store.set(id, conv({ ...c, title }));
     }),
+    sweepIdle: vi.fn(async () => []),
   };
 }
 
@@ -119,9 +121,42 @@ describe("management API", () => {
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status, json } = await call(api, "POST", "/conversations", { threadId: "new1", title: "My task" });
     expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("new1");
+    expect(sessions.start).toHaveBeenCalledWith("new1", undefined);
     expect(sessions.setTitle).toHaveBeenCalledWith("new1", "My task");
     expect((json as any).title).toBe("My task");
+  });
+
+  it("GET /models returns the catalog", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      models: { default: "opus", available: ["opus", "sonnet"] },
+    });
+    const { status, json } = await call(api, "GET", "/models");
+    expect(status).toBe(200);
+    expect(json).toEqual({ default: "opus", available: ["opus", "sonnet"] });
+  });
+
+  it("POST /conversations honors an offered model", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({
+      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      models: { default: "opus", available: ["opus", "sonnet"] },
+    });
+    const { status, json } = await call(api, "POST", "/conversations", { threadId: "m1", model: "sonnet" });
+    expect(status).toBe(201);
+    expect(sessions.start).toHaveBeenCalledWith("m1", "sonnet");
+    expect((json as any).model).toBe("sonnet");
+  });
+
+  it("POST /conversations rejects an unknown model", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({
+      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      models: { default: "opus", available: ["opus", "sonnet"] },
+    });
+    const { status } = await call(api, "POST", "/conversations", { threadId: "m2", model: "haiku" });
+    expect(status).toBe(400);
+    expect(sessions.start).not.toHaveBeenCalled();
   });
 
   it("POST /conversations/:id/suspend + resume flip status", async () => {

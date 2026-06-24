@@ -37,6 +37,7 @@ function view(c: Conversation, now = Date.now()) {
     lastActivityAt: c.lastActivityAt,
     idleMs: Math.max(0, now - c.lastActivityAt),
     ageMs: Math.max(0, now - c.createdAt),
+    model: c.model,
     sandbox: { name: c.sandbox.name, namespace: c.sandbox.namespace },
   };
 }
@@ -47,18 +48,32 @@ export interface ManagementDeps {
   server: AguiServer;
   /** Answer a pending tool permission (wired to the bridge in index.ts). */
   answerPermission: (sessionId: string, toolCallId: string, optionId: string) => Promise<void>;
+  /** Model catalog for per-conversation selection: the host default + the set
+   *  offered to clients. Empty list = only the default is selectable. */
+  models?: { default?: string; available: string[] };
 }
 
 export function createManagementApi(deps: ManagementDeps): Router {
   const { sessions, store, server } = deps;
+  const models = deps.models ?? { available: [] };
   const r = createRouter();
+
+  // The model catalog — a UI populates its selector from this.
+  r.get("/models", () => ({
+    json: { default: models.default ?? null, available: models.available },
+  }));
 
   r.get("/conversations", () => ({ json: sessions.list().map(view) }));
 
   r.post("/conversations", async (ctx) => {
-    const body = await ctx.body<{ threadId?: string; title?: string }>();
+    const body = await ctx.body<{ threadId?: string; title?: string; model?: string }>();
     const threadId = body.threadId ?? randomUUID();
-    const conv = await sessions.start(threadId);
+    // Reject an unknown model rather than silently falling back, so a client
+    // mistake is visible.
+    if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
+      return { status: 400, json: { error: `unknown model: ${body.model}` } };
+    }
+    const conv = await sessions.start(threadId, body.model);
     if (body.title) sessions.setTitle(conv.id, body.title);
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });

@@ -49,11 +49,15 @@ export interface Conversation {
   readonly createdAt: number;
   /** ms epoch of the last prompt or agent event. Drives idle-suspend. */
   readonly lastActivityAt: number;
+  /** Model this conversation runs on (undefined = the host default). */
+  readonly model?: string;
 }
 
 export interface SessionManager {
-  /** Start a brand-new conversation (cold Sandbox + goose + PVCs). */
-  start(threadId: ThreadId): Promise<Conversation>;
+  /** Start a brand-new conversation (cold Sandbox + goose + PVCs). The optional
+   *  model selects which agent model this conversation runs on (validated by
+   *  the caller against the offered set). */
+  start(threadId: ThreadId, model?: string): Promise<Conversation>;
   /** Re-attach to / revive a suspended conversation (resume + replay log). */
   revive(id: SessionId): Promise<Conversation>;
   /** Forward a user prompt into the conversation's goose session. */
@@ -81,6 +85,8 @@ export interface SessionManager {
 export type BridgeFactory = (args: {
   conversationId: SessionId;
   sandbox: SandboxRef;
+  /** Per-conversation model override (undefined = host default). */
+  model?: string;
 }) => SessionBridge | undefined;
 
 export interface SessionManagerDeps {
@@ -100,6 +106,7 @@ interface Entry {
   title: string;
   createdAt: number;
   lastActivityAt: number;
+  model?: string;
 }
 
 /** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
@@ -122,6 +129,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     title: e.title,
     createdAt: e.createdAt,
     lastActivityAt: e.lastActivityAt,
+    model: e.model,
   });
 
   const touch = (e: Entry) => {
@@ -138,16 +146,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   };
 
   return {
-    async start(threadId) {
+    async start(threadId, model) {
       // The conversation id IS the thread id, so AG-UI events broadcast/persist
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
       // short DNS-safe hash of it.
       const id: SessionId = threadId;
       const sandbox = await provisioner.create(shortId(threadId));
-      const bridge = bridgeFactory?.({ conversationId: id, sandbox });
+      const bridge = bridgeFactory?.({ conversationId: id, sandbox, model });
       const entry: Entry = {
         id, threadId, sandbox, bridge, status: "running",
-        title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(),
+        title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(), model,
       };
       entries.set(id, entry);
       wireEventLog(entry);
@@ -161,7 +169,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       entry.sandbox = await provisioner.resume(entry.sandbox);
-      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox }) ?? entry.bridge;
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
       wireEventLog(entry);
       await entry.bridge?.start();

@@ -67,6 +67,48 @@ in
       description = "Run the dummy ACP agent (GOOSE_BIN=fake) — for cluster e2e.";
     };
 
+    serviceAccountRoleArn = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "arn:aws:iam::123456789012:role/agent-host";
+      description = ''
+        IRSA role ARN annotated onto the agent-host ServiceAccount
+        (eks.amazonaws.com/role-arn). The role's trust policy must allow
+        system:serviceaccount:<namespace>:agent-host. Used for Bedrock auth.
+      '';
+    };
+
+    agent = {
+      provider = mkOption {
+        type = types.str;
+        default = "aws_bedrock";
+        description = "GOOSE_PROVIDER for the real agent (e.g. aws_bedrock, anthropic).";
+      };
+      model = mkOption {
+        type = types.str;
+        default = "us.anthropic.claude-opus-4-7";
+        description = ''
+          Default GOOSE_MODEL (the model used when a conversation doesn't pick
+          one). For Bedrock, the cross-region inference-profile id.
+        '';
+      };
+      availableModels = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "us.anthropic.claude-opus-4-7" "us.anthropic.claude-sonnet-4-6" ];
+        description = ''
+          Models offered for per-conversation selection (AGENT_AVAILABLE_MODELS,
+          comma-separated). The UI/management API lets a conversation override
+          the default per-prompt. Empty = only the default model.
+        '';
+      };
+      region = mkOption {
+        type = types.str;
+        default = "us-east-1";
+        description = "AWS_REGION for the agent process (Bedrock region).";
+      };
+    };
+
     idleSuspendMs = mkOption {
       type = types.int;
       default = 30 * 60 * 1000;
@@ -86,7 +128,12 @@ in
       };
 
       serviceAccounts.agent-host = {
-        metadata = { name = "agent-host"; namespace = cfg.namespace; };
+        metadata = {
+          name = "agent-host";
+          namespace = cfg.namespace;
+        } // lib.optionalAttrs (cfg.serviceAccountRoleArn != null) {
+          annotations."eks.amazonaws.com/role-arn" = cfg.serviceAccountRoleArn;
+        };
       };
 
       # The agent-host provisions per-conversation Sandboxes/SAs/PVCs and execs
@@ -139,7 +186,19 @@ in
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
-                ] ++ lib.optional cfg.fakeAgent
+                ] ++ lib.optionals (!cfg.fakeAgent) [
+                  # Real `goose acp` on Bedrock (or another provider). The agent
+                  # process inherits the pod's IRSA identity via the AWS SDK
+                  # web-identity chain — no static keys.
+                  { name = "GOOSE_PROVIDER"; value = cfg.agent.provider; }
+                  { name = "GOOSE_MODEL"; value = cfg.agent.model; }
+                  { name = "AWS_REGION"; value = cfg.agent.region; }
+                  { name = "AWS_DEFAULT_REGION"; value = cfg.agent.region; }
+                ] ++ lib.optional (!cfg.fakeAgent && cfg.agent.availableModels != [ ])
+                  # Models offered for per-conversation selection (the management
+                  # API/UI may override GOOSE_MODEL per conversation).
+                  { name = "AGENT_AVAILABLE_MODELS"; value = lib.concatStringsSep "," cfg.agent.availableModels; }
+                ++ lib.optional cfg.fakeAgent
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; };

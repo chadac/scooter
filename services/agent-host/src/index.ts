@@ -32,6 +32,10 @@ export interface AgentHostConfig {
   statePath: string;
   /** ACP agent launch (goose). */
   agent: { command: string; args: string[]; env: Record<string, string> };
+  /** Default model (GOOSE_MODEL) and the models offered for per-conversation
+   *  selection. A conversation may override the model; unset = default only. */
+  model?: string;
+  availableModels: string[];
   /** Idle-suspend: suspend conversations idle longer than this (ms). 0 = off. */
   idleSuspendMs: number;
   /** How often the idle sweep runs (ms). */
@@ -56,10 +60,27 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
     fakeSandbox: process.env.FAKE_SANDBOX === "1" || useFakeAgent,
+    model: process.env.GOOSE_MODEL,
+    availableModels: (process.env.AGENT_AVAILABLE_MODELS ?? "")
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean),
     agent: useFakeAgent
       ? { command: process.execPath, args: [fakeAgentPath], env: {} }
       : { command: process.env.GOOSE_BIN ?? "goose", args: ["acp"], env: bedrockEnv() },
   };
+}
+
+/** Resolve the model for a conversation: an explicit pick (if it's an offered
+ *  model) else the configured default. Guards against arbitrary model strings. */
+export function resolveModel(
+  requested: string | undefined,
+  config: Pick<AgentHostConfig, "model" | "availableModels">,
+): string | undefined {
+  if (requested && (config.availableModels.includes(requested) || requested === config.model)) {
+    return requested;
+  }
+  return config.model;
 }
 
 /** No-op provisioner for local UI testing (no cluster). */
@@ -76,13 +97,19 @@ function createNoopProvisioner(): SandboxProvisioner {
   };
 }
 
-/** Pass AWS/Bedrock config through to goose if present. */
+/** Pass AWS/Bedrock config through to goose if present. Includes the IRSA
+ *  web-identity vars (AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE) that the EKS
+ *  pod-identity webhook injects — goose's AWS SDK chain uses them to assume the
+ *  pod's role for Bedrock, so no static keys are needed in-cluster. */
 function bedrockEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of [
     "GOOSE_PROVIDER", "GOOSE_MODEL",
     "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    // IRSA (EKS pod identity) — the credential source in-cluster.
+    "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_STS_REGIONAL_ENDPOINTS",
+    "AWS_ROLE_SESSION_NAME",
   ]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
@@ -103,10 +130,10 @@ export async function main(
   const sessions = createSessionManager({
     provisioner,
     store,
-    bridgeFactory: ({ conversationId, sandbox }) => {
+    bridgeFactory: ({ conversationId, sandbox, model }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
-      return makeBridge(conversationId, sandbox, config);
+      return makeBridge(conversationId, sandbox, config, model);
     },
   });
 
@@ -129,6 +156,7 @@ export async function main(
       sessions,
       store,
       server,
+      models: { default: config.model, available: config.availableModels },
       answerPermission: async (sessionId, toolCallId, optionId) => {
         // Permission answering is wired through the bridge in a later pass;
         // the route exists so the API surface is complete.
@@ -162,7 +190,7 @@ export async function main(
 
   // --- helpers ---
 
-  function makeBridge(conversationId: string, sandbox: SandboxRef, cfg: AgentHostConfig) {
+  function makeBridge(conversationId: string, sandbox: SandboxRef, cfg: AgentHostConfig, model?: string) {
     // In fake mode there is no pod, so the agent's tool calls run as local
     // subprocesses; in cluster mode they exec into the sandbox pod via the K8s
     // exec API (resolved on first use). The ACP client (goose) is created by the
@@ -170,11 +198,14 @@ export async function main(
     const exec = createSandboxExecBackend(
       config.fakeSandbox ? createLocalSandboxApiClient() : deferredSandboxApi(sandbox),
     );
+    // Per-conversation model override: GOOSE_MODEL in the agent's launch env.
+    const resolved = resolveModel(model, cfg);
+    const agentEnv = resolved ? { ...cfg.agent.env, GOOSE_MODEL: resolved } : cfg.agent.env;
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/etc/agent-sandbox/skills", agent: cfg.agent, sandbox },
       exec,
       acpClient: () =>
-        createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: cfg.agent.env, exec }),
+        createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
     });
 
     // Mirror bridge events to UI subscribers.
