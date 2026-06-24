@@ -67,14 +67,26 @@ export async function loadLinks(
  * browser tab created in memory).
  */
 export async function loadConversations(config: AgentHostConfig): Promise<ConversationView[]> {
+  return (await loadConversationsResult(config)).conversations;
+}
+
+/**
+ * Like loadConversations, but reports whether the server was REACHABLE — so a
+ * caller can distinguish "the agent-host is down/restarting" (ok=false) from
+ * "the server is up and genuinely has no conversations" (ok=true, []). The
+ * initial-load retry uses this to keep retrying only while the server is down.
+ */
+export async function loadConversationsResult(
+  config: AgentHostConfig,
+): Promise<{ ok: boolean; conversations: ConversationView[] }> {
   try {
     const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations`, {
       headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
     });
-    if (!res.ok) return [];
-    return (await res.json()) as ConversationView[];
+    if (!res.ok) return { ok: false, conversations: [] };
+    return { ok: true, conversations: (await res.json()) as ConversationView[] };
   } catch {
-    return [];
+    return { ok: false, conversations: [] };
   }
 }
 
