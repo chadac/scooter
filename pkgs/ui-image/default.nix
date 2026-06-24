@@ -8,10 +8,15 @@
 # agent-host Service. AGENT_HOST_URL is templated in at container start.
 
 let
-  # nginx needs these dirs writable at runtime; create them in the image.
+  # nginx needs these dirs writable at runtime + a passwd with the worker user
+  # (it getpwnam("nobody")s on start; the minimal image has no /etc/passwd).
   nginxDirs = pkgs.runCommand "ui-nginx-dirs" { } ''
-    mkdir -p $out/var/log/nginx $out/var/cache/nginx $out/tmp $out/var/run
+    mkdir -p $out/var/log/nginx $out/var/cache/nginx $out/tmp $out/var/run $out/etc
     chmod 1777 $out/tmp
+    echo 'root:x:0:0:root:/root:/bin/sh' > $out/etc/passwd
+    echo 'nobody:x:65534:65534:nobody:/nonexistent:/bin/false' >> $out/etc/passwd
+    echo 'root:x:0:' > $out/etc/group
+    echo 'nogroup:x:65534:' >> $out/etc/group
   '';
 
   # nginx.conf with a ${AGENT_HOST_URL} placeholder substituted at start.
