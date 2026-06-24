@@ -277,6 +277,29 @@ in
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };
       };
+    } // lib.optionalAttrs cfg.ingress.enable {
+      # DNS-only companion Ingress: external-dns runs --source=ingress (NOT the
+      # Traefik IngressRoute CRD), so the standard Ingress is what registers the
+      # hostname in Route53. The IngressRoute below does the actual routing +
+      # TLS + auth. (Mirrors the openhands env-manager-dns pattern.)
+      ingresses.agent-host-dns = {
+        metadata = {
+          name = "agent-host-dns";
+          namespace = cfg.namespace;
+          annotations."external-dns.alpha.kubernetes.io/hostname" = cfg.ingress.host;
+        };
+        spec = {
+          ingressClassName = "traefik";
+          rules = [{
+            host = cfg.ingress.host;
+            http.paths = [{
+              path = "/";
+              pathType = "Prefix";
+              backend.service = { name = "agent-host"; port.number = 8080; };
+            }];
+          }];
+        };
+      };
     };
 
     # Public ingress (opt-in). Traefik IngressRoute is a CRD, so it goes through
