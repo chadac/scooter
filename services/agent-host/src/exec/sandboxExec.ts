@@ -79,7 +79,15 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
           // A failed exec (e.g. transient WS error) must NOT reject — goose's
           // terminal/wait_for_exit would surface "Internal error" and lose the
           // run. Surface it as terminal output + a non-zero exit instead.
-          const msg = `exec failed: ${err instanceof Error ? err.message : String(err)}`;
+          const detail =
+            err instanceof Error
+              ? err.message
+              : typeof err === "object" && err !== null
+                ? JSON.stringify(err)
+                : String(err);
+          // eslint-disable-next-line no-console
+          console.error("[exec] spawn execute failed:", detail);
+          const msg = `exec failed: ${detail}`;
           buffered += msg;
           for (const cb of outputCbs) cb(msg);
           exit = { exitCode: 1 };

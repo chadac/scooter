@@ -62,16 +62,31 @@ export async function connectSandbox(
 
 async function resolvePodName(kc: KubeConfig, ref: SandboxRef): Promise<string> {
   const core = kc.makeApiClient(CoreV1Api);
-  const pods = await core.listNamespacedPod({
-    namespace: ref.namespace,
-    labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
-  });
-  const running = pods.items.find((p) => p.status?.phase === "Running");
-  const pod = running ?? pods.items[0];
-  if (!pod?.metadata?.name) {
-    throw new Error(`no pod found for sandbox ${ref.namespace}/${ref.name}`);
+  // Wait for a RUNNING + Ready pod. A freshly-provisioned sandbox may still be
+  // ContainerCreating when the agent's first tool call arrives; exec'ing a
+  // not-ready pod fails (an empty-object WS rejection that surfaces as goose's
+  // "terminal Internal error"). Poll briefly until the pod is execable.
+  const deadline = Date.now() + 90_000;
+  let lastName: string | undefined;
+  for (;;) {
+    const pods = await core.listNamespacedPod({
+      namespace: ref.namespace,
+      labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
+    });
+    const ready = pods.items.find(
+      (p) =>
+        p.status?.phase === "Running" &&
+        (p.status?.containerStatuses ?? []).every((c) => c.ready),
+    );
+    if (ready?.metadata?.name) return ready.metadata.name;
+    lastName = pods.items.find((p) => p.status?.phase === "Running")?.metadata?.name ?? lastName;
+    if (Date.now() > deadline) {
+      // Fall back to any Running pod (or fail) rather than hang forever.
+      if (lastName) return lastName;
+      throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}`);
+    }
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  return pod.metadata.name;
 }
 
 export function createK8sSandboxApiClient(
@@ -119,9 +134,23 @@ export function createK8sSandboxApiClient(
               exitCode: exitCodeFromStatus(status),
             }),
           );
-          ws.on("error", reject);
+          ws.on("error", (e: unknown) => {
+            // eslint-disable-next-line no-console
+            console.error(
+              "[k8sExec] ws error:",
+              e instanceof Error ? e.message : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
+            );
+            reject(e);
+          });
         })
-        .catch(reject);
+        .catch((e: unknown) => {
+          // eslint-disable-next-line no-console
+          console.error(
+            "[k8sExec] exec() rejected:",
+            e instanceof Error ? `${e.message}\n${e.stack}` : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
+          );
+          reject(e);
+        });
     });
 
   return {
