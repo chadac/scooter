@@ -206,11 +206,19 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; };
-                volumeMounts = [{ name = "state"; mountPath = "/var/lib/agent-host"; }];
+                volumeMounts = [
+                  { name = "state"; mountPath = "/var/lib/agent-host"; }
+                  # The image's /tmp is read-only (nix store). goose needs a
+                  # writable /tmp for session/new temp files — mount one.
+                  { name = "tmp"; mountPath = "/tmp"; }
+                ];
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
               };
-              # Conversation-state PVC (Goose state + AG-UI event logs).
-              volumes = [{ name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }];
+              # Conversation-state PVC (Goose state + AG-UI event logs) + writable /tmp.
+              volumes = [
+                { name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }
+                { name = "tmp"; emptyDir = { }; }
+              ];
             };
           };
         };
