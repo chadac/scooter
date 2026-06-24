@@ -21,12 +21,39 @@ import type { AcpClient, SessionUpdate } from "./acp/client.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
 
+/** An AG-UI interrupt: a point where the run pauses for a user response (a
+ *  permission/option choice). Matches @ag-ui/core's Interrupt. `metadata.options`
+ *  carries the choices the UI renders. */
+export interface AguiInterrupt {
+  id: string;
+  /** "confirmation" | "input_required" | "tool_call" | custom. */
+  reason: string;
+  message?: string;
+  toolCallId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** RUN_FINISHED outcome: a normal success, or an interrupt awaiting a response. */
+export type AguiRunOutcome =
+  | { type: "success" }
+  | { type: "interrupt"; interrupts: AguiInterrupt[] };
+
 // AG-UI event union (subset used here; full set per AG-UI spec).
 export type AguiEvent =
   // RUN_STARTED and RUN_FINISHED both REQUIRE threadId per the AG-UI schema —
   // the @ag-ui/client validates incoming events and rejects a missing threadId.
   | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId }
-  | { type: "RUN_FINISHED"; threadId: ThreadId; runId: RunId; result?: unknown }
+  | {
+      type: "RUN_FINISHED";
+      threadId: ThreadId;
+      runId: RunId;
+      result?: unknown;
+      /** When present with outcome "interrupt", the run paused awaiting a user
+       *  response (a permission/option choice). assistant-ui surfaces these as
+       *  pending interrupts; the user's answer resumes via the next run's
+       *  RunAgentInput.resume[]. */
+      outcome?: AguiRunOutcome;
+    }
   | { type: "RUN_ERROR"; message: string; code?: string }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
@@ -42,19 +69,10 @@ export type AguiEvent =
   | { type: "REASONING_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "REASONING_MESSAGE_END"; messageId: string }
   | { type: "REASONING_END"; messageId: string }
-  // The agent (goose) requests the user to choose an option (ACP
-  // session/request_permission). The run BLOCKS until answered. The UI renders
-  // the options as inline buttons; the answer resolves the blocked request.
-  | {
-      type: "PERMISSION_REQUEST";
-      toolCallId: string;
-      /** Human-readable description of what's being requested (the tool's title
-       *  / a permission summary). */
-      title: string;
-      options: Array<{ optionId: string; name: string; kind: string }>;
-    }
-  // Emitted once the request is answered (or cancelled) so a reattaching/late UI
-  // knows the request is settled and renders the chosen option (disabled).
+  // Emitted once a permission/option request is answered (or cancelled) so a
+  // reattaching/late UI (history replay) knows the request is settled and which
+  // option was chosen. The REQUEST itself rides RUN_FINISHED's interrupt outcome
+  // (assistant-ui's native interrupt mechanism), not a bespoke event.
   | { type: "PERMISSION_RESOLVED"; toolCallId: string; optionId: string | null };
 
 /** A user prompt entering the run (maps to ACP session/prompt). */
@@ -165,6 +183,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Per-run mutable mapping state for translating ACP updates -> AG-UI events.
   interface RunState {
     runId: RunId;
+    /** The thread this run belongs to (needed for RUN_STARTED/FINISHED events,
+     *  which the @ag-ui client validates require a threadId). */
+    threadId: ThreadId;
     // The currently-open assistant text message, if any.
     openText?: string;
     // The currently-open reasoning message, if any.
@@ -294,24 +315,51 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // answerPermission() resolves. The text/reasoning currently streaming is
       // closed first so the request renders as its own affordance.
       acpClient.onPermissionRequest(async (req) => {
-        if (currentRun) {
-          closeOpenText(currentRun);
-          closeOpenReasoning(currentRun);
+        const run = currentRun;
+        // Close any open text/reasoning so the run is well-formed before it pauses.
+        if (run) {
+          closeOpenText(run);
+          closeOpenReasoning(run);
         }
+        // Pause the run as an AG-UI INTERRUPT: RUN_FINISHED with outcome
+        // "interrupt" carrying this request. assistant-ui surfaces it as a pending
+        // interrupt and resumes via the next run's RunAgentInput.resume[]. The
+        // ACP requestPermission call stays blocked here until answerPermission().
         const optionId = await new Promise<string | null>((resolve) => {
           pendingPermissions.set(req.toolCallId, {
             resolve,
             validOptions: new Set(req.options.map((o) => o.optionId)),
           });
           emit({
-            type: "PERMISSION_REQUEST",
-            toolCallId: req.toolCallId,
-            title: req.title ?? "The agent needs your choice",
-            options: req.options,
+            type: "RUN_FINISHED",
+            threadId: run?.threadId ?? sessionId,
+            runId: run?.runId ?? "run",
+            outcome: {
+              type: "interrupt",
+              interrupts: [
+                {
+                  id: req.toolCallId,
+                  reason: "confirmation",
+                  message: req.title ?? "The agent needs your choice",
+                  toolCallId: req.toolCallId,
+                  // The choices the UI renders + answers with.
+                  metadata: { options: req.options },
+                },
+              ],
+            },
           });
         });
         pendingPermissions.delete(req.toolCallId);
-        emit({ type: "PERMISSION_RESOLVED", toolCallId: req.toolCallId, optionId });
+        // PERSIST-ONLY: PERMISSION_RESOLVED is OUR record for history replay, not
+        // a standard AG-UI event — broadcasting it to the @ag-ui client would be
+        // rejected (invalid event type). The store logs it; the live UI already
+        // reflects the answer via assistant-ui's interrupt resolution.
+        persist({ type: "PERMISSION_RESOLVED", toolCallId: req.toolCallId, optionId });
+        // Resume: a fresh RUN_STARTED so the continued turn is well-formed.
+        if (run) {
+          emit({ type: "RUN_STARTED", threadId: run.threadId, runId: run.runId });
+          run.ended = false;
+        }
         return optionId ? { optionId } : { cancelled: true as const };
       });
       started = true;
@@ -319,7 +367,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     async prompt(input: PromptInput): Promise<RunId> {
       const runId = `run-${(runCounter += 1)}`;
-      const st: RunState = { runId, toolMessage: new Map() };
+      const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map() };
 
       // Emit RUN_STARTED before any awaiting so the UI sees the run begin even
       // if agent startup is slow or fails (e.g. goose needs a model provider).

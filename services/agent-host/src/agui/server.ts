@@ -37,6 +37,15 @@ export interface AguiServer {
   onPrompt(handler: (sessionId: SessionId, input: RunAgentInput) => Promise<void>): void;
   /** Answer a pending permission request (toolCallId -> optionId). */
   onPermission(handler: (sessionId: SessionId, toolCallId: string, optionId: string) => Promise<void>): void;
+  /** Resume a paused run: the user answered an interrupt via RunAgentInput.resume.
+   *  status "cancelled" -> the request is cancelled; otherwise payload carries the
+   *  chosen optionId. */
+  onResume(
+    handler: (
+      sessionId: SessionId,
+      entry: { interruptId: string; status: "resolved" | "cancelled"; payload?: unknown },
+    ) => Promise<void>,
+  ): void;
   broadcast(sessionId: SessionId, event: AguiEvent): void;
   /** Replay the persisted event log to a newly-attached connection. */
   onAttach(handler: (sessionId: SessionId, conn: AguiConnection) => Promise<void>): void;
@@ -61,6 +70,12 @@ export function createAguiServer(): AguiServer {
     | undefined;
   let permissionHandler:
     | ((sessionId: SessionId, toolCallId: string, optionId: string) => Promise<void>)
+    | undefined;
+  let resumeHandler:
+    | ((
+        sessionId: SessionId,
+        entry: { interruptId: string; status: "resolved" | "cancelled"; payload?: unknown },
+      ) => Promise<void>)
     | undefined;
   let attachHandler:
     | ((sessionId: SessionId, conn: AguiConnection) => Promise<void>)
@@ -137,6 +152,9 @@ export function createAguiServer(): AguiServer {
         threadId: string;
         runId?: string;
         messages?: Array<{ role: string; content?: string }>;
+        /** Per-interrupt responses (assistant-ui resumes a paused run with these
+         *  instead of a new user message). */
+        resume?: Array<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>;
       };
       const sessionId = input.threadId;
       res.writeHead(200, {
@@ -152,6 +170,14 @@ export function createAguiServer(): AguiServer {
       set.add(res);
       runScoped.add(res);
       req.on("close", () => set!.delete(res));
+
+      // A RESUME (answer to a pending interrupt) reconnects to the still-blocked
+      // run and unpauses it — its continued events stream back over THIS SSE. We
+      // do NOT start a new prompt for a resume.
+      if (input.resume && input.resume.length > 0) {
+        for (const r of input.resume) await resumeHandler?.(sessionId, r);
+        return;
+      }
 
       // The latest user message is the prompt text.
       const lastUser = [...(input.messages ?? [])].reverse().find((m) => m.role === "user");
@@ -226,6 +252,9 @@ export function createAguiServer(): AguiServer {
     },
     onPermission(handler) {
       permissionHandler = handler;
+    },
+    onResume(handler) {
+      resumeHandler = handler;
     },
     broadcast,
     onAttach(handler) {

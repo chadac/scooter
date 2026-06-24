@@ -59,6 +59,30 @@ class FakeAgent implements Agent {
     const u = (update: Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"]) =>
       this.conn.sessionUpdate({ sessionId, update });
 
+    // A "?<prompt>" message is a test directive: present an option choice via the
+    // ACP permission round-trip (which the bridge surfaces as an AG-UI interrupt)
+    // and report the picked option. Exercises the agent-presents-options path.
+    if (userText.startsWith("?")) {
+      const question = userText.slice(1).trim() || "Choose an option";
+      const res = (await this.conn.requestPermission({
+        sessionId,
+        toolCall: { toolCallId: "choose_1", title: question } as never,
+        options: [
+          { optionId: "red", name: "Red", kind: "allow_once" },
+          { optionId: "green", name: "Green", kind: "allow_once" },
+          { optionId: "blue", name: "Blue", kind: "allow_once" },
+        ],
+      } as never)) as { outcome: { outcome: string; optionId?: string } };
+      const picked =
+        res.outcome.outcome === "selected" ? res.outcome.optionId : "(cancelled)";
+      const reply = `🤖 (dummy agent) you picked: ${picked}`;
+      for (const word of reply.split(" ")) {
+        await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
+        await sleep(20);
+      }
+      return { stopReason: "end_turn" };
+    }
+
     // A "!<command>" message is a test directive: run <command> verbatim in the
     // sandbox (real exec path) and report its output. Anything else gets a
     // friendly echo. The ! mechanism is the e2e test harness — it lets a UI

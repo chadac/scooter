@@ -79,7 +79,7 @@ describe("ACP -> AG-UI bridge", () => {
     expect(userContent?.delta).toBe("hi");
   });
 
-  it("blocks on a permission/option request and resolves on the user's pick", async () => {
+  it("pauses as an interrupt on a permission request and resumes on the user's pick", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([
       {
@@ -102,28 +102,40 @@ describe("ACP -> AG-UI bridge", () => {
       exec,
       acpClient: acpClientFromTransport(agent.transport, exec),
     });
-    const events = collect(bridge);
-    // Answer as soon as the request is emitted (the run is blocked until then).
+    const events = collect(bridge); // broadcast (what the @ag-ui client sees)
+    // PERMISSION_RESOLVED is persist-only (not a standard AG-UI event) -> separate
+    // persist collector.
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
+    // The request rides RUN_FINISHED's interrupt outcome; answer when it appears.
     bridge.onEvent((e) => {
-      if (e.type === "PERMISSION_REQUEST") {
-        // The request carries the options + a human-readable title.
-        expect(e.title).toMatch(/S3 write/);
-        expect(e.options.map((o) => o.optionId)).toEqual(["allow", "deny"]);
-        bridge.answerPermission(e.toolCallId, "allow");
+      if (e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt") {
+        const intr = e.outcome.interrupts[0];
+        expect(intr.message).toMatch(/S3 write/);
+        const options = intr.metadata?.options as Array<{ optionId: string }>;
+        expect(options.map((o) => o.optionId)).toEqual(["allow", "deny"]);
+        bridge.answerPermission(intr.id, "allow");
       }
     });
 
     await bridge.start();
     await bridge.prompt({ threadId: "t1", text: "grant S3 access" });
 
-    const types = events.map((e) => e.type);
-    expect(types).toContain("PERMISSION_REQUEST");
-    expect(types).toContain("PERMISSION_RESOLVED");
-    const resolved = events.find((e) => e.type === "PERMISSION_RESOLVED") as
+    // The run PAUSED with an interrupt, then RESUMED (a second RUN_STARTED) and
+    // FINISHED for real.
+    const interrupt = events.find(
+      (e) => e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt",
+    );
+    expect(interrupt).toBeTruthy();
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2); // paused + resumed
+    // PERMISSION_RESOLVED must NOT hit the @ag-ui-validated broadcast stream
+    // (it's not a standard event type — the client would reject it).
+    expect(events.some((e) => e.type === "PERMISSION_RESOLVED")).toBe(false);
+    const resolved = persisted.find((e) => e.type === "PERMISSION_RESOLVED") as
       | { optionId: string | null }
       | undefined;
     expect(resolved?.optionId).toBe("allow");
-    // The run continued past the (now-answered) request.
+    // The continued turn streamed past the (now-answered) request.
     const shown = events
       .filter((e): e is { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string } => e.type === "TEXT_MESSAGE_CONTENT")
       .map((e) => e.delta)
@@ -149,18 +161,19 @@ describe("ACP -> AG-UI bridge", () => {
       exec,
       acpClient: acpClientFromTransport(agent.transport, exec),
     });
-    const events = collect(bridge);
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
     bridge.onEvent((e) => {
-      if (e.type === "PERMISSION_REQUEST") {
+      if (e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt") {
         // A garbage optionId must not forward a bad selection — it cancels.
-        const ok = bridge.answerPermission(e.toolCallId, "not-an-option");
+        const ok = bridge.answerPermission(e.outcome.interrupts[0].id, "not-an-option");
         expect(ok).toBe(true); // the pending request WAS found
       }
     });
     await bridge.start();
     await bridge.prompt({ threadId: "t1", text: "go" });
 
-    const resolved = events.find((e) => e.type === "PERMISSION_RESOLVED") as
+    const resolved = persisted.find((e) => e.type === "PERMISSION_RESOLVED") as
       | { optionId: string | null }
       | undefined;
     expect(resolved?.optionId).toBeNull(); // cancelled

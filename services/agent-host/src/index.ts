@@ -198,6 +198,20 @@ export async function main(
     sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId);
   });
 
+  // assistant-ui resumes a paused run by POSTing /agui with resume[] — route the
+  // answer to the conversation's bridge (interruptId == the request's toolCallId).
+  server.onResume(async (sessionId, entry) => {
+    const bridge = sessions.get(sessionId)?.bridge;
+    if (!bridge) return;
+    // cancelled -> empty optionId (the bridge treats an unknown/empty id as a
+    // cancel); resolved -> the chosen optionId from the payload.
+    const optionId =
+      entry.status === "cancelled"
+        ? ""
+        : ((entry.payload as { optionId?: string } | undefined)?.optionId ?? "");
+    bridge.answerPermission(entry.interruptId, optionId);
+  });
+
   server.onAttach(async (sessionId, conn) => {
     for await (const event of store.readEvents(sessionId)) conn.send(event);
   });

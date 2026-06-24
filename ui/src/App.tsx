@@ -6,6 +6,7 @@
 
 import { RuntimeProvider } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
+import { InterruptPanel } from "./InterruptPanel.js";
 import { Thread } from "@/components/assistant-ui/thread";
 
 export function App() {
@@ -18,8 +19,13 @@ export function App() {
         </header>
         <div className="flex min-h-0 flex-1">
           <Sidebar />
-          <main className="min-h-0 flex-1">
-            <Thread />
+          <main className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1">
+              <Thread />
+            </div>
+            {/* Agent option/permission requests (AG-UI interrupts) appear here as
+                inline buttons, between the thread and the composer. */}
+            <InterruptPanel />
           </main>
         </div>
       </div>
