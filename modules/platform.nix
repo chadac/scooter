@@ -234,7 +234,11 @@ in
             # Exec is how the ExecBackend runs the agent's commands in the pod.
             apiGroups = [ "" ];
             resources = [ "pods/exec" ];
-            verbs = [ "create" ];
+            # `get` AND `create`: the WebSocket exec stream (client-node, kubectl)
+            # opens with an HTTP GET upgrade, which RBAC checks as `get pods/exec`
+            # — `create` alone passes `can-i create pods/exec` but the real exec
+            # 403s ("cannot get resource pods/exec").
+            verbs = [ "get" "create" ];
           }
         ];
       };

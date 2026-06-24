@@ -4,7 +4,7 @@
  * No in-pod server: commands run via the exec subresource, like upstream
  * examples/sandboxed-tools. `run`/`spawn` exec directly; file ops use cat / tee.
  *
- * Requires `create pods/exec` (+ get pods) RBAC on the agent-host SA.
+ * Requires `get,create pods/exec` (+ get pods) RBAC — the WS exec upgrade is an HTTP GET on the agent-host SA.
  */
 
 import { Writable, Readable, PassThrough } from "node:stream";
