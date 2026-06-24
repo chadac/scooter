@@ -35,9 +35,13 @@ def github() -> Provider:
     return Provider(
         name="github",
         credential=credential,
+        # ORDER MATTERS: specific routes (git-credentials) MUST be registered
+        # before the HttpProxy's `/{path:path}` catch-all, otherwise the proxy
+        # shadows /github/git-credentials and forwards it to api.github.com
+        # (404). FastAPI matches routes in registration order.
         transports=[
-            HttpProxy(upstream="https://api.github.com"),
             GitCredential(host="github.com", username="x-access-token"),
+            HttpProxy(upstream="https://api.github.com"),
         ],
         enabled=enabled,
     )

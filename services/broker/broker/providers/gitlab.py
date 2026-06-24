@@ -17,9 +17,10 @@ def gitlab() -> Provider:
         credential=StaticTokenSource(
             token=settings.gitlab_token, kind="header", header_name="PRIVATE-TOKEN"
         ),
+        # Specific routes before the HttpProxy catch-all (see github.py).
         transports=[
-            HttpProxy(upstream="https://gitlab.com/api/v4"),
             GitCredential(host="gitlab.com"),
+            HttpProxy(upstream="https://gitlab.com/api/v4"),
         ],
         enabled=bool(settings.gitlab_token),
     )
