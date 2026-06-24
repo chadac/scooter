@@ -103,14 +103,27 @@ Running list of work items. Newest asks at the top of each section. See
         pollutes. Make provider mounting read settings at factory time (or a
         per-test settings fixture) so `just`/CI run the whole suite clean.
 
-- [ ] **Storage consolidation onto a single store.** We have several stores: the
-  webhooks mapping DB (`agent-webhooks-db` Postgres), the agent-host conversation
-  state (PVC: JSONL event log + meta), and the new AWS permissions store.
-  Step 1 (in progress): the AWS broker store reuses the SAME Postgres instance as
-  webhooks (separate `broker` database) — no second Postgres pod. Step 2: rename
-  `agent-webhooks-db` to a neutral shared name (it's no longer webhooks-specific).
-  Step 3 (evaluate): move the agent-host conversation store onto Postgres too, so
-  there's ONE durable backend to operate/back up.
+- [x] **Storage consolidation onto a single store.** DONE (commit 06d6c4a +
+  deployment 004f898). We had several stores: the webhooks mapping DB, the agent-host
+  conversation state (PVC: JSONL event log + meta), and the AWS permissions store.
+  - [x] Step 1: the AWS broker store reuses the SAME Postgres instance as webhooks
+        (separate `broker` database) — no second Postgres pod. (Done earlier.)
+  - [x] Step 2: renamed `agent-webhooks-db` → `agent-shared-db` (neutral — the
+        instance hosts multiple logical DBs). Renamed the PVC/Deployment/Service +
+        selectors and every host default across the webhooks + broker modules and
+        the broker Python config/store. The password Secret keeps its legacy name
+        (externally-managed cluster secret). nix build .#webhooks green; base
+        manifest renders clean; broker shows only the known pre-existing isolation
+        failures (45 passed). DEPLOY: a fresh `agent-shared-db` PVC is created on
+        apply — the old `agent-webhooks-db` PVC/pod is orphaned (acceptable: no
+        data to preserve, per the user); the `broker` DB still needs CREATE on the
+        new instance.
+  - [x] Step 3 (evaluated → SKIP): move the conversation store onto Postgres.
+        Decided against: the conversation store is an append-only JSONL event log
+        with a rolling integrity checksum folded in write order — the file store
+        models that naturally; SQL would be Postgres-as-a-worse-filesystem (opaque
+        event blobs) and wouldn't even reduce backends (the per-conversation
+        sandbox PVCs remain either way). Not worth the complexity.
 
 - [x] **Show linked resources in the chat UI.** DONE (commit b99046d). The
   webhook pushes the conversation's external resource link (GitHub PR/issue,
