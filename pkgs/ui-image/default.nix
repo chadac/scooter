@@ -65,6 +65,9 @@ in
   image = n2c.buildImage {
     name = "agent-sandbox-ui";
     tag = "latest";
+    # Split nginx (stable) from the static build (changes on every UI edit) so a
+    # UI change only re-pushes the small dist layer, not nginx + its deps.
+    maxLayers = 25;
     copyToRoot = [
       (pkgs.buildEnv {
         name = "ui-root";
