@@ -47,7 +47,7 @@ class BrokerSettings(BaseSettings):
     aws_role_ttl_hours: int = 12
     # Store DSN components (shared Postgres; SQLite default). Mirrors webhooks.
     aws_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-aws.db"
-    aws_db_host: str = "agent-webhooks-db.agent-manager.svc.cluster.local"
+    aws_db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
     aws_db_port: int = 5432
     aws_db_user: str = "webhooks"
     aws_db_password: str = ""

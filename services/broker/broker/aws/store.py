@@ -1,6 +1,6 @@
 """Permission-request store — durable record of the request lifecycle.
 
-Backed by the SHARED Postgres (`agent-webhooks-db` in the agent-manager
+Backed by the SHARED Postgres (`agent-shared-db` in the agent-manager
 namespace) on a SEPARATE database (`broker`), via SQLAlchemy async + asyncpg —
 the same DSN-from-components + secretKeyRef pattern the webhooks store uses.
 SQLite (aiosqlite) is the local/dev default. See the storage-consolidation TODO
@@ -31,7 +31,7 @@ class StoreConfig:
     postgresql+asyncpg://{user}:{pw}@{host}:{port}/{name}. Default = SQLite."""
 
     dsn: str = "sqlite+aiosqlite:////tmp/broker-aws.db"
-    db_host: str = "agent-webhooks-db.agent-manager.svc.cluster.local"
+    db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
     db_port: int = 5432
     db_user: str = "webhooks"   # shared instance's user; DB name differs
     db_password: str = ""

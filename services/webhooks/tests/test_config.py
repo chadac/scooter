@@ -12,13 +12,13 @@ def test_default_is_sqlite(monkeypatch):
 def test_db_password_assembles_postgres_dsn(monkeypatch):
     monkeypatch.delenv("DSN", raising=False)
     monkeypatch.setenv("DB_PASSWORD", "s3cr3t")
-    monkeypatch.setenv("DB_HOST", "agent-webhooks-db.agent-manager.svc.cluster.local")
+    monkeypatch.setenv("DB_HOST", "agent-shared-db.agent-manager.svc.cluster.local")
     monkeypatch.setenv("DB_USER", "webhooks")
     monkeypatch.setenv("DB_NAME", "webhooks")
     dsn = DatabaseSettings().dsn
     assert dsn == (
         "postgresql+asyncpg://webhooks:s3cr3t@"
-        "agent-webhooks-db.agent-manager.svc.cluster.local:5432/webhooks"
+        "agent-shared-db.agent-manager.svc.cluster.local:5432/webhooks"
     )
 
 

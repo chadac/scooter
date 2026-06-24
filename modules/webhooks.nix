@@ -184,7 +184,7 @@ in
                   # Durable Postgres store. The DSN is assembled app-side from
                   # these components so the password comes from a secretKeyRef
                   # (never a full connection string in the manifest).
-                  { name = "DB_HOST"; value = "agent-webhooks-db.${cfg.namespace}.svc.cluster.local"; }
+                  { name = "DB_HOST"; value = "agent-shared-db.${cfg.namespace}.svc.cluster.local"; }
                   { name = "DB_PORT"; value = "5432"; }
                   { name = "DB_NAME"; value = wcfg.postgres.database; }
                   { name = "DB_USER"; value = wcfg.postgres.user; }
@@ -223,11 +223,15 @@ in
       };
     }
     (lib.mkIf wcfg.postgres.enable {
-      # Durable mapping store: a single-replica Postgres backed by a PVC, so the
-      # PR/Slack <-> conversation mappings survive pod/node churn. The app reads
-      # DB_PASSWORD from the same secret used here.
-      persistentVolumeClaims.agent-webhooks-db = {
-        metadata = { name = "agent-webhooks-db"; namespace = cfg.namespace; };
+      # Shared durable Postgres for the platform — a single-replica instance
+      # backed by a PVC. It hosts MULTIPLE logical databases (the webhooks
+      # PR/Slack <-> conversation mappings here, plus the AWS broker's `broker`
+      # DB), so the name is deliberately neutral (`agent-shared-db`, not
+      # webhooks-specific). The webhooks app provisions this pod; the broker
+      # connects to the same Service. The app reads DB_PASSWORD from the same
+      # secret used here.
+      persistentVolumeClaims.agent-shared-db = {
+        metadata = { name = "agent-shared-db"; namespace = cfg.namespace; };
         spec = {
           accessModes = [ "ReadWriteOnce" ];
           resources.requests.storage = wcfg.postgres.storage;
@@ -236,16 +240,16 @@ in
         };
       };
 
-      deployments.agent-webhooks-db = {
-        metadata = { name = "agent-webhooks-db"; namespace = cfg.namespace; };
+      deployments.agent-shared-db = {
+        metadata = { name = "agent-shared-db"; namespace = cfg.namespace; };
         spec = {
           replicas = 1;
           # Recreate (not RollingUpdate): a single RWO PVC can't be mounted by
           # two pods, so the old pod must fully release it before the new one.
           strategy.type = "Recreate";
-          selector.matchLabels.app = "agent-webhooks-db";
+          selector.matchLabels.app = "agent-shared-db";
           template = {
-            metadata.labels.app = "agent-webhooks-db";
+            metadata.labels.app = "agent-shared-db";
             spec = {
               containers.postgres = {
                 name = "postgres";
@@ -270,17 +274,17 @@ in
               };
               volumes = [{
                 name = "data";
-                persistentVolumeClaim.claimName = "agent-webhooks-db";
+                persistentVolumeClaim.claimName = "agent-shared-db";
               }];
             };
           };
         };
       };
 
-      services.agent-webhooks-db = {
-        metadata = { name = "agent-webhooks-db"; namespace = cfg.namespace; };
+      services.agent-shared-db = {
+        metadata = { name = "agent-shared-db"; namespace = cfg.namespace; };
         spec = {
-          selector.app = "agent-webhooks-db";
+          selector.app = "agent-shared-db";
           ports = [{ port = 5432; targetPort = "pg"; name = "pg"; }];
         };
       };

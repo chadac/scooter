@@ -106,9 +106,9 @@ in
             };
           });
           default = null;
-          description = "Secret + key for the Postgres password (shared agent-webhooks-db). null = SQLite (dev).";
+          description = "Secret + key for the Postgres password (shared agent-shared-db). null = SQLite (dev).";
         };
-        host = mkOption { type = types.str; default = "agent-webhooks-db.${cfg.namespace}.svc.cluster.local"; description = "Postgres host."; };
+        host = mkOption { type = types.str; default = "agent-shared-db.${cfg.namespace}.svc.cluster.local"; description = "Postgres host (shared instance)."; };
         name = mkOption { type = types.str; default = "broker"; description = "Database name (separate DB on the shared instance)."; };
         user = mkOption { type = types.str; default = "webhooks"; description = "Database user."; };
       };

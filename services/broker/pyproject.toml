@@ -14,7 +14,7 @@ dependencies = [
   # AWS permissions broker (broker/aws/):
   "boto3",        # IAM/STS provisioning
   "sqlalchemy",   # permission-request store
-  "asyncpg",      # Postgres driver (shared agent-webhooks-db)
+  "asyncpg",      # Postgres driver (shared agent-shared-db)
   "aiosqlite",    # SQLite driver (local/dev default)
 ]
 
