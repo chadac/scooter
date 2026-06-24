@@ -38,27 +38,18 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
-- [~] **ACP-expanding tools — agent-presented option dropdown.** SERVER DONE
-  (commit ec74448): goose's ACP session/request_permission is now a real blocking
-  round-trip — bridge emits PERMISSION_REQUEST {toolCallId,title,options}, blocks
-  the run, answerPermission(toolCallId,optionId) resolves it (selected|cancelled).
-  Reuses request_permission (carries rich/long asks via toolCall content + _meta,
-  e.g. AWS perms). 2 contract tests, 55/55 Tier 1.
-  - [ ] **UI is the open part.** KEY FINDING: don't invent a custom event/side
-        channel. assistant-ui's react-ag-ui has a NATIVE interrupt mechanism —
-        a run ends with `RUN_FINISHED { outcome: { outcome: "interrupt",
-        interrupts: Interrupt[] } }` (each Interrupt: id, reason
-        "confirmation"|"input_required"|"tool_call", message, responseSchema,
-        metadata) → populates `runtime.unstable_getPendingInterrupts()`; the UI
-        renders a response and calls `runtime.unstable_submitInterruptResponses(
-        [{interruptId, status:"resolved"|"cancelled", payload}])`, which resumes
-        the run via the next RunAgentInput's per-interrupt responses.
-        NEXT: reshape the server flow to ride this — when the agent calls
-        request_permission, end the run as an interrupt (not a custom event), and
-        accept the resume on the next /agui call instead of the bespoke
-        answerPermission POST. Then render inline buttons from
-        getPendingInterrupts. This is assistant-ui-internals-heavy (like the
-        parked integrity-UI work) — do it carefully, test-first.
+- [x] **ACP-expanding tools — agent-presented option dropdown.** DONE end-to-end
+  (commits ec74448 server scaffold → 74b0566 full interrupt feature). The agent
+  presents options and blocks on the pick using assistant-ui's NATIVE interrupt
+  mechanism: a request_permission pauses the run as RUN_FINISHED {outcome:
+  interrupt, interrupts:[{id, reason, message, metadata:{options}}]}; the UI's
+  InterruptPanel reads runtime.unstable_getPendingInterrupts() → inline buttons →
+  unstable_submitInterruptResponses() → POST /agui resume[] → bridge resumes the
+  blocked ACP call. KEY FIX: PERMISSION_RESOLVED is persist-only (not a standard
+  AG-UI event — broadcasting it makes the @ag-ui client reject the stream).
+  fakeAgent "?<prompt>" exercises it. 2 contract + 2 e2e tests, all green, 55/55
+  Tier 1. (First assistant-ui UI feature to land green — the native interrupt
+  primitive was the right call.)
   - [ ] Slack-surfacing of permission requests (deferred): when a conversation
         came from Slack (tracked in the webhooks store), also post the request +
         options to the Slack thread so the user can respond there. Separate path.
@@ -112,6 +103,8 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Done (recent)
 
+- [x] Agent option dropdown: AG-UI interrupt round-trip + InterruptPanel UI
+      (commit 74b0566) — first assistant-ui UI feature landed green.
 - [x] Conversation titling: agent-assigned via a <title> marker the bridge
       extracts + strips (commit 8089cd3).
 - [x] Durable webhooks mapping store (Postgres), deployed + verified.
