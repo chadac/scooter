@@ -63,7 +63,7 @@ test.describe("session selector & titles", () => {
     await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 10_000 });
   });
 
-  test("clicking a session switches to it", async ({ chat, page }) => {
+  test("clicking a session swaps the thread (other conversation's messages go away)", async ({ chat, page }) => {
     await chat.open();
     await chat.send("alpha conversation");
     await chat.waitForReply(/dummy agent/i);
@@ -71,8 +71,52 @@ test.describe("session selector & titles", () => {
     await chat.send("beta conversation");
     await chat.waitForReply(/dummy agent/i);
 
-    // Switch back to the first; its user message should reappear.
-    await page.locator(sidebar.item).first().click();
-    await expect(chat.userMessages().first()).toContainText(/alpha conversation/i, { timeout: 30_000 });
+    // While on beta, beta is shown and alpha is NOT (a broken swap leaves the
+    // old thread's messages on screen).
+    await expect(chat.userMessages().filter({ hasText: /beta conversation/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await expect(chat.userMessages().filter({ hasText: /alpha conversation/i })).toHaveCount(0);
+
+    // Switch back to alpha; now alpha is shown and beta is gone.
+    await page.locator(sidebar.item).filter({ hasText: /alpha conversation/i }).first().click();
+    await expect(chat.userMessages().filter({ hasText: /alpha conversation/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await expect(chat.userMessages().filter({ hasText: /beta conversation/i })).toHaveCount(0);
+  });
+
+  test("deleting the current conversation actually changes the thread view (not a no-op)", async ({
+    chat,
+    page,
+  }) => {
+    await chat.open();
+    await chat.send("first survivor");
+    await chat.waitForReply(/dummy agent/i);
+    await page.locator(sidebar.newButton).click();
+    await chat.send("doomed conversation");
+    await chat.waitForReply(/dummy agent/i);
+    await expect(page.locator(sidebar.item)).toHaveCount(2);
+
+    // The current (doomed) conversation's message is on screen.
+    await expect(chat.userMessages().filter({ hasText: /doomed conversation/i })).toHaveCount(1);
+
+    // Delete the CURRENT conversation. deleteSession selects a remaining one,
+    // so the view must swap to the survivor — the doomed message must vanish
+    // and the survivor's message must appear (the "close is a no-op" bug).
+    await page
+      .locator(sidebar.item)
+      .filter({ hasText: /doomed/i })
+      .first()
+      .locator(sidebar.deleteButton)
+      .click();
+
+    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 10_000 });
+    await expect(chat.userMessages().filter({ hasText: /doomed conversation/i })).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await expect(chat.userMessages().filter({ hasText: /first survivor/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
   });
 });

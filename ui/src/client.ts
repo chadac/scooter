@@ -35,3 +35,64 @@ export async function listSessions(
   if (!res.ok) return [];
   return res.json();
 }
+
+/** A minimal AG-UI message (what HttpAgent.initialMessages expects). */
+export interface AguiMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+
+/**
+ * Load a conversation's history as AG-UI messages, so switching to (or reviving)
+ * it shows its prior turns. The agent-host stores the conversation as a stream
+ * of AG-UI events; fold the TEXT_MESSAGE_* events back into one message per
+ * messageId (tool/reasoning events are rendered live, not replayed as text).
+ */
+export async function loadHistory(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<AguiMessage[]> {
+  const url = `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(
+    conversationId,
+  )}/history`;
+  let events: Array<Record<string, unknown>>;
+  try {
+    const res = await fetch(url, {
+      headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { events?: Array<Record<string, unknown>> };
+    events = body.events ?? [];
+  } catch {
+    return [];
+  }
+
+  // Fold TEXT_MESSAGE_START -> CONTENT* -> END into one message per id, in order.
+  const order: string[] = [];
+  const byId = new Map<string, AguiMessage>();
+  for (const e of events) {
+    const id = e.messageId as string | undefined;
+    switch (e.type) {
+      case "TEXT_MESSAGE_START": {
+        if (!id) break;
+        const role = (e.role as AguiMessage["role"]) ?? "assistant";
+        if (!byId.has(id)) {
+          byId.set(id, { id, role, content: "" });
+          order.push(id);
+        }
+        break;
+      }
+      case "TEXT_MESSAGE_CONTENT": {
+        if (!id) break;
+        const m = byId.get(id);
+        if (m) m.content += (e.delta as string) ?? "";
+        break;
+      }
+      // TEXT_MESSAGE_END / tool / reasoning events need no folding here.
+      default:
+        break;
+    }
+  }
+  return order.map((id) => byId.get(id)!).filter((m) => m.content.trim() !== "");
+}

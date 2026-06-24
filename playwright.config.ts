@@ -16,7 +16,20 @@ export default defineConfig({
     trace: "on-first-retry",
     video: "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        // On Nix the npm-downloaded browser revision often doesn't match the
+        // playwright-driver build; PW_CHROME points at the nix chromium binary
+        // (set in the dev shell / CI). Unset elsewhere -> default download.
+        ...(process.env.PW_CHROME
+          ? { launchOptions: { executablePath: process.env.PW_CHROME } }
+          : {}),
+      },
+    },
+  ],
 
   webServer: [
     {

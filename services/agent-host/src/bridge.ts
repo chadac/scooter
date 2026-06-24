@@ -26,7 +26,7 @@ export type AguiEvent =
   | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId }
   | { type: "RUN_FINISHED"; threadId: ThreadId; runId: RunId; result?: unknown }
   | { type: "RUN_ERROR"; message: string; code?: string }
-  | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" }
+  | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "TEXT_MESSAGE_END"; messageId: string }
   | { type: "TOOL_CALL_START"; toolCallId: string; toolCallName: string }
@@ -237,6 +237,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Emit RUN_STARTED before any awaiting so the UI sees the run begin even
       // if agent startup is slow or fails (e.g. goose needs a model provider).
       emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
+
+      // Persist the user's prompt as a message so the conversation history is
+      // complete — switching to / reviving a conversation must replay the user
+      // turns too, not just the agent's replies. (The live UI already shows the
+      // message it sent; this makes it durable.)
+      const userMsgId = nextId("user");
+      emit({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
+      emit({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
+      emit({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
 
       try {
         if (!started || !acpSessionId) await this.start();

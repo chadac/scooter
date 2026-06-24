@@ -41,12 +41,26 @@ describe("ACP -> AG-UI bridge", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "RUN_STARTED",
+      // The user's prompt is persisted as a user message (so history replay /
+      // conversation switching shows the user turn, not just the agent reply).
+      "TEXT_MESSAGE_START",
+      "TEXT_MESSAGE_CONTENT",
+      "TEXT_MESSAGE_END",
+      // ...then the agent's streamed reply.
       "TEXT_MESSAGE_START",
       "TEXT_MESSAGE_CONTENT",
       "TEXT_MESSAGE_CONTENT",
       "TEXT_MESSAGE_END",
       "RUN_FINISHED",
     ]);
+
+    // The first text message is the user's prompt; the second the assistant's.
+    const starts = events.filter((e) => e.type === "TEXT_MESSAGE_START") as Array<{ role: string }>;
+    expect(starts.map((s) => s.role)).toEqual(["user", "assistant"]);
+    const userContent = events.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as
+      | { delta: string }
+      | undefined;
+    expect(userContent?.delta).toBe("hi");
   });
 
   it("maps tool_call + tool_call_update to ToolCall start/args/result", async () => {

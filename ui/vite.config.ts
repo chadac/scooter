@@ -12,10 +12,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Proxy the AG-UI endpoint to the agent-host in dev to avoid CORS.
-    proxy: {
-      "/agui": { target: process.env.AGENT_HOST_URL ?? "http://localhost:8080", changeOrigin: true },
-      "/sessions": { target: process.env.AGENT_HOST_URL ?? "http://localhost:8080", changeOrigin: true },
-    },
+    // Proxy the agent-host API to avoid CORS in dev. Mirror the prod nginx
+    // proxy (pkgs/ui-image) so the same relative paths work in both.
+    proxy: Object.fromEntries(
+      ["/agui", "/sessions", "/conversations", "/models"].map((p) => [
+        p,
+        { target: process.env.AGENT_HOST_URL ?? "http://localhost:8080", changeOrigin: true },
+      ]),
+    ),
   },
 });
