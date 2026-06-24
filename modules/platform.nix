@@ -175,6 +175,14 @@ in
             metadata.labels.app = "agent-host";
             spec = {
               serviceAccountName = "agent-host";
+              # The state PVC (EBS/ext4) is owned root:root with restrictive
+              # access; the agent-host process can't write its per-conversation
+              # dirs without an fsGroup that the kubelet uses to relabel/chgrp
+              # the volume. 0 = root group (the uid the container runs as).
+              securityContext = {
+                fsGroup = 0;
+                fsGroupChangePolicy = "OnRootMismatch";
+              };
               containers.agent-host = {
                 name = "agent-host";
                 image = cfg.agentHostImage;
