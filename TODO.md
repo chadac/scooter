@@ -54,13 +54,14 @@ Running list of work items. Newest asks at the top of each section. See
         came from Slack (tracked in the webhooks store), also post the request +
         options to the Slack thread so the user can respond there. Separate path.
 
-- [~] **Broker permissions / approval system (AWS).** PoC stages 1-3 DONE
-  (commits dc5b56c, 73ed00c). Dynamic, approval-gated AWS access — an agent
-  requests a scoped IAM policy, a human approves, the broker provisions a
-  short-lived dynamic IAM role (cross-account assume-role + ExternalId +
-  permission boundary + chained STS) and vends ephemeral STS creds. Ported from
-  the OpenHands agent-token-broker (`~/code/gitlab.com/x.studio/devops/itops-infra/`).
-  See docs/AWS_PERMISSIONS_BROKER.md.
+- [~] **Broker permissions / approval system (AWS) — CODE COMPLETE, awaiting a
+  live test with the user (the only remaining step).** Dynamic, approval-gated
+  AWS access — an agent requests a scoped IAM policy, a human approves in the
+  conversation, the broker provisions a short-lived dynamic IAM role (assume-role
+  + ExternalId + permission boundary + chained STS) and vends ephemeral STS creds
+  (consumed via ~/.aws/config credential_process). 98 tests green across both
+  repos. Ported from the OpenHands agent-token-broker. See
+  docs/AWS_PERMISSIONS_BROKER.md.
   - [x] Research + design + red-first tests: `broker/aws/` (models, policy [the
         security core, FULLY ported — 19 guardrail tests GREEN], iam/store/service
         boilerplate, aws-permissions transport). 10 lifecycle tests RED-first
