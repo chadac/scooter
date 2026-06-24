@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 
 import { createRouter, type Router } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
-import type { ConversationStore } from "../session/manager.js";
+import type { ConversationStore, ChecksummedEvent } from "../session/manager.js";
 import type { AguiServer } from "../agui/server.js";
 import type { AguiEvent } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
@@ -133,6 +133,58 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/events", async (ctx) => {
     // SSE — the server owns the connection; returns void (no JSON result).
     await server.subscribeSSE(ctx.params.id, ctx.res);
+  });
+
+  // Integrity stream: replay the full log (each event + its rolling checksum),
+  // then stay open and forward live appends with their checksums. Plain JSON SSE
+  // (NOT the @ag-ui encoder — this carries our integrity envelope, which the
+  // @ag-ui client would reject). The UI uses this to render reliably AND to
+  // self-heal: if a live event's prevChecksum != the checksum it holds, it has a
+  // gap and refetches history. Single ordered stream → no replay-vs-live race.
+  r.get("/conversations/:id/events.integrity", async (ctx) => {
+    const id = ctx.params.id;
+    const { res } = ctx;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const send = (frame: unknown) => res.write(`data: ${JSON.stringify(frame)}\n\n`);
+
+    // Subscribe to live appends FIRST so nothing emitted during replay is lost;
+    // buffer them until replay is done, then flush + go live. Dedup by checksum
+    // (an event seen in replay won't be re-sent live).
+    const seen = new Set<string>();
+    let live = false;
+    const buffer: ChecksummedEvent[] = [];
+    const unsub = store.onAppend?.((evId, c) => {
+      if (evId !== id) return;
+      if (!live) buffer.push(c);
+      else if (!seen.has(c.checksum)) {
+        seen.add(c.checksum);
+        send({ kind: "event", ...c });
+      }
+    });
+
+    // Replay persisted history with checksums.
+    if (store.readEventsWithChecksum) {
+      for await (const c of store.readEventsWithChecksum(id)) {
+        seen.add(c.checksum);
+        send({ kind: "event", ...c });
+      }
+    }
+    // Flush anything that arrived during replay, then go live.
+    for (const c of buffer) {
+      if (!seen.has(c.checksum)) {
+        seen.add(c.checksum);
+        send({ kind: "event", ...c });
+      }
+    }
+    live = true;
+    // Mark the end of the initial replay so the client knows it's caught up.
+    send({ kind: "synced" });
+
+    ctx.req.on("close", () => unsub?.());
   });
 
   r.post("/conversations/:id/permission/:toolCallId", async (ctx) => {

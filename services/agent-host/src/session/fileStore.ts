@@ -26,6 +26,33 @@ export function createFileConversationStore(root: string): ConversationStore {
   // Serialize all appends per conversation so on-disk order == emission order.
   const writeChains = new Map<SessionId, Promise<void>>();
 
+  // Per-conversation rolling integrity checksum, folded in the SAME write-chain
+  // order as the on-disk log (so live checksums match history). Seeded from disk
+  // on first touch after a restart. `onAppend` subscribers receive the
+  // checksummed event after it's durably written — this is the live stream the
+  // UI verifies against.
+  const checksums = new Map<SessionId, string>();
+  const seeded = new Set<SessionId>();
+  const appendListeners = new Set<(id: SessionId, c: ChecksummedEvent) => void>();
+
+  const seedChecksum = async (id: SessionId): Promise<string> => {
+    if (seeded.has(id)) return checksums.get(id) ?? EMPTY_CHECKSUM;
+    let acc = EMPTY_CHECKSUM;
+    try {
+      const data = await readFile(logPath(id), "utf8");
+      for (const line of data.split("\n")) {
+        if (line.trim()) acc = chainNext(acc, JSON.parse(line) as AguiEvent);
+      }
+    } catch {
+      /* no log yet -> empty seed */
+    }
+    if (!seeded.has(id)) {
+      checksums.set(id, acc);
+      seeded.add(id);
+    }
+    return checksums.get(id)!;
+  };
+
   return {
     appendEvent(id, event) {
       const prev = writeChains.get(id) ?? Promise.resolve();
@@ -33,10 +60,23 @@ export function createFileConversationStore(root: string): ConversationStore {
         .catch(() => {}) // a prior failure must not break the chain
         .then(async () => {
           await ensureDir(id);
+          // Seed the rolling checksum from the log as it exists BEFORE this
+          // append (lazy, once after a restart) — so prevChecksum is the chain
+          // through the prior events, not including the one we're about to write.
+          const prevChecksum = await seedChecksum(id);
           await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
+          // Fold this event in (write order) and notify live subscribers.
+          const checksum = chainNext(prevChecksum, event);
+          checksums.set(id, checksum);
+          for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
         });
       writeChains.set(id, next);
       return next;
+    },
+
+    onAppend(cb) {
+      appendListeners.add(cb);
+      return () => appendListeners.delete(cb);
     },
 
     async *readEvents(id): AsyncIterable<AguiEvent> {

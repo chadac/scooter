@@ -53,6 +53,11 @@ export interface ConversationStore {
    *  the chain. Computed deterministically from the persisted log order, so it
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
+  /** Subscribe to events as they are durably appended, each carrying its rolling
+   *  checksum (folded in persisted order). This is the authority the live
+   *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's
+   *  own prompt), exactly once, in order. Returns an unsubscribe fn. Optional. */
+  onAppend?(cb: (id: SessionId, event: ChecksummedEvent) => void): () => void;
   /** Path on the conversation-state PVC where goose session data lives. */
   gooseStatePath(id: SessionId): string;
   /** Persist last-activity (ms epoch) so it survives restarts and is queryable
