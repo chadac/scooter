@@ -41,7 +41,21 @@ export type AguiEvent =
   | { type: "REASONING_MESSAGE_START"; messageId: string; role: "reasoning" }
   | { type: "REASONING_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "REASONING_MESSAGE_END"; messageId: string }
-  | { type: "REASONING_END"; messageId: string };
+  | { type: "REASONING_END"; messageId: string }
+  // The agent (goose) requests the user to choose an option (ACP
+  // session/request_permission). The run BLOCKS until answered. The UI renders
+  // the options as inline buttons; the answer resolves the blocked request.
+  | {
+      type: "PERMISSION_REQUEST";
+      toolCallId: string;
+      /** Human-readable description of what's being requested (the tool's title
+       *  / a permission summary). */
+      title: string;
+      options: Array<{ optionId: string; name: string; kind: string }>;
+    }
+  // Emitted once the request is answered (or cancelled) so a reattaching/late UI
+  // knows the request is settled and renders the chosen option (disabled).
+  | { type: "PERMISSION_RESOLVED"; toolCallId: string; optionId: string | null };
 
 /** A user prompt entering the run (maps to ACP session/prompt). */
 export interface PromptInput {
@@ -65,6 +79,11 @@ export interface SessionBridge {
   prompt(input: PromptInput): Promise<RunId>;
   cancel(runId: RunId): Promise<void>;
   stop(): Promise<void>;
+
+  /** Answer a pending permission/option request (resolves the blocked agent run).
+   *  optionId must be one of the offered options; an unknown/empty id cancels.
+   *  Returns true if a matching pending request was found. */
+  answerPermission(toolCallId: string, optionId: string): boolean;
 
   /** Subscribe to the AG-UI event stream broadcast to the UI (live). */
   onEvent(cb: (event: AguiEvent) => void): () => void;
@@ -105,6 +124,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Resolved on first start(); a ready client or the result of the factory.
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
+
+  // Permission/option requests awaiting a user answer. The agent's ACP
+  // requestPermission call blocks on these promises; answerPermission resolves
+  // them. Keyed by toolCallId. validOptions guards against a stale/garbage id.
+  interface Pending {
+    resolve: (optionId: string | null) => void;
+    validOptions: Set<string>;
+  }
+  const pendingPermissions = new Map<string, Pending>();
 
   const persistListeners = new Set<(event: AguiEvent) => void>();
   const titleListeners = new Set<(title: string) => void>();
@@ -260,6 +288,32 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       acpClient.onSessionUpdate((_sid, u) => {
         if (currentRun) handleUpdate(currentRun, u);
       });
+
+      // The agent asks the user to choose (ACP session/request_permission). We
+      // emit a PERMISSION_REQUEST to the UI and BLOCK the agent on a promise that
+      // answerPermission() resolves. The text/reasoning currently streaming is
+      // closed first so the request renders as its own affordance.
+      acpClient.onPermissionRequest(async (req) => {
+        if (currentRun) {
+          closeOpenText(currentRun);
+          closeOpenReasoning(currentRun);
+        }
+        const optionId = await new Promise<string | null>((resolve) => {
+          pendingPermissions.set(req.toolCallId, {
+            resolve,
+            validOptions: new Set(req.options.map((o) => o.optionId)),
+          });
+          emit({
+            type: "PERMISSION_REQUEST",
+            toolCallId: req.toolCallId,
+            title: req.title ?? "The agent needs your choice",
+            options: req.options,
+          });
+        });
+        pendingPermissions.delete(req.toolCallId);
+        emit({ type: "PERMISSION_RESOLVED", toolCallId: req.toolCallId, optionId });
+        return optionId ? { optionId } : { cancelled: true as const };
+      });
       started = true;
     },
 
@@ -335,6 +389,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     onTitle(cb) {
       titleListeners.add(cb);
       return () => titleListeners.delete(cb);
+    },
+    answerPermission(toolCallId, optionId) {
+      const pending = pendingPermissions.get(toolCallId);
+      if (!pending) return false; // no such pending request (or already answered)
+      // An unknown optionId cancels rather than forwarding a garbage selection.
+      pending.resolve(pending.validOptions.has(optionId) ? optionId : null);
+      return true;
     },
   };
 }

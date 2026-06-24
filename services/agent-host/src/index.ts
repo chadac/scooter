@@ -193,6 +193,11 @@ export async function main(
     await sessions.promptByThread(sessionId, input.text);
   });
 
+  // A user's answer to a permission/option request -> resolve the blocked run.
+  server.onPermission(async (sessionId, toolCallId, optionId) => {
+    sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId);
+  });
+
   server.onAttach(async (sessionId, conn) => {
     for await (const event of store.readEvents(sessionId)) conn.send(event);
   });
@@ -206,9 +211,12 @@ export async function main(
       server,
       models: { default: config.model, available: config.availableModels },
       answerPermission: async (sessionId, toolCallId, optionId) => {
-        // Permission answering is wired through the bridge in a later pass;
-        // the route exists so the API surface is complete.
-        console.warn("[agent-host] permission answer not yet wired", { sessionId, toolCallId, optionId });
+        // Route the user's choice to the conversation's bridge, which resolves
+        // the blocked agent run (ACP request_permission).
+        const answered = sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId);
+        if (!answered) {
+          console.warn("[agent-host] no pending permission", { sessionId, toolCallId });
+        }
       },
     }),
   );

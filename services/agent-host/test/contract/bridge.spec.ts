@@ -79,6 +79,93 @@ describe("ACP -> AG-UI bridge", () => {
     expect(userContent?.delta).toBe("hi");
   });
 
+  it("blocks on a permission/option request and resolves on the user's pick", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      {
+        requestPermission: {
+          toolCallId: "perm1",
+          title: "Grant S3 write to bucket acme-data?",
+          options: [
+            { optionId: "allow", name: "Allow once", kind: "allow_once" },
+            { optionId: "deny", name: "Reject", kind: "reject_once" },
+          ],
+        },
+      },
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Granted." } } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    // Answer as soon as the request is emitted (the run is blocked until then).
+    bridge.onEvent((e) => {
+      if (e.type === "PERMISSION_REQUEST") {
+        // The request carries the options + a human-readable title.
+        expect(e.title).toMatch(/S3 write/);
+        expect(e.options.map((o) => o.optionId)).toEqual(["allow", "deny"]);
+        bridge.answerPermission(e.toolCallId, "allow");
+      }
+    });
+
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "grant S3 access" });
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain("PERMISSION_REQUEST");
+    expect(types).toContain("PERMISSION_RESOLVED");
+    const resolved = events.find((e) => e.type === "PERMISSION_RESOLVED") as
+      | { optionId: string | null }
+      | undefined;
+    expect(resolved?.optionId).toBe("allow");
+    // The run continued past the (now-answered) request.
+    const shown = events
+      .filter((e): e is { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string } => e.type === "TEXT_MESSAGE_CONTENT")
+      .map((e) => e.delta)
+      .join("");
+    expect(shown).toContain("Granted.");
+  });
+
+  it("cancels the request when answered with an unknown option", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      {
+        requestPermission: {
+          toolCallId: "perm2",
+          title: "Pick a branch",
+          options: [{ optionId: "main", name: "main", kind: "allow_once" }],
+        },
+      },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    bridge.onEvent((e) => {
+      if (e.type === "PERMISSION_REQUEST") {
+        // A garbage optionId must not forward a bad selection — it cancels.
+        const ok = bridge.answerPermission(e.toolCallId, "not-an-option");
+        expect(ok).toBe(true); // the pending request WAS found
+      }
+    });
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "go" });
+
+    const resolved = events.find((e) => e.type === "PERMISSION_RESOLVED") as
+      | { optionId: string | null }
+      | undefined;
+    expect(resolved?.optionId).toBeNull(); // cancelled
+  });
+
   it("extracts an agent-emitted <title> marker and strips it from the shown text", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([

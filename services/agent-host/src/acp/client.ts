@@ -63,8 +63,13 @@ export type SessionUpdate =
 export interface PermissionRequest {
   sessionId: string;
   toolCallId: string;
+  /** Human-readable summary of what's being requested (from the tool call). */
+  title: string;
   options: Array<{ optionId: string; name: string; kind: string }>;
 }
+
+/** A permission handler either selects an option or cancels the request. */
+export type PermissionAnswer = { optionId: string } | { cancelled: true };
 
 export interface AcpClient {
   initialize(params: InitializeParams): Promise<{ protocolVersion: number }>;
@@ -74,7 +79,7 @@ export interface AcpClient {
 
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   onPermissionRequest(
-    handler: (req: PermissionRequest) => Promise<{ optionId: string }>,
+    handler: (req: PermissionRequest) => Promise<PermissionAnswer>,
   ): void;
 
   close(): Promise<void>;
@@ -102,7 +107,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
 
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
   let permissionHandler:
-    | ((req: PermissionRequest) => Promise<{ optionId: string }>)
+    | ((req: PermissionRequest) => Promise<PermissionAnswer>)
     | undefined;
 
   // Our Client implementation: what Goose calls back into.
@@ -118,12 +123,16 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       if (!permissionHandler) {
         return { outcome: { outcome: "cancelled" } };
       }
-      const { optionId } = await permissionHandler({
+      const answer = await permissionHandler({
         sessionId: params.sessionId,
         toolCallId: params.toolCall.toolCallId,
+        title: params.toolCall.title ?? "The agent needs your choice",
         options: params.options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
       });
-      return { outcome: { outcome: "selected", optionId } };
+      if ("cancelled" in answer) {
+        return { outcome: { outcome: "cancelled" } };
+      }
+      return { outcome: { outcome: "selected", optionId: answer.optionId } };
     },
 
     async readTextFile(
