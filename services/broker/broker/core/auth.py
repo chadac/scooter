@@ -60,6 +60,14 @@ async def authenticate(request: Request) -> Identity:
         raise HTTPException(status_code=401, detail="token not authenticated")
 
     username = status.user.username if status.user else ""
+
+    # Approver SAs (e.g. the agent-host relaying a user's approve/deny) aren't
+    # sandboxes — they have no conversation_id but may approve.
+    approvers = {s.strip() for s in settings.aws_approver_service_accounts.split(",") if s.strip()}
+    if username in approvers:
+        return Identity(conversation_id="", namespace=settings.sandbox_namespace,
+                        service_account=username, is_approver=True)
+
     m = _SA_PATTERN.match(username or "")
     if not m:
         raise HTTPException(status_code=403, detail=f"not a sandbox SA: {username}")

@@ -81,11 +81,16 @@ Running list of work items. Newest asks at the top of each section. See
         sandbox image ships scooter-aws + scooter-aws-credentials (embeds the
         broker cli.py) + awscli2/python3, renders ~/.aws/config at entrypoint.
         56/56 agent-host Tier 1, 41 broker tests green; sandbox image builds.
-  - [ ] Stage 5 REMAINING: deployment config (enable broker.aws with the
-        account registry + brokerPrincipalArn + DB secret) + build/push the broker
-        + sandbox images + apply; a cluster e2e proving the full chain. Mount the
-        accounts ConfigMap into the sandbox (conversation template) + set
-        AWS_ACCOUNTS_FILE. GATED on the EXTERNAL AWS IAM below.
+  - [x] Deployment config DONE: broker.aws block (account registry, DB secret,
+        broker IRSA ARN) + the IAM-as-code Terraform (broker IRSA role +
+        agent-token-broker-base + permission boundary). Approver-auth +
+        sandbox/host ConfigMap mounts wired.
+  - [ ] DEPLOY (gated on the IAM apply): (1) terraform apply the 3 IAM objects;
+        (2) build+push the broker + sandbox images to the registry; (3) deployment:
+        nix flake update + nix build .#k8s-yaml + kubectl apply; (4) the
+        `broker` DB needs creating on agent-webhooks-db (CREATE DATABASE broker);
+        (5) live e2e: agent runs `scooter-aws request`, approve in the UI, then
+        `aws --profile <account> s3 ls` works.
   - [ ] EXTERNAL (deployer/AWS): per target account, the `agent-token-broker-base`
         role + `agent-broker-permission-boundary` policy (trust = our broker IRSA
         + ExternalId); the broker IRSA needs sts:AssumeRole on those. Account

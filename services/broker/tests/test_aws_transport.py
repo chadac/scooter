@@ -124,3 +124,37 @@ def test_cross_conversation_isolation_over_http(tmp_path):
         rid = client.post("/aws/aws/request", json={"target_account": "dev", "policy_document": POLICY, "justification": "x"}).json()["request_id"]
         app.dependency_overrides[authenticate] = _identity("conv-2")
         assert client.get(f"/aws/aws/{rid}").status_code == 404
+
+
+def test_approve_requires_approver_identity(tmp_path):
+    """approve/deny are gated on is_approver — a sandbox identity gets 403."""
+    store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'b.db'}"))
+    service = PermissionService(store=store, iam=FakeIam(), account_registry=REGISTRY,
+                                config=ServiceConfig(broker_principal_arn="arn:...:broker"))
+    transport = AwsPermissions()
+    transport.set_service(service, is_admin=lambda identity: identity.is_approver)
+
+    import contextlib
+    from fastapi import FastAPI
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        await store.init()
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+    app.include_router(transport.routes(provider=None, authed=authenticate), prefix="/aws")
+
+    with TestClient(app) as client:
+        # A normal sandbox identity (is_approver=False) creates a request...
+        app.dependency_overrides[authenticate] = _identity("conv-1")
+        rid = client.post("/aws/aws/request", json={"target_account": "dev", "policy_document": POLICY, "justification": "x"}).json()["request_id"]
+        # ...but cannot approve it (403).
+        assert client.post(f"/aws/aws/{rid}/approve").status_code == 403
+
+        # An approver identity can.
+        app.dependency_overrides[authenticate] = lambda: Identity(
+            conversation_id="", namespace="agent-sandbox",
+            service_account="system:serviceaccount:agent-manager:agent-host", is_approver=True,
+        )
+        assert client.post(f"/aws/aws/{rid}/approve").status_code == 200

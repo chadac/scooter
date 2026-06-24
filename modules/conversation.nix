@@ -46,6 +46,10 @@ let
             volumeMounts = [
               { name = "workspace"; mountPath = "/workspace"; }
               { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; }
+            ] ++ lib.optionals cfg.broker.aws.enable [
+              # The AWS account registry — the entrypoint renders ~/.aws/config
+              # from it (one [profile <name>] per account → the credential helper).
+              { name = "aws-accounts"; mountPath = "/etc/agent-sandbox/aws"; readOnly = true; }
             ];
             env = [
               { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
@@ -54,12 +58,16 @@ let
               # broker credential helper is configured for both (image has no
               # /etc/passwd -> HOME would be "/"). Pin to the writable workspace.
               { name = "HOME"; value = "/workspace"; }
+            ] ++ lib.optionals cfg.broker.aws.enable [
+              { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-sandbox/aws/accounts.json"; }
             ];
           }];
           volumes = [{
             name = "broker-token";
             projected.sources = [{ serviceAccountToken = { audience = brokerAudience; path = "token"; }; }];
-          }];
+          }] ++ lib.optionals cfg.broker.aws.enable [
+            { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
+          ];
         };
         # Workspace PVC (body). Conversation-state PVC is mounted by the
         # agent-host, NOT here (it lives outside the sandbox).

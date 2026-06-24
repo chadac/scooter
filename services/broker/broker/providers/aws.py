@@ -91,9 +91,9 @@ def aws() -> Provider:
         ),
         on_request=_notify_host,
     )
-    # Admin seam: default allows any authenticated caller (in-conversation flow
-    # trusts the conversation user). A deployer can tighten this later.
-    transport.set_service(service, is_admin=None)
+    # Admin seam: approve/deny require an APPROVER identity (the agent-host
+    # relaying the user's pick — recognized by auth via aws_approver_service_accounts).
+    transport.set_service(service, is_admin=lambda identity: identity.is_approver)
 
     _sweep_task: list[asyncio.Task] = []
 

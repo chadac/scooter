@@ -40,6 +40,9 @@ export interface K8sProvisionerOptions {
   workspaceStorage?: string;
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
+  /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
+   *  sandbox renders ~/.aws/config — set when the AWS permissions broker is on. */
+  awsAccountsConfigMap?: string;
   kubeConfig?: KubeConfig;
 }
 
@@ -90,7 +93,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         version: VERSION,
         namespace: ns,
         plural: PLURAL,
-        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage),
+        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap),
       });
 
       return { name, namespace: ns };
@@ -132,6 +135,7 @@ function sandboxManifest(
   namespace: string,
   audience: string,
   storage: string,
+  awsAccountsConfigMap?: string,
 ): object {
   return {
     apiVersion: `${GROUP}/${VERSION}`,
@@ -154,6 +158,9 @@ function sandboxManifest(
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },
+                ...(awsAccountsConfigMap
+                  ? [{ name: "aws-accounts", mountPath: "/etc/agent-sandbox/aws", readOnly: true }]
+                  : []),
               ],
               env: [
                 {
@@ -175,6 +182,9 @@ function sandboxManifest(
                   name: "GIT_BROKER_HOST_MAP",
                   value: "github.com=github,gitlab.com=gitlab,test-git.local=test",
                 },
+                ...(awsAccountsConfigMap
+                  ? [{ name: "AWS_ACCOUNTS_FILE", value: "/etc/agent-sandbox/aws/accounts.json" }]
+                  : []),
               ],
             },
           ],
@@ -185,6 +195,9 @@ function sandboxManifest(
                 sources: [{ serviceAccountToken: { audience, path: "token" } }],
               },
             },
+            ...(awsAccountsConfigMap
+              ? [{ name: "aws-accounts", configMap: { name: awsAccountsConfigMap } }]
+              : []),
           ],
         },
       },

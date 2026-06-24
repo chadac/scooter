@@ -35,6 +35,9 @@ class Identity:
     conversation_id: str          # from SA name sandbox-{conversation_id}
     namespace: str
     service_account: str          # full system:serviceaccount:{ns}:sandbox-{id}
+    # True if this caller is a configured APPROVER (e.g. the agent-host relaying a
+    # user's approve/deny), not a sandbox. Approvers have no conversation_id.
+    is_approver: bool = False
 
 
 # ---------------------------------------------------------------------------

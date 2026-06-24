@@ -52,6 +52,10 @@ class BrokerSettings(BaseSettings):
     aws_db_user: str = "webhooks"
     aws_db_password: str = ""
     aws_db_name: str = "broker"
+    # SA usernames allowed to APPROVE/DENY (the agent-host relays the user's pick
+    # after validating it in-conversation). CSV of
+    # system:serviceaccount:{ns}:{name}. Default: the agent-host.
+    aws_approver_service_accounts: str = ""
     # Notify the agent-host when a request is created so it raises the approval
     # interrupt. Empty = no notify (local/dev).
     aws_agent_host_url: str = ""

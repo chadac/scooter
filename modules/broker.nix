@@ -192,6 +192,8 @@ in
                   { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-broker/accounts.json"; }
                   { name = "AWS_ROLE_TTL_HOURS"; value = toString bcfg.aws.roleTtlHours; }
                   { name = "AWS_AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
+                  # The agent-host SA may approve/deny (it relays the user's pick).
+                  { name = "AWS_APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
                   { name = "AWS_DB_HOST"; value = bcfg.aws.db.host; }
                   { name = "AWS_DB_NAME"; value = bcfg.aws.db.name; }
                   { name = "AWS_DB_USER"; value = bcfg.aws.db.user; }

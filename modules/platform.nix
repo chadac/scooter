@@ -304,7 +304,15 @@ in
                 ++ lib.optional cfg.fakeAgent
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
-                  { name = "GOOSE_BIN"; value = "fake"; };
+                  { name = "GOOSE_BIN"; value = "fake"; }
+                ++ lib.optionals cfg.broker.aws.enable [
+                  # AWS permissions broker: the agent-host mounts the account
+                  # ConfigMap into each sandbox, and resolves approvals against the
+                  # broker (BROKER_URL + the projected SA token).
+                  { name = "AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
+                  { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
+                  { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
+                ];
                 volumeMounts = [
                   # Durable history (PVC).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
@@ -315,7 +323,10 @@ in
                   { name = "tmp"; mountPath = "/tmp"; }
                 ] ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
-                  { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; };
+                  { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
+                ++ lib.optional cfg.broker.aws.enable
+                  # The agent-host's own broker token (to relay AWS approve/deny).
+                  { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
               };
               # Durable event-log PVC + ephemeral scratch/tmp emptyDirs.
@@ -324,7 +335,9 @@ in
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
               ] ++ lib.optional (cfg.agent.skills != { })
-                { name = "skills"; configMap.name = "agent-skills"; };
+                { name = "skills"; configMap.name = "agent-skills"; }
+              ++ lib.optional cfg.broker.aws.enable
+                { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; };
             };
           };
         };

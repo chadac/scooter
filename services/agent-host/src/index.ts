@@ -148,7 +148,13 @@ export async function main(
 ): Promise<() => Promise<void>> {
   const provisioner = config.fakeSandbox
     ? createNoopProvisioner()
-    : createK8sProvisioner({ namespace: config.namespace, sandboxImage: config.sandboxImage });
+    : createK8sProvisioner({
+        namespace: config.namespace,
+        sandboxImage: config.sandboxImage,
+        // When the AWS permissions broker is on, mount its account-registry
+        // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
+        awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,
+      });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
   // of running them locally in this pod. Only meaningful for real goose.
