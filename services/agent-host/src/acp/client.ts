@@ -24,6 +24,7 @@ import {
 import type * as schema from "@zed-industries/agent-client-protocol";
 
 import type { ExecBackend } from "../types.js";
+import { debug } from "../debug.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
 
@@ -142,8 +143,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     async createTerminal(
       params: schema.CreateTerminalRequest,
     ): Promise<schema.CreateTerminalResponse> {
-      // eslint-disable-next-line no-console
-      console.log("[acp] createTerminal:", JSON.stringify({ command: params.command, args: params.args, cwd: params.cwd }));
+            debug("[acp] createTerminal:", JSON.stringify({ command: params.command, args: params.args, cwd: params.cwd }));
       // goose passes ITS OWN session cwd (a path in the agent-host pod), which
       // does not exist in the sandbox. The agent's work happens in the sandbox
       // workspace, so run there unless goose gave a sandbox-absolute path under
@@ -169,8 +169,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       params: schema.TerminalOutputRequest,
     ): Promise<schema.TerminalOutputResponse> {
       const buf = terminalBuffers.get(params.terminalId) ?? "";
-      // eslint-disable-next-line no-console
-      console.log("[acp] terminalOutput:", params.terminalId, JSON.stringify(buf.slice(0, 200)));
+            debug("[acp] terminalOutput:", params.terminalId, JSON.stringify(buf.slice(0, 200)));
       return { output: buf, truncated: false };
     },
 

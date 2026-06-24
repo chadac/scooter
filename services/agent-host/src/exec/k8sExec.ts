@@ -8,6 +8,7 @@
  */
 
 import { Writable, Readable, PassThrough } from "node:stream";
+import { debugError } from "../debug.js";
 import { existsSync } from "node:fs";
 
 import { KubeConfig, Exec, CoreV1Api, type V1Status } from "@kubernetes/client-node";
@@ -135,8 +136,7 @@ export function createK8sSandboxApiClient(
             }),
           );
           ws.on("error", (e: unknown) => {
-            // eslint-disable-next-line no-console
-            console.error(
+                        debugError(
               "[k8sExec] ws error:",
               e instanceof Error ? e.message : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
             );
@@ -144,8 +144,7 @@ export function createK8sSandboxApiClient(
           });
         })
         .catch((e: unknown) => {
-          // eslint-disable-next-line no-console
-          console.error(
+                    debugError(
             "[k8sExec] exec() rejected:",
             e instanceof Error ? `${e.message}\n${e.stack}` : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
           );

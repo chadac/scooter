@@ -22,6 +22,7 @@ import type {
   SandboxRef,
   TerminalHandle,
 } from "../types.js";
+import { debugError } from "../debug.js";
 
 /**
  * Thin exec client for one sandbox pod. Production impl wraps the Kubernetes
@@ -85,8 +86,7 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
               : typeof err === "object" && err !== null
                 ? JSON.stringify(err)
                 : String(err);
-          // eslint-disable-next-line no-console
-          console.error("[exec] spawn execute failed:", detail);
+                    debugError("[exec] spawn execute failed:", detail);
           const msg = `exec failed: ${detail}`;
           buffered += msg;
           for (const cb of outputCbs) cb(msg);

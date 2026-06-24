@@ -18,6 +18,7 @@ import type {
   ExecBackend,
 } from "./types.js";
 import type { AcpClient, SessionUpdate } from "./acp/client.js";
+import { debug } from "./debug.js";
 
 // AG-UI event union (subset used here; full set per AG-UI spec).
 export type AguiEvent =
@@ -217,13 +218,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     async start() {
       if (started) return;
-      // eslint-disable-next-line no-console
-      console.log("[bridge] start: creating ACP client");
+            debug("[bridge] start: creating ACP client");
       if (!acpClient) {
         acpClient = await (deps.acpClient as () => Promise<AcpClient>)();
       }
-      // eslint-disable-next-line no-console
-      console.log("[bridge] start: client created, initialize()");
+            debug("[bridge] start: client created, initialize()");
       await acpClient.initialize({
         protocolVersion: 1,
         clientCapabilities: {
@@ -231,11 +230,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           terminal: true,
         },
       });
-      // eslint-disable-next-line no-console
-      console.log("[bridge] start: initialized, newSession(cwd=%s)", deps.config.cwd);
+            debug("[bridge] start: initialized, newSession(cwd=%s)", deps.config.cwd);
       const { sessionId: sid } = await acpClient.newSession({ cwd: deps.config.cwd });
-      // eslint-disable-next-line no-console
-      console.log("[bridge] start: newSession ->", sid);
+            debug("[bridge] start: newSession ->", sid);
       acpSessionId = sid;
       // Subscribe to updates ONCE for the lifetime of the session and route
       // them to the current run. Avoids per-prompt subscribe/unsubscribe (which
@@ -267,14 +264,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       try {
         if (!started || !acpSessionId) await this.start();
         currentRun = st; // route session/update notifications to this run
-        // eslint-disable-next-line no-console
-        console.log("[bridge] prompt: sending to goose, session=%s", acpSessionId);
+                debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
         const { stopReason } = await acpClient!.prompt({
           sessionId: acpSessionId!,
           prompt: [{ type: "text", text: input.text }],
         });
-        // eslint-disable-next-line no-console
-        console.log("[bridge] prompt: stopReason=%s", stopReason);
+                debug("[bridge] prompt: stopReason=%s", stopReason);
         // The ACP prompt response can resolve before the final session/update
         // notifications have been dispatched. Drain a macrotask so trailing
         // text/reasoning chunks are processed (their messages opened) BEFORE we
