@@ -19,16 +19,16 @@ Running list of work items. Newest asks at the top of each section. See
         + nginx /agui+/conversations made SSE-safe (no buffering). 45/45 Tier 1.
   - [x] integrityStream.ts client (subscribe, fold, checksum self-heal). VERIFIED
         live against the real stack: every event link_ok, message present.
-  - [ ] **UI reconciliation is the open part.** Wiring the integrity stream into
-        RuntimeProvider via full `runtime.thread.reset()` works in a single e2e
-        run (the live-stream.spec test passes in isolation — the reported bug IS
-        fixed) but FLAKES in the full shared-webServer suite: reset() per-update
-        fights assistant-ui's own render, and each open page holds a long-lived
-        SSE that stresses the single-process test server. NEXT: use assistant-ui's
-        incremental `import()`/`append()` API instead of full reset(), so we
-        apply deltas rather than rebuilding the thread each update. The
-        RuntimeProvider + live-stream.spec + cleanState changes are left
-        UNCOMMITTED pending that (server side is committed + solid).
+  - [ ] **UI reconciliation is the open part** — parked on branch
+        **`wip/integrity-ui-reconciliation`** (commit 9cc4e62). Wiring the
+        integrity stream into RuntimeProvider via full `runtime.thread.reset()`
+        works in a single e2e run (live-stream.spec passes in isolation — the
+        reported bug IS fixed) but FLAKES in the full shared-webServer suite:
+        reset() per-update fights assistant-ui's own render, and each open page
+        holds a long-lived SSE that stresses the single-process test server.
+        NEXT: replace full reset() with assistant-ui's incremental
+        `import()`/`append()` so we apply deltas instead of rebuilding the thread
+        each update. (Server side is on main + solid.)
 
 - [x] **Durable webhooks mapping store (Postgres).** DONE — deployed + verified.
   The PR/Slack ↔ conversation mapping was SQLite on an emptyDir (wiped on every
