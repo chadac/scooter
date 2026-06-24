@@ -12,6 +12,9 @@
  *                               ExecBackend = K8s exec API into the sandbox pod
  */
 
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { createAguiServer } from "./agui/server.js";
 import { createManagementApi } from "./api/management.js";
 import { createSessionManager } from "./session/manager.js";
@@ -201,8 +204,16 @@ export async function main(
     // Per-conversation model override: GOOSE_MODEL in the agent's launch env.
     const resolved = resolveModel(model, cfg);
     const agentEnv = resolved ? { ...cfg.agent.env, GOOSE_MODEL: resolved } : cfg.agent.env;
+    // goose runs IN the agent-host pod (not the sandbox), so its cwd must be a
+    // real, writable dir HERE — not the sandbox's "/workspace" (which doesn't
+    // exist in this pod; goose's session/new panics on a missing cwd and the
+    // ACP newSession hangs). The agent's *tool calls* still exec into the
+    // sandbox via the ExecBackend. Give goose a per-conversation scratch dir on
+    // the state volume.
+    const cwd = join(config.statePath, conversationId, "agent-cwd");
+    mkdirSync(cwd, { recursive: true });
     const bridge = createSessionBridge({
-      config: { cwd: "/workspace", skillsDir: "/etc/agent-sandbox/skills", agent: cfg.agent, sandbox },
+      config: { cwd, skillsDir: "/etc/agent-sandbox/skills", agent: cfg.agent, sandbox },
       exec,
       acpClient: () =>
         createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
