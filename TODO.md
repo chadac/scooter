@@ -112,15 +112,13 @@ Running list of work items. Newest asks at the top of each section. See
   Step 3 (evaluate): move the agent-host conversation store onto Postgres too, so
   there's ONE durable backend to operate/back up.
 
-- [ ] **Show linked resources in the chat UI.** We already track conversation ↔
-  external-resource links (`ConversationMap` / `ResourceLink`: github PR/issue,
-  gitlab MR, slack thread, jira ticket). Surface them in the left chat panel
-  under a collapsing tab: provider icon + link, e.g. GitHub icon + PR link,
-  GitLab icon + MR link, Slack icon + thread + a brief header/summary of the
-  conversation. Needs: an agent-host endpoint to expose a conversation's links
-  (sourced from the webhooks store, or have the webhook push the link to the
-  agent-host on create — there's already a `/conversations/link` route), and a
-  collapsible UI component.
+- [x] **Show linked resources in the chat UI.** DONE (commit b99046d). The
+  webhook pushes the conversation's external resource link (GitHub PR/issue,
+  GitLab MR, Slack thread) to the agent-host (POST /conversations/:id/links),
+  which persists it per conversation (links.json) and serves GET …/links. The UI
+  shows them in a collapsible Sidebar tab (LinkedResources — provider glyph +
+  link, hidden when empty). github/slack handlers push on create. 59/59 Tier 1,
+  2 e2e. (Future: a richer Slack thread URL + a brief summary header.)
 
 - [x] **Conversation titling — agent-assigned.** DONE (commit 8089cd3). The
   agent emits a `<title>…</title>` marker as its first action; the bridge
