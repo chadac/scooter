@@ -298,8 +298,8 @@ async def _handle_note(payload: dict):
 
 async def _handle_issue(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
-    labels = [l.get("title", "") for l in payload.get("labels", [])]
-    if action != "update" or "openhands" not in labels:
+    labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
+    if action != "update" or settings.label_trigger.lower() not in labels:
         return
 
     issue = payload.get("object_attributes", {})
@@ -337,8 +337,8 @@ async def _handle_issue(payload: dict):
 
 async def _handle_merge_request(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
-    labels = [l.get("title", "") for l in payload.get("labels", [])]
-    if action != "update" or "openhands" not in labels:
+    labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
+    if action != "update" or settings.label_trigger.lower() not in labels:
         return
 
     mr = payload.get("object_attributes", {})

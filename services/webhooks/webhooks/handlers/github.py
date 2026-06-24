@@ -211,7 +211,7 @@ async def _handle_issue_event(payload: dict):
         return
 
     label = payload.get("label", {}).get("name", "")
-    if label.lower() != "openhands":
+    if label.lower() != settings.label_trigger.lower():
         return
 
     issue = payload.get("issue", {})
@@ -252,7 +252,7 @@ async def _handle_pr_event(payload: dict):
         return
 
     label = payload.get("label", {}).get("name", "")
-    if label.lower() != "openhands":
+    if label.lower() != settings.label_trigger.lower():
         return
 
     pr = payload.get("pull_request", {})

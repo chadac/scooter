@@ -9,3 +9,9 @@ dist/
 test-results/
 playwright-report/
 .playwright/
+
+# uv-nix generated artifacts
+services/*/flake.nix
+services/*/flake.lock
+services/*/uv.lock
+services/*/.venv/

@@ -59,8 +59,9 @@ class WebhooksSettings(BaseSettings):
     # Test webhook (/webhooks/test) for e2e — OFF in prod.
     test_webhook_enabled: bool = False
 
-    # Trigger pattern
+    # Trigger pattern (text mention) + issue/PR label that spawns a conversation
     mention_pattern: str = "@agent"
+    label_trigger: str = "scooter"
 
     # Bot usernames to ignore
     ignore_usernames: str = ""
