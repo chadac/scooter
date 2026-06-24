@@ -143,6 +143,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       e.lastActivityAt = nowMs(); // agent events count as activity
       void store.appendEvent(e.id, event);
     });
+    // Persist-only events (e.g. the user's own prompt) go to the log but are not
+    // broadcast — so the durable history is complete without the live UI showing
+    // a duplicate of the message it just sent.
+    e.bridge.onPersist((event) => {
+      e.lastActivityAt = nowMs();
+      void store.appendEvent(e.id, event);
+    });
   };
 
   return {

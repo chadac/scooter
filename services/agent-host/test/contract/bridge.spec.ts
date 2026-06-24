@@ -19,6 +19,15 @@ const collect = (bridge: ReturnType<typeof createSessionBridge>) => {
   return events;
 };
 
+/** Persisted events = the broadcast stream PLUS persist-only events (the user's
+ *  own prompt). What the durable log / history replay sees. */
+const collectPersist = (bridge: ReturnType<typeof createSessionBridge>) => {
+  const events: AguiEvent[] = [];
+  bridge.onEvent((e) => events.push(e));
+  bridge.onPersist((e) => events.push(e));
+  return events;
+};
+
 describe("ACP -> AG-UI bridge", () => {
   it("maps an agent_message_chunk to TextMessage start/content/end", async () => {
     const agent = createFakeAcpAgent();
@@ -34,32 +43,39 @@ describe("ACP -> AG-UI bridge", () => {
       exec,
       acpClient: acpClientFromTransport(agent.transport, exec),
     });
-    const events = collect(bridge);
+    const broadcast = collect(bridge); // onEvent (UI) only
+    const persisted = collectPersist(bridge); // onEvent + onPersist (the log)
 
     await bridge.start();
     await bridge.prompt({ threadId: "t1", text: "hi" });
 
-    expect(events.map((e) => e.type)).toEqual([
+    // BROADCAST (what the UI gets): NO user message — the UI already renders the
+    // message it sent, so re-broadcasting it would echo a duplicate.
+    expect(broadcast.map((e) => e.type)).toEqual([
       "RUN_STARTED",
-      // The user's prompt is persisted as a user message (so history replay /
-      // conversation switching shows the user turn, not just the agent reply).
-      "TEXT_MESSAGE_START",
-      "TEXT_MESSAGE_CONTENT",
-      "TEXT_MESSAGE_END",
-      // ...then the agent's streamed reply.
       "TEXT_MESSAGE_START",
       "TEXT_MESSAGE_CONTENT",
       "TEXT_MESSAGE_CONTENT",
       "TEXT_MESSAGE_END",
       "RUN_FINISHED",
     ]);
+    expect(
+      (broadcast.filter((e) => e.type === "TEXT_MESSAGE_START") as Array<{ role: string }>).map(
+        (s) => s.role,
+      ),
+    ).toEqual(["assistant"]); // no "user" on the broadcast
 
-    // The first text message is the user's prompt; the second the assistant's.
-    const starts = events.filter((e) => e.type === "TEXT_MESSAGE_START") as Array<{ role: string }>;
-    expect(starts.map((s) => s.role)).toEqual(["user", "assistant"]);
-    const userContent = events.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as
-      | { delta: string }
-      | undefined;
+    // PERSISTED (history replay): the user's prompt IS in the durable log, as a
+    // user message, so switching to / reviving the conversation shows it.
+    const userStart = persisted.find(
+      (e) => e.type === "TEXT_MESSAGE_START" && (e as { role?: string }).role === "user",
+    );
+    expect(userStart, "user prompt must be persisted").toBeTruthy();
+    const userContent = persisted.find(
+      (e): e is { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string } =>
+        e.type === "TEXT_MESSAGE_CONTENT" &&
+        (e as { messageId: string }).messageId === (userStart as { messageId: string }).messageId,
+    );
     expect(userContent?.delta).toBe("hi");
   });
 

@@ -64,8 +64,13 @@ export interface SessionBridge {
   cancel(runId: RunId): Promise<void>;
   stop(): Promise<void>;
 
-  /** Subscribe to the AG-UI event stream for this session. */
+  /** Subscribe to the AG-UI event stream broadcast to the UI (live). */
   onEvent(cb: (event: AguiEvent) => void): () => void;
+  /** Subscribe to events that should be PERSISTED but not broadcast live (e.g.
+   *  the user's own prompt — the UI already shows it, so re-broadcasting would
+   *  duplicate it; we still need it in the durable log for history replay). The
+   *  store subscribes here too. */
+  onPersist(cb: (event: AguiEvent) => void): () => void;
 }
 
 export interface BridgeDeps {
@@ -95,8 +100,19 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
 
+  const persistListeners = new Set<(event: AguiEvent) => void>();
+
   const emit = (event: AguiEvent) => {
+    // Broadcast subscribers (UI) AND persist subscribers (store) both see live
+    // events.
     for (const cb of listeners) cb(event);
+    for (const cb of persistListeners) cb(event);
+  };
+
+  // Persist-only: the store records it, but the UI does NOT (avoids duplicating
+  // something the UI already renders, like the user's own prompt).
+  const persist = (event: AguiEvent) => {
+    for (const cb of persistListeners) cb(event);
   };
 
   // Flush pending stream notifications (a macrotask) so late session/update
@@ -240,12 +256,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
       // Persist the user's prompt as a message so the conversation history is
       // complete — switching to / reviving a conversation must replay the user
-      // turns too, not just the agent's replies. (The live UI already shows the
-      // message it sent; this makes it durable.)
+      // turns too, not just the agent's replies. PERSIST-ONLY: the live UI
+      // already renders the message the user just sent, so broadcasting it would
+      // echo it back as a duplicate.
       const userMsgId = nextId("user");
-      emit({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
-      emit({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
-      emit({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
+      persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
+      persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
+      persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
 
       try {
         if (!started || !acpSessionId) await this.start();
@@ -295,6 +312,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     onEvent(cb) {
       listeners.add(cb);
       return () => listeners.delete(cb);
+    },
+    onPersist(cb) {
+      persistListeners.add(cb);
+      return () => persistListeners.delete(cb);
     },
   };
 }
