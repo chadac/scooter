@@ -185,6 +185,10 @@ in
                   { name = "NAMESPACE"; value = cfg.namespace; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
+                  # goose persists its sessions DB + config under $HOME; the image
+                  # default ("/") is unwritable, which stalls `goose acp`'s
+                  # session/new. Point it at the writable state volume.
+                  { name = "HOME"; value = "/var/lib/agent-host/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ] ++ lib.optionals (!cfg.fakeAgent) [
                   # Real `goose acp` on Bedrock (or another provider). The agent
