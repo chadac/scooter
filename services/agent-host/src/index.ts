@@ -25,6 +25,7 @@ import { createSessionBridge } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
+import { writeHints } from "./agent/skills.js";
 import type { SandboxRef } from "./types.js";
 
 export interface AgentHostConfig {
@@ -39,6 +40,11 @@ export interface AgentHostConfig {
    *  selection. A conversation may override the model; unset = default only. */
   model?: string;
   availableModels: string[];
+  /** Agent display name (the assistant introduces itself as this). */
+  agentName: string;
+  /** Directory of markdown skills injected into the agent (a ConfigMap mount in
+   *  cluster). Read per conversation -> .goosehints; add a .md, no image rebuild. */
+  skillsDir: string;
   /** Idle-suspend: suspend conversations idle longer than this (ms). 0 = off. */
   idleSuspendMs: number;
   /** How often the idle sweep runs (ms). */
@@ -68,6 +74,8 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
       .split(",")
       .map((m) => m.trim())
       .filter(Boolean),
+    agentName: process.env.AGENT_NAME ?? "Scooter",
+    skillsDir: process.env.SKILLS_DIR ?? "/etc/agent-sandbox/skills",
     agent: useFakeAgent
       ? { command: process.execPath, args: [fakeAgentPath], env: {} }
       : { command: process.env.GOOSE_BIN ?? "goose", args: ["acp"], env: bedrockEnv() },
@@ -212,8 +220,13 @@ export async function main(
     // the state volume.
     const cwd = join(config.statePath, conversationId, "agent-cwd");
     mkdirSync(cwd, { recursive: true });
+    // Inject the agent identity (Scooter) + skills as goose's .goosehints in its
+    // cwd. Re-read on every conversation start, so editing the skills ConfigMap
+    // takes effect for new conversations with no image rebuild.
+    const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
+    if (skillCount) console.log(`[agent-host] ${conversationId}: ${skillCount} skill(s) -> .goosehints`);
     const bridge = createSessionBridge({
-      config: { cwd, skillsDir: "/etc/agent-sandbox/skills", agent: cfg.agent, sandbox },
+      config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox },
       exec,
       acpClient: () =>
         createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),

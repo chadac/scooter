@@ -126,6 +126,32 @@ in
         default = "us-east-1";
         description = "AWS_REGION for the agent process (Bedrock region).";
       };
+      name = mkOption {
+        type = types.str;
+        default = "Scooter";
+        description = "Display name the agent goes by (AGENT_NAME) — its identity in the UI + prompt.";
+      };
+      skills = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = literalExpression ''
+          {
+            "project-repo.md" = '''
+              ---
+              name: project-repo
+              ---
+              The main repo is github.com/example-org/example-app. Clone it with
+              `git clone https://github.com/example-org/example-app` to get started.
+            ''';
+          }
+        '';
+        description = ''
+          Markdown skills injected into the agent as .goosehints (filename ->
+          content). Rendered to a ConfigMap mounted at SKILLS_DIR on the
+          agent-host and read per conversation — edit the ConfigMap to add/change
+          a skill with no image rebuild. Filenames should end in .md.
+        '';
+      };
     };
 
     idleSuspendMs = mkOption {
@@ -247,6 +273,10 @@ in
                   # session/new. Point it at the writable state volume.
                   { name = "HOME"; value = "/var/lib/agent-host/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
+                  # Agent identity + skills: the agent-host writes these into the
+                  # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
+                  { name = "AGENT_NAME"; value = cfg.agent.name; }
+                  { name = "SKILLS_DIR"; value = "/etc/agent-sandbox/skills"; }
                 ] ++ lib.optionals (!cfg.fakeAgent) [
                   # Real `goose acp` on Bedrock (or another provider). The agent
                   # process inherits the pod's IRSA identity via the AWS SDK
@@ -268,14 +298,17 @@ in
                   # The image's /tmp is read-only (nix store). goose needs a
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
-                ];
+                ] ++ lib.optional (cfg.agent.skills != { })
+                  # Skills ConfigMap -> read per conversation into .goosehints.
+                  { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
               };
               # Conversation-state PVC (Goose state + AG-UI event logs) + writable /tmp.
               volumes = [
                 { name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }
                 { name = "tmp"; emptyDir = { }; }
-              ];
+              ] ++ lib.optional (cfg.agent.skills != { })
+                { name = "skills"; configMap.name = "agent-skills"; };
             };
           };
         };
@@ -286,6 +319,16 @@ in
         spec = {
           accessModes = [ "ReadWriteOnce" ];
           resources.requests.storage = "5Gi";
+        };
+      };
+
+      # Agent skills (filename -> markdown), injected per conversation as
+      # .goosehints. Edit this (the option) to add/change a skill — no image
+      # rebuild. Only rendered when skills are configured.
+      configMaps = lib.optionalAttrs (cfg.agent.skills != { }) {
+        agent-skills = {
+          metadata = { name = "agent-skills"; namespace = cfg.namespace; };
+          data = cfg.agent.skills;
         };
       };
 

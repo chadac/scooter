@@ -13,8 +13,8 @@ export function App() {
     <RuntimeProvider>
       <div className="flex h-dvh flex-col">
         <header className="border-b px-4 py-3 text-sm">
-          <strong>kubenix-agent-manager</strong>
-          <span className="text-muted-foreground"> — agent runs in a Nix sandbox</span>
+          <strong>Scooter</strong>
+          <span className="text-muted-foreground"> — your agent, running in a Nix sandbox</span>
         </header>
         <div className="flex min-h-0 flex-1">
           <Sidebar />
