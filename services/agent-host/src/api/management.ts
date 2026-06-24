@@ -50,6 +50,9 @@ export interface ManagementDeps {
   server: AguiServer;
   /** Answer a pending tool permission (wired to the bridge in index.ts). */
   answerPermission: (sessionId: string, toolCallId: string, optionId: string) => Promise<void>;
+  /** Approve/deny a broker AWS request after the user answers the interrupt
+   *  (POSTs to the broker's /aws/{id}/approve|deny). Optional. */
+  resolveAwsRequest?: (sessionId: string, requestId: string, approved: boolean) => Promise<void>;
   /** Model catalog for per-conversation selection: the host default + the set
    *  offered to clients. Empty list = only the default is selectable. */
   models?: { default?: string; available: string[] };
@@ -198,6 +201,40 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!body.optionId) return { status: 400, json: { error: "optionId required" } };
     await deps.answerPermission(ctx.params.id, ctx.params.toolCallId, body.optionId);
     return { status: 204, json: null };
+  });
+
+  // The broker calls this when an agent requests AWS access: raise an in-
+  // conversation approval interrupt (Approve / Deny). The user's pick routes back
+  // to the broker (approve/deny) via deps.resolveAwsRequest.
+  r.post("/conversations/:id/aws-request", async (ctx) => {
+    const body = await ctx.body<{
+      request_id?: string;
+      target_account?: string;
+      risk_level?: string;
+      policy_summary?: string;
+      justification?: string;
+    }>();
+    if (!body.request_id) return { status: 400, json: { error: "request_id required" } };
+    const conv = sessions.get(ctx.params.id);
+    const bridge = conv?.bridge;
+    if (!bridge) return { status: 404, json: { error: "no active conversation" } };
+
+    const summary =
+      `Scooter is requesting AWS access to ${body.target_account} ` +
+      `(risk: ${body.risk_level}).\n${body.policy_summary || ""}\n` +
+      `Reason: ${body.justification || "(none)"}`;
+    bridge.raiseInterrupt({
+      id: body.request_id,
+      message: summary,
+      options: [
+        { optionId: "approve", name: "Approve", kind: "allow_once" },
+        { optionId: "deny", name: "Deny", kind: "reject_once" },
+      ],
+      onAnswer: (optionId) => {
+        void deps.resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve");
+      },
+    });
+    return { status: 202, json: { ok: true } };
   });
 
   return r;

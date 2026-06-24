@@ -232,6 +232,34 @@ export async function main(
           console.warn("[agent-host] no pending permission", { sessionId, toolCallId });
         }
       },
+      resolveAwsRequest: async (_sessionId, requestId, approved) => {
+        // The user answered a broker AWS approval interrupt -> approve/deny the
+        // request on the broker. The broker URL + auth come from env (BROKER_URL
+        // + the agent-host's SA token, same as the sandbox helpers).
+        const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+        if (!brokerUrl) {
+          console.warn("[agent-host] BROKER_URL unset; cannot resolve AWS request", { requestId });
+          return;
+        }
+        const action = approved ? "approve" : "deny";
+        try {
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
+          try {
+            const { readFileSync } = await import("node:fs");
+            headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
+          } catch {
+            /* no token (local/dev) */
+          }
+          await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ approver: "conversation-user" }),
+          });
+        } catch (err) {
+          console.warn("[agent-host] failed to resolve AWS request", { requestId, action, err: String(err) });
+        }
+      },
     }),
   );
 

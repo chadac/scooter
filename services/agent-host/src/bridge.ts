@@ -98,10 +98,22 @@ export interface SessionBridge {
   cancel(runId: RunId): Promise<void>;
   stop(): Promise<void>;
 
-  /** Answer a pending permission/option request (resolves the blocked agent run).
-   *  optionId must be one of the offered options; an unknown/empty id cancels.
-   *  Returns true if a matching pending request was found. */
+  /** Answer a pending permission/option request (resolves the blocked agent run,
+   *  or fires the external onAnswer for a raiseInterrupt). optionId must be one
+   *  of the offered options; an unknown/empty id cancels. Returns true if a
+   *  matching pending request was found. */
   answerPermission(toolCallId: string, optionId: string): boolean;
+
+  /** Raise an AG-UI interrupt NOT tied to a goose run (e.g. a broker AWS
+   *  permission request). Emits the interrupt to the UI; when the user answers
+   *  (via answerPermission / the UI resume), `onAnswer(optionId|null)` fires.
+   *  `id` is the interrupt/answer key (e.g. the broker request_id). */
+  raiseInterrupt(args: {
+    id: string;
+    message: string;
+    options: Array<{ optionId: string; name: string; kind: string }>;
+    onAnswer: (optionId: string | null) => void;
+  }): void;
 
   /** Subscribe to the AG-UI event stream broadcast to the UI (live). */
   onEvent(cb: (event: AguiEvent) => void): () => void;
@@ -143,12 +155,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
 
-  // Permission/option requests awaiting a user answer. The agent's ACP
-  // requestPermission call blocks on these promises; answerPermission resolves
-  // them. Keyed by toolCallId. validOptions guards against a stale/garbage id.
+  // Permission/option requests awaiting a user answer. Two kinds:
+  //  - goose tool-permission: the ACP requestPermission call blocks on `resolve`.
+  //  - EXTERNAL (e.g. a broker AWS request): no blocked goose run; `onExternal`
+  //    is invoked with the chosen optionId so the caller (agent-host) can act
+  //    (approve/deny the broker request). Keyed by toolCallId; validOptions
+  //    guards a stale/garbage id.
   interface Pending {
     resolve: (optionId: string | null) => void;
     validOptions: Set<string>;
+    onExternal?: (optionId: string | null) => void;
   }
   const pendingPermissions = new Map<string, Pending>();
 
@@ -442,8 +458,36 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const pending = pendingPermissions.get(toolCallId);
       if (!pending) return false; // no such pending request (or already answered)
       // An unknown optionId cancels rather than forwarding a garbage selection.
-      pending.resolve(pending.validOptions.has(optionId) ? optionId : null);
+      const chosen = pending.validOptions.has(optionId) ? optionId : null;
+      if (pending.onExternal) {
+        // External interrupt (e.g. broker AWS request): no blocked goose run —
+        // fire the callback + clean up + record the resolution for replay.
+        pendingPermissions.delete(toolCallId);
+        persist({ type: "PERMISSION_RESOLVED", toolCallId, optionId: chosen });
+        pending.onExternal(chosen);
+      } else {
+        pending.resolve(chosen); // unblocks the goose ACP requestPermission call
+      }
       return true;
+    },
+    raiseInterrupt({ id, message, options, onAnswer }) {
+      pendingPermissions.set(id, {
+        resolve: () => {},
+        validOptions: new Set(options.map((o) => o.optionId)),
+        onExternal: onAnswer,
+      });
+      // Emit the interrupt on the conversation stream (not tied to a run). The UI
+      // surfaces it via assistant-ui's pending interrupts; answerPermission(id, …)
+      // resolves it. threadId == sessionId for a bridge.
+      emit({
+        type: "RUN_FINISHED",
+        threadId: sessionId,
+        runId: `ext-${id}`,
+        outcome: {
+          type: "interrupt",
+          interrupts: [{ id, reason: "confirmation", message, metadata: { options } }],
+        },
+      });
     },
   };
 }

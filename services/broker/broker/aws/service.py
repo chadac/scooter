@@ -16,9 +16,12 @@ Lifecycle (see models.RequestStatus):
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 from . import policy
 from .iam import IamProvisioner
@@ -57,11 +60,14 @@ class PermissionService:
         iam: IamProvisioner,
         account_registry: dict[str, dict],
         config: ServiceConfig,
+        on_request=None,  # async (PermissionRequest) -> None; notify the host to
+                          # raise the approval interrupt. None = no notify.
     ) -> None:
         self._store = store
         self._iam = iam
         self._registry = account_registry
         self._config = config
+        self._on_request = on_request
         # request_id -> StsCredentials. In-memory only; never persisted.
         self._creds: dict[str, StsCredentials] = {}
 
@@ -138,6 +144,13 @@ class PermissionService:
             iam_policy_arn=policy_arn,
         )
         await self._store.insert(req)
+        # Notify the agent-host so it raises the approval interrupt (best-effort —
+        # a notify failure must not fail the request; the user can also poll).
+        if self._on_request is not None:
+            try:
+                await self._on_request(req)
+            except Exception:
+                logger.exception("on_request notify failed for %s", request_id)
         return req
 
     # --- approve / deny (approver) ----------------------------------------

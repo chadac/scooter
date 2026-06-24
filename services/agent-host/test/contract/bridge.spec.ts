@@ -143,6 +143,44 @@ describe("ACP -> AG-UI bridge", () => {
     expect(shown).toContain("Granted.");
   });
 
+  it("raiseInterrupt surfaces an external interrupt and fires onAnswer on the pick", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+
+    let answered: string | null | undefined;
+    // No goose run involved — raise an out-of-band interrupt (e.g. a broker AWS
+    // request) and answer it via answerPermission.
+    bridge.raiseInterrupt({
+      id: "aws-req-1",
+      message: "Approve AWS access to dev?",
+      options: [
+        { optionId: "approve", name: "Approve", kind: "allow_once" },
+        { optionId: "deny", name: "Deny", kind: "reject_once" },
+      ],
+      onAnswer: (o) => {
+        answered = o;
+      },
+    });
+
+    // The interrupt is emitted on the stream with the options.
+    const intr = events.find((e) => e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt");
+    expect(intr).toBeTruthy();
+    const interrupt = (intr as { outcome: { interrupts: Array<{ id: string; metadata?: { options?: unknown } }> } }).outcome.interrupts[0];
+    expect(interrupt.id).toBe("aws-req-1");
+
+    // Answering fires onAnswer (no goose resume); a second answer is a no-op.
+    expect(bridge.answerPermission("aws-req-1", "approve")).toBe(true);
+    expect(answered).toBe("approve");
+    expect(bridge.answerPermission("aws-req-1", "approve")).toBe(false); // already settled
+  });
+
   it("cancels the request when answered with an unknown option", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([

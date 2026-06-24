@@ -63,6 +63,24 @@ def aws() -> Provider:
         external_id=settings.aws_sts_external_id,
         account_registry=registry,
     )
+    async def _notify_host(req) -> None:
+        """Tell the agent-host a request is pending so it raises the approval
+        interrupt in the conversation. Best-effort."""
+        if not settings.aws_agent_host_url:
+            return
+        import httpx
+
+        url = f"{settings.aws_agent_host_url.rstrip('/')}/conversations/{req.conversation_id}/aws-request"
+        payload = {
+            "request_id": req.request_id,
+            "target_account": req.target_account,
+            "risk_level": req.risk_level.value,
+            "policy_summary": req.policy_summary,
+            "justification": req.justification,
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(url, json=payload)
+
     service = PermissionService(
         store=store,
         iam=iam,
@@ -71,6 +89,7 @@ def aws() -> Provider:
             role_ttl_hours=settings.aws_role_ttl_hours,
             broker_principal_arn=settings.aws_broker_principal_arn,
         ),
+        on_request=_notify_host,
     )
     # Admin seam: default allows any authenticated caller (in-conversation flow
     # trusts the conversation user). A deployer can tighten this later.
