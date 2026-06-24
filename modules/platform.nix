@@ -286,7 +286,18 @@ in
         metadata = {
           name = "agent-host-dns";
           namespace = cfg.namespace;
-          annotations."external-dns.alpha.kubernetes.io/hostname" = cfg.ingress.host;
+          annotations = {
+            "external-dns.alpha.kubernetes.io/hostname" = cfg.ingress.host;
+          } // lib.optionalAttrs (cfg.ingress.middlewares != [ ]) {
+            # This Ingress ALSO produces a Traefik router that serves traffic, so
+            # it must carry the SAME middlewares as the IngressRoute — otherwise
+            # it shadows the IngressRoute with an UNAUTHENTICATED route. Traefik
+            # middleware refs here are "<namespace>-<name>@kubernetescrd".
+            "traefik.ingress.kubernetes.io/router.middlewares" =
+              lib.concatMapStringsSep ","
+                (m: "${m.namespace}-${m.name}@kubernetescrd")
+                cfg.ingress.middlewares;
+          };
         };
         spec = {
           ingressClassName = "traefik";
