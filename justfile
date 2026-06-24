@@ -13,6 +13,15 @@ default:
 check-flake:
     nix flake show
 
+# Render the example platform config (examples/kubenix-config.nix) and assert
+# the expected resources are present. Catches (a) Nix syntax / module eval
+# errors and (b) silent resource drops — e.g. a shallow `//` that overwrites
+# `deployments` and loses agent-host (a valid-but-wrong manifest set a plain
+# build wouldn't catch). examples/kubenix-config.nix also doubles as the
+# reference config for deploying the platform.
+check-manifests:
+    @nix eval --impure --raw -f examples/check.nix
+
 # Build the generic Nix sandbox image.
 build-image:
     nix build .#sandbox-image
@@ -79,5 +88,5 @@ typecheck:
 lint: typecheck
 
 # Everything CI runs.
-ci: check-flake lint test-unit
+ci: check-flake check-manifests lint test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
