@@ -119,4 +119,59 @@ test.describe("session selector & titles", () => {
       timeout: 30_000,
     });
   });
+
+  test("send -> swap conversation -> send again preserves each conversation's messages", async ({
+    chat,
+    page,
+  }) => {
+    await chat.open();
+    // Conversation A.
+    await chat.send("message in A");
+    await chat.waitForReply(/dummy agent/i);
+    // New conversation B, send there.
+    await page.locator(sidebar.newButton).click();
+    await chat.send("message in B");
+    await chat.waitForReply(/dummy agent/i);
+    await expect(page.locator(sidebar.item)).toHaveCount(2);
+
+    // Back to A: its message must still be there (the reported resume bug —
+    // sending in B must not lose A's messages).
+    await page.locator(sidebar.item).filter({ hasText: /message in A/i }).first().click();
+    await expect(chat.userMessages().filter({ hasText: /message in A/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await expect(chat.userMessages().filter({ hasText: /message in B/i })).toHaveCount(0);
+
+    // Send a SECOND message in A; both A messages present, B's still absent.
+    await chat.send("second message in A");
+    await chat.waitForReply(/dummy agent/i);
+    await expect(chat.userMessages().filter({ hasText: /message in A/i })).toHaveCount(1);
+    await expect(chat.userMessages().filter({ hasText: /second message in A/i })).toHaveCount(1);
+    await expect(chat.userMessages().filter({ hasText: /message in B/i })).toHaveCount(0);
+
+    // And B still has only its own message when we switch back.
+    await page.locator(sidebar.item).filter({ hasText: /message in B/i }).first().click();
+    await expect(chat.userMessages().filter({ hasText: /message in B/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await expect(chat.userMessages().filter({ hasText: /message in A/i })).toHaveCount(0);
+  });
+
+  test("conversations survive a page refresh (loaded from the server)", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("persisted conversation one");
+    await chat.waitForReply(/dummy agent/i);
+    await page.locator(sidebar.newButton).click();
+    await chat.send("persisted conversation two");
+    await chat.waitForReply(/dummy agent/i);
+    await expect(page.locator(sidebar.item)).toHaveCount(2);
+
+    // Refresh: the sidebar must repopulate from the server (not reset to one
+    // fresh in-memory session), so all conversations remain available.
+    await page.reload();
+    await expect(chat.input()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
+    await expect(page.locator(sidebar.title).filter({ hasText: /persisted conversation one/i })).toHaveCount(1);
+    await expect(page.locator(sidebar.title).filter({ hasText: /persisted conversation two/i })).toHaveCount(1);
+  });
 });

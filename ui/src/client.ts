@@ -25,15 +25,31 @@ export function createAgentHostAgent(config: AgentHostConfig): HttpAgent {
   });
 }
 
-/** List existing conversations (for the sessions/history view). */
-export async function listSessions(
-  config: AgentHostConfig,
-): Promise<Array<{ threadId: string; status: string; title?: string }>> {
-  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/sessions`, {
-    headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
-  });
-  if (!res.ok) return [];
-  return res.json();
+/** A conversation as the management API returns it (GET /conversations). */
+export interface ConversationView {
+  id: string;
+  threadId: string;
+  title: string;
+  status: string;
+  createdAt: number;
+  lastActivityAt: number;
+}
+
+/**
+ * Load ALL conversations from the agent-host so the sidebar survives a page
+ * refresh and every conversation is listed/searchable (not just the ones this
+ * browser tab created in memory).
+ */
+export async function loadConversations(config: AgentHostConfig): Promise<ConversationView[]> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations`, {
+      headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+    });
+    if (!res.ok) return [];
+    return (await res.json()) as ConversationView[];
+  } catch {
+    return [];
+  }
 }
 
 /** A minimal AG-UI message (what HttpAgent.initialMessages expects). */

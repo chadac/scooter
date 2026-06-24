@@ -55,6 +55,43 @@ export const sessionStore = {
     if (state.sessions.some((s) => s.id === id)) setState({ ...state, currentId: id });
   },
 
+  /**
+   * Merge conversations loaded from the agent-host into the list. Called on
+   * startup so the sidebar survives a refresh and every conversation is listed
+   * (not just ones created in this tab). Dedups by id, sorts newest-first, and
+   * preserves the current selection. If the only local session is the untouched
+   * initial "New chat" and the server has real conversations, select the newest
+   * server one so a refresh lands on a real conversation.
+   */
+  mergeFromServer(
+    convs: Array<{ id: string; title?: string; createdAt?: number }>,
+  ) {
+    if (convs.length === 0) return;
+    const byId = new Map<string, Session>();
+    for (const s of state.sessions) byId.set(s.id, s);
+    for (const c of convs) {
+      const existing = byId.get(c.id);
+      byId.set(c.id, {
+        id: c.id,
+        title: c.title || existing?.title || DEFAULT_TITLE,
+        createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),
+      });
+    }
+    const sessions = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
+
+    // Was the current session the pristine initial one (random id, default
+    // title, not on the server)? If so, jump to the newest real conversation.
+    const cur = state.sessions.find((s) => s.id === state.currentId);
+    const curIsPristineInitial =
+      !!cur &&
+      cur.title === DEFAULT_TITLE &&
+      !convs.some((c) => c.id === state.currentId) &&
+      state.sessions.length === 1;
+    const currentId = curIsPristineInitial ? sessions[0].id : state.currentId;
+
+    setState({ sessions, currentId });
+  },
+
   /** Delete a conversation. If it was current, select another (or start fresh). */
   deleteSession(id: string) {
     const remaining = state.sessions.filter((s) => s.id !== id);

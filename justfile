@@ -51,6 +51,14 @@ test-cluster: cluster-up
 test-e2e:
     npm run test:e2e
 
+# Tier 3 — E2E against a LIVE deployment (real sandbox, real exec, real Bedrock).
+# Usage: just test-e2e-external https://chat.example.com [user:pass]
+# Drives the deployed agent-host API directly; catches in-cluster failures the
+# fake stack can't (e.g. a 403 on pods/exec, broker git auth).
+test-e2e-external url basic_auth="":
+    RUN_EXTERNAL_E2E=1 AGENT_HOST_URL={{url}} EXTERNAL_BASIC_AUTH={{basic_auth}} \
+      npx playwright test test/e2e/external.spec.ts --reporter=list
+
 # Tier 3 — the single real-`goose acp` E2E (needs a model key).
 test-e2e-real:
     RUN_REAL_GOOSE=1 npm run test:e2e -- real-goose

@@ -78,10 +78,16 @@ export function createK8sSandboxApiClient(
   ref: SandboxRef,
   opts: K8sExecOptions = {},
 ): SandboxApiClient {
-  const kc = opts.kubeConfig ?? defaultKubeConfig();
-  const exec = new Exec(kc);
   const container = opts.container ?? DEFAULT_CONTAINER;
   const podName = opts.podName ?? ref.name;
+
+  // Build a fresh Exec per call. In-cluster the projected SA token ROTATES
+  // (~1h on EKS); the client-node Exec WebSocket caches user.token from the
+  // KubeConfig at construction, so a long-lived, reused Exec starts 403-ing on
+  // the pods/exec upgrade once the cached token expires. Re-reading the config
+  // (cheap — it just reads the token file) picks up the current token each time.
+  // An explicitly-injected kubeConfig (tests) is reused as-is.
+  const freshExec = (): Exec => new Exec(opts.kubeConfig ?? defaultKubeConfig());
 
   const execRaw = (
     command: string[],
@@ -91,7 +97,7 @@ export function createK8sSandboxApiClient(
       const out = sink();
       const err = sink();
       let status: V1Status | undefined;
-      exec
+      freshExec()
         .exec(
           ref.namespace,
           podName,
