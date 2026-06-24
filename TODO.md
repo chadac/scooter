@@ -37,6 +37,32 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
+- [ ] **ACP-expanding tools — agent-presented option dropdown.** Give the agent
+  a tool to present a set of choices to the user as a dropdown/select in the UI,
+  and block until the user picks. Maps to an ACP request → AG-UI custom event →
+  assistant-ui renders a select → the choice posts back (similar plumbing to the
+  existing permission round-trip: `POST /conversations/:id/permission/:toolCallId`).
+  Likely a new AG-UI custom event type + a UI widget + a bridge tool handler.
+
+- [ ] **Broker permissions / approval system.** Today the broker is
+  passthrough (any holder of a conversation's SA token can use any enabled
+  provider route). Add a permissions model where an agent can *request expanded
+  permissions* (e.g. a new provider, a write scope, a specific repo) and the
+  user *approves them in the UI*. Needs: a request representation, an approval
+  UI surface (likely reusing the permission/approval round-trip), and broker
+  enforcement keyed on what's been granted per conversation. Bigger design —
+  spec it out (research → design → tests → impl) before building.
+
+- [ ] **Show linked resources in the chat UI.** We already track conversation ↔
+  external-resource links (`ConversationMap` / `ResourceLink`: github PR/issue,
+  gitlab MR, slack thread, jira ticket). Surface them in the left chat panel
+  under a collapsing tab: provider icon + link, e.g. GitHub icon + PR link,
+  GitLab icon + MR link, Slack icon + thread + a brief header/summary of the
+  conversation. Needs: an agent-host endpoint to expose a conversation's links
+  (sourced from the webhooks store, or have the webhook push the link to the
+  agent-host on create — there's already a `/conversations/link` route), and a
+  collapsible UI component.
+
 - [ ] **Conversation titling is weak.** The first thing an agent does on a new
   conversation should be to assign a title (right now titles are derived from
   the first user message client-side, or stay "New chat"). Likely needs a new
