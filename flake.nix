@@ -66,6 +66,11 @@
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
           ui = pkgs.callPackage ./ui { };
 
+          # UI OCI image: nginx serving the static build + proxying the agent-host.
+          uiImage = import ./pkgs/ui-image {
+            inherit pkgs lib n2c ui;
+          };
+
           # Render the platform manifests (namespace, agent-host Deployment +
           # RBAC) with kubenix. `nix build .#platform-manifests` -> a YAML file.
           platform = kubenix.evalModules.${system} {
@@ -109,6 +114,9 @@
 
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = agentHostImageBuilder.image;
+
+            # nix build .#ui-image  ->  UI (nginx + static build) OCI image
+            ui-image = uiImage.image;
 
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             platform-manifests = platform.config.kubernetes.resultYAML;

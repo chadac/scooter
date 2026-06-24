@@ -14,6 +14,9 @@
 
 let
   cfg = config.agentSandbox;
+  # The ingress targets the UI when it's deployed (the UI proxies the API on the
+  # same origin); otherwise it targets the agent-host API directly.
+  ingressBackend = if cfg.ui.enable then "ui" else "agent-host";
 in
 {
   imports = [ kubenix.modules.k8s ./broker.nix ./webhooks.nix ];
@@ -55,6 +58,22 @@ in
       default = "${cfg.registryPrefix}agent-sandbox-nix:latest";
       defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-nix:latest"'';
       description = "OCI ref of the generic Nix sandbox image.";
+    };
+    uiImage = mkOption {
+      type = types.str;
+      default = "${cfg.registryPrefix}agent-sandbox-ui:latest";
+      defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-ui:latest"'';
+      description = "OCI ref of the UI image (nginx + static build + API proxy).";
+    };
+    ui.enable = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Deploy the conversation UI (nginx serving the assistant-ui build and
+        proxying /agui + /sessions + the management API to the agent-host).
+        When enabled, the ingress targets the UI (which proxies the API);
+        when disabled, the ingress targets the agent-host directly.
+      '';
     };
     replicas = mkOption {
       type = types.int;
@@ -277,6 +296,39 @@ in
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };
       };
+    } // lib.optionalAttrs cfg.ui.enable {
+      # Conversation UI — nginx serving the assistant-ui build and proxying the
+      # agent-host API on the same origin (so the browser's /agui SSE + /sessions
+      # + management calls work without CORS).
+      deployments.ui = {
+        metadata = { name = "ui"; namespace = cfg.namespace; };
+        spec = {
+          replicas = 1;
+          selector.matchLabels.app = "ui";
+          template = {
+            metadata.labels.app = "ui";
+            spec.containers.ui = {
+              name = "ui";
+              image = cfg.uiImage;
+              imagePullPolicy = cfg.pullPolicy;
+              ports = [{ containerPort = 8080; name = "http"; }];
+              env = [{
+                name = "AGENT_HOST_URL";
+                value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
+              }];
+              readinessProbe.httpGet = { path = "/"; port = "http"; };
+            };
+          };
+        };
+      };
+
+      services.ui = {
+        metadata = { name = "ui"; namespace = cfg.namespace; };
+        spec = {
+          selector.app = "ui";
+          ports = [{ port = 8080; targetPort = "http"; name = "http"; }];
+        };
+      };
     } // lib.optionalAttrs cfg.ingress.enable {
       # DNS-only companion Ingress: external-dns runs --source=ingress (NOT the
       # Traefik IngressRoute CRD), so the standard Ingress is what registers the
@@ -306,7 +358,7 @@ in
             http.paths = [{
               path = "/";
               pathType = "Prefix";
-              backend.service = { name = "agent-host"; port.number = 8080; };
+              backend.service = { name = ingressBackend; port.number = 8080; };
             }];
           }];
         };
@@ -332,7 +384,7 @@ in
             kind = "Rule";
             match = "Host(`${cfg.ingress.host}`)";
             middlewares = map (m: { inherit (m) name namespace; }) cfg.ingress.middlewares;
-            services = [{ name = "agent-host"; port = 8080; }];
+            services = [{ name = ingressBackend; port = 8080; }];
           }];
         };
       }
