@@ -144,6 +144,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/events.integrity", async (ctx) => {
     const id = ctx.params.id;
     const { res } = ctx;
+    // Unknown conversation -> 404 so the client stops reconnecting (a deleted
+    // conversation otherwise loops retries forever).
+    if (!sessions.get(id)) {
+      res.writeHead(404, { "Content-Type": "application/json" }).end('{"error":"not found"}');
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",

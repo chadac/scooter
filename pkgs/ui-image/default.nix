@@ -40,10 +40,27 @@ let
         root ${ui};
         index index.html;
 
-        # Agent-host API — same-origin reverse proxy.
-        location /agui          { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; proxy_set_header Connection ""; }
+        # Agent-host API — same-origin reverse proxy. /agui and /conversations
+        # carry SSE (POST /agui, GET /conversations/:id/events[.integrity]), so
+        # they MUST disable buffering and use HTTP/1.1 keep-alive or events would
+        # be batched/withheld and the live UI stream would stall.
+        location /agui {
+          proxy_pass ''${AGENT_HOST_URL};
+          proxy_set_header Host $host;
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+        }
+        location /conversations {
+          proxy_pass ''${AGENT_HOST_URL};
+          proxy_set_header Host $host;
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+        }
         location /sessions      { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
-        location /conversations { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
         location /models        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
 
         # SPA: serve the app, fall back to index.html for client routes.
