@@ -197,7 +197,11 @@ in
   };
 
   config = {
-    kubernetes.resources = {
+    # mkMerge (not //): the optional UI / ingress blocks below ALSO define
+    # `deployments` / `services`, and a shallow `//` update would replace the
+    # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
+    kubernetes.resources = lib.mkMerge [
+    {
       namespaces.${cfg.namespace} = {
         metadata.name = cfg.namespace;
       };
@@ -339,7 +343,8 @@ in
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };
       };
-    } // lib.optionalAttrs cfg.ui.enable {
+    }
+    (lib.mkIf cfg.ui.enable {
       # Conversation UI — nginx serving the assistant-ui build and proxying the
       # agent-host API on the same origin (so the browser's /agui SSE + /sessions
       # + management calls work without CORS).
@@ -372,7 +377,8 @@ in
           ports = [{ port = 8080; targetPort = "http"; name = "http"; }];
         };
       };
-    } // lib.optionalAttrs cfg.ingress.enable {
+    })
+    (lib.mkIf cfg.ingress.enable {
       # DNS-only companion Ingress: external-dns runs --source=ingress (NOT the
       # Traefik IngressRoute CRD), so the standard Ingress is what registers the
       # hostname in Route53. The IngressRoute below does the actual routing +
@@ -406,7 +412,8 @@ in
           }];
         };
       };
-    };
+    })
+    ];
 
     # Public ingress (opt-in). Traefik IngressRoute is a CRD, so it goes through
     # kubernetes.objects. external-dns reads the hostname annotation; websecure
