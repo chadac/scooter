@@ -253,6 +253,12 @@ in
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
           replicas = cfg.replicas;
+          # Recreate (not the default RollingUpdate): agent-host mounts the
+          # single RWO `agent-host-state` PVC, which can't be Multi-Attached to
+          # an old + new pod at once. RollingUpdate deadlocks — the new pod waits
+          # on the volume the old pod still holds, and the old pod won't drain
+          # until the new one is Ready. Recreate stops the old pod first.
+          strategy.type = "Recreate";
           selector.matchLabels.app = "agent-host";
           template = {
             metadata.labels.app = "agent-host";
