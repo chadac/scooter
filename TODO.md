@@ -22,18 +22,11 @@ Running list of work items. Newest asks at the top of each section. See
         track the rolling checksum; on a `prevChecksum` mismatch, refetch
         history until the chains agree (self-heal).
 
-- [ ] **Durable webhooks mapping store (Postgres).**
-  The PR/Slack ↔ conversation mapping (`ConversationMap`) is fully implemented
-  but stored in SQLite on an **emptyDir** — wiped on every pod restart (Karpenter
-  consolidated the pods twice in one day). A restart orphans every in-flight
-  mapping: follow-up comments spawn a new conversation instead of resuming, and
-  status-back-posting stops.
-  - [x] Add `asyncpg` to webhooks deps (`pyproject.toml` + `default.nix`).
-  - [ ] Add a Postgres Deployment + Service + PVC + creds Secret to
-        `modules/webhooks.nix` (gated option); switch DSN to
-        `postgresql+asyncpg://…` when enabled. (`init_db` runs `create_all`, so
-        no migration tooling needed.)
-  - [ ] Wire it in example-app `kubenix/agent-manager.nix` + apply.
+- [x] **Durable webhooks mapping store (Postgres).** DONE — deployed + verified.
+  The PR/Slack ↔ conversation mapping was SQLite on an emptyDir (wiped on every
+  restart). Now a PVC-backed Postgres pod (`agent-webhooks-db`, ebs-gp3 1Gi);
+  the app assembles the DSN from DB_* env (password via secretKeyRef). All 5
+  tables created in Postgres, verified live. (commits c9eba33, mkMerge fix.)
 
 ## Backlog
 
