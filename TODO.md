@@ -127,11 +127,12 @@ Running list of work items. Newest asks at the top of each section. See
   merge poll surfaces it without a refresh. Also fixed a latent durability bug
   (start() now awaits saveMeta). 53/53 Tier 1.
 
-- [~] **UI emptiness during agent-host restart.** PARTLY addressed by the new 10s
-  `loadConversations` poll (commit 8089cd3) — a fresh tab repopulates within 10s
-  once the server is back. A retry-with-backoff on the *initial* load would still
-  make the very-first paint snappier during a restart, but the poll covers the
-  worst of it now.
+- [x] **UI emptiness during agent-host restart.** DONE (commits 8089cd3 + ff515b1).
+  The 10s `loadConversations` poll handles the steady state; the initial load now
+  retries with backoff (0.5s→8s) while the server is unreachable, so a fresh tab
+  during a restart paints within a second or two of the agent-host coming back
+  (loadConversationsResult distinguishes "down" from "up but empty"). 9/9 sessions
+  e2e green.
 
 ## External (provider config — outside the cluster)
 
