@@ -6,12 +6,16 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   createSessionManager,
   type SandboxProvisioner,
   type ConversationStore,
 } from "../../src/session/manager.js";
+import { createFileConversationStore } from "../../src/session/fileStore.js";
 import type { AguiEvent } from "../../src/bridge.js";
 import type { SandboxRef, SessionId } from "../../src/types.js";
 
@@ -90,6 +94,35 @@ describe("SessionManager", () => {
 
     expect(provisioner.destroy).toHaveBeenCalledOnce();
     expect(sessions.get(conv.id)?.status).toBe("ended");
+  });
+
+  it("conversations survive a restart (file store hydrate)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      // First "process": create two conversations + give one a title.
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      await m1.start("alpha");
+      await m1.start("beta");
+      m1.setTitle("alpha", "Refactor the parser");
+      expect(m1.list()).toHaveLength(2);
+
+      // Second "process": a fresh manager over the SAME store. hydrate() must
+      // repopulate the list from disk (the in-memory entries are gone).
+      const store2 = createFileConversationStore(root);
+      const m2 = createSessionManager({ provisioner: fakeProvisioner(), store: store2 });
+      expect(m2.list()).toHaveLength(0); // nothing in memory yet
+      await m2.hydrate();
+
+      const restored = m2.list();
+      expect(restored).toHaveLength(2);
+      const alpha = restored.find((c) => c.id === "alpha");
+      expect(alpha?.title).toBe("Refactor the parser"); // persisted title
+      expect(alpha?.status).toBe("suspended"); // resumable, not live
+      expect(restored.find((c) => c.id === "beta")).toBeTruthy();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("records last-activity metadata and persists it via the store", async () => {

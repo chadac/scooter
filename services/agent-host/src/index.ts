@@ -168,6 +168,10 @@ export async function main(
     },
   });
 
+  // Restore persisted conversations so the session list survives a restart
+  // (GET /conversations returns them; the UI sidebar repopulates on refresh).
+  await sessions.hydrate();
+
   // Forward every conversation's AG-UI events to subscribed UI connections.
   // (SessionManager already persists them to the store via its own wiring.)
 

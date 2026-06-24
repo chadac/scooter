@@ -26,6 +26,15 @@ export interface SandboxProvisioner {
   destroy(ref: SandboxRef): Promise<void>;
 }
 
+/** Durable, restart-surviving metadata for one conversation. */
+export interface ConversationMeta {
+  id: SessionId;
+  threadId: ThreadId;
+  title: string;
+  createdAt: number;
+  lastActivityAt: number;
+}
+
 /** Durable conversation store (event log replay + goose state pointer). */
 export interface ConversationStore {
   appendEvent(id: SessionId, event: AguiEvent): Promise<void>;
@@ -35,6 +44,12 @@ export interface ConversationStore {
   /** Persist last-activity (ms epoch) so it survives restarts and is queryable
    *  by an external lifecycle manager. Optional. */
   recordActivity?(id: SessionId, at: number): Promise<void>;
+  /** Persist conversation metadata (title/createdAt) so the list survives an
+   *  agent-host restart. Optional (in-memory stores skip it). */
+  saveMeta?(meta: ConversationMeta): Promise<void>;
+  /** Reconstruct all persisted conversations (for the list after a restart).
+   *  Optional. */
+  listConversations?(): Promise<ConversationMeta[]>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";
@@ -72,6 +87,10 @@ export interface SessionManager {
   list(): Conversation[];
   /** Set a conversation's title (e.g. agent-assigned). */
   setTitle(id: SessionId, title: string): void;
+  /** Load persisted conversations from the store into the in-memory list, so
+   *  the session list (and GET /conversations) survives an agent-host restart.
+   *  Persisted-but-not-live conversations come back as "suspended". */
+  hydrate(): Promise<void>;
   /**
    * Suspend conversations that have been idle (no prompt/event) longer than
    * idleMs. Native-friendly: the agent-host owns the activity signal, so it
@@ -137,6 +156,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     void store.recordActivity?.(e.id, e.lastActivityAt);
   };
 
+  const saveMeta = (e: Entry) => {
+    void store.saveMeta?.({
+      id: e.id,
+      threadId: e.threadId,
+      title: e.title,
+      createdAt: e.createdAt,
+      lastActivityAt: e.lastActivityAt,
+    });
+  };
+
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
     e.bridge.onEvent((event) => {
@@ -166,6 +195,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       wireEventLog(entry);
+      saveMeta(entry); // persist so the conversation list survives a restart
       // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
       // on its ACP newSession. bridge.prompt() lazily starts on first use, after
       // emitting RUN_STARTED, so the UI always sees the run begin.
@@ -175,10 +205,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async revive(id) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
-      entry.sandbox = await provisioner.resume(entry.sandbox);
+      // A HYDRATED conversation (restored from disk after a restart) has a
+      // placeholder sandbox ref with no namespace — its pod was never created in
+      // THIS process (and a suspended Sandbox may have been GC'd). Re-create the
+      // sandbox rather than resume a ref this process never owned.
+      entry.sandbox = entry.sandbox.namespace
+        ? await provisioner.resume(entry.sandbox)
+        : await provisioner.create(shortId(entry.threadId));
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
       wireEventLog(entry);
+      saveMeta(entry);
       await entry.bridge?.start();
       // Event-log replay to a reattaching UI is driven by the AG-UI server's
       // onAttach handler reading store.readEvents(id); nothing to do here.
@@ -237,7 +274,29 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     setTitle(id, title) {
       const entry = entries.get(id);
-      if (entry) entry.title = title;
+      if (entry) {
+        entry.title = title;
+        saveMeta(entry); // persist the (possibly agent-assigned) title
+      }
+    },
+
+    async hydrate() {
+      const metas = (await store.listConversations?.()) ?? [];
+      for (const m of metas) {
+        if (entries.has(m.id)) continue; // a live one already exists
+        // Persisted but not currently live -> a resumable (suspended)
+        // conversation. No bridge/sandbox yet; revive() recreates them on use.
+        entries.set(m.id, {
+          id: m.id,
+          threadId: m.threadId,
+          sandbox: { name: `conv-${shortId(m.threadId)}`, namespace: "" },
+          bridge: undefined,
+          status: "suspended",
+          title: m.title,
+          createdAt: m.createdAt,
+          lastActivityAt: m.lastActivityAt,
+        });
+      }
     },
 
     async sweepIdle(idleMs, now = nowMs()) {
