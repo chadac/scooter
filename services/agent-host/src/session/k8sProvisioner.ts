@@ -165,6 +165,14 @@ function sandboxManifest(
                 // would default to "/" (often read-only) — pin it to the
                 // writable workspace volume.
                 { name: "HOME", value: "/workspace" },
+                // git host -> broker provider map for git-credential-broker.
+                // github.com/gitlab.com are the built-in defaults; test-git.local
+                // -> test lets the cluster e2e exercise the path via the test
+                // provider (harmless in prod — that provider is gated off).
+                {
+                  name: "GIT_BROKER_HOST_MAP",
+                  value: "github.com=github,gitlab.com=gitlab,test-git.local=test",
+                },
               ],
             },
           ],

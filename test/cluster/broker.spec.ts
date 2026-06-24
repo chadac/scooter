@@ -70,4 +70,41 @@ maybe("broker credential flow (IRSA)", () => {
     );
     expect(stdout.trim()).toBe("401");
   });
+
+  it("git-credential-broker vends a credential for an authenticated pod", async () => {
+    // Invoke the helper exactly as git would: `get` with the credential
+    // description on stdin. It reads the projected SA token, maps the host to
+    // the broker `test` provider (GIT_BROKER_HOST_MAP) and returns git creds.
+    const { stdout, exitCode } = await cluster.exec(
+      SELECTOR(id),
+      [
+        "sh",
+        "-c",
+        "printf 'protocol=https\\nhost=test-git.local\\n\\n' | git-credential-broker get",
+      ],
+      NS,
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("username=test-user");
+    expect(stdout).toContain("password=test-broker-token");
+  });
+
+  it("git itself uses the broker helper (credential.helper broker)", async () => {
+    // `git credential fill` runs the configured helper chain. The entrypoint set
+    // credential.helper=broker, so this proves git -> git-credential-broker ->
+    // broker end to end (the same path `git clone https://test-git.local/...`
+    // takes). HOME must match the entrypoint's so the global config applies.
+    const { stdout, exitCode } = await cluster.exec(
+      SELECTOR(id),
+      [
+        "sh",
+        "-c",
+        "printf 'protocol=https\\nhost=test-git.local\\n\\n' | git credential fill",
+      ],
+      NS,
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("username=test-user");
+    expect(stdout).toContain("password=test-broker-token");
+  });
 });
