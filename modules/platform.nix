@@ -119,6 +119,36 @@ in
         exposed via the management API for an external controller. 0 disables.
       '';
     };
+
+    ingress = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Expose the agent-host (AG-UI/API + UI) via a Traefik IngressRoute.";
+      };
+      host = mkOption {
+        type = types.str;
+        default = "";
+        example = "chat.example.com";
+        description = "Public hostname. external-dns registers it from the route annotation.";
+      };
+      entryPoint = mkOption {
+        type = types.str;
+        default = "websecure";
+        description = "Traefik entryPoint (websecure = auto-TLS via the cert resolver).";
+      };
+      middlewares = mkOption {
+        type = types.listOf (types.submodule {
+          options = {
+            name = mkOption { type = types.str; };
+            namespace = mkOption { type = types.str; };
+          };
+        });
+        default = [ ];
+        example = [{ name = "basic-auth"; namespace = "example-org"; }];
+        description = "Traefik middlewares to attach (e.g. an existing basic-auth).";
+      };
+    };
   };
 
   config = {
@@ -248,5 +278,30 @@ in
         };
       };
     };
+
+    # Public ingress (opt-in). Traefik IngressRoute is a CRD, so it goes through
+    # kubernetes.objects. external-dns reads the hostname annotation; websecure
+    # terminates TLS via the cert resolver. Auth is whatever middlewares are
+    # attached (e.g. reuse an existing basic-auth).
+    kubernetes.objects = lib.optionals cfg.ingress.enable [
+      {
+        apiVersion = "traefik.io/v1alpha1";
+        kind = "IngressRoute";
+        metadata = {
+          name = "agent-host";
+          namespace = cfg.namespace;
+          annotations."external-dns.alpha.kubernetes.io/hostname" = cfg.ingress.host;
+        };
+        spec = {
+          entryPoints = [ cfg.ingress.entryPoint ];
+          routes = [{
+            kind = "Rule";
+            match = "Host(`${cfg.ingress.host}`)";
+            middlewares = map (m: { inherit (m) name namespace; }) cfg.ingress.middlewares;
+            services = [{ name = "agent-host"; port = 8080; }];
+          }];
+        };
+      }
+    ];
   };
 }
