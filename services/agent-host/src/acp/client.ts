@@ -142,10 +142,18 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     async createTerminal(
       params: schema.CreateTerminalRequest,
     ): Promise<schema.CreateTerminalResponse> {
+      // eslint-disable-next-line no-console
+      console.log("[acp] createTerminal:", JSON.stringify({ command: params.command, args: params.args, cwd: params.cwd }));
+      // goose passes ITS OWN session cwd (a path in the agent-host pod), which
+      // does not exist in the sandbox. The agent's work happens in the sandbox
+      // workspace, so run there unless goose gave a sandbox-absolute path under
+      // /workspace. (A `cd` to a missing dir would fail the whole command.)
+      const sandboxCwd =
+        params.cwd && params.cwd.startsWith("/workspace") ? params.cwd : "/workspace";
       const handle = deps.exec.spawn({
         command: params.command,
         args: params.args ?? [],
-        cwd: params.cwd ?? undefined,
+        cwd: sandboxCwd,
         env: Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])),
       });
       terminals.set(handle.id, handle);
@@ -161,6 +169,8 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       params: schema.TerminalOutputRequest,
     ): Promise<schema.TerminalOutputResponse> {
       const buf = terminalBuffers.get(params.terminalId) ?? "";
+      // eslint-disable-next-line no-console
+      console.log("[acp] terminalOutput:", params.terminalId, JSON.stringify(buf.slice(0, 200)));
       return { output: buf, truncated: false };
     },
 

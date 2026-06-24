@@ -66,13 +66,25 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
       let exit: { exitCode: number } | undefined;
       let buffered = ""; // retain output for subscribers that attach after exec
 
-      const exitPromise = api.execute(req).then((res): { exitCode: number } => {
-        const chunk = res.stdout + (res.stderr ? res.stderr : "");
-        buffered += chunk;
-        for (const cb of outputCbs) cb(chunk);
-        exit = { exitCode: res.exitCode };
-        return exit;
-      });
+      const exitPromise = api
+        .execute(req)
+        .then((res): { exitCode: number } => {
+          const chunk = res.stdout + (res.stderr ? res.stderr : "");
+          buffered += chunk;
+          for (const cb of outputCbs) cb(chunk);
+          exit = { exitCode: res.exitCode };
+          return exit;
+        })
+        .catch((err): { exitCode: number } => {
+          // A failed exec (e.g. transient WS error) must NOT reject — goose's
+          // terminal/wait_for_exit would surface "Internal error" and lose the
+          // run. Surface it as terminal output + a non-zero exit instead.
+          const msg = `exec failed: ${err instanceof Error ? err.message : String(err)}`;
+          buffered += msg;
+          for (const cb of outputCbs) cb(msg);
+          exit = { exitCode: 1 };
+          return exit;
+        });
 
       return {
         id,

@@ -147,12 +147,25 @@ export function createK8sSandboxApiClient(
   };
 }
 
-/** Build the argv for an ExecRequest, honoring cwd/env without a shell when possible. */
+/**
+ * Build the argv for an ExecRequest as a `sh -c` invocation.
+ *
+ * Two input shapes:
+ *  - argv form: command + args[] are separate tokens -> shell-quote each so they
+ *    pass through literally.
+ *  - shell-string form: command is a whole shell line (pipes, redirects, &&) and
+ *    args is empty -> it is ALREADY shell syntax, so DON'T requote it (quoting
+ *    the whole line makes the shell try to run one program literally named
+ *    "echo X > f && cat f"). goose's ACP terminal sends this form.
+ */
 function wrapCommand(req: ExecRequest): string[] {
   const envPrefix = req.env
     ? Object.entries(req.env).map(([k, v]) => `${k}=${shellQuote(v)}`)
     : [];
-  const inner = [req.command, ...req.args].map(shellQuote).join(" ");
+  const inner =
+    req.args.length === 0
+      ? req.command // already a shell line — pass through verbatim
+      : [req.command, ...req.args].map(shellQuote).join(" ");
   const cd = req.cwd ? `cd ${shellQuote(req.cwd)} && ` : "";
   const assigns = envPrefix.length ? `${envPrefix.join(" ")} ` : "";
   return ["sh", "-c", `${cd}${assigns}${inner}`];

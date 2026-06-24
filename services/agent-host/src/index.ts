@@ -26,6 +26,7 @@ import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
+import { writeGooseConfig } from "./agent/gooseConfig.js";
 import type { SandboxRef } from "./types.js";
 
 export interface AgentHostConfig {
@@ -139,6 +140,19 @@ export async function main(
   const provisioner = config.fakeSandbox
     ? createNoopProvisioner()
     : createK8sProvisioner({ namespace: config.namespace, sandboxImage: config.sandboxImage });
+  // Ensure goose's developer extension is enabled in its config, so goose
+  // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
+  // of running them locally in this pod. Only meaningful for real goose.
+  if (!config.fakeSandbox && process.env.HOME) {
+    try {
+      writeGooseConfig(process.env.HOME);
+      // eslint-disable-next-line no-console
+      console.log(`[agent-host] wrote goose config (developer enabled) to ${process.env.HOME}/.config/goose`);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[agent-host] failed to write goose config:", e);
+    }
+  }
   const store = createFileConversationStore(config.statePath);
   const server = createAguiServer();
 
