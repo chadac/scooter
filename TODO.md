@@ -19,16 +19,31 @@ Running list of work items. Newest asks at the top of each section. See
         + nginx /agui+/conversations made SSE-safe (no buffering). 45/45 Tier 1.
   - [x] integrityStream.ts client (subscribe, fold, checksum self-heal). VERIFIED
         live against the real stack: every event link_ok, message present.
-  - [ ] **UI reconciliation is the open part** — parked on branch
-        **`wip/integrity-ui-reconciliation`** (commit 9cc4e62). Wiring the
-        integrity stream into RuntimeProvider via full `runtime.thread.reset()`
-        works in a single e2e run (live-stream.spec passes in isolation — the
-        reported bug IS fixed) but FLAKES in the full shared-webServer suite:
-        reset() per-update fights assistant-ui's own render, and each open page
-        holds a long-lived SSE that stresses the single-process test server.
-        NEXT: replace full reset() with assistant-ui's incremental
-        `import()`/`append()` so we apply deltas instead of rebuilding the thread
-        each update. (Server side is on main + solid.)
+  - [x] **Two server/client fixes landed on main** (commit b6e227c):
+        agui/server.broadcast() scoped to run-scoped POST /agui conns (an external
+        run no longer hits an idle @ag-ui client as a stray RUN_STARTED); and
+        integrityStream retries a 404 with capped backoff (a lazily-created new
+        thread connects once the user sends). 59/59 Tier 1.
+  - [~] **UI reconciliation — parked on `wip/integrity-ui-import`** (commit 31d7e05,
+        supersedes the older reset()-based `wip/integrity-ui-reconciliation`). Now
+        uses the RIGHT primitive: `runtime.thread.import()` → `applyExternalMessages`
+        (no run protocol, no RUN_STARTED, doesn't clobber interrupt/in-flight state).
+        live-stream.spec passes IN ISOLATION. **Real blocker (measured): the Tier-3
+        e2e suite is already flaky on pristine main** (~2 failed/2 flaky with ZERO
+        changes — interrupt/linked-resources/revive/sessions shuffle run-to-run), so
+        the shared suite can't validate this cleanly either way. NEXT: stabilize the
+        e2e harness (below), THEN land import() (structural shape: hydrate via
+        onSwitchToThread, stream appends-only). See docs/INTEGRITY_UI_NOTES.md.
+
+- [ ] **Stabilize the Tier-3 e2e harness (pre-existing flakiness).** Measured on
+  pristine `main`: a full `just test-e2e` run is ~2 failed + 2 flaky with NO code
+  changes; the failing set shuffles (interrupt, linked-resources, revive,
+  sessions/new-session). Root cause: one shared single-process fake-agent webServer
+  + vite, accumulating state and long-lived SSE connections across specs. This
+  BLOCKS validating the live-integrity-UI feature (and erodes trust in the suite
+  generally). Fix: isolate per-spec server state (or an isolated agent-host for
+  SSE-heavy specs), make the SSE lifecycle + no-error-box afterEach deterministic.
+  Deterministic Tier 1 (59/59) is unaffected — this is purely the e2e tier.
 
 - [x] **Durable webhooks mapping store (Postgres).** DONE — deployed + verified.
   The PR/Slack ↔ conversation mapping was SQLite on an emptyDir (wiped on every
@@ -37,6 +52,21 @@ Running list of work items. Newest asks at the top of each section. See
   tables created in Postgres, verified live. (commits c9eba33, mkMerge fix.)
 
 ## Backlog
+
+- [ ] **Proper in-sandbox dev environment (Nix-powered, lazy, services-capable).**
+  The sandbox should be a real dev box the agent can build/install into and run
+  services in. Requirements:
+  1. **Nix build/install:** the agent can `nix build`/install tools on demand; ship
+     a SKILL that explains the workflow (how to add a package, build it, where it
+     lands on PATH) so the agent knows how to use it without trial-and-error.
+  2. **systemd-enabled container:** it's a container, but enable systemd so we can
+     run real services. Forward-looking: collaborative envs (Jupyter notebooks etc.)
+     with port-forwarding the agent can enable on request.
+  3. **Lazy by default:** keep the base image LIGHT — set up stubs/shims for common
+     tools (`uv`, `python`, …) that auto-build the underlying Nix package on first
+     use, instead of baking everything in. Build-on-demand, not build-ahead.
+  Touches pkgs/sandbox-image (the generic sandbox), a new skill, and the exec/PATH
+  story. Design it via the staged PoC process (research → design → tests → impl).
 
 - [x] **ACP-expanding tools — agent-presented option dropdown.** DONE end-to-end
   (commits ec74448 server scaffold → 74b0566 full interrupt feature). The agent
