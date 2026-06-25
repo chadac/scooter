@@ -110,13 +110,24 @@ export function createAguiServer(): AguiServer {
   // ends. The persistent GET /sessions/:id/events connections stay open.
   const runScoped = new WeakSet<ServerResponse>();
 
+  // Broadcast a run's live AG-UI events ONLY to run-scoped connections — i.e.
+  // the POST /agui stream of the client that started THIS run. We deliberately
+  // do NOT push to persistent (GET .../events) connections: a run the client
+  // didn't initiate (driven by another tab or a webhook via POST
+  // /conversations/:id/messages) would otherwise reach an idle @ag-ui client as
+  // a stray RUN_STARTED — which it rejects ("RUN_STARTED while a run is still
+  // active"). The open UI renders those external runs through the separate
+  // integrity stream (GET .../events.integrity) instead, which is fed off the
+  // persist path and carries every event with its checksum. The right primitive
+  // for each: run-scoped SSE for your own run, the integrity stream for the rest.
   const broadcast = (sessionId: SessionId, event: AguiEvent) => {
     const set = connections.get(sessionId);
     if (!set) return;
     const terminal = event.type === "RUN_FINISHED" || event.type === "RUN_ERROR";
     for (const res of set) {
+      if (!runScoped.has(res)) continue; // integrity stream serves persistent conns
       write(res, event);
-      if (terminal && runScoped.has(res)) {
+      if (terminal) {
         set.delete(res);
         res.end();
       }

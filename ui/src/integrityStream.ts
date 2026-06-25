@@ -114,6 +114,16 @@ export function subscribeIntegrity(
     return "ok";
   };
 
+  // A 404 can mean two things: the conversation doesn't exist YET (a brand-new
+  // thread the user hasn't sent in — it's created server-side on the first
+  // prompt) or it's gone (deleted). We can't tell them apart, so we retry 404
+  // with a backoff that's capped (404Cap) rather than giving up: a soon-to-exist
+  // thread connects once the user sends; a deleted one just polls slowly until
+  // the caller closes the subscription (on switch-away / unmount). The cap keeps
+  // us from hammering the server.
+  let notFoundDelay = 500;
+  const notFoundCap = 5000;
+
   const run = async () => {
     while (!closed) {
       controller = new AbortController();
@@ -122,9 +132,12 @@ export function subscribeIntegrity(
           headers: { Accept: "text/event-stream", ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}) },
           signal: controller.signal,
         });
-        // A 404 means the conversation is gone (deleted) — stop reconnecting, or
-        // we'd hammer the server with retries for a thread that no longer exists.
-        if (res.status === 404) return;
+        if (res.status === 404) {
+          await delay(notFoundDelay);
+          notFoundDelay = Math.min(notFoundDelay * 2, notFoundCap);
+          continue;
+        }
+        notFoundDelay = 500; // connected (or non-404 error) — reset the 404 backoff
         if (!res.ok || !res.body) {
           await delay(1000);
           continue;
