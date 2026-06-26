@@ -74,10 +74,75 @@ in
     };
   };
 
-  # STAGE 5 will implement: generate one stub script per tool and add them to the
-  # system PATH (environment.systemPackages). Until then config is a no-op so the
-  # module evaluates but the stubs don't exist — the lazy-stub nixosTest is RED.
   config = lib.mkIf cfg.enable {
-    # TODO(stage5): environment.systemPackages = [ (mkStubs cfg) ];
+    # One PATH stub per declared tool. On first call the stub resolves the real
+    # package from the pinned nixpkgs (`nix build`), memoizes the resolved /bin
+    # path to cacheDir (tagged with the pin rev), and execs it. Later calls hit
+    # the cache and exec directly — so a tool is only slow the very first time,
+    # and the base image ships none of these tools' closures.
+    environment.systemPackages =
+      lib.mapAttrsToList
+        (name: tool:
+          let
+            bin = if tool.bin != null then tool.bin else name;
+          in
+          pkgs.writeShellApplication {
+            name = name;
+            # The stub needs nix (to resolve) + jq (to read the pin file) + the
+            # coreutils it uses. nix comes from the system; we only declare jq.
+            runtimeInputs = [ pkgs.jq pkgs.coreutils ];
+            # Don't let shellcheck rewrite the careful quoting / exec.
+            checkPhase = "";
+            text = ''
+              # --- lazy tool stub: ${name} -> ${tool.package} (${bin}) ---
+              set -euo pipefail
+
+              pin_file=${lib.escapeShellArg cfg.pinFile}
+              default_ref=${lib.escapeShellArg cfg.defaultNixpkgs}
+              cache_dir=${lib.escapeShellArg cfg.cacheDir}
+              pkg=${lib.escapeShellArg tool.package}
+              bin=${lib.escapeShellArg bin}
+              cache_file="$cache_dir/${name}"
+
+              # The pinned nixpkgs ref: the mounted ConfigMap (pinFile) wins; else
+              # the built-in default. Re-pinning is a ConfigMap edit, no rebuild.
+              ref="$default_ref"
+              if [ -r "$pin_file" ]; then
+                if v=$(jq -er '.nixpkgs' "$pin_file" 2>/dev/null); then
+                  ref="$v"
+                fi
+              fi
+
+              # Fast path: a cache entry for THIS ref whose path still exists.
+              if [ -r "$cache_file" ]; then
+                cached_ref=$(sed -n 1p "$cache_file")
+                cached_path=$(sed -n 2p "$cache_file")
+                if [ "$cached_ref" = "$ref" ] && [ -x "$cached_path" ]; then
+                  exec "$cached_path" "$@"
+                fi
+              fi
+
+              # Resolve: realise the package and find its binary. Slow once.
+              out=$(nix build --no-link --print-out-paths "$ref#$pkg")
+              target="$out/bin/$bin"
+              if [ ! -x "$target" ]; then
+                echo "lazy-tools: ${name}: '$bin' not found under $out/bin" >&2
+                exit 127
+              fi
+
+              # Memoize {ref, path} so later calls skip the resolve. Best-effort:
+              # if the cache dir isn't writable we still run, just not cached.
+              if mkdir -p "$cache_dir" 2>/dev/null; then
+                printf '%s\n%s\n' "$ref" "$target" > "$cache_file" 2>/dev/null || true
+              fi
+
+              exec "$target" "$@"
+            '';
+          })
+        cfg.tools;
+
+    # The memoize cache lives on tmpfs-or-disk; ensure the dir exists at boot so
+    # the first stub call doesn't race to create it.
+    systemd.tmpfiles.rules = [ "d ${cfg.cacheDir} 0755 root root -" ];
   };
 }
