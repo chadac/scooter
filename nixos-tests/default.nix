@@ -26,4 +26,6 @@ in
   # Deployment-injected CLI tool via a mounted .scooter flake dir (the generic
   # mechanism; a deployment ships its own real tool, e.g. example-review).
   dev-env-injected-tool = runTest ./injected-tool.nix;
+  # mkLazyTool used DIRECTLY in a module (inline lazy-tool declaration, multi-command).
+  dev-env-mklazytool = runTest ./mklazytool.nix;
 }
