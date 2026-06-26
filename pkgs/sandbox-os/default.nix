@@ -38,6 +38,15 @@ let
     # the flake input so it's a fixed rev (deterministic).
     programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsPinned;
     devEnvNix.nixpkgs = lib.mkForce nixpkgsPinned;
+
+    # Runtime re-converge: the pod applies a mounted .scooter/module.nix (a NixOS
+    # module that declares its own tools/services, e.g. example-review) via
+    # switch-to-configuration. The in-pod toplevel build uses the SAME nixpkgs
+    # source the image was built from (a fixed store path) — deterministic, offline.
+    programs.scooterModule = {
+      enable = lib.mkDefault true;
+      nixpkgs = lib.mkForce (toString pkgs.path);
+    };
   });
 
   toplevel = nixos.config.system.build.toplevel;

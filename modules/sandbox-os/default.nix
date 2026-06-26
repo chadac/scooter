@@ -21,6 +21,7 @@
     ./lazy-tools.nix
     ./sample-service.nix
     ./carry-over.nix
+    ./runtime-converge.nix
   ];
 
   # --- systemd base ----------------------------------------------------------

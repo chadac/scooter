@@ -28,4 +28,7 @@ in
   dev-env-injected-tool = runTest ./injected-tool.nix;
   # mkLazyTool used DIRECTLY in a module (inline lazy-tool declaration, multi-command).
   dev-env-mklazytool = runTest ./mklazytool.nix;
+  # A deployment's .scooter/module.nix (a NixOS module declaring its own tools)
+  # applied at runtime via switch-to-configuration. The no-rebuild injection path.
+  dev-env-scooter-module = runTest ./scooter-module.nix;
 }
