@@ -78,9 +78,20 @@ Running list of work items. Newest asks at the top of each section. See
         SYSTEMD PID 1 under containerd (the #1 unknown, RESOLVED), is-system-running
         = running, nix-daemon active, sample service systemctl-controllable.
         test/cluster/sandbox-os.spec.ts. Also verified in-pod: uv lazy stub, nix.
-  - [ ] **Carry-over** the old sandbox's broker/git-credential/aws-config + HOME as
-        units/packages; keep both images until parity, then switch the
-        per-conversation Sandbox to sandbox-os + retire pkgs/sandbox-image.
+  - [x] **Carry-over** broker/git-credential/aws-config -> NixOS units/packages
+        (programs.scooterCarryOver, commit 90c091b). Verified in-pod: helper in
+        /workspace/.gitconfig (systemd resets PID1 HOME to /root, so units write
+        the agent's HOME explicitly). Tools on PATH.
+  - [x] **CUTOVER DEPLOYED to the dev cluster (LIVE):** provisioner gained
+        systemdImage (SANDBOX_SYSTEMD=1 -> privileged + tmpfs /run,/tmp, commit
+        8d2b01b). Pushed agent-sandbox-os + agent-host to ECR; set the agent-host
+        SANDBOX_IMAGE -> the OS image + SANDBOX_SYSTEMD=1. A REAL conversation
+        provisioned a systemd NixOS pod (conv-fxh4j4: privileged, systemd PID 1,
+        is-system-running=running), agent-broker whoami works (per-conv SA),
+        Scooter ran a shell cmd and reported "running on NixOS with systemd PID 1".
+  - [ ] **Retire pkgs/sandbox-image** once the OS image proves out in real use +
+        update modules/conversation.nix (the kubenix mirror) to match the
+        provisioner (systemdImage privileged/tmpfs) so rendered manifests agree.
   - [ ] (future) wire switch-on-claim into the agent-sandbox warm pool (claim→exec
         trigger); ConfigMap-driven services (`programs.lazyServices`, sibling of
         lazyTools). See memory runtime-nixos-switch-in-container.
