@@ -19,6 +19,11 @@ Running list of work items. Newest asks at the top of each section. See
         run is in flight -> the collision. Fix: serialize prompts via a runChain
         promise (each run completes before the next RUN_STARTED). Red-first test.
         Deployed. RE-TEST the webhook trigger.
+  - [x] **Second mention did nothing** (commit 0cab66e, regression from the
+        pod-leak fix): hydrate marks a still-running conversation 'running' but it
+        has no live bridge; prompt() gated revive on status!=='running' so it
+        skipped revive and bridge?.prompt() silently no-op'd. Fix: revive on
+        !bridge. Verified live (POST /agui to an existing conv now runs). Deployed.
 
 - [~] **Chat-window reliability — live SSE + integrity checksum.** SERVER DONE +
   CLIENT lib done; UI reconciliation works in isolation but is flaky in the
