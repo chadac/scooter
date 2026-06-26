@@ -149,6 +149,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const listeners = new Set<(event: AguiEvent) => void>();
   let acpSessionId: string | undefined;
   let started = false;
+  // Serialize runs: a bridge has ONE goose session + ONE RunState. A second
+  // prompt arriving while a run is in flight (e.g. the webhook POSTs /agui while
+  // the agent is mid-run) must QUEUE, not clobber currentRun — otherwise the
+  // first run's open text message never gets its END and RUN_FINISHED is emitted
+  // while it's still open (the @ag-ui client rejects that, and the reply is lost).
+  let runChain: Promise<unknown> = Promise.resolve();
   // The run currently receiving ACP updates (set during prompt()).
   let currentRun: RunState | undefined;
   // Resolved on first start(); a ready client or the result of the factory.
@@ -298,7 +304,60 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     }
   };
 
-  return {
+  // The actual run, executed serially via the prompt() chain above. One run at a
+  // time per bridge — see the runChain comment.
+  const runPrompt = async (input: PromptInput): Promise<RunId> => {
+    const runId = `run-${(runCounter += 1)}`;
+    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map() };
+
+    // Emit RUN_STARTED before any awaiting so the UI sees the run begin even if
+    // agent startup is slow or fails (e.g. goose needs a model provider).
+    emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
+
+    // Persist the user's prompt as a message so the conversation history is
+    // complete — switching to / reviving a conversation must replay the user
+    // turns too. PERSIST-ONLY: the live UI already renders the message the user
+    // just sent, so broadcasting it would echo a duplicate.
+    const userMsgId = nextId("user");
+    persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
+    persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
+    persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
+
+    try {
+      if (!started || !acpSessionId) await self.start();
+      currentRun = st; // route session/update notifications to this run
+      debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
+      const { stopReason } = await acpClient!.prompt({
+        sessionId: acpSessionId!,
+        prompt: [{ type: "text", text: input.text }],
+      });
+      debug("[bridge] prompt: stopReason=%s", stopReason);
+      // The ACP prompt response can resolve before the final session/update
+      // notifications have been dispatched. Drain a macrotask so trailing
+      // text/reasoning chunks are processed (their messages opened) BEFORE we
+      // close them and emit RUN_FINISHED — the AG-UI client rejects RUN_FINISHED
+      // while a message is still open.
+      await drain();
+      st.ended = true; // stop routing further late updates into this run
+      closeOpenText(st);
+      closeOpenReasoning(st);
+      if (stopReason === "error") {
+        emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
+      } else {
+        emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
+      }
+    } catch (err) {
+      st.ended = true;
+      closeOpenText(st);
+      closeOpenReasoning(st);
+      emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      if (currentRun === st) currentRun = undefined;
+    }
+    return runId;
+  };
+
+  const self: SessionBridge = {
     sessionId,
 
     async start() {
@@ -381,56 +440,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       started = true;
     },
 
-    async prompt(input: PromptInput): Promise<RunId> {
-      const runId = `run-${(runCounter += 1)}`;
-      const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map() };
-
-      // Emit RUN_STARTED before any awaiting so the UI sees the run begin even
-      // if agent startup is slow or fails (e.g. goose needs a model provider).
-      emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
-
-      // Persist the user's prompt as a message so the conversation history is
-      // complete — switching to / reviving a conversation must replay the user
-      // turns too, not just the agent's replies. PERSIST-ONLY: the live UI
-      // already renders the message the user just sent, so broadcasting it would
-      // echo it back as a duplicate.
-      const userMsgId = nextId("user");
-      persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
-      persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
-      persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
-
-      try {
-        if (!started || !acpSessionId) await this.start();
-        currentRun = st; // route session/update notifications to this run
-                debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
-        const { stopReason } = await acpClient!.prompt({
-          sessionId: acpSessionId!,
-          prompt: [{ type: "text", text: input.text }],
-        });
-                debug("[bridge] prompt: stopReason=%s", stopReason);
-        // The ACP prompt response can resolve before the final session/update
-        // notifications have been dispatched. Drain a macrotask so trailing
-        // text/reasoning chunks are processed (their messages opened) BEFORE we
-        // close them and emit RUN_FINISHED — the AG-UI client rejects
-        // RUN_FINISHED while a message is still open.
-        await drain();
-        st.ended = true; // stop routing further late updates into this run
-        closeOpenText(st);
-        closeOpenReasoning(st);
-        if (stopReason === "error") {
-          emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
-        } else {
-          emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
-        }
-      } catch (err) {
-        st.ended = true;
-        closeOpenText(st);
-        closeOpenReasoning(st);
-        emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
-      } finally {
-        if (currentRun === st) currentRun = undefined;
-      }
-      return runId;
+    prompt(input: PromptInput): Promise<RunId> {
+      // Chain after any in-flight run so prompts are processed one at a time on
+      // this bridge's single goose session. Each run fully completes (its text
+      // closed + RUN_FINISHED emitted) before the next RUN_STARTED — preventing
+      // the concurrent-run corruption where one run's open message is left
+      // unclosed when another run's RUN_FINISHED fires. Errors don't break the chain.
+      const next = runChain.catch(() => {}).then(() => runPrompt(input));
+      runChain = next;
+      return next;
     },
 
     async cancel(_runId: RunId) {
@@ -490,6 +508,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       });
     },
   };
+
+  return self;
 }
 
 function blockText(content: { type: string; text?: string } | { type: "text"; text: string }): string {

@@ -308,4 +308,42 @@ describe("ACP -> AG-UI bridge", () => {
     await bridge.prompt({ threadId: "t1", text: "boom" });
     expect(events.some((e) => e.type === "RUN_ERROR")).toBe(true);
   });
+
+  it("serializes concurrent prompts — no RUN_FINISHED with a text message still open", async () => {
+    // The webhook bug: a second prompt arriving while a run is in flight clobbered
+    // the single RunState, so the first run's open text message never got its END
+    // and RUN_FINISHED fired with it open (the @ag-ui client rejects that). Two
+    // overlapping prompts must produce TWO well-formed runs, one after the other.
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply" } } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+
+    // Fire two prompts WITHOUT awaiting the first — they overlap.
+    const p1 = bridge.prompt({ threadId: "t1", text: "first" });
+    const p2 = bridge.prompt({ threadId: "t1", text: "second" });
+    await Promise.all([p1, p2]);
+
+    // Invariant: every RUN_FINISHED is emitted with NO text message open.
+    const open = new Set<string>();
+    for (const e of events) {
+      if (e.type === "TEXT_MESSAGE_START") open.add(e.messageId);
+      else if (e.type === "TEXT_MESSAGE_END") open.delete(e.messageId);
+      else if (e.type === "RUN_FINISHED") {
+        expect(open.size, `RUN_FINISHED while text open: ${[...open]}`).toBe(0);
+      }
+    }
+    // And both runs actually ran (two RUN_STARTED / two RUN_FINISHED).
+    expect(events.filter((e) => e.type === "RUN_STARTED")).toHaveLength(2);
+    expect(events.filter((e) => e.type === "RUN_FINISHED")).toHaveLength(2);
+  });
 });
