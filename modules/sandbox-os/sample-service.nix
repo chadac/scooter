@@ -3,9 +3,6 @@
 # A minimal service proving the systemd path end-to-end: it reaches `active`,
 # opens a TCP port, and the agent can `systemctl start/stop` it. Stands in for a
 # real collaborative service (Jupyter etc.) which reuses the same path later.
-#
-# STAGE 3 (red-first): option schema is real; the systemd.services definition is
-# NOT implemented yet, so the service nixosTest fails until Stage 5.
 
 { config, lib, pkgs, ... }:
 
@@ -23,8 +20,19 @@ in
     };
   };
 
-  # STAGE 5 will implement: a tiny HTTP listener as a systemd unit on cfg.port.
   config = lib.mkIf cfg.enable {
-    # TODO(stage5): systemd.services.sample-dev-service = { ... };
+    # A tiny HTTP listener on cfg.port — Python's stdlib http.server, no app code
+    # to ship. Enough to prove: reaches `active`, opens the port, responds, and
+    # `systemctl start/stop` toggles it. Replace with a real unit (Jupyter, …)
+    # later; the shape (a wanted-by-multi-user systemd unit) is the same.
+    systemd.services.sample-dev-service = {
+      description = "PoC sample dev service (HTTP on ${toString cfg.port})";
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        ExecStart = "${pkgs.python3}/bin/python3 -m http.server ${toString cfg.port} --bind 0.0.0.0";
+        DynamicUser = true;
+        Restart = "on-failure";
+      };
+    };
   };
 }

@@ -208,6 +208,35 @@ systemd as PID 1 in a privileged agent-sandbox pod on a real cluster; `kubectl
 exec` works; suspend/resume; PVC. One cluster test asserts `systemctl
 is-system-running` inside the deployed pod.
 
+## SPIKE (done, GREEN): runtime re-converge — warm-pod-specializes-on-claim
+
+`nixos-tests/switch-specialisation.nix` PROVES the core primitive behind the
+warm-pool optimization (a generic pod that specializes itself when claimed):
+- boot a generic config with the service OFF;
+- exec `/run/current-system/specialisation/<name>/bin/switch-to-configuration
+  switch` to a PRE-BUILT specialisation that turns the service ON;
+- the service comes up in **~1 second** (pure activation — the specialisation
+  toplevel is already in the store, no build/substitute);
+- **systemd is still PID 1** afterwards (same process + start time — the switch
+  did a daemon-reload + restarted the unit diff, it did NOT re-exec the world).
+
+NixOS-native (it's how `nixos-container update` works); matches the
+exec-via-K8s-API pattern (the switch is EXEC'd — the low-latency trigger, NOT a
+mounted-ConfigMap watch, whose ~1-2min propagation defeats the warm-pool point).
+See memory `runtime-nixos-switch-in-container` for the full recipe.
+
+**CAVEAT (observed in the spike): switch-AWAY cleanup is incomplete** — re-running
+the base's switch to drop a specialisation does NOT reliably stop the units it
+added. Production sidesteps this: **suspend-don't-recycle + a fresh cold
+specialisation per conversation** (this repo's existing one-cold-Sandbox model),
+never re-converging one pod across workloads. So switch-on-claim is a WARM-PATH
+optimization, not a recycle mechanism. The spike asserts the agent-control `stop`,
+not switch-back. Latency = a few seconds (not the controller's sub-second flip);
+keep systemd + system.conf constant across candidates to avoid the PID-1 re-exec.
+
+The warm-pool WIRING (claim→exec trigger) is Tier 2 / future; the spike proves
+only the in-container primitive.
+
 ## Carry-over from the current sandbox (must not regress)
 
 The existing `pkgs/sandbox-image` provides: overlay Nix store (subsumed by NixOS),

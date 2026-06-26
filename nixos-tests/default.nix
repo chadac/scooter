@@ -21,4 +21,6 @@ in
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
   dev-env-service = runTest ./service.nix;
   dev-env-nix-build-skill = runTest ./nix-build-skill.nix;
+  # SPIKE: runtime re-converge (warm-pod-specializes-on-claim primitive).
+  dev-env-switch-specialisation = runTest ./switch-specialisation.nix;
 }
