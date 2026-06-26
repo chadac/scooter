@@ -5,6 +5,21 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## In progress
 
+- [x] **Two live bugs found while testing the dev-env cutover (both fixed + deployed).**
+  - [x] **Pod leak** (commit beceac3): hydrate() assumed a restart meant pods were
+        gone -> marked all conversations 'suspended' -> idle sweep (running-only)
+        never reclaimed the still-running pods (24 'suspended' in-memory vs 9 pods
+        Running). Fix: provisioner.reconcile() lists live conv-* Sandboxes +
+        replicas; hydrate() marks still-running ones 'running' so the sweep
+        reclaims them. Cleaned up 7 stale pods (suspended -> PVCs kept). Deployed.
+  - [x] **Webhook didn't trigger a response** (commit 3351cfe): the bridge had NO
+        concurrency guard — a 2nd prompt mid-run clobbered the single RunState, so
+        the first run's open TEXT_MESSAGE never got END and RUN_FINISHED fired with
+        it open (@ag-ui client rejects -> reply lost). Webhook POSTs /agui while a
+        run is in flight -> the collision. Fix: serialize prompts via a runChain
+        promise (each run completes before the next RUN_STARTED). Red-first test.
+        Deployed. RE-TEST the webhook trigger.
+
 - [~] **Chat-window reliability — live SSE + integrity checksum.** SERVER DONE +
   CLIENT lib done; UI reconciliation works in isolation but is flaky in the
   shared-server e2e suite — needs a better render primitive before it lands.
