@@ -71,12 +71,16 @@ Running list of work items. Newest asks at the top of each section. See
   - [x] **SPIKE — runtime re-converge** (warm-pod-specializes-on-claim): a generic
         pod live-switches to a pre-built specialisation via switch-to-configuration
         in ~1s, service comes up, systemd survives as PID 1. [dev-env-switch-specialisation]
-  - [ ] **OCI image builder** `pkgs/sandbox-os` — NixOS toplevel → image
-        (boot.isContainer, /sbin/init, container=docker). NOT nixosTest-coverable.
+  - [x] **OCI image builder** `pkgs/sandbox-os` — NixOS toplevel → OCI tarball
+        (boot.isContainer, entrypoint=${toplevel}/init, container=docker, empty
+        machine-id). ~339M. `.#sandbox-os-image`; cluster-up builds+imports it.
+  - [x] **Tier 2 cluster test** (4/4 GREEN on real kind) — privileged pod boots
+        SYSTEMD PID 1 under containerd (the #1 unknown, RESOLVED), is-system-running
+        = running, nix-daemon active, sample service systemctl-controllable.
+        test/cluster/sandbox-os.spec.ts. Also verified in-pod: uv lazy stub, nix.
   - [ ] **Carry-over** the old sandbox's broker/git-credential/aws-config + HOME as
-        units/packages; keep both images until parity.
-  - [ ] **Tier 2 cluster test** — the privileged systemd-PID-1 pod boots on a real
-        cluster, `kubectl exec` works, `systemctl is-system-running` ok.
+        units/packages; keep both images until parity, then switch the
+        per-conversation Sandbox to sandbox-os + retire pkgs/sandbox-image.
   - [ ] (future) wire switch-on-claim into the agent-sandbox warm pool (claim→exec
         trigger); ConfigMap-driven services (`programs.lazyServices`, sibling of
         lazyTools). See memory runtime-nixos-switch-in-container.
