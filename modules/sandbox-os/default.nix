@@ -20,6 +20,7 @@
     ./nix-config.nix
     ./lazy-tools.nix
     ./sample-service.nix
+    ./carry-over.nix
   ];
 
   # --- systemd base ----------------------------------------------------------
@@ -65,6 +66,11 @@
 
   # --- the PoC sample service ------------------------------------------------
   services.sampleDevService.enable = true;
+
+  # --- broker/git/aws carry-over from the legacy sandbox image ---------------
+  # So the agent-host's exec'd commands (broker whoami, brokered git, AWS
+  # credential_process) work unchanged in the new image.
+  programs.scooterCarryOver.enable = true;
 
   # STAGE 5 carry-over (from the old entrypoint.sh, must not regress):
   #   - broker tools (agent-broker, git-credential-broker, scooter-aws*)
