@@ -276,7 +276,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
-      if (entry.status !== "running") await this.revive(id);
+      // Revive whenever there's no LIVE bridge (goose process), not just when the
+      // status is non-running: a HYDRATED conversation can be status "running"
+      // (its pod is up, per hydrate's reconcile) yet have no bridge in THIS
+      // process, so the prompt would silently no-op (bridge?.prompt on undefined).
+      if (!entry.bridge) await this.revive(id);
       await entry.bridge?.prompt({ threadId: entry.threadId, text });
     },
 
@@ -286,7 +290,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entry) {
         const conv = await this.start(threadId);
         entry = entries.get(conv.id)!;
-      } else if (entry.status !== "running") {
+      } else if (!entry.bridge) {
+        // No live bridge -> revive (start goose). Covers both suspended AND
+        // hydrated-but-"running" conversations (pod up, no goose in this process).
         await this.revive(entry.id);
       }
       touch(entry);

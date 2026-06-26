@@ -179,6 +179,57 @@ describe("SessionManager", () => {
     }
   });
 
+  it("prompting a hydrated-but-running conversation revives it (builds the bridge)", async () => {
+    // Regression: hydrate() marks a still-running conversation 'running' (pod up)
+    // but it has NO bridge in this process. prompt() must revive on !bridge — NOT
+    // gate revive on status!=="running", or bridge?.prompt() silently no-ops and
+    // the agent never runs (the second-!scooter-does-nothing symptom).
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const conv = await m1.start("delta");
+      const sandboxName = m1.get(conv.id)!.sandbox.name;
+
+      // Fresh process: a recording bridge so we can see prompt() reach it.
+      const prompts: string[] = [];
+      const bridgeFactory = () =>
+        ({
+          start: vi.fn(async () => {}),
+          prompt: vi.fn(async ({ text }: { text: string }) => {
+            prompts.push(text);
+            return "run-x";
+          }),
+          stop: vi.fn(async () => {}),
+          onEvent: () => () => {},
+          onPersist: () => () => {},
+          onTitle: () => () => {},
+        }) as never;
+      const prov2 = fakeProvisioner();
+      prov2.reconcile = vi.fn(async () => [
+        { ref: { name: sandboxName, namespace: "ns" }, running: true },
+      ]);
+      const m2 = createSessionManager({
+        provisioner: prov2,
+        store: createFileConversationStore(root),
+        bridgeFactory,
+      });
+      await m2.hydrate();
+      expect(m2.get(conv.id)?.status).toBe("running"); // pod up, but no bridge
+
+      // The webhook path: prompt the existing conversation by thread id.
+      await m2.promptByThread("delta", "second !scooter mention");
+
+      // It revived (built the bridge) and the prompt reached the agent.
+      expect(prompts).toContain("second !scooter mention");
+      // Let the fire-and-forget activity write settle before teardown deletes the
+      // store dir (else a late recordActivity mkdir races rmSync -> ENOENT).
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("ended conversations do NOT come back after a restart (persisted state removed)", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {
