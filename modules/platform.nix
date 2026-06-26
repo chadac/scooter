@@ -59,6 +59,35 @@ in
       defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-nix:latest"'';
       description = "OCI ref of the generic Nix sandbox image.";
     };
+    sandboxSystemd = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Set when sandboxImage is the NixOS systemd-PID-1 dev image: the sandbox
+        runs privileged with tmpfs /run+/tmp (SANDBOX_SYSTEMD=1).
+      '';
+    };
+    # Generic, DEPLOYMENT-parameterized tool injection — the platform doesn't know
+    # what's in these; a deployment fills them with its own .scooter tools + the
+    # token audiences / env its tools need. See docs/SCOOTER_DIR_INJECTION.md.
+    deployTools = {
+      scooterConfigMap = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "A deployment's .scooter ConfigMap to mount at /etc/agent-sandbox/scooter.";
+      };
+      tokenAudiences = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Extra projected SA token audiences a deployment's tools need (mounted at /var/run/secrets/<aud>/token).";
+      };
+      env = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = { EXAMPLE_TOOL_URL = "http://example-tool.ns.svc:8080"; };
+        description = "Extra env vars a deployment's tools need, set on each sandbox.";
+      };
+    };
     uiImage = mkOption {
       type = types.str;
       default = "${cfg.registryPrefix}agent-sandbox-ui:latest";
@@ -318,7 +347,18 @@ in
                   { name = "AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
                   { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
-                ];
+                ] ++ lib.optional cfg.sandboxSystemd
+                  # The NixOS systemd dev image: provision the sandbox privileged.
+                  { name = "SANDBOX_SYSTEMD"; value = "1"; }
+                ++ lib.optionals (cfg.deployTools.scooterConfigMap != null) [
+                  # Deployment tool injection (generic): the agent-host mounts the
+                  # deployment's .scooter ConfigMap + projects the named token
+                  # audiences + sets the deployment env on each sandbox.
+                  { name = "SCOOTER_CONFIGMAP"; value = cfg.deployTools.scooterConfigMap; }
+                ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
+                  { name = "SCOOTER_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
+                ++ lib.optional (cfg.deployTools.env != { })
+                  { name = "SCOOTER_ENV"; value = lib.concatStringsSep ";" (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.deployTools.env); };
                 volumeMounts = [
                   # Durable history (PVC).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
