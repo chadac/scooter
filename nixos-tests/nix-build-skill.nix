@@ -15,22 +15,30 @@
 pkgs.testers.runNixOSTest {
   name = "dev-env-nix-build-skill";
 
-  nodes.machine = { config, pkgs, ... }: {
+  nodes.machine = { config, pkgs, lib, ... }: {
     imports = [ sandboxModule ];
-    # A package the skill's example installs — available offline.
-    system.extraDependencies = [ pkgs.hello ];
+
+    # Resolve OFFLINE: pin the `nixpkgs` registry at the test's own nixpkgs source
+    # (a path-flake) and pre-seed both that source and the built `hello`, so
+    # `nix profile install nixpkgs#hello` evaluates from the store and the output
+    # is already realised — no fetch, no build. Production uses a github: ref over
+    # the network; the documented command is identical.
+    devEnvNix.nixpkgs = lib.mkForce "path:${pkgs.path}";
+    system.extraDependencies = [ pkgs.hello pkgs.path ];
   };
 
   testScript = ''
     machine.wait_for_unit("default.target")
     machine.wait_for_unit("nix-daemon.socket")
 
-    # The documented "install a tool with nix" step (the skill's canonical
-    # example). After it, the tool is on PATH and runs.
-    machine.succeed("nix profile install nixpkgs#hello 2>&1 | tail -5 || true")
-    machine.succeed("hello >/dev/null")
+    # The skill's canonical "install a tool with nix" step. It resolves via the
+    # pinned `nixpkgs` registry alias and installs into the user's nix profile.
+    machine.succeed("nix profile install nixpkgs#hello")
 
-    # The built tool lands under the user's nix profile on PATH.
-    machine.succeed("command -v hello | grep -q nix-profile")
+    # The installed tool is on PATH (login shell picks up ~/.nix-profile/bin) and
+    # runs — proving the documented workflow end to end.
+    hello = machine.succeed("bash -l -c 'command -v hello'").strip()
+    assert "nix-profile" in hello, f"hello not under the nix profile: {hello!r}"
+    machine.succeed("bash -l -c 'hello' >/dev/null")
   '';
 }

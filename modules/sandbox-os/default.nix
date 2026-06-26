@@ -17,6 +17,7 @@
 
 {
   imports = [
+    ./nix-config.nix
     ./lazy-tools.nix
     ./sample-service.nix
   ];
@@ -28,11 +29,15 @@
   documentation.enable = lib.mkDefault false;
 
   # --- nix usable in-pod (the agent builds/installs on demand) ---------------
-  nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    # cache.nixos.org egress is available in-pod (confirmed) — first-call lazy
-    # stub builds substitute from it instead of building from source.
-    substituters = lib.mkDefault [ "https://cache.nixos.org/" ];
+  # cache.nixos.org egress is available in-pod (confirmed) — first-call lazy
+  # stub builds substitute from it instead of building from source.
+  nix.settings.substituters = lib.mkDefault [ "https://cache.nixos.org/" ];
+
+  # Flakes + pinned `nixpkgs` registry + the user nix-profile on PATH, so
+  # `nix profile install nixpkgs#x` (the skill) and `nix run nixpkgs#x` work.
+  devEnvNix = {
+    enable = true;
+    nixpkgs = lib.mkDefault "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   # --- base packages: DELIBERATELY MINIMAL (lazy stubs cover the rest) -------
