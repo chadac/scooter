@@ -48,6 +48,17 @@ export interface K8sProvisionerOptions {
    *  Set when sandboxImage is the agent-sandbox-os image. Default false keeps the
    *  legacy generic image behavior. */
   systemdImage?: boolean;
+  /** A deployment's `.scooter` ConfigMap (its own injected Nix tools) to mount at
+   *  /etc/agent-sandbox/scooter, where lazyTools `localFlake` builds them. The
+   *  CONTENT is deployment-specific (this platform doesn't know what's in it). */
+  scooterConfigMap?: string;
+  /** Additional projected SA token audiences a deployment's tools authenticate
+   *  with — each mounted at /var/run/secrets/<audience>/token. The audiences are
+   *  DEPLOYMENT-supplied (this platform doesn't hardcode any). */
+  extraTokenAudiences?: string[];
+  /** Additional environment variables a deployment's tools need (e.g. a service
+   *  URL). DEPLOYMENT-supplied; this platform sets none of its own here. */
+  extraEnv?: Array<{ name: string; value: string }>;
   kubeConfig?: KubeConfig;
 }
 
@@ -98,7 +109,11 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         version: VERSION,
         namespace: ns,
         plural: PLURAL,
-        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false),
+        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false, {
+          scooterConfigMap: opts.scooterConfigMap,
+          extraTokenAudiences: opts.extraTokenAudiences ?? [],
+          extraEnv: opts.extraEnv ?? [],
+        }),
       });
 
       return { name, namespace: ns };
@@ -161,7 +176,15 @@ function sandboxManifest(
   storage: string,
   awsAccountsConfigMap?: string,
   systemdImage = false,
+  deploy: {
+    scooterConfigMap?: string;
+    extraTokenAudiences?: string[];
+    extraEnv?: Array<{ name: string; value: string }>;
+  } = {},
 ): object {
+  const scooter = deploy.scooterConfigMap;
+  const extraAudiences = deploy.extraTokenAudiences ?? [];
+  const extraEnv = deploy.extraEnv ?? [];
   return {
     apiVersion: `${GROUP}/${VERSION}`,
     kind: "Sandbox",
@@ -197,6 +220,16 @@ function sandboxManifest(
                       { name: "tmp", mountPath: "/tmp" },
                     ]
                   : []),
+                // A deployment's injected .scooter tools (content is theirs).
+                ...(scooter
+                  ? [{ name: "scooter-tools", mountPath: "/etc/agent-sandbox/scooter", readOnly: true }]
+                  : []),
+                // Deployment-named extra SA tokens (this platform names none).
+                ...extraAudiences.map((aud) => ({
+                  name: `tok-${aud}`,
+                  mountPath: `/var/run/secrets/${aud}`,
+                  readOnly: true,
+                })),
               ],
               env: [
                 {
@@ -221,6 +254,11 @@ function sandboxManifest(
                 ...(awsAccountsConfigMap
                   ? [{ name: "AWS_ACCOUNTS_FILE", value: "/etc/agent-sandbox/aws/accounts.json" }]
                   : []),
+                // Generically useful to any deployment tool (e.g. one keyed by
+                // conversation). The conversation id, not a deployment concept.
+                { name: "CONVERSATION_ID", value: id },
+                // Deployment-supplied env (e.g. a service URL). Platform-neutral.
+                ...extraEnv,
               ],
             },
           ],
@@ -240,6 +278,13 @@ function sandboxManifest(
                   { name: "tmp", emptyDir: { medium: "Memory" } },
                 ]
               : []),
+            ...(scooter
+              ? [{ name: "scooter-tools", configMap: { name: scooter } }]
+              : []),
+            ...extraAudiences.map((aud) => ({
+              name: `tok-${aud}`,
+              projected: { sources: [{ serviceAccountToken: { audience: aud, path: "token" } }] },
+            })),
           ],
         },
       },

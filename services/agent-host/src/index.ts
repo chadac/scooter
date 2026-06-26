@@ -157,6 +157,17 @@ export async function main(
         // SANDBOX_SYSTEMD=1 when SANDBOX_IMAGE is the NixOS systemd dev image:
         // run the sandbox privileged with tmpfs /run + /tmp so systemd PID 1 boots.
         systemdImage: process.env.SANDBOX_SYSTEMD === "1",
+        // Deployment-supplied tool injection (generic — the platform doesn't know
+        // what's in these; a deployment sets them to its .scooter
+        // ConfigMap, the token audiences its tools need, and their env vars).
+        // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (k=v;k=v).
+        scooterConfigMap: process.env.SCOOTER_CONFIGMAP || undefined,
+        extraTokenAudiences: (process.env.SCOOTER_TOKEN_AUDIENCES || "")
+          .split(",").map((s) => s.trim()).filter(Boolean),
+        extraEnv: (process.env.SCOOTER_ENV || "")
+          .split(";").map((s) => s.trim()).filter(Boolean)
+          .map((kv) => { const i = kv.indexOf("="); return { name: kv.slice(0, i), value: kv.slice(i + 1) }; })
+          .filter((e) => e.name),
       });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
