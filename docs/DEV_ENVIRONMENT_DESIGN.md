@@ -74,11 +74,13 @@ init; set the container env; tmpfs dirs are runtime (pod spec), not image.
     # Base packages: DELIBERATELY MINIMAL (lazy stubs cover the rest).
     environment.systemPackages = [ /* git curl jq coreutils ... */ ];
 
-    # The lazy-tool stubs (extensible; uv shipped).
+    # The lazy-tool stubs (extensible; uv shipped). The pin comes from a mounted
+    # ConfigMap (pinFile); defaultNixpkgs is the fallback for tests/local.
     programs.lazyTools = {
       enable = true;
-      nixpkgs = nixpkgsPinned;        # pinned rev the stubs resolve against
-      tools.uv = { package = "uv"; }; # other agents add python/node/... here
+      defaultNixpkgs = nixpkgsPinned;  # built-in fallback ref (a fixed rev)
+      # pinFile defaults to /etc/agent-sandbox/nix/pin.json (mounted ConfigMap)
+      tools.uv = { package = "uv"; };  # other agents add python/node/... here
     };
 
     # The PoC sample service (proves the systemd path).
@@ -99,9 +101,15 @@ let cfg = config.programs.lazyTools; in {
   options.programs.lazyTools = {
     enable = lib.mkEnableOption "lazy Nix-built tool stubs on PATH";
 
-    nixpkgs = lib.mkOption {
-      type = lib.types.str;     # a flake ref, pinned: "github:NixOS/nixpkgs/<rev>"
-      description = "Pinned nixpkgs the stubs resolve packages against.";
+    pinFile = lib.mkOption {
+      type = lib.types.str;     # path to a mounted ConfigMap JSON: { "nixpkgs": "github:NixOS/nixpkgs/<rev>" }
+      default = "/etc/agent-sandbox/nix/pin.json";
+      description = "Path to the nixpkgs-pin ConfigMap file the stubs read at resolve time.";
+    };
+
+    defaultNixpkgs = lib.mkOption {
+      type = lib.types.str;     # built-in fallback when pinFile isn't mounted (tests / local)
+      description = "Fallback pinned nixpkgs ref when pinFile is absent.";
     };
 
     cacheDir = lib.mkOption {
@@ -132,9 +140,10 @@ let cfg = config.programs.lazyTools; in {
   };
 
   # OUTPUT (Stage 5): for each tool, a PATH stub script that, on first call:
-  #   1. reads cacheDir/<tool> if present -> exec that path (fast path)
-  #   2. else: nix build --no-link --print-out-paths <nixpkgs>#<package>
-  #            -> write the resolved /bin/<bin> path to cacheDir/<tool> -> exec it
+  #   0. reads the nixpkgs ref: pinFile if mounted, else defaultNixpkgs.
+  #   1. if cacheDir/<tool> exists AND its tagged pin rev == current -> exec it (fast)
+  #   2. else: nix build --no-link --print-out-paths <ref>#<package>
+  #            -> write {path, pinRev} to cacheDir/<tool> -> exec /bin/<bin>
   # config.environment.systemPackages = [ <generated stub derivation> ];
   config = lib.mkIf cfg.enable { /* generate stubs from cfg.tools */ };
 }
@@ -199,10 +208,24 @@ skills dir, the broker tools (`agent-broker`, `git-credential-broker`,
 these move into the NixOS config (systemd units / activation scripts / packages).
 The PoC keeps both images until the OS image reaches parity + passes Tier 2.
 
-## Open seams flagged for Review (Stage 4)
+## Review decisions (Stage 4, resolved 2026-06-24)
 
-- Stub cache invalidation when `nixpkgs` pin changes (cache keyed by pin rev?).
-- Does the agent's `kubectl exec` get a login shell with the stubs on PATH +
-  `HOME` set (today HOME=/workspace via env)? systemd/PAM may change the exec env.
-- Substituter availability in-pod (egress / internal cache) for first-call builds.
-- `nix build` in-pod needs the daemon running as a systemd unit (`nix-daemon`).
+1. **nixpkgs pin via ConfigMap (not baked into the image).** The pinned nixpkgs
+   rev lives in a **ConfigMap mounted into the pod** (e.g. `/etc/agent-sandbox/nix/pin.json`
+   → `{ "nixpkgs": "github:NixOS/nixpkgs/<rev>" }`), mirroring how the AWS accounts
+   registry is already a mounted ConfigMap. The lazy-stub eval READS the pin from
+   there at resolve time — so re-pinning is a ConfigMap edit, no image rebuild.
+   `programs.lazyTools.nixpkgs` becomes a PATH to the pin file (default points at the
+   mount), not a hardcoded ref. **Cache keying:** the memoized store path in
+   `cacheDir/<tool>` is tagged with the pin rev; a mismatch → re-resolve. (Falls
+   back to a built-in default pin if the ConfigMap isn't mounted, e.g. nixosTest.)
+2. **Login-shell exec — confirmed.** `kubectl exec` must land a shell with the lazy
+   stubs on PATH and `HOME` set, so the agent runs `uv …` directly and it just
+   works. Ensure the exec env (systemd/PAM may differ) carries PATH + HOME.
+3. **Keep both images until parity + Tier 2 — confirmed.** No regression to the
+   broker tools / git-credential / aws-config carry-over; the OS image proves out
+   behind the existing one.
+4. **`cache.nixos.org` egress is available in-pod — confirmed.** First-call stub
+   builds substitute from cache.nixos.org; no internal substituter needed.
+5. **`nix build` in-pod** needs the nix daemon as a systemd unit (NixOS provides
+   `nix-daemon.service` by default once nix is enabled).
