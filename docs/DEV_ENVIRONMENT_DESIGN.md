@@ -55,17 +55,25 @@ Flake wiring (additions to `flake.nix`):
 Implementation notes (for Stage 5, NOT now): copy the toplevel closure; symlink
 init; set the container env; tmpfs dirs are runtime (pod spec), not image.
 
-## `modules/sandbox-os/default.nix` — the NixOS config
+## `modules/sandbox-os/default.nix` — the SHARED NixOS config
+
+IMPORTANT split discovered in Stage 3: `boot.isContainer = true` removes the
+kernel/initrd, but `nixosTest` boots each node as a **QEMU VM** that REQUIRES a
+kernel/initrd. So `boot.isContainer` must NOT live in the shared config — it goes
+in the **image build** only. The shared config carries the *capabilities* (stubs,
+service, nix); the image build adds `isContainer` for systemd-PID-1 packaging; a
+test node imports the shared config and boots a normal VM. This keeps one source
+of truth for the capabilities while letting tests actually boot.
 
 ```nix
-# A NixOS module evaluated via pkgs.nixos { imports = [ ./default.nix ]; }.
-{ config, lib, pkgs, nixpkgsPinned, ... }:
+# The SHARED config (capabilities only). Image build adds boot.isContainer.
+{ config, lib, pkgs, ... }:
 {
   imports = [ ./lazy-tools.nix ./sample-service.nix ];
 
   config = {
-    boot.isContainer = true;          # trims kernel/udev/hardware; keeps systemd
     system.stateVersion = "24.11";    # pin
+    # boot.isContainer = true;  <-- NOT here; added by pkgs/sandbox-os only.
 
     # Nix usable in-pod (the agent builds/installs on demand).
     nix.settings.experimental-features = [ "nix-command" "flakes" ];

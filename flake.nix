@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Pinned nixpkgs the sandbox's lazy tool stubs resolve packages against
+    # (the built-in fallback when the pin ConfigMap isn't mounted). Fixed rev =
+    # deterministic eval + eval-cache hits. Bump deliberately.
+    nixpkgs-pinned.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     nix2container = {
       url = "github:nlewo/nix2container";
@@ -14,7 +18,7 @@
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix }:
+  outputs = inputs@{ self, nixpkgs, nixpkgs-pinned, flake-parts, nix2container, kubenix }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
@@ -95,6 +99,15 @@
               };
             };
           };
+
+          # Tier-1-style config-correctness tests for the dev-environment sandbox:
+          # each boots the sandbox-os NixOS config in a QEMU VM with real systemd.
+          # Linux-only (nixosTest needs KVM). Exposed as checks so `nix flake
+          # check` runs them. See nixos-tests/ + docs/DEV_ENVIRONMENT*.
+          devEnvTests =
+            if pkgs.stdenv.isLinux
+            then import ./nixos-tests { inherit pkgs lib; }
+            else { };
         in
         {
           packages = {
@@ -164,7 +177,7 @@
 
           checks = {
             inherit agentHost ui;
-          };
+          } // devEnvTests;
         };
 
       flake = {
