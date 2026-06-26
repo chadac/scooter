@@ -67,6 +67,14 @@
             inherit pkgs lib n2c skillsDir;
           };
 
+          # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
+          # services). Built from the shared modules/sandbox-os config. Coexists
+          # with sandboxImage until it reaches parity + passes Tier 2.
+          sandboxOsImage = import ./pkgs/sandbox-os {
+            inherit pkgs lib;
+            nixpkgsPinned = "path:${inputs.nixpkgs-pinned}";
+          };
+
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
           ui = pkgs.callPackage ./ui { };
 
@@ -118,6 +126,9 @@
 
             # nix build .#sandbox-image  ->  generic OCI sandbox (runtime + Nix)
             sandbox-image = sandboxImage.image;
+
+            # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox
+            sandbox-os-image = sandboxOsImage.image;
 
             # nix build .#broker-image  ->  broker OCI image
             broker-image = brokerImage.image;

@@ -203,10 +203,25 @@ Skeletons (assertions only; testScript filled in Stage 3):
 - **nix-build-skill.nix** — execute the skill's documented commands; assert the
   tool ends up runnable on PATH.
 
-**Out of nixosTest scope (Tier 2 cluster, later):** the OCI image actually boots
-systemd as PID 1 in a privileged agent-sandbox pod on a real cluster; `kubectl
-exec` works; suspend/resume; PVC. One cluster test asserts `systemctl
-is-system-running` inside the deployed pod.
+**Out of nixosTest scope (Tier 2 cluster) — DONE + GREEN:** `pkgs/sandbox-os`
+builds the NixOS toplevel → an OCI tarball (dockerTools.buildLayeredImage, ~339M:
+systemd base + closure, lazy stubs keep it from growing). `test/cluster/sandbox-os.spec.ts`
+(4/4 green on a real kind cluster, `RUN_CLUSTER_TESTS=1 CLUSTER_PROVIDER=kind`)
+proves a privileged pod running the image: reaches Ready (**systemd PID 1 boots
+under containerd** — the design's #1 unknown, RESOLVED), `systemctl is-system-running`
+= running, nix-daemon active, sample service `systemctl start/stop`-able.
+
+Implementation gotchas found + fixed:
+- Entrypoint must be the store path `${toplevel}/init`, NOT `/init` (the symlink
+  isn't at the image root → `exec: "/init": no such file`). Pointing at the store
+  path can't be missing.
+- `container=docker` Env (systemd container detection), empty writable
+  `/etc/machine-id`, tmpfs on /run + /tmp (the pod mounts these), privileged.
+- `networking.dhcpcd` + `services.nscd` OFF (+ `system.nssModules = []`): in a pod
+  the kubelet/CNI owns networking; otherwise those units fail and leave the system
+  "degraded". Off → clean `running`.
+Verified live in-pod too: `uv` is the lazy stub on PATH, `nix --version` works,
+`systemctl stop` toggles the service.
 
 ## SPIKE (done, GREEN): runtime re-converge — warm-pod-specializes-on-claim
 

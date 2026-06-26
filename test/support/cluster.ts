@@ -25,6 +25,8 @@ export type ClusterProvider = "existing" | "k3s" | "kind" | "minikube" | "k3d";
 export interface Cluster {
   readonly provider: ClusterProvider;
   apply(manifest: object): Promise<void>;
+  /** Delete a Pod by name (best-effort; for tests that create bare pods). */
+  deletePod(name: string, namespace?: string): Promise<void>;
   get<T = unknown>(kind: string, name: string, namespace?: string): Promise<T>;
   waitFor<T = unknown>(
     kind: string,
@@ -70,6 +72,7 @@ const RESOURCES: Record<string, { group: string; version: string; plural: string
   SandboxClaim: { group: "extensions.agents.x-k8s.io", version: "v1alpha1", plural: "sandboxclaims" },
   ServiceAccount: { group: "", version: "v1", plural: "serviceaccounts", core: true },
   PersistentVolumeClaim: { group: "", version: "v1", plural: "persistentvolumeclaims", core: true },
+  Pod: { group: "", version: "v1", plural: "pods", core: true },
 };
 
 export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Cluster> {
@@ -89,7 +92,9 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
       const fn =
         kind === "ServiceAccount"
           ? core.readNamespacedServiceAccount({ name, namespace: ns })
-          : core.readNamespacedPersistentVolumeClaim({ name, namespace: ns });
+          : kind === "Pod"
+            ? core.readNamespacedPod({ name, namespace: ns })
+            : core.readNamespacedPersistentVolumeClaim({ name, namespace: ns });
       return (await fn) as T;
     }
     return (await custom.getNamespacedCustomObject({
@@ -123,6 +128,12 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
 
     get(kind, name, ns = namespace) {
       return getResource(kind, name, ns);
+    },
+
+    async deletePod(name, ns = namespace) {
+      await core
+        .deleteNamespacedPod({ name, namespace: ns, gracePeriodSeconds: 0 })
+        .catch(() => {});
     },
 
     async waitFor(kind, name, predicate, timeoutMs = 120_000, ns = namespace) {

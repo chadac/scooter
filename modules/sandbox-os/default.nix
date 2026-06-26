@@ -28,6 +28,14 @@
   # No display/doc/etc. — keep it lean.
   documentation.enable = lib.mkDefault false;
 
+  # In a k8s pod the kubelet/CNI owns networking and there's no host name-service
+  # cache — dhcpcd + nscd just fail and leave the system "degraded". Turn them off
+  # so a healthy boot reaches "running". (Harmless in a VM too.)
+  networking.dhcpcd.enable = lib.mkDefault false;
+  services.nscd.enable = lib.mkDefault false;
+  # nscd off needs an explicit NSS module set.
+  system.nssModules = lib.mkForce [ ];
+
   # --- nix usable in-pod (the agent builds/installs on demand) ---------------
   # cache.nixos.org egress is available in-pod (confirmed) — first-call lazy
   # stub builds substitute from it instead of building from source.

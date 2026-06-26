@@ -97,16 +97,11 @@ install_controller() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Images (generic sandbox + fake ACP agent), built with Nix, imported.
+# 3. Images (generic sandbox + NixOS dev sandbox), built with Nix, imported.
 # ---------------------------------------------------------------------------
-import_images() {
-  log "building sandbox image with Nix..."
-  local tarball
-  tarball="$(cd "$REPO_ROOT" && nix build .#sandbox-image --no-link --print-out-paths 2>/dev/null || true)"
-  if [ -z "$tarball" ]; then
-    log "WARN: sandbox image build not available yet (image module still sketched); skipping import"
-    return
-  fi
+# Import one image-archive tarball into the cluster, provider-agnostic.
+import_tarball() {
+  local tarball="$1"
   case "$PROVIDER" in
     k3s)      sudo k3s ctr images import "$tarball" ;;
     kind)     kind load image-archive "$tarball" --name "$CLUSTER_NAME" ;;
@@ -114,6 +109,25 @@ import_images() {
     minikube) minikube -p "$CLUSTER_NAME" image load "$tarball" ;;
     existing) log "existing cluster: ensure the image is reachable (push to a registry)" ;;
   esac
+}
+
+# Build a flake image target and import it; warn+skip if the build fails.
+build_and_import() {
+  local target="$1" label="$2" tarball
+  log "building $label image with Nix..."
+  tarball="$(cd "$REPO_ROOT" && nix build "$target" --no-link --print-out-paths 2>/dev/null || true)"
+  if [ -z "$tarball" ]; then
+    log "WARN: $label image build not available; skipping import"
+    return
+  fi
+  import_tarball "$tarball"
+}
+
+import_images() {
+  build_and_import ".#sandbox-image" "generic sandbox"
+  # The NixOS dev-environment sandbox (systemd PID 1). Heavier build; gated on
+  # the Tier 2 sandbox-os test needing it (SANDBOX_OS_IMAGE).
+  build_and_import ".#sandbox-os-image" "NixOS dev sandbox"
 }
 
 # ---------------------------------------------------------------------------
