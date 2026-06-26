@@ -30,6 +30,18 @@ let
         default = null;
         description = "Binary under the package's /bin to exec. Defaults to the tool's attr name.";
       };
+      localFlake = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Resolve this tool from a LOCAL flake DIRECTORY (a path MOUNTED into the
+          sandbox, e.g. a deployment's `.scooter/` ConfigMap) instead of the
+          pinned nixpkgs. The stub builds `path:<localFlake>#<package>`. This is
+          how a DEPLOYMENT injects its own CLI tool (scooter-review, …) into the
+          generic sandbox at runtime — no flake ref, no image rebuild, instant
+          (it's just a package, not a system rebuild). See docs/HYPERNIX_INJECTION.md.
+        '';
+      };
     };
   });
 in
@@ -103,15 +115,33 @@ in
               pkg=${lib.escapeShellArg tool.package}
               bin=${lib.escapeShellArg bin}
               cache_file="$cache_dir/${name}"
+              ${lib.optionalString (tool.localFlake != null)
+                "local_flake=${lib.escapeShellArg tool.localFlake}"}
 
+              ${if tool.localFlake != null then ''
+              # DEPLOYMENT-INJECTED tool: resolve from a local flake dir (a mounted
+              # .scooter ConfigMap), not the pinned nixpkgs. No flake ref needed.
+              if [ ! -e "$local_flake/flake.nix" ]; then
+                echo "lazy-tools: ${name}: flake not mounted at $local_flake" >&2
+                echo "  (the deployment must mount its .scooter ConfigMap there)" >&2
+                exit 127
+              fi
+              ref="path:$local_flake"
+              # The mounted flake dir is read-only and may have a path: nixpkgs
+              # input (not a content-locked one) — --impure lets it resolve
+              # without a strict lock. Trusted: it's the deployment's own dir.
+              extra_args="--impure"
+              '' else ''
               # The pinned nixpkgs ref: the mounted ConfigMap (pinFile) wins; else
               # the built-in default. Re-pinning is a ConfigMap edit, no rebuild.
               ref="$default_ref"
+              extra_args=""
               if [ -r "$pin_file" ]; then
                 if v=$(jq -er '.nixpkgs' "$pin_file" 2>/dev/null); then
                   ref="$v"
                 fi
               fi
+              ''}
 
               # Fast path: a cache entry for THIS ref whose path still exists.
               if [ -r "$cache_file" ]; then
@@ -123,10 +153,18 @@ in
               fi
 
               # Resolve: realise the package and find its binary. Slow once.
-              out=$(nix build --no-link --print-out-paths "$ref#$pkg")
-              target="$out/bin/$bin"
-              if [ ! -x "$target" ]; then
-                echo "lazy-tools: ${name}: '$bin' not found under $out/bin" >&2
+              # --no-write-lock-file: a mounted .scooter flake dir is READ-ONLY,
+              # so nix mustn't try to write a flake.lock into it.
+              # shellcheck disable=SC2086
+              out=$(nix build --no-link --print-out-paths --no-write-lock-file $extra_args "$ref#$pkg")
+              # Prefer $out/bin/<bin> (the usual layout); fall back to $out itself
+              # being the executable (a bare-script derivation / meta.mainProgram).
+              if [ -x "$out/bin/$bin" ]; then
+                target="$out/bin/$bin"
+              elif [ -x "$out" ]; then
+                target="$out"
+              else
+                echo "lazy-tools: ${name}: no executable at $out/bin/$bin or $out" >&2
                 exit 127
               fi
 

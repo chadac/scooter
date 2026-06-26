@@ -73,6 +73,15 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
+- [ ] **Conversation list: titles + linked-resource icons in the sidebar.** Today
+  you have to open a conversation to see its title, and there's no way to spot
+  which conversations have linked GitHub/GitLab/Slack threads from the list. Add:
+  (1) surface the agent-assigned title in the listing (it exists — the <title>
+  marker is extracted server-side; the 10s merge poll has it); (2) a small
+  provider icon per conversation in the sidebar when it has a linked resource
+  (the links are already stored + served via GET /conversations/:id/links and the
+  LinkedResources panel). So the list shows title + a GitHub/GitLab/Slack glyph.
+
 - [~] **Proper in-sandbox dev environment (Nix-powered, lazy, services-capable).**
   Modeled as a NixOS-config container (systemd PID 1). NixOS-config LAYER COMPLETE
   + PROVEN — all 5 nixosTests GREEN (commits d0ef8ff…4524987). See

@@ -23,4 +23,7 @@ in
   dev-env-nix-build-skill = runTest ./nix-build-skill.nix;
   # SPIKE: runtime re-converge (warm-pod-specializes-on-claim primitive).
   dev-env-switch-specialisation = runTest ./switch-specialisation.nix;
+  # Deployment-injected CLI tool via a mounted .scooter flake dir (the generic
+  # mechanism; a deployment ships its own real tool, e.g. example-review).
+  dev-env-injected-tool = runTest ./injected-tool.nix;
 }
