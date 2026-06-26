@@ -43,6 +43,11 @@ export interface K8sProvisionerOptions {
   /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
    *  sandbox renders ~/.aws/config — set when the AWS permissions broker is on. */
   awsAccountsConfigMap?: string;
+  /** Run the sandbox container as a systemd-PID-1 NixOS dev environment: a
+   *  privileged securityContext + tmpfs on /run + /tmp (what systemd needs).
+   *  Set when sandboxImage is the agent-sandbox-os image. Default false keeps the
+   *  legacy generic image behavior. */
+  systemdImage?: boolean;
   kubeConfig?: KubeConfig;
 }
 
@@ -93,7 +98,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         version: VERSION,
         namespace: ns,
         plural: PLURAL,
-        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap),
+        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false),
       });
 
       return { name, namespace: ns };
@@ -136,6 +141,7 @@ function sandboxManifest(
   audience: string,
   storage: string,
   awsAccountsConfigMap?: string,
+  systemdImage = false,
 ): object {
   return {
     apiVersion: `${GROUP}/${VERSION}`,
@@ -155,11 +161,22 @@ function sandboxManifest(
               // Always pull so a re-pushed :latest sandbox image is picked up
               // (IfNotPresent would keep a node's stale cached image).
               imagePullPolicy: "Always",
+              // The systemd NixOS dev image runs systemd as PID 1 — it needs a
+              // privileged context (writable cgroup + CAP_SYS_ADMIN). Accepted on
+              // dev; tighten post-PoC. The legacy generic image runs unprivileged.
+              ...(systemdImage ? { securityContext: { privileged: true } } : {}),
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },
                 ...(awsAccountsConfigMap
                   ? [{ name: "aws-accounts", mountPath: "/etc/agent-sandbox/aws", readOnly: true }]
+                  : []),
+                // systemd writes to /run + /tmp; back them with tmpfs.
+                ...(systemdImage
+                  ? [
+                      { name: "run", mountPath: "/run" },
+                      { name: "tmp", mountPath: "/tmp" },
+                    ]
                   : []),
               ],
               env: [
@@ -197,6 +214,12 @@ function sandboxManifest(
             },
             ...(awsAccountsConfigMap
               ? [{ name: "aws-accounts", configMap: { name: awsAccountsConfigMap } }]
+              : []),
+            ...(systemdImage
+              ? [
+                  { name: "run", emptyDir: { medium: "Memory" } },
+                  { name: "tmp", emptyDir: { medium: "Memory" } },
+                ]
               : []),
           ],
         },

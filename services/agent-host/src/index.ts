@@ -154,6 +154,9 @@ export async function main(
         // When the AWS permissions broker is on, mount its account-registry
         // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
         awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,
+        // SANDBOX_SYSTEMD=1 when SANDBOX_IMAGE is the NixOS systemd dev image:
+        // run the sandbox privileged with tmpfs /run + /tmp so systemd PID 1 boots.
+        systemdImage: process.env.SANDBOX_SYSTEMD === "1",
       });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
