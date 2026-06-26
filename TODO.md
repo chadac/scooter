@@ -53,20 +53,33 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
-- [ ] **Proper in-sandbox dev environment (Nix-powered, lazy, services-capable).**
-  The sandbox should be a real dev box the agent can build/install into and run
-  services in. Requirements:
-  1. **Nix build/install:** the agent can `nix build`/install tools on demand; ship
-     a SKILL that explains the workflow (how to add a package, build it, where it
-     lands on PATH) so the agent knows how to use it without trial-and-error.
-  2. **systemd-enabled container:** it's a container, but enable systemd so we can
-     run real services. Forward-looking: collaborative envs (Jupyter notebooks etc.)
-     with port-forwarding the agent can enable on request.
-  3. **Lazy by default:** keep the base image LIGHT — set up stubs/shims for common
-     tools (`uv`, `python`, …) that auto-build the underlying Nix package on first
-     use, instead of baking everything in. Build-on-demand, not build-ahead.
-  Touches pkgs/sandbox-image (the generic sandbox), a new skill, and the exec/PATH
-  story. Design it via the staged PoC process (research → design → tests → impl).
+- [~] **Proper in-sandbox dev environment (Nix-powered, lazy, services-capable).**
+  Modeled as a NixOS-config container (systemd PID 1). NixOS-config LAYER COMPLETE
+  + PROVEN — all 5 nixosTests GREEN (commits d0ef8ff…4524987). See
+  docs/DEV_ENVIRONMENT*.md + memory dev-environment-nixos-config.
+  - [x] Research + Design + red-first nixosTests (Stage 1-3).
+  - [x] **Lazy tool stubs** (`programs.lazyTools`, extensible; `uv` shipped): a PATH
+        stub resolves the pkg from a pinned nixpkgs (ConfigMap pinFile / default) on
+        first call, memoizes the /bin path by rev, execs it. Test stops the nix
+        daemon to PROVE the cache hit ("slow only once"). [dev-env-lazy-stub]
+  - [x] **systemd services** (`services.sampleDevService` sample unit): reaches
+        active, opens a port, agent `systemctl start/stop`. [dev-env-service]
+  - [x] **In-pod nix + skill** (`devEnvNix`): flakes, pinned `nixpkgs` registry
+        (global registry off → deterministic), user nix-profile on PATH;
+        skills/nix-dev-env.md teaches lazy tools + install + systemctl.
+        [dev-env-nix-build-skill]
+  - [x] **SPIKE — runtime re-converge** (warm-pod-specializes-on-claim): a generic
+        pod live-switches to a pre-built specialisation via switch-to-configuration
+        in ~1s, service comes up, systemd survives as PID 1. [dev-env-switch-specialisation]
+  - [ ] **OCI image builder** `pkgs/sandbox-os` — NixOS toplevel → image
+        (boot.isContainer, /sbin/init, container=docker). NOT nixosTest-coverable.
+  - [ ] **Carry-over** the old sandbox's broker/git-credential/aws-config + HOME as
+        units/packages; keep both images until parity.
+  - [ ] **Tier 2 cluster test** — the privileged systemd-PID-1 pod boots on a real
+        cluster, `kubectl exec` works, `systemctl is-system-running` ok.
+  - [ ] (future) wire switch-on-claim into the agent-sandbox warm pool (claim→exec
+        trigger); ConfigMap-driven services (`programs.lazyServices`, sibling of
+        lazyTools). See memory runtime-nixos-switch-in-container.
 
 - [x] **ACP-expanding tools — agent-presented option dropdown.** DONE end-to-end
   (commits ec74448 server scaffold → 74b0566 full interrupt feature). The agent
