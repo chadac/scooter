@@ -33,6 +33,13 @@ export interface SandboxProvisioner {
   resume(ref: SandboxRef): Promise<SandboxRef>;
   /** Delete the Sandbox + GC the per-conversation SA/RBAC. */
   destroy(ref: SandboxRef): Promise<void>;
+  /** List the live per-conversation Sandboxes (name -> ref + whether its pod is
+   *  currently running, i.e. replicas>0). Used by hydrate() after a restart to
+   *  reconcile in-memory status against reality, so a Sandbox whose pod is STILL
+   *  running (never actually suspended) is tracked as running and the idle sweep
+   *  can reclaim it — instead of being assumed-suspended and leaking forever.
+   *  Optional: provisioners that can't enumerate return undefined. */
+  reconcile?(): Promise<Array<{ ref: SandboxRef; running: boolean }>>;
 }
 
 /** Durable, restart-surviving metadata for one conversation. */
@@ -330,16 +337,34 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     async hydrate() {
       const metas = (await store.listConversations?.()) ?? [];
+
+      // Reconcile against the cluster: which conv-* Sandboxes actually exist, and
+      // is each one's pod still running? A restart loses the in-memory map but the
+      // pods may NOT have been suspended — without this we'd assume-suspend them
+      // and the idle sweep would never reclaim them (a pod leak).
+      const live = new Map<string, { ref: SandboxRef; running: boolean }>();
+      try {
+        for (const s of (await provisioner.reconcile?.()) ?? []) {
+          live.set(s.ref.name, s);
+        }
+      } catch {
+        /* best-effort; fall back to the assume-suspended placeholder below */
+      }
+
       for (const m of metas) {
         if (entries.has(m.id)) continue; // a live one already exists
-        // Persisted but not currently live -> a resumable (suspended)
-        // conversation. No bridge/sandbox yet; revive() recreates them on use.
+        const name = `conv-${shortId(m.threadId)}`;
+        const onCluster = live.get(name);
+        // If the Sandbox's pod is still running, track it as RUNNING with its real
+        // namespace so suspend()/sweepIdle() can act on it. Otherwise it's a
+        // resumable (suspended) conversation — revive() recreates it on use; the
+        // empty-namespace placeholder signals "create a fresh pod".
         entries.set(m.id, {
           id: m.id,
           threadId: m.threadId,
-          sandbox: { name: `conv-${shortId(m.threadId)}`, namespace: "" },
+          sandbox: onCluster?.running ? onCluster.ref : { name, namespace: "" },
           bridge: undefined,
-          status: "suspended",
+          status: onCluster?.running ? "running" : "suspended",
           title: m.title,
           createdAt: m.createdAt,
           lastActivityAt: m.lastActivityAt,

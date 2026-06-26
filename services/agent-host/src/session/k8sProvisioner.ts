@@ -113,6 +113,25 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       return ref;
     },
 
+    async reconcile(): Promise<Array<{ ref: SandboxRef; running: boolean }>> {
+      // List every per-conversation Sandbox in the namespace and report whether
+      // its pod is running (replicas > 0). hydrate() uses this to avoid leaking
+      // pods across an agent-host restart.
+      const list = (await custom.listNamespacedCustomObject({
+        group: GROUP,
+        version: VERSION,
+        namespace: ns,
+        plural: PLURAL,
+      })) as { items?: Array<{ metadata?: { name?: string }; spec?: { replicas?: number } }> };
+      const out: Array<{ ref: SandboxRef; running: boolean }> = [];
+      for (const item of list.items ?? []) {
+        const name = item.metadata?.name;
+        if (!name || !name.startsWith("conv-")) continue;
+        out.push({ ref: { name, namespace: ns }, running: (item.spec?.replicas ?? 0) > 0 });
+      }
+      return out;
+    },
+
     async destroy(ref: SandboxRef): Promise<void> {
       const id = ref.name.replace(/^conv-/, "");
       await custom

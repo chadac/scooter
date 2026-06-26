@@ -147,6 +147,38 @@ describe("SessionManager", () => {
     }
   });
 
+  it("hydrate reconciles a still-running Sandbox as running so the idle sweep reclaims it", async () => {
+    // The leak bug: after a restart the pods may NOT have been suspended, but
+    // hydrate() assumed they were -> sweepIdle (running-only) never reclaimed
+    // them. With reconcile(), a Sandbox whose pod is still up is tracked running.
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const conv = await m1.start("gamma");
+      const sandboxName = m1.get(conv.id)!.sandbox.name; // conv-<shortId>
+
+      // Fresh "process": its provisioner reports that conv's pod is STILL running.
+      const prov2 = fakeProvisioner();
+      prov2.reconcile = vi.fn(async () => [
+        { ref: { name: sandboxName, namespace: "ns" }, running: true },
+      ]);
+      const m2 = createSessionManager({ provisioner: prov2, store: createFileConversationStore(root) });
+      await m2.hydrate();
+
+      // Reconciled as running (not assume-suspended), with the real namespace.
+      expect(m2.get(conv.id)?.status).toBe("running");
+
+      // ...so the idle sweep can now actually suspend it (the leak is reclaimed).
+      const swept = await m2.sweepIdle(0); // 0 idle threshold -> everything idle
+      expect(swept).toContain(conv.id);
+      expect(prov2.suspend).toHaveBeenCalledOnce();
+      expect(m2.get(conv.id)?.status).toBe("suspended");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("ended conversations do NOT come back after a restart (persisted state removed)", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {
