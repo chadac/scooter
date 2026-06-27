@@ -73,6 +73,24 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
+- [~] **Deployment-injected tools (.scooter) — code complete, deploy gated on AWS auth.**
+  A deployment adds its own Nix tools/services to the GENERIC sandbox with NO
+  platform changes. Mechanisms (all green): `config.lib.mkLazyTool` (declare a lazy
+  tool inline in any module; 3 resolve sources: pinned-attr / mounted-flake /
+  pkgs.*); runtime `.scooter/module.nix` applied via switch-to-configuration (the
+  module DECLARES its own tools — no enumeration, no image rebuild); generic
+  `deployTools` provisioner hooks (scooterConfigMap mount + token audiences + env;
+  no deployment-specific tool/credential concepts in the platform). nixosTests:
+  mklazytool, injected-tool, scooter-module, lazy-stub all GREEN. Fixed a real
+  prod bug: ship the nixpkgs source + modules tree in the image closure
+  (cfg.nixpkgs is a context-less string) so the in-pod re-converge build is
+  self-contained. DEPLOYMENT side done (in the deployment repo): .scooter/module.nix
+  declares its review tool (over the deployment's credential mechanism), the tools
+  ConfigMap, sandboxImage=OS + sandboxSystemd + deployTools wired; k8s-yaml renders
+  clean. REMAINING: push closure-fixed OS + agent-host images to the registry,
+  apply, start a conversation, confirm the tool works in the systemd sandbox.
+  (Blocked: cloud auth token expired — re-auth needed.)
+
 - [ ] **Conversation list: titles + linked-resource icons in the sidebar.** Today
   you have to open a conversation to see its title, and there's no way to spot
   which conversations have linked GitHub/GitLab/Slack threads from the list. Add:
