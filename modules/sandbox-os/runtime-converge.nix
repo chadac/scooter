@@ -38,7 +38,7 @@ let
 
   applyModule = pkgs.writeShellApplication {
     name = "scooter-apply-module";
-    runtimeInputs = [ pkgs.nix pkgs.coreutils ];
+    runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.systemd ];
     checkPhase = "";
     text = ''
       # scooter-apply-module — re-converge this sandbox to include the mounted
@@ -70,8 +70,15 @@ let
       ")
 
       echo "scooter-apply-module: switching to $toplevel..."
-      # `switch` (bootloader install is /bin/true under boot.isContainer).
-      "$toplevel/bin/switch-to-configuration" switch
+      # Run the switch in a TRANSIENT systemd scope, detached from THIS unit.
+      # switch-to-configuration restarts the changed-unit diff — which includes
+      # scooter-apply-module.service itself — and would SIGTERM us mid-switch if we
+      # ran it inline (the service would 'fail' even though the build succeeded).
+      # A --scope process isn't a unit the switch manages, so it survives.
+      # (bootloader install is /bin/true under boot.isContainer.)
+      systemd-run --scope --collect --quiet \
+        --unit="scooter-switch-$$" \
+        "$toplevel/bin/switch-to-configuration" switch
       echo "scooter-apply-module: applied."
     '';
   };
@@ -118,6 +125,12 @@ in
       description = "Apply the mounted .scooter/module.nix via switch-to-configuration";
       wantedBy = [ "multi-user.target" ];
       after = [ "nix-daemon.socket" ];
+      # The switch this unit runs will restart the changed-unit diff — which would
+      # include THIS unit — and SIGTERM the running switch. Tell the switch to
+      # leave this unit alone (it's a deliberate self-applying oneshot).
+      restartIfChanged = false;
+      stopIfChanged = false;
+      unitConfig.X-StopOnReconfiguration = false;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
