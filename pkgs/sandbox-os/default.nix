@@ -47,6 +47,10 @@ let
       enable = lib.mkDefault true;
       nixpkgs = lib.mkForce (toString pkgs.path);
     };
+    # Ship the nixpkgs SOURCE in the image closure (pkgs.path has Nix context
+    # here; the bare-string cfg.nixpkgs in the apply script does not). The in-pod
+    # re-converge `nix build` imports it — offline, no fetch.
+    system.extraDependencies = [ pkgs.path ];
   });
 
   toplevel = nixos.config.system.build.toplevel;

@@ -105,6 +105,13 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ applyModule ];
 
+    # CRITICAL: the in-pod `nix build` imports the modules tree (shipped here) and
+    # the nixpkgs source. cfg.nixpkgs is a bare string (no Nix context), so it is
+    # NOT pulled into the image closure by itself — the IMAGE BUILDER must add the
+    # nixpkgs source to system.extraDependencies (where it still has context).
+    # Without both, the in-pod build fails with "path does not exist".
+    system.extraDependencies = [ modulesTree ];
+
     # Apply the mounted module at boot (best-effort; a missing module is a no-op).
     # The agent-host can also exec scooter-apply-module on spawn/claim.
     systemd.services.scooter-apply-module = lib.mkIf cfg.applyOnBoot {
