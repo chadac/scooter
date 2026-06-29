@@ -40,10 +40,22 @@ function ConversationRuntime({
   conversationId,
   children,
 }: Readonly<{ conversationId: string; children: ReactNode }>) {
+  const { sessions } = useSessions();
+  const model = sessions.find((s) => s.id === conversationId)?.model;
+
   const agent = useMemo(
     () => new HttpAgent({ url: AGENT_URL, threadId: conversationId, headers: { Accept: "text/event-stream" } }),
     [conversationId],
   );
+
+  // The per-conversation model rides a header on every /agui POST. assistant-ui
+  // drives the request body internally, so a mutable header on the HttpAgent is
+  // the clean injection point — updating it here switches the model on the next
+  // prompt without recreating the runtime.
+  useEffect(() => {
+    if (model) agent.headers["X-Agent-Model"] = model;
+    else delete agent.headers["X-Agent-Model"];
+  }, [agent, model]);
 
   const threadListAdapter = useMemo(
     () => ({

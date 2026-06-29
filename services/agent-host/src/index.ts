@@ -273,7 +273,14 @@ export async function main(
 
   server.onPrompt(async (sessionId, input) => {
     // sessionId here is the AG-UI threadId; find-or-start the conversation.
-    await sessions.promptByThread(sessionId, input.text);
+    // A requested model is honored only if it's the default or an offered model
+    // (an unknown one is ignored -> the conversation keeps its current model).
+    const requested = input.model;
+    const model =
+      requested && (requested === config.model || config.availableModels.includes(requested))
+        ? requested
+        : undefined;
+    await sessions.promptByThread(sessionId, input.text, model);
   });
 
   // A user's answer to a permission/option request -> resolve the blocked run.

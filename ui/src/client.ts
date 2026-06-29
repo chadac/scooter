@@ -33,6 +33,28 @@ export interface ConversationView {
   status: string;
   createdAt: number;
   lastActivityAt: number;
+  /** The conversation's model (undefined = host default). */
+  model?: string;
+}
+
+/** The model catalog (GET /models): the default + the offered models. */
+export interface ModelCatalog {
+  default: string | null;
+  available: string[];
+}
+
+/** Fetch the offered models. Returns an empty catalog if the server is
+ *  unreachable or has none configured (the picker then hides itself). */
+export async function loadModels(config: AgentHostConfig): Promise<ModelCatalog> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/models`, {
+      headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+    });
+    if (!res.ok) return { default: null, available: [] };
+    return (await res.json()) as ModelCatalog;
+  } catch {
+    return { default: null, available: [] };
+  }
 }
 
 /** An external resource a conversation is linked to (GET /conversations/:id/links). */

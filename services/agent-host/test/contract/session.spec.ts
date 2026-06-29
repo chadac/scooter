@@ -230,6 +230,57 @@ describe("SessionManager", () => {
     }
   });
 
+  it("promptByThread with a NEW model rebuilds the bridge with that model + persists it", async () => {
+    // Per-conversation model is switchable mid-conversation: passing a model to
+    // promptByThread that differs from the conversation's current model must tear
+    // down the live bridge and rebuild it with the new model (so goose relaunches
+    // with the new GOOSE_MODEL), and persist it so a restart keeps the switch.
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const built: Array<string | undefined> = [];
+      const stops: number[] = [];
+      const bridgeFactory = ({ model }: { model?: string }) => {
+        built.push(model);
+        return {
+          start: vi.fn(async () => {}),
+          prompt: vi.fn(async () => "run-x"),
+          stop: vi.fn(async () => {
+            stops.push(1);
+          }),
+          onEvent: () => () => {},
+          onPersist: () => () => {},
+          onTitle: () => () => {},
+        } as never;
+      };
+      const store = createFileConversationStore(root);
+      const m = createSessionManager({ provisioner: fakeProvisioner(), store, bridgeFactory });
+
+      await m.start("t1", "opus"); // initial model
+      expect(built).toEqual(["opus"]);
+
+      // Same model -> no rebuild.
+      await m.promptByThread("t1", "hello", "opus");
+      expect(built).toEqual(["opus"]);
+
+      // New model -> stop old bridge + rebuild with the new model.
+      await m.promptByThread("t1", "now switch", "sonnet");
+      expect(stops.length).toBe(1);
+      expect(built).toEqual(["opus", "sonnet"]);
+      expect(m.get("t1")?.model).toBe("sonnet");
+
+      // Persisted: a fresh process hydrates the switched model.
+      const m2 = createSessionManager({
+        provisioner: fakeProvisioner(),
+        store: createFileConversationStore(root),
+      });
+      await m2.hydrate();
+      expect(m2.get("t1")?.model).toBe("sonnet");
+      await new Promise((r) => setTimeout(r, 20)); // settle fire-and-forget writes
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("ended conversations do NOT come back after a restart (persisted state removed)", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {

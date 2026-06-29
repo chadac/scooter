@@ -15,6 +15,9 @@ export interface Session {
   id: string; // AG-UI threadId
   title: string;
   createdAt: number;
+  /** Per-conversation model (undefined = host default). Sent on the next prompt
+   *  via the X-Agent-Model header; a change mid-conversation switches the model. */
+  model?: string;
 }
 
 const DEFAULT_TITLE = "New chat";
@@ -101,7 +104,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -120,6 +123,9 @@ export const sessionStore = {
         id: c.id,
         title: serverTitle ?? localTitle ?? c.title ?? existing?.title ?? DEFAULT_TITLE,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),
+        // A locally-chosen model (not yet persisted server-side on first prompt)
+        // wins; otherwise take the server's persisted model.
+        model: existing?.model ?? c.model,
       });
     }
 
@@ -184,6 +190,17 @@ export const sessionStore = {
     setState({
       ...state,
       sessions: state.sessions.map((x) => (x.id === id ? { ...x, title } : x)),
+    });
+  },
+
+  /** Set a conversation's model (the picker). No-op if unchanged. The next
+   *  prompt carries it via the X-Agent-Model header (see RuntimeProvider). */
+  setModel(id: string, model: string) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s || s.model === model) return;
+    setState({
+      ...state,
+      sessions: state.sessions.map((x) => (x.id === id ? { ...x, model } : x)),
     });
   },
 };

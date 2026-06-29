@@ -83,6 +83,19 @@ class FakeAgent implements Agent {
       return { stopReason: "end_turn" };
     }
 
+    // A "~model" message is a test directive: report the GOOSE_MODEL the agent
+    // process was launched with. Proves the per-conversation model selection
+    // reached the agent (a model switch relaunches goose with the new
+    // GOOSE_MODEL; here the fake agent just echoes its env).
+    if (userText.startsWith("~model")) {
+      const reply = `model=${process.env.GOOSE_MODEL ?? "(default)"}`;
+      for (const word of reply.split(" ")) {
+        await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
+        await sleep(10);
+      }
+      return { stopReason: "end_turn" };
+    }
+
     // A "!<command>" message is a test directive: run <command> verbatim in the
     // sandbox (real exec path) and report its output. Anything else gets a
     // friendly echo. The ! mechanism is the e2e test harness — it lets a UI

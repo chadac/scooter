@@ -22,6 +22,9 @@ import type { Router } from "../http/router.js";
 export interface RunAgentInput {
   threadId: ThreadId;
   text: string;
+  /** Per-conversation model pick/switch (from the X-Agent-Model header on the
+   *  /agui POST). Undefined = keep the conversation's current model. */
+  model?: string;
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -193,7 +196,11 @@ export function createAguiServer(): AguiServer {
       // The latest user message is the prompt text.
       const lastUser = [...(input.messages ?? [])].reverse().find((m) => m.role === "user");
       const text = lastUser?.content ?? "";
-      await promptHandler?.(sessionId, { threadId: sessionId, text });
+      // The UI rides the per-conversation model on a header (the assistant-ui
+      // runtime drives the AG-UI body, so a header is the clean injection point).
+      const hdr = req.headers["x-agent-model"];
+      const model = (Array.isArray(hdr) ? hdr[0] : hdr) || undefined;
+      await promptHandler?.(sessionId, { threadId: sessionId, text, model });
       // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       return;
     }

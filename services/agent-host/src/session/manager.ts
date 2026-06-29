@@ -49,6 +49,9 @@ export interface ConversationMeta {
   title: string;
   createdAt: number;
   lastActivityAt: number;
+  /** Per-conversation model override (undefined = host default). Persisted so a
+   *  mid-conversation model switch survives an agent-host restart. */
+  model?: string;
 }
 
 /** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
@@ -122,10 +125,14 @@ export interface SessionManager {
   start(threadId: ThreadId, model?: string): Promise<Conversation>;
   /** Re-attach to / revive a suspended conversation (resume + replay log). */
   revive(id: SessionId): Promise<Conversation>;
-  /** Forward a user prompt into the conversation's goose session. */
-  prompt(id: SessionId, text: string): Promise<void>;
-  /** Find-or-start the conversation for an AG-UI thread, then prompt it. */
-  promptByThread(threadId: ThreadId, text: string): Promise<void>;
+  /** Forward a user prompt into the conversation's goose session. An optional
+   *  `model` switches the conversation's model: if it differs from the current
+   *  one, the live goose session is rebuilt with the new model. */
+  prompt(id: SessionId, text: string, model?: string): Promise<void>;
+  /** Find-or-start the conversation for an AG-UI thread, then prompt it. A
+   *  `model` on the FIRST prompt picks the conversation's model; on a later
+   *  prompt it switches it (rebuilds the goose session). */
+  promptByThread(threadId: ThreadId, text: string, model?: string): Promise<void>;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
 
@@ -216,6 +223,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       title: e.title,
       createdAt: e.createdAt,
       lastActivityAt: e.lastActivityAt,
+      model: e.model,
     }) ?? Promise.resolve();
 
   const wireEventLog = (e: Entry) => {
@@ -229,6 +237,20 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       e.lastActivityAt = nowMs();
       void store.appendEvent(e.id, event);
     });
+  };
+
+  /** Switch a conversation's model. A no-op when `model` is undefined or already
+   *  the current one. Otherwise updates entry.model, tears down the live bridge
+   *  (so goose is relaunched with the new GOOSE_MODEL on the next prompt's
+   *  revive), and persists the change so a restart keeps it. */
+  const applyModelSwitch = async (e: Entry, model?: string): Promise<void> => {
+    if (model === undefined || model === e.model) return;
+    e.model = model;
+    if (e.bridge) {
+      await e.bridge.stop();
+      e.bridge = undefined; // prompt()/promptByThread revive -> rebuild with e.model
+    }
+    await saveMeta(e);
   };
 
   return {
@@ -275,10 +297,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return toConversation(entry);
     },
 
-    async prompt(id, text) {
+    async prompt(id, text, model) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
+      await applyModelSwitch(entry, model);
       // Revive whenever there's no LIVE bridge (goose process), not just when the
       // status is non-running: a HYDRATED conversation can be status "running"
       // (its pod is up, per hydrate's reconcile) yet have no bridge in THIS
@@ -287,16 +310,20 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await entry.bridge?.prompt({ threadId: entry.threadId, text });
     },
 
-    async promptByThread(threadId, text) {
-      // Find the conversation for this thread, or start one on first prompt.
+    async promptByThread(threadId, text, model) {
+      // Find the conversation for this thread, or start one on first prompt
+      // (the FIRST prompt's model picks the conversation's model).
       let entry = [...entries.values()].find((e) => e.threadId === threadId);
       if (!entry) {
-        const conv = await this.start(threadId);
+        const conv = await this.start(threadId, model);
         entry = entries.get(conv.id)!;
-      } else if (!entry.bridge) {
-        // No live bridge -> revive (start goose). Covers both suspended AND
-        // hydrated-but-"running" conversations (pod up, no goose in this process).
-        await this.revive(entry.id);
+      } else {
+        await applyModelSwitch(entry, model);
+        if (!entry.bridge) {
+          // No live bridge -> revive (start goose). Covers both suspended AND
+          // hydrated-but-"running" conversations (pod up, no goose in this process).
+          await this.revive(entry.id);
+        }
       }
       touch(entry);
       await entry.bridge?.prompt({ threadId, text });
@@ -376,6 +403,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           title: m.title,
           createdAt: m.createdAt,
           lastActivityAt: m.lastActivityAt,
+          model: m.model,
         });
       }
     },
