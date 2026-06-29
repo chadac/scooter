@@ -55,16 +55,22 @@ Running list of work items. Newest asks at the top of each section. See
         e2e harness (below), THEN land import() (structural shape: hydrate via
         onSwitchToThread, stream appends-only). See docs/INTEGRITY_UI_NOTES.md.
 
-- [x] **CI: split the dev-env nixosTests into a parallel matrix.** DONE
-  (`.github/workflows/ci.yml`). The single `nixos-tests` job built all 8 VM tests
-  SERIALLY (~1h on a cold cache, and it gated PR merges). Replaced with: a cheap
-  `nixos-tests-matrix` job that evals the `dev-env-*` check names to JSON, and a
-  `nixos-test` MATRIX job (one VM test per job, fail-fast off, max-parallel 4,
-  per-test cache key with a shared-base restore prefix). Each job builds exactly
-  one `.#checks.x86_64-linux.<test>` — so the suite finishes in the time of the
-  slowest single test, not the sum. Still continue-on-error + KVM-gated. (Cache
-  warming helps the base closure, but execution was the bottleneck — hence the
-  fan-out.)
+- [x] **CI: split the dev-env nixosTests into a parallel matrix + enable KVM.** DONE
+  (`.github/workflows/ci.yml`, PR #5). Two-part fix:
+  1. SPLIT: the single `nixos-tests` job built all 8 VM tests SERIALLY (~1h, gated
+     merges). Replaced with a `nixos-tests-matrix` job (evals `dev-env-*` names to
+     JSON) + a `nixos-test` MATRIX (one VM test/job, fail-fast off, max-parallel 4,
+     per-test cache key + shared-base restore prefix). Suite now finishes in the
+     time of the slowest single test.
+  2. KVM: the ROOT cause of the slowness — GitHub standard Linux runners HAVE KVM
+     hardware but ship `/dev/kvm` with restrictive group perms, so qemu silently
+     fell back to TCG software emulation (~6-10× slower; a VM that's ~44s locally
+     took ~6 min in CI). Added the GitHub-documented udev rule
+     (`MODE="0666"` on /dev/kvm) before the test runs → real hardware accel. (The
+     `[ -e /dev/kvm ]` check passed all along — the device NODE existed, it just
+     wasn't usable; that masked the TCG fallback.) Diagnosis confirmed by timing:
+     matrix-on-TCG = ~2-7 min/test; expect near-local with KVM. Still
+     continue-on-error until confirmed consistently green, then promote to required.
 
 - [ ] **Stabilize the Tier-3 e2e harness (pre-existing flakiness).** Measured on
   pristine `main`: a full `just test-e2e` run is ~2 failed + 2 flaky with NO code
