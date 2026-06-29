@@ -190,6 +190,7 @@ export function createFileConversationStore(root: string): ConversationStore {
           createdAt: meta.createdAt ?? lastActivityAt,
           lastActivityAt,
           model: meta.model,
+          owner: meta.owner,
         });
       }
       return out;

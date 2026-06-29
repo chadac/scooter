@@ -6,12 +6,14 @@
  * new-session.
  */
 
-import { sessionStore, useSessions } from "./sessions.js";
+import { sessionStore, useSessions, visibleSessions } from "./sessions.js";
 import { LinkedResources } from "./LinkedResources.js";
 import { SourceBadge } from "./sourceIcon.js";
 
 export function Sidebar() {
-  const { sessions, currentId } = useSessions();
+  const state = useSessions();
+  const { currentId, scope } = state;
+  const sessions = visibleSessions(state);
 
   return (
     <aside className="flex h-full w-64 flex-col border-r bg-muted/30">
@@ -23,6 +25,23 @@ export function Sidebar() {
         >
           + New conversation
         </button>
+      </div>
+      {/* Mine / All view filter (conversations are public; this is just a view). */}
+      <div data-testid="scope-toggle" className="flex gap-1 px-3 pb-1 text-xs">
+        {(["mine", "all"] as const).map((s) => (
+          <button
+            key={s}
+            data-testid={`scope-${s}`}
+            data-active={scope === s}
+            onClick={() => sessionStore.setScope(s)}
+            className={
+              "flex-1 rounded px-2 py-1 capitalize " +
+              (scope === s ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent/50")
+            }
+          >
+            {s}
+          </button>
+        ))}
       </div>
       <nav data-testid="session-list" className="flex-1 overflow-y-auto px-2 pb-2">
         {sessions.map((s) => (

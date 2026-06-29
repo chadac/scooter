@@ -52,6 +52,9 @@ export interface ConversationMeta {
   /** Per-conversation model override (undefined = host default). Persisted so a
    *  mid-conversation model switch survives an agent-host restart. */
   model?: string;
+  /** Creating user (ingress identity). undefined = unowned/public. Persisted for
+   *  the "my conversations" view filter (survives restart). */
+  owner?: string;
 }
 
 /** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
@@ -116,13 +119,17 @@ export interface Conversation {
   readonly lastActivityAt: number;
   /** Model this conversation runs on (undefined = the host default). */
   readonly model?: string;
+  /** The user who created it (the ingress identity). undefined = unowned/public
+   *  (e.g. pre-migration or webhook-spawned). Drives the "my conversations" view
+   *  filter — NOT an access boundary (conversations are public). */
+  readonly owner?: string;
 }
 
 export interface SessionManager {
-  /** Start a brand-new conversation (cold Sandbox + goose + PVCs). The optional
-   *  model selects which agent model this conversation runs on (validated by
-   *  the caller against the offered set). */
-  start(threadId: ThreadId, model?: string): Promise<Conversation>;
+  /** Start a brand-new conversation (cold Sandbox + goose + PVCs). `model`
+   *  selects the agent model (validated by the caller); `owner` is the creating
+   *  user (the ingress identity) recorded for the view filter. */
+  start(threadId: ThreadId, model?: string, owner?: string): Promise<Conversation>;
   /** Re-attach to / revive a suspended conversation (resume + replay log). */
   revive(id: SessionId): Promise<Conversation>;
   /** Forward a user prompt into the conversation's goose session. An optional
@@ -183,6 +190,7 @@ interface Entry {
   createdAt: number;
   lastActivityAt: number;
   model?: string;
+  owner?: string;
 }
 
 /** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
@@ -206,6 +214,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     createdAt: e.createdAt,
     lastActivityAt: e.lastActivityAt,
     model: e.model,
+    owner: e.owner,
   });
 
   const touch = (e: Entry) => {
@@ -224,6 +233,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       createdAt: e.createdAt,
       lastActivityAt: e.lastActivityAt,
       model: e.model,
+      owner: e.owner,
     }) ?? Promise.resolve();
 
   const wireEventLog = (e: Entry) => {
@@ -254,7 +264,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   };
 
   return {
-    async start(threadId, model) {
+    async start(threadId, model, owner) {
       // The conversation id IS the thread id, so AG-UI events broadcast/persist
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
       // short DNS-safe hash of it.
@@ -263,7 +273,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const bridge = bridgeFactory?.({ conversationId: id, sandbox, model });
       const entry: Entry = {
         id, threadId, sandbox, bridge, status: "running",
-        title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(), model,
+        title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(), model, owner,
       };
       entries.set(id, entry);
       wireEventLog(entry);
@@ -404,6 +414,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           createdAt: m.createdAt,
           lastActivityAt: m.lastActivityAt,
           model: m.model,
+          owner: m.owner,
         });
       }
     },

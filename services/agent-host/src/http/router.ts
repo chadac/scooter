@@ -8,12 +8,22 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import {
+  userFromRequest,
+  identityConfigFromEnv,
+  type IdentityConfig,
+  type UserContext,
+} from "../auth/identity.js";
+
 export interface Ctx {
   req: IncomingMessage;
   res: ServerResponse;
   params: Record<string, string>;
   query: URLSearchParams;
   body: <T = unknown>() => Promise<T>;
+  /** The caller's identity, extracted from the trusted ingress header (or
+   *  anonymous when none). Used for conversation ownership / view-filtering. */
+  user: UserContext;
 }
 
 export type JsonResult = { status?: number; json: unknown };
@@ -34,7 +44,7 @@ export interface Router {
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
 }
 
-export function createRouter(): Router {
+export function createRouter(identityConfig: IdentityConfig = identityConfigFromEnv()): Router {
   const routes: Route[] = [];
 
   const readBody = (req: IncomingMessage): Promise<string> =>
@@ -89,6 +99,7 @@ export function createRouter(): Router {
           res,
           params,
           query: url.searchParams,
+          user: userFromRequest(req, identityConfig),
           body: async <T,>() => {
             cachedBody ??= await readBody(req);
             return (cachedBody ? JSON.parse(cachedBody) : {}) as T;

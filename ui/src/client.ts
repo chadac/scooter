@@ -91,8 +91,34 @@ export async function loadLinks(
  * refresh and every conversation is listed/searchable (not just the ones this
  * browser tab created in memory).
  */
-export async function loadConversations(config: AgentHostConfig): Promise<ConversationView[]> {
-  return (await loadConversationsResult(config)).conversations;
+/** The caller's identity (GET /whoami) — from the trusted ingress header. */
+export interface Whoami {
+  id: string;
+  email: string | null;
+  anonymous: boolean;
+}
+
+/** Fetch the caller's identity. Falls back to anonymous if unreachable. */
+export async function loadWhoami(config: AgentHostConfig): Promise<Whoami> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/whoami`, {
+      headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+    });
+    if (!res.ok) return { id: "anonymous", email: null, anonymous: true };
+    return (await res.json()) as Whoami;
+  } catch {
+    return { id: "anonymous", email: null, anonymous: true };
+  }
+}
+
+/** Which conversations to list: the caller's own ("mine", default) or all. */
+export type ConversationScope = "mine" | "all";
+
+export async function loadConversations(
+  config: AgentHostConfig,
+  scope: ConversationScope = "mine",
+): Promise<ConversationView[]> {
+  return (await loadConversationsResult(config, scope)).conversations;
 }
 
 /**
@@ -103,9 +129,10 @@ export async function loadConversations(config: AgentHostConfig): Promise<Conver
  */
 export async function loadConversationsResult(
   config: AgentHostConfig,
+  scope: ConversationScope = "mine",
 ): Promise<{ ok: boolean; conversations: ConversationView[] }> {
   try {
-    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations`, {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations?scope=${scope}`, {
       headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
     });
     if (!res.ok) return { ok: false, conversations: [] };
