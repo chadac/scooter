@@ -189,6 +189,7 @@ export function createFileConversationStore(root: string): ConversationStore {
           title: meta.title ?? "New chat",
           createdAt: meta.createdAt ?? lastActivityAt,
           lastActivityAt,
+          model: meta.model,
         });
       }
       return out;

@@ -155,15 +155,35 @@ Running list of work items. Newest asks at the top of each section. See
   green (esp. KVM for nixos-tests), set required checks. Tier 2/3 still out of CI
   (heavy; see e2e-stabilize).
 
-- [ ] **UI: per-conversation model selection.** The backend already supports it —
-  `availableModels` is configured, the management API accepts a model on
-  POST /conversations and validates it via `resolveModel()`, and a conversation can
-  override per-prompt. The UI just doesn't expose it. Add a model picker in the chat
-  composer (and/or new-conversation flow): fetch the offered models from the API
-  (GET /models exists), let the user pick, and send it with the prompt. Show the
-  active model somewhere unobtrusive. Needs: a small assistant-ui composer addition,
-  wiring the choice into the /agui or management call, and an e2e covering "pick a
-  non-default model → it's used."
+- [x] **UI: per-conversation model selection.** DONE (branch `feat/ui-model-selection`).
+  Pick at new-chat AND switchable mid-conversation. The model rides the PROMPT via an
+  `X-Agent-Model` header on the /agui POST (assistant-ui drives the body, so a mutable
+  header on the HttpAgent is the clean injection point). Server: SessionManager
+  `prompt/promptByThread` gained `model?`; a model that differs from the conversation's
+  current one tears down the live bridge + rebuilds it (relaunches goose with the new
+  GOOSE_MODEL); `model` is now persisted in ConversationMeta/saveMeta/hydrate + the file
+  store's listConversations (so a switch survives restart); /agui reads the header +
+  validates against the catalog (unknown → keep current). UI: `loadModels()` (GET /models),
+  `Session.model` + `setModel` in the session store, a `ModelPicker` component (styled
+  native <select>, hidden when ≤1 model) above the composer, RuntimeProvider syncs the
+  header from the current session's model, server model merged back on load. fakeAgent
+  gained a `~model` directive echoing its GOOSE_MODEL. Tests: session.spec model-switch
+  (rebuild + persist), 69/69 Tier 1; e2e model-selection.spec (4/4, incl. full
+  end-to-end "pick model-smart in the UI → fake agent reports model=model-smart" + a
+  mid-conversation switch). playwright.config fake stack now sets GOOSE_MODEL +
+  AGENT_AVAILABLE_MODELS. (Proves the model reached the agent PROCESS; whether the real
+  LLM switched is the separate goose-real e2e below.)
+
+- [ ] **Goose-real e2e for model switching (the fake agent can't prove the LLM
+  switched).** The fakeAgent echoes its GOOSE_MODEL env so e2e can assert the model
+  reached the agent PROCESS — but that does NOT prove goose actually talked to that
+  model/provider. Add a Tier-3 real-goose scenario (gated like `test-e2e-real` /
+  RUN_REAL_GOOSE) that: picks a non-default model in the UI, sends a prompt, and
+  verifies the REAL goose run used it — e.g. assert via the OTel cost/usage metrics
+  (tokens attributed to the picked model) once that lands, or parse goose's session
+  DB / a model-identifying reply. Needs a model key + 2 distinct models configured.
+  Depends on: the UI-model-selection feature + ideally the OTel metrics (model-tagged
+  tokens give a clean assertion surface).
 
 - [x] **E2E: concurrent tool-invocation reliability (parallel bash calls hang).**
   DONE — ROOT CAUSE FOUND + FIXED. The ACP terminal id was `term-${hash(command+args)}`

@@ -46,9 +46,17 @@ export default defineConfig({
     ? undefined
     : [
         {
-          // agent-host in fake mode: no cluster, no model.
+          // agent-host in fake mode: no cluster. A default + offered models so
+          // the model-selection UI has a catalog to pick from (the fake agent
+          // echoes its GOOSE_MODEL via the "~model" directive).
           command: "node services/agent-host/dist/index.js",
-          env: { PORT: "8080", GOOSE_BIN: "fake", STATE_PATH: "/tmp/agent-host-e2e" },
+          env: {
+            PORT: "8080",
+            GOOSE_BIN: "fake",
+            STATE_PATH: "/tmp/agent-host-e2e",
+            GOOSE_MODEL: "model-default",
+            AGENT_AVAILABLE_MODELS: "model-default,model-fast,model-smart",
+          },
           port: 8080,
           reuseExistingServer: !process.env.CI,
           stdout: "pipe",
