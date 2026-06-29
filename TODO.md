@@ -249,14 +249,24 @@ Running list of work items. Newest asks at the top of each section. See
   apply, start a conversation, confirm the tool works in the systemd sandbox.
   (Blocked: cloud auth token expired — re-auth needed.)
 
-- [ ] **Conversation list: titles + linked-resource icons in the sidebar.** Today
-  you have to open a conversation to see its title, and there's no way to spot
-  which conversations have linked GitHub/GitLab/Slack threads from the list. Add:
-  (1) surface the agent-assigned title in the listing (it exists — the <title>
-  marker is extracted server-side; the 10s merge poll has it); (2) a small
-  provider icon per conversation in the sidebar when it has a linked resource
-  (the links are already stored + served via GET /conversations/:id/links and the
-  LinkedResources panel). So the list shows title + a GitHub/GitLab/Slack glyph.
+- [x] **Conversation list: titles + linked-resource icons in the sidebar.** DONE
+  (branch feat/sidebar-titles-icons). (1) Titles already surfaced (agent <title>
+  marker → server → 10s merge poll → `s.title`); confirmed, no change needed.
+  (2) Provider icons per row: the LIST endpoint carried no link info (links were
+  only per-conversation via /links), so `GET /conversations` now enriches each
+  view with `sources` (distinct providers, from store.listLinks, fetched in
+  parallel) — no N-per-row fetches. UI: `sources` on ConversationView/Session +
+  merged in mergeFromServer (in the dedup signature so a new link re-renders);
+  Sidebar renders real brand icons (react-icons/si — Simple Icons SVGs, brand
+  colors, tree-shaken; GitHub uses currentColor + Slack a brighter accent for
+  dark-mode legibility) via a shared `sourceIcon.tsx` (SourceBadge), which also
+  replaced LinkedResources' broken emoji glyphs (github/slack were empty). Tests:
+  2 contract (GET /conversations sources: distinct+sorted, [] when none) → 89/89
+  Tier 1; e2e (push a github link → the badge appears on the sidebar row) → 3/3
+  linked-resources. NOTE: ui lockfile must be regenerated with the FLAKE's npm
+  (10.x via `nix develop`), NOT local npm 11 — npm 11 resolves the
+  tailwind-oxide-wasm optional/bundled deps differently and breaks `npm ci` in
+  the nix build.
 
 - [~] **Proper in-sandbox dev environment (Nix-powered, lazy, services-capable).**
   Modeled as a NixOS-config container (systemd PID 1). NixOS-config LAYER COMPLETE

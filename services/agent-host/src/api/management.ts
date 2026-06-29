@@ -68,7 +68,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
     json: { default: models.default ?? null, available: models.available },
   }));
 
-  r.get("/conversations", () => ({ json: sessions.list().map(view) }));
+  r.get("/conversations", async () => {
+    const now = Date.now();
+    // Enrich each conversation with the DISTINCT providers it links to, so the
+    // sidebar can show a per-row provider icon without an extra /links fetch per
+    // conversation. Links are file-backed (cheap); fetch them in parallel.
+    const list = sessions.list();
+    const json = await Promise.all(
+      list.map(async (c) => {
+        const links = (await store.listLinks?.(c.id)) ?? [];
+        const sources = [...new Set(links.map((l) => l.source))].sort();
+        return { ...view(c, now), sources };
+      }),
+    );
+    return { json };
+  });
 
   r.post("/conversations", async (ctx) => {
     const body = await ctx.body<{ threadId?: string; title?: string; model?: string }>();

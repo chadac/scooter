@@ -55,4 +55,31 @@ test.describe("linked resources panel", () => {
     await chat.waitForReply(/dummy agent/i);
     await expect(page.locator(panel.root)).toHaveCount(0);
   });
+
+  test("a conversation with a link shows a provider icon in the sidebar row", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    await chat.open();
+    await chat.send("opening message");
+    await chat.waitForReply(/dummy agent/i);
+
+    const threadId = await page.evaluate(() => {
+      const raw = window.localStorage.getItem("kubenix-agent.sessions.v1");
+      return raw ? (JSON.parse(raw) as { currentId: string }).currentId : "";
+    });
+    expect(threadId).toBeTruthy();
+
+    // No provider icon on the row before any link.
+    const row = page.locator('[data-testid="session-item"]').first();
+    await expect(row.locator('[data-testid="source-icon"]')).toHaveCount(0);
+
+    // Push a GitHub link (as the webhooks service would).
+    const r = await request.post(`${base}/conversations/${threadId}/links`, {
+      data: { source: "github", resourceType: "pull_request", url: "https://github.com/example-org/example-app/pull/203" },
+    });
+    expect(r.ok()).toBeTruthy();
+
+    // The sidebar row picks up the github badge via the /conversations merge poll.
+    const icon = row.locator('[data-testid="source-icon"][data-source="github"]');
+    await expect(icon).toHaveCount(1, { timeout: 30_000 });
+  });
 });

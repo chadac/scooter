@@ -35,6 +35,9 @@ export interface ConversationView {
   lastActivityAt: number;
   /** The conversation's model (undefined = host default). */
   model?: string;
+  /** Distinct providers this conversation links to ("github"|"slack"|…), for a
+   *  per-row icon in the sidebar. [] when it has no linked resources. */
+  sources?: string[];
 }
 
 /** The model catalog (GET /models): the default + the offered models. */

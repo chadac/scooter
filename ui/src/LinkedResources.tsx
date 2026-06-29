@@ -11,24 +11,9 @@ import { useEffect, useState } from "react";
 
 import { loadLinks, type ConversationLink } from "./client.js";
 import { useSessions } from "./sessions.js";
+import { SourceBadge } from "./sourceIcon.js";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
-
-/** A tiny inline glyph per source (no icon dependency). */
-function sourceGlyph(source: string): string {
-  switch (source) {
-    case "github":
-      return "";
-    case "gitlab":
-      return "🦊";
-    case "slack":
-      return "";
-    case "jira":
-      return "📋";
-    default:
-      return "🔗";
-  }
-}
 
 function linkLabel(l: ConversationLink): string {
   if (l.title) return l.title;
@@ -81,12 +66,12 @@ export function LinkedResources() {
                   className="flex items-center gap-2 rounded px-2 py-1 hover:bg-accent"
                   title={linkLabel(l)}
                 >
-                  <span aria-hidden>{sourceGlyph(l.source)}</span>
+                  <SourceBadge source={l.source} />
                   <span className="truncate">{linkLabel(l)}</span>
                 </a>
               ) : (
                 <span className="flex items-center gap-2 px-2 py-1" title={linkLabel(l)}>
-                  <span aria-hidden>{sourceGlyph(l.source)}</span>
+                  <SourceBadge source={l.source} />
                   <span className="truncate">{linkLabel(l)}</span>
                 </span>
               )}
