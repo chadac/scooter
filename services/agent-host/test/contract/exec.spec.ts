@@ -54,4 +54,34 @@ describe("ExecBackend (agent-sandbox SDK)", () => {
     expect(chunks.join("")).toContain("line1");
     await term.release();
   });
+
+  it("concurrent spawns of the SAME command get DISTINCT terminal ids", () => {
+    // Regression: ids were hash(command+args), so identical concurrent bash
+    // calls collided on one id — the ACP client's per-id terminal/buffer maps
+    // then clobbered each other and a call's waitForExit never resolved (hang).
+    const api = createFakeSandboxApi();
+    const exec = createSandboxExecBackend(api);
+
+    const a = exec.spawn({ command: "bash", args: ["-c", "echo hi"] });
+    const b = exec.spawn({ command: "bash", args: ["-c", "echo hi"] }); // identical
+    const c = exec.spawn({ command: "bash", args: ["-c", "echo hi"] }); // identical
+
+    expect(new Set([a.id, b.id, c.id]).size).toBe(3);
+  });
+
+  it("concurrent identical spawns each resolve independently (no orphaned hang)", async () => {
+    // Each spawn's waitForExit must resolve with ITS OWN result even when three
+    // identical commands run at once. Distinct per-call exit codes prove no
+    // handle was overwritten/orphaned.
+    const api = createFakeSandboxApi();
+    let n = 0;
+    api.whenExecute(() => ({ stdout: `out${n}`, stderr: "", exitCode: n++ }));
+    const exec = createSandboxExecBackend(api);
+
+    const terms = [0, 1, 2].map(() => exec.spawn({ command: "bash", args: ["-c", "x"] }));
+    // All three must resolve (a hang would time the test out).
+    const exits = await Promise.all(terms.map((t) => t.waitForExit()));
+
+    expect(exits.map((e) => e.exitCode).sort()).toEqual([0, 1, 2]);
+  });
 });
