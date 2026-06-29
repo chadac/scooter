@@ -9,12 +9,25 @@ name: CI
 #
 # Tier 2 (cluster) and Tier 3 (e2e) are heavier and NOT run here — see the
 # `cluster` / `e2e` justfile recipes and docs/TESTING.md. The KVM-backed
-# nixosTests run in a separate, non-required job below.
+# dev-env nixosTests run as a parallel MATRIX (one job per VM test) below, so
+# they finish in the time of the slowest single test rather than 8 serial boots.
+#
+# BINARY CACHE (Cachix) — one-time setup so expensive closures (e.g. the
+# scooter-module NixOS toplevel) are built ONCE and pulled across branches/PRs
+# instead of rebuilt cold per branch:
+#   1. Create a cache named `scooter` at https://app.cachix.org (public read).
+#   2. Generate a write auth token; add it as the repo secret CACHIX_AUTH_TOKEN.
+# Without the secret CI still works — cachix-action pulls read-only (no push),
+# so forks/contributors are unaffected; they just don't populate the cache.
 
 on:
   pull_request:
   push:
     branches: [main]
+  # Nightly: run the FULL nixosTest set incl. the heavy ones (see HEAVY_TESTS
+  # below) that are too slow for per-PR (a ~1h from-source NixOS toplevel build).
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily
 
 # Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
 concurrency:
@@ -28,17 +41,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Nix + a GitHub-Actions-cache-backed store, so repeat runs don't rebuild
-      # the world. No external service / secret required (cache-nix-action uses
-      # the built-in Actions cache, not FlakeHub). For a persistent binary cache
-      # shared across branches, swap in cachix/cachix-action with a
-      # CACHIX_AUTH_TOKEN secret instead.
       - uses: nixbuild/nix-quick-install-action@v30
-      - uses: nix-community/cache-nix-action@v6
+
+      # Cachix binary cache: build-once-share-everywhere across branches/PRs, so
+      # an expensive closure (e.g. the scooter-module NixOS toplevel) is realised
+      # ONCE and pulled thereafter rather than rebuilt cold per branch. With the
+      # CACHIX_AUTH_TOKEN secret set it also PUSHES; without it (forks) it still
+      # PULLS read-only. See README/docs for creating the `scooter` cache.
+      - uses: cachix/cachix-action@v15
         with:
-          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # The fast `just ci` bundle, run inside the pinned dev shell (gets `just`,
       # node, npm from the flake). check-flake + check-manifests + typecheck +
@@ -54,47 +67,86 @@ jobs:
       - name: broker + webhooks tests (nix build runs pytest)
         run: nix build .#broker .#webhooks --print-build-logs
 
-  nixos-tests:
-    name: dev-env nixosTests (KVM)
+  # Enumerate the dev-env-* nixosTests into a matrix so each VM test runs in its
+  # OWN parallel job. This generate job is cheap (eval only). By default the
+  # HEAVY tests (a ~1h from-source NixOS toplevel build — see HEAVY_TESTS) are
+  # EXCLUDED from per-PR runs; they run nightly (schedule) or when a PR carries
+  # the `full-nixos-tests` label. The fast tests run on every PR.
+  nixos-tests-matrix:
+    name: enumerate dev-env nixosTests
     runs-on: ubuntu-latest
-    # Non-required: the dev-env nixosTests boot real VMs and need /dev/kvm, which
-    # not all runners provide. Keep this job from failing the PR while we confirm
-    # KVM is reliably available on the runner; promote it to required once green.
-    continue-on-error: true
+    outputs:
+      tests: ${{ steps.list.outputs.tests }}
+    env:
+      # Tests too expensive for per-PR (space-separated check names). scooter-module
+      # builds a full second nixos-system toplevel from nixos-unstable (~1h cold).
+      HEAVY_TESTS: "dev-env-scooter-module"
+      # Include heavy tests when: nightly schedule, OR the PR has the label.
+      INCLUDE_HEAVY: ${{ github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'full-nixos-tests') }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
-
-      - name: KVM available?
-        run: |
-          if [ -e /dev/kvm ]; then
-            echo "/dev/kvm present"; ls -l /dev/kvm
-          else
-            echo "::warning::/dev/kvm not available — nixosTests will be skipped"
-            exit 0
-          fi
-
-      # Build every dev-env nixosTest check (the VM-backed ones). nix flake check
-      # would also re-run agentHost/ui/broker/webhooks (covered in `ci`); building
-      # the checks directly keeps this job to the VM tests.
-      - name: dev-env nixosTests
+      - id: list
+        name: list dev-env-* checks
         run: |
           set -euo pipefail
-          # Enumerate the dev-env-* checks and build them.
-          checks=$(nix eval --raw --impure --expr '
+          # All dev-env-* check names.
+          all=$(nix eval --json --impure --expr '
             let f = builtins.getFlake (toString ./.);
                 s = builtins.currentSystem;
                 names = builtins.attrNames f.checks.${s};
-            in builtins.concatStringsSep " " (builtins.filter
-                 (n: builtins.match "dev-env-.*" n != null) names)')
-          echo "nixosTests: $checks"
-          for c in $checks; do
-            echo "::group::$c"
-            nix build ".#checks.x86_64-linux.$c" --print-build-logs
-            echo "::endgroup::"
-          done
+            in builtins.filter (n: builtins.match "dev-env-.*" n != null) names')
+          if [ "$INCLUDE_HEAVY" = "true" ]; then
+            tests="$all"
+            echo "including heavy tests ($HEAVY_TESTS)"
+          else
+            # Drop the heavy ones with jq (per-PR fast path).
+            tests=$(echo "$all" | jq -c --arg heavy "$HEAVY_TESTS" \
+              '($heavy | split(" ")) as $h | [ .[] | select( . as $t | ($h | index($t)) | not ) ]')
+            echo "excluding heavy tests ($HEAVY_TESTS) — run nightly or add the 'full-nixos-tests' label"
+          fi
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+          echo "matrix: $tests"
+
+  nixos-test:
+    name: nixosTest ${{ matrix.test }}
+    needs: nixos-tests-matrix
+    runs-on: ubuntu-latest
+    # Non-required for now (continue-on-error) — promote to required once the
+    # KVM-accelerated matrix is confirmed consistently green on the runner.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      # Cap concurrent VM jobs so we don't exhaust the runner pool; each is a
+      # full NixOS VM. Tune up if the org has more runner capacity.
+      max-parallel: 4
+      matrix:
+        test: ${{ fromJSON(needs.nixos-tests-matrix.outputs.tests) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # GitHub's standard Linux runners HAVE KVM hardware, but /dev/kvm ships with
+      # restrictive group perms — so qemu can't open it and the nixosTest VM
+      # silently falls back to TCG software emulation (~6-10x slower; this is why
+      # the old serial job took ~1h). Loosen the perms so qemu uses real KVM.
+      - name: enable KVM access (else qemu falls back to slow TCG)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      # Cachix: the heavy bits (esp. scooter-module's NixOS toplevel closure) are
+      # built once and pulled across branches/PRs — so a cold branch doesn't
+      # rebuild them from source. Pushes when CACHIX_AUTH_TOKEN is set; pulls
+      # read-only otherwise.
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: build ${{ matrix.test }}
+        run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
