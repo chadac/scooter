@@ -63,7 +63,12 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
       // once, then an exit. (A future runtime-side streaming endpoint can make
       // onOutput truly incremental.)
       const outputCbs = new Set<(chunk: string) => void>();
-      const id = `term-${Math.abs(hashRef(req))}`;
+      // A UNIQUE id per spawn. It must NOT derive from the command — the ACP
+      // terminal id keys the client's per-terminal handle/output maps, so two
+      // concurrent identical commands sharing one id would clobber each other
+      // (a later spawn overwrites the earlier handle -> its waitForExit never
+      // reaches the right goose call -> the tool call hangs forever).
+      const id = `term-${nextTerminalSeq()}`;
       let exit: { exitCode: number } | undefined;
       let buffered = ""; // retain output for subscribers that attach after exec
 
@@ -116,11 +121,11 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
   };
 }
 
-function hashRef(req: ExecRequest): number {
-  const s = `${req.command} ${req.args.join(" ")}`;
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h;
+// Monotonic terminal-id counter, unique per process. (One agent-host process
+// serves many conversations; a shared counter still yields globally-unique ids.)
+let terminalSeq = 0;
+function nextTerminalSeq(): number {
+  return ++terminalSeq;
 }
 
 export type { ExecBackend, ExecRequest, ExecResult, TerminalHandle, SandboxRef };

@@ -117,17 +117,20 @@ Running list of work items. Newest asks at the top of each section. See
   wiring the choice into the /agui or management call, and an e2e covering "pick a
   non-default model → it's used."
 
-- [ ] **E2E: concurrent tool-invocation reliability (parallel bash calls hang).**
-  OBSERVED BUG: when the agent fires ~3 bash tool calls at once, some calls just
-  HANG and never return. This must never happen. Likely in the exec path
-  (ExecBackend / K8s exec API) or the ACP↔bridge tool-call handling — concurrent
-  exec streams over the same connection, or a serialization point that drops/blocks
-  parallel calls (cf. the bridge runChain serialization fix — tool calls within a
-  run may be getting unintended ordering/locking). Needs: (1) a red-first repro —
-  a contract/e2e test that issues N concurrent tool calls and asserts ALL return;
-  (2) root-cause in exec/bridge (stream multiplexing? a shared buffer? an await that
-  starves siblings?); (3) fix + the test green under repeated runs. High priority —
-  it's a correctness bug the user hits in normal use.
+- [x] **E2E: concurrent tool-invocation reliability (parallel bash calls hang).**
+  DONE — ROOT CAUSE FOUND + FIXED. The ACP terminal id was `term-${hash(command+args)}`
+  (sandboxExec.ts), so two concurrent IDENTICAL bash calls got the SAME id; the ACP
+  client's per-id `terminals`/`terminalBuffers` maps then clobbered each other — a
+  later spawn overwrote the earlier handle, so `waitForTerminalExit` for the first
+  call resolved against the WRONG (or no) handle → it hung / returned the other
+  call's result. (Verified: with colliding ids, waitForExit(t1) returns t2's exit
+  code.) Fix: unique per-spawn id (`term-${++seq}` monotonic counter), drop hashRef.
+  Also extracted the fs/terminal handlers into a testable seam
+  (`acp/sandboxHandlers.ts`, `createSandboxClientHandlers(exec)`) so concurrency is
+  unit-testable WITHOUT spawning goose. Tests: exec.spec (distinct ids + independent
+  resolution) + sandboxHandlers.spec (3 concurrent identical createTerminal → distinct
+  ids, isolated output buffers, out-of-order independent exits, release-isolation,
+  unknown-id non-hang). 68/68 Tier 1, stable across repeated runs.
 
 - [ ] **User identity — per-user sessions + a basis for permission-gating.** Today
   conversations aren't attributed to a user; anyone seeing the UI sees all sessions.

@@ -24,6 +24,7 @@ import {
 import type * as schema from "@zed-industries/agent-client-protocol";
 
 import type { ExecBackend } from "../types.js";
+import { createSandboxClientHandlers } from "./sandboxHandlers.js";
 import { debug } from "../debug.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
@@ -110,7 +111,13 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     | ((req: PermissionRequest) => Promise<PermissionAnswer>)
     | undefined;
 
-  // Our Client implementation: what Goose calls back into.
+  // fs/* + terminal/* handlers live in a standalone, testable factory (each call
+  // gets a fresh handler set with its own unique-id-keyed terminal maps).
+  const sandbox = createSandboxClientHandlers(deps.exec);
+
+  // Our Client implementation: what Goose calls back into. sessionUpdate +
+  // requestPermission need the bridge's callbacks (closures below); everything
+  // else is the sandbox handlers.
   const makeClient = (_agent: Agent): Client => ({
     async sessionUpdate(params: schema.SessionNotification): Promise<void> {
       const norm = normalizeUpdate(params);
@@ -135,80 +142,14 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       return { outcome: { outcome: "selected", optionId: answer.optionId } };
     },
 
-    async readTextFile(
-      params: schema.ReadTextFileRequest,
-    ): Promise<schema.ReadTextFileResponse> {
-      const content = await deps.exec.readTextFile(params.path);
-      return { content };
-    },
-
-    async writeTextFile(
-      params: schema.WriteTextFileRequest,
-    ): Promise<schema.WriteTextFileResponse> {
-      await deps.exec.writeTextFile(params.path, params.content);
-      return {};
-    },
-
-    async createTerminal(
-      params: schema.CreateTerminalRequest,
-    ): Promise<schema.CreateTerminalResponse> {
-            debug("[acp] createTerminal:", JSON.stringify({ command: params.command, args: params.args, cwd: params.cwd }));
-      // goose passes ITS OWN session cwd (a path in the agent-host pod), which
-      // does not exist in the sandbox. The agent's work happens in the sandbox
-      // workspace, so run there unless goose gave a sandbox-absolute path under
-      // /workspace. (A `cd` to a missing dir would fail the whole command.)
-      const sandboxCwd =
-        params.cwd && params.cwd.startsWith("/workspace") ? params.cwd : "/workspace";
-      const handle = deps.exec.spawn({
-        command: params.command,
-        args: params.args ?? [],
-        cwd: sandboxCwd,
-        env: Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])),
-      });
-      terminals.set(handle.id, handle);
-      // Accumulate streamed output so terminalOutput()/currentOutput() can read it.
-      terminalBuffers.set(handle.id, "");
-      handle.onOutput((chunk) => {
-        terminalBuffers.set(handle.id, (terminalBuffers.get(handle.id) ?? "") + chunk);
-      });
-      return { terminalId: handle.id };
-    },
-
-    async terminalOutput(
-      params: schema.TerminalOutputRequest,
-    ): Promise<schema.TerminalOutputResponse> {
-      const buf = terminalBuffers.get(params.terminalId) ?? "";
-            debug("[acp] terminalOutput:", params.terminalId, JSON.stringify(buf.slice(0, 200)));
-      return { output: buf, truncated: false };
-    },
-
-    async waitForTerminalExit(
-      params: schema.WaitForTerminalExitRequest,
-    ): Promise<schema.WaitForTerminalExitResponse> {
-      const handle = terminals.get(params.terminalId);
-      if (!handle) return { exitCode: 1 };
-      const { exitCode } = await handle.waitForExit();
-      return { exitCode };
-    },
-
-    async releaseTerminal(
-      params: schema.ReleaseTerminalRequest,
-    ): Promise<schema.ReleaseTerminalResponse | void> {
-      await terminals.get(params.terminalId)?.release();
-      terminals.delete(params.terminalId);
-      terminalBuffers.delete(params.terminalId);
-    },
-
-    async killTerminal(
-      params: schema.KillTerminalCommandRequest,
-    ): Promise<schema.KillTerminalResponse | void> {
-      await terminals.get(params.terminalId)?.kill();
-    },
+    readTextFile: sandbox.readTextFile,
+    writeTextFile: sandbox.writeTextFile,
+    createTerminal: sandbox.createTerminal,
+    terminalOutput: sandbox.terminalOutput,
+    waitForTerminalExit: sandbox.waitForTerminalExit,
+    releaseTerminal: sandbox.releaseTerminal,
+    killTerminal: sandbox.killTerminal,
   });
-
-  // Terminal bookkeeping: accumulate streamed output for terminalOutput().
-  const terminals = new Map<string, ReturnType<ExecBackend["spawn"]>>();
-  const terminalBuffers = new Map<string, string>();
 
   const conn = new ClientSideConnection(makeClient, stream);
 
