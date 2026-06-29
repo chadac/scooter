@@ -29,8 +29,8 @@ const conv = (over: Partial<Conversation> = {}): Conversation => ({
 function fakeSessions(): SessionManager {
   const store = new Map<string, Conversation>([["c1", conv()]]);
   return {
-    start: vi.fn(async (threadId, model) => {
-      const c = conv({ id: threadId, threadId, status: "running", title: "New chat", model });
+    start: vi.fn(async (threadId, model, owner) => {
+      const c = conv({ id: threadId, threadId, status: "running", title: "New chat", model, owner });
       store.set(threadId, c);
       return c;
     }),
@@ -82,10 +82,12 @@ async function call(
   method: string,
   path: string,
   body?: unknown,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; json: unknown }> {
   const req = new PassThrough() as unknown as IncomingMessage;
   (req as { method?: string }).method = method;
   (req as { url?: string }).url = path;
+  (req as { headers?: Record<string, string> }).headers = headers;
   let status = 200;
   let chunks = "";
   const res = {
@@ -128,9 +130,21 @@ describe("management API", () => {
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status, json } = await call(api, "POST", "/conversations", { threadId: "new1", title: "My task" });
     expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("new1", undefined);
+    expect(sessions.start).toHaveBeenCalledWith("new1", undefined, undefined);
     expect(sessions.setTitle).toHaveBeenCalledWith("new1", "My task");
     expect((json as any).title).toBe("My task");
+  });
+
+  it("GET /whoami returns the caller's identity (header)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const me = await call(api, "GET", "/whoami", undefined, { "x-auth-user": "alice", "x-auth-email": "a@x.io" });
+    expect(me.json).toEqual({ id: "alice", email: "a@x.io", anonymous: false });
+  });
+
+  it("GET /whoami is anonymous when no header is set", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const me = await call(api, "GET", "/whoami");
+    expect(me.json).toEqual({ id: "anonymous", email: null, anonymous: true });
   });
 
   it("GET /models returns the catalog", async () => {
@@ -151,7 +165,7 @@ describe("management API", () => {
     });
     const { status, json } = await call(api, "POST", "/conversations", { threadId: "m1", model: "sonnet" });
     expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("m1", "sonnet");
+    expect(sessions.start).toHaveBeenCalledWith("m1", "sonnet", undefined);
     expect((json as any).model).toBe("sonnet");
   });
 
@@ -191,6 +205,60 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerPermission: async () => {} });
     const { json } = await call(api, "GET", "/conversations/c1/history");
     expect((json as any).events).toHaveLength(2);
+  });
+
+  it("POST /conversations stamps the caller (x-auth-user) as the owner", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const res = await call(api, "POST", "/conversations", { threadId: "owned" }, { "x-auth-user": "alice" });
+    expect(res.status).toBe(201);
+    // start() was called with (threadId, model, owner="alice").
+    expect(sessions.start).toHaveBeenCalledWith("owned", undefined, "alice");
+    expect((res.json as any).owner).toBe("alice");
+  });
+
+  it("GET /conversations?scope=mine returns only the caller's conversations", async () => {
+    const sessions = fakeSessions();
+    // alice + bob each own one; c1 (the seed) has no owner -> public.
+    await sessions.start("a1", undefined, "alice");
+    await sessions.start("b1", undefined, "bob");
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+
+    const mine = await call(api, "GET", "/conversations?scope=mine", undefined, { "x-auth-user": "alice" });
+    const ids = (mine.json as any[]).map((c) => c.id).sort();
+    // alice's own + the null-owner public one; NOT bob's.
+    expect(ids).toContain("a1");
+    expect(ids).toContain("c1"); // null-owner is public
+    expect(ids).not.toContain("b1");
+  });
+
+  it("GET /conversations?scope=all returns everything regardless of owner", async () => {
+    const sessions = fakeSessions();
+    await sessions.start("a1", undefined, "alice");
+    await sessions.start("b1", undefined, "bob");
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const all = await call(api, "GET", "/conversations?scope=all", undefined, { "x-auth-user": "alice" });
+    const ids = (all.json as any[]).map((c) => c.id).sort();
+    expect(ids).toEqual(["a1", "b1", "c1"]);
+  });
+
+  it("GET /conversations default scope is 'mine'", async () => {
+    const sessions = fakeSessions();
+    await sessions.start("b1", undefined, "bob");
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const def = await call(api, "GET", "/conversations", undefined, { "x-auth-user": "alice" });
+    const ids = (def.json as any[]).map((c) => c.id);
+    expect(ids).not.toContain("b1"); // default = mine, so bob's is excluded
+  });
+
+  it("anonymous (no header) sees all conversations (single-user/dev unchanged)", async () => {
+    const sessions = fakeSessions();
+    await sessions.start("a1", undefined, "alice");
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    // No x-auth-user -> anonymous -> sees everything even at default scope.
+    const res = await call(api, "GET", "/conversations");
+    const ids = (res.json as any[]).map((c) => c.id).sort();
+    expect(ids).toEqual(["a1", "c1"]);
   });
 
   it("GET /conversations includes each conversation's distinct link sources (for sidebar icons)", async () => {

@@ -194,6 +194,26 @@ in
       '';
     };
 
+    auth = {
+      # The agent-host trusts an identity header injected by the ingress (an OIDC
+      # proxy / forward-auth / basic-auth the deployer configures). It does NOT do
+      # login itself. A missing header => the `anonymous` user (single-user/dev).
+      # SECURITY: only expose the agent-host behind an ingress that SETS (and
+      # strips any client-supplied) these headers — else identity is spoofable.
+      userHeader = mkOption {
+        type = types.str;
+        default = "x-auth-user";
+        example = "x-forwarded-user";
+        description = "Request header carrying the authenticated user id (set by the ingress).";
+      };
+      emailHeader = mkOption {
+        type = types.str;
+        default = "x-auth-email";
+        example = "x-forwarded-email";
+        description = "Request header carrying the user's email (optional; set by the ingress).";
+      };
+    };
+
     observability = {
       otel = {
         enable = mkOption {
@@ -382,7 +402,12 @@ in
                   # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
                   { name = "AGENT_NAME"; value = cfg.agent.name; }
                   { name = "SKILLS_DIR"; value = "/etc/agent-sandbox/skills"; }
-                ] ++ lib.optionals (!cfg.fakeAgent) [
+                ] ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
+                  # Identity header the ingress injects (default x-auth-user).
+                  { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
+                ++ lib.optional (cfg.auth.emailHeader != "x-auth-email")
+                  { name = "AUTH_EMAIL_HEADER"; value = cfg.auth.emailHeader; }
+                ++ lib.optionals (!cfg.fakeAgent) [
                   # Real `goose acp` on Bedrock (or another provider). The agent
                   # process inherits the pod's IRSA identity via the AWS SDK
                   # web-identity chain — no static keys.

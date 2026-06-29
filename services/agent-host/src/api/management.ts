@@ -40,6 +40,7 @@ function view(c: Conversation, now = Date.now()) {
     idleMs: Math.max(0, now - c.lastActivityAt),
     ageMs: Math.max(0, now - c.createdAt),
     model: c.model,
+    owner: c.owner,
     sandbox: { name: c.sandbox.name, namespace: c.sandbox.namespace },
   };
 }
@@ -63,17 +64,33 @@ export function createManagementApi(deps: ManagementDeps): Router {
   const models = deps.models ?? { available: [] };
   const r = createRouter();
 
+  // Who the caller is, per the trusted ingress identity header (anonymous when
+  // none). The UI uses this to label conversations as "mine" + show the user.
+  r.get("/whoami", (ctx) => ({
+    json: { id: ctx.user.id, email: ctx.user.email ?? null, anonymous: ctx.user.anonymous },
+  }));
+
   // The model catalog — a UI populates its selector from this.
   r.get("/models", () => ({
     json: { default: models.default ?? null, available: models.available },
   }));
 
-  r.get("/conversations", async () => {
+  r.get("/conversations", async (ctx) => {
     const now = Date.now();
+    // VIEW FILTER (not access control — conversations are public):
+    //   ?scope=mine (default) -> conversations the caller owns + unowned/public ones.
+    //   ?scope=all            -> everything.
+    // An anonymous caller (no identity header) sees everything either way, so
+    // single-user / local-dev is unchanged.
+    const scope = ctx.query.get("scope") ?? "mine";
+    const user = ctx.user;
+    const visible = (c: { owner?: string }) =>
+      scope === "all" || user.anonymous || c.owner == null || c.owner === user.id;
+
+    const list = sessions.list().filter(visible);
     // Enrich each conversation with the DISTINCT providers it links to, so the
     // sidebar can show a per-row provider icon without an extra /links fetch per
     // conversation. Links are file-backed (cheap); fetch them in parallel.
-    const list = sessions.list();
     const json = await Promise.all(
       list.map(async (c) => {
         const links = (await store.listLinks?.(c.id)) ?? [];
@@ -92,7 +109,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
       return { status: 400, json: { error: `unknown model: ${body.model}` } };
     }
-    const conv = await sessions.start(threadId, body.model);
+    // Stamp the creating user as the owner (for the "my conversations" filter).
+    const owner = ctx.user.anonymous ? undefined : ctx.user.id;
+    const conv = await sessions.start(threadId, body.model, owner);
     if (body.title) sessions.setTitle(conv.id, body.title);
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });

@@ -217,19 +217,33 @@ Running list of work items. Newest asks at the top of each section. See
         verify the transport itself doesn't serialize-and-stall). Likely fine; just
         needs a deliberate check (or a stress test) so we KNOW.
 
-- [ ] **User identity — per-user sessions + a basis for permission-gating.** Today
-  conversations aren't attributed to a user; anyone seeing the UI sees all sessions.
-  Add user identity so (a) a user sees THEIR OWN previous sessions, and (b) we have
-  an identity to permission-gate sensitive actions on (e.g. who may approve/request
-  the AWS broker perms). Needs a design pass: auth source (the chat ingress already
-  has basic-auth; or OIDC — reconcile with the broker's pluggable `is_admin`/
-  approver-auth seam so identity is consistent across UI + broker), an owner field on
-  the conversation record + store/migration, list-filtering by owner, and the UI
-  surfacing only the caller's conversations. Then permission-gating (AWS approve/
-  request, maybe conversation visibility) keys off this identity. Spec it (research →
-  design → tests → impl); the auth-source choice + how it threads into the existing
-  broker identity path are the key decisions. Related: the deferred "Broker
-  permissions / approval system" + the admin-auth notes in docs/AWS_PERMISSIONS_BROKER.md.
+- [~] **User identity — per-user sessions + a basis for permission-gating.**
+  Design in docs/USER_IDENTITY.md. Decisions: auth source = a TRUSTED IDENTITY
+  HEADER from the ingress (app stays auth-source-agnostic; no header → anonymous);
+  conversations are PUBLIC (the "my conversations" view is a FILTER, not access
+  control); authorization = OpenFGA (ReBAC), enforced at the BROKER (so future
+  AGENT permission boundaries check the same place). Split into 2 PRs.
+  - [x] **PR 1 — agent-host identity + ownership view-filter** (this branch,
+        feat/user-identity-ownership; NO OpenFGA). `auth/identity.ts`: read
+        x-auth-user/x-auth-email → UserContext (anonymous when none); router Ctx
+        gains `user`. `owner` on ConversationMeta/Conversation/Entry (persisted +
+        hydrated, like `model`). POST /conversations stamps the caller as owner;
+        GET /conversations?scope=mine|all (default mine) filters by owner
+        (null-owner = public; anonymous sees all). New GET /whoami. UI: Mine/All
+        toggle in the sidebar (client-side filter on owner via /whoami; instant,
+        no refetch). kubenix `auth.userHeader/emailHeader` options. Tests: identity
+        (6), management owner/scope/whoami (8) → 102/102 Tier 1; e2e ownership (2)
+        + sessions/linked-resources still green.
+  - [ ] **PR 2 — broker OpenFGA enforcement.** The `openfga` Deployment (shared
+        Postgres; in-memory for dev), a Python Authorizer seam (noop when FGA
+        unset → today's behavior), the `aws_account.approver` gate on AWS
+        approve/deny (broker ENFORCES, doesn't trust the relayed claim; SA-token
+        `is_approver` stays as the relay-gate, OpenFGA adds the which-human
+        layer), deploy-config approver seeding, and the agent-host relaying the
+        REAL user id (replacing the `"conversation-user"` constant) +
+        `approved_by` = real user. See docs/USER_IDENTITY.md.
+  - [ ] (later) webhook-spawned conversation ownership (capture the GitHub/Slack
+        actor); admin UI for approver tuples; per-conversation private opt-in.
 
 - [~] **Deployment-injected tools (.scooter) — code complete, deploy gated on AWS auth.**
   A deployment adds its own Nix tools/services to the GENERIC sandbox with NO

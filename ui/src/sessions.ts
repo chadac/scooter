@@ -21,19 +21,37 @@ export interface Session {
   /** Distinct linked-resource providers ("github"|"slack"|…) for the sidebar
    *  icons. Server-sourced (GET /conversations); [] / undefined when none. */
   sources?: string[];
+  /** Creating user (server-sourced). undefined = unowned/public. Drives the
+   *  Mine/All view filter. */
+  owner?: string;
 }
 
 const DEFAULT_TITLE = "New chat";
 const STORAGE_KEY = "kubenix-agent.sessions.v1";
 
-type State = { sessions: Session[]; currentId: string };
+/** Sidebar view filter: the caller's own conversations or all of them. */
+export type Scope = "mine" | "all";
+
+type State = {
+  sessions: Session[];
+  currentId: string;
+  /** The caller's id (from /whoami), for the Mine filter. "" until loaded. */
+  currentUser: string;
+  /** Sidebar Mine/All toggle (default Mine). */
+  scope: Scope;
+};
 
 /** A brand-new, untouched conversation (default title, no messages yet). */
 const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
 
 const freshState = (): State => {
   const id = crypto.randomUUID();
-  return { sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }], currentId: id };
+  return {
+    sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }],
+    currentId: id,
+    currentUser: "",
+    scope: "mine",
+  };
 };
 
 /** Load persisted sessions from user data (localStorage), so the sidebar
@@ -52,7 +70,9 @@ const loadState = (): State => {
     const currentId = sessions.some((s) => s.id === parsed.currentId)
       ? parsed.currentId
       : sessions[0].id;
-    return { sessions, currentId };
+    // currentUser is NOT persisted (it's re-fetched via /whoami on load); scope
+    // persists so the toggle choice survives a refresh.
+    return { sessions, currentId, currentUser: "", scope: parsed.scope === "all" ? "all" : "mine" };
   } catch {
     return freshState();
   }
@@ -88,6 +108,7 @@ export const sessionStore = {
   newSession(): string {
     const id = crypto.randomUUID();
     setState({
+      ...state,
       sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }, ...state.sessions],
       currentId: id,
     });
@@ -107,7 +128,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[] }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; owner?: string }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -132,6 +153,8 @@ export const sessionStore = {
         // Link sources are server-owned (the webhooks push links); always take
         // the server's value.
         sources: c.sources ?? existing?.sources,
+        // Owner is server-owned (stamped at creation); take the server's value.
+        owner: c.owner ?? existing?.owner,
       });
     }
 
@@ -163,7 +186,7 @@ export const sessionStore = {
       cur + "|" + ss.map((s) => `${s.id}:${s.title}:${(s.sources ?? []).join(",")}`).join("|");
     if (sig(sessions, currentId) === sig(state.sessions, state.currentId)) return;
 
-    setState({ sessions, currentId });
+    setState({ ...state, sessions, currentId });
   },
 
   /** Delete a conversation. If it was current, select another (or start fresh). */
@@ -172,11 +195,11 @@ export const sessionStore = {
     if (remaining.length === 0) {
       // Always keep at least one conversation.
       const fresh = { id: crypto.randomUUID(), title: DEFAULT_TITLE, createdAt: Date.now() };
-      setState({ sessions: [fresh], currentId: fresh.id });
+      setState({ ...state, sessions: [fresh], currentId: fresh.id });
       return;
     }
     const currentId = state.currentId === id ? remaining[0].id : state.currentId;
-    setState({ sessions: remaining, currentId });
+    setState({ ...state, sessions: remaining, currentId });
   },
 
   /** Derive a title from the first user message if still default. No-op (no
@@ -209,7 +232,27 @@ export const sessionStore = {
       sessions: state.sessions.map((x) => (x.id === id ? { ...x, model } : x)),
     });
   },
+
+  /** Record the caller's id (from /whoami), for the Mine view filter. */
+  setCurrentUser(id: string) {
+    if (state.currentUser === id) return;
+    setState({ ...state, currentUser: id });
+  },
+
+  /** Flip the sidebar Mine/All filter. */
+  setScope(scope: Scope) {
+    if (state.scope === scope) return;
+    setState({ ...state, scope });
+  },
 };
+
+/** Filter a conversation list by the current Mine/All scope. "Mine" shows the
+ *  caller's own + unowned/public conversations; "All" shows everything. With no
+ *  known user yet (anonymous / pre-whoami), Mine shows everything (dev-friendly). */
+export function visibleSessions(state: State): Session[] {
+  if (state.scope === "all" || !state.currentUser) return state.sessions;
+  return state.sessions.filter((s) => s.owner == null || s.owner === state.currentUser);
+}
 
 export function useSessions(): State {
   return useSyncExternalStore(sessionStore.subscribe, sessionStore.get);
