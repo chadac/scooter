@@ -24,6 +24,7 @@ python3Packages.buildPythonApplication {
     sqlalchemy
     asyncpg
     aiosqlite
+    openfga-sdk
   ];
 
   nativeCheckInputs = with python3Packages; [

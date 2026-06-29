@@ -322,7 +322,7 @@ export async function main(
           console.warn("[agent-host] no pending permission", { sessionId, toolCallId });
         }
       },
-      resolveAwsRequest: async (_sessionId, requestId, approved) => {
+      resolveAwsRequest: async (_sessionId, requestId, approved, approver) => {
         // The user answered a broker AWS approval interrupt -> approve/deny the
         // request on the broker. The broker URL + auth come from env (BROKER_URL
         // + the agent-host's SA token, same as the sandbox helpers).
@@ -341,10 +341,13 @@ export async function main(
           } catch {
             /* no token (local/dev) */
           }
+          // The broker expects the approver as an OpenFGA user object (user:<id>)
+          // and enforces their per-account rights. The agent-host SA token is the
+          // trust anchor (it vouches for this real user).
           await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ approver: "conversation-user" }),
+            body: JSON.stringify({ approver: `user:${approver}` }),
           });
         } catch (err) {
           console.warn("[agent-host] failed to resolve AWS request", { requestId, action, err: String(err) });

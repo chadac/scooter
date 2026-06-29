@@ -16,6 +16,7 @@ from ..aws.iam import IamProvisioner
 from ..aws.service import PermissionService, ServiceConfig
 from ..aws.store import PermissionStore, StoreConfig
 from ..config import settings
+from ..core.authz import authorizer_from_settings, aws_account_object, user_object
 from ..core.registry import register_provider
 from ..core.types import Provider
 from ..transports.aws_permissions import AwsPermissions
@@ -81,6 +82,10 @@ def aws() -> Provider:
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(url, json=payload)
 
+    # Authorization (the broker's enforcement point): per-account approver gate
+    # on approve/deny. Off (default) -> NoopAuthorizer -> today's behavior.
+    authorizer = authorizer_from_settings(settings)
+
     service = PermissionService(
         store=store,
         iam=iam,
@@ -90,6 +95,7 @@ def aws() -> Provider:
             broker_principal_arn=settings.aws_broker_principal_arn,
         ),
         on_request=_notify_host,
+        authorizer=authorizer,
     )
     # Admin seam: approve/deny require an APPROVER identity (the agent-host
     # relaying the user's pick — recognized by auth via aws_approver_service_accounts).
@@ -97,8 +103,26 @@ def aws() -> Provider:
 
     _sweep_task: list[asyncio.Task] = []
 
+    async def seed_approver_tuples() -> None:
+        """Seed OpenFGA approver tuples from the account registry's per-account
+        `approvers` list (deploy config). Idempotent (grant of an existing tuple
+        is a no-op). No-op when FGA is off (NoopAuthorizer.grant does nothing)."""
+        for alias, acct in registry.items():
+            for approver in acct.get("approvers", []) or []:
+                try:
+                    await authorizer.grant(
+                        user=user_object(approver),
+                        relation="approver",
+                        obj=aws_account_object(alias),
+                    )
+                except Exception:
+                    logger.exception("failed seeding approver %s for %s", approver, alias)
+        if settings.fga_enabled:
+            logger.info("seeded AWS approver tuples from the account registry")
+
     async def on_startup() -> None:
         await store.init()
+        await seed_approver_tuples()
         async def sweep_loop() -> None:
             while True:
                 await asyncio.sleep(settings.aws_sweep_interval)

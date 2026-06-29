@@ -52,8 +52,9 @@ export interface ManagementDeps {
   /** Answer a pending tool permission (wired to the bridge in index.ts). */
   answerPermission: (sessionId: string, toolCallId: string, optionId: string) => Promise<void>;
   /** Approve/deny a broker AWS request after the user answers the interrupt
-   *  (POSTs to the broker's /aws/{id}/approve|deny). Optional. */
-  resolveAwsRequest?: (sessionId: string, requestId: string, approved: boolean) => Promise<void>;
+   *  (POSTs to the broker's /aws/{id}/approve|deny). `approver` is the real user
+   *  id (the conversation owner) the broker enforces via OpenFGA. Optional. */
+  resolveAwsRequest?: (sessionId: string, requestId: string, approved: boolean, approver: string) => Promise<void>;
   /** Model catalog for per-conversation selection: the host default + the set
    *  offered to clients. Empty list = only the default is selectable. */
   models?: { default?: string; available: string[] };
@@ -286,7 +287,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
         { optionId: "deny", name: "Deny", kind: "reject_once" },
       ],
       onAnswer: (optionId) => {
-        void deps.resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve");
+        // The approver is the conversation's OWNER (the human who owns this
+        // in-conversation approval); the broker enforces their rights via
+        // OpenFGA. Fall back to the conversation id when unowned (FGA-off / dev).
+        const approver = conv?.owner || ctx.params.id;
+        void deps.resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve", approver);
       },
     });
     return { status: 202, json: { ok: true } };
