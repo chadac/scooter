@@ -234,14 +234,23 @@ Running list of work items. Newest asks at the top of each section. See
         no refetch). kubenix `auth.userHeader/emailHeader` options. Tests: identity
         (6), management owner/scope/whoami (8) → 102/102 Tier 1; e2e ownership (2)
         + sessions/linked-resources still green.
-  - [ ] **PR 2 — broker OpenFGA enforcement.** The `openfga` Deployment (shared
-        Postgres; in-memory for dev), a Python Authorizer seam (noop when FGA
-        unset → today's behavior), the `aws_account.approver` gate on AWS
-        approve/deny (broker ENFORCES, doesn't trust the relayed claim; SA-token
-        `is_approver` stays as the relay-gate, OpenFGA adds the which-human
-        layer), deploy-config approver seeding, and the agent-host relaying the
-        REAL user id (replacing the `"conversation-user"` constant) +
-        `approved_by` = real user. See docs/USER_IDENTITY.md.
+  - [x] **PR 2 — broker OpenFGA enforcement.** DONE (branch feat/broker-openfga-authz).
+        `broker/core/authz.py`: Authorizer protocol + NoopAuthorizer (FGA off →
+        allow, today's behavior) + FgaAuthorizer (lazy openfga-sdk; check fails
+        CLOSED on FGA error). The per-account gate is in PermissionService.approve/
+        deny (the target account is known there) → check(approver, "approver",
+        "aws_account:<alias>"); SA-token is_approver stays as the relay-gate, FGA
+        adds the which-human layer. aws() factory builds the authorizer + seeds
+        approver tuples at startup from each account's `approvers` list. agent-host:
+        resolveAwsRequest sends `approver: user:<conversation owner>` (the real PR-1
+        user), replacing the "conversation-user" constant; approved_by = real user.
+        kubenix: broker.aws.fga.* options + an openfga Deployment/Service on the
+        shared Postgres (default off). FOUND+FIXED a latent bug: broker.nix joined
+        resource blocks with `//` (shallow) so adding deployments.openfga would have
+        REPLACED deployments.agent-broker — switched to lib.mkMerge. Tests: authz
+        (6) + aws_authz_gate (4, fake authorizer) → 61 broker pytest; agent-host
+        102/102. Deploy-remaining: create the FGA store + write the model DSL, set
+        fga.storeId, create the `openfga` DB on agent-shared-db.
   - [ ] (later) webhook-spawned conversation ownership (capture the GitHub/Slack
         actor); admin UI for approver tuples; per-conversation private opt-in.
 

@@ -137,11 +137,25 @@ account → OpenFGA `write` tuples on startup, or a small seed job). No admin UI
 
 ## Build order (two PRs)
 1. **Agent-host identity + ownership view-filter** (no OpenFGA): header →
-   UserContext, `owner` field, `?scope=` filter, UI toggle. Ships the visible
-   "my conversations" win with no new infra.
+   UserContext, `owner` field, `?scope=` filter, UI toggle. **DONE (PR #7).**
 2. **Broker OpenFGA enforcement:** the `openfga` Deployment, the Python
    Authorizer + `aws_account.approver` gate, deploy-config approver seeding, and
-   the agent-host relaying the real user id. Ships the security gate.
+   the agent-host relaying the real user id. **DONE (this PR).** Notes:
+   - `broker/core/authz.py`: `Authorizer` protocol + `NoopAuthorizer` (FGA off →
+     allow) + `FgaAuthorizer` (lazy openfga-sdk import; check fails CLOSED).
+   - The per-account gate lives in `PermissionService.approve/deny` (the account
+     is known there): `check(approver, "approver", "aws_account:<alias>")`.
+   - `aws()` factory builds the authorizer + seeds approver tuples at startup
+     from each account's `approvers` list (registry config).
+   - agent-host: `resolveAwsRequest` sends `approver: user:<conversation owner>`
+     (the real user from PR 1), replacing the `"conversation-user"` constant.
+   - kubenix: `broker.aws.fga.*` options + an `openfga` Deployment/Service on the
+     shared Postgres. FOUND+FIXED a latent bug: broker.nix joined resource blocks
+     with `//` (shallow) — adding `deployments.openfga` would have REPLACED
+     `deployments.agent-broker`; switched to `lib.mkMerge`.
+   - REMAINING for a real deploy: create the OpenFGA store + write the auth model
+     (the `aws_account.approver` DSL), set `broker.aws.fga.storeId`, create the
+     `openfga` database on agent-shared-db.
 
 ## Tests
 - Agent-host contract: header → UserContext (present/absent/anonymous);

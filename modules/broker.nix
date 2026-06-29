@@ -112,11 +112,46 @@ in
         name = mkOption { type = types.str; default = "broker"; description = "Database name (separate DB on the shared instance)."; };
         user = mkOption { type = types.str; default = "webhooks"; description = "Database user."; };
       };
+      # OpenFGA authorization: the broker ENFORCES which user may approve which
+      # account (relation `approver` on `aws_account:<alias>`). Off by default →
+      # the broker's NoopAuthorizer → today's behavior. Per-account approver lists
+      # live in `accounts.<alias>.approvers` (seeded into OpenFGA at startup).
+      fga = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Enforce per-account approver authorization via OpenFGA. Deploys an openfga server.";
+        };
+        apiUrl = mkOption {
+          type = types.str;
+          default = "http://openfga.${cfg.namespace}.svc.cluster.local:8080";
+          description = "OpenFGA HTTP API URL.";
+        };
+        storeId = mkOption {
+          type = types.str;
+          default = "";
+          description = "OpenFGA store id (created out-of-band or by a seed step).";
+        };
+        authorizationModelId = mkOption {
+          type = types.str;
+          default = "";
+          description = "OpenFGA authorization-model id (optional; latest used if empty).";
+        };
+        image = mkOption {
+          type = types.str;
+          default = "openfga/openfga:latest";
+          description = "OpenFGA server image.";
+        };
+      };
     };
   };
 
   config = lib.mkIf bcfg.enable {
-    kubernetes.resources = {
+    # mkMerge (not //): the aws + fga blocks each add to `deployments`/`services`,
+    # and a shallow // would REPLACE those keys (dropping agent-broker). mkMerge
+    # deep-merges so all deployments/services coexist.
+    kubernetes.resources = lib.mkMerge [
+    {
       serviceAccounts.agent-broker = {
         metadata = {
           name = "agent-broker";
@@ -204,6 +239,12 @@ in
                       inherit (bcfg.aws.db.passwordSecret) name key;
                     };
                   }
+                ] ++ lib.optionals bcfg.aws.fga.enable [
+                  # OpenFGA authorization (the per-account approver gate).
+                  { name = "FGA_ENABLED"; value = "true"; }
+                  { name = "FGA_API_URL"; value = bcfg.aws.fga.apiUrl; }
+                  { name = "FGA_STORE_ID"; value = bcfg.aws.fga.storeId; }
+                  { name = "FGA_AUTHORIZATION_MODEL_ID"; value = bcfg.aws.fga.authorizationModelId; }
                 ]);
                 volumeMounts = lib.optionals bcfg.aws.enable [
                   { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
@@ -226,13 +267,67 @@ in
           ports = [{ port = 8080; targetPort = "http"; name = "http"; }];
         };
       };
-    } // lib.optionalAttrs bcfg.aws.enable {
+    }
+    (lib.mkIf bcfg.aws.enable {
       # The account registry, mounted at /etc/agent-broker/accounts.json. Single
-      # source of truth shared with the sandbox's ~/.aws/config profiles.
+      # source of truth shared with the sandbox's ~/.aws/config profiles. Each
+      # account's optional `approvers` list (user ids) is seeded into OpenFGA by
+      # the broker at startup when fga.enable is set.
       configMaps.agent-broker-aws-accounts = {
         metadata = { name = "agent-broker-aws-accounts"; namespace = cfg.namespace; };
         data."accounts.json" = builtins.toJSON bcfg.aws.accounts;
       };
-    };
+    })
+    (lib.mkIf bcfg.aws.fga.enable {
+      # OpenFGA authorization server — the broker's policy enforcement backend.
+      # Uses the shared Postgres (agent-shared-db) as its datastore (a separate
+      # `openfga` database). The broker seeds the model + approver tuples at
+      # startup. (storeId/modelId are provided via broker.aws.fga options once
+      # created — e.g. by a one-time `fga store create` against this server.)
+      deployments.openfga = {
+        metadata = { name = "openfga"; namespace = cfg.namespace; };
+        spec = {
+          replicas = 1;
+          selector.matchLabels.app = "openfga";
+          template = {
+            metadata.labels.app = "openfga";
+            spec.containers.openfga = {
+              name = "openfga";
+              image = bcfg.aws.fga.image;
+              args = [ "run" ];
+              env = [
+                { name = "OPENFGA_DATASTORE_ENGINE"; value = "postgres"; }
+                {
+                  # postgres://user:pass@host:5432/openfga
+                  name = "OPENFGA_DATASTORE_URI";
+                  value = "postgres://${bcfg.aws.db.user}@${bcfg.aws.db.host}:5432/openfga?sslmode=disable";
+                }
+              ] ++ lib.optionals (bcfg.aws.db.passwordSecret != null) [
+                {
+                  name = "OPENFGA_DATASTORE_PASSWORD";
+                  valueFrom.secretKeyRef = { inherit (bcfg.aws.db.passwordSecret) name key; };
+                }
+              ];
+              ports = [
+                { containerPort = 8080; name = "http"; }
+                { containerPort = 8081; name = "grpc"; }
+              ];
+            };
+          };
+        };
+      };
+
+      services.openfga = {
+        metadata = { name = "openfga"; namespace = cfg.namespace; };
+        spec = {
+          selector.app = "openfga";
+          ports = [
+            { port = 8080; targetPort = "http"; name = "http"; }
+            { port = 8081; targetPort = "grpc"; name = "grpc"; }
+          ];
+        };
+      };
+    })
+    ];
   };
 }

@@ -62,6 +62,14 @@ class BrokerSettings(BaseSettings):
     # Sweep interval (seconds) for expired dynamic roles.
     aws_sweep_interval: int = 300
 
+    # --- OpenFGA authorization (broker = the policy enforcement point) ------
+    # Off by default -> NoopAuthorizer -> the broker behaves as before. When on,
+    # the per-account approver gate on approve/deny is enforced via OpenFGA.
+    fga_enabled: bool = False
+    fga_api_url: str = ""             # e.g. http://openfga.agent-manager.svc:8080
+    fga_store_id: str = ""
+    fga_authorization_model_id: str = ""
+
     port: int = 8080
 
 

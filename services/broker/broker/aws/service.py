@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 from . import policy
+from ..core.authz import Authorizer, NoopAuthorizer, aws_account_object
 from .iam import IamProvisioner
 from .models import PermissionRequest, RequestStatus, RiskLevel, StsCredentials
 from .store import PermissionStore
@@ -62,12 +63,15 @@ class PermissionService:
         config: ServiceConfig,
         on_request=None,  # async (PermissionRequest) -> None; notify the host to
                           # raise the approval interrupt. None = no notify.
+        authorizer: Authorizer | None = None,  # per-account approve/deny gate;
+                          # None -> NoopAuthorizer (FGA off -> allow, today's behavior).
     ) -> None:
         self._store = store
         self._iam = iam
         self._registry = account_registry
         self._config = config
         self._on_request = on_request
+        self._authz: Authorizer = authorizer or NoopAuthorizer()
         # request_id -> StsCredentials. In-memory only; never persisted.
         self._creds: dict[str, StsCredentials] = {}
 
@@ -154,12 +158,22 @@ class PermissionService:
         return req
 
     # --- approve / deny (approver) ----------------------------------------
+    async def _authorize_approver(self, approver: str, target_account: str) -> None:
+        """Enforce that `approver` may approve THIS account (OpenFGA). FGA off ->
+        NoopAuthorizer -> always allowed. Fails closed if FGA is unreachable."""
+        allowed = await self._authz.check(
+            user=approver, relation="approver", obj=aws_account_object(target_account)
+        )
+        if not allowed:
+            raise RequestError([f"'{approver}' is not authorized to approve account '{target_account}'"])
+
     async def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
         req = await self._store.get(request_id)
         if req is None:
             raise RequestError([f"Unknown request '{request_id}'"])
         if req.status != RequestStatus.PENDING:
             raise RequestError([f"Request is {req.status.value}, not pending"])
+        await self._authorize_approver(approver, req.target_account)
 
         approved_at = _now()
         role_expires_at = (
@@ -198,6 +212,7 @@ class PermissionService:
         req = await self._store.get(request_id)
         if req is None:
             raise RequestError([f"Unknown request '{request_id}'"])
+        await self._authorize_approver(approver, req.target_account)
         if req.iam_policy_arn:
             self._iam.delete_dynamic_policy(target_account=req.target_account, policy_arn=req.iam_policy_arn)
         await self._store.update(

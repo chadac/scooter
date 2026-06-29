@@ -16,6 +16,7 @@ dependencies = [
   "sqlalchemy",   # permission-request store
   "asyncpg",      # Postgres driver (shared agent-shared-db)
   "aiosqlite",    # SQLite driver (local/dev default)
+  "openfga-sdk",  # OpenFGA authorization (the broker's enforcement point)
 ]
 
 [project.scripts]
