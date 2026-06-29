@@ -58,6 +58,13 @@ def _load_entrypoint_providers() -> None:
 
 def discover_providers() -> list[Provider]:
     """Build all registered + entry-point providers, keeping enabled ones."""
+    # Re-read env into the shared settings so provider factories (which read
+    # `config.settings` at build time) reflect the CURRENT environment — not a
+    # snapshot frozen at first import. This makes create_app() deterministic
+    # regardless of test import order (the test-provider-enabled flag, etc.).
+    from ..config import refresh_settings
+
+    refresh_settings()
     _import_builtin_providers()
     _load_entrypoint_providers()
     providers: list[Provider] = []

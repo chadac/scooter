@@ -65,4 +65,26 @@ class BrokerSettings(BaseSettings):
     port: int = 8080
 
 
+# The process-wide settings snapshot. Most code reads `config.settings` directly.
+# It's instantiated at import time, which is fine in prod (env is fixed before
+# the app starts) but BRITTLE in tests: a test that sets an env var (e.g.
+# TEST_PROVIDER_ENABLED) AFTER this module was first imported would otherwise be
+# ignored. `refresh_settings()` re-reads the environment and updates this object
+# IN PLACE so existing `from ..config import settings` references see the new
+# values; `discover_providers()` calls it so provider factories always build
+# against current env. See get_settings() for a fresh, non-mutating read.
 settings = BrokerSettings()
+
+
+def get_settings() -> BrokerSettings:
+    """A fresh BrokerSettings read from the CURRENT environment (no caching)."""
+    return BrokerSettings()
+
+
+def refresh_settings() -> BrokerSettings:
+    """Re-read env into the shared `settings` object in place, so module-level
+    `settings` references (provider factories, etc.) pick up the current env.
+    Returns the shared object. Idempotent; cheap."""
+    fresh = BrokerSettings()
+    settings.__dict__.update(fresh.__dict__)
+    return settings

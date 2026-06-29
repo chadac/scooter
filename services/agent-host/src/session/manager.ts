@@ -133,7 +133,10 @@ export interface SessionManager {
   /** All conversations, newest first. */
   list(): Conversation[];
   /** Set a conversation's title (e.g. agent-assigned). */
-  setTitle(id: SessionId, title: string): void;
+  /** Set a conversation's title and persist it. Returns the persist promise so a
+   *  caller can await durability (e.g. before a restart); fire-and-forget callers
+   *  may ignore it. */
+  setTitle(id: SessionId, title: string): Promise<void>;
   /** Load persisted conversations from the store into the in-memory list, so
    *  the session list (and GET /conversations) survives an agent-host restart.
    *  Persisted-but-not-live conversations come back as "suspended". */
@@ -335,10 +338,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     setTitle(id, title) {
       const entry = entries.get(id);
-      if (entry) {
-        entry.title = title;
-        saveMeta(entry); // persist the (possibly agent-assigned) title
-      }
+      if (!entry) return Promise.resolve();
+      entry.title = title;
+      return saveMeta(entry); // persist the (possibly agent-assigned) title
     },
 
     async hydrate() {
