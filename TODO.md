@@ -69,8 +69,16 @@ Running list of work items. Newest asks at the top of each section. See
      (`MODE="0666"` on /dev/kvm) before the test runs → real hardware accel. (The
      `[ -e /dev/kvm ]` check passed all along — the device NODE existed, it just
      wasn't usable; that masked the TCG fallback.) Diagnosis confirmed by timing:
-     matrix-on-TCG = ~2-7 min/test; expect near-local with KVM. Still
+     matrix-on-TCG = ~2-7 min/test; with KVM 7/8 dropped to ~1 min. Still
      continue-on-error until confirmed consistently green, then promote to required.
+  3. CACHIX: the 8th test, `scooter-module`, is dominated by a COLD from-source
+     NixOS toplevel build (~223MB closure, ~30min on a 4-vCPU runner — it's the
+     `reconverged` deriv built before the VM boots, instant once cached). Added a
+     `scooter` Cachix binary cache (cachix-action in both `ci` + the matrix) so
+     that closure is built ONCE and pulled across branches/PRs instead of cold per
+     branch. NEEDS one-time setup (in the workflow header): create the `scooter`
+     cache + add the CACHIX_AUTH_TOKEN repo secret. Without the secret CI still
+     works (read-only pull). Once warm, scooter-module should also be ~fast.
 
 - [ ] **Stabilize the Tier-3 e2e harness (pre-existing flakiness).** Measured on
   pristine `main`: a full `just test-e2e` run is ~2 failed + 2 flaky with NO code

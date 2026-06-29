@@ -11,6 +11,14 @@ name: CI
 # `cluster` / `e2e` justfile recipes and docs/TESTING.md. The KVM-backed
 # dev-env nixosTests run as a parallel MATRIX (one job per VM test) below, so
 # they finish in the time of the slowest single test rather than 8 serial boots.
+#
+# BINARY CACHE (Cachix) — one-time setup so expensive closures (e.g. the
+# scooter-module NixOS toplevel) are built ONCE and pulled across branches/PRs
+# instead of rebuilt cold per branch:
+#   1. Create a cache named `scooter` at https://app.cachix.org (public read).
+#   2. Generate a write auth token; add it as the repo secret CACHIX_AUTH_TOKEN.
+# Without the secret CI still works — cachix-action pulls read-only (no push),
+# so forks/contributors are unaffected; they just don't populate the cache.
 
 on:
   pull_request:
@@ -29,17 +37,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Nix + a GitHub-Actions-cache-backed store, so repeat runs don't rebuild
-      # the world. No external service / secret required (cache-nix-action uses
-      # the built-in Actions cache, not FlakeHub). For a persistent binary cache
-      # shared across branches, swap in cachix/cachix-action with a
-      # CACHIX_AUTH_TOKEN secret instead.
       - uses: nixbuild/nix-quick-install-action@v30
-      - uses: nix-community/cache-nix-action@v6
+
+      # Cachix binary cache: build-once-share-everywhere across branches/PRs, so
+      # an expensive closure (e.g. the scooter-module NixOS toplevel) is realised
+      # ONCE and pulled thereafter rather than rebuilt cold per branch. With the
+      # CACHIX_AUTH_TOKEN secret set it also PUSHES; without it (forks) it still
+      # PULLS read-only. See README/docs for creating the `scooter` cache.
+      - uses: cachix/cachix-action@v15
         with:
-          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # The fast `just ci` bundle, run inside the pinned dev shell (gets `just`,
       # node, npm from the flake). check-flake + check-manifests + typecheck +
@@ -109,15 +117,15 @@ jobs:
           ls -l /dev/kvm
 
       - uses: nixbuild/nix-quick-install-action@v30
-      - uses: nix-community/cache-nix-action@v6
+
+      # Cachix: the heavy bits (esp. scooter-module's NixOS toplevel closure) are
+      # built once and pulled across branches/PRs — so a cold branch doesn't
+      # rebuild them from source. Pushes when CACHIX_AUTH_TOKEN is set; pulls
+      # read-only otherwise.
+      - uses: cachix/cachix-action@v15
         with:
-          # Per-test cache key so each VM test keeps its own warm closure; all
-          # share the base via the restore-prefix fallback.
-          primary-key: nix-ci-${{ runner.os }}-nixostest-${{ matrix.test }}-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-prefixes-first-match: |
-            nix-ci-${{ runner.os }}-nixostest-${{ matrix.test }}-
-            nix-ci-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: build ${{ matrix.test }}
         run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
