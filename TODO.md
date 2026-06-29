@@ -55,6 +55,17 @@ Running list of work items. Newest asks at the top of each section. See
         e2e harness (below), THEN land import() (structural shape: hydrate via
         onSwitchToThread, stream appends-only). See docs/INTEGRITY_UI_NOTES.md.
 
+- [x] **CI: split the dev-env nixosTests into a parallel matrix.** DONE
+  (`.github/workflows/ci.yml`). The single `nixos-tests` job built all 8 VM tests
+  SERIALLY (~1h on a cold cache, and it gated PR merges). Replaced with: a cheap
+  `nixos-tests-matrix` job that evals the `dev-env-*` check names to JSON, and a
+  `nixos-test` MATRIX job (one VM test per job, fail-fast off, max-parallel 4,
+  per-test cache key with a shared-base restore prefix). Each job builds exactly
+  one `.#checks.x86_64-linux.<test>` — so the suite finishes in the time of the
+  slowest single test, not the sum. Still continue-on-error + KVM-gated. (Cache
+  warming helps the base closure, but execution was the bottleneck — hence the
+  fan-out.)
+
 - [ ] **Stabilize the Tier-3 e2e harness (pre-existing flakiness).** Measured on
   pristine `main`: a full `just test-e2e` run is ~2 failed + 2 flaky with NO code
   changes; the failing set shuffles (interrupt, linked-resources, revive,

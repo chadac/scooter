@@ -9,7 +9,8 @@ name: CI
 #
 # Tier 2 (cluster) and Tier 3 (e2e) are heavier and NOT run here — see the
 # `cluster` / `e2e` justfile recipes and docs/TESTING.md. The KVM-backed
-# nixosTests run in a separate, non-required job below.
+# dev-env nixosTests run as a parallel MATRIX (one job per VM test) below, so
+# they finish in the time of the slowest single test rather than 8 serial boots.
 
 on:
   pull_request:
@@ -54,20 +55,55 @@ jobs:
       - name: broker + webhooks tests (nix build runs pytest)
         run: nix build .#broker .#webhooks --print-build-logs
 
-  nixos-tests:
-    name: dev-env nixosTests (KVM)
+  # Enumerate the dev-env-* nixosTests into a matrix so each VM test runs in its
+  # OWN parallel job (8 serial VM boots took ~1h; fanned out they finish in the
+  # time of the slowest single test). This generate job is cheap (eval only).
+  nixos-tests-matrix:
+    name: enumerate dev-env nixosTests
     runs-on: ubuntu-latest
-    # Non-required: the dev-env nixosTests boot real VMs and need /dev/kvm, which
-    # not all runners provide. Keep this job from failing the PR while we confirm
-    # KVM is reliably available on the runner; promote it to required once green.
+    outputs:
+      tests: ${{ steps.list.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - id: list
+        name: list dev-env-* checks
+        run: |
+          set -euo pipefail
+          # JSON array of the dev-env-* check names, for the matrix below.
+          tests=$(nix eval --json --impure --expr '
+            let f = builtins.getFlake (toString ./.);
+                s = builtins.currentSystem;
+                names = builtins.attrNames f.checks.${s};
+            in builtins.filter (n: builtins.match "dev-env-.*" n != null) names')
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+          echo "matrix: $tests"
+
+  nixos-test:
+    name: nixosTest ${{ matrix.test }}
+    needs: nixos-tests-matrix
+    runs-on: ubuntu-latest
+    # Non-required: the dev-env nixosTests boot real VMs and need /dev/kvm.
+    # Keep them from failing the PR while we confirm KVM + promote to required.
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      # Cap concurrent VM jobs so we don't exhaust the runner pool; each is a
+      # full NixOS VM. Tune up if the org has more runner capacity.
+      max-parallel: 4
+      matrix:
+        test: ${{ fromJSON(needs.nixos-tests-matrix.outputs.tests) }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
+          # Per-test cache key so each VM test keeps its own warm closure; all
+          # share the base via the restore-prefix fallback.
+          primary-key: nix-ci-${{ runner.os }}-nixostest-${{ matrix.test }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: |
+            nix-ci-${{ runner.os }}-nixostest-${{ matrix.test }}-
+            nix-ci-${{ runner.os }}-
           gc-max-store-size-linux: 5G
 
       - name: KVM available?
@@ -75,26 +111,9 @@ jobs:
           if [ -e /dev/kvm ]; then
             echo "/dev/kvm present"; ls -l /dev/kvm
           else
-            echo "::warning::/dev/kvm not available — nixosTests will be skipped"
+            echo "::warning::/dev/kvm not available — ${{ matrix.test }} skipped"
             exit 0
           fi
 
-      # Build every dev-env nixosTest check (the VM-backed ones). nix flake check
-      # would also re-run agentHost/ui/broker/webhooks (covered in `ci`); building
-      # the checks directly keeps this job to the VM tests.
-      - name: dev-env nixosTests
-        run: |
-          set -euo pipefail
-          # Enumerate the dev-env-* checks and build them.
-          checks=$(nix eval --raw --impure --expr '
-            let f = builtins.getFlake (toString ./.);
-                s = builtins.currentSystem;
-                names = builtins.attrNames f.checks.${s};
-            in builtins.concatStringsSep " " (builtins.filter
-                 (n: builtins.match "dev-env-.*" n != null) names)')
-          echo "nixosTests: $checks"
-          for c in $checks; do
-            echo "::group::$c"
-            nix build ".#checks.x86_64-linux.$c" --print-build-logs
-            echo "::endgroup::"
-          done
+      - name: build ${{ matrix.test }}
+        run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
