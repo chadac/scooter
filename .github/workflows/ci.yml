@@ -26,14 +26,19 @@ jobs:
     name: fast checks (flake + typecheck + Tier 1 + python)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # Determinate's installer + a GitHub-Actions-cache-backed Nix store, so
-      # repeat runs don't rebuild the world. No secret required. To use a
-      # persistent binary cache instead (faster, shared across branches), swap in
-      # cachix/cachix-action with a CACHIX_AUTH_TOKEN secret.
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Nix + a GitHub-Actions-cache-backed store, so repeat runs don't rebuild
+      # the world. No external service / secret required (cache-nix-action uses
+      # the built-in Actions cache, not FlakeHub). For a persistent binary cache
+      # shared across branches, swap in cachix/cachix-action with a
+      # CACHIX_AUTH_TOKEN secret instead.
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
 
       # The fast `just ci` bundle, run inside the pinned dev shell (gets `just`,
       # node, npm from the flake). check-flake + check-manifests + typecheck +
@@ -57,9 +62,13 @@ jobs:
     # KVM is reliably available on the runner; promote it to required once green.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
 
       - name: KVM available?
         run: |
