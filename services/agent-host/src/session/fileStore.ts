@@ -6,13 +6,27 @@
  * gooseStatePath(id). A richer store (indexing, compaction) can come later.
  */
 
-import { appendFile, mkdir, readFile, writeFile, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile, rename, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
 import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
 import type { SessionId } from "../types.js";
 import { EMPTY_CHECKSUM, chainNext } from "../agui/integrity.js";
+
+// Atomic whole-file write: write a temp sibling then rename over the target.
+// rename(2) is atomic on POSIX, so a concurrent reader (e.g. listConversations()
+// during a hydrate in another replica, or a fire-and-forget setTitle/activity
+// write) always sees either the complete old file or the complete new one —
+// never a truncated/partial one. writeFile alone truncates-then-writes, which a
+// concurrent read can catch mid-flight (-> a torn JSON.parse that drops the
+// record). A monotonic counter keeps temp names unique under concurrent writes.
+let atomicSeq = 0;
+async function writeFileAtomic(path: string, data: string): Promise<void> {
+  const tmp = `${path}.tmp-${process.pid}-${atomicSeq++}`;
+  await writeFile(tmp, data, "utf8");
+  await rename(tmp, path);
+}
 
 export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
@@ -105,12 +119,12 @@ export function createFileConversationStore(root: string): ConversationStore {
       await ensureDir(id);
       // Last-activity marker — small, overwritten; queryable by an external
       // lifecycle manager that mounts the same PVC.
-      await writeFile(join(root, id, "activity.json"), JSON.stringify({ lastActivityAt: at }), "utf8");
+      await writeFileAtomic(join(root, id, "activity.json"), JSON.stringify({ lastActivityAt: at }));
     },
 
     async saveMeta(meta: ConversationMeta) {
       await ensureDir(meta.id);
-      await writeFile(metaPath(meta.id), JSON.stringify(meta), "utf8");
+      await writeFileAtomic(metaPath(meta.id), JSON.stringify(meta));
     },
 
     async addLink(id: SessionId, link: ConversationLink) {
@@ -118,7 +132,7 @@ export function createFileConversationStore(root: string): ConversationStore {
       const existing = await this.listLinks!(id);
       const key = (l: ConversationLink) => `${l.source}|${l.resourceType}|${l.url ?? l.title ?? ""}`;
       if (existing.some((l) => key(l) === key(link))) return; // dedup
-      await writeFile(linksPath(id), JSON.stringify([...existing, link]), "utf8");
+      await writeFileAtomic(linksPath(id), JSON.stringify([...existing, link]));
     },
 
     async listLinks(id: SessionId): Promise<ConversationLink[]> {

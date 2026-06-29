@@ -73,6 +73,76 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
+- [ ] **OTel cost/usage metrics — exportable to any aggregator (Datadog, etc.).**
+  Emit OpenTelemetry metrics from the agent-host (and broker) so a deployer can
+  ship cost + usage to their own backend. Core signals: per-conversation token
+  usage (input/output, by model), derived cost (model → price table), run count +
+  latency, active/suspended sandbox counts, broker request counts. The agent-host
+  is the natural collector — it already brokers every ACP run, so it sees token
+  counts in the ACP/usage events. Use the OTel SDK with an OTLP exporter so it's
+  vendor-neutral (Datadog/Grafana/Honeycomb all ingest OTLP). MUST be an EASILY
+  CONFIGURABLE option in the helm template: an `otel.enable` flag + endpoint /
+  headers / resource-attributes (service.name, deployment.environment) wired to
+  the standard OTEL_EXPORTER_OTLP_* env so no code change is needed to retarget.
+  Off by default. Needs: a metrics module in agent-host, the price table as
+  config (per-model $/1M tokens), helm/kubenix values, and a test that asserts the
+  counters fire on a run. Spec it (research → design → tests → impl) — the cost
+  derivation + the helm surface are the two design points.
+
+- [~] **CI: GitHub Actions running our checks on every PR.** DONE (workflow added);
+  needs a throwaway PR to confirm green on the runner + branch-protection to make it
+  required. `.github/workflows/ci.yml`: job `ci` (required) installs Nix
+  (Determinate installer + magic-nix-cache, no secret) and runs `nix develop -c just
+  ci` (flake check, check-manifests, agent-host + ui typecheck, Tier 1 vitest) plus
+  `nix build .#broker .#webhooks` (their build runs pytest via pytestCheckHook); job
+  `nixos-tests` (continue-on-error, KVM-gated) builds the dev-env nixosTests. Fixed
+  along the way: (a) the `npm -w agent-host` → `npm -w services/agent-host` workspace
+  selector in the justfile (npm 11 resolves -w by path); (b) a REAL torn-read race —
+  fileStore now writes meta/activity/links ATOMICALLY (temp+rename) so a concurrent
+  hydrate/list never reads a half-written file (was a 50%-flaky Tier 1 + a prod
+  multi-replica hazard); (c) setTitle returns its persist promise so durability is
+  awaitable; (d) the broker test-isolation CLEANUP below — discover_providers()
+  refresh_settings() so create_app() is deterministic regardless of import order
+  (`nix build .#broker` now green). REMAINING: open a PR, confirm the runner is
+  green (esp. KVM for nixos-tests), set required checks. Tier 2/3 still out of CI
+  (heavy; see e2e-stabilize).
+
+- [ ] **UI: per-conversation model selection.** The backend already supports it —
+  `availableModels` is configured, the management API accepts a model on
+  POST /conversations and validates it via `resolveModel()`, and a conversation can
+  override per-prompt. The UI just doesn't expose it. Add a model picker in the chat
+  composer (and/or new-conversation flow): fetch the offered models from the API
+  (GET /models exists), let the user pick, and send it with the prompt. Show the
+  active model somewhere unobtrusive. Needs: a small assistant-ui composer addition,
+  wiring the choice into the /agui or management call, and an e2e covering "pick a
+  non-default model → it's used."
+
+- [ ] **E2E: concurrent tool-invocation reliability (parallel bash calls hang).**
+  OBSERVED BUG: when the agent fires ~3 bash tool calls at once, some calls just
+  HANG and never return. This must never happen. Likely in the exec path
+  (ExecBackend / K8s exec API) or the ACP↔bridge tool-call handling — concurrent
+  exec streams over the same connection, or a serialization point that drops/blocks
+  parallel calls (cf. the bridge runChain serialization fix — tool calls within a
+  run may be getting unintended ordering/locking). Needs: (1) a red-first repro —
+  a contract/e2e test that issues N concurrent tool calls and asserts ALL return;
+  (2) root-cause in exec/bridge (stream multiplexing? a shared buffer? an await that
+  starves siblings?); (3) fix + the test green under repeated runs. High priority —
+  it's a correctness bug the user hits in normal use.
+
+- [ ] **User identity — per-user sessions + a basis for permission-gating.** Today
+  conversations aren't attributed to a user; anyone seeing the UI sees all sessions.
+  Add user identity so (a) a user sees THEIR OWN previous sessions, and (b) we have
+  an identity to permission-gate sensitive actions on (e.g. who may approve/request
+  the AWS broker perms). Needs a design pass: auth source (the chat ingress already
+  has basic-auth; or OIDC — reconcile with the broker's pluggable `is_admin`/
+  approver-auth seam so identity is consistent across UI + broker), an owner field on
+  the conversation record + store/migration, list-filtering by owner, and the UI
+  surfacing only the caller's conversations. Then permission-gating (AWS approve/
+  request, maybe conversation visibility) keys off this identity. Spec it (research →
+  design → tests → impl); the auth-source choice + how it threads into the existing
+  broker identity path are the key decisions. Related: the deferred "Broker
+  permissions / approval system" + the admin-auth notes in docs/AWS_PERMISSIONS_BROKER.md.
+
 - [~] **Deployment-injected tools (.scooter) — code complete, deploy gated on AWS auth.**
   A deployment adds its own Nix tools/services to the GENERIC sandbox with NO
   platform changes. Mechanisms (all green): `config.lib.mkLazyTool` (declare a lazy
@@ -201,12 +271,15 @@ Running list of work items. Newest asks at the top of each section. See
         role + `agent-broker-permission-boundary` policy (trust = our broker IRSA
         + ExternalId); the broker IRSA needs sts:AssumeRole on those. Account
         registry as broker config.
-  - [ ] CLEANUP (pre-existing, not AWS-specific): the broker test suite has
-        global-singleton isolation fragility — the test/echo provider's mount
-        depends on settings-singleton timing (its _mounts_ test fails at baseline);
-        tests pass individually + per-AWS-file but the FULL suite in one process
-        pollutes. Make provider mounting read settings at factory time (or a
-        per-test settings fixture) so `just`/CI run the whole suite clean.
+  - [x] CLEANUP (pre-existing, not AWS-specific): DONE — the broker test suite had
+        global-singleton isolation fragility: `config.settings` was instantiated at
+        import time, so the test/echo provider's `enabled=settings.test_provider_enabled`
+        froze to whatever the env was at FIRST import; a later test setting the env
+        was ignored, and the FULL suite in one process failed (whoami/git-credential
+        routes 404). Fix: `config.refresh_settings()` re-reads env into the shared
+        settings in place, and `discover_providers()` calls it, so create_app() builds
+        providers against CURRENT env regardless of import order. `nix build .#broker`
+        (full suite, one process) now GREEN.
 
 - [x] **Storage consolidation onto a single store.** DONE (commit 06d6c4a +
   deployment 004f898). We had several stores: the webhooks mapping DB, the agent-host

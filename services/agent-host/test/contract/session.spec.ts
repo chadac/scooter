@@ -126,7 +126,7 @@ describe("SessionManager", () => {
       const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
       await m1.start("alpha");
       await m1.start("beta");
-      m1.setTitle("alpha", "Refactor the parser");
+      await m1.setTitle("alpha", "Refactor the parser"); // await durability before the "restart"
       expect(m1.list()).toHaveLength(2);
 
       // Second "process": a fresh manager over the SAME store. hydrate() must

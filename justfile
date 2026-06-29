@@ -90,7 +90,7 @@ cluster-down:
 
 typecheck:
     npm install
-    npm -w agent-host run typecheck
+    npm -w services/agent-host run typecheck
     npm -w ui run typecheck
 
 lint: typecheck

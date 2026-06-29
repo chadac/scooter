@@ -1,0 +1,100 @@
+name: CI
+
+# Runs the fast check tier on every PR and on pushes to main:
+#   - nix flake show          (flake evaluates)
+#   - check-manifests         (example platform config renders, resources present)
+#   - typecheck               (agent-host + ui)
+#   - Tier 1 contract tests   (vitest, no cluster)
+#   - broker + webhooks builds (their nix build runs pytest via pytestCheckHook)
+#
+# Tier 2 (cluster) and Tier 3 (e2e) are heavier and NOT run here — see the
+# `cluster` / `e2e` justfile recipes and docs/TESTING.md. The KVM-backed
+# nixosTests run in a separate, non-required job below.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: fast checks (flake + typecheck + Tier 1 + python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Nix + a GitHub-Actions-cache-backed store, so repeat runs don't rebuild
+      # the world. No external service / secret required (cache-nix-action uses
+      # the built-in Actions cache, not FlakeHub). For a persistent binary cache
+      # shared across branches, swap in cachix/cachix-action with a
+      # CACHIX_AUTH_TOKEN secret instead.
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+
+      # The fast `just ci` bundle, run inside the pinned dev shell (gets `just`,
+      # node, npm from the flake). check-flake + check-manifests + typecheck +
+      # Tier 1 vitest. CI=1 makes vitest use the default (non-verbose) reporter.
+      - name: just ci (flake check, typecheck, Tier 1)
+        env:
+          CI: "1"
+        run: nix develop --command just ci
+
+      # broker + webhooks: their nix build runs the python test suite
+      # (pytestCheckHook). Building them here gives PR coverage of the Python
+      # services without a separate Python toolchain in CI.
+      - name: broker + webhooks tests (nix build runs pytest)
+        run: nix build .#broker .#webhooks --print-build-logs
+
+  nixos-tests:
+    name: dev-env nixosTests (KVM)
+    runs-on: ubuntu-latest
+    # Non-required: the dev-env nixosTests boot real VMs and need /dev/kvm, which
+    # not all runners provide. Keep this job from failing the PR while we confirm
+    # KVM is reliably available on the runner; promote it to required once green.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-ci-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: nix-ci-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+
+      - name: KVM available?
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo "/dev/kvm present"; ls -l /dev/kvm
+          else
+            echo "::warning::/dev/kvm not available — nixosTests will be skipped"
+            exit 0
+          fi
+
+      # Build every dev-env nixosTest check (the VM-backed ones). nix flake check
+      # would also re-run agentHost/ui/broker/webhooks (covered in `ci`); building
+      # the checks directly keeps this job to the VM tests.
+      - name: dev-env nixosTests
+        run: |
+          set -euo pipefail
+          # Enumerate the dev-env-* checks and build them.
+          checks=$(nix eval --raw --impure --expr '
+            let f = builtins.getFlake (toString ./.);
+                s = builtins.currentSystem;
+                names = builtins.attrNames f.checks.${s};
+            in builtins.concatStringsSep " " (builtins.filter
+                 (n: builtins.match "dev-env-.*" n != null) names)')
+          echo "nixosTests: $checks"
+          for c in $checks; do
+            echo "::group::$c"
+            nix build ".#checks.x86_64-linux.$c" --print-build-logs
+            echo "::endgroup::"
+          done
