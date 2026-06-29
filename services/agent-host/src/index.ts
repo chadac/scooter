@@ -25,6 +25,7 @@ import { createFileConversationStore } from "./session/fileStore.js";
 import { createSessionBridge } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
+import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
 import { writeGooseConfig } from "./agent/gooseConfig.js";
@@ -457,8 +458,10 @@ export async function main(
  * (connectSandbox is async; the ExecBackend interface is sync-constructed.)
  */
 function deferredSandboxApi(sandbox: SandboxRef) {
-  let real: Awaited<ReturnType<typeof connectSandbox>> | undefined;
-  const ensure = async () => (real ??= await connectSandbox(sandbox));
+  // In-flight dedupe: a burst of concurrent first tool calls shares ONE connect
+  // (one pod-readiness wait), not N. (`real ??= await connect()` would not dedupe
+  // — it caches only the resolved value, so concurrent awaits each connect.)
+  const ensure = createDeferredConnector(() => connectSandbox(sandbox));
   return {
     mode: "k8s-exec" as const,
     async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0]) {
