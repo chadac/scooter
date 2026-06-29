@@ -12,7 +12,7 @@
  *                               ExecBackend = K8s exec API into the sandbox pod
  */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -28,6 +28,9 @@ import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js"
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
 import { writeGooseConfig } from "./agent/gooseConfig.js";
+import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
+import { parsePriceTable } from "./metrics/pricing.js";
+import { createGooseUsageReader } from "./metrics/gooseUsage.js";
 import type { SandboxRef } from "./types.js";
 
 export interface AgentHostConfig {
@@ -56,6 +59,17 @@ export interface AgentHostConfig {
   idleSuspendMs: number;
   /** How often the idle sweep runs (ms). */
   idleSweepIntervalMs: number;
+  /** OpenTelemetry metrics (cost + usage + operational), exported over OTLP.
+   *  OFF by default. Endpoint/headers come from the standard OTEL_* env. */
+  observability: {
+    enabled: boolean;
+    /** deployment.environment resource attribute (e.g. "dev", "prod"). */
+    environment?: string;
+    /** Raw JSON of the per-model price table (USD per 1M tokens). Usually a
+     *  ConfigMap-mounted file's contents, passed via AGENT_PRICING_JSON or read
+     *  from AGENT_PRICING_FILE. Empty -> tokens counted, cost omitted. */
+    pricingJson: string;
+  };
 }
 
 export interface AgentHostConfigExtra {
@@ -92,10 +106,44 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
       .filter(Boolean),
     agentName: process.env.AGENT_NAME ?? "Scooter",
     skillsDir: process.env.SKILLS_DIR ?? "/etc/agent-sandbox/skills",
+    observability: {
+      // OFF unless OTEL_METRICS_ENABLED=1. (The OTLP endpoint/headers still come
+      // from the standard OTEL_EXPORTER_OTLP_* env, which the SDK reads.)
+      enabled: process.env.OTEL_METRICS_ENABLED === "1",
+      environment: process.env.OTEL_DEPLOYMENT_ENVIRONMENT || undefined,
+      pricingJson: readPricing(),
+    },
     agent: useFakeAgent
       ? { command: process.execPath, args: [fakeAgentPath], env: {} }
       : { command: process.env.GOOSE_BIN ?? "goose", args: ["acp"], env: bedrockEnv() },
   };
+}
+
+/** The per-model price table JSON: inline (AGENT_PRICING_JSON) or from a mounted
+ *  file (AGENT_PRICING_FILE — a ConfigMap). Empty string if neither is set or the
+ *  file can't be read (cost is then omitted; tokens still counted). */
+function readPricing(): string {
+  if (process.env.AGENT_PRICING_JSON) return process.env.AGENT_PRICING_JSON;
+  const file = process.env.AGENT_PRICING_FILE;
+  if (file) {
+    try {
+      return readFileSync(file, "utf8");
+    } catch {
+      console.warn(`[agent-host] AGENT_PRICING_FILE ${file} unreadable; cost metrics disabled`);
+    }
+  }
+  return "";
+}
+
+/** Parse the price table, tolerating an empty/invalid value (cost just omitted). */
+function safeParsePrices(json: string) {
+  if (!json.trim()) return {};
+  try {
+    return parsePriceTable(json);
+  } catch (e) {
+    console.warn("[agent-host] invalid pricing JSON; cost metrics disabled:", e);
+    return {};
+  }
 }
 
 /** Resolve the model for a conversation: an explicit pick (if it's an offered
@@ -185,6 +233,21 @@ export async function main(
   const store = createFileConversationStore(config.statePath);
   const server = createAguiServer();
 
+  // Metrics (OFF unless OTEL_METRICS_ENABLED=1). Cost needs goose's per-session
+  // token usage, which it persists under its $HOME; the reader degrades to "no
+  // cost" if that DB isn't present. Tokens/cost are attributed to the resolved
+  // model per run.
+  const metrics: MetricsSink = createMetrics({
+    enabled: config.observability.enabled,
+    serviceName: "agent-host",
+    environment: config.observability.environment,
+    prices: safeParsePrices(config.observability.pricingJson),
+    usageReader:
+      config.observability.enabled && !config.fakeSandbox && process.env.HOME
+        ? createGooseUsageReader({ gooseHome: process.env.HOME })
+        : undefined,
+  });
+
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn
   // goose, and wire its AG-UI events out through the server.
   const sessions = createSessionManager({
@@ -193,7 +256,7 @@ export async function main(
     bridgeFactory: ({ conversationId, sandbox, model }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
-      const bridge = makeBridge(conversationId, sandbox, config, model);
+      const bridge = makeBridge(conversationId, sandbox, config, model, metrics);
       // The agent titles the conversation by emitting <title>…</title> as its
       // first action; the bridge extracts it -> set it on the conversation.
       bridge.onTitle((title) => sessions.setTitle(conversationId, title));
@@ -291,11 +354,24 @@ export async function main(
   // signal, so it suspends idle conversations itself (drops the pod, keeps the
   // PVCs). Activity metadata is exposed via the API + persisted so an external
   // lifecycle controller could take over. 0 disables.
+  // Report sandbox population to metrics (also each sweep tick below).
+  const reportSandboxCounts = () => {
+    let running = 0;
+    let suspended = 0;
+    for (const c of sessions.list()) {
+      if (c.status === "running") running++;
+      else if (c.status === "suspended") suspended++;
+    }
+    metrics.setSandboxCounts({ running, suspended });
+  };
+  reportSandboxCounts();
+
   let sweepTimer: ReturnType<typeof setInterval> | undefined;
   if (config.idleSuspendMs > 0) {
     sweepTimer = setInterval(() => {
       void sessions.sweepIdle(config.idleSuspendMs).then((ids) => {
         if (ids.length) console.log(`[agent-host] idle-suspended ${ids.length}:`, ids);
+        reportSandboxCounts();
       });
     }, config.idleSweepIntervalMs);
     sweepTimer.unref?.();
@@ -303,12 +379,19 @@ export async function main(
 
   return async () => {
     if (sweepTimer) clearInterval(sweepTimer);
+    await metrics.shutdown();
     await server.close();
   };
 
   // --- helpers ---
 
-  function makeBridge(conversationId: string, sandbox: SandboxRef, cfg: AgentHostConfig, model?: string) {
+  function makeBridge(
+    conversationId: string,
+    sandbox: SandboxRef,
+    cfg: AgentHostConfig,
+    model: string | undefined,
+    metrics: MetricsSink,
+  ) {
     // In fake mode there is no pod, so the agent's tool calls run as local
     // subprocesses; in cluster mode they exec into the sandbox pod via the K8s
     // exec API (resolved on first use). The ACP client (goose) is created by the
@@ -336,11 +419,21 @@ export async function main(
     // takes effect for new conversations with no image rebuild.
     const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
     if (skillCount) console.log(`[agent-host] ${conversationId}: ${skillCount} skill(s) -> .goosehints`);
+    const metricModel = resolved ?? cfg.model ?? "unknown";
     const bridge = createSessionBridge({
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox },
       exec,
       acpClient: () =>
         createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
+      onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
+        metrics.runFinished({
+          conversationId,
+          model: metricModel,
+          acpSessionId: acpSessionId ?? conversationId,
+          durationMs,
+          outcome,
+        });
+      },
     });
 
     // Mirror bridge events to UI subscribers.

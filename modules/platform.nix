@@ -194,6 +194,64 @@ in
       '';
     };
 
+    observability = {
+      otel = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Emit OpenTelemetry metrics (run count/latency, tokens, derived cost,
+            sandbox population) over OTLP. OFF by default. The OTLP endpoint +
+            headers come from the standard OTEL_EXPORTER_OTLP_* env (set via
+            `otel.env` below) — vendor-neutral (Datadog/Grafana/Honeycomb/...).
+          '';
+        };
+        env = mkOption {
+          type = types.attrsOf types.str;
+          default = { };
+          example = {
+            OTEL_EXPORTER_OTLP_ENDPOINT = "http://otel-collector.observability:4318";
+            OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
+          };
+          description = ''
+            Standard OTEL_EXPORTER_OTLP_* env vars passed through to the
+            agent-host (the OTel SDK reads them directly). Point these at your
+            collector / vendor endpoint. Only applied when otel.enable = true.
+          '';
+        };
+        environment = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "dev";
+          description = "deployment.environment resource attribute on every metric.";
+        };
+        pricing = mkOption {
+          type = types.attrsOf (types.submodule {
+            options = {
+              inputPerMillion = mkOption { type = types.either types.int types.float; };
+              outputPerMillion = mkOption { type = types.either types.int types.float; };
+              cachedReadPerMillion = mkOption { type = types.nullOr (types.either types.int types.float); default = null; };
+              cachedWritePerMillion = mkOption { type = types.nullOr (types.either types.int types.float); default = null; };
+            };
+          });
+          default = { };
+          example = literalExpression ''
+            {
+              "us.anthropic.claude-opus-4-7" = { inputPerMillion = 15.0; outputPerMillion = 75.0; cachedReadPerMillion = 1.5; };
+              "us.anthropic.claude-sonnet-4-6" = { inputPerMillion = 3.0; outputPerMillion = 15.0; };
+            }
+          '';
+          description = ''
+            Per-model price table, USD per 1,000,000 tokens, for cost derivation.
+            Rendered to a ConfigMap mounted into the agent-host and read at start.
+            A model absent here has its tokens counted but no cost emitted (so $0
+            is never reported misleadingly). Edit the ConfigMap to reprice with no
+            image rebuild.
+          '';
+        };
+      };
+    };
+
     ingress = {
       enable = mkOption {
         type = types.bool;
@@ -358,7 +416,18 @@ in
                 ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
                   { name = "SCOOTER_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
                 ++ lib.optional (cfg.deployTools.env != { })
-                  { name = "SCOOTER_ENV"; value = lib.concatStringsSep ";" (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.deployTools.env); };
+                  { name = "SCOOTER_ENV"; value = lib.concatStringsSep ";" (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.deployTools.env); }
+                ++ lib.optionals cfg.observability.otel.enable ([
+                  # OTel metrics ON. The OTLP endpoint/headers come from the
+                  # OTEL_EXPORTER_OTLP_* env in observability.otel.env (the SDK
+                  # reads them). Pricing comes from the mounted ConfigMap.
+                  { name = "OTEL_METRICS_ENABLED"; value = "1"; }
+                  { name = "OTEL_SERVICE_NAME"; value = "agent-host"; }
+                ] ++ lib.optional (cfg.observability.otel.environment != null)
+                    { name = "OTEL_DEPLOYMENT_ENVIRONMENT"; value = cfg.observability.otel.environment; }
+                  ++ lib.optional (cfg.observability.otel.pricing != { })
+                    { name = "AGENT_PRICING_FILE"; value = "/etc/agent-sandbox/pricing/pricing.json"; }
+                  ++ lib.mapAttrsToList (k: v: { name = k; value = v; }) cfg.observability.otel.env);
                 volumeMounts = [
                   # Durable history (PVC).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
@@ -370,6 +439,9 @@ in
                 ] ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
+                ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
+                  # Per-model price table -> cost derivation (AGENT_PRICING_FILE).
+                  { name = "pricing"; mountPath = "/etc/agent-sandbox/pricing"; readOnly = true; }
                 ++ lib.optional cfg.broker.aws.enable
                   # The agent-host's own broker token (to relay AWS approve/deny).
                   { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; };
@@ -382,6 +454,8 @@ in
                 { name = "tmp"; emptyDir = { }; }
               ] ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
+              ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
+                { name = "pricing"; configMap.name = "agent-pricing"; }
               ++ lib.optional cfg.broker.aws.enable
                 { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; };
             };
@@ -404,6 +478,20 @@ in
         agent-skills = {
           metadata = { name = "agent-skills"; namespace = cfg.namespace; };
           data = cfg.agent.skills;
+        };
+      } // lib.optionalAttrs (cfg.observability.otel.enable && cfg.observability.otel.pricing != { }) {
+        # Per-model price table (USD per 1M tokens) -> cost derivation. Serialized
+        # to the shape pricing.ts parses; null cached rates are dropped.
+        agent-pricing = {
+          metadata = { name = "agent-pricing"; namespace = cfg.namespace; };
+          data."pricing.json" = builtins.toJSON (
+            lib.mapAttrs
+              (_model: p:
+                { inherit (p) inputPerMillion outputPerMillion; }
+                // lib.optionalAttrs (p.cachedReadPerMillion != null) { inherit (p) cachedReadPerMillion; }
+                // lib.optionalAttrs (p.cachedWritePerMillion != null) { inherit (p) cachedWritePerMillion; })
+              cfg.observability.otel.pricing
+          );
         };
       };
 
