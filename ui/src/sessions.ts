@@ -18,6 +18,9 @@ export interface Session {
   /** Per-conversation model (undefined = host default). Sent on the next prompt
    *  via the X-Agent-Model header; a change mid-conversation switches the model. */
   model?: string;
+  /** Distinct linked-resource providers ("github"|"slack"|…) for the sidebar
+   *  icons. Server-sourced (GET /conversations); [] / undefined when none. */
+  sources?: string[];
 }
 
 const DEFAULT_TITLE = "New chat";
@@ -104,7 +107,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[] }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -126,6 +129,9 @@ export const sessionStore = {
         // A locally-chosen model (not yet persisted server-side on first prompt)
         // wins; otherwise take the server's persisted model.
         model: existing?.model ?? c.model,
+        // Link sources are server-owned (the webhooks push links); always take
+        // the server's value.
+        sources: c.sources ?? existing?.sources,
       });
     }
 
@@ -154,7 +160,7 @@ export const sessionStore = {
     // periodic merge poll calls this every few seconds; without this guard every
     // poll would setState -> re-render -> churn the runtime even when idle.
     const sig = (ss: Session[], cur: string) =>
-      cur + "|" + ss.map((s) => `${s.id}:${s.title}`).join("|");
+      cur + "|" + ss.map((s) => `${s.id}:${s.title}:${(s.sources ?? []).join(",")}`).join("|");
     if (sig(sessions, currentId) === sig(state.sessions, state.currentId)) return;
 
     setState({ sessions, currentId });

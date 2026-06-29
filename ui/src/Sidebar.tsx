@@ -8,6 +8,7 @@
 
 import { sessionStore, useSessions } from "./sessions.js";
 import { LinkedResources } from "./LinkedResources.js";
+import { SourceBadge } from "./sourceIcon.js";
 
 export function Sidebar() {
   const { sessions, currentId } = useSessions();
@@ -44,6 +45,14 @@ export function Sidebar() {
             >
               <span data-testid="session-title">{s.title}</span>
             </button>
+            {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
+            {s.sources && s.sources.length > 0 && (
+              <span className="flex shrink-0 items-center gap-0.5">
+                {s.sources.map((src) => (
+                  <SourceBadge key={src} source={src} />
+                ))}
+              </span>
+            )}
             <button
               data-testid="session-delete"
               aria-label={`Delete ${s.title}`}

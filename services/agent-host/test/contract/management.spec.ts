@@ -193,6 +193,28 @@ describe("management API", () => {
     expect((json as any).events).toHaveLength(2);
   });
 
+  it("GET /conversations includes each conversation's distinct link sources (for sidebar icons)", async () => {
+    const store = fakeStore([]);
+    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerPermission: async () => {} });
+    // c1 has a github PR + a slack thread (+ a duplicate github -> distinct sources only).
+    await call(api, "POST", "/conversations/c1/links", { source: "github", resourceType: "pull_request", url: "https://gh/pr/1" });
+    await call(api, "POST", "/conversations/c1/links", { source: "slack", resourceType: "thread", title: "#eng" });
+    await call(api, "POST", "/conversations/c1/links", { source: "github", resourceType: "issue", url: "https://gh/i/2" });
+
+    const { json } = await call(api, "GET", "/conversations");
+    const c1 = (json as any[]).find((c) => c.id === "c1");
+    expect(c1).toBeDefined();
+    // Distinct sources, sorted; a conversation with no links has [].
+    expect([...c1.sources].sort()).toEqual(["github", "slack"]);
+  });
+
+  it("GET /conversations gives [] sources for a conversation with no links", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { json } = await call(api, "GET", "/conversations");
+    const c1 = (json as any[]).find((c) => c.id === "c1");
+    expect(c1.sources).toEqual([]);
+  });
+
   it("POST then GET /conversations/:id/links round-trips an external link", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const post = await call(api, "POST", "/conversations/c1/links", {
