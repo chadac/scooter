@@ -200,22 +200,26 @@ Running list of work items. Newest asks at the top of each section. See
   ids, isolated output buffers, out-of-order independent exits, release-isolation,
   unknown-id non-hang). 68/68 Tier 1, stable across repeated runs.
 
-- [ ] **Two lower-severity concurrency follow-ups (from the parallel-tool-call
-  investigation).** Neither causes the fixed hang; both are latency/robustness.
-  - [ ] **Deferred-connect in-flight dedupe** (`index.ts`, the
-        `real ??= await connectSandbox(sandbox)` memoization): `??=` only caches the
-        RESOLVED value, not the in-flight promise. So a burst of concurrent first
-        tool calls each independently runs `connectSandbox` → `resolvePodName`
-        (polls up to 90s for a Ready pod). Dedupe by memoizing the PROMISE
-        (`pending ??= connectSandbox(...)`) so one connect serves the whole burst;
-        a single pod-readiness wait instead of N.
-  - [ ] **ACP stdio write ordering under concurrency** (`acp/client.ts`): all
-        client-method responses are multiplexed over one stdio pipe + one
-        `ClientSideConnection`. The SDK (`@zed-industries/agent-client-protocol`)
-        owns write serialization; confirm a slow/blocked handler can't wedge other
-        in-flight responses (the unique-id fix removed the handler-level block, but
-        verify the transport itself doesn't serialize-and-stall). Likely fine; just
-        needs a deliberate check (or a stress test) so we KNOW.
+- [x] **Two lower-severity concurrency follow-ups (from the parallel-tool-call
+  investigation).** DONE (branch fix/exec-concurrency-followups).
+  - [x] **Deferred-connect in-flight dedupe** — FIXED. `real ??= await connect()`
+        cached only the RESOLVED value, so a burst of concurrent first tool calls
+        each ran connectSandbox → resolvePodName (each polling ~90s for a Ready
+        pod). Extracted `exec/deferredConnect.ts` `createDeferredConnector(connect)`
+        that memoizes the PROMISE (one connect serves the burst) and CLEARS it on
+        failure (a transient pod-not-ready retries, doesn't wedge the conversation).
+        Wired into deferredSandboxApi. 3 tests (burst→1 connect, reuse, failure
+        retries) → 105/105 Tier 1.
+  - [x] **ACP stdio write ordering** — VERIFIED SAFE, no change needed. The SDK
+        (@zed-industries/agent-client-protocol 0.4.5) read loop dispatches
+        `#processMessage` WITHOUT await (acp.js:524, fire-and-forget), so handlers
+        run CONCURRENTLY; the write queue (`#writeQueue`, acp.js:660) only
+        serializes the physical byte write of an ALREADY-resolved message — it
+        never reserves a slot for a pending handler. So a slow waitForTerminalExit
+        (30s) does NOT block a concurrent terminalOutput/createTerminal response
+        (JSON-RPC matches by id, so out-of-order writes are correct). NOTE (not a
+        bug, a future watch-item): the no-await read loop means unbounded handler
+        concurrency — a resource concern under a flood, not a deadlock.
 
 - [~] **User identity — per-user sessions + a basis for permission-gating.**
   Design in docs/USER_IDENTITY.md. Decisions: auth source = a TRUSTED IDENTITY
