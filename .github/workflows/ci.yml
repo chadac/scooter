@@ -24,6 +24,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Nightly: run the FULL nixosTest set incl. the heavy ones (see HEAVY_TESTS
+  # below) that are too slow for per-PR (a ~1h from-source NixOS toplevel build).
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily
 
 # Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
 concurrency:
@@ -64,13 +68,21 @@ jobs:
         run: nix build .#broker .#webhooks --print-build-logs
 
   # Enumerate the dev-env-* nixosTests into a matrix so each VM test runs in its
-  # OWN parallel job (8 serial VM boots took ~1h; fanned out they finish in the
-  # time of the slowest single test). This generate job is cheap (eval only).
+  # OWN parallel job. This generate job is cheap (eval only). By default the
+  # HEAVY tests (a ~1h from-source NixOS toplevel build — see HEAVY_TESTS) are
+  # EXCLUDED from per-PR runs; they run nightly (schedule) or when a PR carries
+  # the `full-nixos-tests` label. The fast tests run on every PR.
   nixos-tests-matrix:
     name: enumerate dev-env nixosTests
     runs-on: ubuntu-latest
     outputs:
       tests: ${{ steps.list.outputs.tests }}
+    env:
+      # Tests too expensive for per-PR (space-separated check names). scooter-module
+      # builds a full second nixos-system toplevel from nixos-unstable (~1h cold).
+      HEAVY_TESTS: "dev-env-scooter-module"
+      # Include heavy tests when: nightly schedule, OR the PR has the label.
+      INCLUDE_HEAVY: ${{ github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'full-nixos-tests') }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
@@ -78,12 +90,21 @@ jobs:
         name: list dev-env-* checks
         run: |
           set -euo pipefail
-          # JSON array of the dev-env-* check names, for the matrix below.
-          tests=$(nix eval --json --impure --expr '
+          # All dev-env-* check names.
+          all=$(nix eval --json --impure --expr '
             let f = builtins.getFlake (toString ./.);
                 s = builtins.currentSystem;
                 names = builtins.attrNames f.checks.${s};
             in builtins.filter (n: builtins.match "dev-env-.*" n != null) names')
+          if [ "$INCLUDE_HEAVY" = "true" ]; then
+            tests="$all"
+            echo "including heavy tests ($HEAVY_TESTS)"
+          else
+            # Drop the heavy ones with jq (per-PR fast path).
+            tests=$(echo "$all" | jq -c --arg heavy "$HEAVY_TESTS" \
+              '($heavy | split(" ")) as $h | [ .[] | select( . as $t | ($h | index($t)) | not ) ]')
+            echo "excluding heavy tests ($HEAVY_TESTS) — run nightly or add the 'full-nixos-tests' label"
+          fi
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
           echo "matrix: $tests"
 

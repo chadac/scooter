@@ -71,14 +71,19 @@ Running list of work items. Newest asks at the top of each section. See
      wasn't usable; that masked the TCG fallback.) Diagnosis confirmed by timing:
      matrix-on-TCG = ~2-7 min/test; with KVM 7/8 dropped to ~1 min. Still
      continue-on-error until confirmed consistently green, then promote to required.
-  3. CACHIX: the 8th test, `scooter-module`, is dominated by a COLD from-source
-     NixOS toplevel build (~223MB closure, ~30min on a 4-vCPU runner — it's the
-     `reconverged` deriv built before the VM boots, instant once cached). Added a
-     `scooter` Cachix binary cache (cachix-action in both `ci` + the matrix) so
-     that closure is built ONCE and pulled across branches/PRs instead of cold per
-     branch. NEEDS one-time setup (in the workflow header): create the `scooter`
-     cache + add the CACHIX_AUTH_TOKEN repo secret. Without the secret CI still
-     works (read-only pull). Once warm, scooter-module should also be ~fast.
+  3. CACHIX + HEAVY-TEST SPLIT: the 8th test, `scooter-module`, builds a full
+     SECOND nixos-system toplevel (193 extra drvs) from nixos-unstable — measured
+     ~1h cold (recurs on every nixpkgs bump, not just per-branch). Two mitigations:
+     (a) a `scooter` Cachix binary cache (cachix-action in `ci` + the matrix) so a
+     given lock's closure is built ONCE and pulled across branches — NEEDS the
+     CACHIX_AUTH_TOKEN secret + the `scooter` cache (DONE: secret set, cachix steps
+     green, pushing). (b) the matrix enumerate job now EXCLUDES heavy tests
+     (HEAVY_TESTS="dev-env-scooter-module") from per-PR runs — they run NIGHTLY
+     (schedule cron) or on-demand when a PR carries the `full-nixos-tests` label.
+     So per-PR nixos is uniformly the 7 fast (~1min) tests; the ~1h one doesn't
+     gate PRs but still runs daily + is opt-in-able per PR. CONFIRMED: 7/7 fast
+     tests pass ~1min with KVM; cachix push works. Still continue-on-error until
+     promoted to required.
 
 - [ ] **Stabilize the Tier-3 e2e harness (pre-existing flakiness).** Measured on
   pristine `main`: a full `just test-e2e` run is ~2 failed + 2 flaky with NO code
