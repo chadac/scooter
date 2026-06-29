@@ -83,8 +83,8 @@ jobs:
     name: nixosTest ${{ matrix.test }}
     needs: nixos-tests-matrix
     runs-on: ubuntu-latest
-    # Non-required: the dev-env nixosTests boot real VMs and need /dev/kvm.
-    # Keep them from failing the PR while we confirm KVM + promote to required.
+    # Non-required for now (continue-on-error) — promote to required once the
+    # KVM-accelerated matrix is confirmed consistently green on the runner.
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -95,6 +95,19 @@ jobs:
         test: ${{ fromJSON(needs.nixos-tests-matrix.outputs.tests) }}
     steps:
       - uses: actions/checkout@v5
+
+      # GitHub's standard Linux runners HAVE KVM hardware, but /dev/kvm ships with
+      # restrictive group perms — so qemu can't open it and the nixosTest VM
+      # silently falls back to TCG software emulation (~6-10x slower; this is why
+      # the old serial job took ~1h). Loosen the perms so qemu uses real KVM.
+      - name: enable KVM access (else qemu falls back to slow TCG)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: nix-community/cache-nix-action@v6
         with:
@@ -105,15 +118,6 @@ jobs:
             nix-ci-${{ runner.os }}-nixostest-${{ matrix.test }}-
             nix-ci-${{ runner.os }}-
           gc-max-store-size-linux: 5G
-
-      - name: KVM available?
-        run: |
-          if [ -e /dev/kvm ]; then
-            echo "/dev/kvm present"; ls -l /dev/kvm
-          else
-            echo "::warning::/dev/kvm not available — ${{ matrix.test }} skipped"
-            exit 0
-          fi
 
       - name: build ${{ matrix.test }}
         run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
