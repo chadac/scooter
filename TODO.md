@@ -103,21 +103,39 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
-- [ ] **OTel cost/usage metrics — exportable to any aggregator (Datadog, etc.).**
-  Emit OpenTelemetry metrics from the agent-host (and broker) so a deployer can
-  ship cost + usage to their own backend. Core signals: per-conversation token
-  usage (input/output, by model), derived cost (model → price table), run count +
-  latency, active/suspended sandbox counts, broker request counts. The agent-host
-  is the natural collector — it already brokers every ACP run, so it sees token
-  counts in the ACP/usage events. Use the OTel SDK with an OTLP exporter so it's
-  vendor-neutral (Datadog/Grafana/Honeycomb all ingest OTLP). MUST be an EASILY
-  CONFIGURABLE option in the helm template: an `otel.enable` flag + endpoint /
-  headers / resource-attributes (service.name, deployment.environment) wired to
-  the standard OTEL_EXPORTER_OTLP_* env so no code change is needed to retarget.
-  Off by default. Needs: a metrics module in agent-host, the price table as
-  config (per-model $/1M tokens), helm/kubenix values, and a test that asserts the
-  counters fire on a run. Spec it (research → design → tests → impl) — the cost
-  derivation + the helm surface are the two design points.
+- [x] **OTel cost/usage metrics — exportable to any aggregator (Datadog, etc.).**
+  DONE (agent-host; off by default). OpenTelemetry metrics over OTLP (vendor-neutral):
+  `agent_runs_total` + `agent_run_duration_ms` (by model + outcome), `agent_tokens_total`
+  (by model + kind: input/output/cache_read/cache_write), `agent_cost_usd_total` (by
+  model), `agent_sandboxes` gauge (running/suspended), `agent_broker_requests_total`.
+  - KEY RESEARCH FINDING: goose does NOT report token usage over ACP (PromptResponse
+    carries only stopReason — goose issue #8132; our SDK v0.4.5 lacks the usage field).
+    The TODO's "sees token counts in the ACP events" assumption was WRONG. SOLVED by
+    reading goose's session DB instead: goose persists per-session token usage to
+    `$HOME/.local/share/goose/sessions/sessions.db` (sqlite, the real schema has
+    accumulated_{input,output,cache_read,cache_write}_tokens). The agent-host sets
+    goose's $HOME, so it reads that DB out-of-band per-run and emits the delta.
+  - Modules (services/agent-host/src/metrics/): `pricing.ts` (parse price table +
+    computeCost = tokens × $/1M, unknown model → priced:false not a false $0),
+    `gooseUsage.ts` (reads sessions.db via node:sqlite, introspects columns,
+    degrades to "no cost" if DB/cols absent — never crashes), `metrics.ts` (OTel
+    MeterProvider + OTLP exporter; no-op sink when disabled so call sites are
+    unconditional; per-run delta accounting for cumulative usage). Wired: bridge
+    onRunComplete hook (model/duration/outcome/acpSessionId), index.ts builds the
+    sink, sweep reports sandbox counts, shutdown flushes.
+  - Config (kubenix, NOT a helm chart — none exists; deployment is 100% kubenix):
+    `observability.otel.enable` (off), `.env` (OTEL_EXPORTER_OTLP_* passthrough,
+    SDK reads them), `.environment` (deployment.environment), `.pricing` (per-model
+    $/1M → agent-pricing ConfigMap mounted at AGENT_PRICING_FILE). Verified the
+    otel-ON render: env + ConfigMap JSON correct.
+  - Tests: pricing.spec (8), gooseUsage.spec (4, against goose's REAL schema +
+    graceful-degradation cases), metrics.spec (6, in-memory exporter: runs/tokens/
+    cost/delta/gauge/no-op). 86/86 Tier 1. agentHost nix build green (npmDepsHash
+    bumped for @opentelemetry/*).
+  - NOT done (future): broker-side metrics (brokerRequest hook exists, unwired);
+    if goose later fixes #8132, switch to the in-band ACP usage (more robust than
+    the DB coupling). The sessions.db schema coupling is the main fragility —
+    mitigated by column introspection + graceful degradation.
 
 - [~] **CI: GitHub Actions running our checks on every PR.** DONE (workflow added);
   needs a throwaway PR to confirm green on the runner + branch-protection to make it
@@ -161,6 +179,23 @@ Running list of work items. Newest asks at the top of each section. See
   resolution) + sandboxHandlers.spec (3 concurrent identical createTerminal → distinct
   ids, isolated output buffers, out-of-order independent exits, release-isolation,
   unknown-id non-hang). 68/68 Tier 1, stable across repeated runs.
+
+- [ ] **Two lower-severity concurrency follow-ups (from the parallel-tool-call
+  investigation).** Neither causes the fixed hang; both are latency/robustness.
+  - [ ] **Deferred-connect in-flight dedupe** (`index.ts`, the
+        `real ??= await connectSandbox(sandbox)` memoization): `??=` only caches the
+        RESOLVED value, not the in-flight promise. So a burst of concurrent first
+        tool calls each independently runs `connectSandbox` → `resolvePodName`
+        (polls up to 90s for a Ready pod). Dedupe by memoizing the PROMISE
+        (`pending ??= connectSandbox(...)`) so one connect serves the whole burst;
+        a single pod-readiness wait instead of N.
+  - [ ] **ACP stdio write ordering under concurrency** (`acp/client.ts`): all
+        client-method responses are multiplexed over one stdio pipe + one
+        `ClientSideConnection`. The SDK (`@zed-industries/agent-client-protocol`)
+        owns write serialization; confirm a slow/blocked handler can't wedge other
+        in-flight responses (the unique-id fix removed the handler-level block, but
+        verify the transport itself doesn't serialize-and-stall). Likely fine; just
+        needs a deliberate check (or a stress test) so we KNOW.
 
 - [ ] **User identity — per-user sessions + a basis for permission-gating.** Today
   conversations aren't attributed to a user; anyone seeing the UI sees all sessions.

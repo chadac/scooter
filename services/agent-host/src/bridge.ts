@@ -138,6 +138,14 @@ export interface BridgeDeps {
    * first prompt). A factory avoids the brittle sync/async adapter shims.
    */
   acpClient: AcpClient | (() => Promise<AcpClient>);
+
+  /**
+   * Optional run-completion hook for metrics. Called once per run (after the
+   * run resolves, success or error) with its goose ACP session id, wall-clock
+   * duration, and outcome. The host wires this to the metrics sink; absent in
+   * tests / when metrics are off. Must not throw (fire-and-forget).
+   */
+  onRunComplete?: (info: { acpSessionId?: string; durationMs: number; outcome: "ok" | "error" }) => void;
 }
 
 let runCounter = 0;
@@ -309,6 +317,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const runPrompt = async (input: PromptInput): Promise<RunId> => {
     const runId = `run-${(runCounter += 1)}`;
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map() };
+    const startedAt = Date.now();
+    let outcome: "ok" | "error" = "ok";
 
     // Emit RUN_STARTED before any awaiting so the UI sees the run begin even if
     // agent startup is slow or fails (e.g. goose needs a model provider).
@@ -342,17 +352,25 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       closeOpenText(st);
       closeOpenReasoning(st);
       if (stopReason === "error") {
+        outcome = "error";
         emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
       } else {
         emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
       }
     } catch (err) {
+      outcome = "error";
       st.ended = true;
       closeOpenText(st);
       closeOpenReasoning(st);
       emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
     } finally {
       if (currentRun === st) currentRun = undefined;
+      // Metrics hook — fire-and-forget, never let it break the run.
+      try {
+        deps.onRunComplete?.({ acpSessionId, durationMs: Date.now() - startedAt, outcome });
+      } catch {
+        /* ignore */
+      }
     }
     return runId;
   };
