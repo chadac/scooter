@@ -124,21 +124,45 @@ in
       };
     };
 
+    # The webhooks receiver's own generic Ingress — SEPARATE from the chat ingress
+    # and UNAUTHENTICATED (GitHub/Slack/… can't send an identity header; the
+    # handlers verify provider signatures themselves). Controller-specific config
+    # (cert, scheme, external-dns, …) comes from `annotations` — NO auth here.
     ingress = {
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Create a Traefik ingress (webhooks must be publicly reachable).";
+        description = "Expose the webhooks receiver via a standard Ingress.";
       };
       host = mkOption {
         type = types.str;
         default = "";
-        description = "Ingress host (e.g. scooter.example.com).";
+        example = "scooter.example.com";
+        description = "Public hostname for the webhooks receiver (path /webhooks).";
       };
-      entryPoint = mkOption {
+      className = mkOption {
         type = types.str;
-        default = "websecure";
-        description = "Traefik entryPoint (websecure = auto-TLS via the cert resolver).";
+        default = "";
+        example = "alb";
+        description = "spec.ingressClassName (the controller). Empty = cluster default.";
+      };
+      annotations = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        description = ''
+          Annotations on the webhooks Ingress — controller/cert config WITHOUT auth
+          (the endpoint must accept unauthenticated provider POSTs).
+        '';
+      };
+      tls = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Add a spec.tls entry for `host` (cert-manager / controllers that read spec.tls).";
+      };
+      tlsSecretName = mkOption {
+        type = types.str;
+        default = "";
+        description = "TLS Secret for `host` (empty + tls=true emits spec.tls without a secretName).";
       };
     };
   };
@@ -290,18 +314,18 @@ in
       };
     })
     (lib.mkIf wcfg.ingress.enable {
-      # DNS-only companion Ingress: external-dns runs --source=ingress (NOT the
-      # Traefik IngressRoute CRD), so the standard Ingress is what registers the
-      # hostname in Route53. The IngressRoute below does the actual routing+TLS.
-      # (Mirrors the agent-host / openhands env-manager-dns pattern.)
-      ingresses.agent-webhooks-dns = {
+      # The webhooks Ingress — a generic networking.k8s.io/v1 Ingress, UNAUTH
+      # (providers sign their requests; the handlers verify). Controller +
+      # cert/scheme/external-dns config come from `annotations` (NO auth), so any
+      # controller (ALB, nginx, traefik) works. /webhooks -> agent-webhooks:8080.
+      ingresses.agent-webhooks = {
         metadata = {
-          name = "agent-webhooks-dns";
+          name = "agent-webhooks";
           namespace = cfg.namespace;
-          annotations."external-dns.alpha.kubernetes.io/hostname" = wcfg.ingress.host;
+          annotations = wcfg.ingress.annotations;
         };
         spec = {
-          ingressClassName = "traefik";
+          ingressClassName = lib.mkIf (wcfg.ingress.className != "") wcfg.ingress.className;
           rules = [{
             host = wcfg.ingress.host;
             http.paths = [{
@@ -310,32 +334,15 @@ in
               backend.service = { name = "agent-webhooks"; port.number = 8080; };
             }];
           }];
+          tls = lib.optionals wcfg.ingress.tls [
+            ({ hosts = [ wcfg.ingress.host ]; }
+              // lib.optionalAttrs (wcfg.ingress.tlsSecretName != "") {
+                secretName = wcfg.ingress.tlsSecretName;
+              })
+          ];
         };
       };
     })
-    ];
-
-    # Public ingress (opt-in). Traefik IngressRoute is a CRD → kubernetes.objects.
-    # NO middlewares: providers sign their requests, so this route is
-    # intentionally open (unlike the basic-auth-gated agent-host UI route).
-    kubernetes.objects = lib.optionals (wcfg.ingress.enable) [
-      {
-        apiVersion = "traefik.io/v1alpha1";
-        kind = "IngressRoute";
-        metadata = {
-          name = "agent-webhooks";
-          namespace = cfg.namespace;
-          annotations."external-dns.alpha.kubernetes.io/hostname" = wcfg.ingress.host;
-        };
-        spec = {
-          entryPoints = [ wcfg.ingress.entryPoint ];
-          routes = [{
-            kind = "Rule";
-            match = "Host(`${wcfg.ingress.host}`) && PathPrefix(`/webhooks`)";
-            services = [{ name = "agent-webhooks"; port = 8080; }];
-          }];
-        };
-      }
     ];
   };
 }

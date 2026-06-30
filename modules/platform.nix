@@ -264,34 +264,72 @@ in
       };
     };
 
+    # Expose the platform via a GENERIC networking.k8s.io/v1 Ingress so deployers
+    # can bring their own controller (ALB, nginx, traefik, …) by setting
+    # className + annotations. Controller-specific config (auth, the identity
+    # header the agent-host trusts, cert ARN / cluster-issuer, etc.) is passed
+    # through `annotations` — the module renders a portable Ingress, no CRDs.
     ingress = {
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Expose the agent-host (AG-UI/API + UI) via a Traefik IngressRoute.";
+        description = "Expose the agent-host (AG-UI/API + UI) via a standard Ingress.";
       };
       host = mkOption {
         type = types.str;
         default = "";
         example = "chat.example.com";
-        description = "Public hostname. external-dns registers it from the route annotation.";
+        description = "Public hostname for the chat UI / API.";
       };
-      entryPoint = mkOption {
+      className = mkOption {
         type = types.str;
-        default = "websecure";
-        description = "Traefik entryPoint (websecure = auto-TLS via the cert resolver).";
+        default = "";
+        example = "alb";
+        description = ''
+          spec.ingressClassName (the controller). Empty = the cluster's default
+          IngressClass. e.g. "alb", "nginx", "traefik".
+        '';
       };
-      middlewares = mkOption {
-        type = types.listOf (types.submodule {
-          options = {
-            name = mkOption { type = types.str; };
-            namespace = mkOption { type = types.str; };
-          };
-        });
-        default = [ ];
-        example = [{ name = "basic-auth"; namespace = "example-org"; }];
-        description = "Traefik middlewares to attach (e.g. an existing basic-auth).";
+      annotations = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = literalExpression ''
+          {
+            "alb.ingress.kubernetes.io/scheme" = "internet-facing";
+            "alb.ingress.kubernetes.io/certificate-arn" = "arn:aws:acm:...";
+          }
+        '';
+        description = ''
+          Annotations on the chat Ingress — controller-specific config (cert,
+          scheme, AUTH, the trusted identity header, external-dns hostname, …).
+          SECURITY: the agent-host trusts an identity header set by the ingress;
+          put your auth + header-setting annotations here so unauthenticated
+          requests can't spoof a user. Nothing is auth-gated by the module itself.
+        '';
       };
+      tls = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Add a spec.tls entry for `host`. Needed for cert-manager (the tls block
+          triggers issuance) and for controllers that read spec.tls. Deployers
+          that terminate TLS at the LB via annotations (e.g. ALB cert-arn) can set
+          this false and rely on annotations alone.
+        '';
+      };
+      tlsSecretName = mkOption {
+        type = types.str;
+        default = "";
+        example = "chat-tls";
+        description = ''
+          The TLS Secret holding the cert for `host` (populated by cert-manager,
+          your CD, etc.). Empty + tls=true emits a spec.tls entry WITHOUT a
+          secretName (some controllers, e.g. cert-manager with an annotation,
+          accept that).
+        '';
+      };
+      # The webhooks receiver has its own ingress options under
+      # `agentSandbox.webhooks.ingress` (separate host, NO auth) — see webhooks.nix.
     };
   };
 
@@ -552,29 +590,20 @@ in
       };
     })
     (lib.mkIf cfg.ingress.enable {
-      # DNS-only companion Ingress: external-dns runs --source=ingress (NOT the
-      # Traefik IngressRoute CRD), so the standard Ingress is what registers the
-      # hostname in Route53. The IngressRoute below does the actual routing +
-      # TLS + auth. (Mirrors the openhands env-manager-dns pattern.)
-      ingresses.agent-host-dns = {
+      # The chat/API Ingress — a generic networking.k8s.io/v1 Ingress. The
+      # controller (className) + all controller-specific config (TLS cert, scheme,
+      # AUTH + the trusted identity header, external-dns hostname, …) come from
+      # `annotations`, so any controller (ALB, nginx, traefik) works. SECURITY: the
+      # agent-host trusts an identity header the ingress sets — that auth lives in
+      # `annotations` (the module gates nothing itself).
+      ingresses.agent-host = {
         metadata = {
-          name = "agent-host-dns";
+          name = "agent-host";
           namespace = cfg.namespace;
-          annotations = {
-            "external-dns.alpha.kubernetes.io/hostname" = cfg.ingress.host;
-          } // lib.optionalAttrs (cfg.ingress.middlewares != [ ]) {
-            # This Ingress ALSO produces a Traefik router that serves traffic, so
-            # it must carry the SAME middlewares as the IngressRoute — otherwise
-            # it shadows the IngressRoute with an UNAUTHENTICATED route. Traefik
-            # middleware refs here are "<namespace>-<name>@kubernetescrd".
-            "traefik.ingress.kubernetes.io/router.middlewares" =
-              lib.concatMapStringsSep ","
-                (m: "${m.namespace}-${m.name}@kubernetescrd")
-                cfg.ingress.middlewares;
-          };
+          annotations = cfg.ingress.annotations;
         };
         spec = {
-          ingressClassName = "traefik";
+          ingressClassName = lib.mkIf (cfg.ingress.className != "") cfg.ingress.className;
           rules = [{
             host = cfg.ingress.host;
             http.paths = [{
@@ -583,34 +612,18 @@ in
               backend.service = { name = ingressBackend; port.number = 8080; };
             }];
           }];
+          tls = lib.optionals cfg.ingress.tls [
+            ({ hosts = [ cfg.ingress.host ]; }
+              // lib.optionalAttrs (cfg.ingress.tlsSecretName != "") {
+                secretName = cfg.ingress.tlsSecretName;
+              })
+          ];
         };
       };
     })
-    ];
-
-    # Public ingress (opt-in). Traefik IngressRoute is a CRD, so it goes through
-    # kubernetes.objects. external-dns reads the hostname annotation; websecure
-    # terminates TLS via the cert resolver. Auth is whatever middlewares are
-    # attached (e.g. reuse an existing basic-auth).
-    kubernetes.objects = lib.optionals cfg.ingress.enable [
-      {
-        apiVersion = "traefik.io/v1alpha1";
-        kind = "IngressRoute";
-        metadata = {
-          name = "agent-host";
-          namespace = cfg.namespace;
-          annotations."external-dns.alpha.kubernetes.io/hostname" = cfg.ingress.host;
-        };
-        spec = {
-          entryPoints = [ cfg.ingress.entryPoint ];
-          routes = [{
-            kind = "Rule";
-            match = "Host(`${cfg.ingress.host}`)";
-            middlewares = map (m: { inherit (m) name namespace; }) cfg.ingress.middlewares;
-            services = [{ name = ingressBackend; port = 8080; }];
-          }];
-        };
-      }
+    # NOTE: the webhooks receiver gets its OWN generic Ingress, defined in
+    # webhooks.nix (its own host + annotations + NO auth — providers can't send an
+    # identity header; the handlers verify provider signatures themselves).
     ];
   };
 }
