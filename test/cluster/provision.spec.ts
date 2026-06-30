@@ -17,7 +17,7 @@ import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
 const NS = "agent-sandbox-test";
-const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
+const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest";
 
 maybe("cold Sandbox per conversation", () => {
   let cluster: Cluster;

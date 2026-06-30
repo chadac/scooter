@@ -93,7 +93,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
   return {
     port: Number(process.env.PORT ?? 8080),
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
-    sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest",
+    sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest",
     statePath: process.env.STATE_PATH ?? defaultStatePath,
     scratchPath: process.env.SCRATCH_PATH ?? defaultScratchPath,
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
@@ -203,9 +203,10 @@ export async function main(
         // When the AWS permissions broker is on, mount its account-registry
         // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
         awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,
-        // SANDBOX_SYSTEMD=1 when SANDBOX_IMAGE is the NixOS systemd dev image:
-        // run the sandbox privileged with tmpfs /run + /tmp so systemd PID 1 boots.
-        systemdImage: process.env.SANDBOX_SYSTEMD === "1",
+        // The sandbox is ALWAYS the NixOS systemd-PID-1 image now (the legacy
+        // generic image was retired): always provision privileged + tmpfs /run,/tmp
+        // so systemd PID 1 boots.
+        systemdImage: true,
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).

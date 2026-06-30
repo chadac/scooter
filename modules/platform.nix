@@ -33,7 +33,7 @@ in
       example = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myorg/";
       description = ''
         Registry/repository prefix prepended to the default image names
-        (agent-host, agent-broker, agent-webhooks, agent-sandbox-nix). Empty =
+        (agent-host, agent-broker, agent-webhooks, agent-sandbox-os). Empty =
         bare local names (`agent-host:latest`) for kind/k3s where images are
         side-loaded. Set to an ECR/registry prefix (WITH trailing slash) for a
         real cluster. Per-image options below override this entirely.
@@ -55,17 +55,9 @@ in
     };
     sandboxImage = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-sandbox-nix:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-nix:latest"'';
+      default = "${cfg.registryPrefix}agent-sandbox-os:latest";
+      defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-os:latest"'';
       description = "OCI ref of the generic Nix sandbox image.";
-    };
-    sandboxSystemd = mkOption {
-      type = types.bool;
-      default = false;
-      description = ''
-        Set when sandboxImage is the NixOS systemd-PID-1 dev image: the sandbox
-        runs privileged with tmpfs /run+/tmp (SANDBOX_SYSTEMD=1).
-      '';
     };
     # Generic, DEPLOYMENT-parameterized tool injection — the platform doesn't know
     # what's in these; a deployment fills them with its own .scooter tools + the
@@ -430,10 +422,7 @@ in
                   { name = "AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
                   { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
-                ] ++ lib.optional cfg.sandboxSystemd
-                  # The NixOS systemd dev image: provision the sandbox privileged.
-                  { name = "SANDBOX_SYSTEMD"; value = "1"; }
-                ++ lib.optionals (cfg.deployTools.scooterConfigMap != null) [
+                ] ++ lib.optionals (cfg.deployTools.scooterConfigMap != null) [
                   # Deployment tool injection (generic): the agent-host mounts the
                   # deployment's .scooter ConfigMap + projects the named token
                   # audiences + sets the deployment env on each sandbox.
