@@ -88,6 +88,9 @@ let
           modulesPath = ${modulesSrc};
           extraModules = [
             ({ lib, ... }: { programs.scooterModule.nixpkgs = lib.mkForce ${cfg.nixpkgs}; })
+            # Layer the currently-running system's extra config (so the switch
+            # preserves what's already active — see extraReconvergeModules).
+            ${lib.concatStringsSep "\n            " cfg.extraReconvergeModules}
             $module
           ];
         }).toplevel
@@ -186,6 +189,21 @@ in
       type = lib.types.bool;
       default = true;
       description = "Run scooter-apply-module once at boot if a module is mounted.";
+    };
+
+    extraReconvergeModules = lib.mkOption {
+      # A list of Nix expression STRINGS (module paths or inline modules) that the
+      # re-converge ALWAYS layers on top of the base config — so the rebuilt
+      # toplevel reflects the CURRENTLY-RUNNING system, not just the bare base.
+      # This is how a runtime-applied switch preserves what's already active
+      # instead of dropping units the base config doesn't declare (e.g. the
+      # nixosTest framework's backdoor.service — without this the switch stops the
+      # test's control channel and the test hangs). The image sets none; a test or
+      # a deployment that injects extra node-level config threads it here.
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "/nix/store/…-keep-backdoor.nix" ];
+      description = "Extra module exprs always layered into the runtime re-converge (keeps currently-running config).";
     };
   };
 
