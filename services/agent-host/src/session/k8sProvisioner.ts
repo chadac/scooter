@@ -46,6 +46,15 @@ export interface K8sProvisionerOptions {
   sandboxImage: string;
   /** Workspace PVC size, e.g. "10Gi". */
   workspaceStorage?: string;
+  /** Mount a writable PVC upper for the local-overlay Nix store (the agent's
+   *  runtime re-converge + in-pod builds land here). Set when using the
+   *  overlay-store-enabled image (agent-sandbox-os-overlay). The PVC persists
+   *  runtime builds across suspend/resume; it MUST be disk-backed (a PVC), never
+   *  tmpfs — a RAM upper charges every runtime closure to pod memory. */
+  overlayStore?: boolean;
+  /** Overlay-store upper PVC size, e.g. "20Gi" (module rebuild closures are
+   *  hundreds of MB). Only used when overlayStore is true. */
+  overlayStorage?: string;
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
   /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
@@ -121,6 +130,8 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           scooterConfigMap: opts.scooterConfigMap,
           extraTokenAudiences: opts.extraTokenAudiences ?? [],
           extraEnv: opts.extraEnv ?? [],
+          overlayStore: opts.overlayStore ?? false,
+          overlayStorage: opts.overlayStorage,
         }),
       });
 
@@ -181,7 +192,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
 }
 
 /** The Sandbox CR body — mirror of modules/conversation.nix. */
-function sandboxManifest(
+export function sandboxManifest(
   id: string,
   name: string,
   sa: string,
@@ -195,11 +206,17 @@ function sandboxManifest(
     scooterConfigMap?: string;
     extraTokenAudiences?: string[];
     extraEnv?: Array<{ name: string; value: string }>;
+    overlayStore?: boolean;
+    overlayStorage?: string;
   } = {},
 ): object {
   const scooter = deploy.scooterConfigMap;
   const extraAudiences = deploy.extraTokenAudiences ?? [];
   const extraEnv = deploy.extraEnv ?? [];
+  // Overlay-store writable upper: a disk-backed PVC at the module's upperPath
+  // (/nix/.scooter-rw). Only when the overlay-store image is in use.
+  const overlayStore = deploy.overlayStore ?? false;
+  const overlayStorage = deploy.overlayStorage ?? "20Gi";
   return {
     apiVersion: `${GROUP}/${VERSION}`,
     kind: "Sandbox",
@@ -245,6 +262,11 @@ function sandboxManifest(
                   mountPath: `/var/run/secrets/${aud}`,
                   readOnly: true,
                 })),
+                // The local-overlay store's writable upper (disk-backed PVC). The
+                // image's overlay-store-setup mounts the overlay onto /nix/store
+                // using this as the upperdir; runtime nix builds (re-converge,
+                // in-pod installs) land here and persist across suspend/resume.
+                ...(overlayStore ? [{ name: "scooter-rw", mountPath: "/nix/.scooter-rw" }] : []),
               ],
               env: [
                 {
@@ -311,6 +333,19 @@ function sandboxManifest(
             resources: { requests: { storage } },
           },
         },
+        // The overlay-store upper PVC (disk-backed; persists runtime builds across
+        // suspend/resume). Only when the overlay-store image is in use.
+        ...(overlayStore
+          ? [
+              {
+                metadata: { name: "scooter-rw" },
+                spec: {
+                  accessModes: ["ReadWriteOnce"],
+                  resources: { requests: { storage: overlayStorage } },
+                },
+              },
+            ]
+          : []),
       ],
     },
   };

@@ -20,7 +20,7 @@ let
   cfg = config.agentSandbox;
 
   # Shape of one conversation's resources. `id` = conversationId.
-  mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker" }: {
+  mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker", overlayStore ? false, overlayStorage ? "20Gi" }: {
     # ServiceAccount sandbox-${id}  (unique per conversation; broker identity)
     serviceAccount = {
       apiVersion = "v1";
@@ -53,6 +53,12 @@ let
               # systemd writes to /run + /tmp; back them with tmpfs (emptyDir).
               { name = "run"; mountPath = "/run"; }
               { name = "tmp"; mountPath = "/tmp"; }
+            ] ++ lib.optionals overlayStore [
+              # The local-overlay store's writable upper (disk-backed PVC). The
+              # overlay-store image mounts the overlay onto /nix/store using this as
+              # the upperdir; runtime nix builds (re-converge) land here + persist
+              # across suspend/resume. Disk-backed PVC, never tmpfs.
+              { name = "scooter-rw"; mountPath = "/nix/.scooter-rw"; }
             ] ++ lib.optionals cfg.broker.aws.enable [
               # The AWS account registry — the entrypoint renders ~/.aws/config
               # from it (one [profile <name>] per account → the credential helper).
@@ -88,6 +94,14 @@ let
           spec = {
             accessModes = [ "ReadWriteOnce" ];
             resources.requests.storage = "10Gi";
+          };
+        }] ++ lib.optionals overlayStore [{
+          # The overlay-store upper PVC (disk-backed; persists runtime builds across
+          # suspend/resume). Only when the overlay-store image is in use.
+          metadata.name = "scooter-rw";
+          spec = {
+            accessModes = [ "ReadWriteOnce" ];
+            resources.requests.storage = overlayStorage;
           };
         }];
         # NetworkPolicy: default-deny blocks RFC1918 -> add an egress allow to the
