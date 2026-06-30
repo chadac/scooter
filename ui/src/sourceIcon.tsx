@@ -9,7 +9,9 @@
  */
 
 import type { ComponentType } from "react";
-import { SiGithub, SiGitlab, SiSlack, SiJira } from "react-icons/si";
+import { SiGithub, SiGitlab, SiJira } from "react-icons/si";
+// Simple Icons dropped the Slack mark (trademark); FontAwesome still ships it.
+import { FaSlack } from "react-icons/fa";
 
 interface SourceMeta {
   label: string;
@@ -24,7 +26,7 @@ const SOURCES: Record<string, SourceMeta> = {
   gitlab: { label: "GitLab", Icon: SiGitlab, color: "#FC6D26" },
   // Slack's deep aubergine also disappears in dark mode -> use a brighter brand
   // accent that reads on both themes.
-  slack: { label: "Slack", Icon: SiSlack, color: "#E01E5A" },
+  slack: { label: "Slack", Icon: FaSlack, color: "#E01E5A" },
   jira: { label: "Jira", Icon: SiJira, color: "#0052CC" },
 };
 
