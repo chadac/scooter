@@ -49,6 +49,9 @@ export function createFileConversationStore(root: string): ConversationStore {
   const checksums = new Map<SessionId, string>();
   const seeded = new Set<SessionId>();
   const appendListeners = new Set<(id: SessionId, c: ChecksummedEvent) => void>();
+  // Finding #4: observers notified when a durable append FAILS, so a lost turn
+  // leaves a trace (log + metric/health signal) instead of vanishing silently.
+  const appendErrorListeners = new Set<(id: SessionId, error: unknown) => void>();
 
   const seedChecksum = async (id: SessionId): Promise<string> => {
     if (seeded.has(id)) return checksums.get(id) ?? EMPTY_CHECKSUM;
@@ -72,26 +75,49 @@ export function createFileConversationStore(root: string): ConversationStore {
     appendEvent(id, event) {
       const prev = writeChains.get(id) ?? Promise.resolve();
       const next = prev
-        .catch(() => {}) // a prior failure must not break the chain
+        .catch(() => {}) // a prior failure must not break the CHAIN (ordering)
         .then(async () => {
-          await ensureDir(id);
-          // Seed the rolling checksum from the log as it exists BEFORE this
-          // append (lazy, once after a restart) — so prevChecksum is the chain
-          // through the prior events, not including the one we're about to write.
-          const prevChecksum = await seedChecksum(id);
-          await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
-          // Fold this event in (write order) and notify live subscribers.
-          const checksum = chainNext(prevChecksum, event);
-          checksums.set(id, checksum);
-          for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+          try {
+            await ensureDir(id);
+            // Seed the rolling checksum from the log as it exists BEFORE this
+            // append (lazy, once after a restart) — so prevChecksum is the chain
+            // through the prior events, not including the one we're about to write.
+            const prevChecksum = await seedChecksum(id);
+            await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
+            // Fold this event in (write order) and notify live subscribers.
+            const checksum = chainNext(prevChecksum, event);
+            checksums.set(id, checksum);
+            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+          } catch (error) {
+            // Finding #4: this append failed (ENOSPC/EACCES/unmounted PVC). The
+            // log+chain catch above keeps ORDERING but would otherwise swallow
+            // THIS failure — and the caller is `void store.appendEvent(...)`, so
+            // nobody sees the rejection. Surface it loudly + notify observers
+            // (the only persistence the conversation has just lost a turn), THEN
+            // rethrow so an awaiting caller (tests, sync writers) sees it too.
+            // eslint-disable-next-line no-console
+            console.error(`[fileStore] durable append FAILED for ${id} (turn lost):`, error);
+            for (const cb of appendErrorListeners) {
+              try { cb(id, error); } catch { /* an observer must not break the store */ }
+            }
+            throw error;
+          }
         });
-      writeChains.set(id, next);
+      // The chain advances on the SETTLED promise (so a failed write doesn't wedge
+      // the next append's ordering), but `next` itself preserves the rejection for
+      // the caller.
+      writeChains.set(id, next.catch(() => {}));
       return next;
     },
 
     onAppend(cb) {
       appendListeners.add(cb);
       return () => appendListeners.delete(cb);
+    },
+
+    onAppendError(cb) {
+      appendErrorListeners.add(cb);
+      return () => appendErrorListeners.delete(cb);
     },
 
     async *readEvents(id): AsyncIterable<AguiEvent> {

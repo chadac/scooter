@@ -85,6 +85,11 @@ export interface ConversationStore {
    *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's
    *  own prompt), exactly once, in order. Returns an unsubscribe fn. Optional. */
   onAppend?(cb: (id: SessionId, event: ChecksummedEvent) => void): () => void;
+  /** Subscribe to durable-append FAILURES (finding #4). appendEvent is usually
+   *  fire-and-forget, so a failed write to the conversation's only persistence
+   *  would otherwise vanish silently — this surfaces it for logging/metrics.
+   *  Returns an unsubscribe fn. Optional. */
+  onAppendError?(cb: (id: SessionId, error: unknown) => void): () => void;
   /** Path on the conversation-state PVC where goose session data lives. */
   gooseStatePath(id: SessionId): string;
   /** Persist last-activity (ms epoch) so it survives restarts and is queryable

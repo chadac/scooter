@@ -28,7 +28,7 @@ import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js"
 import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
-import { writeGooseConfig } from "./agent/gooseConfig.js";
+import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
@@ -221,17 +221,10 @@ export async function main(
       });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
-  // of running them locally in this pod. Only meaningful for real goose.
-  if (!config.fakeSandbox && process.env.HOME) {
-    try {
-      writeGooseConfig(process.env.HOME);
-      // eslint-disable-next-line no-console
-      console.log(`[agent-host] wrote goose config (developer enabled) to ${process.env.HOME}/.config/goose`);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn("[agent-host] failed to write goose config:", e);
-    }
-  }
+  // of running them locally in this pod. On a REAL deployment a failure here is
+  // FATAL (else goose silently runs tools in the agent-host pod — finding #1);
+  // on a fake/dev sandbox there's no real goose, so it's best-effort.
+  ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
   const store = createFileConversationStore(config.statePath);
   const server = createAguiServer();
 
@@ -248,6 +241,13 @@ export async function main(
       config.observability.enabled && !config.fakeSandbox && process.env.HOME
         ? createGooseUsageReader({ gooseHome: process.env.HOME })
         : undefined,
+  });
+
+  // Finding #4: a failed durable append (the conversation's only persistence)
+  // must leave a trace. The store now surfaces append failures; record them as a
+  // metric so an operator can alert (the store already logs each one loudly).
+  store.onAppendError?.((conversationId) => {
+    metrics.persistenceError?.({ conversationId });
   });
 
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn

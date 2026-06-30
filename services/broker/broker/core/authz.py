@@ -20,6 +20,24 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 
+def _is_duplicate_tuple_error(exc: Exception) -> bool:
+    """True if an OpenFGA write error is the idempotent "tuple already exists"
+    case (safe to ignore) vs a real failure (must propagate).
+
+    OpenFGA returns this as an HTTP 400 with code `write_failed_due_to_invalid_input`
+    and a message mentioning the existing tuple. We match on the message/code
+    rather than the SDK exception class so this stays correct without importing
+    the (optional, lazily-loaded) openfga-sdk — and errs toward "NOT a duplicate"
+    so an unrecognized error propagates rather than being silently swallowed.
+    """
+    text = f"{getattr(exc, 'body', '')} {exc}".lower()
+    return (
+        "write_failed_due_to_invalid_input" in text
+        or "already exists" in text
+        or "duplicate" in text
+    )
+
+
 class Authorizer(Protocol):
     async def check(self, *, user: str, relation: str, obj: str) -> bool:
         """True if `user` has `relation` to `obj` (e.g. user "alice",
@@ -85,9 +103,17 @@ class FgaAuthorizer:
             await client.write(
                 ClientWriteRequest(writes=[ClientTuple(user=user, relation=relation, object=obj)])
             )
-        except Exception:
-            # A duplicate tuple (already granted) is fine; log anything else.
-            logger.debug("OpenFGA grant no-op/failed for %s#%s@%s", obj, relation, user)
+        except Exception as exc:
+            # Finding #2: a duplicate tuple (already granted) is a genuine no-op;
+            # but EVERY OTHER write failure (FGA unreachable, wrong store/model,
+            # network) must PROPAGATE — swallowing it at DEBUG meant the tuple was
+            # never written, and since check() fails CLOSED the approver is then
+            # permanently and silently locked out. Re-raise so the caller's loud
+            # handler (seed_approver_tuples -> logger.exception) actually fires.
+            if _is_duplicate_tuple_error(exc):
+                logger.debug("OpenFGA grant no-op (tuple exists) for %s#%s@%s", obj, relation, user)
+                return
+            raise
 
 
 def authorizer_from_settings(settings) -> Authorizer:
