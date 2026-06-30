@@ -393,7 +393,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         },
       });
             debug("[bridge] start: initialized, newSession(cwd=%s)", deps.config.cwd);
-      const { sessionId: sid } = await acpClient.newSession({ cwd: deps.config.cwd });
+      const { sessionId: sid } = await acpClient.newSession({
+        cwd: deps.config.cwd,
+        mcpServers: deps.config.mcpServers,
+      });
             debug("[bridge] start: newSession ->", sid);
       acpSessionId = sid;
       // Subscribe to updates ONCE for the lifetime of the session and route

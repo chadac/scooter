@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { createRouter, type Router } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
@@ -58,12 +59,29 @@ export interface ManagementDeps {
   /** Model catalog for per-conversation selection: the host default + the set
    *  offered to clients. Empty list = only the default is selectable. */
   models?: { default?: string; available: string[] };
+  /** Raw handler for the agent-self-modify MCP endpoint (goose's
+   *  modify_environment tool). It writes the response itself (the MCP transport
+   *  streams), so it takes req/res directly. Optional (self-modify off). */
+  mcpHandler?: (req: IncomingMessage, res: ServerResponse, body: unknown) => Promise<void>;
 }
 
 export function createManagementApi(deps: ManagementDeps): Router {
   const { sessions, store, server } = deps;
   const models = deps.models ?? { available: [] };
   const r = createRouter();
+
+  // The agent-self-modify MCP endpoint (goose calls modify_environment here). The
+  // MCP StreamableHTTP transport owns the response, so this handler reads the body
+  // and hands req/res to it, then returns void (response already written).
+  if (deps.mcpHandler) {
+    const mcp = deps.mcpHandler;
+    const mcpRoute = async (ctx: { req: IncomingMessage; res: ServerResponse; body: <T>() => Promise<T> }) => {
+      const body = await ctx.body<unknown>().catch(() => undefined);
+      await mcp(ctx.req, ctx.res, body);
+    };
+    r.post("/mcp", mcpRoute as never);
+    r.get("/mcp", mcpRoute as never); // MCP also uses GET for the SSE stream
+  }
 
   // Who the caller is, per the trusted ingress identity header (anonymous when
   // none). The UI uses this to label conversations as "mine" + show the user.

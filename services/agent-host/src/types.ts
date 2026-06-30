@@ -29,6 +29,9 @@ export interface SessionConfig {
   agent: AgentLaunchConfig;
   /** How to reach the session's sandbox pod for exec. */
   sandbox: SandboxRef;
+  /** MCP servers offered to the agent on newSession (e.g. the agent-host's
+   *  modify_environment tool). Passed through ACP; empty/absent when none. */
+  mcpServers?: unknown[];
 }
 
 export interface AgentLaunchConfig {
