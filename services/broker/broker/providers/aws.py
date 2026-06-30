@@ -34,7 +34,14 @@ def _load_registry() -> dict[str, dict]:
         with open(settings.aws_accounts_file) as f:
             return json.load(f)
     except Exception:
+        # Finding #3: returning {} here makes `enabled = aws_enabled and bool(registry)`
+        # compute False, so a CONFIGURED-but-broken file (bad path / perms / malformed
+        # JSON) silently disables the AWS provider — the broker boots "healthy" and
+        # every request gets a misleading 503, indistinguishable from a deliberately
+        # disabled provider. If the operator explicitly enabled AWS, fail fast instead.
         logger.exception("failed to read aws_accounts_file %s", settings.aws_accounts_file)
+        if settings.aws_enabled:
+            raise
         return {}
 
 

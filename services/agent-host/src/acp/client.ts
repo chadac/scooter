@@ -25,7 +25,7 @@ import type * as schema from "@zed-industries/agent-client-protocol";
 
 import type { ExecBackend } from "../types.js";
 import { createSandboxClientHandlers } from "./sandboxHandlers.js";
-import { debug } from "../debug.js";
+import { debug, debugError } from "../debug.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
 
@@ -128,6 +128,16 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       params: schema.RequestPermissionRequest,
     ): Promise<schema.RequestPermissionResponse> {
       if (!permissionHandler) {
+        // Finding #25: a permission request arrived but no handler is registered —
+        // that's a HOST WIRING BUG, not a user cancel. Returning "cancelled"
+        // silently makes the agent (and any UI) think the user declined. We still
+        // return cancelled so the agent run doesn't hang, but log loudly so the
+        // missing wiring is diagnosable instead of masquerading as a user choice.
+        debugError(
+          "[acp] requestPermission with NO handler registered (host wiring bug) — " +
+            "returning cancelled for toolCall",
+          params.toolCall.toolCallId,
+        );
         return { outcome: { outcome: "cancelled" } };
       }
       const answer = await permissionHandler({

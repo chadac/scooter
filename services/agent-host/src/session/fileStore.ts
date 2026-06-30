@@ -28,6 +28,15 @@ async function writeFileAtomic(path: string, data: string): Promise<void> {
   await rename(tmp, path);
 }
 
+/** True for "file/dir does not exist" — the ONE benign read error (a genuinely
+ *  new/empty conversation, or the state dir before first write). Findings #11/#12:
+ *  every OTHER read error (EACCES/EIO/unmounted PVC) is a real failure that must
+ *  NOT be silently flattened to empty — that replays a real conversation as blank
+ *  history, or vanishes the entire conversation list after a restart. */
+function isENOENT(e: unknown): boolean {
+  return (e as { code?: string })?.code === "ENOENT";
+}
+
 export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
@@ -49,6 +58,9 @@ export function createFileConversationStore(root: string): ConversationStore {
   const checksums = new Map<SessionId, string>();
   const seeded = new Set<SessionId>();
   const appendListeners = new Set<(id: SessionId, c: ChecksummedEvent) => void>();
+  // Finding #4: observers notified when a durable append FAILS, so a lost turn
+  // leaves a trace (log + metric/health signal) instead of vanishing silently.
+  const appendErrorListeners = new Set<(id: SessionId, error: unknown) => void>();
 
   const seedChecksum = async (id: SessionId): Promise<string> => {
     if (seeded.has(id)) return checksums.get(id) ?? EMPTY_CHECKSUM;
@@ -58,8 +70,16 @@ export function createFileConversationStore(root: string): ConversationStore {
       for (const line of data.split("\n")) {
         if (line.trim()) acc = chainNext(acc, JSON.parse(line) as AguiEvent);
       }
-    } catch {
-      /* no log yet -> empty seed */
+    } catch (e) {
+      // Finding #20: ENOENT = no log yet (a new conversation) -> empty seed is
+      // correct and silent. But a PARSE or I/O error here mis-seeds the integrity
+      // checksum from a corrupt/unreadable log — and the integrity chain exists
+      // precisely to detect corruption, so swallowing it silently defeats it. Log
+      // loudly for anything other than not-found.
+      if (!isENOENT(e)) {
+        // eslint-disable-next-line no-console
+        console.error(`[fileStore] checksum seed for ${id} failed to read/parse the log (integrity may be off):`, e);
+      }
     }
     if (!seeded.has(id)) {
       checksums.set(id, acc);
@@ -72,20 +92,38 @@ export function createFileConversationStore(root: string): ConversationStore {
     appendEvent(id, event) {
       const prev = writeChains.get(id) ?? Promise.resolve();
       const next = prev
-        .catch(() => {}) // a prior failure must not break the chain
+        .catch(() => {}) // a prior failure must not break the CHAIN (ordering)
         .then(async () => {
-          await ensureDir(id);
-          // Seed the rolling checksum from the log as it exists BEFORE this
-          // append (lazy, once after a restart) — so prevChecksum is the chain
-          // through the prior events, not including the one we're about to write.
-          const prevChecksum = await seedChecksum(id);
-          await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
-          // Fold this event in (write order) and notify live subscribers.
-          const checksum = chainNext(prevChecksum, event);
-          checksums.set(id, checksum);
-          for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+          try {
+            await ensureDir(id);
+            // Seed the rolling checksum from the log as it exists BEFORE this
+            // append (lazy, once after a restart) — so prevChecksum is the chain
+            // through the prior events, not including the one we're about to write.
+            const prevChecksum = await seedChecksum(id);
+            await appendFile(logPath(id), JSON.stringify(event) + "\n", "utf8");
+            // Fold this event in (write order) and notify live subscribers.
+            const checksum = chainNext(prevChecksum, event);
+            checksums.set(id, checksum);
+            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+          } catch (error) {
+            // Finding #4: this append failed (ENOSPC/EACCES/unmounted PVC). The
+            // log+chain catch above keeps ORDERING but would otherwise swallow
+            // THIS failure — and the caller is `void store.appendEvent(...)`, so
+            // nobody sees the rejection. Surface it loudly + notify observers
+            // (the only persistence the conversation has just lost a turn), THEN
+            // rethrow so an awaiting caller (tests, sync writers) sees it too.
+            // eslint-disable-next-line no-console
+            console.error(`[fileStore] durable append FAILED for ${id} (turn lost):`, error);
+            for (const cb of appendErrorListeners) {
+              try { cb(id, error); } catch { /* an observer must not break the store */ }
+            }
+            throw error;
+          }
         });
-      writeChains.set(id, next);
+      // The chain advances on the SETTLED promise (so a failed write doesn't wedge
+      // the next append's ordering), but `next` itself preserves the rejection for
+      // the caller.
+      writeChains.set(id, next.catch(() => {}));
       return next;
     },
 
@@ -94,12 +132,22 @@ export function createFileConversationStore(root: string): ConversationStore {
       return () => appendListeners.delete(cb);
     },
 
+    onAppendError(cb) {
+      appendErrorListeners.add(cb);
+      return () => appendErrorListeners.delete(cb);
+    },
+
     async *readEvents(id): AsyncIterable<AguiEvent> {
       let data: string;
       try {
         data = await readFile(logPath(id), "utf8");
-      } catch {
-        return;
+      } catch (e) {
+        // Finding #11: ENOENT = no log yet (a new conversation) — yield nothing.
+        // Any OTHER error (EACCES/EIO/unmounted PVC) means a REAL conversation's
+        // log can't be read; returning empty would replay it as blank history and
+        // hide the failure. Propagate instead.
+        if (isENOENT(e)) return;
+        throw e;
       }
       for (const line of data.split("\n")) {
         if (line.trim()) yield JSON.parse(line) as AguiEvent;
@@ -159,8 +207,13 @@ export function createFileConversationStore(root: string): ConversationStore {
       try {
         const ents = await readdir(root, { withFileTypes: true });
         ids = ents.filter((e) => e.isDirectory()).map((e) => e.name);
-      } catch {
-        return [];
+      } catch (e) {
+        // Finding #12: ENOENT = the state dir doesn't exist yet (nothing persisted
+        // -> []). Any OTHER readdir error (EACCES/EIO/unmounted state PVC) must
+        // propagate — silently returning [] makes the ENTIRE conversation list
+        // vanish after a restart, indistinguishable from "no conversations".
+        if (isENOENT(e)) return [];
+        throw e;
       }
       const out: ConversationMeta[] = [];
       for (const id of ids) {

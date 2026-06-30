@@ -52,6 +52,10 @@ export interface MetricsSink {
   /** A broker request passed through (provider + outcome), if wired. */
   brokerRequest?(attrs: { provider: string; outcome: "ok" | "error" }): void;
 
+  /** A durable conversation-log append FAILED (finding #4) — the conversation's
+   *  only persistence lost a turn. Surfaced so an operator can alert on it. */
+  persistenceError?(attrs: { conversationId: string }): void;
+
   /** Flush + shut down the exporter (called on graceful shutdown). */
   shutdown(): Promise<void>;
 }
@@ -119,6 +123,9 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
   });
   const brokerReqs: Counter = meter.createCounter("agent_broker_requests_total", {
     description: "Broker requests, by provider + outcome.",
+  });
+  const persistenceErrors: Counter = meter.createCounter("agent_persistence_errors_total", {
+    description: "Durable conversation-log append failures (a turn was lost).",
   });
 
   // Sandbox population is observed (set from outside); an ObservableGauge reads
@@ -202,6 +209,10 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
       brokerReqs.add(1, { provider: attrs.provider, outcome: attrs.outcome });
     },
 
+    persistenceError(attrs) {
+      persistenceErrors.add(1, { conversationId: attrs.conversationId });
+    },
+
     async shutdown() {
       try {
         await provider.shutdown(); // flushes the exporter
@@ -220,6 +231,7 @@ export function noopMetrics(): MetricsSink {
     runFinished() {},
     setSandboxCounts() {},
     brokerRequest() {},
+    persistenceError() {},
     async shutdown() {},
   };
 }

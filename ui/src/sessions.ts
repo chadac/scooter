@@ -73,7 +73,11 @@ const loadState = (): State => {
     // currentUser is NOT persisted (it's re-fetched via /whoami on load); scope
     // persists so the toggle choice survives a refresh.
     return { sessions, currentId, currentUser: "", scope: parsed.scope === "all" ? "all" : "mine" };
-  } catch {
+  } catch (e) {
+    // Finding #26: corrupt persisted state -> start fresh (recoverable), but log
+    // it so a user silently losing their session list is diagnosable rather than
+    // invisible.
+    console.warn("[sessions] persisted state unreadable; starting fresh:", e);
     return freshState();
   }
 };

@@ -72,7 +72,15 @@ def discover_providers() -> list[Provider]:
         try:
             provider = factory()
         except Exception:
-            logger.exception("provider factory %s failed; skipping", name)
+            # Finding #21: a provider whose factory raises is skipped so one bad
+            # provider can't take down the whole broker — but it's then ABSENT (its
+            # routes 404/503), which is easy to mistake for "disabled". Log it as a
+            # loud, alert-worthy error naming the consequence, not a quiet "skip".
+            logger.exception(
+                "provider %s FAILED to build and is now ABSENT (its routes will not "
+                "serve) — this is a misconfiguration/bug, not a deliberate disable",
+                name,
+            )
             continue
         if provider.enabled:
             providers.append(provider)

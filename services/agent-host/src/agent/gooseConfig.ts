@@ -52,3 +52,50 @@ export function writeGooseConfig(home: string): void {
   ].join("\n");
   writeFileSync(join(dir, "config.yaml"), yaml, "utf8");
 }
+
+/**
+ * Ensure goose's developer-enabled config exists — and FAIL LOUDLY when it can't
+ * on a real deployment.
+ *
+ * Audit finding #1 (HIGH): without this config goose's developer extension
+ * defaults to enabled=false, so it runs the agent's shell/file tools LOCALLY in
+ * the agent-host pod instead of redirecting them to the per-conversation sandbox
+ * — a silent isolation breach (the pod still passes /healthz). So:
+ *   - fatal=true  (real goose):  a missing $HOME or a write failure THROWS, so
+ *                                main() rejects and the process exits rather than
+ *                                serving mis-isolated.
+ *   - fatal=false (fake/dev):    best-effort no-op; there is no real goose to
+ *                                mis-route, so a missing home / write failure is
+ *                                swallowed (with a warning) and startup proceeds.
+ */
+export function ensureGooseConfig(
+  home: string | undefined,
+  opts: { fatal: boolean },
+): void {
+  if (!home) {
+    if (opts.fatal) {
+      throw new Error(
+        "goose config: $HOME is unset on a real deployment — cannot enable the " +
+          "developer extension, so goose would run tools in the agent-host pod " +
+          "instead of the sandbox (isolation breach). Refusing to start.",
+      );
+    }
+    return; // fake/dev: nothing to configure
+  }
+  try {
+    writeGooseConfig(home);
+    // eslint-disable-next-line no-console
+    console.log(`[agent-host] wrote goose config (developer enabled) to ${home}/.config/goose`);
+  } catch (e) {
+    if (opts.fatal) {
+      throw new Error(
+        `goose config: failed to write ${home}/.config/goose — goose would run ` +
+          `tools in the agent-host pod instead of the sandbox (isolation breach). ` +
+          `Refusing to start. Cause: ${(e as Error)?.message ?? e}`,
+        { cause: e },
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.warn("[agent-host] failed to write goose config (non-fatal, fake sandbox):", e);
+  }
+}

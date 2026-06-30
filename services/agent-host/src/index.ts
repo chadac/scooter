@@ -28,7 +28,7 @@ import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js"
 import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
-import { writeGooseConfig } from "./agent/gooseConfig.js";
+import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
@@ -129,8 +129,13 @@ function readPricing(): string {
   if (file) {
     try {
       return readFileSync(file, "utf8");
-    } catch {
-      console.warn(`[agent-host] AGENT_PRICING_FILE ${file} unreadable; cost metrics disabled`);
+    } catch (e) {
+      // Findings #22/#23: cost metrics are best-effort, so we DON'T crash — but
+      // the operator EXPLICITLY set AGENT_PRICING_FILE, so a failure to honor it
+      // is a misconfiguration, not a default-off. Log it as an error (with cause)
+      // so it's not mistaken for "cost simply isn't configured".
+      // eslint-disable-next-line no-console
+      console.error(`[agent-host] AGENT_PRICING_FILE ${file} unreadable — cost metrics DISABLED (misconfig?):`, e);
     }
   }
   return "";
@@ -142,7 +147,11 @@ function safeParsePrices(json: string) {
   try {
     return parsePriceTable(json);
   } catch (e) {
-    console.warn("[agent-host] invalid pricing JSON; cost metrics disabled:", e);
+    // Finding #22: pricing JSON was provided but is malformed -> cost metrics
+    // disabled. Best-effort (no crash), but an explicit-config failure, so log
+    // it as an error rather than a quiet warn.
+    // eslint-disable-next-line no-console
+    console.error("[agent-host] invalid pricing JSON — cost metrics DISABLED (misconfig?):", e);
     return {};
   }
 }
@@ -221,17 +230,10 @@ export async function main(
       });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
-  // of running them locally in this pod. Only meaningful for real goose.
-  if (!config.fakeSandbox && process.env.HOME) {
-    try {
-      writeGooseConfig(process.env.HOME);
-      // eslint-disable-next-line no-console
-      console.log(`[agent-host] wrote goose config (developer enabled) to ${process.env.HOME}/.config/goose`);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn("[agent-host] failed to write goose config:", e);
-    }
-  }
+  // of running them locally in this pod. On a REAL deployment a failure here is
+  // FATAL (else goose silently runs tools in the agent-host pod — finding #1);
+  // on a fake/dev sandbox there's no real goose, so it's best-effort.
+  ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
   const store = createFileConversationStore(config.statePath);
   const server = createAguiServer();
 
@@ -248,6 +250,13 @@ export async function main(
       config.observability.enabled && !config.fakeSandbox && process.env.HOME
         ? createGooseUsageReader({ gooseHome: process.env.HOME })
         : undefined,
+  });
+
+  // Finding #4: a failed durable append (the conversation's only persistence)
+  // must leave a trace. The store now surfaces append failures; record them as a
+  // metric so an operator can alert (the store already logs each one loudly).
+  store.onAppendError?.((conversationId) => {
+    metrics.persistenceError?.({ conversationId });
   });
 
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn
@@ -334,25 +343,44 @@ export async function main(
           return;
         }
         const action = approved ? "approve" : "deny";
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
         try {
-          const headers: Record<string, string> = { "Content-Type": "application/json" };
-          const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
-          try {
-            const { readFileSync } = await import("node:fs");
-            headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
-          } catch {
-            /* no token (local/dev) */
+          const { readFileSync } = await import("node:fs");
+          headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
+        } catch (e) {
+          // Finding #9: a MISSING token (ENOENT) is the genuine local/dev case.
+          // But an unreadable token (EACCES, etc.) that SHOULD be there would
+          // otherwise masquerade as dev mode -> we'd send an unauthenticated
+          // request -> broker 401 -> the user's approval silently lost. Only treat
+          // not-found as dev; surface any other read error.
+          if ((e as { code?: string })?.code !== "ENOENT") {
+            throw new Error(
+              `failed to read broker token at ${tokenPath} (would send an ` +
+                `unauthenticated approval): ${(e as Error)?.message ?? e}`,
+              { cause: e },
+            );
           }
-          // The broker expects the approver as an OpenFGA user object (user:<id>)
-          // and enforces their per-account rights. The agent-host SA token is the
-          // trust anchor (it vouches for this real user).
-          await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ approver: `user:${approver}` }),
-          });
-        } catch (err) {
-          console.warn("[agent-host] failed to resolve AWS request", { requestId, action, err: String(err) });
+          /* ENOENT -> no token (local/dev) */
+        }
+        // The broker expects the approver as an OpenFGA user object (user:<id>)
+        // and enforces their per-account rights. The agent-host SA token is the
+        // trust anchor (it vouches for this real user).
+        // Finding #5: the user's approve/deny is security-relevant — a broker
+        // 4xx/5xx (approver lacks rights, request expired) must NOT be treated as
+        // success. Check res.ok and FAIL LOUDLY (throw) so the dropped decision
+        // is observable rather than leaving the agent's request hanging while the
+        // user believes they answered.
+        const res = await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ approver: `user:${approver}` }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          throw new Error(
+            `broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`,
+          );
         }
       },
     }),

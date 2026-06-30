@@ -213,8 +213,16 @@ class PermissionService:
         if req is None:
             raise RequestError([f"Unknown request '{request_id}'"])
         await self._authorize_approver(approver, req.target_account)
-        if req.iam_policy_arn:
-            self._iam.delete_dynamic_policy(target_account=req.target_account, policy_arn=req.iam_policy_arn)
+        # Finding #19: if a policy was already provisioned, its teardown must
+        # SUCCEED before we record this request as terminal — else we orphan the
+        # IAM policy while the DB claims it's gone (state drift, lying audit trail).
+        # delete_dynamic_policy logs + returns False on a real failure; surface it.
+        if req.iam_policy_arn and not self._iam.delete_dynamic_policy(
+            target_account=req.target_account, policy_arn=req.iam_policy_arn
+        ):
+            raise RequestError(
+                [f"Failed to delete IAM policy for '{request_id}'; not marking denied (will retry)"]
+            )
         await self._store.update(
             request_id, status=RequestStatus.DENIED, denied_at=_now(),
             denied_by=approver, deny_reason=reason,
@@ -251,12 +259,27 @@ class PermissionService:
         req = await self._store.get_for_conversation(request_id, conversation_id)
         if req is None:
             raise RequestError([f"Unknown request '{request_id}'"])
+        # Finding #6: the IAM role/policy teardown must SUCCEED before we record
+        # the request as REVOKED — otherwise a live dynamic role (with a trust
+        # policy letting the broker assume it) is orphaned while the DB says it's
+        # gone, and list_expired_active only re-sweeps ACTIVE/APPROVED, so a
+        # terminal status is never retried. On a teardown failure (the helper logs
+        # + returns False), keep the request non-terminal and raise so the caller
+        # sees it; the role stays selectable for the next sweep/revoke.
         if req.iam_role_arn:
-            self._iam.delete_dynamic_role(
+            torn_down = self._iam.delete_dynamic_role(
                 target_account=req.target_account, role_arn=req.iam_role_arn, policy_arn=req.iam_policy_arn,
             )
         elif req.iam_policy_arn:
-            self._iam.delete_dynamic_policy(target_account=req.target_account, policy_arn=req.iam_policy_arn)
+            torn_down = self._iam.delete_dynamic_policy(
+                target_account=req.target_account, policy_arn=req.iam_policy_arn
+            )
+        else:
+            torn_down = True
+        if not torn_down:
+            raise RequestError(
+                [f"Failed to delete IAM resources for '{request_id}'; not marking revoked (will retry)"]
+            )
         self._creds.pop(request_id, None)
         await self._store.update(request_id, status=RequestStatus.REVOKED, revoked_at=_now())
         return await self._store.get(request_id)  # type: ignore[return-value]
@@ -265,10 +288,19 @@ class PermissionService:
     async def sweep_expired(self) -> list[str]:
         swept: list[str] = []
         for req in await self._store.list_expired_active(_now()):
-            if req.iam_role_arn:
-                self._iam.delete_dynamic_role(
-                    target_account=req.target_account, role_arn=req.iam_role_arn, policy_arn=req.iam_policy_arn,
+            # Finding #6: only mark EXPIRED when the teardown actually succeeded.
+            # On failure the helper logs + returns False; leave the request
+            # ACTIVE/APPROVED so the NEXT sweep retries it (list_expired_active
+            # re-selects it) instead of orphaning the live role behind a terminal
+            # status that's never revisited.
+            if req.iam_role_arn and not self._iam.delete_dynamic_role(
+                target_account=req.target_account, role_arn=req.iam_role_arn, policy_arn=req.iam_policy_arn,
+            ):
+                logger.error(
+                    "sweep_expired: IAM teardown failed for %s; leaving non-terminal for retry",
+                    req.request_id,
                 )
+                continue
             self._creds.pop(req.request_id, None)
             await self._store.update(req.request_id, status=RequestStatus.EXPIRED)
             swept.append(req.request_id)

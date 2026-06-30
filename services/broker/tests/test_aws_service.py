@@ -64,18 +64,29 @@ REGISTRY = {
 READ = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}]}
 
 
-async def make_service(tmp_path):
+async def make_service(tmp_path, iam=None):
     cfg = StoreConfig()
     cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"  # local SQLite for tests
     store = PermissionStore(cfg)
     await store.init()
     svc = PermissionService(
         store=store,
-        iam=FakeIam(),
+        iam=iam or FakeIam(),
         account_registry=REGISTRY,
         config=ServiceConfig(broker_principal_arn="arn:...:broker"),
     )
     return svc
+
+
+class FailingTeardownIam(FakeIam):
+    """FakeIam whose teardown ALWAYS fails (returns False), as the real helper
+    does on a non-NoSuchEntity AWS error. Findings #6/#19."""
+
+    def delete_dynamic_policy(self, *, target_account, policy_arn):
+        return False
+
+    def delete_dynamic_role(self, *, target_account, role_arn, policy_arn):
+        return False
 
 
 # --- request -------------------------------------------------------------
@@ -162,6 +173,45 @@ async def test_revoke_tears_down(tmp_path):
     assert revoked.status == RequestStatus.REVOKED
     _, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert creds is None
+
+
+async def test_revoke_does_not_mark_revoked_when_teardown_fails(tmp_path):
+    """Finding #6: a failed IAM role teardown must NOT flip the request to a
+    terminal REVOKED status — that orphans a live role behind a status the sweep
+    never revisits. Raise + keep it ACTIVE so the next sweep/revoke retries."""
+    svc = await make_service(tmp_path, iam=FailingTeardownIam())
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    with pytest.raises(RequestError):
+        await svc.revoke(request_id=req.request_id, conversation_id="c1")
+    got, _ = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got.status == RequestStatus.ACTIVE  # NOT revoked — still cleanable
+
+
+async def test_deny_does_not_mark_denied_when_policy_teardown_fails(tmp_path):
+    """Finding #19: same for deny's policy teardown."""
+    svc = await make_service(tmp_path, iam=FailingTeardownIam())
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    # Give it a policy to tear down (request creates one at approve; for deny we
+    # need iam_policy_arn set — approve to provision, then deny).
+    await svc.approve(request_id=req.request_id, approver="a")
+    with pytest.raises(RequestError):
+        await svc.deny(request_id=req.request_id, approver="alice@x", reason="nope")
+    got, _ = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got.status != RequestStatus.DENIED
+
+
+async def test_sweep_leaves_request_active_when_teardown_fails(tmp_path):
+    """Finding #6: the sweep must NOT mark EXPIRED on a failed teardown — leave it
+    selectable so the next sweep retries instead of orphaning the role."""
+    svc = await make_service(tmp_path, iam=FailingTeardownIam())
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    await svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00Z")  # type: ignore[attr-defined]
+    swept = await svc.sweep_expired()
+    assert req.request_id not in swept  # teardown failed -> not swept
+    got, _ = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got.status == RequestStatus.ACTIVE  # left for retry
 
 
 # --- expiry sweep --------------------------------------------------------

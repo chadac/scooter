@@ -291,7 +291,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
         // in-conversation approval); the broker enforces their rights via
         // OpenFGA. Fall back to the conversation id when unowned (FGA-off / dev).
         const approver = conv?.owner || ctx.params.id;
-        void deps.resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve", approver);
+        // Finding #5: resolveAwsRequest now THROWS on a dropped approval (token
+        // unreadable / broker 4xx-5xx). It's still fire-and-forget here, so attach
+        // a handler — a swallowed rejection would put us right back to silently
+        // losing the user's security decision.
+        void deps
+          .resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve", approver)
+          .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error(
+              `[agent-host] AWS approval NOT recorded for ${ctx.params.id} ` +
+                `(request ${body.request_id}, ${optionId}):`,
+              err,
+            );
+          });
       },
     });
     return { status: 202, json: { ok: true } };

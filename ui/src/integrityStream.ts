@@ -160,7 +160,12 @@ export function subscribeIntegrity(
             let frame: IntegrityFrame;
             try {
               frame = JSON.parse(line.slice(5).trim()) as IntegrityFrame;
-            } catch {
+            } catch (e) {
+              // Finding #16: a malformed frame is skipped so one bad line doesn't
+              // kill the stream — but if it was the 'synced' marker, the UI would
+              // sit in perpetual loading. Log it so a stuck stream is diagnosable
+              // instead of silently dropping the frame.
+              console.warn("[integrityStream] dropping unparseable frame:", line.slice(0, 200), e);
               continue;
             }
             const r = await apply(frame);
