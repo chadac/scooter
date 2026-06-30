@@ -48,7 +48,7 @@ just test-e2e-real   # Tier 3  (one scenario with REAL goose; needs a model key)
 
 Rules of thumb:
 - After **any** change to `agent-host/`, run `just test-unit` before moving on.
-- After changes touching provisioning (`modules/`, `pkgs/sandbox-image/`,
+- After changes touching provisioning (`modules/`, `pkgs/sandbox-os/`,
   session/provisioner code), run `just test-cluster`.
 - After UI or end-to-end flow changes, run `just test-e2e`.
 - Before declaring a milestone done, run the full `just test` and report the
@@ -85,7 +85,8 @@ Rules of thumb:
 |------|------|
 | `flake.nix` | sandbox image, agent-host, ui, agent (goose) |
 | `services/agent-host/` | TS: ACP⇄AG-UI bridge, session manager, SDK exec backend |
-| `pkgs/sandbox-image/` | generic Nix sandbox image (no in-pod server; exec via K8s API) |
+| `pkgs/sandbox-os/` | the NixOS systemd-PID-1 dev sandbox image (exec via K8s API) |
+| `pkgs/broker-tools/` | broker CLIs (agent-broker / git-credential-broker / scooter-aws*), prebuilt into the sandbox |
 | `modules/` | kubenix: per-conversation Sandbox, agent-host, warm pool |
 | `ui/` | assistant-ui frontend + AG-UI client library |
 | `test/` | Tier 2 cluster + Tier 3 e2e + fixtures/fakes |

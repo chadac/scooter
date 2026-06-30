@@ -31,7 +31,7 @@ in
 
     sandboxImage = mkOption {
       type = types.str;
-      description = "OCI ref of the generic Nix sandbox image (pkgs/sandbox-image).";
+      description = "OCI ref of the NixOS systemd-PID-1 dev sandbox image (pkgs/sandbox-os).";
     };
 
     agentHostImage = mkOption {

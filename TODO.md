@@ -331,9 +331,21 @@ Running list of work items. Newest asks at the top of each section. See
         provisioned a systemd NixOS pod (conv-fxh4j4: privileged, systemd PID 1,
         is-system-running=running), agent-broker whoami works (per-conv SA),
         Scooter ran a shell cmd and reported "running on NixOS with systemd PID 1".
-  - [ ] **Retire pkgs/sandbox-image** once the OS image proves out in real use +
-        update modules/conversation.nix (the kubenix mirror) to match the
-        provisioner (systemdImage privileged/tmpfs) so rendered manifests agree.
+  - [x] **Retire pkgs/sandbox-image** DONE (branch chore/retire-sandbox-image,
+        design in docs/SANDBOX_IMAGE_RETIREMENT.md). The legacy generic OCI image
+        is deleted; the NixOS systemd-PID-1 sandbox-os image is the only sandbox.
+        Broker CLIs moved to pkgs/broker-tools (prebuilt; carry-over.nix
+        callPackages it, no readFile drift; runtime-converge vendors it). Flake
+        default → sandbox-os; image name agent-sandbox-nix → agent-sandbox-os
+        everywhere. systemd is now ALWAYS on (removed the `sandboxSystemd` option +
+        SANDBOX_SYSTEMD env; index.ts passes systemdImage:true). conversation.nix
+        synced to the provisioner (privileged + tmpfs /run,/tmp). 105/105 Tier 1;
+        all 7 dev-env nixosTests eval; check-manifests + sandbox-os build green.
+        FOLLOW-UPS (parked): (1) the local-overlay-store — image boots with a
+        read-only-lower + writable-upper Nix store; spiked (boots!) but VM can't
+        validate it (framework already overlays /nix/store → compose w/ multi
+        lowerdirs; upper must be DISK-backed NOT tmpfs; validate in Tier 2). (2)
+        nix-stubs flake input + lazy-tool plumbing.
   - [ ] (future) wire switch-on-claim into the agent-sandbox warm pool (claim→exec
         trigger); ConfigMap-driven services (`programs.lazyServices`, sibling of
         lazyTools). See memory runtime-nixos-switch-in-container.

@@ -58,18 +58,14 @@
             inherit pkgs lib n2c broker;
           };
 
-          # Layered agent skills (markdown; frontmatter + body). See skills/.
-          skillsDir = ./skills;
-
-          # Generic Nix sandbox image: plain Nix env + overlay /nix store +
-          # skills. No in-pod server (exec via K8s API). NO agent baked in.
-          sandboxImage = import ./pkgs/sandbox-image {
-            inherit pkgs lib n2c skillsDir;
-          };
+          # Broker tools (agent-broker / git-credential-broker / scooter-aws*),
+          # prebuilt — always needed, so baked into the sandbox image (the read-only
+          # lower of its overlay store). The sandbox-os config callPackages these
+          # directly (carry-over.nix), one source of truth (pkgs/broker-tools).
+          brokerTools = pkgs.callPackage ./pkgs/broker-tools { };
 
           # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
-          # services). Built from the shared modules/sandbox-os config. Coexists
-          # with sandboxImage until it reaches parity + passes Tier 2.
+          # services). Built from the shared modules/sandbox-os config.
           sandboxOsImage = import ./pkgs/sandbox-os {
             inherit pkgs lib;
             nixpkgsPinned = "path:${inputs.nixpkgs-pinned}";
@@ -92,7 +88,7 @@
               kubernetes.version = "1.31";
               agentSandbox = {
                 agentHostImage = "agent-host:latest";
-                sandboxImage = "agent-sandbox-nix:latest";
+                sandboxImage = "agent-sandbox-os:latest";
                 fakeAgent = true; # dummy agent for cluster e2e (no model needed)
                 broker = {
                   enable = true;
@@ -119,16 +115,19 @@
         in
         {
           packages = {
-            default = sandboxImage.image;
+            # The sandbox is the NixOS systemd-PID-1 dev image (the legacy generic
+            # pkgs/sandbox-image was retired).
+            default = sandboxOsImage.image;
 
             inherit agentHost ui broker webhooks;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
 
-            # nix build .#sandbox-image  ->  generic OCI sandbox (runtime + Nix)
-            sandbox-image = sandboxImage.image;
-
             # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox
             sandbox-os-image = sandboxOsImage.image;
+
+            # The broker tools (agent-broker / git-credential-broker / scooter-aws*),
+            # prebuilt; baked into the sandbox-os image via the brokerTools overlay.
+            broker-tools = brokerTools.agent-broker;
 
             # nix build .#broker-image  ->  broker OCI image
             broker-image = brokerImage.image;
@@ -178,12 +177,6 @@
               export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
               export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
             '';
-          };
-
-          # Expose the image builder so consumers can customize
-          # (extra skills, extra packages).
-          legacyPackages = {
-            inherit sandboxImage;
           };
 
           checks = {

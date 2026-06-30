@@ -43,9 +43,16 @@ let
             name = "sandbox";
             image = sandboxImage;
             ports = [{ containerPort = 8888; }];
+            # The sandbox is the NixOS systemd-PID-1 image: systemd needs a
+            # privileged context (writable cgroup + CAP_SYS_ADMIN). Mirrors the
+            # agent-host k8sProvisioner (systemdImage=true, always). Tighten post-PoC.
+            securityContext.privileged = true;
             volumeMounts = [
               { name = "workspace"; mountPath = "/workspace"; }
               { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; }
+              # systemd writes to /run + /tmp; back them with tmpfs (emptyDir).
+              { name = "run"; mountPath = "/run"; }
+              { name = "tmp"; mountPath = "/tmp"; }
             ] ++ lib.optionals cfg.broker.aws.enable [
               # The AWS account registry — the entrypoint renders ~/.aws/config
               # from it (one [profile <name>] per account → the credential helper).
@@ -62,10 +69,15 @@ let
               { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-sandbox/aws/accounts.json"; }
             ];
           }];
-          volumes = [{
-            name = "broker-token";
-            projected.sources = [{ serviceAccountToken = { audience = brokerAudience; path = "token"; }; }];
-          }] ++ lib.optionals cfg.broker.aws.enable [
+          volumes = [
+            {
+              name = "broker-token";
+              projected.sources = [{ serviceAccountToken = { audience = brokerAudience; path = "token"; }; }];
+            }
+            # tmpfs for systemd's /run + /tmp (mirrors the provisioner).
+            { name = "run"; emptyDir.medium = "Memory"; }
+            { name = "tmp"; emptyDir.medium = "Memory"; }
+          ] ++ lib.optionals cfg.broker.aws.enable [
             { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
           ];
         };

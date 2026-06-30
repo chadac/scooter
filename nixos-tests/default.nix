@@ -31,4 +31,5 @@ in
   # A deployment's .scooter/module.nix (a NixOS module declaring its own tools)
   # applied at runtime via switch-to-configuration. The no-rebuild injection path.
   dev-env-scooter-module = runTest ./scooter-module.nix;
+  # clean immutable base + a writable upper for runtime builds).
 }

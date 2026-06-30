@@ -25,7 +25,7 @@ const enabled = clusterTestsEnabled() && process.env.RUN_BROKER_TESTS === "1";
 const maybe = enabled ? describe : describe.skip;
 
 const NS = process.env.BROKER_NS ?? "agent-sandbox";
-const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
+const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest";
 const SELECTOR = (id: string) => `agents.x-k8s.io/sandbox-name=conv-${id}`;
 const ready = (s: { status?: { conditions?: Array<{ type: string; status: string }> } }) =>
   !!s.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True");

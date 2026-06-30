@@ -23,39 +23,13 @@
 let
   cfg = config.programs.scooterCarryOver;
 
-  agentBroker = pkgs.writeShellApplication {
-    name = "agent-broker";
-    runtimeInputs = [ pkgs.curl pkgs.coreutils ];
-    text = builtins.readFile ../../pkgs/sandbox-image/agent-broker.sh;
-  };
-
-  gitCredentialBroker = pkgs.writeShellApplication {
-    name = "git-credential-broker";
-    runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
-    text = builtins.readFile ../../pkgs/sandbox-image/git-credential-broker.sh;
-  };
-
-  # The AWS request CLI + credential_process helper — the broker's own cli.py,
-  # embedded verbatim (same one-source-of-truth pattern as the legacy image).
-  scooterAwsCli = pkgs.writeTextFile {
-    name = "scooter_aws_cli.py";
-    destination = "/lib/scooter_aws_cli.py";
-    text = builtins.readFile ../../services/broker/broker/aws/cli.py;
-  };
-  scooterAws = pkgs.writeShellApplication {
-    name = "scooter-aws";
-    runtimeInputs = [ pkgs.python3 ];
-    text = ''
-      exec python3 -c 'import runpy,sys; m=runpy.run_path("${scooterAwsCli}/lib/scooter_aws_cli.py"); sys.exit(m["cli_main"](sys.argv[1:]))' "$@"
-    '';
-  };
-  scooterAwsCredentials = pkgs.writeShellApplication {
-    name = "scooter-aws-credentials";
-    runtimeInputs = [ pkgs.python3 ];
-    text = ''
-      exec python3 -c 'import runpy,sys; m=runpy.run_path("${scooterAwsCli}/lib/scooter_aws_cli.py"); sys.exit(m["credentials_main"](sys.argv[1:]))' "$@"
-    '';
-  };
+  # The broker tools come from the prebuilt broker-tools package (a single source
+  # of truth, pkgs/broker-tools — no readFile drift). callPackage'd directly (not
+  # via nixpkgs.overlays, which conflicts with the nixosTest framework's own
+  # nixpkgs.pkgs). The relative path resolves in the in-pod runtime-converge build
+  # too (the modulesTree vendors pkgs/broker-tools at the same layout).
+  brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
+  scooterAwsCredentials = brokerTools.scooter-aws-credentials;
 in
 {
   options.programs.scooterCarryOver = {
@@ -74,11 +48,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [
-      agentBroker
-      gitCredentialBroker
-      scooterAws
-      scooterAwsCredentials
+    environment.systemPackages = brokerTools.all ++ [
       pkgs.git
       pkgs.awscli2
     ];

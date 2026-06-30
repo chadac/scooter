@@ -15,7 +15,7 @@ import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
 const NS = "agent-sandbox-test";
-const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-nix:latest";
+const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest";
 const SELECTOR = (id: string) => `agents.x-k8s.io/sandbox-name=conv-${id}`;
 type SandboxStatus = {
   status?: { conditions?: Array<{ type: string; status: string; message?: string }> };

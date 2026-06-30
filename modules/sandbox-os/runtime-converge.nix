@@ -23,15 +23,15 @@ let
   baseConfig = ./runtime-converge/base-config.nix;
 
   # The base config (modules/sandbox-os) reaches a few files OUTSIDE its own dir
-  # via `../../` relative paths (carry-over.nix readFile's the broker scripts +
-  # cli.py). For the in-pod rebuild to resolve those, we vendor a small source
-  # TREE that places modules/sandbox-os AND those referenced files at the same
-  # relative layout. modulesPath then points at <tree>/modules/sandbox-os.
+  # via `../../` relative paths: the broker-tools overlay (pkgs/broker-tools, which
+  # reads the broker scripts + cli.py). For the in-pod rebuild to resolve those, we
+  # vendor a small source TREE placing modules/sandbox-os AND pkgs/broker-tools +
+  # the broker cli.py at the same relative layout. modulesPath then points at
+  # <tree>/modules/sandbox-os; the overlay's `../../pkgs/broker-tools` resolves.
   modulesTree = pkgs.runCommand "sandbox-os-src" { } ''
-    mkdir -p $out/modules $out/pkgs/sandbox-image $out/services/broker/broker/aws
+    mkdir -p $out/modules $out/pkgs $out/services/broker/broker/aws
     cp -r ${lib.cleanSource ./.} $out/modules/sandbox-os
-    cp ${../../pkgs/sandbox-image/agent-broker.sh} $out/pkgs/sandbox-image/agent-broker.sh
-    cp ${../../pkgs/sandbox-image/git-credential-broker.sh} $out/pkgs/sandbox-image/git-credential-broker.sh
+    cp -r ${../../pkgs/broker-tools} $out/pkgs/broker-tools
     cp ${../../services/broker/broker/aws/cli.py} $out/services/broker/broker/aws/cli.py
   '';
   modulesSrc = "${modulesTree}/modules/sandbox-os";
