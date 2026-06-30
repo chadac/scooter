@@ -32,6 +32,13 @@ maybe("NixOS sandbox image boots systemd PID 1 in a pod", () => {
   beforeAll(async () => {
     cluster = await withCluster({ installController: false, namespace: NS });
 
+    // Self-sufficient: ensure the namespace exists (no controller/platform is
+    // installed for this image-boot test, so nothing else creates it). Tolerate
+    // already-exists (a prior run / the broader suite may have created it).
+    await cluster
+      .apply({ apiVersion: "v1", kind: "Namespace", metadata: { name: NS } })
+      .catch(() => {});
+
     // A bare privileged pod running the OS image — isolates the image-boot
     // concern from the agent-sandbox controller (the controller path is covered
     // by provision.spec). The container is named "sandbox" so cluster.exec()
@@ -84,12 +91,27 @@ maybe("NixOS sandbox image boots systemd PID 1 in a pod", () => {
     expect(pid1.exitCode).toBe(0);
     expect(pid1.stdout.trim()).toBe("systemd");
 
-    // is-system-running exits 0 only for "running"; "degraded" exits non-zero but
-    // is acceptable (some unit may be inactive in a bare pod). Reject offline/
-    // initializing — those mean systemd didn't really boot.
-    const state = await cluster.exec(SELECTOR, ["systemctl", "is-system-running"], NS);
-    expect(["running", "degraded"]).toContain(state.stdout.trim());
+    // The pod reports Running before systemd finishes booting, so is-system-running
+    // can transiently read `initializing`/`starting`. Poll until it settles to a
+    // terminal state. `running` exits 0; `degraded` is acceptable (a unit may be
+    // inactive in a bare pod). Reject offline. This settle also gates the
+    // later daemon/service assertions (it blocks subsequent sequential `it`s).
+    const state = await waitForSystem(120_000);
+    expect(["running", "degraded"]).toContain(state);
   });
+
+  // Re-exec `systemctl is-system-running` until it leaves the transient boot
+  // states, returning the terminal word.
+  async function waitForSystem(timeoutMs: number): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const r = await cluster.exec(SELECTOR, ["systemctl", "is-system-running"], NS);
+      const s = r.stdout.trim();
+      if (s !== "initializing" && s !== "starting" && s !== "") return s;
+      if (Date.now() > deadline) return s;
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
 
   it("the in-pod nix daemon is up (the agent can build/install)", async () => {
     const r = await cluster.exec(SELECTOR, ["systemctl", "is-active", "nix-daemon.socket"], NS);

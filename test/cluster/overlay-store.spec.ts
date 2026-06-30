@@ -24,7 +24,10 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
-const NS = "agent-sandbox-test";
+// Dedicated namespace (not the shared agent-sandbox-test) so this spec never
+// races/​conflicts with the other image-boot spec when CI runs them in the same
+// cluster.
+const NS = "agent-sandbox-overlay-test";
 const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os-overlay:latest";
 const POD = "overlay-store-boot";
 const SELECTOR = "app=overlay-store-boot";
@@ -38,6 +41,13 @@ maybe("local-overlay Nix store works in a real container (prod topology)", () =>
 
   beforeAll(async () => {
     cluster = await withCluster({ installController: false, namespace: NS });
+
+    // Self-sufficient: ensure the namespace exists (the controller/platform isn't
+    // installed for this image-boot test, so nothing else creates it). Tolerate
+    // already-exists (a prior run / the broader suite may have created it).
+    await cluster
+      .apply({ apiVersion: "v1", kind: "Namespace", metadata: { name: NS } })
+      .catch(() => {});
 
     await cluster.apply({
       apiVersion: "v1",
