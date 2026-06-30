@@ -95,6 +95,20 @@ typecheck:
 
 lint: typecheck
 
+# Guard against a stale/drifted package-lock.json. Regenerates the lockfiles
+# (package-lock-only, no install) and fails if anything changes — i.e. a
+# package.json dep was added/bumped without committing the matching lockfile
+# (the exact "react-icons added to ui/ but root lockfile never regenerated ->
+# floated to a version that dropped an icon" bug). Run with the flake's npm so
+# the result is reproducible. Both lockfiles: root (workspace, used by `just ci`)
+# and ui/ (used by the `nix build .#ui` image via buildNpmPackage).
+check-lockfiles:
+    npm install --package-lock-only --workspaces --include-workspace-root
+    npm install --package-lock-only --prefix ui
+    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json \
+      || (echo "❌ lockfile drift: a package.json changed without regenerating the lockfile. Run 'nix develop -c just check-lockfiles' and commit the result." && exit 1)
+    @echo "✅ lockfiles are in sync with package.json"
+
 # Everything CI runs.
-ci: check-flake check-manifests lint test-unit
+ci: check-flake check-manifests check-lockfiles lint test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
