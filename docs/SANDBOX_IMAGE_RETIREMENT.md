@@ -132,9 +132,15 @@ manifests match what the agent-host actually provisions:
   be DISK-backed (emptyDir/PVC), NOT tmpfs** — a RAM upper would charge every
   runtime-built nix closure to pod memory. This is a NIX local-overlay *store*
   within the pod's already-overlayfs root, NOT a second docker overlay.
-  - Still TODO: a Tier-2 cluster test (real container, lower = baked store, no
-    register-nix-paths) + wiring the upper volume into conversation.nix/the
-    provisioner + flipping it on in the image.
+  - Tier-2 cluster test DONE (`test/cluster/overlay-store.spec.ts`, 6/6 on k3d):
+    runs `.#sandbox-os-overlay-image` in a real privileged pod, lower = the baked
+    store, no register-nix-paths — and a real `nix build` lands in the upper. This
+    surfaced a prod gap the VM couldn't: a dockerTools image ships store paths but
+    NO Nix DB / `.links`, so the read-only lower had nothing to open. Fixed in
+    `pkgs/sandbox-os` by baking the closure registration into `/nix/var/nix/db`
+    (`nix-store --load-db`) + creating `.links` at image-build time.
+  - Still TODO: wire the upper volume into conversation.nix/the provisioner +
+    flip overlayStore on in the default image.
 - **nix-stubs (was Part 4).** Add the flake input (local path:../nix-stubs → github:
   when ready) + mkOverlay plumbing so tools CAN be lazy; keep basic tools prebuilt.
   KEEP the homegrown mkLazyTool for the .scooter/local-flake injection source.
