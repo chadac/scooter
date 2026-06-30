@@ -66,10 +66,19 @@ def _call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
         with urllib.request.urlopen(req) as resp:
             return resp.status, json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as e:
+        # Finding #27: a non-JSON error body was dropped to {} — losing the only
+        # human-readable detail (e.g. a plain-text 502 / proxy error). Read the
+        # body ONCE, try JSON, and on failure preserve the raw text so the caller
+        # can surface it instead of a bare status with no explanation.
+        raw = b""
         try:
-            return e.code, json.loads(e.read() or b"{}")
+            raw = e.read() or b""
         except Exception:
-            return e.code, {}
+            pass
+        try:
+            return e.code, json.loads(raw or b"{}")
+        except Exception:
+            return e.code, {"error": raw.decode("utf-8", "replace").strip()}
 
 
 # --- credential_process helper ------------------------------------------
