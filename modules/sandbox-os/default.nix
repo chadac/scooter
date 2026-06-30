@@ -22,6 +22,7 @@
     ./sample-service.nix
     ./carry-over.nix
     ./runtime-converge.nix
+    ./overlay-store.nix
   ];
 
   # --- systemd base ----------------------------------------------------------
