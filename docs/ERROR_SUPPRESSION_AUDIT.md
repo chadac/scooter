@@ -13,6 +13,15 @@ a skeptic that read the surrounding code and defaulted toward rejection. Result:
 legitimate** (correctly intentional — cleanup, idempotent already-exists,
 best-effort telemetry, retries that re-raise).
 
+> **Status: ALL 27 FIXED.** Each fix fails loud / surfaces the masked failure
+> instead of substituting a default, with a regression test asserting the new
+> behavior where the change is behavioral (the security/data-loss/leak findings)
+> and observability (a loud log) where graceful degradation is the right call
+> (best-effort telemetry, UI fetches). See the `fix(audit): …` commits. The
+> guiding rule: ENOENT/404/already-exists = the ONE benign case (silent OK);
+> every other error propagates or is logged. Verified: agent-host 119/119 Tier 1
+> + typecheck, broker + webhooks pytest green via nix, ui typecheck.
+
 ## Summary
 
 The audit surfaced 27 verified suppression sites, concentrated almost entirely in the agent-host (services/agent-host) and the credential broker (services/broker). The picture is a consistent "degrade silently" anti-pattern: bare catches that conflate the one benign case (file-not-found / already-exists / 404) with every real failure, then proceed as if nothing happened — with no log, metric, or health signal. The worst offenders are genuinely dangerous: (1) two fail-open / fail-closed authz+config bugs that silently break security boundaries — index.ts:230 lets goose run tools in the HOST pod instead of the sandbox when its config write fails, and authz.py:88 swallows an OpenFGA grant-write failure at DEBUG that then permanently locks an approver out (check fails closed); (2) two broker startup/config swallows (aws.py:34) and a dropped user approval (index.ts:354) that silently disable or lose security-relevant decisions; and (3) the conversation's sole persistence write chain (fileStore.ts:75) which drops a failed durable event-log append entirely. Below those, a cluster of resource-leak and silent-empty-history bugs round out the medium tier.
