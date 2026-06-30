@@ -23,6 +23,7 @@
     ./carry-over.nix
     ./runtime-converge.nix
     ./overlay-store.nix
+    ./dbus-container.nix
   ];
 
   # --- systemd base ----------------------------------------------------------
