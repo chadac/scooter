@@ -118,17 +118,23 @@ manifests match what the agent-host actually provisions:
   index.ts passes systemdImage:true unconditionally.
 - Part 5 — conversation.nix synced to the provisioner (privileged + tmpfs /run,/tmp).
 
-## Deferred to FOLLOW-UP PRs
-- **local-overlay-store (was Part 3).** SPIKED: the system BOOTS with the overlay
-  (systemd survives), but (a) the nixosTest VM can't validate it — the framework
-  already overlays /nix/store (name collision; compose with MULTIPLE lowerdirs on
-  top), (b) the boot ordering is fiddly (setup must run AFTER the upper-volume
-  mount, BEFORE nix-daemon), (c) real validation is container-only (Tier 2). WIP
-  module + test parked. **The upper must be DISK-backed (emptyDir/PVC), NOT tmpfs**
-  — a RAM upper would charge every runtime-built nix closure (incl. the
-  ~hundreds-of-MB scooter-module rebuild) to pod memory. This is a NIX
-  local-overlay *store* layered WITHIN the pod's already-overlayfs container root,
-  NOT a second docker/container overlay.
+## Landed in a FOLLOW-UP PR
+- **local-overlay-store (was Part 3) — DONE + VM-TESTED.** `modules/sandbox-os/
+  overlay-store.nix` (off by default, `programs.overlayStore.enable`) +
+  `nixos-tests/overlay-store.nix`. Compose-on-top: bind-pin whatever /nix/store IS
+  as the read-only lower, stack a writable upper — works over a baked OCI store,
+  a bare EC2/VM host store, OR the nixosTest framework's own overlay (so the VM
+  test DOES validate it, contrary to the earlier note — the trick was the
+  compose-on-top lower + reconciling register-nix-paths in the test). The VM test
+  proves a real `nix build` lands in the upper and the lower stays read-only.
+  Recipe + the #11840 work-arounds are documented in the module and the commit;
+  the rootless proof is `docs/spikes/local-overlay-store-mwe.sh`. **The upper must
+  be DISK-backed (emptyDir/PVC), NOT tmpfs** — a RAM upper would charge every
+  runtime-built nix closure to pod memory. This is a NIX local-overlay *store*
+  within the pod's already-overlayfs root, NOT a second docker overlay.
+  - Still TODO: a Tier-2 cluster test (real container, lower = baked store, no
+    register-nix-paths) + wiring the upper volume into conversation.nix/the
+    provisioner + flipping it on in the image.
 - **nix-stubs (was Part 4).** Add the flake input (local path:../nix-stubs → github:
   when ready) + mkOverlay plumbing so tools CAN be lazy; keep basic tools prebuilt.
   KEEP the homegrown mkLazyTool for the .scooter/local-flake injection source.
