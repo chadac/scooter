@@ -100,11 +100,13 @@ lint: typecheck
 # package.json dep was added/bumped without committing the matching lockfile
 # (the exact "react-icons added to ui/ but root lockfile never regenerated ->
 # floated to a version that dropped an icon" bug). Run with the flake's npm so
-# the result is reproducible. Both lockfiles: root (workspace, used by `just ci`)
-# and ui/ (used by the `nix build .#ui` image via buildNpmPackage).
+# the result is reproducible. THREE lockfiles: root (workspace, used by `just ci`)
+# + ui/ and services/agent-host/ (the STANDALONE ones the `nix build .#ui` /
+# `.#agentHost` images use via buildNpmPackage — regen with --workspaces=false).
 check-lockfiles:
     npm install --package-lock-only --workspaces --include-workspace-root
-    npm install --package-lock-only --prefix ui
+    npm install --package-lock-only --prefix ui --workspaces=false
+    npm install --package-lock-only --prefix services/agent-host --workspaces=false
     @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json \
       || (echo "❌ lockfile drift: a package.json changed without regenerating the lockfile. Run 'nix develop -c just check-lockfiles' and commit the result." && exit 1)
     @echo "✅ lockfiles are in sync with package.json"
