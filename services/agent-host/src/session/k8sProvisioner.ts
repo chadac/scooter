@@ -25,6 +25,14 @@ import {
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
 
+/** Delete-error policy (findings #7/#8): a 404 means the object is already gone
+ *  (the delete's goal — fine to ignore); EVERY other error means the delete did
+ *  NOT happen and must propagate, else we leak the Sandbox/SA/PVC silently.
+ *  Throws the original error for non-404; returns void for 404. */
+export function ignoreDeleteNotFound(e: { code?: number }): void {
+  if (e?.code !== 404) throw e;
+}
+
 const GROUP = "agents.x-k8s.io";
 // agent-sandbox v0.4.x serves v1alpha1, where suspend/resume is `spec.replicas`
 // (0 = suspended, 1 = running) — there is no operatingMode field yet.
@@ -149,6 +157,13 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
 
     async destroy(ref: SandboxRef): Promise<void> {
       const id = ref.name.replace(/^conv-/, "");
+      // Findings #7/#8: a bare .catch(() => {}) here swallowed EVERY delete error.
+      // A 404 means the object is already gone — exactly the delete's goal — so
+      // ignore that; but any OTHER failure (403/409/5xx/timeout) means the delete
+      // did NOT happen, and silently swallowing it leaks the Sandbox CR + pod +
+      // workspace PVC (#7) or the per-conversation ServiceAccount = the broker
+      // identity (#8). Rethrow so end() doesn't report a clean teardown that
+      // actually left live resources behind.
       await custom
         .deleteNamespacedCustomObject({
           group: GROUP,
@@ -157,10 +172,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           plural: PLURAL,
           name: ref.name,
         })
-        .catch(() => {});
+        .catch(ignoreDeleteNotFound);
       await core
         .deleteNamespacedServiceAccount({ name: saName(id), namespace: ref.namespace })
-        .catch(() => {});
+        .catch(ignoreDeleteNotFound);
     },
   };
 }

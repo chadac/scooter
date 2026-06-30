@@ -28,6 +28,15 @@ async function writeFileAtomic(path: string, data: string): Promise<void> {
   await rename(tmp, path);
 }
 
+/** True for "file/dir does not exist" — the ONE benign read error (a genuinely
+ *  new/empty conversation, or the state dir before first write). Findings #11/#12:
+ *  every OTHER read error (EACCES/EIO/unmounted PVC) is a real failure that must
+ *  NOT be silently flattened to empty — that replays a real conversation as blank
+ *  history, or vanishes the entire conversation list after a restart. */
+function isENOENT(e: unknown): boolean {
+  return (e as { code?: string })?.code === "ENOENT";
+}
+
 export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
@@ -124,8 +133,13 @@ export function createFileConversationStore(root: string): ConversationStore {
       let data: string;
       try {
         data = await readFile(logPath(id), "utf8");
-      } catch {
-        return;
+      } catch (e) {
+        // Finding #11: ENOENT = no log yet (a new conversation) — yield nothing.
+        // Any OTHER error (EACCES/EIO/unmounted PVC) means a REAL conversation's
+        // log can't be read; returning empty would replay it as blank history and
+        // hide the failure. Propagate instead.
+        if (isENOENT(e)) return;
+        throw e;
       }
       for (const line of data.split("\n")) {
         if (line.trim()) yield JSON.parse(line) as AguiEvent;
@@ -185,8 +199,13 @@ export function createFileConversationStore(root: string): ConversationStore {
       try {
         const ents = await readdir(root, { withFileTypes: true });
         ids = ents.filter((e) => e.isDirectory()).map((e) => e.name);
-      } catch {
-        return [];
+      } catch (e) {
+        // Finding #12: ENOENT = the state dir doesn't exist yet (nothing persisted
+        // -> []). Any OTHER readdir error (EACCES/EIO/unmounted state PVC) must
+        // propagate — silently returning [] makes the ENTIRE conversation list
+        // vanish after a restart, indistinguishable from "no conversations".
+        if (isENOENT(e)) return [];
+        throw e;
       }
       const out: ConversationMeta[] = [];
       for (const id of ids) {

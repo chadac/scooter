@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,6 +54,58 @@ describe("fileStore persistence-error surface", () => {
       writeFileSync(join(root, "conv-y"), "file", "utf8");
       const store = createFileConversationStore(root);
       await expect(store.appendEvent("conv-y" as SessionId, event)).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Finding #11: readEvents must yield empty for a NEW conversation (ENOENT) but
+  // THROW on a real read failure (else a real conversation replays as blank).
+  it("readEvents yields empty for a missing log (ENOENT), not an error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "store-re-"));
+    try {
+      const store = createFileConversationStore(root);
+      const out = [];
+      for await (const e of store.readEvents("nope" as SessionId)) out.push(e);
+      expect(out).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("readEvents THROWS on a non-ENOENT read error (real log unreadable)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "store-re2-"));
+    try {
+      // Make the events.jsonl path a DIRECTORY -> readFile fails with EISDIR
+      // (a non-ENOENT read failure standing in for EACCES/EIO/unmounted PVC).
+      const id = "conv-z";
+      mkdirSync(join(root, id, "events.jsonl"), { recursive: true });
+      const store = createFileConversationStore(root);
+      await expect(async () => {
+        for await (const _ of store.readEvents(id as SessionId)) { /* drain */ }
+      }).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Finding #12: listConversations returns [] for a missing state dir (ENOENT)
+  // but THROWS on a real readdir failure (else the whole list vanishes silently).
+  it("listConversations returns [] for a missing state dir (ENOENT)", async () => {
+    const root = join(tmpdir(), `store-lc-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    // root deliberately does not exist
+    const store = createFileConversationStore(root);
+    expect(await store.listConversations?.()).toEqual([]);
+  });
+
+  it("listConversations THROWS when the state path is not a directory (real error)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "store-lc2-"));
+    try {
+      // Point the store root at a FILE -> readdir fails with ENOTDIR (non-ENOENT).
+      const fileRoot = join(root, "not-a-dir");
+      writeFileSync(fileRoot, "x", "utf8");
+      const store = createFileConversationStore(fileRoot);
+      await expect(store.listConversations?.()).rejects.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

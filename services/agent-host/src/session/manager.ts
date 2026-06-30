@@ -397,8 +397,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         for (const s of (await provisioner.reconcile?.()) ?? []) {
           live.set(s.ref.name, s);
         }
-      } catch {
-        /* best-effort; fall back to the assume-suspended placeholder below */
+      } catch (err) {
+        // Finding #10: the fallback (assume-suspended) is correct, but swallowing
+        // SILENTLY hides a persistently-failing reconcile — and a reconcile that
+        // never succeeds means still-running pods are all marked 'suspended' and
+        // the idle sweep (running-only) never reclaims them: the exact pod leak
+        // this reconcile exists to prevent. Log loudly so it's observable.
+        // eslint-disable-next-line no-console
+        console.error("[manager] hydrate reconcile FAILED — assuming all suspended (pod-leak risk if persistent):", err);
       }
 
       for (const m of metas) {
@@ -432,8 +438,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         try {
           await this.suspend(entry.id);
           suspended.push(entry.id);
-        } catch {
-          /* best-effort; a failed suspend is retried next sweep */
+        } catch (err) {
+          // Finding #18: retrying next sweep is right, but a conversation whose
+          // suspend ALWAYS fails leaks a pod forever with zero signal. Log it so a
+          // chronically-unsuspendable conversation is visible.
+          // eslint-disable-next-line no-console
+          console.error(`[manager] idle-suspend failed for ${entry.id} (will retry next sweep):`, err);
         }
       }
       return suspended;
