@@ -89,6 +89,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
 
   const sandboxName = (id: string) => `conv-${id}`;
   const saName = (id: string) => `sandbox-${id}`;
+  // The per-conversation module ConfigMap the agent-host owns: the agent's
+  // self-authored module.nix lives here (durable across suspend/resume). Mounted
+  // read-only into the pod; scooter-apply-module reads it.
+  const moduleCmName = (id: string) => `conv-${id}-module`;
 
   // v1alpha1: replicas 0 = suspended (pod dropped, PVCs kept), 1 = running.
   // A plain-object body negotiates application/merge-patch+json.
@@ -119,6 +123,24 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           if (e?.code !== 409) throw e;
         });
 
+      // 1b. the per-conversation module ConfigMap (agent-host-owned), created
+      // EMPTY now — it must exist before the Sandbox so the podTemplate can mount
+      // it from pod birth (a ConfigMap created later won't appear as a volume; the
+      // kubelet only live-updates the CONTENTS of an already-mounted CM). The
+      // agent-host fills it in when the agent modifies its environment. Empty
+      // module.nix = scooter-apply-module no-ops. Idempotent on 409.
+      await core
+        .createNamespacedConfigMap({
+          namespace: ns,
+          body: {
+            metadata: { name: moduleCmName(id), namespace: ns },
+            data: { "module.nix": "" },
+          },
+        })
+        .catch((e: { code?: number }) => {
+          if (e?.code !== 409) throw e;
+        });
+
       // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
       const name = sandboxName(id);
       await custom.createNamespacedCustomObject({
@@ -132,6 +154,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           extraEnv: opts.extraEnv ?? [],
           overlayStore: opts.overlayStore ?? false,
           overlayStorage: opts.overlayStorage,
+          moduleConfigMap: moduleCmName(id),
         }),
       });
 
@@ -187,6 +210,25 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       await core
         .deleteNamespacedServiceAccount({ name: saName(id), namespace: ref.namespace })
         .catch(ignoreDeleteNotFound);
+      await core
+        .deleteNamespacedConfigMap({ name: moduleCmName(id), namespace: ref.namespace })
+        .catch(ignoreDeleteNotFound);
+    },
+
+    // Persist the agent's self-authored module into the per-conversation module
+    // ConfigMap (durable across suspend/resume; the boot oneshot re-applies it on
+    // a fresh pod). The agent-host calls this AFTER a clean live apply (the
+    // moduleManager build-before-persist gate), so the CM only ever holds a
+    // switch-clean module. Merge-patch just the module.nix key.
+    async writeModule(conversationId: string, module: string): Promise<void> {
+      await core.patchNamespacedConfigMap(
+        {
+          name: moduleCmName(conversationId),
+          namespace: ns,
+          body: { data: { "module.nix": module } },
+        },
+        setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+      );
     },
   };
 }
@@ -208,6 +250,7 @@ export function sandboxManifest(
     extraEnv?: Array<{ name: string; value: string }>;
     overlayStore?: boolean;
     overlayStorage?: string;
+    moduleConfigMap?: string;
   } = {},
 ): object {
   const scooter = deploy.scooterConfigMap;
@@ -217,6 +260,15 @@ export function sandboxManifest(
   // (/nix/.scooter-rw). Only when the overlay-store image is in use.
   const overlayStore = deploy.overlayStore ?? false;
   const overlayStorage = deploy.overlayStorage ?? "20Gi";
+  // The agent-host-owned per-conversation module ConfigMap, mounted read-only at
+  // the SAME path scooterModule.dir points at (/etc/agent-sandbox/scooter), so
+  // scooter-apply-module reads the agent's self-authored module from it and the
+  // boot oneshot re-applies it on a fresh pod -> survives suspend/resume. The
+  // agent-host renders ONE final module here (deployment base + agent additions),
+  // so this REPLACES the deployment scooter-tools mount as the converge source
+  // when present.
+  const moduleCm = deploy.moduleConfigMap;
+  const moduleMountPath = "/etc/agent-sandbox/scooter";
   return {
     apiVersion: `${GROUP}/${VERSION}`,
     kind: "Sandbox",
@@ -253,7 +305,9 @@ export function sandboxManifest(
                     ]
                   : []),
                 // A deployment's injected .scooter tools (content is theirs).
-                ...(scooter
+                // Skipped when the per-conversation module CM owns this path (the
+                // agent-host renders the deployment's tools into that module).
+                ...(scooter && !moduleCm
                   ? [{ name: "scooter-tools", mountPath: "/etc/agent-sandbox/scooter", readOnly: true }]
                   : []),
                 // Deployment-named extra SA tokens (this platform names none).
@@ -267,6 +321,9 @@ export function sandboxManifest(
                 // using this as the upperdir; runtime nix builds (re-converge,
                 // in-pod installs) land here and persist across suspend/resume.
                 ...(overlayStore ? [{ name: "scooter-rw", mountPath: "/nix/.scooter-rw" }] : []),
+                // The agent-host-owned per-conversation module ConfigMap (the
+                // agent's self-authored module.nix). scooter-apply-module reads it.
+                ...(moduleCm ? [{ name: "scooter-conv", mountPath: moduleMountPath, readOnly: true }] : []),
               ],
               env: [
                 {
@@ -315,8 +372,11 @@ export function sandboxManifest(
                   { name: "tmp", emptyDir: { medium: "Memory" } },
                 ]
               : []),
-            ...(scooter
+            ...(scooter && !moduleCm
               ? [{ name: "scooter-tools", configMap: { name: scooter } }]
+              : []),
+            ...(moduleCm
+              ? [{ name: "scooter-conv", configMap: { name: moduleCm } }]
               : []),
             ...extraAudiences.map((aud) => ({
               name: `tok-${aud}`,

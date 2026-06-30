@@ -14,7 +14,12 @@ import { sandboxManifest } from "../../src/session/k8sProvisioner.js";
 
 type Manifest = {
   spec: {
-    podTemplate: { spec: { containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string }> }> } };
+    podTemplate: {
+      spec: {
+        containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>;
+        volumes?: Array<{ name: string; configMap?: { name: string } }>;
+      };
+    };
     volumeClaimTemplates: Array<{ metadata: { name: string }; spec: { resources: { requests: { storage: string } } } }>;
   };
 };
@@ -44,5 +49,34 @@ describe("sandboxManifest overlay-store wiring", () => {
     const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
     expect(mounts.find((v) => v.name === "scooter-rw")).toBeUndefined();
     expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeUndefined();
+  });
+});
+
+describe("sandboxManifest per-conversation module ConfigMap", () => {
+  it("mounts the module CM read-only at the converge path + adds the volume", () => {
+    const m = render({ moduleConfigMap: "conv-abc-module" });
+    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
+    const mount = mounts.find((v) => v.name === "scooter-conv");
+    expect(mount?.mountPath).toBe("/etc/agent-sandbox/scooter");
+    expect(mount?.readOnly).toBe(true);
+
+    const vol = (m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-conv");
+    expect(vol?.configMap?.name).toBe("conv-abc-module");
+  });
+
+  it("does NOT mount the deployment scooter-tools at the same path when the module CM owns it", () => {
+    // Both set: the per-conversation module CM wins the converge path (the host
+    // renders the deployment's tools into the module).
+    const m = render({ moduleConfigMap: "conv-abc-module", scooterConfigMap: "deploy-tools" });
+    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
+    const atPath = mounts.filter((v) => v.mountPath === "/etc/agent-sandbox/scooter");
+    expect(atPath.map((v) => v.name)).toEqual(["scooter-conv"]); // not scooter-tools too
+  });
+
+  it("adds no module CM mount/volume when none is given", () => {
+    const m = render({});
+    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
+    expect(mounts.find((v) => v.name === "scooter-conv")).toBeUndefined();
+    expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-conv")).toBeUndefined();
   });
 });
