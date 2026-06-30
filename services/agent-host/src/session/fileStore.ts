@@ -70,8 +70,16 @@ export function createFileConversationStore(root: string): ConversationStore {
       for (const line of data.split("\n")) {
         if (line.trim()) acc = chainNext(acc, JSON.parse(line) as AguiEvent);
       }
-    } catch {
-      /* no log yet -> empty seed */
+    } catch (e) {
+      // Finding #20: ENOENT = no log yet (a new conversation) -> empty seed is
+      // correct and silent. But a PARSE or I/O error here mis-seeds the integrity
+      // checksum from a corrupt/unreadable log — and the integrity chain exists
+      // precisely to detect corruption, so swallowing it silently defeats it. Log
+      // loudly for anything other than not-found.
+      if (!isENOENT(e)) {
+        // eslint-disable-next-line no-console
+        console.error(`[fileStore] checksum seed for ${id} failed to read/parse the log (integrity may be off):`, e);
+      }
     }
     if (!seeded.has(id)) {
       checksums.set(id, acc);

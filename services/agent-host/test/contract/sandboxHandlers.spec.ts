@@ -130,10 +130,14 @@ describe("ACP sandbox handlers — concurrent terminals", () => {
     expect((await h.terminalOutput({ terminalId: t2 } as any)).output).toBe("second");
   });
 
-  it("waitForTerminalExit on an unknown terminal returns a non-hanging error code", async () => {
+  it("waitForTerminalExit on an unknown terminal THROWS (host bug, not a command failure)", async () => {
+    // Finding #14: an unknown id must NOT be reported as exitCode:1 (which looks
+    // like the agent's command failed) — it's a host/protocol bug. Throw instead
+    // (still non-hanging: it rejects rather than waits forever).
     const { exec } = createControllableExec();
     const h = createSandboxClientHandlers(exec);
-    const { exitCode } = await h.waitForTerminalExit({ terminalId: "term-nope" } as any);
-    expect(exitCode).toBe(1);
+    await expect(h.waitForTerminalExit({ terminalId: "term-nope" } as any)).rejects.toThrow(
+      /unknown terminalId/,
+    );
   });
 });

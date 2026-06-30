@@ -77,7 +77,14 @@ export function createSandboxClientHandlers(exec: ExecBackend): SandboxClientHan
 
     async waitForTerminalExit(params) {
       const handle = terminals.get(params.terminalId);
-      if (!handle) return { exitCode: 1 };
+      if (!handle) {
+        // Finding #14: an unknown terminalId is a HOST bug (the id was never
+        // registered, or was released/killed before this wait) — NOT a command
+        // outcome. Fabricating exitCode:1 made an internal bug masquerade as "your
+        // command failed", misleading the agent. Throw a clear protocol error
+        // instead (still non-hanging — the original concern — but honest).
+        throw new Error(`waitForTerminalExit: unknown terminalId ${params.terminalId}`);
+      }
       const { exitCode } = await handle.waitForExit();
       return { exitCode };
     },

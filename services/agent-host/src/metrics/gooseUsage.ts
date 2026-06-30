@@ -107,7 +107,16 @@ export function createGooseUsageReader(config: GooseUsageReaderConfig): GooseUsa
       available = { table: "sessions", cols: resolved };
       return true;
     } catch (err) {
-      debug("[metrics] goose sessions.db not readable (%s); cost will be omitted", dbPath);
+      // Finding #13: this is logged ONCE (openedOnce guards re-entry). An ABSENT
+      // DB (ENOENT — goose hasn't run yet) is expected, so stay quiet (debug);
+      // but a PRESENT-but-unreadable DB (EACCES/corrupt) silently disabling all
+      // cost metrics is worth surfacing — log it loudly WITH the error, so the
+      // operator knows WHY cost is missing instead of guessing.
+      if ((err as { code?: string })?.code === "ENOENT") {
+        debug("[metrics] goose sessions.db absent (%s); cost will be omitted until goose runs", dbPath);
+      } else {
+        debugError(`[metrics] goose sessions.db at ${dbPath} unreadable; cost metrics DISABLED:`, err);
+      }
       return false;
     }
   };
