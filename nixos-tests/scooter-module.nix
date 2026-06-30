@@ -26,17 +26,10 @@ let
     cp -r ${pkgs.path} $out
   '';
 
-  # A module (written to the store) that pins the lazyTools/devEnvNix nixpkgs to
-  # the test's offline source — layered into the re-converge so the rebuilt
-  # toplevel doesn't default to nixos-unstable (a network ref) and the injected
-  # lazy tool resolves offline. A real file path (not an inline string) avoids the
-  # nested-quoting hazard of embedding it in scooter-apply-module's --expr.
-  offlinePin = pkgs.writeText "pin-offline-nixpkgs.nix" ''
-    { lib, ... }: {
-      programs.lazyTools.defaultNixpkgs = lib.mkForce "${toString nixpkgsSrc}";
-      devEnvNix.nixpkgs = lib.mkForce "${toString nixpkgsSrc}";
-    }
-  '';
+  # NOTE: lazyTools.defaultNixpkgs + devEnvNix.nixpkgs are now pinned by
+  # base-config.nix itself (to `path:${nixpkgs}`, the SAME source passed below), so
+  # the re-converged lazy tool resolves OFFLINE against the test's nixpkgs without a
+  # separate pin module here.
 
   # Pre-build the re-converged toplevel (base config + the layered modules) so its
   # closure is in the VM store and the in-pod build is pure activation (offline).
@@ -50,7 +43,6 @@ let
     extraModules = [
       ({ lib, ... }: { programs.scooterModule.nixpkgs = lib.mkForce (toString nixpkgsSrc); })
       ./fixtures/keep-backdoor.nix
-      "${offlinePin}"
       "${scooterFixture}/module.nix"
     ];
   }).toplevel;
@@ -93,12 +85,11 @@ pkgs.testers.runNixOSTest {
     # no backdoor, so prod is unaffected.) extraReconvergeModules threads a module
     # into EVERY re-converge that re-declares backdoor + keeps it across the switch,
     # so the rebuilt toplevel reflects the currently-running system.
-    # The re-converge always layers: keep-backdoor (so the test control channel
-    # survives the switch) + the offline nixpkgs pin (so the injected lazy tool
-    # resolves without network).
+    # The re-converge always layers keep-backdoor (so the test control channel
+    # survives the switch). The offline nixpkgs pin is no longer needed — base-config
+    # pins lazyTools/devEnvNix to the same nixpkgs source automatically.
     programs.scooterModule.extraReconvergeModules = [
       "${./fixtures/keep-backdoor.nix}"
-      "${offlinePin}"
     ];
   };
 

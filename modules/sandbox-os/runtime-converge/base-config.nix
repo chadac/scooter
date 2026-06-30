@@ -23,11 +23,22 @@
 }:
 
 let
+  # `nixpkgs` is a BARE store path (so we can `import` it). The lazy-tool stubs +
+  # the flake registry, however, embed a flake-REF string verbatim — and the image
+  # bakes those with a `path:`-prefixed ref. We MUST produce the identical ref here
+  # or the stubs hash differently and the re-converge needlessly rebuilds
+  # system-path (and re-substitutes the toolchain in-pod, ~10min). So derive the
+  # `path:` form from the bare path and force it on lazyTools/devEnvNix below.
+  nixpkgsRef = "path:" + (toString nixpkgs);
   evaled = import (nixpkgs + "/nixos/lib/eval-config.nix") {
     inherit system;
     modules = [
       modulesPath
       { boot.isContainer = true; }
+      ({ lib, ... }: {
+        programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsRef;
+        devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
+      })
     ] ++ extraModules;
   };
 in
