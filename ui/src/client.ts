@@ -79,9 +79,16 @@ export async function loadLinks(
       `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/links`,
       { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
     );
-    if (!res.ok) return [];
+    if (!res.ok) {
+      // Finding #24: a non-OK response is a real failure, not "no links" — log it
+      // so an empty links panel that's actually an error is diagnosable (the UI
+      // still degrades to [] rather than breaking).
+      console.warn(`[client] loadLinks ${conversationId}: HTTP ${res.status}`);
+      return [];
+    }
     return ((await res.json()) as { links?: ConversationLink[] }).links ?? [];
-  } catch {
+  } catch (e) {
+    console.warn(`[client] loadLinks ${conversationId} failed:`, e);
     return [];
   }
 }
@@ -167,10 +174,18 @@ export async function loadHistory(
     const res = await fetch(url, {
       headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      // Finding #15: a non-OK history fetch is a real failure — reviving a real
+      // conversation would show a BLANK thread, indistinguishable from empty.
+      // Log it (the UI still degrades to [] so it doesn't break; a refresh
+      // retries) so the blank-thread case is diagnosable instead of silent.
+      console.warn(`[client] loadHistory ${conversationId}: HTTP ${res.status}`);
+      return [];
+    }
     const body = (await res.json()) as { events?: Array<Record<string, unknown>> };
     events = body.events ?? [];
-  } catch {
+  } catch (e) {
+    console.warn(`[client] loadHistory ${conversationId} failed:`, e);
     return [];
   }
 

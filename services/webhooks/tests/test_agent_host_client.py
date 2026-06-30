@@ -91,3 +91,46 @@ def test_resolve_sandbox_is_identity():
     import asyncio
 
     assert asyncio.run(ahc.resolve_sandbox_to_conversation("conv-x")) == "conv-x"
+
+
+# --- finding #17: status fetch distinguishes 404 from a transient failure -------
+#
+# get_conversation_status returns None for BOTH a 404 (conversation gone) and a
+# 5xx/unreachable error, but they're logged DISTINCTLY so a dead agent-host
+# doesn't silently look like every conversation vanished. We assert the return
+# values + that a transient failure logs at WARNING (vs a 404 at debug).
+
+def _patch_get(monkeypatch, handler):
+    """Make the module's httpx.AsyncClient route through a MockTransport handler.
+
+    Replace the AsyncClient class the module references with a factory that
+    injects a MockTransport — so `async with httpx.AsyncClient(...)` + client.get
+    hits our handler (no recursion, unlike patching .get on the instance).
+    """
+    real_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs.pop("transport", None)
+        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(ahc.httpx, "AsyncClient", factory)
+
+
+async def test_status_404_returns_none(monkeypatch):
+    _patch_get(monkeypatch, lambda req: httpx.Response(404))
+    assert await ahc.get_conversation_status("c1") is None
+
+
+async def test_status_ok_returns_status(monkeypatch):
+    _patch_get(monkeypatch, lambda req: httpx.Response(200, json={"status": "running"}))
+    assert await ahc.get_conversation_status("c1") == "running"
+
+
+async def test_status_5xx_returns_none_and_warns(monkeypatch, caplog):
+    import logging
+
+    _patch_get(monkeypatch, lambda req: httpx.Response(503))
+    with caplog.at_level(logging.WARNING, logger="webhooks.agent_host_client"):
+        assert await ahc.get_conversation_status("c1") is None
+    # A transient failure is surfaced at WARNING (NOT silently like a 404).
+    assert any("FAILED (transient" in r.message for r in caplog.records)

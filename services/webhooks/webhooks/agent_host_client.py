@@ -127,17 +127,29 @@ async def push_link(
 
 
 async def get_conversation_status(conversation_id: str) -> str | None:
-    """Status of a conversation via the agent-host management API."""
+    """Status of a conversation via the agent-host management API.
+
+    Returns the status string, or None when it can't be determined. Finding #17:
+    a 404 (conversation gone) and a transient failure (5xx / agent-host
+    unreachable) BOTH yield None, but they're very different — the former is
+    terminal, the latter means "try again". They're logged DISTINCTLY (404 at
+    debug, transient at warning) so a persistently-unreachable agent-host is
+    visible instead of silently looking like every conversation vanished.
+    """
     base = settings.agent_host_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{base}/conversations/{conversation_id}")
             if resp.status_code == 404:
+                logger.debug("conversation %s not found (404) — no status", conversation_id)
                 return None
             resp.raise_for_status()
             return resp.json().get("status")
-    except httpx.HTTPError:
-        logger.warning("status fetch failed for %s", conversation_id)
+    except httpx.HTTPError as e:
+        # Transient: the agent-host is unreachable or erroring. NOT the same as a
+        # 404 — surface it so a flapping/dead agent-host doesn't silently freeze
+        # all status comments.
+        logger.warning("status fetch for %s FAILED (transient, will retry): %s", conversation_id, e)
         return None
 
 
