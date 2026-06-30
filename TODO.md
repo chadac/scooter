@@ -103,6 +103,68 @@ Running list of work items. Newest asks at the top of each section. See
 
 ## Backlog
 
+- [ ] **Agent self-modifies its compute environment (rebuild on-the-fly).** Let the
+  agent change its OWN sandbox and have the change take effect live, at two layers:
+  1. **In-pod (NixOS config):** add tools/services to the running sandbox without a
+     platform round-trip. The pieces largely EXIST — `.scooter/module.nix` applied
+     via switch-to-configuration (the deployment-injected-tools work) is exactly a
+     "declare new tools/services, re-converge live" mechanism. This item is about
+     giving the AGENT a first-class, safe handle on it: a skill/tool to edit its
+     own `.scooter/module.nix` (or an overlay of it), trigger the switch, and see
+     the result — with the local-overlay store (this PR) catching the rebuilt
+     closure in the writable upper so the baked base stays clean and the rebuild is
+     discardable. Guardrails: validate the module evals before switching; don't let
+     a bad switch wedge PID 1 (the switch-specialisation spike showed it survives,
+     but the agent path needs a rollback-on-failure).
+  2. **Cluster (kubenix deployment):** the bigger ask — the agent expands its own
+     *resources* (CPU/mem/disk requests+limits, extra volumes, maybe a sidecar) by
+     mutating the Sandbox spec. Today the Sandbox is provisioned by the agent-host
+     from `modules/conversation.nix`; resizing means either (a) patching the live
+     Sandbox/Pod (k8s in-place pod resize for CPU/mem; PVC expansion for disk) or
+     (b) re-rendering the conversation's kubenix + re-applying (suspend→resume with
+     a new podTemplate — heavier, but matches "suspend, don't delete"). Needs an
+     agent-facing, AUTHZ-GATED API (this is exactly why broker/OpenFGA enforcement
+     exists — an agent changing its own resource envelope is a permission-boundary
+     event). OPEN QUESTIONS: in-place resize vs resume-with-new-template; quotas /
+     a max envelope per conversation; who approves (auto under a cap, human above);
+     does a disk/PVC grow need the overlay upper moved to a PVC (see the web-services
+     item + the overlay follow-up). Depends on: the .scooter switch mechanism, the
+     local-overlay store, broker authz.
+
+- [ ] **Sandbox runs web services the agent shares with the user (per-conversation
+  routing).** The compute environment ships a catalog of web services, DISABLED by
+  default, that the agent can enable and expose to the user under the conversation's
+  own URL space. Target UX: `chat.scooter.dev/<conv-id>/` routes to an nginx the
+  conversation's agent controls; the agent adds subpaths like
+  `chat.scooter.dev/<conv-id>/hello-world` (review apps, prototypes, served assets)
+  and shares the link in chat.
+  - **Service catalog (off by default), big ones:**
+    - **marimo** notebook (`marimo-pair` — collaborative/agent-pair editing),
+    - **jupyter** notebook,
+    - **vscode** (code-server) instance — with a mechanism for the SAME agent to send
+      messages into it (agent↔editor channel),
+    - a **generic static HTTP server** for prototyping static assets / review apps.
+    Model these like the existing dev-env services: a `programs.lazyServices` /
+    sibling-of-`lazyTools` pattern (ConfigMap- or `.scooter`-driven enable), so the
+    generic image carries them latent and a conversation turns on what it needs.
+    (This dovetails with `programs.lazyServices` already noted under the dev-env
+    item's "future" bullet.)
+  - **Routing:** an in-pod nginx the agent controls is the per-conversation reverse
+    proxy; it maps `/<conv-id>/<subpath>` → the right local service / static dir, and
+    the agent can register new subpaths at runtime (write an nginx snippet + reload,
+    or a small dynamic router). The cluster ingress (Traefik today) routes
+    `chat.scooter.dev/<conv-id>/*` to that conversation's pod. OPEN QUESTIONS:
+    path-prefix vs sub-subdomain (`<conv-id>.chat.scooter.dev`) — prefix is simpler
+    for one wildcard cert + ingress, but some apps (vscode, jupyter) assume a root
+    path and need base-href/prefix-stripping config; auth (the chat is auth-gated —
+    these subpaths must inherit the same identity/ownership gate, not be open);
+    websockets (marimo/jupyter/vscode are WS-heavy — ingress + nginx must pass WS,
+    like the SSE no-buffering fix already done); lifecycle (a service holds the pod
+    busy — interacts with idle-suspend; suspending a conv with a live review app).
+    Depends on: per-conversation ingress routing, the dev-env services mechanism,
+    user-identity/ownership (auth gate), and ideally the self-modify item (the agent
+    enabling a service IS a compute-env change).
+
 - [x] **OTel cost/usage metrics — exportable to any aggregator (Datadog, etc.).**
   DONE (agent-host; off by default). OpenTelemetry metrics over OTLP (vendor-neutral):
   `agent_runs_total` + `agent_run_duration_ms` (by model + outcome), `agent_tokens_total`
