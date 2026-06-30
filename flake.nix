@@ -2,11 +2,13 @@
   description = "Nix-powered agent sandbox platform layered over the Kubernetes agent-sandbox controller";
 
   inputs = {
+    # The single nixpkgs the platform AND the sandbox build from. The sandbox's
+    # lazy-tool stubs + the runtime re-converge resolve against `path:${nixpkgs}`,
+    # the SAME source the image baked with — so a re-converge is a near-noop diff
+    # against the baked store (no toolchain re-fetch). (There used to be a separate
+    # `nixpkgs-pinned` input for the stubs; that drift was the cause of the slow
+    # first re-converge, so it's unified onto this one.)
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # Pinned nixpkgs the sandbox's lazy tool stubs resolve packages against
-    # (the built-in fallback when the pin ConfigMap isn't mounted). Fixed rev =
-    # deterministic eval + eval-cache hits. Bump deliberately.
-    nixpkgs-pinned.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     nix2container = {
       url = "github:nlewo/nix2container";
@@ -18,7 +20,7 @@
     };
   };
 
-  outputs = inputs@{ self, nixpkgs, nixpkgs-pinned, flake-parts, nix2container, kubenix }:
+  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
@@ -68,7 +70,6 @@
           # services). Built from the shared modules/sandbox-os config.
           sandboxOsImage = import ./pkgs/sandbox-os {
             inherit pkgs lib;
-            nixpkgsPinned = "path:${inputs.nixpkgs-pinned}";
           };
 
           # Same image with the read-only-base + writable-upper local-overlay store
@@ -77,7 +78,6 @@
           # register-nix-paths — to prove the prod topology the nixosTest can't.
           sandboxOsOverlayImage = import ./pkgs/sandbox-os {
             inherit pkgs lib;
-            nixpkgsPinned = "path:${inputs.nixpkgs-pinned}";
             name = "agent-sandbox-os-overlay";
             extraModules = [ { programs.overlayStore.enable = true; } ];
           };
