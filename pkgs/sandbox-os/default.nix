@@ -55,6 +55,14 @@ let
 
   toplevel = nixos.config.system.build.toplevel;
 
+  # The Nix path-registration for the WHOLE system closure. dockerTools ships the
+  # store *paths* but not a Nix DB; we load this into /nix/var/nix/db at build time
+  # so the baked store is a REAL, registered, read-only Nix store. Required by the
+  # local-overlay store (its read-only lower must already have a DB — it can't
+  # create one read-only; see modules/sandbox-os/overlay-store.nix + the MWE), and
+  # harmless/beneficial otherwise (nix queries against the baked store just work).
+  closure = pkgs.closureInfo { rootPaths = [ toplevel ]; };
+
   # Files baked at the image root (outside the Nix store): the init symlink,
   # writable machine-id, and the dirs systemd expects to exist.
   rootExtras = pkgs.runCommand "sandbox-os-root" { } ''
@@ -84,6 +92,15 @@ in
       # doesn't block first boot (they become tmpfs at runtime).
       mkdir -p var/log run tmp
       chmod 1777 tmp
+
+      # Register the closure into a baked Nix DB and create the optimiser's .links
+      # dir, so /nix/store is a COMPLETE read-only store (DB + .links present). The
+      # local-overlay store's read-only lower needs both — it cannot create them
+      # read-only (NixOS/nix#11840) — and a registered DB makes nix queries against
+      # the baked store correct in general.
+      export NIX_STATE_DIR=$PWD/nix/var/nix
+      mkdir -p nix/var/nix nix/store/.links
+      ${pkgs.buildPackages.nix}/bin/nix-store --load-db < ${closure}/registration
     '';
 
     config = {

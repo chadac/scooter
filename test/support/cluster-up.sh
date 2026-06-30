@@ -124,10 +124,12 @@ build_and_import() {
 }
 
 import_images() {
-  build_and_import ".#sandbox-image" "generic sandbox"
-  # The NixOS dev-environment sandbox (systemd PID 1). Heavier build; gated on
-  # the Tier 2 sandbox-os test needing it (SANDBOX_OS_IMAGE).
+  # The NixOS dev-environment sandbox (systemd PID 1). The pkgs/sandbox-image
+  # generic image was retired (#10); the OS image is the only sandbox now.
   build_and_import ".#sandbox-os-image" "NixOS dev sandbox"
+  # Same image with the local-overlay Nix store enabled — the Tier-2 overlay-store
+  # test (OVERLAY_IMAGE) runs this. Heavier; warn+skip if the build isn't ready.
+  build_and_import ".#sandbox-os-overlay-image" "NixOS dev sandbox (overlay store)"
 }
 
 # ---------------------------------------------------------------------------
