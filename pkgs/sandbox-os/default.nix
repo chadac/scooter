@@ -27,6 +27,18 @@
 }:
 
 let
+  # The nixpkgs SOURCE the in-pod re-converge imports, captured as ONE store
+  # object used on BOTH sides — critical, or the apply fails "path does not
+  # exist" in-pod. `pkgs.path` is subtle: `toString pkgs.path` yields the flake
+  # input's bare `…-source` path (a plain string, NO Nix context), while coercing
+  # `pkgs.path` into a derivation (what `system.extraDependencies = [ pkgs.path ]`
+  # does) re-imports it via builtins.path under a DIFFERENT, content-addressed
+  # `…-source` name. So baking `toString pkgs.path` into the apply script while
+  # shipping the coerced copy ships one path and references another. Pin a single
+  # `builtins.path` derivation and use ITS path verbatim for both the script
+  # (scooterModule.nixpkgs) and the closure (extraDependencies).
+  nixpkgsSource = builtins.path { path = pkgs.path; name = "source"; };
+
   nixos = pkgs.nixos ({ lib, ... }: {
     imports = [ ../../modules/sandbox-os ] ++ extraModules;
 
@@ -40,8 +52,8 @@ let
     # (a bare vs path: format mismatch) makes the
     # first re-converge rebuild system-path + re-fetch the toolchain (~10min)
     # instead of being a near-noop diff against the baked store.
-    programs.lazyTools.defaultNixpkgs = lib.mkForce "path:${toString pkgs.path}";
-    devEnvNix.nixpkgs = lib.mkForce "path:${toString pkgs.path}";
+    programs.lazyTools.defaultNixpkgs = lib.mkForce "path:${nixpkgsSource}";
+    devEnvNix.nixpkgs = lib.mkForce "path:${nixpkgsSource}";
 
     # Runtime re-converge: the pod applies a mounted .scooter/module.nix (a NixOS
     # module that declares its own tools/services, e.g. example-review) via
@@ -49,12 +61,11 @@ let
     # BARE store path (no `path:` prefix — that's a flake ref, not importable).
     programs.scooterModule = {
       enable = lib.mkDefault true;
-      nixpkgs = lib.mkForce (toString pkgs.path);
+      nixpkgs = lib.mkForce "${nixpkgsSource}";
     };
-    # Ship the nixpkgs SOURCE in the image closure (pkgs.path has Nix context
-    # here; the bare-string cfg.nixpkgs in the apply script does not). The in-pod
-    # re-converge `nix build` imports it — offline, no fetch.
-    system.extraDependencies = [ pkgs.path ];
+    # Ship the SAME source object the script references (see nixpkgsSource above).
+    # The in-pod re-converge `nix build` imports it — offline, no fetch.
+    system.extraDependencies = [ nixpkgsSource ];
   });
 
   toplevel = nixos.config.system.build.toplevel;
