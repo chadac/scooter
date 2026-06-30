@@ -60,12 +60,34 @@
     # Conversation UI (nginx serving assistant-ui + proxying the agent-host API).
     ui.enable = true;
 
-    # Public ingress via Traefik (+ external-dns companion). Reuse a basic-auth
-    # middleware since the agent-host API is otherwise unauthenticated.
+    # Public ingress — a generic networking.k8s.io/v1 Ingress; bring your own
+    # controller via className + annotations. The agent-host trusts an identity
+    # header the ingress sets, so your AUTH + header-setting config goes in
+    # `annotations` (here: an nginx external-auth + a forwarded header — adapt to
+    # your controller, e.g. ALB cert-arn/scheme, an OIDC proxy, etc.).
     ingress = {
       enable = true;
       host = "chat.example.com";
-      middlewares = [{ name = "basic-auth"; namespace = "agent-sandbox"; }];
+      className = "nginx";
+      annotations = {
+        "cert-manager.io/cluster-issuer" = "letsencrypt";
+        # Example: gate the UI/API behind an external auth service that injects
+        # x-auth-user (the header the agent-host trusts). Replace for your setup.
+        "nginx.ingress.kubernetes.io/auth-url" = "https://auth.example.com/verify";
+        "nginx.ingress.kubernetes.io/auth-response-headers" = "x-auth-user,x-auth-email";
+      };
+      tls = true;
+      tlsSecretName = "chat-tls";
+    };
+
+    # Webhooks receiver (GitHub/Slack/…): its own host + NO auth (providers sign
+    # their requests). Generic ingress under agentSandbox.webhooks.ingress.
+    webhooks.ingress = {
+      enable = true;
+      host = "scooter.example.com";
+      className = "nginx";
+      annotations."cert-manager.io/cluster-issuer" = "letsencrypt";
+      tlsSecretName = "webhooks-tls";
     };
   };
 }
