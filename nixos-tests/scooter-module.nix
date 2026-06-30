@@ -26,14 +26,31 @@ let
     cp -r ${pkgs.path} $out
   '';
 
-  # Pre-build the re-converged toplevel (base config + the fixture module) so its
+  # A module (written to the store) that pins the lazyTools/devEnvNix nixpkgs to
+  # the test's offline source — layered into the re-converge so the rebuilt
+  # toplevel doesn't default to nixos-unstable (a network ref) and the injected
+  # lazy tool resolves offline. A real file path (not an inline string) avoids the
+  # nested-quoting hazard of embedding it in scooter-apply-module's --expr.
+  offlinePin = pkgs.writeText "pin-offline-nixpkgs.nix" ''
+    { lib, ... }: {
+      programs.lazyTools.defaultNixpkgs = lib.mkForce "${toString nixpkgsSrc}";
+      devEnvNix.nixpkgs = lib.mkForce "${toString nixpkgsSrc}";
+    }
+  '';
+
+  # Pre-build the re-converged toplevel (base config + the layered modules) so its
   # closure is in the VM store and the in-pod build is pure activation (offline).
+  # MUST mirror what scooter-apply-module builds exactly — including the
+  # keep-backdoor module threaded via extraReconvergeModules — or the in-pod build
+  # is a cache miss and tries to build from source (offline -> hang/fail).
   reconverged = (import "${sandboxModule}/runtime-converge/base-config.nix" {
     nixpkgs = toString nixpkgsSrc;
     modulesPath = sandboxModule;
     system = pkgs.system;
     extraModules = [
       ({ lib, ... }: { programs.scooterModule.nixpkgs = lib.mkForce (toString nixpkgsSrc); })
+      ./fixtures/keep-backdoor.nix
+      "${offlinePin}"
       "${scooterFixture}/module.nix"
     ];
   }).toplevel;
@@ -65,6 +82,24 @@ pkgs.testers.runNixOSTest {
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     virtualisation.diskSize = 6144;
+
+    # LAYER the runtime re-converge on top of the running system. scooter-apply-
+    # module builds its toplevel from the SHARED base config (modules/sandbox-os),
+    # which does NOT include the nixosTest framework's `backdoor.service` (the test
+    # control channel) — so without this, switch-to-configuration stops backdoor as
+    # a "removed" unit, the driver loses its connection, and
+    # `machine.succeed("scooter-apply-module")` HANGS to the 1h timeout. (This is
+    # the pre-existing reason dev-env-scooter-module failed on main; a real pod has
+    # no backdoor, so prod is unaffected.) extraReconvergeModules threads a module
+    # into EVERY re-converge that re-declares backdoor + keeps it across the switch,
+    # so the rebuilt toplevel reflects the currently-running system.
+    # The re-converge always layers: keep-backdoor (so the test control channel
+    # survives the switch) + the offline nixpkgs pin (so the injected lazy tool
+    # resolves without network).
+    programs.scooterModule.extraReconvergeModules = [
+      "${./fixtures/keep-backdoor.nix}"
+      "${offlinePin}"
+    ];
   };
 
   testScript = ''
