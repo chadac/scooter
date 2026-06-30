@@ -71,6 +71,17 @@
             nixpkgsPinned = "path:${inputs.nixpkgs-pinned}";
           };
 
+          # Same image with the read-only-base + writable-upper local-overlay store
+          # turned ON (programs.overlayStore). The Tier-2 cluster test runs THIS in a
+          # real container — where the lower is the baked store and there's no VM
+          # register-nix-paths — to prove the prod topology the nixosTest can't.
+          sandboxOsOverlayImage = import ./pkgs/sandbox-os {
+            inherit pkgs lib;
+            nixpkgsPinned = "path:${inputs.nixpkgs-pinned}";
+            name = "agent-sandbox-os-overlay";
+            extraModules = [ { programs.overlayStore.enable = true; } ];
+          };
+
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
           ui = pkgs.callPackage ./ui { };
 
@@ -124,6 +135,10 @@
 
             # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox
             sandbox-os-image = sandboxOsImage.image;
+
+            # nix build .#sandbox-os-overlay-image  ->  same, with the local-overlay
+            # Nix store enabled. Used by the Tier-2 overlay-store cluster test.
+            sandbox-os-overlay-image = sandboxOsOverlayImage.image;
 
             # The broker tools (agent-broker / git-credential-broker / scooter-aws*),
             # prebuilt; baked into the sandbox-os image via the brokerTools overlay.

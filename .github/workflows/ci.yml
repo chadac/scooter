@@ -7,10 +7,16 @@ name: CI
 #   - Tier 1 contract tests   (vitest, no cluster)
 #   - broker + webhooks builds (their nix build runs pytest via pytestCheckHook)
 #
-# Tier 2 (cluster) and Tier 3 (e2e) are heavier and NOT run here — see the
-# `cluster` / `e2e` justfile recipes and docs/TESTING.md. The KVM-backed
-# dev-env nixosTests run as a parallel MATRIX (one job per VM test) below, so
-# they finish in the time of the slowest single test rather than 8 serial boots.
+# The KVM-backed dev-env nixosTests run as a parallel MATRIX (one job per VM
+# test) below, so they finish in the time of the slowest single test rather than
+# 8 serial boots.
+#
+# Tier 2 (cluster): a PATH-GATED k3d job (`cluster-image-boot`) runs the
+# self-contained image-boot specs (sandbox-os + overlay-store) on a real cluster
+# when the sandbox image / its modules / those specs change — covering the OCI
+# packaging + in-pod systemd boot + the local-overlay store's PROD topology that
+# the VM tests can't. The rest of Tier 2 (controller/broker/webhooks) and Tier 3
+# (e2e) stay manual — see the `cluster` / `e2e` justfile recipes + docs/TESTING.md.
 #
 # BINARY CACHE (Cachix) — one-time setup so expensive closures (e.g. the
 # scooter-module NixOS toplevel) are built ONCE and pulled across branches/PRs
@@ -150,3 +156,87 @@ jobs:
 
       - name: build ${{ matrix.test }}
         run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
+
+  # Decide whether the Tier-2 cluster job needs to run: only when the sandbox
+  # image, its NixOS modules, or the image-boot cluster specs change. Most PRs
+  # touch none of these and skip the (heavier) cluster job entirely.
+  cluster-changes:
+    name: detect sandbox-image changes
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.filter.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            image:
+              - 'pkgs/sandbox-os/**'
+              - 'modules/sandbox-os/**'
+              - 'pkgs/broker-tools/**'
+              - 'flake.nix'
+              - 'test/cluster/sandbox-os.spec.ts'
+              - 'test/cluster/overlay-store.spec.ts'
+              - 'test/support/cluster.ts'
+
+  # Tier-2 image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
+  # Docker; no root, runs on the standard runner). Covers what the nixosTest VMs
+  # cannot: the OCI packaging + the in-pod systemd-PID-1 boot, and the
+  # local-overlay store in the PROD topology (baked store as the read-only lower).
+  # Path-gated via cluster-changes; only the self-contained image-boot specs run
+  # (sandbox-os + overlay-store) — no controller/broker/webhooks needed.
+  cluster-image-boot:
+    name: Tier-2 image boot (k3d)
+    needs: cluster-changes
+    if: needs.cluster-changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # Non-required while the runner-side k3d path is being confirmed; promote to
+    # required once it's consistently green.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # k3d needs Docker (present on ubuntu-latest). Get k3d + kubectl from nixpkgs.
+      - name: create k3d cluster
+        run: |
+          nix shell nixpkgs#k3d nixpkgs#kubectl -c k3d cluster create scooter-ci --no-lb --wait
+          nix shell nixpkgs#k3d -c k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
+
+      # Build both OS images (Cachix-cached), load into Docker, import into k3d by
+      # NAME. We import by name (not the tarball) because dockerTools ships a
+      # GZIPPED tar that ctr's importer rejects ("invalid tar header").
+      - name: build + import sandbox images
+        run: |
+          set -euo pipefail
+          for pkg in sandbox-os-image sandbox-os-overlay-image; do
+            tarball=$(nix build ".#${pkg}" --no-link --print-out-paths --print-build-logs)
+            docker load < "$tarball"
+          done
+          nix shell nixpkgs#k3d -c k3d image import \
+            agent-sandbox-os:latest agent-sandbox-os-overlay:latest -c scooter-ci
+
+      # Run ONLY the two self-contained image-boot specs against the live cluster.
+      # `npm install` first (node_modules for vitest + the k8s client), inside the
+      # dev shell so node/npm come from the flake.
+      - name: Tier-2 image-boot specs
+        env:
+          RUN_CLUSTER_TESTS: "1"
+          CLUSTER_PROVIDER: existing
+          SANDBOX_OS_IMAGE: agent-sandbox-os:latest
+          OVERLAY_IMAGE: agent-sandbox-os-overlay:latest
+          CI: "1"
+        # --no-file-parallelism: run the two specs SEQUENTIALLY. Each boots a
+        # privileged systemd-PID-1 pod; two at once on a single-node k3d contend
+        # for resources (slow boots → flaky readiness) and share the test
+        # namespace. One at a time is reliable and still fast.
+        run: nix develop --command bash -c 'npm install && npm run test:cluster -- sandbox-os overlay-store --no-file-parallelism'
+
+      - name: tear down k3d
+        if: always()
+        run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true

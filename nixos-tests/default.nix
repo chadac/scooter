@@ -31,5 +31,9 @@ in
   # A deployment's .scooter/module.nix (a NixOS module declaring its own tools)
   # applied at runtime via switch-to-configuration. The no-rebuild injection path.
   dev-env-scooter-module = runTest ./scooter-module.nix;
-  # clean immutable base + a writable upper for runtime builds).
+  # The read-only-lower + writable-upper local-overlay Nix store (clean immutable
+  # base + a writable upper for runtime builds). Composes on top of whatever
+  # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's
+  # own VM overlay — so this VM test exercises the real mechanism.
+  dev-env-overlay-store = runTest ./overlay-store.nix;
 }
