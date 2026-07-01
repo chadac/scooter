@@ -31,14 +31,22 @@ let
   # the re-converged lazy tool resolves OFFLINE against the test's nixpkgs without a
   # separate pin module here.
 
+  # The EXACT inputs the in-pod build feeds base-config.nix, from the SAME helper
+  # runtime-converge.nix uses (single source of truth). `modulesSrc` is a VENDORED
+  # tree (modules/sandbox-os + pkgs/broker-tools at a fixed layout), NOT the bare
+  # module dir: building `reconverged` with `sandboxModule` directly produces a
+  # DIFFERENT derivation than the runtime builds -> cache miss -> from-source build
+  # that hangs OFFLINE in the VM.
+  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
+
   # Pre-build the re-converged toplevel (base config + the layered modules) so its
-  # closure is in the VM store and the in-pod build is pure activation (offline).
-  # MUST mirror what scooter-apply-module builds exactly — including the
-  # keep-backdoor module threaded via extraReconvergeModules — or the in-pod build
-  # is a cache miss and tries to build from source (offline -> hang/fail).
-  reconverged = (import "${sandboxModule}/runtime-converge/base-config.nix" {
+  # closure is in the VM store and the in-pod build is a pure CACHE HIT (offline
+  # activation). MUST mirror what scooter-apply-module builds exactly — same
+  # modulesSrc, same nixpkgs, same module order — including the keep-backdoor module
+  # threaded via extraReconvergeModules.
+  reconverged = (import reconvergeInputs.baseConfig {
     nixpkgs = toString nixpkgsSrc;
-    modulesPath = sandboxModule;
+    modulesPath = reconvergeInputs.modulesSrc;
     system = pkgs.system;
     extraModules = [
       ({ lib, ... }: { programs.scooterModule.nixpkgs = lib.mkForce (toString nixpkgsSrc); })
