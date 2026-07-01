@@ -59,7 +59,8 @@ def _format_forwarded_message(
         )
 
     reply_instruction = (
-        f"To respond on Jira, post a comment via the Jira API on issue {issue_key}."
+        "To respond, use the `jira_comment` tool (this issue is already known — you just "
+        "provide the comment body). It reports the real result."
     )
 
     return f"{preamble}\n\n---\n\n{comment_body}\n\n---\n\n{reply_instruction}"
@@ -68,9 +69,10 @@ def _format_forwarded_message(
 def _response_instructions(issue_key: str) -> str:
     return (
         f"\n\n---\n"
-        f"**Response workflow:** First, post an acknowledgment on Jira so the requester knows you've seen it. "
+        f"**Response workflow:** First, acknowledge so the requester knows you've seen it. "
         f"Then work on the task. When finished, post a follow-up comment with your results.\n\n"
-        f"To respond on Jira, post a comment via the Jira API on issue {issue_key}."
+        f"To respond on Jira, use the `jira_comment` tool (issue {issue_key} is already known — "
+        f"you just provide the body)."
     )
 
 

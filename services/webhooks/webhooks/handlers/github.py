@@ -92,7 +92,8 @@ def _format_forwarded_message(
         )
 
     reply_instruction = (
-        f"To respond, use: `gh issue comment {number} -R {owner}/{repo} -b \"your response\"`"
+        "To respond, use the `github_comment` tool (this PR/issue is already known — "
+        "you just provide the comment body). It reports the real result."
     )
 
     return f"{preamble}\n\n---\n\n{comment_body}\n\n---\n\n{reply_instruction}"

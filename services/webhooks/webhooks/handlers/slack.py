@@ -104,8 +104,8 @@ def _format_forwarded_message(
 
     reply_hint = (
         f"\n\n---\n"
-        f"Reply via the broker: `$BROKER_URL/slack/chat.postMessage` "
-        f"(channel: `{channel}`, thread_ts: `{thread_ts}`)"
+        f"To reply, use the `slack_respond` tool (this thread is already known — you just "
+        f"provide the text)."
     )
     return f"{preamble}\n\n---\n\n{comment_body}{reply_hint}"
 
