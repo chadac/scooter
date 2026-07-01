@@ -97,6 +97,14 @@ So:
 SERVER-SIDE; the run proceeds and every event persists → flows to the integrity
 stream — whether or not the caller consumes the POST's SSE body.
 
+**Latency of the single-source model — MEASURED (negligible).** The only cost of
+routing your own send's reply back through the persist→integrity path (instead of
+the direct `/agui` SSE) is how much later each event lands on the integrity stream.
+Measured locally (fake agent, file store), per-event delta (integrity − direct)
+over a full run: **p50 0.7 ms, p90 7 ms, max 44 ms, mean 3.5 ms** — all well below
+perception. `onAppend` fires right after the durable write, so it stays low-ms. No
+fallback needed; single-source stands.
+
 **Part-1 architecture (final): ONE runtime, fed solely by the `IntegrityAgent`;
 sends are fire-and-forget `POST /agui`.** The open conversation always renders
 from `/conversations/:id/events.integrity`. When the user sends, we POST to

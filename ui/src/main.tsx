@@ -5,6 +5,7 @@ import "./globals.css";
 import { App } from "./App.js";
 import { sessionStore } from "./sessions.js";
 import { loadConversations, loadConversationsResult, loadWhoami } from "./client.js";
+import { subscribeConversations } from "./conversationStream.js";
 
 // On load — and then on a light interval — pull every conversation from the
 // agent-host so the sidebar survives a refresh, lists conversations created
@@ -41,6 +42,21 @@ const initialLoad = async () => {
 };
 void initialLoad();
 setInterval(refreshConversations, 10000);
+
+// Live sidebar push: subscribe to the agent-host's conversation-list stream so a
+// NEW conversation (e.g. a Slack thread) — or an agent-assigned title — lands in
+// the sidebar INSTANTLY instead of on the next 10s poll. We fold both frames
+// through the SAME sessionStore.mergeFromServer the poll uses, so a streamed
+// conversation gets its source badge/owner exactly like a polled one. Scope
+// "all" MIRRORS the poll (which loads everything and filters Mine/All
+// client-side via /whoami), so the stream never shows less than the poll. The
+// 10s poll stays as the reconcile/backstop; the stream just makes it feel
+// instant. It reconnects on drop internally. This tab lives for the page's
+// lifetime, so there is no unmount to close on (parallel to the setInterval).
+subscribeConversations({ baseUrl: BASE_URL }, "all", {
+  onSnapshot: (list) => sessionStore.mergeFromServer(list),
+  onUpsert: (c) => sessionStore.mergeFromServer([c]),
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

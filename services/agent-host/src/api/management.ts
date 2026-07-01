@@ -94,29 +94,33 @@ export function createManagementApi(deps: ManagementDeps): Router {
     json: { default: models.default ?? null, available: models.available },
   }));
 
-  r.get("/conversations", async (ctx) => {
-    const now = Date.now();
-    // VIEW FILTER (not access control — conversations are public):
-    //   ?scope=mine (default) -> conversations the caller owns + unowned/public ones.
-    //   ?scope=all            -> everything.
-    // An anonymous caller (no identity header) sees everything either way, so
-    // single-user / local-dev is unchanged.
+  // VIEW FILTER (not access control — conversations are public):
+  //   ?scope=mine (default) -> conversations the caller owns + unowned/public ones.
+  //   ?scope=all            -> everything.
+  // An anonymous caller (no identity header) sees everything either way, so
+  // single-user / local-dev is unchanged. Extracted so the list route AND the
+  // /conversations/events push stream share ONE predicate — the stream is a
+  // security boundary and must not leak more than the poll would.
+  const visibleFilter = (ctx: { user: { anonymous: boolean; id: string }; query: URLSearchParams }) => {
     const scope = ctx.query.get("scope") ?? "mine";
     const user = ctx.user;
-    const visible = (c: { owner?: string }) =>
+    return (c: { owner?: string }) =>
       scope === "all" || user.anonymous || c.owner == null || c.owner === user.id;
+  };
 
-    const list = sessions.list().filter(visible);
-    // Enrich each conversation with the DISTINCT providers it links to, so the
-    // sidebar can show a per-row provider icon without an extra /links fetch per
-    // conversation. Links are file-backed (cheap); fetch them in parallel.
-    const json = await Promise.all(
-      list.map(async (c) => {
-        const links = (await store.listLinks?.(c.id)) ?? [];
-        const sources = [...new Set(links.map((l) => l.source))].sort();
-        return { ...view(c, now), sources };
-      }),
-    );
+  // Enrich a conversation with the DISTINCT providers it links to, so the sidebar
+  // can show a per-row provider icon without an extra /links fetch. Links are
+  // file-backed (cheap). Shared by the list route and the push stream.
+  const withSources = async (c: Conversation, now: number) => {
+    const links = (await store.listLinks?.(c.id)) ?? [];
+    const sources = [...new Set(links.map((l) => l.source))].sort();
+    return { ...view(c, now), sources };
+  };
+
+  r.get("/conversations", async (ctx) => {
+    const now = Date.now();
+    const list = sessions.list().filter(visibleFilter(ctx));
+    const json = await Promise.all(list.map((c) => withSources(c, now)));
     return { json };
   });
 
@@ -126,12 +130,45 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // each SessionManager.onConversationChange (new conversation / title change),
   // filtered by the caller's scope so it never leaks more than the poll. Makes a
   // Slack thread appear in the sidebar instantly instead of on the 10s poll.
-  //
-  // Design stage: STUB — writes 501 so the contract test is red until implemented.
   r.get("/conversations/events", async (ctx) => {
     const { res } = ctx;
-    void sessions; // will subscribe onConversationChange + honor ctx.query scope
-    res.writeHead(501, { "Content-Type": "application/json" }).end('{"error":"not implemented"}');
+    // Bind the view-filter to THIS caller's scope+identity once — the same
+    // predicate the REST list uses (a security boundary: the stream must not
+    // emit conversations the poll would hide).
+    const visible = visibleFilter(ctx);
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const send = (frame: unknown) => res.write(`data: ${JSON.stringify(frame)}\n\n`);
+
+    // Initial snapshot: the visible list, each enriched with its link sources
+    // (same shape as GET /conversations).
+    const now = Date.now();
+    const conversations = await Promise.all(
+      sessions.list().filter(visible).map((c) => withSources(c, now)),
+    );
+    send({ kind: "snapshot", conversations });
+
+    // Then push each lifecycle change (new conversation / title change) that
+    // passes the filter as an upsert. Enrichment (sources) happens here, not in
+    // the emitter, so the manager stays cheap. Emit the frame SYNCHRONOUSLY (a
+    // base view with empty sources) so the change is on the wire immediately;
+    // then, if the store has links, patch `sources` and re-emit. A brand-new
+    // conversation almost never has links yet, so the first frame is usually the
+    // only one — but the two-phase emit means a webhook-linked conversation still
+    // gets its provider icon without waiting on the next poll/snapshot.
+    const unsub = sessions.onConversationChange((c) => {
+      if (!visible(c)) return;
+      const now = Date.now();
+      send({ kind: "upsert", conversation: { ...view(c, now), sources: [] as string[] } });
+      void withSources(c, now).then((conversation) => {
+        if (conversation.sources.length) send({ kind: "upsert", conversation });
+      });
+    });
+
+    ctx.req.on("close", () => unsub());
   });
 
   r.post("/conversations", async (ctx) => {
