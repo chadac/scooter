@@ -132,6 +132,19 @@ export class IntegrityAgent extends AbstractAgent {
   }
 
   /**
+   * Update the per-conversation model IN PLACE (the X-Agent-Model header on the
+   * next send). The model does NOT affect the render source (the integrity stream
+   * carries the same events regardless), so switching it must NOT tear down the
+   * agent / render pump — the caller keeps the SAME agent instance and just calls
+   * this. (Recreating the agent on a model switch races the next send's events in
+   * a slow environment and drops the reply — the model-switch-mid-conversation
+   * bug.)
+   */
+  setModel(model?: string): void {
+    this.cfg.model = model;
+  }
+
+  /**
    * The RENDER source: a CONTINUOUS Observable of the conversation's events from
    * GET /conversations/:id/events.integrity. Emits each frame's inner event
    * (already a BaseEvent) and does NOT complete while the stream is open, so the

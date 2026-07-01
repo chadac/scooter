@@ -109,11 +109,23 @@ function ConversationRuntime({
 
   // The render source: an IntegrityAgent bound to this conversation. run() is the
   // continuous integrity stream; send()/submitResume() are fire-and-forget POST
-  // /agui. Recreated per conversation (parent key) so a switch re-subscribes.
+  // /agui. Keyed to conversationId ONLY — NOT model. The model only rides the
+  // X-Agent-Model header on the next send and has no effect on the render stream,
+  // so recreating the agent (+ tearing down the render pump) on a model switch is
+  // needless — and it RACES the next send's events in a slow environment, dropping
+  // the reply (the model-switch-mid-conversation bug). Instead we keep the agent
+  // stable and update the model in place (effect below).
   const agent = useMemo(
     () => createIntegrityAgent({ baseUrl: BASE_URL, conversationId, model }),
-    [conversationId, model],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [conversationId],
   );
+
+  // Model switch mid-conversation: update the agent in place (no teardown). Do it
+  // SYNCHRONOUSLY during render, NOT in an effect — an effect runs after render, so
+  // a select-then-send-immediately (the composer, and the e2e) would fire the send
+  // with the STALE model before the effect ran. setModel is idempotent.
+  agent.setModel(model);
 
   // Shadow the INSTANCE runAgent so the composer's send (onNew -> core.append ->
   // startRun -> agent.runAgent) becomes fire-and-forget instead of opening a
