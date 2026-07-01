@@ -190,6 +190,16 @@ export interface SessionManager {
    * controller could take over. Returns the ids suspended.
    */
   sweepIdle(idleMs: number, now?: number): Promise<SessionId[]>;
+
+  /**
+   * Subscribe to conversation LIFECYCLE changes (a new conversation via start(),
+   * or a title change via setTitle()) so the GET /conversations/events stream can
+   * push the sidebar without the 10s poll. Fires with the changed Conversation
+   * (the caller enriches with `sources`/view). Returns an unsubscribe fn.
+   *
+   * Design stage: SIGNATURE ONLY.
+   */
+  onConversationChange(cb: (conv: Conversation) => void): () => void;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -244,6 +254,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     model: e.model,
     owner: e.owner,
   });
+
+  // Conversation lifecycle subscribers (the /conversations/events push stream).
+  // Fired by start() (new conversation) and setTitle() (title change) so the
+  // sidebar updates without waiting on the 10s poll. Fire-and-forget + cheap:
+  // it passes the Conversation only; the stream handler enriches with `sources`.
+  const changeSubs = new Set<(c: Conversation) => void>();
+  const emitChange = (e: Entry): void => {
+    const c = toConversation(e);
+    for (const cb of changeSubs) cb(c);
+  };
 
   const touch = (e: Entry) => {
     e.lastActivityAt = nowMs();
@@ -309,6 +329,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // (a crash right after start() must not lose it; and hydrate() in another
       // process must see it). setTitle stays fire-and-forget.
       await saveMeta(entry);
+      emitChange(entry); // push the new conversation to the sidebar stream
       // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
       // on its ACP newSession. bridge.prompt() lazily starts on first use, after
       // emitting RUN_STARTED, so the UI always sees the run begin.
@@ -405,7 +426,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const entry = entries.get(id);
       if (!entry) return Promise.resolve();
       entry.title = title;
-      return saveMeta(entry); // persist the (possibly agent-assigned) title
+      const persisted = saveMeta(entry); // persist the (possibly agent-assigned) title
+      emitChange(entry); // push the title change to the sidebar stream
+      return persisted;
     },
 
     async hydrate() {
@@ -470,6 +493,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       return suspended;
+    },
+
+    onConversationChange(cb) {
+      changeSubs.add(cb);
+      return () => changeSubs.delete(cb);
     },
   };
 }

@@ -54,6 +54,7 @@ function fakeSessions(): SessionManager {
       if (c) store.set(id, conv({ ...c, title }));
     }),
     sweepIdle: vi.fn(async () => []),
+    onConversationChange: vi.fn(() => () => {}),
   };
 }
 
@@ -123,6 +124,61 @@ describe("management API", () => {
     expect(Array.isArray(json)).toBe(true);
     expect((json as any[])[0]).toMatchObject({ id: "c1", title: "Hello", status: "running" });
     expect((json as any[])[0]).not.toHaveProperty("bridge");
+  });
+
+  // --- Part 2: conversation-list push stream (RED until implemented) ----------
+  // Captures res.write() SSE frames + the onConversationChange callback the route
+  // registers, so we can assert: initial snapshot of the visible list, then an
+  // upsert when a new conversation is announced.
+  async function callStream(
+    api: ReturnType<typeof createManagementApi>,
+    path: string,
+    headers: Record<string, string> = {},
+  ): Promise<{ status: number; frames: unknown[]; closeReq: () => void }> {
+    const req = new PassThrough() as unknown as IncomingMessage;
+    (req as { method?: string }).method = "GET";
+    (req as { url?: string }).url = path;
+    (req as { headers?: Record<string, string> }).headers = headers;
+    let status = 200;
+    const frames: unknown[] = [];
+    const res = {
+      writeHead: (s: number) => { status = s; return res; },
+      write: (c: string) => {
+        for (const line of c.split("\n")) {
+          if (line.startsWith("data: ")) frames.push(JSON.parse(line.slice(6)));
+        }
+        return true;
+      },
+      end: () => {},
+      req,
+    } as unknown as ServerResponse;
+    const matched = api.handle(req, res);
+    (req as PassThrough).end();
+    await matched;
+    return { status, frames, closeReq: () => (req as PassThrough).emit("close") };
+  }
+
+  it("GET /conversations/events emits a snapshot then upserts new conversations", async () => {
+    const sessions = fakeSessions();
+    let announce: ((c: Conversation) => void) | undefined;
+    (sessions.onConversationChange as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (c: Conversation) => void) => { announce = cb; return () => {}; },
+    );
+    const api = createManagementApi({
+      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+    });
+
+    const s = await callStream(api, "/conversations/events");
+    expect(s.status).toBe(200);
+    // First frame is the snapshot of the currently-visible list.
+    expect(s.frames[0]).toMatchObject({ kind: "snapshot" });
+    expect((s.frames[0] as any).conversations.map((c: any) => c.id)).toContain("c1");
+
+    // A newly-created conversation is pushed as an upsert.
+    announce?.(conv({ id: "c2", threadId: "c2", title: "Slack: help" }));
+    expect(s.frames).toContainEqual(
+      expect.objectContaining({ kind: "upsert", conversation: expect.objectContaining({ id: "c2" }) }),
+    );
   });
 
   it("POST /conversations creates with a title", async () => {
