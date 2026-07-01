@@ -14,6 +14,7 @@ import { describe, it, expect, vi } from "vitest";
 
 import {
   handleSlackRespond,
+  handleJiraComment,
   handleWebFetch,
   inferRef,
   toToolResult,
@@ -90,6 +91,23 @@ describe("agent-tools: inferred defaults", () => {
     const out = await handleSlackRespond({ broker }, ctxWith([]), { text: "hi" });
     expect(out.isError).toBe(true);
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0); // never called blind
+  });
+
+  it("jira_comment posts to the inferred issue via the v2 comment endpoint", async () => {
+    const broker = fakeBroker({ status: 201, raw: '{"id":"1"}', data: { id: "1" } });
+    const jiraLink: ConversationLink = { source: "jira", resourceType: "issue", ref: { issueKey: "ENG-42" } };
+    const out = await handleJiraComment({ broker }, ctxWith([jiraLink]), { body: "done" });
+    expect(out.isError).toBeFalsy();
+    const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[2]).toBe("/jira/rest/api/2/issue/ENG-42/comment");
+    expect(call[3]).toMatchObject({ body: "done" });
+  });
+
+  it("jira_comment errors clearly (not a guess) when the issue can't be inferred", async () => {
+    const broker = fakeBroker({ status: 200, raw: "{}", data: {} });
+    const out = await handleJiraComment({ broker }, ctxWith([]), { body: "hi" });
+    expect(out.isError).toBe(true);
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 });
 
