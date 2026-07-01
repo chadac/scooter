@@ -116,14 +116,10 @@ def _response_instructions(channel: str, thread_ts: str) -> str:
         f"\n\n---\n"
         f"**Response workflow:** First, post an acknowledgment in the Slack thread so the requester knows you've seen it. "
         f"Then work on the task. When finished, post a follow-up message with your results.\n\n"
-        f"To respond in the Slack thread, use:\n"
-        f"```\n"
-        f"TOKEN=$(cat /var/run/secrets/broker/token)\n"
-        f"curl -sf -X POST \"$BROKER_URL/slack/chat.postMessage\" \\\n"
-        f"  -H \"Authorization: Bearer $TOKEN\" \\\n"
-        f"  -H \"Content-Type: application/json\" \\\n"
-        f"  -d '{{\"channel\": \"{channel}\", \"thread_ts\": \"{thread_ts}\", \"text\": \"your message here\"}}'\n"
-        f"```"
+        f"To respond in the Slack thread, use the `slack_respond` tool with your message text — "
+        f"the thread ({channel}) is already known, so you only supply the `text`.\n\n"
+        f"(The raw broker endpoint `$BROKER_URL/slack/chat.postMessage` still exists and returns the same errors, "
+        f"but prefer the tool.)"
     )
 
 
@@ -320,6 +316,7 @@ async def _background_create_conversation(
         await push_link(
             conv_id, source="slack", resource_type="thread",
             title=f"{channel} thread",
+            ref={"channel": channel, "threadTs": thread_ts},
         )
 
         # Flush pending messages

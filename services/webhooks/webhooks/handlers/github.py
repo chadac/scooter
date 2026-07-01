@@ -63,8 +63,8 @@ def _response_instructions(owner: str, repo: str, number: int, is_pr: bool) -> s
         f"\n\n---\n"
         f"**Response workflow:** First, post an acknowledgment on GitHub so the requester knows you've seen it. "
         f"Then work on the task. When finished, post a follow-up comment with your results.\n\n"
-        f"To respond on GitHub {kind} #{number}, use: "
-        f"`gh issue comment {number} -R {owner}/{repo} -b \"your response\"`"
+        f"To respond on GitHub {kind} #{number}, use the `github_comment` tool with your comment `body` — "
+        f"the target ({owner}/{repo} #{number}) is already known."
     )
 
 
@@ -313,6 +313,7 @@ async def _background_create_conversation(
             conv_id, source="github", resource_type=res_type,
             url=f"https://github.com/{owner}/{repo_name}/{gh_kind}/{issue_number}",
             title=f"{owner}/{repo_name} #{issue_number}",
+            ref={"owner": owner, "repo": repo_name, "number": issue_number},
         )
 
         # Flush pending messages

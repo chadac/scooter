@@ -109,16 +109,24 @@ async def push_link(
     resource_type: str,
     url: str | None = None,
     title: str | None = None,
+    ref: dict | None = None,
 ) -> bool:
     """Record an external resource link (the PR/issue/thread this conversation
     came from) on the agent-host, so the UI's linked-resources panel can show it.
-    Best-effort — a failure must not break the webhook flow."""
+
+    `ref` carries structured target identifiers (e.g. slack channel/threadTs,
+    github owner/repo/number) so the agent-host's response tools can infer where
+    to reply without the agent supplying them. Best-effort — a failure must not
+    break the webhook flow."""
     base = settings.agent_host_url.rstrip("/")
+    body: dict = {"source": source, "resourceType": resource_type, "url": url, "title": title}
+    if ref is not None:
+        body["ref"] = ref
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 f"{base}/conversations/{conversation_id}/links",
-                json={"source": source, "resourceType": resource_type, "url": url, "title": title},
+                json=body,
             )
             return resp.status_code in (200, 201)
     except httpx.HTTPError:
