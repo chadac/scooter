@@ -176,7 +176,12 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       return { protocolVersion: 1 };
     },
     async newSession(params) {
-      const res = await conn.newSession({ cwd: params.cwd, mcpServers: [] });
+      const res = await conn.newSession({
+        cwd: params.cwd,
+        // MCP servers the agent (goose) may call — e.g. the agent-host's
+        // modify_environment tool. Empty when none configured.
+        mcpServers: (params.mcpServers ?? []) as never,
+      });
       return { sessionId: res.sessionId };
     },
     async prompt(params) {

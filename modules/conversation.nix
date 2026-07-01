@@ -28,6 +28,17 @@ let
       metadata = { name = "sandbox-${id}"; namespace = cfg.namespace; };
     };
 
+    # Per-conversation module ConfigMap (agent-host-owned): the agent's
+    # self-authored module.nix. Created EMPTY (the host fills it on a self-modify),
+    # mounted at the converge path so scooter-apply-module reads it + the boot
+    # oneshot re-applies it on a fresh pod (survives suspend/resume).
+    moduleConfigMap = {
+      apiVersion = "v1";
+      kind = "ConfigMap";
+      metadata = { name = "conv-${id}-module"; namespace = cfg.namespace; };
+      data."module.nix" = "";
+    };
+
     # Sandbox (cold): SA + workspace PVC + conversation-state PVC + broker token.
     sandbox = {
       apiVersion = "agents.x-k8s.io/v1beta1";
@@ -59,6 +70,10 @@ let
               # the upperdir; runtime nix builds (re-converge) land here + persist
               # across suspend/resume. Disk-backed PVC, never tmpfs.
               { name = "scooter-rw"; mountPath = "/nix/.scooter-rw"; }
+            ] ++ [
+              # The per-conversation module ConfigMap at the converge path: the
+              # agent's self-authored module.nix that scooter-apply-module reads.
+              { name = "scooter-conv"; mountPath = "/etc/agent-sandbox/scooter"; readOnly = true; }
             ] ++ lib.optionals cfg.broker.aws.enable [
               # The AWS account registry — the entrypoint renders ~/.aws/config
               # from it (one [profile <name>] per account → the credential helper).
@@ -83,6 +98,8 @@ let
             # tmpfs for systemd's /run + /tmp (mirrors the provisioner).
             { name = "run"; emptyDir.medium = "Memory"; }
             { name = "tmp"; emptyDir.medium = "Memory"; }
+            # The per-conversation module ConfigMap.
+            { name = "scooter-conv"; configMap.name = "conv-${id}-module"; }
           ] ++ lib.optionals cfg.broker.aws.enable [
             { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
           ];

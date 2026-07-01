@@ -108,6 +108,34 @@ def test_slack_webhook_disabled(client):
         assert resp.json()["status"] == "disabled"
 
 
+def test_slack_event_deduped_by_event_id(client):
+    """Slack redelivers the same event (retries + app_mention/message dual
+    delivery). The handler must process a given event_id EXACTLY ONCE, else one
+    user message creates two conversations / two replies."""
+    import webhooks.handlers.slack as slack_mod
+
+    slack_mod._SEEN_EVENT_IDS.clear()
+    payload = {
+        "type": "event_callback",
+        "event_id": "Ev0DUPLICATE",
+        "event": {"type": "app_mention", "user": "U1", "channel": "C1", "ts": "1.0", "text": "hi"},
+    }
+    with (
+        patch("webhooks.handlers.slack.settings") as mock_settings,
+        patch("webhooks.handlers.slack._verify_slack_signature", return_value=True),
+        patch("webhooks.handlers.slack._handle_event", new=AsyncMock()) as mock_handle,
+    ):
+        mock_settings.slack_enabled = True
+
+        first = client.post("/webhooks/slack", json=payload)
+        second = client.post("/webhooks/slack", json=payload)  # retry / dual delivery
+
+    assert first.json()["status"] == "ok"
+    assert second.json().get("deduped") is True
+    # The event was handled exactly once despite two identical deliveries.
+    assert mock_handle.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Conversation link endpoint
 # ---------------------------------------------------------------------------

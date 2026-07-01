@@ -29,10 +29,12 @@ import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
+import { createModuleManager } from "./session/moduleManager.js";
+import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
-import type { SandboxRef } from "./types.js";
+import type { SandboxRef, SessionId } from "./types.js";
 
 export interface AgentHostConfig {
   port: number;
@@ -280,6 +282,30 @@ export async function main(
     },
   });
 
+  // Agent self-modify: the moduleManager applies the agent's self-authored module
+  // live (upload -> scooter-apply-module -> persist-on-success) and the MCP server
+  // exposes it to goose as the `modify_environment` tool. OFF unless enabled (the
+  // overlay-store image + a real sandbox are required for the in-pod build).
+  const selfModifyEnabled =
+    process.env.AGENT_SELF_MODIFY === "1" && !config.fakeSandbox && !!provisioner.writeModule;
+  const moduleManager = selfModifyEnabled
+    ? createModuleManager({
+        // Resolve each conversation's sandbox to an exec client (same path the
+        // bridge uses) so the apply runs in the right pod.
+        client: (id) => deferredSandboxApi(sessions.get(id as SessionId)!.sandbox),
+        configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
+      })
+    : undefined;
+  const mcpEndpoint =
+    moduleManager !== undefined
+      ? createMcpEndpoint({
+          manager: moduleManager,
+          // The URL goose connects to. The agent-host serves it on its own port;
+          // goose runs in THIS pod, so localhost reaches it.
+          baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+        })
+      : undefined;
+
   // Restore persisted conversations so the session list survives a restart
   // (GET /conversations returns them; the UI sidebar repopulates on refresh).
   await sessions.hydrate();
@@ -330,6 +356,7 @@ export async function main(
       store,
       server,
       models: { default: config.model, available: config.availableModels },
+      mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId) => {
         // Route the user's choice to the conversation's bridge, which resolves
         // the blocked agent run (ACP request_permission).
@@ -465,8 +492,13 @@ export async function main(
     const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
     if (skillCount) console.log(`[agent-host] ${conversationId}: ${skillCount} skill(s) -> .goosehints`);
     const metricModel = resolved ?? cfg.model ?? "unknown";
+    // Offer the agent the modify_environment MCP tool (when self-modify is on),
+    // scoped to THIS conversation via the URL's ?conv=<id>.
+    const mcpServers = mcpEndpoint
+      ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
+      : undefined;
     const bridge = createSessionBridge({
-      config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox },
+      config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
       acpClient: () =>
         createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),

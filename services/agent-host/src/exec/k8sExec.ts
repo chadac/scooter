@@ -70,17 +70,28 @@ async function resolvePodName(kc: KubeConfig, ref: SandboxRef): Promise<string> 
   const deadline = Date.now() + 90_000;
   let lastName: string | undefined;
   for (;;) {
+    // Try both the label selector (v0.4.x) and direct pod name lookup (v0.5.0+
+    // where the controller names the pod after the Sandbox but may not propagate
+    // podTemplate labels).
     const pods = await core.listNamespacedPod({
       namespace: ref.namespace,
       labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
     });
-    const ready = pods.items.find(
+    let candidates = pods.items;
+    if (candidates.length === 0) {
+      // v0.5.0 controller: pod is named after the Sandbox, label may be hash-only.
+      try {
+        const pod = await core.readNamespacedPod({ namespace: ref.namespace, name: ref.name });
+        if (pod) candidates = [pod];
+      } catch { /* pod not yet created */ }
+    }
+    const ready = candidates.find(
       (p) =>
         p.status?.phase === "Running" &&
         (p.status?.containerStatuses ?? []).every((c) => c.ready),
     );
     if (ready?.metadata?.name) return ready.metadata.name;
-    lastName = pods.items.find((p) => p.status?.phase === "Running")?.metadata?.name ?? lastName;
+    lastName = candidates.find((p) => p.status?.phase === "Running")?.metadata?.name ?? lastName;
     if (Date.now() > deadline) {
       // Fall back to any Running pod (or fail) rather than hang forever.
       if (lastName) return lastName;

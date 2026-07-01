@@ -14,5 +14,6 @@
       "@/*": ["./*"]
     }
   },
-  "include": ["src", "components", "lib"]
+  "include": ["src", "components", "lib"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

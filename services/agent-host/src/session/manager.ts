@@ -40,6 +40,10 @@ export interface SandboxProvisioner {
    *  can reclaim it — instead of being assumed-suspended and leaking forever.
    *  Optional: provisioners that can't enumerate return undefined. */
   reconcile?(): Promise<Array<{ ref: SandboxRef; running: boolean }>>;
+  /** Persist the agent's self-authored module into the per-conversation module
+   *  ConfigMap (durable across suspend/resume). Called after a clean live apply.
+   *  Optional (the noop/local provisioner has no ConfigMap). */
+  writeModule?(conversationId: string, module: string): Promise<void>;
 }
 
 /** Durable, restart-surviving metadata for one conversation. */

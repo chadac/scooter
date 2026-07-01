@@ -21,36 +21,51 @@
 # can load it.
 
 { pkgs, lib
-, nixpkgsPinned        # the pinned nixpkgs ref string for the lazy stubs / registry
 , name ? "agent-sandbox-os"
 , tag ? "latest"
 , extraModules ? [ ]   # let consumers layer extra NixOS config (extra tools/services)
 }:
 
 let
+  # The nixpkgs SOURCE the in-pod re-converge imports, captured as ONE store
+  # object used on BOTH sides — critical, or the apply fails "path does not
+  # exist" in-pod. `pkgs.path` is subtle: `toString pkgs.path` yields the flake
+  # input's bare `…-source` path (a plain string, NO Nix context), while coercing
+  # `pkgs.path` into a derivation (what `system.extraDependencies = [ pkgs.path ]`
+  # does) re-imports it via builtins.path under a DIFFERENT, content-addressed
+  # `…-source` name. So baking `toString pkgs.path` into the apply script while
+  # shipping the coerced copy ships one path and references another. Pin a single
+  # `builtins.path` derivation and use ITS path verbatim for both the script
+  # (scooterModule.nixpkgs) and the closure (extraDependencies).
+  nixpkgsSource = builtins.path { path = pkgs.path; name = "source"; };
+
   nixos = pkgs.nixos ({ lib, ... }: {
     imports = [ ../../modules/sandbox-os ] ++ extraModules;
 
     # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
     boot.isContainer = true;
 
-    # The pinned nixpkgs the lazy stubs + registry resolve against, threaded from
-    # the flake input so it's a fixed rev (deterministic).
-    programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsPinned;
-    devEnvNix.nixpkgs = lib.mkForce nixpkgsPinned;
+    # The pinned nixpkgs the lazy stubs + registry resolve against. MUST be the
+    # `path:`-ref of the SAME source the re-converge uses (`pkgs.path`), so the
+    # baked lazy-tool stubs are byte-identical to the ones a runtime re-converge
+    # rebuilds (base-config.nix derives `path:${pkgs.path}` too). A mismatch here
+    # (a bare vs path: format mismatch) makes the
+    # first re-converge rebuild system-path + re-fetch the toolchain (~10min)
+    # instead of being a near-noop diff against the baked store.
+    programs.lazyTools.defaultNixpkgs = lib.mkForce "path:${nixpkgsSource}";
+    devEnvNix.nixpkgs = lib.mkForce "path:${nixpkgsSource}";
 
     # Runtime re-converge: the pod applies a mounted .scooter/module.nix (a NixOS
     # module that declares its own tools/services, e.g. example-review) via
-    # switch-to-configuration. The in-pod toplevel build uses the SAME nixpkgs
-    # source the image was built from (a fixed store path) — deterministic, offline.
+    # switch-to-configuration. base-config.nix `import`s this path, so it must be a
+    # BARE store path (no `path:` prefix — that's a flake ref, not importable).
     programs.scooterModule = {
       enable = lib.mkDefault true;
-      nixpkgs = lib.mkForce (toString pkgs.path);
+      nixpkgs = lib.mkForce "${nixpkgsSource}";
     };
-    # Ship the nixpkgs SOURCE in the image closure (pkgs.path has Nix context
-    # here; the bare-string cfg.nixpkgs in the apply script does not). The in-pod
-    # re-converge `nix build` imports it — offline, no fetch.
-    system.extraDependencies = [ pkgs.path ];
+    # Ship the SAME source object the script references (see nixpkgsSource above).
+    # The in-pod re-converge `nix build` imports it — offline, no fetch.
+    system.extraDependencies = [ nixpkgsSource ];
   });
 
   toplevel = nixos.config.system.build.toplevel;
