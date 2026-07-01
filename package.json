@@ -11,6 +11,7 @@
   "scripts": {
     "test": "vitest run --project agent-host",
     "test:cluster": "vitest run --project cluster",
+    "pretest:e2e": "npm --prefix services/agent-host run build",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
