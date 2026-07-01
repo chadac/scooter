@@ -35,6 +35,11 @@ class FakeAgent implements Agent {
   /** Sessions that have already received their first prompt — used to emit the
    *  <title> marker only on the FIRST reply, like the real agent's first action. */
   private titled = new Set<string>();
+  // A monotonic tool-call id counter. Real ACP agents (goose) mint a UNIQUE id per
+  // tool call; reusing one id across turns makes the UI fold two distinct calls
+  // into one (and, via duplicate message ids, drops a later turn's reply on thread
+  // reset). So mirror real behavior and give each tool call a fresh id.
+  private toolCallSeq = 0;
 
   async initialize(_p: InitializeRequest): Promise<InitializeResponse> {
     return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
@@ -113,9 +118,10 @@ class FakeAgent implements Agent {
     // command through `sh -c` so it behaves like a shell line.
     let cmdOutput = "";
     let exitCode = 0;
+    const toolCallId = `call_${++this.toolCallSeq}`;
     await u({
       sessionUpdate: "tool_call",
-      toolCallId: "call_1",
+      toolCallId,
       title: `run: ${command}`,
       kind: "execute",
       status: "pending",
@@ -138,7 +144,7 @@ class FakeAgent implements Agent {
     }
     await u({
       sessionUpdate: "tool_call_update",
-      toolCallId: "call_1",
+      toolCallId,
       status: exitCode === 0 ? "completed" : "failed",
       content: [{ type: "content", content: { type: "text", text: cmdOutput } }],
     } as never);

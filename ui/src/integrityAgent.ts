@@ -24,7 +24,7 @@
 
 import { AbstractAgent, type RunAgentInput } from "@ag-ui/client";
 import type { BaseEvent } from "@ag-ui/core";
-import { Observable, type Subscription, defer, repeat, catchError, EMPTY } from "rxjs";
+import { Observable, Subject, type Subscription, catchError, EMPTY } from "rxjs";
 
 import type { AgentHostConfig } from "./client.js";
 
@@ -49,6 +49,18 @@ interface IntegrityFrame {
   event?: Record<string, unknown>;
 }
 
+/** A pending interrupt parsed from the log's RUN_FINISHED(outcome=interrupt).
+ *  Shape mirrors the bridge's AguiInterrupt (id/reason/message + metadata.options),
+ *  which assistant-ui's runtime stores under an assistant message's
+ *  metadata.custom.agui.interrupts. */
+export interface PendingInterrupt {
+  id: string;
+  reason: string;
+  message?: string;
+  toolCallId?: string;
+  metadata?: Record<string, unknown>;
+}
+
 /** Result of reading one integrity SSE connection to completion. */
 type ConnectionOutcome = "not-found" | "closed" | "error";
 
@@ -58,8 +70,54 @@ export class IntegrityAgent extends AbstractAgent {
   private readonly doFetch: typeof fetch;
   /** Abort controllers for the live render subscription(s), aborted on dispose. */
   private readonly controllers = new Set<AbortController>();
-  /** The single render-pump subscription (see renderPump), torn down on dispose. */
-  private pumpSub?: Subscription;
+  /** Stops the render-pump reconnect loop (see renderPump), called on dispose. */
+  private stopPump?: () => void;
+  /** The interrupt(s) the current run is paused on, parsed from the log's
+   *  RUN_FINISHED(outcome=interrupt). Cleared when a new RUN_STARTED arrives (the
+   *  run resumed) or when the log is re-seeded. The base AbstractAgent applier does
+   *  NOT track interrupts (only the react-ag-ui runtime's own aggregator does, and
+   *  we bypass it), so the pump surfaces them here for RuntimeProvider to fold into
+   *  the trailing assistant message's status/metadata. */
+  private logInterrupts: PendingInterrupt[] = [];
+
+  /** The interrupt(s) the conversation is currently paused on (empty if none). */
+  getPendingInterrupts(): readonly PendingInterrupt[] {
+    return this.logInterrupts;
+  }
+
+  /** Update pendingInterrupts from a single log event: RUN_STARTED clears (the run
+   *  resumed / a new turn began), RUN_FINISHED(outcome=interrupt) sets. Only the
+   *  LATEST run's outcome matters, so a later RUN_STARTED always supersedes. */
+  private trackInterrupt(e: BaseEvent): void {
+    const ev = e as unknown as {
+      type?: string;
+      outcome?: { type?: string; interrupts?: PendingInterrupt[] };
+    };
+    const before = this.logInterrupts;
+    if (ev.type === "RUN_STARTED") {
+      this.logInterrupts = [];
+    } else if (ev.type === "RUN_FINISHED") {
+      this.logInterrupts =
+        ev.outcome?.type === "interrupt" && Array.isArray(ev.outcome.interrupts)
+          ? ev.outcome.interrupts
+          : [];
+    } else {
+      return;
+    }
+    // A RUN_FINISHED(interrupt) usually produces NO message change through the base
+    // applier (empty state => no AgentStateMessage), so the render subscribers
+    // wouldn't otherwise refresh to show the interrupt. Nudge them when the pending
+    // set actually changes so RuntimeProvider re-folds + surfaces (or clears) it.
+    if (before.length !== this.logInterrupts.length) {
+      for (const s of this.subscribers) {
+        s.onMessagesChanged?.({
+          messages: this.messages,
+          state: this.state,
+          agent: this,
+        } as never);
+      }
+    }
+  }
 
   constructor(config: IntegrityAgentConfig) {
     super({ threadId: config.conversationId });
@@ -93,8 +151,8 @@ export class IntegrityAgent extends AbstractAgent {
     // to this directly — a reconnect re-replays every event, and the base applier
     // would then DOUBLE-APPLY the replay into the SAME accumulator (doubling
     // tool-call args like '{"cmd":"ls"}{"cmd":"ls"}' and duplicating messages —
-    // the page-refresh replay bug). The pump instead folds each connection fresh;
-    // see renderPump / connectionEvents.
+    // the page-refresh replay bug). The pump instead runs its OWN reconnect loop
+    // that re-seeds the accumulator per physical connection; see renderPump.
     return new Observable<BaseEvent>((subscriber) => {
       const controller = new AbortController();
       this.controllers.add(controller);
@@ -115,36 +173,6 @@ export class IntegrityAgent extends AbstractAgent {
         }
       };
       void loop();
-      return () => {
-        closed = true;
-        controller.abort();
-        this.controllers.delete(controller);
-      };
-    });
-  }
-
-  /**
-   * One SSE CONNECTION as a self-completing Observable: opens the integrity
-   * stream, emits each frame's inner BaseEvent, and COMPLETES when that stream
-   * ends (or errors). Unlike run(), it does NOT reconnect — reconnection is the
-   * pump's job (renderPump), so each connection can be folded from a fresh,
-   * empty message accumulator and the full-log replay rebuilds identical state
-   * instead of doubling it.
-   */
-  private connectionEvents(): Observable<BaseEvent> {
-    const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
-    const headers: Record<string, string> = {
-      Accept: "text/event-stream",
-      ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
-    };
-    return new Observable<BaseEvent>((subscriber) => {
-      const controller = new AbortController();
-      this.controllers.add(controller);
-      let closed = false;
-      void (async () => {
-        await this.readConnection(url, headers, controller, (e) => subscriber.next(e));
-        if (!closed) subscriber.complete();
-      })();
       return () => {
         closed = true;
         controller.abort();
@@ -212,44 +240,117 @@ export class IntegrityAgent extends AbstractAgent {
    *      use runAgent; we drive the protected `apply` + `processApplyEvents` (the
    *      same fold runAgent uses) over ONE connection Observable ourselves.
    *
-   *   2. The integrity stream REPLAYS the full log on every (re)connect. A single
-   *      long-lived subscription that reconnects would replay every event again
-   *      into the SAME applier accumulator — doubling tool-call args
-   *      ('{"cmd":"ls"}{"cmd":"ls"}') and duplicating messages (the page-refresh
-   *      replay bug). So each connection gets its OWN fold seeded from an EMPTY
-   *      message list (setMessages([]) before starting), and repeat({delay})
-   *      reconnects ONLY after the current connection completes — one fetch in
-   *      flight at a time. A reconnect thus rebuilds identical state from the
-   *      replay instead of appending to it.
+   *   2. The integrity stream REPLAYS the full log on every (re)connect. Folding
+   *      every reconnect's replay into the SAME applier accumulator would double
+   *      tool-call args ('{"cmd":"ls"}{"cmd":"ls"}') and duplicate messages (the
+   *      page-refresh replay bug). So each PHYSICAL connection gets its OWN fold,
+   *      seeded from an EMPTY message list (setMessages([]) before starting), and
+   *      the replay rebuilds identical state instead of appending to it.
    *
    * `processApplyEvents` writes `this.messages` and fires each subscriber's
    * onMessagesChanged, so callers keep observing via `subscribe({...})` as before.
    * Returns a teardown; also torn down by dispose().
+   *
+   * ONE LONG-LIVED CONNECTION, reconnect only on a real DROP. The server holds the
+   * integrity stream open indefinitely (it forwards live appends), so a healthy
+   * connection NEVER completes — the fold subscription over it stays live for the
+   * whole conversation and applies each event exactly once as it arrives.
+   *
+   * The earlier design deferred a fresh fold per connection and drove reconnection
+   * with rxjs `repeat({delay})`. But `processApplyEvents(apply(conn$))` completes
+   * when its SOURCE conn$ completes, and rxjs `repeat` — on that completion —
+   * unsubscribes the (still-open) connection and re-subscribes after the delay. The
+   * result was a ~500ms teardown/re-replay churn on an OPEN stream: every reconnect
+   * did setMessages([]) then re-folded the log from empty, and a reconnect that
+   * raced a mid-run append (e.g. the SECOND turn's reply) rebuilt state from a log
+   * snapshot that did not yet contain those in-flight events — dropping the reply
+   * (observed: users=2, assistants=1). So we do NOT use repeat. We run our own
+   * reconnect loop that seeds setMessages([]) ONCE per PHYSICAL connection and only
+   * loops when readConnection actually returns (drop / 404 backoff) — the fresh
+   * fold that guards the double-apply replay bug still happens on every real
+   * (re)connect, just never on a healthy open stream.
    */
   renderPump(): () => void {
     const input = this.prepareRunAgentInput();
-    // One fold per connection, deferred so each (re)subscription opens a FRESH SSE
-    // connection seeded from an EMPTY message list — the full-log replay rebuilds
-    // identical state rather than doubling onto the previous fold. repeat({delay})
-    // reconnects ONLY after the current connection completes (its stream ended),
-    // so exactly one fetch is in flight at a time and a completed stream backs off
-    // before re-replaying. catchError keeps a mid-fold error from killing the pump.
-    const fold$ = defer(() => {
-      this.setMessages([]);
-      const conn$ = this.connectionEvents();
-      return this.processApplyEvents(
-        input,
-        this.apply(input, conn$, this.subscribers),
-        this.subscribers,
-      ).pipe(catchError(() => EMPTY));
-    }).pipe(repeat({ delay: 500 }));
-
-    this.pumpSub?.unsubscribe();
-    this.pumpSub = fold$.subscribe({ error: () => {} });
-    return () => {
-      this.pumpSub?.unsubscribe();
-      this.pumpSub = undefined;
+    const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+      ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
     };
+
+    let closed = false;
+    let connSub: Subscription | undefined;
+    let controller: AbortController | undefined;
+
+    const loop = async () => {
+      let notFoundDelay = 500;
+      while (!closed) {
+        // Fresh fold per PHYSICAL connection: reset to empty so the full-log
+        // replay rebuilds identical state rather than doubling onto the previous
+        // connection's fold (the page-refresh double-apply bug). A `Subject`
+        // carries this connection's events into ONE apply/processApplyEvents
+        // subscription; it completes only when the connection actually ends.
+        this.setMessages([]);
+        // A fresh connection re-replays the whole log; recompute pending interrupts
+        // from scratch too (they are derived from the trailing RUN_FINISHED).
+        this.logInterrupts = [];
+        controller = new AbortController();
+        this.controllers.add(controller);
+        const events$ = new Subject<BaseEvent>();
+        // The applier's fold is async (concatMap over the event stream); it drains
+        // buffered events even after the source completes. Track that completion so
+        // we DON'T tear the fold down mid-flight (which would drop the tail of the
+        // replay and leave `messages` empty/partial — the failure this guards).
+        const folded = new Promise<void>((resolve) => {
+          connSub = this.processApplyEvents(
+            input,
+            this.apply(input, events$, this.subscribers),
+            this.subscribers,
+          )
+            .pipe(catchError(() => EMPTY))
+            .subscribe({ error: () => resolve(), complete: () => resolve() });
+        });
+
+        const outcome = await this.readConnection(url, headers, controller, (e) => {
+          // Track the pending interrupt as it rides the log: a RUN_STARTED means the
+          // (resumed) run is live again — clear any pending; a RUN_FINISHED with an
+          // interrupt outcome pauses the run awaiting a user answer. The base
+          // applier ignores this, so we surface it via getPendingInterrupts().
+          this.trackInterrupt(e);
+          events$.next(e);
+        });
+        // The connection ended — signal end-of-events and WAIT for the fold to
+        // finish applying everything buffered before deciding whether to reconnect.
+        events$.complete();
+        await folded;
+        connSub?.unsubscribe();
+        connSub = undefined;
+        this.controllers.delete(controller);
+        controller = undefined;
+        if (closed) break;
+
+        if (outcome === "not-found") {
+          // Conversation not created yet — back off with exponential delay.
+          await delay(notFoundDelay);
+          notFoundDelay = Math.min(notFoundDelay * 2, 5000);
+        } else {
+          // A real drop/error: brief pause, then reconnect + re-replay.
+          notFoundDelay = 500;
+          if (!closed) await delay(500);
+        }
+      }
+    };
+
+    const stop = () => {
+      closed = true;
+      controller?.abort();
+      connSub?.unsubscribe();
+      if (this.stopPump === stop) this.stopPump = undefined;
+    };
+    this.stopPump?.();
+    this.stopPump = stop;
+    void loop();
+    return stop;
   }
 
   /**
@@ -297,8 +398,8 @@ export class IntegrityAgent extends AbstractAgent {
 
   /** Close all live integrity subscriptions and release resources. */
   dispose(): void {
-    this.pumpSub?.unsubscribe();
-    this.pumpSub = undefined;
+    this.stopPump?.();
+    this.stopPump = undefined;
     for (const c of this.controllers) c.abort();
     this.controllers.clear();
   }

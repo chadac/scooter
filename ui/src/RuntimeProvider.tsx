@@ -45,18 +45,43 @@
  *      appear), and a user send hits the server as POST /agui exactly once.
  *
  * Interrupts: an interrupt (RUN_FINISHED outcome=interrupt) rides the integrity
- * log, so it surfaces through the render pump; InterruptPanel answers via the
- * runtime's unstable_submitInterruptResponses -> core.submitInterruptResponses ->
- * (our shadowed runAgent sees input.resume) -> agent.submitResume(). One POST.
+ * log. The base AbstractAgent applier does NOT produce the react-ag-ui runtime's
+ * requires-action message status (that's the runtime's per-run aggregator, which
+ * the single-source model bypasses), so we surface interrupts on the SAME
+ * integrity-log path as messages: the IntegrityAgent parses them
+ * (getPendingInterrupts) and the pump publishes them into an InterruptContext.
+ * InterruptPanel reads that context and answers via agent.submitResume() — a POST
+ * /agui with resume[] whose continuation streams back through the same log.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AbstractAgent, RunAgentInput } from "@ag-ui/client";
 import { useAgUiRuntime, fromAgUiMessages } from "@assistant-ui/react-ag-ui";
 
 import { sessionStore, useSessions } from "./sessions.js";
-import { createIntegrityAgent, type ResumeEntry } from "./integrityAgent.js";
+import {
+  createIntegrityAgent,
+  type IntegrityAgent,
+  type PendingInterrupt,
+  type ResumeEntry,
+} from "./integrityAgent.js";
+
+/** The current conversation's pending interrupts + a resume answerer, sourced
+ *  from the IntegrityAgent (the single integrity-log source), so InterruptPanel
+ *  reads them directly instead of the react-ag-ui runtime's message-status
+ *  machinery — which the single-source render pump bypasses. */
+export interface InterruptContextValue {
+  interrupts: readonly PendingInterrupt[];
+  submitResume: (entries: readonly ResumeEntry[]) => Promise<void>;
+}
+
+const InterruptContext = createContext<InterruptContextValue>({
+  interrupts: [],
+  submitResume: async () => {},
+});
+
+export const useConversationInterrupts = () => useContext(InterruptContext);
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
@@ -143,11 +168,20 @@ function ConversationRuntime({
   // SINGLE writer (a Slack-driven run and a local run render through the identical
   // path). This replaces the old one-shot loadHistory: the stream's replay IS the
   // history.
+  // The current pending interrupt(s), sourced from the IntegrityAgent (parsed from
+  // the integrity log's RUN_FINISHED outcome=interrupt). The base applier does NOT
+  // produce the runtime's requires-action status, so InterruptPanel reads these via
+  // context (useConversationInterrupts) rather than the runtime — keeping interrupts
+  // on the same single-source path as messages.
+  const [interrupts, setInterrupts] = useState<readonly PendingInterrupt[]>([]);
+
   useEffect(() => {
     let disposed = false;
     const push = () => {
       if (disposed) return;
       runtime.thread.reset(fromAgUiMessages(agent.messages as unknown as unknown[]));
+      // Interrupts ride the log too; surface them (or clear them) on every change.
+      setInterrupts(agent.getPendingInterrupts());
     };
     const { unsubscribe } = agent.subscribe({ onMessagesChanged: () => push() });
     const stopPump = agent.renderPump();
@@ -173,5 +207,14 @@ function ConversationRuntime({
     });
   }, [runtime, conversationId]);
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+  const interruptValue = useMemo<InterruptContextValue>(
+    () => ({ interrupts, submitResume: (entries) => agent.submitResume(entries) }),
+    [interrupts, agent],
+  );
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <InterruptContext.Provider value={interruptValue}>{children}</InterruptContext.Provider>
+    </AssistantRuntimeProvider>
+  );
 }
