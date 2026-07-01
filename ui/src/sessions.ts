@@ -39,6 +39,10 @@ type State = {
   currentUser: string;
   /** Sidebar Mine/All toggle (default Mine). */
   scope: Scope;
+  /** A deep-link target (from ?thread=<id>) to select AS SOON AS it's known — the
+   *  conversation may not be in the list yet (it arrives via the poll/stream for a
+   *  webhook-created thread the user has never opened). Cleared once selected. */
+  pendingSelect?: string;
 };
 
 /** A brand-new, untouched conversation (default title, no messages yet). */
@@ -124,6 +128,22 @@ export const sessionStore = {
   },
 
   /**
+   * Select a conversation by id, even one not yet in the list. For the ?thread=
+   * deep-link: a webhook-created conversation the user has never opened isn't in
+   * localStorage — it arrives via the /conversations poll/stream. If it's already
+   * known, select it now; otherwise stash it as pendingSelect and mergeFromServer
+   * selects it the moment it appears. A no-op if already current.
+   */
+  requestSelect(id: string) {
+    if (!id || state.currentId === id) return;
+    if (state.sessions.some((s) => s.id === id)) {
+      setState({ ...state, currentId: id, pendingSelect: undefined });
+    } else {
+      setState({ ...state, pendingSelect: id });
+    }
+  },
+
+  /**
    * Merge conversations loaded from the agent-host into the list. Called on
    * startup so the sidebar survives a refresh and every conversation is listed
    * (not just ones created in this tab). Dedups by id, sorts newest-first, and
@@ -179,18 +199,33 @@ export const sessionStore = {
     // user switchTo()/newSession() (a read-modify-write race that dropped the
     // just-selected thread's view). Selection is owned by switchTo/newSession.
     // Only keep currentId valid if it vanished entirely from the list.
-    const currentId = sessions.some((s) => s.id === state.currentId)
+    //
+    // THE ONE EXCEPTION: a pending deep-link (?thread=<id> via requestSelect).
+    // That's an explicit user intent waiting for the conversation to arrive, not a
+    // background reassign — honor it the moment the target shows up, then clear it.
+    let pendingSelect = state.pendingSelect;
+    let currentId = sessions.some((s) => s.id === state.currentId)
       ? state.currentId
       : (sessions[0]?.id ?? state.currentId);
+    if (pendingSelect && sessions.some((s) => s.id === pendingSelect)) {
+      currentId = pendingSelect;
+      pendingSelect = undefined;
+    }
 
     // No-op if nothing actually changed (same ids+titles+order+selection). The
     // periodic merge poll calls this every few seconds; without this guard every
     // poll would setState -> re-render -> churn the runtime even when idle.
     const sig = (ss: Session[], cur: string) =>
       cur + "|" + ss.map((s) => `${s.id}:${s.title}:${(s.sources ?? []).join(",")}`).join("|");
-    if (sig(sessions, currentId) === sig(state.sessions, state.currentId)) return;
+    // Include pendingSelect in the change check: if only the pending target was
+    // cleared (selection already applied), the currentId sig already differs.
+    if (
+      pendingSelect === state.pendingSelect &&
+      sig(sessions, currentId) === sig(state.sessions, state.currentId)
+    )
+      return;
 
-    setState({ ...state, sessions, currentId });
+    setState({ ...state, sessions, currentId, pendingSelect });
   },
 
   /** Delete a conversation. If it was current, select another (or start fresh). */

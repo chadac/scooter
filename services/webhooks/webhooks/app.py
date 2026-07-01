@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 from . import store as db
 
-from . import status_monitor
 from .config import db_settings, require_relay_key, settings
 from .handlers.github import router as github_router
 from .handlers.gitlab import router as gitlab_router
@@ -29,10 +28,9 @@ logging.basicConfig(
 async def lifespan(app: FastAPI):
     await db.init_db(db_settings)
     # No message bus: the agent runs in the agent-host, reached directly via
-    # POST /agui. status_monitor polls conversation status.
-    status_monitor.start()
+    # POST /agui. Each provider posts a single "on it" message with the
+    # conversation link; there is no live status to poll.
     yield
-    status_monitor.stop()
     await db.close_db()
 
 

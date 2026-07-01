@@ -67,6 +67,19 @@ in
       description = "Issue/PR label name that triggers a conversation (GitHub/GitLab).";
     };
 
+    # The public UI base URL, so a webhook-created conversation's "View
+    # conversation" link (posted back to Slack/GitHub/GitLab/Jira) is a real,
+    # directly-visitable deep-link (<managerUrl>/?thread=<id>). Defaults to
+    # https://<chat-ingress-host> when the platform's chat ingress is enabled;
+    # override for a different UI hostname. Empty -> the link degrades to the raw
+    # conversation id (set this so the links work).
+    managerUrl = mkOption {
+      type = types.str;
+      default = if cfg.ingress.enable && cfg.ingress.host != "" then "https://${cfg.ingress.host}" else "";
+      defaultText = lib.literalExpression ''"https://''${agentSandbox.ingress.host}" (when the chat ingress is enabled)'';
+      description = "Public UI base URL for the 'View conversation' deep-links (AGENT_MANAGER_URL).";
+    };
+
     # --- Provider secrets ---------------------------------------------------
     # A Secret supplying GITHUB_WEBHOOK_SECRET / SLACK_SIGNING_SECRET /
     # SLACK_BOT_TOKEN (+ optionally GITHUB_TOKEN). envFrom-mounted, so the keys
@@ -204,6 +217,7 @@ in
                   { name = "SLACK_ENABLED"; value = lib.boolToString wcfg.slackEnabled; }
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
+                  { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
                 ] ++ (if wcfg.postgres.enable then [
                   # Durable Postgres store. The DSN is assembled app-side from
                   # these components so the password comes from a secretKeyRef

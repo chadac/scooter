@@ -86,7 +86,9 @@ class WebhooksSettings(BaseSettings):
     # Bot usernames to ignore
     ignore_usernames: str = ""
 
-    # OpenHands conversation URL base
+    # Public UI base URL for the "View conversation" deep-links posted back to
+    # Slack/GitHub/GitLab/Jira: <agent_manager_url>/?thread=<id>. Distinct from
+    # agent_host_url (the internal API). Empty -> the link degrades to the raw id.
     agent_manager_url: str = ""
 
     # Default repo

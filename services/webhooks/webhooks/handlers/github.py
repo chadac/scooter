@@ -18,8 +18,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
-from ..responses.github import post_github_comment, update_github_comment
-from .. import status_monitor
+from ..responses.github import post_github_comment
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,7 +49,13 @@ def _is_ignored_user(username: str) -> bool:
 
 
 def _is_own_comment(body: str) -> bool:
-    return body.startswith("OpenHands is working on this.") or "OpenHands status:" in body
+    # Recognize Scooter's own comments; keep matching the legacy "OpenHands"
+    # markers so in-flight threads created before the rename still match.
+    return (
+        body.startswith("Scooter is on it")
+        or body.startswith("OpenHands is working on this.")
+        or "OpenHands status:" in body
+    )
 
 
 def _resource_id(owner: str, repo: str, number: int) -> str:
@@ -178,12 +183,6 @@ async def _handle_comment(payload: dict):
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)
 
-    # Post status comment
-    note_id = await post_github_comment(
-        owner=owner, repo=repo, issue_number=issue_number,
-        body=":hourglass_flowing_sand: OpenHands status: **CREATING**",
-    )
-
     await db.store_conversation("github", res_type, res_id, PENDING_CONVERSATION_ID)
 
     kind = "PR" if is_pr else "Issue"
@@ -199,7 +198,6 @@ async def _handle_comment(payload: dict):
             res_type=res_type, res_id=res_id,
             message=full_message, repo=full_repo, conv_title=conv_title,
             owner=owner, repo_name=repo, issue_number=issue_number,
-            note_id=note_id,
         )
     )
 
@@ -226,11 +224,6 @@ async def _handle_issue_event(payload: dict):
 
     await db.store_conversation("github", "issue", res_id, PENDING_CONVERSATION_ID)
 
-    note_id = await post_github_comment(
-        owner=owner, repo=repo, issue_number=issue_number,
-        body=":hourglass_flowing_sand: OpenHands status: **CREATING**",
-    )
-
     reply_hint = _response_instructions(owner, repo, issue_number, is_pr=False)
     message = f"Issue #{issue_number} '{issue_title}' in {full_repo}\n\n{issue_body}{reply_hint}"
 
@@ -240,7 +233,6 @@ async def _handle_issue_event(payload: dict):
             message=message, repo=full_repo,
             conv_title=f"Issue #{issue_number}: {issue_title}",
             owner=owner, repo_name=repo, issue_number=issue_number,
-            note_id=note_id,
         )
     )
 
@@ -268,11 +260,6 @@ async def _handle_pr_event(payload: dict):
 
     await db.store_conversation("github", "pull_request", res_id, PENDING_CONVERSATION_ID)
 
-    note_id = await post_github_comment(
-        owner=owner, repo=repo, issue_number=pr_number,
-        body=":hourglass_flowing_sand: OpenHands status: **CREATING**",
-    )
-
     reply_hint = _response_instructions(owner, repo, pr_number, is_pr=True)
     message = f"PR #{pr_number} '{pr_title}' (branch: {source_branch}) in {full_repo}\n\n{pr_body}{reply_hint}"
 
@@ -282,7 +269,6 @@ async def _handle_pr_event(payload: dict):
             message=message, repo=full_repo,
             conv_title=f"PR #{pr_number}: {pr_title}",
             owner=owner, repo_name=repo, issue_number=pr_number,
-            note_id=note_id,
         )
     )
 
@@ -290,17 +276,16 @@ async def _handle_pr_event(payload: dict):
 async def _background_create_conversation(
     res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, owner: str, repo_name: str,
-    issue_number: int, note_id: int | None,
+    issue_number: int,
 ) -> None:
     try:
         result = await create_conversation(message, repository=repo, git_provider="github", title=conv_title)
         if not result:
             await _clear_pending(res_type, res_id)
-            if note_id:
-                await update_github_comment(
-                    owner=owner, repo=repo_name, comment_id=note_id,
-                    body=":x: OpenHands status: **ERROR**\n\nFailed to create conversation.",
-                )
+            await post_github_comment(
+                owner=owner, repo=repo_name, issue_number=issue_number,
+                body="Scooter couldn't start on this one — failed to create the conversation.",
+            )
             return
 
         conv_id = result.get("conversation_id", "")
@@ -323,15 +308,10 @@ async def _background_create_conversation(
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
 
-        if note_id:
-            await update_github_comment(
-                owner=owner, repo=repo_name, comment_id=note_id,
-                body=f":hourglass_flowing_sand: OpenHands status: **RUNNING**\n\n[View conversation]({conv_link})",
-            )
-            status_monitor.track_github(
-                conversation_id=conv_id, owner=owner, repo=repo_name,
-                issue_number=issue_number, comment_id=note_id,
-            )
+        await post_github_comment(
+            owner=owner, repo=repo_name, issue_number=issue_number,
+            body=f"Scooter is on it — follow along: [View conversation]({conv_link})",
+        )
     except Exception:
         await _clear_pending(res_type, res_id)
         logger.exception("Error in background conversation creation for %s", res_id)
