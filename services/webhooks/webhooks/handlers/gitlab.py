@@ -17,7 +17,7 @@ from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
-from ..agent_host_client import conversation_url, create_conversation, send_message
+from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..responses.gitlab import post_gitlab_comment, update_gitlab_comment
 from .. import status_monitor
 
@@ -95,12 +95,13 @@ def _is_own_comment(body: str) -> bool:
 
 
 def _response_instructions(noteable_type: str, noteable_iid: int) -> str:
-    cmd = f"glab mr comment {noteable_iid}" if noteable_type == "merge_requests" else f"glab issue comment {noteable_iid}"
+    kind = "merge request" if noteable_type == "merge_requests" else "issue"
     return (
         f"\n\n---\n"
         f"**Response workflow:** First, post an acknowledgment on GitLab so the requester knows you've seen it. "
         f"Then work on the task. When finished, post a follow-up comment with your results.\n\n"
-        f"To respond on GitLab, use: `{cmd} -m \"your response\"`"
+        f"To respond on GitLab {kind} {noteable_iid}, use the `gitlab_comment` tool with your comment `body` — "
+        f"the target is already known."
     )
 
 
@@ -395,6 +396,13 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
         await db.store_conversation(source, res_type, res_id, conv_id)
         conv_link = conversation_url(conv_id)
+
+        # Surface the originating MR/issue and give the response tools a target.
+        await push_link(
+            conv_id, source="gitlab", resource_type=res_type,
+            title=res_id,
+            ref={"projectId": str(project_id), "mrIid": str(noteable_iid)},
+        )
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages(source, res_type, res_id)

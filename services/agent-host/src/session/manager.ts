@@ -73,6 +73,25 @@ export interface ConversationLink {
   url?: string;
   /** A short human label (e.g. "example-org/example-app #203", "#eng-help thread"). */
   title?: string;
+  /**
+   * Structured target identifiers for the agent-tools (slack_respond,
+   * gitlab_comment, github_comment) to INFER where to respond WITHOUT the agent
+   * passing them. Populated by the webhooks handlers in push_link. Shapes by
+   * source (all optional so old links / partial data degrade to an explicit-target
+   * request, never a wrong guess):
+   *   slack:  { channel, threadTs }
+   *   gitlab: { projectId, mrIid }
+   *   github: { owner, repo, number }
+   */
+  ref?: {
+    channel?: string;
+    threadTs?: string;
+    projectId?: string;
+    mrIid?: string;
+    owner?: string;
+    repo?: string;
+    number?: number;
+  };
 }
 
 /** Durable conversation store (event log replay + goose state pointer). */

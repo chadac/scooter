@@ -22,7 +22,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { createRouter, type Router } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
-import type { ConversationStore, ChecksummedEvent } from "../session/manager.js";
+import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import type { AguiServer } from "../agui/server.js";
 import type { AguiEvent } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
@@ -264,7 +264,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.post("/conversations/:id/links", async (ctx) => {
-    const body = await ctx.body<{ source?: string; resourceType?: string; url?: string; title?: string }>();
+    const body = await ctx.body<{
+      source?: string;
+      resourceType?: string;
+      url?: string;
+      title?: string;
+      ref?: ConversationLink["ref"];
+    }>();
     if (!body.source || !body.resourceType) {
       return { status: 400, json: { error: "source and resourceType required" } };
     }
@@ -273,6 +279,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       resourceType: body.resourceType,
       url: body.url,
       title: body.title,
+      ref: body.ref,
     });
     return { status: 201, json: { ok: true } };
   });

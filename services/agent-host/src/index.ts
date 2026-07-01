@@ -31,6 +31,7 @@ import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { createModuleManager } from "./session/moduleManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
+import { createBrokerClient } from "./agent/brokerClient.js";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
@@ -284,10 +285,12 @@ export async function main(
 
   // Agent self-modify: the moduleManager applies the agent's self-authored module
   // live (upload -> scooter-apply-module -> persist-on-success) and the MCP server
-  // exposes it to goose as the `modify_environment` tool. OFF unless enabled (the
-  // overlay-store image + a real sandbox are required for the in-pod build).
+  // exposes it to goose as the `modify_environment` tool. ON by default; it still
+  // self-gates to a real sandbox with the in-pod build support (overlay-store
+  // image + a real sandbox), so fake/local runs skip it. Set AGENT_SELF_MODIFY=0
+  // to force it off.
   const selfModifyEnabled =
-    process.env.AGENT_SELF_MODIFY === "1" && !config.fakeSandbox && !!provisioner.writeModule;
+    process.env.AGENT_SELF_MODIFY !== "0" && !config.fakeSandbox && !!provisioner.writeModule;
   const moduleManager = selfModifyEnabled
     ? createModuleManager({
         // Resolve each conversation's sandbox to an exec client (same path the
@@ -296,13 +299,33 @@ export async function main(
         configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
       })
     : undefined;
+  // The typed agent-tools (slack/gitlab/github/web) call the broker server-side
+  // under the agent-host's OWN identity (BROKER_URL + SA token, same anchor as
+  // resolveAwsRequest below). When BROKER_URL is unset (local/fake) the tools
+  // still register, but calls fail with a clear error the handlers echo verbatim.
+  const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+  const agentToolsWiring = brokerUrl
+    ? {
+        broker: createBrokerClient({
+          baseUrl: brokerUrl,
+          tokenPath: process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token",
+        }),
+        links: (id: string) => store.listLinks?.(id as SessionId) ?? Promise.resolve([]),
+      }
+    : undefined;
+  // Serve the MCP endpoint if EITHER capability is available: self-modify
+  // (modify_environment) OR the agent-tools (broker wired). They're independent —
+  // the agent-tools (slack/gitlab/github/web) must reach goose even when
+  // self-modify is off, and vice-versa. buildServer registers whichever deps are
+  // present.
   const mcpEndpoint =
-    moduleManager !== undefined
+    moduleManager !== undefined || agentToolsWiring !== undefined
       ? createMcpEndpoint({
           manager: moduleManager,
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+          agentTools: agentToolsWiring,
         })
       : undefined;
 

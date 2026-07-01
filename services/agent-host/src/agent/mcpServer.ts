@@ -18,6 +18,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 import type { ModuleManager } from "../session/moduleManager.js";
+import type { ConversationLink } from "../session/manager.js";
+import { registerAgentTools, type BrokerClient } from "./agentTools.js";
 
 /** An MCP tool result (the shape the SDK callback returns). */
 export interface ToolResult {
@@ -62,23 +64,47 @@ export async function handleModifyEnvironment(
   };
 }
 
-/** Build an McpServer instance bound to one conversation. */
-function buildServer(manager: ModuleManager, conversationId: string): McpServer {
+/** The extra deps buildServer needs to ALSO register the agent-tools (slack/
+ *  gitlab/github/web). Optional — when absent, only modify_environment registers
+ *  (a modify_environment-only endpoint never crashes for lack of a broker). */
+export interface AgentToolsWiring {
+  /** The broker client the agent-tools call under the agent-host's identity. */
+  broker: BrokerClient;
+  /** The conversation's links (for inferred defaults), from store.listLinks. */
+  links(conversationId: string): Promise<ConversationLink[]>;
+  /** Injectable fetch for web_search / web_fetch (defaults to global fetch). */
+  fetchImpl?: typeof fetch;
+}
+
+/** Build an McpServer instance bound to one conversation. Registers whichever
+ *  capabilities are present: modify_environment when `manager` is given (self-
+ *  modify enabled), and the five typed agent-tools when `agentTools` is given
+ *  (broker wired). The two are independent — the endpoint serves either or both. */
+function buildServer(manager: ModuleManager | undefined, conversationId: string, agentTools?: AgentToolsWiring): McpServer {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
-  server.registerTool(
-    "modify_environment",
-    {
-      title: "Modify the dev environment",
-      description:
-        "Apply a NixOS module to THIS sandbox, live (no restart). Use it to add tools, packages, " +
-        "systemd services, or config — anything a NixOS module can declare. Pass the full module as " +
-        "`module_nix` (e.g. `{ pkgs, ... }: { environment.systemPackages = [ pkgs.ripgrep ]; }`). " +
-        "The module is built (the build is the validation gate) and switched into the running system; " +
-        "a build error or a failed switch is returned to you and the old environment is kept.",
-      inputSchema: { module_nix: z.string().describe("The full NixOS module.nix text to apply.") },
-    },
-    async (args) => handleModifyEnvironment(manager, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
-  );
+  if (manager) {
+    server.registerTool(
+      "modify_environment",
+      {
+        title: "Modify the dev environment",
+        description:
+          "Apply a NixOS module to THIS sandbox, live (no restart). Use it to add tools, packages, " +
+          "systemd services, or config — anything a NixOS module can declare. Pass the full module as " +
+          "`module_nix` (e.g. `{ pkgs, ... }: { environment.systemPackages = [ pkgs.ripgrep ]; }`). " +
+          "The module is built (the build is the validation gate) and switched into the running system; " +
+          "a build error or a failed switch is returned to you and the old environment is kept.",
+        inputSchema: { module_nix: z.string().describe("The full NixOS module.nix text to apply.") },
+      },
+      async (args) => handleModifyEnvironment(manager, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
+  if (agentTools) {
+    registerAgentTools(
+      server,
+      { broker: agentTools.broker, fetchImpl: agentTools.fetchImpl },
+      { conversationId, links: () => agentTools.links(conversationId) },
+    );
+  }
   return server;
 }
 
@@ -96,7 +122,17 @@ export interface McpEndpoint {
  * conversationId comes from the URL), so it composes with the agent-host's
  * existing node:http server.
  */
-export function createMcpEndpoint(deps: { manager: ModuleManager; baseUrl: string; path?: string }): McpEndpoint {
+export function createMcpEndpoint(deps: {
+  /** Self-modify (modify_environment). Omit when self-modify is off — the
+   *  endpoint then serves only the agent-tools. */
+  manager?: ModuleManager;
+  baseUrl: string;
+  path?: string;
+  /** When provided, the same per-conversation server ALSO exposes the five typed
+   *  agent-tools (slack/gitlab/github/web). Omit to expose only
+   *  modify_environment (e.g. when no broker is configured). */
+  agentTools?: AgentToolsWiring;
+}): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
     urlFor(conversationId) {
@@ -112,7 +148,7 @@ export function createMcpEndpoint(deps: { manager: ModuleManager; baseUrl: strin
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(deps.manager, conv);
+      const server = buildServer(deps.manager, conv, deps.agentTools);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },
