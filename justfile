@@ -111,6 +111,30 @@ check-lockfiles:
       || (echo "❌ lockfile drift: a package.json changed without regenerating the lockfile. Run 'nix develop -c just check-lockfiles' and commit the result." && exit 1)
     @echo "✅ lockfiles are in sync with package.json"
 
+# Guard against a stale npmDepsHash. check-lockfiles proves the lockfile matches
+# package.json, but NOTHING proved the buildNpmPackage `npmDepsHash` in ui/ and
+# services/agent-host/ default.nix matches the lockfile — so a dep bump could land
+# with a stale hash and only fail later at `nix build .#ui`/`.#agentHost` (image
+# build), AFTER merge. This recomputes each hash from its lockfile (prefetch-npm-
+# deps — cheap, no full build) and fails if the committed one differs.
+check-npm-hashes:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    check() {  # <lockfile> <nixfile>
+      want=$(nix run nixpkgs#prefetch-npm-deps -- "$1" 2>/dev/null)
+      have=$(grep -oE 'npmDepsHash = "[^"]+"' "$2" | sed -E 's/.*"([^"]+)".*/\1/')
+      if [ "$want" != "$have" ]; then
+        echo "❌ stale npmDepsHash in $2: have $have, want $want (from $1)."
+        echo "   Fix: set npmDepsHash to the 'want' value above and commit."
+        fail=1
+      fi
+    }
+    check ui/package-lock.json ui/default.nix
+    check services/agent-host/package-lock.json services/agent-host/default.nix
+    [ "$fail" -eq 0 ] && echo "✅ npmDepsHash values match their lockfiles"
+    exit "$fail"
+
 # Everything CI runs.
-ci: check-flake check-manifests check-lockfiles lint test-unit
+ci: check-flake check-manifests check-lockfiles check-npm-hashes lint test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
