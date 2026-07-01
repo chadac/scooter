@@ -131,11 +131,32 @@ export function inferRef(
 
 // --- The five tool handlers (pure, testable — no MCP/HTTP plumbing) -------------
 
-/** Parse a slack conversation_map resource_id ("<channel>:<thread_ts>"). */
+// Parse the webhooks conversation_map `resource_id` (the fallback target source)
+// per provider. Formats mirror the webhooks handlers' _resource_id().
+
+/** slack: "<channel>:<thread_ts>". */
 function parseSlackResourceId(resourceId: string): { channel?: string; threadTs?: string } {
   const i = resourceId.lastIndexOf(":");
   if (i <= 0) return {};
   return { channel: resourceId.slice(0, i), threadTs: resourceId.slice(i + 1) };
+}
+
+/** github: "<owner>/<repo>#<number>". */
+function parseGithubResourceId(resourceId: string): { owner?: string; repo?: string; number?: number } {
+  const m = resourceId.match(/^([^/]+)\/(.+)#(\d+)$/);
+  if (!m) return {};
+  return { owner: m[1], repo: m[2], number: Number(m[3]) };
+}
+
+/** gitlab: "<repo>!<iid>" (MR) or "<repo>#<iid>" (issue). `repo` is the project
+ *  PATH — GitLab's API accepts a URL-encoded path in place of the numeric id, so
+ *  we return it as `projectId`. `isMr` distinguishes the endpoint. */
+function parseGitlabResourceId(resourceId: string): { projectId?: string; iid?: string; isMr?: boolean } {
+  const mr = resourceId.match(/^(.+)!(\d+)$/);
+  if (mr) return { projectId: mr[1], iid: mr[2], isMr: true };
+  const issue = resourceId.match(/^(.+)#(\d+)$/);
+  if (issue) return { projectId: issue[1], iid: issue[2], isMr: false };
+  return {};
 }
 
 /** Post to the current Slack thread (channel + thread_ts inferred). */
@@ -175,25 +196,42 @@ export async function handleSlackRespond(
   return toToolResult(res, { successText: "Posted to the Slack thread.", slackOkCheck: true });
 }
 
-/** Comment on the conversation's GitLab MR (project + iid inferred). */
+/** Comment on the conversation's GitLab MR/issue (project + iid inferred). */
 export async function handleGitlabComment(
   deps: AgentToolsDeps,
   ctx: ToolContext,
   args: { body: string; discussion_id?: string },
 ): Promise<ToolResult> {
+  // Prefer the link `ref`; fall back to the webhooks conversation_map (resource_id
+  // "<repo>!<iid>" MR / "<repo>#<iid>" issue — repo is the project path, which the
+  // GitLab API accepts URL-encoded as the project id). ref wins when present.
   const ref = inferRef(await ctx.links(), "gitlab");
-  if (!ref?.projectId || !ref?.mrIid) {
+  let projectId = ref?.projectId;
+  let iid: string | undefined = ref?.mrIid;
+  let isMr = true;
+  if (!projectId || !iid) {
+    const m = await ctx.resourceLookup?.("gitlab");
+    if (m) {
+      const p = parseGitlabResourceId(m.resourceId);
+      projectId = projectId ?? p.projectId;
+      iid = iid ?? p.iid;
+      isMr = p.isMr ?? true;
+    }
+  }
+  if (!projectId || !iid) {
     return err(
-      "Could not infer the GitLab MR for this conversation (no gitlab link). " +
-        "Pass the project + MR explicitly, or use the broker directly.",
+      "Could not determine the GitLab MR/issue for this conversation — it has no " +
+        "gitlab link with a project + iid, and no GitLab mapping was found in the " +
+        "webhooks store. Pass the project + iid explicitly, or use the broker directly.",
     );
   }
-  const base = `/gitlab/projects/${encodeURIComponent(ref.projectId)}/merge_requests/${ref.mrIid}`;
+  const kind = isMr ? "merge_requests" : "issues";
+  const base = `/gitlab/projects/${encodeURIComponent(projectId)}/${kind}/${iid}`;
   const path = args.discussion_id
     ? `${base}/discussions/${encodeURIComponent(args.discussion_id)}/notes`
     : `${base}/notes`;
   const res = await deps.broker.call(ctx.conversationId, "POST", path, { body: args.body });
-  return toToolResult(res, { successText: "Commented on the GitLab MR." });
+  return toToolResult(res, { successText: `Commented on the GitLab ${isMr ? "MR" : "issue"}.` });
 }
 
 /** Comment on the conversation's GitHub PR/issue (owner/repo/number inferred). */
@@ -202,18 +240,33 @@ export async function handleGithubComment(
   ctx: ToolContext,
   args: { body: string; in_reply_to?: number },
 ): Promise<ToolResult> {
+  // Prefer the link `ref`; fall back to the webhooks conversation_map (resource_id
+  // "<owner>/<repo>#<number>"). ref wins when present.
   const ref = inferRef(await ctx.links(), "github");
-  if (!ref?.owner || !ref?.repo || ref?.number == null) {
+  let owner = ref?.owner;
+  let repo = ref?.repo;
+  let number: number | undefined = ref?.number;
+  if (!owner || !repo || number == null) {
+    const m = await ctx.resourceLookup?.("github");
+    if (m) {
+      const p = parseGithubResourceId(m.resourceId);
+      owner = owner ?? p.owner;
+      repo = repo ?? p.repo;
+      number = number ?? p.number;
+    }
+  }
+  if (!owner || !repo || number == null) {
     return err(
-      "Could not infer the GitHub PR/issue for this conversation (no github link). " +
-        "Pass owner/repo/number explicitly, or use the broker directly.",
+      "Could not determine the GitHub PR/issue for this conversation — it has no " +
+        "github link with owner/repo/number, and no GitHub mapping was found in the " +
+        "webhooks store. Pass owner/repo/number explicitly, or use the broker directly.",
     );
   }
   // A review-comment reply uses a different endpoint; a plain comment posts to the
   // issue/PR comments. Default = a new issue comment.
   const path = args.in_reply_to
-    ? `/github/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${args.in_reply_to}/replies`
-    : `/github/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`;
+    ? `/github/repos/${owner}/${repo}/pulls/${number}/comments/${args.in_reply_to}/replies`
+    : `/github/repos/${owner}/${repo}/issues/${number}/comments`;
   const res = await deps.broker.call(ctx.conversationId, "POST", path, { body: args.body });
   return toToolResult(res, { successText: "Commented on the GitHub PR/issue." });
 }
@@ -224,16 +277,24 @@ export async function handleJiraComment(
   ctx: ToolContext,
   args: { body: string },
 ): Promise<ToolResult> {
+  // Prefer the link `ref`; fall back to the webhooks conversation_map (resource_id
+  // IS the issue key for jira). ref wins when present.
   const ref = inferRef(await ctx.links(), "jira");
-  if (!ref?.issueKey) {
+  let issueKey = ref?.issueKey;
+  if (!issueKey) {
+    const m = await ctx.resourceLookup?.("jira");
+    if (m?.resourceId) issueKey = m.resourceId;
+  }
+  if (!issueKey) {
     return err(
-      "Could not infer the Jira issue for this conversation (no jira link). " +
+      "Could not determine the Jira issue for this conversation — it has no jira " +
+        "link with an issue key, and no Jira mapping was found in the webhooks store. " +
         "Pass the issue key explicitly, or use the broker directly.",
     );
   }
   // Jira Cloud REST v2 accepts a plain-text `body` (v3 requires ADF); the broker
   // proxies to /ex/jira/{cloud_id}, so the path is /jira/rest/api/2/....
-  const path = `/jira/rest/api/2/issue/${encodeURIComponent(ref.issueKey)}/comment`;
+  const path = `/jira/rest/api/2/issue/${encodeURIComponent(issueKey)}/comment`;
   const res = await deps.broker.call(ctx.conversationId, "POST", path, { body: args.body });
   return toToolResult(res, { successText: "Commented on the Jira issue." });
 }
