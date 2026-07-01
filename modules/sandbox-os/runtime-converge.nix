@@ -20,21 +20,12 @@
 let
   cfg = config.programs.scooterModule;
 
-  baseConfig = ./runtime-converge/base-config.nix;
-
-  # The base config (modules/sandbox-os) reaches a few files OUTSIDE its own dir
-  # via `../../` relative paths: the broker-tools overlay (pkgs/broker-tools, which
-  # reads the broker scripts + cli.py). For the in-pod rebuild to resolve those, we
-  # vendor a small source TREE placing modules/sandbox-os AND pkgs/broker-tools +
-  # the broker cli.py at the same relative layout. modulesPath then points at
-  # <tree>/modules/sandbox-os; the overlay's `../../pkgs/broker-tools` resolves.
-  modulesTree = pkgs.runCommand "sandbox-os-src" { } ''
-    mkdir -p $out/modules $out/pkgs $out/services/broker/broker/aws
-    cp -r ${lib.cleanSource ./.} $out/modules/sandbox-os
-    cp -r ${../../pkgs/broker-tools} $out/pkgs/broker-tools
-    cp ${../../services/broker/broker/aws/cli.py} $out/services/broker/broker/aws/cli.py
-  '';
-  modulesSrc = "${modulesTree}/modules/sandbox-os";
+  # The base-config entrypoint + vendored modules tree the in-pod build feeds to it.
+  # Factored into a shared helper so the nixosTest pre-builds the re-converged
+  # toplevel from the IDENTICAL derivations (else: cache miss -> offline from-source
+  # build that hangs in the VM). See runtime-converge/reconverge-inputs.nix.
+  inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib; })
+    baseConfig modulesTree modulesSrc;
 
   # The canonical system profile — registering each switch here gives us the
   # numbered-generation ladder NixOS uses for rollback. The symlinks
