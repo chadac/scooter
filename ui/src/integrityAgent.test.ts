@@ -68,6 +68,54 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("REPLAY through the base applier keeps the tool call in fromAgUiMessages (refresh path)", async () => {
+    // Mirrors RuntimeProvider's render pump: drive the base AbstractAgent applier
+    // over the integrity stream (via agent.renderPump), then convert agent.messages
+    // the way the pump does. This is the page-refresh replay path where tool calls
+    // went missing — assert they SURVIVE into the assistant-ui thread messages.
+    const { fromAgUiMessages } = await import("@assistant-ui/react-ag-ui");
+    const fetchSpy = vi.fn(sseFetch(FRAMES)) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+    // Drive the render pump exactly as RuntimeProvider does. The pump folds each
+    // SSE connection fresh (one connection == one fold == one fetch of the log),
+    // then reconnects after a delay. Stop the pump once the FIRST fold has gone
+    // quiet (a short debounce after the last message change) so we assert on a
+    // single fold's result — exactly one fetch drove it.
+    const stop = agent.renderPump();
+    const settled = new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsubscribe(); stop(); resolve(); };
+      const { unsubscribe } = agent.subscribe({
+        onMessagesChanged: () => {
+          clearTimeout(timer);
+          timer = setTimeout(done, 200); // quiet for 200ms => fold settled
+        },
+      });
+      setTimeout(done, 1500); // hard cap
+    });
+    await settled;
+
+    // agent.messages should carry the tool call (applier attaches it to a msg).
+    const agMsgs = (agent as unknown as { messages: Array<{ id: string; role: string; toolCalls?: Array<{ function: { arguments: string } }> }> }).messages;
+    const withTool = agMsgs.filter((m) => (m.toolCalls?.length ?? 0) > 0);
+    expect(withTool.length, "applier should attach the tool call to a message").toBeGreaterThan(0);
+
+    // NO DOUBLE-APPLICATION: the pump folds each connection fresh (setMessages([])
+    // per connection) so the log's full-log replay rebuilds identical state rather
+    // than doubling. Without that the args come out doubled ('{"cmd":"ls"}{"cmd":"ls"}')
+    // and messages duplicate. Also assert exactly ONE fetch drove this replay.
+    expect(withTool[0].toolCalls![0].function.arguments).toBe('{"cmd":"ls"}');
+    // Exactly one assistant-with-toolcall and one tool-result message (not two each).
+    expect(agMsgs.filter((m) => m.id === "t1" && m.role === "assistant").length).toBe(1);
+    expect((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls.length, "one fetch per fold").toBe(1);
+
+    // And it must survive the conversion the pump feeds the thread.
+    const threadMsgs = fromAgUiMessages(agent.messages as never);
+    expect(JSON.stringify(threadMsgs), "fromAgUiMessages must keep the tool call").toContain("run_command");
+    agent.dispose();
+  });
+
   it("send() issues a fire-and-forget POST /agui and does NOT consume its SSE", async () => {
     const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
       void url;

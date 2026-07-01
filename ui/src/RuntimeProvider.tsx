@@ -20,11 +20,15 @@
  *      placeholder + one RUN_STARTED/FINISHED pair per `startRun`). Feeding it
  *      the continuous, multi-run integrity replay through that per-run applier
  *      would merge every run into one bubble. So we do NOT let the runtime drive
- *      rendering: we run our OWN render pump — the base AbstractAgent applier
- *      (`AbstractAgent.prototype.runAgent`, invoked directly) folds the integrity
- *      stream into `agent.messages`, and on every change we push a full snapshot
- *      into the thread via `runtime.thread.reset(fromAgUiMessages(...))` (the same
- *      reset + converter the old history hydration used).
+ *      rendering: we run our OWN render pump — `agent.renderPump()`, which drives
+ *      the base AbstractAgent applier over the integrity stream (with exactly one
+ *      subscription per SSE connection, re-folded from empty each connect so the
+ *      full-log replay never doubles) and folds it into `agent.messages`; on every
+ *      change we push a full snapshot into the thread via
+ *      `runtime.thread.reset(fromAgUiMessages(...))` (the same reset + converter
+ *      the old history hydration used). We deliberately avoid
+ *      AbstractAgent.runAgent here — it subscribes to run() twice and would double
+ *      every event.
  *
  *   2. The composer send goes onNew -> core.append -> startRun -> agent.runAgent.
  *      There is no send-override adapter on useAgUiRuntime (checked
@@ -48,7 +52,7 @@
 
 import { useEffect, useMemo, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { AbstractAgent, type RunAgentInput } from "@ag-ui/client";
+import type { AbstractAgent, RunAgentInput } from "@ag-ui/client";
 import { useAgUiRuntime, fromAgUiMessages } from "@assistant-ui/react-ag-ui";
 
 import { sessionStore, useSessions } from "./sessions.js";
@@ -127,14 +131,18 @@ function ConversationRuntime({
 
   const runtime = useAgUiRuntime({ agent, adapters: { threadList: threadListAdapter } });
 
-  // The RENDER PUMP. Drive the base AbstractAgent applier directly (the prototype
-  // runAgent, NOT the shadowed instance one) so it subscribes to run() — the
-  // continuous integrity stream — and folds every event into agent.messages with
-  // full fidelity across all runs. On each change, replace the thread with the
-  // folded snapshot: fromAgUiMessages preserves tool calls + reasoning, and
-  // reset() makes the integrity log the SINGLE writer (a Slack-driven run and a
-  // local run render through the identical path). This replaces the old one-shot
-  // loadHistory: the stream's replay IS the history.
+  // The RENDER PUMP. agent.renderPump() folds the integrity stream into
+  // agent.messages with full fidelity across all runs, using EXACTLY ONE
+  // subscription per SSE connection and re-folding each connection from an empty
+  // accumulator — so the log's full-log replay (on connect AND on every reconnect)
+  // rebuilds identical state instead of DOUBLING tool-call args / duplicating
+  // messages (the page-refresh replay bug). We do NOT use AbstractAgent.runAgent
+  // here: it subscribes to run() twice and would double every event. On each
+  // message change, replace the thread with the folded snapshot — fromAgUiMessages
+  // preserves tool calls + reasoning, and reset() makes the integrity log the
+  // SINGLE writer (a Slack-driven run and a local run render through the identical
+  // path). This replaces the old one-shot loadHistory: the stream's replay IS the
+  // history.
   useEffect(() => {
     let disposed = false;
     const push = () => {
@@ -142,12 +150,10 @@ function ConversationRuntime({
       runtime.thread.reset(fromAgUiMessages(agent.messages as unknown as unknown[]));
     };
     const { unsubscribe } = agent.subscribe({ onMessagesChanged: () => push() });
-    // Start the applier on the continuous stream. It never resolves while the
-    // stream is open (dispose aborts it, which completes/errors the run); errors
-    // are swallowed — the integrity stream self-heals by reconnecting.
-    void AbstractAgent.prototype.runAgent.call(agent).catch(() => {});
+    const stopPump = agent.renderPump();
     return () => {
       disposed = true;
+      stopPump();
       unsubscribe();
       agent.dispose();
     };

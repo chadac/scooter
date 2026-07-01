@@ -24,7 +24,7 @@
 
 import { AbstractAgent, type RunAgentInput } from "@ag-ui/client";
 import type { BaseEvent } from "@ag-ui/core";
-import { Observable } from "rxjs";
+import { Observable, type Subscription, defer, repeat, catchError, EMPTY } from "rxjs";
 
 import type { AgentHostConfig } from "./client.js";
 
@@ -49,12 +49,17 @@ interface IntegrityFrame {
   event?: Record<string, unknown>;
 }
 
+/** Result of reading one integrity SSE connection to completion. */
+type ConnectionOutcome = "not-found" | "closed" | "error";
+
 export class IntegrityAgent extends AbstractAgent {
   private readonly cfg: IntegrityAgentConfig;
   private readonly base: string;
   private readonly doFetch: typeof fetch;
   /** Abort controllers for the live render subscription(s), aborted on dispose. */
   private readonly controllers = new Set<AbortController>();
+  /** The single render-pump subscription (see renderPump), torn down on dispose. */
+  private pumpSub?: Subscription;
 
   constructor(config: IntegrityAgentConfig) {
     super({ threadId: config.conversationId });
@@ -77,67 +82,169 @@ export class IntegrityAgent extends AbstractAgent {
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
     };
 
+    // A CONTINUOUS cold Observable: one SSE connection, reconnecting on drop and
+    // re-replaying the full log each time. Kept for the run() contract (a caller
+    // reading events off a single connection). The render pump does NOT subscribe
+    // to this directly — a reconnect re-replays every event, and the base applier
+    // would then DOUBLE-APPLY the replay into the SAME accumulator (doubling
+    // tool-call args like '{"cmd":"ls"}{"cmd":"ls"}' and duplicating messages —
+    // the page-refresh replay bug). The pump instead folds each connection fresh;
+    // see renderPump / connectionEvents.
     return new Observable<BaseEvent>((subscriber) => {
-      let closed = false;
       const controller = new AbortController();
       this.controllers.add(controller);
-
+      let closed = false;
       const loop = async () => {
         let notFoundDelay = 500;
         while (!closed) {
-          try {
-            const res = await this.doFetch(url, { headers, signal: controller.signal });
-            if (res.status === 404) {
-              // The conversation is created server-side on the first prompt; a
-              // brand-new thread 404s until then. Back off and retry.
-              await delay(notFoundDelay);
-              notFoundDelay = Math.min(notFoundDelay * 2, 5000);
-              continue;
-            }
+          const outcome = await this.readConnection(url, headers, controller, (e) =>
+            subscriber.next(e),
+          );
+          if (outcome === "not-found") {
+            await delay(notFoundDelay);
+            notFoundDelay = Math.min(notFoundDelay * 2, 5000);
+          } else {
             notFoundDelay = 500;
-            if (!res.ok || !res.body) {
-              await delay(1000);
-              continue;
-            }
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = "";
-            while (!closed) {
-              const { value, done } = await reader.read();
-              if (done) break;
-              buf += decoder.decode(value, { stream: true });
-              let idx: number;
-              while ((idx = buf.indexOf("\n\n")) !== -1) {
-                const raw = buf.slice(0, idx);
-                buf = buf.slice(idx + 2);
-                const line = raw.split("\n").find((l) => l.startsWith("data:"));
-                if (!line) continue;
-                let frame: IntegrityFrame;
-                try {
-                  frame = JSON.parse(line.slice(5).trim()) as IntegrityFrame;
-                } catch {
-                  continue; // skip a malformed frame, keep the stream alive
-                }
-                // `synced` is a replay-complete marker with no event; skip it.
-                if (frame.kind === "event" && frame.event) {
-                  subscriber.next(frame.event as unknown as BaseEvent);
-                }
-              }
-            }
-          } catch {
-            /* network drop / abort — reconnect (a fresh stream re-replays) */
+            if (!closed) await delay(500);
           }
-          if (!closed) await delay(500);
         }
       };
       void loop();
-
       return () => {
         closed = true;
         controller.abort();
         this.controllers.delete(controller);
       };
     });
+  }
+
+  /**
+   * One SSE CONNECTION as a self-completing Observable: opens the integrity
+   * stream, emits each frame's inner BaseEvent, and COMPLETES when that stream
+   * ends (or errors). Unlike run(), it does NOT reconnect — reconnection is the
+   * pump's job (renderPump), so each connection can be folded from a fresh,
+   * empty message accumulator and the full-log replay rebuilds identical state
+   * instead of doubling it.
+   */
+  private connectionEvents(): Observable<BaseEvent> {
+    const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+      ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
+    };
+    return new Observable<BaseEvent>((subscriber) => {
+      const controller = new AbortController();
+      this.controllers.add(controller);
+      let closed = false;
+      void (async () => {
+        await this.readConnection(url, headers, controller, (e) => subscriber.next(e));
+        if (!closed) subscriber.complete();
+      })();
+      return () => {
+        closed = true;
+        controller.abort();
+        this.controllers.delete(controller);
+      };
+    });
+  }
+
+  /**
+   * Read a single integrity SSE connection to completion, invoking `onEvent` for
+   * each inner BaseEvent. Returns "not-found" (conversation not yet created — the
+   * caller should back off), "closed" (stream ended normally), or "error".
+   */
+  private async readConnection(
+    url: string,
+    headers: Record<string, string>,
+    controller: AbortController,
+    onEvent: (e: BaseEvent) => void,
+  ): Promise<ConnectionOutcome> {
+    try {
+      const res = await this.doFetch(url, { headers, signal: controller.signal });
+      if (res.status === 404) return "not-found"; // created on first prompt
+      if (!res.ok || !res.body) return "error";
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) !== -1) {
+          const raw = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const line = raw.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let frame: IntegrityFrame;
+          try {
+            frame = JSON.parse(line.slice(5).trim()) as IntegrityFrame;
+          } catch {
+            continue; // skip a malformed frame, keep the stream alive
+          }
+          // `synced` is a replay-complete marker with no event; skip it.
+          if (frame.kind === "event" && frame.event) {
+            onEvent(frame.event as unknown as BaseEvent);
+          }
+        }
+      }
+      return "closed";
+    } catch {
+      return "error"; // network drop / abort
+    }
+  }
+
+  /**
+   * The RENDER PUMP. Folds the integrity stream into `messages` with FULL FIDELITY
+   * using the base-class applier, but with EXACTLY ONE subscription per SSE
+   * connection — so every event is applied ONCE.
+   *
+   * TWO duplication traps this avoids:
+   *
+   *   1. AbstractAgent.runAgent subscribes to run() TWICE per run (sequential
+   *      connect + apply passes; refCount drops to 0 between them, so share()
+   *      cannot collapse them) — two streams, every event folded twice. We do NOT
+   *      use runAgent; we drive the protected `apply` + `processApplyEvents` (the
+   *      same fold runAgent uses) over ONE connection Observable ourselves.
+   *
+   *   2. The integrity stream REPLAYS the full log on every (re)connect. A single
+   *      long-lived subscription that reconnects would replay every event again
+   *      into the SAME applier accumulator — doubling tool-call args
+   *      ('{"cmd":"ls"}{"cmd":"ls"}') and duplicating messages (the page-refresh
+   *      replay bug). So each connection gets its OWN fold seeded from an EMPTY
+   *      message list (setMessages([]) before starting), and repeat({delay})
+   *      reconnects ONLY after the current connection completes — one fetch in
+   *      flight at a time. A reconnect thus rebuilds identical state from the
+   *      replay instead of appending to it.
+   *
+   * `processApplyEvents` writes `this.messages` and fires each subscriber's
+   * onMessagesChanged, so callers keep observing via `subscribe({...})` as before.
+   * Returns a teardown; also torn down by dispose().
+   */
+  renderPump(): () => void {
+    const input = this.prepareRunAgentInput();
+    // One fold per connection, deferred so each (re)subscription opens a FRESH SSE
+    // connection seeded from an EMPTY message list — the full-log replay rebuilds
+    // identical state rather than doubling onto the previous fold. repeat({delay})
+    // reconnects ONLY after the current connection completes (its stream ended),
+    // so exactly one fetch is in flight at a time and a completed stream backs off
+    // before re-replaying. catchError keeps a mid-fold error from killing the pump.
+    const fold$ = defer(() => {
+      this.setMessages([]);
+      const conn$ = this.connectionEvents();
+      return this.processApplyEvents(
+        input,
+        this.apply(input, conn$, this.subscribers),
+        this.subscribers,
+      ).pipe(catchError(() => EMPTY));
+    }).pipe(repeat({ delay: 500 }));
+
+    this.pumpSub?.unsubscribe();
+    this.pumpSub = fold$.subscribe({ error: () => {} });
+    return () => {
+      this.pumpSub?.unsubscribe();
+      this.pumpSub = undefined;
+    };
   }
 
   /**
@@ -185,6 +292,8 @@ export class IntegrityAgent extends AbstractAgent {
 
   /** Close all live integrity subscriptions and release resources. */
   dispose(): void {
+    this.pumpSub?.unsubscribe();
+    this.pumpSub = undefined;
     for (const c of this.controllers) c.abort();
     this.controllers.clear();
   }
