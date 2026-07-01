@@ -479,7 +479,22 @@ in
                     { name = "OTEL_DEPLOYMENT_ENVIRONMENT"; value = cfg.observability.otel.environment; }
                   ++ lib.optional (cfg.observability.otel.pricing != { })
                     { name = "AGENT_PRICING_FILE"; value = "/etc/agent-sandbox/pricing/pricing.json"; }
-                  ++ lib.mapAttrsToList (k: v: { name = k; value = v; }) cfg.observability.otel.env);
+                  ++ lib.mapAttrsToList (k: v: { name = k; value = v; }) cfg.observability.otel.env)
+                ++ lib.optionals (cfg.webhooks.enable && cfg.webhooks.postgres.enable && cfg.webhooks.postgres.passwordSecret != null) [
+                  # READ access to the webhooks conversation_map (shared Postgres),
+                  # so the agent-tools can DISCOVER a conversation's slack/PR/MR/issue
+                  # target when its link has no structured `ref` (fallback). Same DB
+                  # the webhooks service writes; reuses its password secret.
+                  { name = "WEBHOOKS_DB_HOST"; value = "agent-shared-db.${cfg.namespace}.svc.cluster.local"; }
+                  { name = "WEBHOOKS_DB_NAME"; value = cfg.webhooks.postgres.database; }
+                  { name = "WEBHOOKS_DB_USER"; value = cfg.webhooks.postgres.user; }
+                  {
+                    name = "WEBHOOKS_DB_PASSWORD";
+                    valueFrom.secretKeyRef = {
+                      inherit (cfg.webhooks.postgres.passwordSecret) name key;
+                    };
+                  }
+                ];
                 volumeMounts = [
                   # Durable history (PVC).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }

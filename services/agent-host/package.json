@@ -22,10 +22,12 @@
     "@opentelemetry/resources": "^1.30.0",
     "@opentelemetry/sdk-metrics": "^1.30.0",
     "@opentelemetry/semantic-conventions": "^1.30.0",
-    "@zed-industries/agent-client-protocol": "^0.4.5"
+    "@zed-industries/agent-client-protocol": "^0.4.5",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
     "typescript": "^5.7.2",
     "vitest": "^3.0.5"
   }

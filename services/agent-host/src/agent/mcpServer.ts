@@ -19,7 +19,7 @@ import { z } from "zod";
 
 import type { ModuleManager } from "../session/moduleManager.js";
 import type { ConversationLink } from "../session/manager.js";
-import { registerAgentTools, type BrokerClient } from "./agentTools.js";
+import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
 
 /** An MCP tool result (the shape the SDK callback returns). */
 export interface ToolResult {
@@ -72,6 +72,9 @@ export interface AgentToolsWiring {
   broker: BrokerClient;
   /** The conversation's links (for inferred defaults), from store.listLinks. */
   links(conversationId: string): Promise<ConversationLink[]>;
+  /** FALLBACK target lookup: the webhooks conversation_map (Postgres), used when a
+   *  link has no structured `ref`. Optional — omitted when no DB is wired. */
+  resourceLookup?(conversationId: string, source: string): Promise<ResourceMapping | undefined>;
   /** Injectable fetch for web_search / web_fetch (defaults to global fetch). */
   fetchImpl?: typeof fetch;
 }
@@ -102,7 +105,13 @@ function buildServer(manager: ModuleManager | undefined, conversationId: string,
     registerAgentTools(
       server,
       { broker: agentTools.broker, fetchImpl: agentTools.fetchImpl },
-      { conversationId, links: () => agentTools.links(conversationId) },
+      {
+        conversationId,
+        links: () => agentTools.links(conversationId),
+        resourceLookup: agentTools.resourceLookup
+          ? (source) => agentTools.resourceLookup!(conversationId, source)
+          : undefined,
+      },
     );
   }
   return server;

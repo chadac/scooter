@@ -86,11 +86,42 @@ describe("agent-tools: inferred defaults", () => {
     expect(call[3]).toMatchObject({ channel: "C123", thread_ts: "1700.5", text: "on it" });
   });
 
-  it("slack_respond errors clearly (not a guess) when the thread can't be inferred", async () => {
+  it("slack_respond errors clearly (not a guess) when neither ref nor DB has the target", async () => {
     const broker = fakeBroker({ status: 200, raw: "{}", data: {} });
     const out = await handleSlackRespond({ broker }, ctxWith([]), { text: "hi" });
     expect(out.isError).toBe(true);
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0); // never called blind
+  });
+
+  it("slack_respond FALLS BACK to the webhooks conversation_map when the link has no ref", async () => {
+    // A conversation created before `ref` existed: its slack link has no channel.
+    const refless: ConversationLink = { source: "slack", resourceType: "thread", title: "#eng thread" };
+    const broker = fakeBroker({ status: 200, raw: '{"ok":true}', data: { ok: true } });
+    // The webhooks store maps this conversation to its slack resource.
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [refless],
+      resourceLookup: async (source) =>
+        source === "slack"
+          ? { source: "slack", resourceType: "thread", resourceId: "C999:1699.42", slackChannel: "C999", slackTs: "1699.42" }
+          : undefined,
+    };
+    const out = await handleSlackRespond({ broker }, ctx, { text: "on it" });
+    expect(out.isError).toBeFalsy();
+    const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[3]).toMatchObject({ channel: "C999", thread_ts: "1699.42", text: "on it" });
+  });
+
+  it("slack_respond fallback parses channel:thread_ts from resource_id when the slack columns are unset", async () => {
+    const broker = fakeBroker({ status: 200, raw: '{"ok":true}', data: { ok: true } });
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async () => ({ source: "slack", resourceType: "thread", resourceId: "C777:1700.9" }),
+    };
+    const out = await handleSlackRespond({ broker }, ctx, { text: "hi" });
+    expect(out.isError).toBeFalsy();
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][3]).toMatchObject({ channel: "C777", thread_ts: "1700.9" });
   });
 
   it("jira_comment posts to the inferred issue via the v2 comment endpoint", async () => {

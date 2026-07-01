@@ -32,6 +32,7 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { createModuleManager } from "./session/moduleManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
+import { createResourceLookup } from "./agent/resourceMapping.js";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
@@ -189,6 +190,23 @@ function createNoopProvisioner(): SandboxProvisioner {
  *  web-identity vars (AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE) that the EKS
  *  pod-identity webhook injects — goose's AWS SDK chain uses them to assume the
  *  pod's role for Bedrock, so no static keys are needed in-cluster. */
+/** DSN for the shared Postgres holding the webhooks conversation_map (the agent-
+ *  tools' target-discovery fallback). Prefer an explicit WEBHOOKS_DB_DSN; else
+ *  assemble it from WEBHOOKS_DB_* components (host/name/user/password/port) the
+ *  same way the webhooks service does. Empty when no DB is configured (then the
+ *  tools rely on the link `ref` alone). Read-only use. */
+function webhooksResourceDsn(): string {
+  const explicit = process.env.WEBHOOKS_DB_DSN;
+  if (explicit) return explicit;
+  const pw = process.env.WEBHOOKS_DB_PASSWORD;
+  if (!pw) return "";
+  const host = process.env.WEBHOOKS_DB_HOST ?? "agent-shared-db";
+  const port = process.env.WEBHOOKS_DB_PORT ?? "5432";
+  const name = process.env.WEBHOOKS_DB_NAME ?? "webhooks";
+  const user = process.env.WEBHOOKS_DB_USER ?? "webhooks";
+  return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
+}
+
 function bedrockEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of [
@@ -304,6 +322,13 @@ export async function main(
   // resolveAwsRequest below). When BROKER_URL is unset (local/fake) the tools
   // still register, but calls fail with a clear error the handlers echo verbatim.
   const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+  // Optional FALLBACK target discovery: read the webhooks conversation_map from
+  // the shared Postgres when a conversation's link has no structured `ref` (e.g.
+  // a conversation created before ref existed). Wired iff a DSN is available
+  // (WEBHOOKS_DB_DSN, or assembled from WEBHOOKS_DB_* like the webhooks service).
+  // Absent -> the tools rely on `ref` alone (unchanged behavior).
+  const webhooksDsn = webhooksResourceDsn();
+  const resourceLookup = webhooksDsn ? createResourceLookup({ dsn: webhooksDsn }) : undefined;
   const agentToolsWiring = brokerUrl
     ? {
         broker: createBrokerClient({
@@ -311,6 +336,9 @@ export async function main(
           tokenPath: process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token",
         }),
         links: (id: string) => store.listLinks?.(id as SessionId) ?? Promise.resolve([]),
+        resourceLookup: resourceLookup
+          ? (id: string, source: string) => resourceLookup.lookup(id, source)
+          : undefined,
       }
     : undefined;
   // Serve the MCP endpoint if EITHER capability is available: self-modify
