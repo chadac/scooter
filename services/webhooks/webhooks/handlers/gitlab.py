@@ -133,22 +133,17 @@ def _format_forwarded_message(
     iid_prefix = "!" if noteable_type == "merge_requests" else "#"
 
     if discussion_id:
-        api_path = f"projects/{project_id}/{noteable_type}/{noteable_iid}/discussions/{discussion_id}/notes"
-        toplevel_cmd = (
-            f"glab mr comment {noteable_iid}" if noteable_type == "merge_requests"
-            else f"glab issue comment {noteable_iid}"
-        )
         reply_instruction = (
-            f"To reply **in this thread**, use:\n"
-            f"```\nglab api --method POST \"{api_path}\" -f 'body=your response'\n```\n"
-            f"To post a top-level comment instead, use: `{toplevel_cmd} -m \"your response\"`"
+            "To respond, use the `gitlab_comment` tool (this MR is already known — you "
+            f"just provide the body). Pass `discussion_id=\"{discussion_id}\"` to reply "
+            "within this review thread; omit it for a top-level comment. It reports the "
+            "real result."
         )
     else:
-        cmd = (
-            f"glab mr comment {noteable_iid}" if noteable_type == "merge_requests"
-            else f"glab issue comment {noteable_iid}"
+        reply_instruction = (
+            "To respond, use the `gitlab_comment` tool (this MR is already known — you "
+            "just provide the body). It reports the real result."
         )
-        reply_instruction = f"To respond on GitLab, use: `{cmd} -m \"your response\"`"
 
     if has_mention:
         preamble = (
@@ -206,6 +201,17 @@ async def _handle_note(payload: dict):
         return
     if _is_own_comment(note_body):
         return
+
+    # Branch-specific fields, initialized so they're always bound (the later
+    # noteable_type-gated blocks reference the ones relevant to their branch; the
+    # unused-branch defaults are never read there, but binding them keeps the
+    # control flow provably safe rather than "possibly unbound").
+    mr: dict = {}
+    issue: dict = {}
+    mr_title = source_branch = ""
+    issue_title = ""
+    mr_iid: int | None = None
+    issue_iid: int | None = None
 
     if noteable_type == "MergeRequest":
         mr = payload.get("merge_request", {})

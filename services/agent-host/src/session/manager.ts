@@ -75,13 +75,14 @@ export interface ConversationLink {
   title?: string;
   /**
    * Structured target identifiers for the agent-tools (slack_respond,
-   * gitlab_comment, github_comment) to INFER where to respond WITHOUT the agent
-   * passing them. Populated by the webhooks handlers in push_link. Shapes by
-   * source (all optional so old links / partial data degrade to an explicit-target
-   * request, never a wrong guess):
+   * gitlab_comment, github_comment, jira_comment) to INFER where to respond
+   * WITHOUT the agent passing them. Populated by the webhooks handlers in
+   * push_link. Shapes by source (all optional so old links / partial data degrade
+   * to an explicit-target request, never a wrong guess):
    *   slack:  { channel, threadTs }
    *   gitlab: { projectId, mrIid }
    *   github: { owner, repo, number }
+   *   jira:   { issueKey }
    */
   ref?: {
     channel?: string;
@@ -91,6 +92,7 @@ export interface ConversationLink {
     owner?: string;
     repo?: string;
     number?: number;
+    issueKey?: string;
   };
 }
 

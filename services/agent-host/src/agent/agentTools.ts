@@ -103,7 +103,7 @@ export function toToolResult(
  *  then returns a clear isError asking for an explicit target — never a guess). */
 export function inferRef(
   links: ConversationLink[],
-  source: "slack" | "gitlab" | "github",
+  source: "slack" | "gitlab" | "github" | "jira",
 ): ConversationLink["ref"] | undefined {
   return links.find((l) => l.source === source)?.ref;
 }
@@ -175,6 +175,26 @@ export async function handleGithubComment(
     : `/github/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`;
   const res = await deps.broker.call(ctx.conversationId, "POST", path, { body: args.body });
   return toToolResult(res, { successText: "Commented on the GitHub PR/issue." });
+}
+
+/** Comment on the conversation's Jira issue (issue key inferred). */
+export async function handleJiraComment(
+  deps: AgentToolsDeps,
+  ctx: ToolContext,
+  args: { body: string },
+): Promise<ToolResult> {
+  const ref = inferRef(await ctx.links(), "jira");
+  if (!ref?.issueKey) {
+    return err(
+      "Could not infer the Jira issue for this conversation (no jira link). " +
+        "Pass the issue key explicitly, or use the broker directly.",
+    );
+  }
+  // Jira Cloud REST v2 accepts a plain-text `body` (v3 requires ADF); the broker
+  // proxies to /ex/jira/{cloud_id}, so the path is /jira/rest/api/2/....
+  const path = `/jira/rest/api/2/issue/${encodeURIComponent(ref.issueKey)}/comment`;
+  const res = await deps.broker.call(ctx.conversationId, "POST", path, { body: args.body });
+  return toToolResult(res, { successText: "Commented on the Jira issue." });
 }
 
 /**
@@ -342,6 +362,17 @@ export function registerAgentTools(
       inputSchema: { body: z.string().describe("The comment (Markdown)."), in_reply_to: z.number().optional() },
     },
     async (args) => (await handleGithubComment(deps, ctx, args)) as never,
+  );
+  server.registerTool(
+    "jira_comment",
+    {
+      title: "Comment on the Jira issue",
+      description:
+        "Post a comment on THIS conversation's Jira issue (the issue key is inferred). Returns the " +
+        "real Jira result. Prefer this over a raw broker call.",
+      inputSchema: { body: z.string().describe("The comment text.") },
+    },
+    async (args) => (await handleJiraComment(deps, ctx, args)) as never,
   );
   server.registerTool(
     "web_search",

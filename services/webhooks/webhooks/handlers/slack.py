@@ -22,6 +22,7 @@ from ..agent_host_client import conversation_url, create_conversation, push_link
 from ..responses.slack import (
     add_slack_reaction,
     get_bot_user_id,
+    get_thread_history,
     post_slack_message,
     reply_in_thread,
 )
@@ -103,8 +104,8 @@ def _format_forwarded_message(
 
     reply_hint = (
         f"\n\n---\n"
-        f"Reply via the broker: `$BROKER_URL/slack/chat.postMessage` "
-        f"(channel: `{channel}`, thread_ts: `{thread_ts}`)"
+        f"To reply, use the `slack_respond` tool (this thread is already known — you just "
+        f"provide the text)."
     )
     return f"{preamble}\n\n---\n\n{comment_body}{reply_hint}"
 
@@ -189,8 +190,44 @@ async def _handle_event(event: dict):
         await _handle_thread_message(event)
 
 
+async def _format_thread_history(channel: str, thread_ts: str, up_to_ts: str) -> str:
+    """When @scooter is mentioned INSIDE an existing thread, the agent otherwise
+    sees only the single mention message and loses the conversation it's being
+    pulled into — so it replies out of context. Fetch the thread's prior messages
+    (conversations.replies) and format them as context, up to (but not including)
+    the mention itself. Returns "" for a root-level mention (no prior history) or
+    on any fetch failure (best-effort — a missing history must not block the reply).
+    """
+    try:
+        messages = await get_thread_history(channel, thread_ts)
+    except Exception:
+        logger.exception("Failed to fetch Slack thread history for %s/%s", channel, thread_ts)
+        return ""
+    bot_id = await _get_bot_id()
+    lines: list[str] = []
+    for m in messages:
+        m_ts = m.get("ts", "")
+        # Stop at the mention message (it's already the current request) + skip our
+        # own bot posts (status/acks — not part of the human conversation).
+        if m_ts and up_to_ts and m_ts >= up_to_ts:
+            continue
+        if bot_id and m.get("user") == bot_id:
+            continue
+        author = m.get("user", "unknown")
+        body = (m.get("text") or "").strip()
+        if body:
+            lines.append(f"<@{author}>: {body}")
+    if not lines:
+        return ""
+    joined = "\n".join(lines)
+    return (
+        "This thread already has a conversation. Here is its history "
+        f"(oldest first), for context:\n\n{joined}\n"
+    )
+
+
 async def _handle_mention(event: dict):
-    """Handle app_mention events — user mentioned @openhands."""
+    """Handle app_mention events — user mentioned @scooter."""
     text = event.get("text", "")
     user = event.get("user", "unknown")
     channel = event.get("channel", "")
@@ -231,8 +268,16 @@ async def _handle_mention(event: dict):
 
     await db.store_conversation("slack", "thread", res_id, PENDING_CONVERSATION_ID)
 
+    # If the mention is INSIDE an existing thread (thread_ts != this message's ts),
+    # publish the thread's prior history so the agent works from the real
+    # conversation it was pulled into, not just the one mention message.
+    history = ""
+    if thread_ts and thread_ts != ts:
+        history = await _format_thread_history(channel, thread_ts, up_to_ts=ts)
+
     reply_hint = _response_instructions(channel, thread_ts)
-    full_message = f"Slack message in channel {channel}:\n\n{comment_text}{reply_hint}"
+    prefix = f"{history}\n---\n\n" if history else ""
+    full_message = f"{prefix}Slack message in channel {channel}:\n\n{comment_text}{reply_hint}"
 
     asyncio.create_task(
         _background_create_conversation(
