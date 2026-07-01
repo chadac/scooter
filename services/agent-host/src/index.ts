@@ -216,6 +216,11 @@ export async function main(
         // generic image was retired): always provision privileged + tmpfs /run,/tmp
         // so systemd PID 1 boots.
         systemdImage: true,
+        // When the sandbox image has the local-overlay Nix store enabled
+        // (agent-sandbox-os-overlay), mount a disk-backed PVC upper at
+        // /nix/.scooter-rw so runtime nix builds (re-converge) can write + persist.
+        overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "") === "1",
+        overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).
