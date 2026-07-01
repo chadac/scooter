@@ -272,6 +272,60 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     void store.recordActivity?.(e.id, e.lastActivityAt);
   };
 
+  // Build an in-memory Entry from a persisted meta (no bridge; revive() spawns
+  // goose on first use). `onCluster` is the reconcile result for this conversation's
+  // Sandbox (running pod -> track RUNNING with its real ref; else a suspended
+  // placeholder that revive() recreates). Shared by hydrate() (bulk, at startup)
+  // and hydrateByThread() (on-demand, when a prompt arrives for an id not yet in
+  // the map — e.g. hydrate raced or failed). Returns the Entry.
+  const hydrateEntry = (m: ConversationMeta, onCluster?: { ref: SandboxRef; running: boolean }): Entry => {
+    const name = `conv-${shortId(m.threadId)}`;
+    const entry: Entry = {
+      id: m.id,
+      threadId: m.threadId,
+      sandbox: onCluster?.running ? onCluster.ref : { name, namespace: "" },
+      bridge: undefined,
+      status: onCluster?.running ? "running" : "suspended",
+      title: m.title,
+      createdAt: m.createdAt,
+      lastActivityAt: m.lastActivityAt,
+      model: m.model,
+      owner: m.owner,
+    };
+    entries.set(m.id, entry);
+    return entry;
+  };
+
+  // On-demand hydration for a single thread: if a conversation with `threadId`
+  // exists in the STORE but not in the in-memory map, reconstruct its Entry so a
+  // follow-up prompt CONTINUES it instead of blind-creating a duplicate (which
+  // orphans the persisted event log). Returns the Entry, or undefined if the store
+  // has no such conversation (a genuinely new thread). Best-effort: a store error
+  // returns undefined (caller falls back to creating), logged so it's observable.
+  const hydrateByThread = async (threadId: ThreadId): Promise<Entry | undefined> => {
+    let metas: ConversationMeta[];
+    try {
+      metas = (await store.listConversations?.()) ?? [];
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[manager] hydrateByThread(${threadId}) store lookup FAILED (may create a duplicate):`, err);
+      return undefined;
+    }
+    const m = metas.find((x) => x.threadId === threadId);
+    if (!m) return undefined;
+    if (entries.has(m.id)) return entries.get(m.id);
+    // Reconcile just this conversation's Sandbox so we track a still-running pod
+    // correctly (best-effort; on failure revive() recreates from the placeholder).
+    let onCluster: { ref: SandboxRef; running: boolean } | undefined;
+    try {
+      const name = `conv-${shortId(m.threadId)}`;
+      onCluster = (await provisioner.reconcile?.())?.find((s) => s.ref.name === name);
+    } catch {
+      /* reconcile failed — treat as suspended; revive() recreates the pod */
+    }
+    return hydrateEntry(m, onCluster);
+  };
+
   // Returns the persist promise so callers that must guarantee durability (e.g.
   // start(), before returning to the caller) can await it; fire-and-forget
   // callers (setTitle) just ignore it.
@@ -372,17 +426,28 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     },
 
     async promptByThread(threadId, text, model) {
-      // Find the conversation for this thread, or start one on first prompt
-      // (the FIRST prompt's model picks the conversation's model).
+      // Find the conversation for this thread. Three cases:
+      //  1. in the in-memory map -> use it (revive if no live bridge).
+      //  2. NOT in the map but PERSISTED (store has it) -> hydrate it on demand and
+      //     revive. CRITICAL after an agent-host restart: hydrate() may have raced,
+      //     failed, or evicted the id, and a webhook follow-up must CONTINUE the
+      //     existing conversation — NOT blind-create a duplicate that orphans the
+      //     persisted event log (the restart-orphan bug).
+      //  3. genuinely new thread (not in map, not in store) -> start one (the first
+      //     prompt's model picks the conversation's model).
       let entry = [...entries.values()].find((e) => e.threadId === threadId);
+      if (!entry) {
+        entry = await hydrateByThread(threadId);
+      }
       if (!entry) {
         const conv = await this.start(threadId, model);
         entry = entries.get(conv.id)!;
       } else {
         await applyModelSwitch(entry, model);
         if (!entry.bridge) {
-          // No live bridge -> revive (start goose). Covers both suspended AND
-          // hydrated-but-"running" conversations (pod up, no goose in this process).
+          // No live bridge -> revive (start goose). Covers suspended, hydrated-but-
+          // "running" (pod up, no goose in this process), AND just-hydrated-on-demand
+          // conversations.
           await this.revive(entry.id);
         }
       }
@@ -458,23 +523,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       for (const m of metas) {
         if (entries.has(m.id)) continue; // a live one already exists
         const name = `conv-${shortId(m.threadId)}`;
-        const onCluster = live.get(name);
-        // If the Sandbox's pod is still running, track it as RUNNING with its real
-        // namespace so suspend()/sweepIdle() can act on it. Otherwise it's a
-        // resumable (suspended) conversation — revive() recreates it on use; the
-        // empty-namespace placeholder signals "create a fresh pod".
-        entries.set(m.id, {
-          id: m.id,
-          threadId: m.threadId,
-          sandbox: onCluster?.running ? onCluster.ref : { name, namespace: "" },
-          bridge: undefined,
-          status: onCluster?.running ? "running" : "suspended",
-          title: m.title,
-          createdAt: m.createdAt,
-          lastActivityAt: m.lastActivityAt,
-          model: m.model,
-          owner: m.owner,
-        });
+        hydrateEntry(m, live.get(name));
       }
     },
 

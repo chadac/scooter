@@ -230,6 +230,70 @@ describe("SessionManager", () => {
     }
   });
 
+  it("promptByThread continues a PERSISTED conversation even when hydrate() didn't run (no orphaned duplicate)", async () => {
+    // The restart-orphan bug: after an agent-host restart, a webhook follow-up
+    // hits promptByThread with a threadId that's in the STORE but not yet in the
+    // in-memory map (hydrate raced/failed/evicted). It must reconstruct + CONTINUE
+    // the existing conversation — NOT blind-create a duplicate that orphans the
+    // persisted event log. This mirrors the real failure: NO hydrate() call.
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const conv = await m1.start("echo");
+      const originalId = conv.id;
+      const sandboxName = m1.get(conv.id)!.sandbox.name;
+      // A distinctive title + createdAt: a BLIND-create would reset these (new
+      // "New chat" entry, fresh createdAt) while CONTINUING preserves them — that's
+      // the observable proxy for "same conversation, event log intact" (the id is
+      // the threadId either way, so id-equality alone can't tell them apart).
+      await m1.setTitle(originalId, "The Original Conversation");
+      const originalCreatedAt = m1.get(originalId)!.createdAt;
+      await new Promise((r) => setTimeout(r, 25)); // settle saveMeta + a clock gap
+
+      // Fresh "process": a new manager over the SAME store, with a recording bridge.
+      // Deliberately DO NOT call hydrate() — the in-memory map is empty.
+      const prompts: string[] = [];
+      const bridgeFactory = () =>
+        ({
+          start: vi.fn(async () => {}),
+          prompt: vi.fn(async ({ text }: { text: string }) => {
+            prompts.push(text);
+            return "run-y";
+          }),
+          stop: vi.fn(async () => {}),
+          onEvent: () => () => {},
+          onPersist: () => () => {},
+          onTitle: () => () => {},
+        }) as never;
+      const prov2 = fakeProvisioner();
+      prov2.reconcile = vi.fn(async () => [
+        { ref: { name: sandboxName, namespace: "ns" }, running: true },
+      ]);
+      const m2 = createSessionManager({
+        provisioner: prov2,
+        store: createFileConversationStore(root),
+        bridgeFactory,
+      });
+      // No hydrate() — the map is empty.
+      expect(m2.list().length).toBe(0);
+
+      await m2.promptByThread("echo", "follow-up after restart");
+
+      // It CONTINUED the same conversation (not a blind-create): the prompt reached
+      // the agent, and the persisted title + createdAt are preserved. A blind-create
+      // would show title "New chat" and a newer createdAt (orphaning the original).
+      expect(prompts).toContain("follow-up after restart");
+      const revived = m2.get(originalId)!;
+      expect(revived.title).toBe("The Original Conversation");
+      expect(revived.createdAt).toBe(originalCreatedAt);
+      expect(m2.list().length).toBe(1);
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("promptByThread with a NEW model rebuilds the bridge with that model + persists it", async () => {
     // Per-conversation model is switchable mid-conversation: passing a model to
     // promptByThread that differs from the conversation's current model must tear
