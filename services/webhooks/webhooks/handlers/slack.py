@@ -33,6 +33,31 @@ router = APIRouter()
 
 _bot_user_id: str | None = None
 
+# Idempotency guard for the Slack Events API. Slack DELIVERS THE SAME EVENT MORE
+# THAN ONCE: it retries (up to 3×, with an X-Slack-Retry-Num header) whenever it
+# doesn't get a 200 within ~3s, and it can deliver both an `app_mention` AND a
+# `message` event for the same mention. Every delivery carries a stable outer
+# `event_id`; we drop any event_id we've already handled so a single user message
+# creates exactly one conversation / one reply. The webhooks service runs a single
+# replica (see modules/webhooks.nix), so an in-process guard is sufficient — no
+# cross-pod store needed. Bounded FIFO so it can't grow without limit.
+from collections import OrderedDict
+
+_SEEN_EVENT_IDS: "OrderedDict[str, None]" = OrderedDict()
+_SEEN_EVENT_IDS_MAX = 4096
+
+
+def _already_handled(event_id: str) -> bool:
+    """True if this Slack event_id was seen before (a retry / duplicate delivery)."""
+    if not event_id:
+        return False  # no id to dedupe on — let it through
+    if event_id in _SEEN_EVENT_IDS:
+        return True
+    _SEEN_EVENT_IDS[event_id] = None
+    while len(_SEEN_EVENT_IDS) > _SEEN_EVENT_IDS_MAX:
+        _SEEN_EVENT_IDS.popitem(last=False)
+    return False
+
 
 def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
     if not settings.slack_signing_secret:
@@ -124,6 +149,19 @@ async def handle_slack_event(request: Request):
     event_type = payload.get("type", "")
 
     if event_type == "event_callback":
+        # Drop retries / duplicate deliveries of the same event so one user
+        # message doesn't create two conversations / two replies. `event_id` is
+        # stable across Slack's retries; the X-Slack-Retry-Num header (present
+        # only on retries) is a fast secondary signal we can log.
+        event_id = payload.get("event_id", "")
+        if _already_handled(event_id):
+            retry = request.headers.get("x-slack-retry-num", "")
+            logger.info(
+                "Slack event %s already handled — dropping duplicate%s",
+                event_id,
+                f" (retry {retry})" if retry else "",
+            )
+            return {"status": "ok", "deduped": True}
         event = payload.get("event", {})
         await _handle_event(event)
 
