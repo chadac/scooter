@@ -59,6 +59,29 @@ in
       };
     };
 
+    # --- Slack (static bot token; http-proxy to slack.com/api) --------------
+    # The broker's slack provider proxies /slack/* -> https://slack.com/api,
+    # injecting the bot token so the agent can chat.postMessage etc. WITHOUT ever
+    # seeing the token. Enabled iff SLACK_BOT_TOKEN is set on the broker — hence
+    # this option (without it the /slack/* routes never mount and the agent's
+    # POST /slack/chat.postMessage 404s).
+    slack = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable the Slack provider (http-proxy to slack.com/api with the bot token injected).";
+      };
+      botTokenSecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
+            key = mkOption { type = types.str; default = "SLACK_BOT_TOKEN"; description = "Secret key holding the Slack bot token."; };
+          };
+        };
+        description = "Secret holding the Slack bot token (xoxb-…). Injected as SLACK_BOT_TOKEN. The secret must exist in the broker namespace.";
+      };
+    };
+
     # --- AWS permissions broker (dynamic, approval-gated AWS access) --------
     aws = {
       enable = mkOption {
@@ -217,6 +240,17 @@ in
                     valueFrom.secretKeyRef = {
                       name = bcfg.githubApp.privateKeySecret.name;
                       key = bcfg.githubApp.privateKeySecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.slack.enable [
+                  # Slack bot token -> the broker's slack provider proxies
+                  # /slack/* to slack.com/api with this injected. Without it the
+                  # provider is disabled and /slack/chat.postMessage 404s.
+                  {
+                    name = "SLACK_BOT_TOKEN";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.slack.botTokenSecret.name;
+                      key = bcfg.slack.botTokenSecret.key;
                     };
                   }
                 ] ++ lib.optionals bcfg.aws.enable ([
