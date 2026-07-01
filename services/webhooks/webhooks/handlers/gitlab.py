@@ -18,8 +18,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
-from ..responses.gitlab import post_gitlab_comment, update_gitlab_comment
-from .. import status_monitor
+from ..responses.gitlab import post_gitlab_comment
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -91,7 +90,13 @@ def _is_ignored_user(username: str) -> bool:
 
 
 def _is_own_comment(body: str) -> bool:
-    return body.startswith("OpenHands is working on this.") or "OpenHands status:" in body
+    # Recognize Scooter's own comments; keep matching the legacy "OpenHands"
+    # markers so in-flight threads created before the rename still match.
+    return (
+        body.startswith("Scooter is on it")
+        or body.startswith("OpenHands is working on this.")
+        or "OpenHands status:" in body
+    )
 
 
 def _response_instructions(noteable_type: str, noteable_iid: int) -> str:
@@ -271,12 +276,6 @@ async def _handle_note(payload: dict):
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)
 
-    note_id = await post_gitlab_comment(
-        project_id=project_id, noteable_type=note_api_type,
-        noteable_iid=noteable_iid,
-        body=":hourglass_flowing_sand: OpenHands status: **CREATING**",
-    )
-
     await db.store_conversation("gitlab", res_type, res_id, PENDING_CONVERSATION_ID)
 
     if noteable_type == "MergeRequest":
@@ -292,7 +291,7 @@ async def _handle_note(payload: dict):
             source="gitlab", res_type=res_type, res_id=res_id,
             message=full_message, repo=repo, conv_title=conv_title,
             project_id=project_id, note_api_type=note_api_type,
-            noteable_iid=noteable_iid, note_id=note_id,
+            noteable_iid=noteable_iid,
         )
     )
 
@@ -317,11 +316,6 @@ async def _handle_issue(payload: dict):
 
     await db.store_conversation("gitlab", "issue", res_id, PENDING_CONVERSATION_ID)
 
-    note_id = await post_gitlab_comment(
-        project_id=project_id, noteable_type="issues", noteable_iid=issue_iid,
-        body=":hourglass_flowing_sand: OpenHands status: **CREATING**",
-    )
-
     reply_hint = _response_instructions("issues", issue_iid)
     message = f"Issue #{issue_iid} '{issue_title}' in {repo}\n\n{issue_desc}{reply_hint}"
 
@@ -331,7 +325,7 @@ async def _handle_issue(payload: dict):
             message=message, repo=repo,
             conv_title=f"Issue #{issue_iid}: {issue_title}",
             project_id=project_id, note_api_type="issues",
-            noteable_iid=issue_iid, note_id=note_id,
+            noteable_iid=issue_iid,
         )
     )
 
@@ -357,11 +351,6 @@ async def _handle_merge_request(payload: dict):
 
     await db.store_conversation("gitlab", "merge_request", res_id, PENDING_CONVERSATION_ID)
 
-    note_id = await post_gitlab_comment(
-        project_id=project_id, noteable_type="merge_requests", noteable_iid=mr_iid,
-        body=":hourglass_flowing_sand: OpenHands status: **CREATING**",
-    )
-
     reply_hint = _response_instructions("merge_requests", mr_iid)
     message = f"MR !{mr_iid} '{mr_title}' (branch: {source_branch}) in {repo}\n\n{mr_desc}{reply_hint}"
 
@@ -371,7 +360,7 @@ async def _handle_merge_request(payload: dict):
             message=message, repo=repo,
             conv_title=f"MR !{mr_iid}: {mr_title}",
             project_id=project_id, note_api_type="merge_requests",
-            noteable_iid=mr_iid, note_id=note_id,
+            noteable_iid=mr_iid,
         )
     )
 
@@ -379,18 +368,17 @@ async def _handle_merge_request(payload: dict):
 async def _background_create_conversation(
     source: str, res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, project_id: int, note_api_type: str,
-    noteable_iid: int, note_id: int | None,
+    noteable_iid: int,
 ) -> None:
     try:
         result = await create_conversation(message, repository=repo, title=conv_title)
         if not result:
             await _clear_pending(source, res_type, res_id)
-            if note_id:
-                await update_gitlab_comment(
-                    project_id=project_id, noteable_type=note_api_type,
-                    noteable_iid=noteable_iid, note_id=note_id,
-                    body=":x: OpenHands status: **ERROR**\n\nFailed to create conversation.",
-                )
+            await post_gitlab_comment(
+                project_id=project_id, noteable_type=note_api_type,
+                noteable_iid=noteable_iid,
+                body="Scooter couldn't start on this one — failed to create the conversation.",
+            )
             return
 
         conv_id = result.get("conversation_id", "")
@@ -411,17 +399,11 @@ async def _background_create_conversation(
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
 
-        if note_id:
-            await update_gitlab_comment(
-                project_id=project_id, noteable_type=note_api_type,
-                noteable_iid=noteable_iid, note_id=note_id,
-                body=f":hourglass_flowing_sand: OpenHands status: **RUNNING**\n\n[View conversation]({conv_link})",
-            )
-            status_monitor.track(
-                conversation_id=conv_id, project_id=project_id,
-                noteable_type=note_api_type, noteable_iid=noteable_iid,
-                note_id=note_id,
-            )
+        await post_gitlab_comment(
+            project_id=project_id, noteable_type=note_api_type,
+            noteable_iid=noteable_iid,
+            body=f"Scooter is on it — follow along: [View conversation]({conv_link})",
+        )
     except Exception:
         await _clear_pending(source, res_type, res_id)
         logger.exception("Error in background conversation creation for %s", res_id)

@@ -58,6 +58,25 @@ subscribeConversations({ baseUrl: BASE_URL }, "all", {
   onUpsert: (c) => sessionStore.mergeFromServer([c]),
 });
 
+// Deep-link support (?thread=<id>). The webhooks service posts a "View
+// conversation" link of the form <ui>/?thread=<id>; opening it should land on
+// that conversation — even one the user has never seen (it arrives via the
+// poll/stream, then requestSelect's pending target selects it). We also keep the
+// URL in sync as the user switches conversations, so the address bar is always a
+// shareable deep-link (and refresh restores the same conversation).
+const threadParam = new URLSearchParams(globalThis.location?.search ?? "").get("thread");
+if (threadParam) sessionStore.requestSelect(threadParam);
+
+// Reflect the selected conversation in the URL (replaceState — no history spam).
+sessionStore.subscribe(() => {
+  const id = sessionStore.get().currentId;
+  const url = new URL(globalThis.location.href);
+  if (url.searchParams.get("thread") !== id) {
+    url.searchParams.set("thread", id);
+    globalThis.history.replaceState(null, "", url);
+  }
+});
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

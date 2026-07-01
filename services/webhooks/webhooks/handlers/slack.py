@@ -24,9 +24,7 @@ from ..responses.slack import (
     get_bot_user_id,
     post_slack_message,
     reply_in_thread,
-    update_slack_message,
 )
-from .. import status_monitor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -231,13 +229,6 @@ async def _handle_mention(event: dict):
     # React to indicate we're processing
     await add_slack_reaction(channel, ts, "eyes")
 
-    # Post status message in thread
-    status_ts = await post_slack_message(
-        channel=channel,
-        text=":hourglass_flowing_sand: *OpenHands status: CREATING*",
-        thread_ts=thread_ts,
-    )
-
     await db.store_conversation("slack", "thread", res_id, PENDING_CONVERSATION_ID)
 
     reply_hint = _response_instructions(channel, thread_ts)
@@ -247,7 +238,7 @@ async def _handle_mention(event: dict):
         _background_create_conversation(
             res_id=res_id, message=full_message,
             conv_title=f"Slack: {message_text[:50]}",
-            channel=channel, thread_ts=thread_ts, status_ts=status_ts,
+            channel=channel, thread_ts=thread_ts,
         )
     )
 
@@ -295,17 +286,17 @@ async def _handle_thread_message(event: dict):
 
 async def _background_create_conversation(
     res_id: str, message: str, conv_title: str,
-    channel: str, thread_ts: str, status_ts: str | None,
+    channel: str, thread_ts: str,
 ) -> None:
     try:
         result = await create_conversation(message, title=conv_title)
         if not result:
             await _clear_pending(res_id)
-            if status_ts:
-                await update_slack_message(
-                    channel=channel, ts=status_ts,
-                    text=":x: *OpenHands status: ERROR*\n\nFailed to create conversation.",
-                )
+            await post_slack_message(
+                channel=channel,
+                text="Scooter couldn't start on this one — failed to create the conversation.",
+                thread_ts=thread_ts,
+            )
             return
 
         conv_id = result.get("conversation_id", "")
@@ -326,14 +317,11 @@ async def _background_create_conversation(
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
 
-        if status_ts:
-            await update_slack_message(
-                channel=channel, ts=status_ts,
-                text=f":hourglass_flowing_sand: *OpenHands status: RUNNING*\n\n<{conv_link}|View conversation>",
-            )
-            status_monitor.track_slack(
-                conversation_id=conv_id, channel=channel, message_ts=status_ts,
-            )
+        await post_slack_message(
+            channel=channel,
+            text=f"Scooter is on it — follow along: <{conv_link}|View conversation>",
+            thread_ts=thread_ts,
+        )
     except Exception:
         await _clear_pending(res_id)
         logger.exception("Error in background conversation creation for Slack %s", res_id)

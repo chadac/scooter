@@ -18,8 +18,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, send_message
-from ..responses.jira import post_jira_comment, update_jira_comment
-from .. import status_monitor
+from ..responses.jira import post_jira_comment
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,7 +31,9 @@ def _contains_mention(text: str) -> bool:
 def _is_own_comment(body: str, author_account_id: str) -> bool:
     if settings.jira_bot_account_id and author_account_id == settings.jira_bot_account_id:
         return True
-    return "OpenHands status:" in body
+    # Recognize Scooter's own comments; keep matching the legacy "OpenHands"
+    # marker so in-flight tickets created before the rename still match.
+    return body.startswith("Scooter is on it") or "OpenHands status:" in body
 
 
 def _is_ignored_user(username: str) -> bool:
@@ -139,12 +140,6 @@ async def _handle_comment(payload: dict):
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)
 
-    # Post status comment
-    note_id = await post_jira_comment(
-        issue_key=issue_key,
-        body="(i) OpenHands status: CREATING",
-    )
-
     await db.store_conversation("jira", "issue", issue_key, PENDING_CONVERSATION_ID)
     await db.link_jira_ticket(PENDING_CONVERSATION_ID, issue_key)
 
@@ -156,7 +151,7 @@ async def _handle_comment(payload: dict):
     asyncio.create_task(
         _background_create_conversation(
             issue_key=issue_key, message=full_message,
-            conv_title=conv_title, note_id=note_id,
+            conv_title=conv_title,
         )
     )
 
@@ -190,11 +185,6 @@ async def _handle_issue_updated(payload: dict):
     await db.store_conversation("jira", "issue", issue_key, PENDING_CONVERSATION_ID)
     await db.link_jira_ticket(PENDING_CONVERSATION_ID, issue_key)
 
-    note_id = await post_jira_comment(
-        issue_key=issue_key,
-        body="(i) OpenHands status: CREATING",
-    )
-
     reply_hint = _response_instructions(issue_key)
     message = f"Jira issue {issue_key} '{issue_summary}'\n\n{issue_desc}{reply_hint}"
 
@@ -202,24 +192,21 @@ async def _handle_issue_updated(payload: dict):
         _background_create_conversation(
             issue_key=issue_key, message=message,
             conv_title=f"Jira {issue_key}: {issue_summary}",
-            note_id=note_id,
         )
     )
 
 
 async def _background_create_conversation(
     issue_key: str, message: str, conv_title: str,
-    note_id: str | None,
 ) -> None:
     try:
         result = await create_conversation(message, title=conv_title)
         if not result:
             await _clear_pending(issue_key)
-            if note_id:
-                await update_jira_comment(
-                    issue_key=issue_key, comment_id=note_id,
-                    body="(x) OpenHands status: ERROR\n\nFailed to create conversation.",
-                )
+            await post_jira_comment(
+                issue_key=issue_key,
+                body="Scooter couldn't start on this one — failed to create the conversation.",
+            )
             return
 
         conv_id = result.get("conversation_id", "")
@@ -234,14 +221,10 @@ async def _background_create_conversation(
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
 
-        if note_id:
-            await update_jira_comment(
-                issue_key=issue_key, comment_id=note_id,
-                body=f"(i) OpenHands status: RUNNING\n\nView conversation: {conv_link}",
-            )
-            status_monitor.track_jira(
-                conversation_id=conv_id, issue_key=issue_key, comment_id=note_id,
-            )
+        await post_jira_comment(
+            issue_key=issue_key,
+            body=f"Scooter is on it — follow along: {conv_link}",
+        )
     except Exception:
         await _clear_pending(issue_key)
         logger.exception("Error in background conversation creation for Jira %s", issue_key)
