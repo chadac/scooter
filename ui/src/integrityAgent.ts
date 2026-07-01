@@ -65,7 +65,12 @@ export class IntegrityAgent extends AbstractAgent {
     super({ threadId: config.conversationId });
     this.cfg = config;
     this.base = config.baseUrl.replace(/\/$/, "");
-    this.doFetch = config.fetchImpl ?? fetch;
+    // Bind to globalThis: an unbound `fetch` reference invoked as `this.doFetch(...)`
+    // throws "Illegal invocation" in the browser (fetch needs its Window/global as
+    // receiver). Tests inject fetchImpl, so this only bites at runtime — which is
+    // exactly why the render pump + send silently no-op'd in the UI while unit
+    // tests stayed green.
+    this.doFetch = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
   /**
