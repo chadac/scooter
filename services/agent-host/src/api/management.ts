@@ -120,6 +120,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json };
   });
 
+  // GET /conversations/events — the conversation-LIST push stream. Emits an
+  // initial { kind: "snapshot", conversations } (the visible list, same scope /
+  // view-filter as GET /conversations), then { kind: "upsert", conversation } on
+  // each SessionManager.onConversationChange (new conversation / title change),
+  // filtered by the caller's scope so it never leaks more than the poll. Makes a
+  // Slack thread appear in the sidebar instantly instead of on the 10s poll.
+  //
+  // Design stage: STUB — writes 501 so the contract test is red until implemented.
+  r.get("/conversations/events", async (ctx) => {
+    const { res } = ctx;
+    void sessions; // will subscribe onConversationChange + honor ctx.query scope
+    res.writeHead(501, { "Content-Type": "application/json" }).end('{"error":"not implemented"}');
+  });
+
   r.post("/conversations", async (ctx) => {
     const body = await ctx.body<{ threadId?: string; title?: string; model?: string }>();
     const threadId = body.threadId ?? randomUUID();

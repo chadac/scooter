@@ -171,6 +171,16 @@ export interface SessionManager {
    * controller could take over. Returns the ids suspended.
    */
   sweepIdle(idleMs: number, now?: number): Promise<SessionId[]>;
+
+  /**
+   * Subscribe to conversation LIFECYCLE changes (a new conversation via start(),
+   * or a title change via setTitle()) so the GET /conversations/events stream can
+   * push the sidebar without the 10s poll. Fires with the changed Conversation
+   * (the caller enriches with `sources`/view). Returns an unsubscribe fn.
+   *
+   * Design stage: SIGNATURE ONLY.
+   */
+  onConversationChange(cb: (conv: Conversation) => void): () => void;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -225,6 +235,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     model: e.model,
     owner: e.owner,
   });
+
+  // Conversation lifecycle subscribers (the /conversations/events push stream).
+  // Design stage: the emitter set exists; start()/setTitle() will fire it in
+  // implementation. `emitChange` is a no-op until then (no subscribers wired).
+  const changeSubs = new Set<(c: Conversation) => void>();
+  const emitChange = (e: Entry): void => {
+    const c = toConversation(e);
+    for (const cb of changeSubs) cb(c);
+  };
+  void emitChange; // referenced once implemented (start/setTitle call it)
 
   const touch = (e: Entry) => {
     e.lastActivityAt = nowMs();
@@ -451,6 +471,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       return suspended;
+    },
+
+    onConversationChange(cb) {
+      changeSubs.add(cb);
+      return () => changeSubs.delete(cb);
     },
   };
 }
