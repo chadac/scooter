@@ -240,3 +240,37 @@ jobs:
       - name: tear down k3d
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+  # Tier 3 — Playwright E2E through the UI against the fake-agent stack (no
+  # cluster/model). The dev shell provides the Nix-wrapped Playwright browsers
+  # (playwright-driver.browsers + PLAYWRIGHT_BROWSERS_PATH), so no separate browser
+  # install is needed. Runs SERIALLY (playwright.config workers:1) because the whole
+  # suite shares one agent-host webServer + its persisted state; CI=1 also makes
+  # Playwright start fresh servers instead of reusing whatever's on the ports.
+  e2e:
+    name: e2e (Playwright, fake stack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # npm install (node_modules for the workspaces + the UI). pretest:e2e builds
+      # the agent-host dist the webServer runs; the UI webServer is `npm run dev`.
+      - name: e2e
+        env:
+          CI: "1"
+        run: nix develop --command bash -c 'npm install && npm run test:e2e'
+
+      # Traces/videos/screenshots for any failure — invaluable for a flaky/broken
+      # e2e without a local repro.
+      - name: upload e2e artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: test-results/
+          retention-days: 7

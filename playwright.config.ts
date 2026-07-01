@@ -19,8 +19,17 @@ export default defineConfig({
   testDir: "./test/e2e",
   timeout: 60_000,
   expect: { timeout: 15_000 },
+  // The whole suite shares ONE agent-host webServer + its persisted conversation
+  // state (the `cleanState` fixture wipes conversations between tests). Running
+  // spec FILES in parallel (multiple workers) lets that shared state interleave —
+  // one spec's conversations/streams leak into another's assertions (observed:
+  // ~6 fail + 4 flaky in parallel vs green serially). So the backend is a serial
+  // resource: one worker. (fullyParallel is already false = serial within a file.)
   fullyParallel: false,
-  retries: process.env.CI ? 1 : 0,
+  workers: 1,
+  // No retries: a flake is a signal to fix or quarantine, not to paper over. A
+  // test that only passes on retry is reported and dealt with deliberately.
+  retries: 0,
   use: {
     baseURL: process.env.BASE_URL ?? "http://localhost:5173",
     trace: "on-first-retry",

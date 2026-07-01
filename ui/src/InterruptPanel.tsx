@@ -3,33 +3,20 @@
  * inline buttons and resumes the run with the user's pick.
  *
  * The agent-host pauses a run with an AG-UI interrupt (RUN_FINISHED outcome
- * "interrupt"); assistant-ui's react-ag-ui runtime collects these as pending
- * interrupts. We read them via the (unstable) interrupt API — wrapped here so a
- * future API change is a one-file fix — and resume via submitInterruptResponses.
+ * "interrupt"), which rides the per-conversation integrity log. In the
+ * single-source render model the log — not the react-ag-ui runtime's per-run
+ * aggregator — is the source of truth, so we read the pending interrupts and
+ * answer them through the IntegrityAgent via context (useConversationInterrupts),
+ * NOT the runtime's unstable interrupt API. The answer is a POST /agui with
+ * resume[], and the continuation streams back through the same integrity log.
  *
  * Each interrupt's metadata.options carries { optionId, name, kind } choices.
  */
 
-import { useEffect, useState } from "react";
-import { useAssistantRuntime } from "@assistant-ui/react";
+import { useState } from "react";
 
-/** The subset of the AgUiAssistantRuntime interrupt API we depend on. Wrapping
- *  it isolates the `unstable_` surface to this one adapter. */
-export interface InterruptRuntime {
-  unstable_getPendingInterrupts?: () => readonly AgUiInterrupt[];
-  unstable_submitInterruptResponses?: (
-    responses: ReadonlyArray<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>,
-  ) => Promise<void>;
-  subscribe?: (cb: () => void) => () => void;
-}
-
-interface AgUiInterrupt {
-  id: string;
-  reason: string;
-  message?: string;
-  toolCallId?: string;
-  metadata?: Record<string, unknown>;
-}
+import { useConversationInterrupts } from "./RuntimeProvider.js";
+import type { PendingInterrupt } from "./integrityAgent.js";
 
 interface Option {
   optionId: string;
@@ -37,41 +24,23 @@ interface Option {
   kind: string;
 }
 
-function optionsOf(intr: AgUiInterrupt): Option[] {
+function optionsOf(intr: PendingInterrupt): Option[] {
   const raw = intr.metadata?.options;
   return Array.isArray(raw) ? (raw as Option[]) : [];
 }
 
 export function InterruptPanel() {
-  const runtime = useAssistantRuntime() as unknown as InterruptRuntime;
-
-  // The runtime's pending interrupts aren't reactive on their own; re-read on
-  // every runtime change (subscribe) and as a fallback poll, so the panel
-  // appears/disappears as interrupts arrive and are answered.
-  const [pending, setPending] = useState<readonly AgUiInterrupt[]>([]);
+  const { interrupts: pending, submitResume } = useConversationInterrupts();
   const [submitting, setSubmitting] = useState<string | null>(null);
-
-  useEffect(() => {
-    const get = () => runtime.unstable_getPendingInterrupts?.() ?? [];
-    const refresh = () => setPending(get());
-    refresh();
-    const unsub = runtime.subscribe?.(refresh);
-    const t = setInterval(refresh, 1000); // fallback if subscribe misses a change
-    return () => {
-      unsub?.();
-      clearInterval(t);
-    };
-  }, [runtime]);
 
   if (pending.length === 0) return null;
 
-  const answer = async (intr: AgUiInterrupt, status: "resolved" | "cancelled", optionId?: string) => {
+  const answer = async (intr: PendingInterrupt, status: "resolved" | "cancelled", optionId?: string) => {
     setSubmitting(intr.id);
     try {
-      await runtime.unstable_submitInterruptResponses?.([
+      await submitResume([
         { interruptId: intr.id, status, payload: optionId ? { optionId } : undefined },
       ]);
-      setPending(runtime.unstable_getPendingInterrupts?.() ?? []);
     } finally {
       setSubmitting(null);
     }
