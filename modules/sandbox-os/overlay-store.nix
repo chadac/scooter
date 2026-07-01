@@ -82,18 +82,29 @@ in
       wantedBy = [ "local-fs.target" ];
       before = [ "local-fs.target" "nix-daemon.service" "nix-daemon.socket" ];
       after = [ "-.mount" ];
-      # Order AFTER the upper volume's mount unit (and require it) — the overlay
-      # is useless until the writable upper is present. RequiresMountsFor resolves
-      # cfg.upperPath to its (escaped) .mount unit and orders us after it, so we
-      # don't race the volume mount and fall into the "no upper volume" degrade
-      # path. Without this, `before local-fs.target` runs us too early.
+      # DO NOT use `RequiresMountsFor = [ cfg.upperPath ]` here. In a k8s pod the
+      # upper volume is a kubelet/CRI bind-mount established BEFORE this container's
+      # PID 1 starts — systemd inside the container does not reliably synthesize a
+      # `<upperPath>.mount` unit for it. `RequiresMountsFor` adds a hard
+      # `Requires=<that unit>`; when the unit never appears/activates (observed on
+      # EKS/containerd, though not k3d), this oneshot's start job BLOCKS, and because
+      # we're `before local-fs.target` with DefaultDependencies=false, the WHOLE BOOT
+      # FREEZES right after "starting systemd..." — never reaching local-fs/multi-user.
+      # The mount is already present when we run, so we don't need to wait on a unit:
+      # the script's own `[ -d "$upper_root" ]` check is the real guard (degrade if
+      # absent). A short TimeoutStartSec guarantees we can never wedge boot even if
+      # the overlay mount itself stalls.
       unitConfig = {
         DefaultDependencies = false;
-        RequiresMountsFor = [ cfg.upperPath ];
       };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # Fail-safe: never let overlay setup hang the boot. If it can't finish
+        # quickly, give up (store stays as the read-only baked lower — degrade,
+        # don't freeze). local-fs.target only `Wants` (not `Requires`) us, so a
+        # timeout/failure here does NOT block the target — boot proceeds.
+        TimeoutStartSec = "30s";
       };
       path = [ pkgs.util-linux pkgs.coreutils pkgs.gnugrep ];
       script = ''
