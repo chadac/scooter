@@ -32,11 +32,32 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+/** The external resource a conversation maps to, as recorded by the webhooks
+ *  service in Postgres (conversation_map). The FALLBACK source of the target when
+ *  a conversation's link has no structured `ref` (e.g. it was created before ref
+ *  existed). `resourceId` is source-specific:
+ *    slack:  "<channel>:<thread_ts>"
+ *    github: "<owner>/<repo>#<number>"
+ *    gitlab: "<repo>!<iid>" (MR) or "<repo>#<iid>" (issue) */
+export interface ResourceMapping {
+  source: string;
+  resourceType: string;
+  resourceId: string;
+  /** Slack keeps the channel/ts as their own columns too — prefer these if set. */
+  slackChannel?: string;
+  slackTs?: string;
+}
+
 /** The conversation context the tools resolve inferred defaults from. */
 export interface ToolContext {
   conversationId: string;
   /** The conversation's links (store.listLinks) — carry the `ref` targets. */
   links(): Promise<ConversationLink[]>;
+  /** FALLBACK: the webhooks Postgres conversation_map row for this conversation,
+   *  used to discover the target when the link has no `ref`. undefined when no DB
+   *  is wired (then the tools rely on `ref` alone). Returns undefined if the
+   *  conversation isn't mapped (a genuinely non-webhook conversation). */
+  resourceLookup?(source: "slack" | "gitlab" | "github" | "jira"): Promise<ResourceMapping | undefined>;
 }
 
 /** A broker HTTP call bound to a conversation's identity. Returns the raw upstream
@@ -110,20 +131,40 @@ export function inferRef(
 
 // --- The five tool handlers (pure, testable — no MCP/HTTP plumbing) -------------
 
+/** Parse a slack conversation_map resource_id ("<channel>:<thread_ts>"). */
+function parseSlackResourceId(resourceId: string): { channel?: string; threadTs?: string } {
+  const i = resourceId.lastIndexOf(":");
+  if (i <= 0) return {};
+  return { channel: resourceId.slice(0, i), threadTs: resourceId.slice(i + 1) };
+}
+
 /** Post to the current Slack thread (channel + thread_ts inferred). */
 export async function handleSlackRespond(
   deps: AgentToolsDeps,
   ctx: ToolContext,
   args: { text: string; thread_ts?: string },
 ): Promise<ToolResult> {
+  // Prefer the link's structured `ref`; if it's missing (e.g. a conversation
+  // created before `ref` existed), FALL BACK to the webhooks conversation_map in
+  // Postgres before failing — the channel/thread_ts are recorded there for every
+  // Slack conversation (as slack_channel/slack_ts columns and in resource_id
+  // "<channel>:<thread_ts>"). This is additive: ref wins when present.
   const ref = inferRef(await ctx.links(), "slack");
-  const channel = ref?.channel;
-  const threadTs = args.thread_ts ?? ref?.threadTs;
+  let channel = ref?.channel;
+  let threadTs = args.thread_ts ?? ref?.threadTs;
+  if (!channel) {
+    const m = await ctx.resourceLookup?.("slack");
+    if (m) {
+      const parsed = parseSlackResourceId(m.resourceId);
+      channel = m.slackChannel ?? parsed.channel;
+      threadTs = args.thread_ts ?? m.slackTs ?? parsed.threadTs;
+    }
+  }
   if (!channel) {
     return err(
-      "Could not infer the Slack channel for this conversation (no slack link). " +
-        "This conversation isn't linked to a Slack thread — respond where the request came from, " +
-        "or use the broker directly if you have the channel.",
+      "Could not determine the Slack channel for this conversation — it has no slack " +
+        "link with a channel, and no Slack mapping was found in the webhooks store. " +
+        "If you know the channel, pass it to the broker directly.",
     );
   }
   const res = await deps.broker.call(ctx.conversationId, "POST", "/slack/chat.postMessage", {
