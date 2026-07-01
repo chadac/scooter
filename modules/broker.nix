@@ -82,6 +82,29 @@ in
       };
     };
 
+    # --- GitLab (static token; http-proxy to gitlab.com/api/v4) --------------
+    # The broker's gitlab provider proxies /gitlab/* -> https://gitlab.com/api/v4
+    # with the token injected (PRIVATE-TOKEN header), so the agent can comment on
+    # MRs / create notes WITHOUT seeing the token. Enabled iff GITLAB_TOKEN is set
+    # on the broker — hence this option (without it the /gitlab/* routes never
+    # mount and the agent's calls 404).
+    gitlab = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable the GitLab provider (http-proxy to gitlab.com/api/v4 with the token injected).";
+      };
+      tokenSecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
+            key = mkOption { type = types.str; default = "GITLAB_TOKEN"; description = "Secret key holding the GitLab token."; };
+          };
+        };
+        description = "Secret holding the GitLab token (glpat-…). Injected as GITLAB_TOKEN. The secret must exist in the broker namespace.";
+      };
+    };
+
     # --- AWS permissions broker (dynamic, approval-gated AWS access) --------
     aws = {
       enable = mkOption {
@@ -251,6 +274,17 @@ in
                     valueFrom.secretKeyRef = {
                       name = bcfg.slack.botTokenSecret.name;
                       key = bcfg.slack.botTokenSecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.gitlab.enable [
+                  # GitLab token -> the broker's gitlab provider proxies /gitlab/*
+                  # to gitlab.com/api/v4 with this injected. Without it the provider
+                  # is disabled and the agent's /gitlab/* calls 404.
+                  {
+                    name = "GITLAB_TOKEN";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.gitlab.tokenSecret.name;
+                      key = bcfg.gitlab.tokenSecret.key;
                     };
                   }
                 ] ++ lib.optionals bcfg.aws.enable ([
