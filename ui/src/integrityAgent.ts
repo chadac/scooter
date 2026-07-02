@@ -87,6 +87,16 @@ export class IntegrityAgent extends AbstractAgent {
    *  settled only by a matching PERMISSION_RESOLVED. Keyed by interrupt id. */
   private externalInterrupts = new Map<string, PendingInterrupt>();
 
+  /** True while a connection is REPLAYING the persisted log (before its `synced`
+   *  marker). The render pump suppresses per-event thread updates during replay so
+   *  a long history paints in ONE shot (landing at the latest message) instead of
+   *  visibly building top-down. Flips false at `synced`, then live events render
+   *  per-event as usual. */
+  private replaying = false;
+  isReplaying(): boolean {
+    return this.replaying;
+  }
+
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
@@ -137,14 +147,15 @@ export class IntegrityAgent extends AbstractAgent {
     // applier (empty state => no AgentStateMessage), so the render subscribers
     // wouldn't otherwise refresh to show the interrupt. Nudge them when the pending
     // set actually changes so RuntimeProvider re-folds + surfaces (or clears) it.
-    if (before !== this.getPendingInterrupts().length) {
-      for (const s of this.subscribers) {
-        s.onMessagesChanged?.({
-          messages: this.messages,
-          state: this.state,
-          agent: this,
-        } as never);
-      }
+    if (before !== this.getPendingInterrupts().length) this.notifyMessages();
+  }
+
+  /** Fire onMessagesChanged on every subscriber with the current snapshot. Used to
+   *  nudge the render pump for changes the base applier doesn't itself signal
+   *  (interrupt set changes, and the once-per-replay `synced` render). */
+  private notifyMessages(): void {
+    for (const s of this.subscribers) {
+      s.onMessagesChanged?.({ messages: this.messages, state: this.state, agent: this } as never);
     }
   }
 
@@ -233,6 +244,7 @@ export class IntegrityAgent extends AbstractAgent {
     headers: Record<string, string>,
     controller: AbortController,
     onEvent: (e: BaseEvent) => void,
+    onSynced?: () => void,
   ): Promise<ConnectionOutcome> {
     try {
       const res = await this.doFetch(url, { headers, signal: controller.signal });
@@ -257,8 +269,11 @@ export class IntegrityAgent extends AbstractAgent {
           } catch {
             continue; // skip a malformed frame, keep the stream alive
           }
-          // `synced` is a replay-complete marker with no event; skip it.
-          if (frame.kind === "event" && frame.event) {
+          // `synced` marks replay-complete (no event) → the pump can render once
+          // now and go live per-event; before it, we're still replaying history.
+          if (frame.kind === "synced") {
+            onSynced?.();
+          } else if (frame.kind === "event" && frame.event) {
             onEvent(frame.event as unknown as BaseEvent);
           }
         }
@@ -340,6 +355,8 @@ export class IntegrityAgent extends AbstractAgent {
         // survives the reload, and a resolved one stays gone.
         this.logInterrupts = [];
         this.externalInterrupts.clear();
+        // Entering (re)replay: suppress per-event renders until `synced`.
+        this.replaying = true;
         controller = new AbortController();
         this.controllers.add(controller);
         const events$ = new Subject<BaseEvent>();
@@ -357,14 +374,31 @@ export class IntegrityAgent extends AbstractAgent {
             .subscribe({ error: () => resolve(), complete: () => resolve() });
         });
 
-        const outcome = await this.readConnection(url, headers, controller, (e) => {
-          // Track the pending interrupt as it rides the log: a RUN_STARTED means the
-          // (resumed) run is live again — clear any pending; a RUN_FINISHED with an
-          // interrupt outcome pauses the run awaiting a user answer. The base
-          // applier ignores this, so we surface it via getPendingInterrupts().
-          this.trackInterrupt(e);
-          events$.next(e);
-        });
+        const outcome = await this.readConnection(
+          url,
+          headers,
+          controller,
+          (e) => {
+            // Track the pending interrupt as it rides the log: a RUN_STARTED means the
+            // (resumed) run is live again — clear any pending; a RUN_FINISHED with an
+            // interrupt outcome pauses the run awaiting a user answer. The base
+            // applier ignores this, so we surface it via getPendingInterrupts().
+            this.trackInterrupt(e);
+            events$.next(e);
+          },
+          () => {
+            // Replay complete: the whole history is folded. Flip out of replay and
+            // render once — but the base applier's fold is async, so wait a macrotask
+            // for its buffered per-event notifications to drain FIRST (they observe
+            // isReplaying()===true and are suppressed), then flip + render the final
+            // history in one shot. A macrotask (not microtask) clears the concatMap
+            // fold queue reliably.
+            setTimeout(() => {
+              this.replaying = false;
+              this.notifyMessages();
+            }, 0);
+          },
+        );
         // The connection ended — signal end-of-events and WAIT for the fold to
         // finish applying everything buffered before deciding whether to reconnect.
         events$.complete();
