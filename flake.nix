@@ -161,38 +161,9 @@
           };
 
           # Dev shell: everything needed to build, test (Tier 1-3), and drive a
-          # local cluster. `nix develop`.
-          devShells.default = pkgs.mkShell {
-            packages = with pkgs; [
-              # JS toolchain (agent-host + ui + tests)
-              nodejs_22
-              # cluster tooling — local k8s + control
-              kubectl
-              kind
-              k3d
-              kubernetes-helm
-              # image plumbing
-              skopeo
-              # the ACP agent the agent-host spawns
-              goose-cli
-              # e2e: Nix-wrapped Playwright browsers (the downloaded ones fail
-              # on NixOS — missing libglib etc.)
-              playwright-driver.browsers
-              # misc used by scripts/tests
-              jq
-              yq-go
-              just
-            ];
-            shellHook = ''
-              echo "kubenix-agent-manager dev shell"
-              echo "  just            — task runner (test-quick, test, test-cluster, ...)"
-              echo "  goose: $(command -v goose >/dev/null && goose --version 2>/dev/null | head -1 || echo absent)"
-              export GOOSE_BIN="$(command -v goose || true)"
-              # Point Playwright at the Nix browsers + skip its host-req validation.
-              export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
-              export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
-            '';
-          };
+          # local cluster. Defined in ./nix/devshell.nix; `nix develop` or
+          # `.envrc` (`use flake`) via direnv both use it.
+          devShells.default = import ./nix/devshell.nix { inherit pkgs; };
 
           checks = {
             inherit agentHost ui;

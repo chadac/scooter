@@ -5,6 +5,10 @@ dist/
 .direnv/
 *.tsbuildinfo
 
+# .envrc is shared dev config (direnv `use flake`) — track it even though a
+# global gitignore may exclude it.
+!.envrc
+
 # playwright
 test-results/
 playwright-report/
