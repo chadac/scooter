@@ -24,6 +24,7 @@ flow trusts the conversation user; tighten via config for a real boundary).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +33,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from ..aws.models import PermissionRequest, RequestStatus, StsCredentials
 from ..aws.service import PermissionService, RequestError
 from ..core.types import AuthDependency, Identity, Provider, Transport
+
+logger = logging.getLogger(__name__)
 
 
 def _request_view(req: PermissionRequest, creds: StsCredentials | None = None) -> dict[str, Any]:
@@ -103,6 +106,11 @@ class AwsPermissions(Transport):
                 raise HTTPException(status_code=400, detail=f"missing field: {e}")
             except RequestError as e:
                 raise HTTPException(status_code=400, detail={"errors": e.reasons})
+            except Exception as e:
+                # Never leak a bare 500: surface the real exception so the agent can
+                # act on it (e.g. an IAM/STS failure the request path didn't wrap).
+                logger.exception("aws request failed unexpectedly")
+                raise HTTPException(status_code=500, detail={"errors": [f"{type(e).__name__}: {e}"]})
             return _request_view(req)
 
         @router.post("/aws/escalate", status_code=201)
