@@ -22,7 +22,7 @@ import { createSessionManager } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { createSessionBridge } from "./bridge.js";
+import { createSessionBridge, type AguiEvent } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createDeferredConnector } from "./exec/deferredConnect.js";
@@ -561,6 +561,15 @@ export async function main(
           durationMs,
           outcome,
         });
+      },
+      // Revive history reinjection: a revived conversation spawns a fresh goose
+      // session with no memory, so on this bridge's first prompt the persisted
+      // event log is folded into a transcript and prepended. Read the FULL log
+      // for this conversation (the bridge snapshots it before the current turn).
+      loadHistory: async () => {
+        const events: AguiEvent[] = [];
+        for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
+        return events;
       },
     });
 

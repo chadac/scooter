@@ -20,6 +20,7 @@ import type {
 import type { AcpClient, SessionUpdate } from "./acp/client.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
+import { buildHistoryPreamble } from "./agent/transcript.js";
 
 /** An AG-UI interrupt: a point where the run pauses for a user response (a
  *  permission/option choice). Matches @ag-ui/core's Interrupt. `metadata.options`
@@ -146,6 +147,16 @@ export interface BridgeDeps {
    * tests / when metrics are off. Must not throw (fire-and-forget).
    */
   onRunComplete?: (info: { acpSessionId?: string; durationMs: number; outcome: "ok" | "error" }) => void;
+
+  /**
+   * Optional history provider for REVIVE reinjection. A revived conversation
+   * spawns a fresh ACP session with no memory of prior turns, so on this bridge's
+   * FIRST prompt we prepend a transcript of the persisted log (built via
+   * buildHistoryPreamble) ahead of the user's message. Returns the persisted
+   * AG-UI events for this conversation (BEFORE the current turn is appended).
+   * Absent in tests / when there's nothing to inject → no prepend.
+   */
+  loadHistory?: () => Promise<AguiEvent[]>;
 }
 
 let runCounter = 0;
@@ -157,6 +168,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const listeners = new Set<(event: AguiEvent) => void>();
   let acpSessionId: string | undefined;
   let started = false;
+  // Revive history reinjection: this bridge is re-created per revive (a fresh
+  // closure ⇒ fresh ACP session), so a bridge-scoped one-shot flag fires exactly
+  // once — on the first prompt after (re)start — and naturally resets next revive.
+  let historyInjected = false;
   // Serialize runs: a bridge has ONE goose session + ONE RunState. A second
   // prompt arriving while a run is in flight (e.g. the webhook POSTs /agui while
   // the agent is mid-run) must QUEUE, not clobber currentRun — otherwise the
@@ -324,10 +339,26 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // agent startup is slow or fails (e.g. goose needs a model provider).
     emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
 
+    // REVIVE reinjection: on this bridge's FIRST prompt, snapshot the persisted
+    // log (the PRIOR turns) BEFORE we append the current user turn below, so the
+    // transcript never includes — and can't duplicate — the message we're about
+    // to send. A fresh conversation's log is empty here → preamble "" → no-op.
+    let historyPreamble = "";
+    if (!historyInjected && deps.loadHistory) {
+      historyInjected = true;
+      try {
+        historyPreamble = buildHistoryPreamble(await deps.loadHistory());
+      } catch (err) {
+        debug("[bridge] loadHistory failed (continuing without reinjection): %s", err);
+      }
+    }
+
     // Persist the user's prompt as a message so the conversation history is
     // complete — switching to / reviving a conversation must replay the user
     // turns too. PERSIST-ONLY: the live UI already renders the message the user
-    // just sent, so broadcasting it would echo a duplicate.
+    // just sent, so broadcasting it would echo a duplicate. NOTE: persist the RAW
+    // input.text (not the history-prefixed prompt), so the transcript is never
+    // folded back into itself on the next revive.
     const userMsgId = nextId("user");
     persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
     persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
@@ -337,9 +368,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       if (!started || !acpSessionId) await self.start();
       currentRun = st; // route session/update notifications to this run
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
+      // Prepend the history preamble as a separate text block on the first prompt
+      // of a revived session (empty → omitted).
+      const promptBlocks = historyPreamble
+        ? [{ type: "text" as const, text: historyPreamble }, { type: "text" as const, text: input.text }]
+        : [{ type: "text" as const, text: input.text }];
       const { stopReason } = await acpClient!.prompt({
         sessionId: acpSessionId!,
-        prompt: [{ type: "text", text: input.text }],
+        prompt: promptBlocks,
       });
       debug("[bridge] prompt: stopReason=%s", stopReason);
       // The ACP prompt response can resolve before the final session/update

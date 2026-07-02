@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 
 import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
+import type { AcpClient } from "../../src/acp/client.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
 import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
@@ -345,5 +346,106 @@ describe("ACP -> AG-UI bridge", () => {
     // And both runs actually ran (two RUN_STARTED / two RUN_FINISHED).
     expect(events.filter((e) => e.type === "RUN_STARTED")).toHaveLength(2);
     expect(events.filter((e) => e.type === "RUN_FINISHED")).toHaveLength(2);
+  });
+});
+
+describe("revive history reinjection", () => {
+  // An ACP client that records the prompt ContentBlock[] of every prompt() call,
+  // so we can assert what goose actually received. Emits nothing + ends the turn.
+  function recordingClient() {
+    const prompts: Array<Array<{ type: string; text?: string }>> = [];
+    const client: AcpClient = {
+      async initialize() {
+        return { protocolVersion: 1 };
+      },
+      async newSession() {
+        return { sessionId: "sess-1" };
+      },
+      async prompt(params) {
+        prompts.push(params.prompt as Array<{ type: string; text?: string }>);
+        return { stopReason: "end_turn" };
+      },
+      async cancel() {},
+      onSessionUpdate() {
+        return () => {};
+      },
+      onPermissionRequest() {},
+      async close() {},
+    };
+    return { client, prompts };
+  }
+
+  const priorLog: AguiEvent[] = [
+    { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "add a readme" },
+    { type: "TEXT_MESSAGE_END", messageId: "u1" },
+    { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "done, added README.md" },
+    { type: "TEXT_MESSAGE_END", messageId: "a1" },
+  ];
+
+  const makeBridge = (loadHistory?: () => Promise<AguiEvent[]>) => {
+    const { client, prompts } = recordingClient();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: client,
+      loadHistory,
+    });
+    return { bridge, prompts };
+  };
+
+  it("prepends the persisted transcript to the FIRST prompt after a revive", async () => {
+    const { bridge, prompts } = makeBridge(async () => priorLog);
+    await bridge.prompt({ threadId: "t1", text: "now add a license" });
+
+    // Two content blocks: [history preamble, the user's actual message].
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toHaveLength(2);
+    expect(prompts[0][0].text).toContain("User: add a readme");
+    expect(prompts[0][0].text).toContain("Assistant: done, added README.md");
+    expect(prompts[0][1].text).toBe("now add a license"); // the raw current message, unprefixed
+  });
+
+  it("does NOT re-inject on the SECOND prompt of the same session", async () => {
+    const { bridge, prompts } = makeBridge(async () => priorLog);
+    await bridge.prompt({ threadId: "t1", text: "first" });
+    await bridge.prompt({ threadId: "t1", text: "second" });
+
+    expect(prompts[0]).toHaveLength(2); // first: history + message
+    expect(prompts[1]).toHaveLength(1); // second: just the message (goose remembers within the session)
+    expect(prompts[1][0].text).toBe("second");
+  });
+
+  it("sends only the message when there's no history provider (fresh conversation)", async () => {
+    const { bridge, prompts } = makeBridge(undefined);
+    await bridge.prompt({ threadId: "t1", text: "hello" });
+    expect(prompts[0]).toHaveLength(1);
+    expect(prompts[0][0].text).toBe("hello");
+  });
+
+  it("persists the RAW user message (not the history-prefixed prompt) so it can't fold into itself", async () => {
+    const { client } = recordingClient();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: client,
+      loadHistory: async () => priorLog,
+    });
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
+
+    await bridge.prompt({ threadId: "t1", text: "the new message" });
+
+    const userStart = persisted.find(
+      (e) => e.type === "TEXT_MESSAGE_START" && (e as { role?: string }).role === "user",
+    ) as { messageId: string } | undefined;
+    const userContent = persisted.find(
+      (e): e is { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string } =>
+        e.type === "TEXT_MESSAGE_CONTENT" && (e as { messageId: string }).messageId === userStart?.messageId,
+    );
+    expect(userContent?.delta).toBe("the new message"); // raw, no preamble folded in
   });
 });
