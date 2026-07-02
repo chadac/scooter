@@ -167,6 +167,17 @@ class AwsPermissions(Transport):
         # The `approver` in the body may be a full identity dict {id, email, name}
         # (the agent-host sends the answering user's identity) or a plain string
         # (legacy / dev). The service resolves the configured claim (email/id/name).
+        # Read-only: may the VIEWING user approve this request? Powers the UI's
+        # greyed-out Approve button. Per-viewer (the interrupt is raised once but
+        # seen by many), so the agent-host passes the current user's identity as
+        # `approver` (dict or string, resolved the same as approve/deny). No admin
+        # gate: anyone may ASK — the answer itself is the authorization signal.
+        @router.post("/aws/{request_id}/can-approve")
+        async def can_approve(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):
+            approver = _svc().resolve_approver(body.get("approver"), fallback=identity.conversation_id)
+            allowed = await _svc().can_approve(request_id=request_id, approver=approver)
+            return {"can_approve": allowed}
+
         @router.post("/aws/{request_id}/approve")
         async def approve(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):
             _admin_or_403(identity)

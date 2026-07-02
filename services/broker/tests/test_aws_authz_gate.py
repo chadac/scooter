@@ -110,3 +110,45 @@ async def test_noop_authorizer_allows_approve(tmp_path):
     req = await _pending(svc)
     out = await svc.approve(request_id=req.request_id, approver="anyone")
     assert out.status == RequestStatus.ACTIVE
+
+
+# --- can_approve: read-only, per-viewer (powers the greyed-out Approve button) ---
+
+async def test_can_approve_true_for_account_approver(tmp_path):
+    authz = FakeAuthorizer({("user:alice", "approver", "aws_account:dev")})
+    svc = await _service(tmp_path, authz)
+    req = await _pending(svc)
+    assert await svc.can_approve(request_id=req.request_id, approver="user:alice") is True
+    # It is READ-ONLY: the request is untouched (still PENDING, no side effects).
+    assert (await svc._store.get(req.request_id)).status == RequestStatus.PENDING
+
+
+async def test_can_approve_false_when_not_approver_for_account(tmp_path):
+    authz = FakeAuthorizer({("user:alice", "approver", "aws_account:prod")})  # not dev
+    svc = await _service(tmp_path, authz)
+    req = await _pending(svc)
+    assert await svc.can_approve(request_id=req.request_id, approver="user:alice") is False
+
+
+async def test_can_approve_false_for_unknown_request(tmp_path):
+    # Fails closed: no request -> no account to resolve -> not approvable.
+    svc = await _service(tmp_path, FakeAuthorizer(set()))
+    assert await svc.can_approve(request_id="nope", approver="user:alice") is False
+
+
+async def test_can_approve_false_when_authz_unreachable(tmp_path):
+    class BoomAuthorizer(FakeAuthorizer):
+        async def check(self, *, user, relation, obj):
+            raise RuntimeError("FGA down")
+
+    svc = await _service(tmp_path, BoomAuthorizer(set()))
+    req = await _pending(svc)
+    # FGA unreachable must NOT surface a live Approve button -> fail closed.
+    assert await svc.can_approve(request_id=req.request_id, approver="user:alice") is False
+
+
+async def test_can_approve_true_with_noop_authorizer(tmp_path):
+    # FGA off -> anyone can approve -> button stays live (matches approve() behavior).
+    svc = await _service(tmp_path, NoopAuthorizer())
+    req = await _pending(svc)
+    assert await svc.can_approve(request_id=req.request_id, approver="anyone") is True

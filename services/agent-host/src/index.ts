@@ -442,6 +442,30 @@ export async function main(
     for await (const event of store.readEvents(sessionId)) conn.send(event);
   });
 
+  // Shared broker call setup: base URL + the agent-host SA token (the trust
+  // anchor that vouches for the real user). Returns null when BROKER_URL is unset
+  // (local/fake) so callers can no-op cleanly. Mirrors the token-read rules used
+  // by resolveAwsRequest (ENOENT => dev/no-token; any other read error throws).
+  const brokerAuth = async (): Promise<{ url: string; headers: Record<string, string> } | null> => {
+    const url = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+    if (!url) return null;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
+    try {
+      const { readFileSync } = await import("node:fs");
+      headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
+    } catch (e) {
+      if ((e as { code?: string })?.code !== "ENOENT") {
+        throw new Error(
+          `failed to read broker token at ${tokenPath}: ${(e as Error)?.message ?? e}`,
+          { cause: e },
+        );
+      }
+      /* ENOENT -> no token (local/dev) */
+    }
+    return { url, headers };
+  };
+
   // Management REST API (conversation CRUD + lifecycle + history), mounted on
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
@@ -528,6 +552,26 @@ export async function main(
           throw new Error(
             `broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`,
           );
+        }
+      },
+      canApproveAwsRequest: async (_sessionId, requestId, approver) => {
+        // Read-only: may THIS viewer approve THIS request? Per-viewer (the interrupt
+        // is raised once but seen by many users), so the UI asks with the current
+        // user's identity. Fail CLOSED (false) on any hiccup — a greyed button that
+        // should be live is safe; a live button that should be greyed is not. When
+        // BROKER_URL is unset (local/fake), default to true so dev UIs stay usable.
+        const auth = await brokerAuth().catch(() => null);
+        if (!auth) return true;
+        try {
+          const res = await fetch(
+            `${auth.url}/aws/aws/${encodeURIComponent(requestId)}/can-approve`,
+            { method: "POST", headers: auth.headers, body: JSON.stringify({ approver }) },
+          );
+          if (!res.ok) return false;
+          const j = (await res.json().catch(() => ({}))) as { can_approve?: boolean };
+          return j.can_approve === true;
+        } catch {
+          return false;
         }
       },
     }),

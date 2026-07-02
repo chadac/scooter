@@ -66,6 +66,15 @@ export interface ManagementDeps {
     approved: boolean,
     approver: ApproverIdentity,
   ) => Promise<void>;
+  /** Read-only: may `approver` (the VIEWING user) approve this AWS request? Powers
+   *  the UI's greyed-out Approve button. Per-viewer — the interrupt is raised once
+   *  server-side but seen by many users. Fails closed (false) broker-side. Optional
+   *  (defaults to allowed when unwired / no broker). */
+  canApproveAwsRequest?: (
+    sessionId: string,
+    requestId: string,
+    approver: ApproverIdentity,
+  ) => Promise<boolean>;
   /** Model catalog for per-conversation selection: the host default + the set
    *  offered to clients. Empty list = only the default is selectable. */
   models?: { default?: string; available: string[] };
@@ -347,6 +356,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 204, json: null };
   });
 
+  // May the CURRENT viewer approve this AWS request? The UI calls this per pending
+  // AWS interrupt to decide whether to grey out the Approve button (per-viewer: the
+  // interrupt is raised once server-side but seen by many users). Anonymous users
+  // can never approve (no identity to authorize) → canApprove:false, greyed button.
+  r.get("/conversations/:id/aws-request/:requestId/can-approve", async (ctx) => {
+    if (!deps.canApproveAwsRequest) return { json: { canApprove: true } }; // unwired → don't block
+    if (ctx.user.anonymous) return { json: { canApprove: false } };
+    const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name };
+    const canApprove = await deps
+      .canApproveAwsRequest(ctx.params.id, ctx.params.requestId, approver)
+      .catch(() => false); // fail closed (greyed) on any error
+    return { json: { canApprove } };
+  });
+
   // External resource links (the GitHub PR / Slack thread a conversation came
   // from). The webhooks service POSTs them on create; the UI GETs them for the
   // linked-resources panel.
@@ -403,6 +426,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
         { optionId: "approve", name: "Approve", kind: "allow_once" },
         { optionId: "deny", name: "Deny", kind: "reject_once" },
       ],
+      // Tag it AWS so the UI runs a per-viewer can-approve check (greys the
+      // Approve button for users who can't approve this account). `requestId` ==
+      // the interrupt id, but carry it explicitly so the UI needn't assume that.
+      metadata: { aws: true, requestId: body.request_id },
       onAnswer: (optionId, approver) => {
         // The approver is the HUMAN who answered (passed from the permission route
         // via answerPermission), not the conversation owner — the broker authorizes

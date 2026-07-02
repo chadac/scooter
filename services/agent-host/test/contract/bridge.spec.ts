@@ -182,6 +182,35 @@ describe("ACP -> AG-UI bridge", () => {
     expect(bridge.answerPermission("aws-req-1", "approve")).toBe(false); // already settled
   });
 
+  it("raiseInterrupt merges extra metadata (e.g. aws:true) alongside options", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+
+    bridge.raiseInterrupt({
+      id: "aws-req-2",
+      message: "Approve AWS access to dev?",
+      options: [{ optionId: "approve", name: "Approve", kind: "allow_once" }],
+      // The AWS tag the UI keys on to run its per-viewer can-approve check.
+      metadata: { aws: true, requestId: "aws-req-2" },
+      onAnswer: () => {},
+    });
+
+    const intr = events.find((e) => e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt");
+    const meta = (intr as { outcome: { interrupts: Array<{ metadata?: Record<string, unknown> }> } })
+      .outcome.interrupts[0].metadata;
+    // Both the extra metadata AND the options survive the merge.
+    expect(meta?.aws).toBe(true);
+    expect(meta?.requestId).toBe("aws-req-2");
+    expect(Array.isArray(meta?.options)).toBe(true);
+  });
+
   it("cancels the request when answered with an unknown option", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([

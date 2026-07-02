@@ -74,11 +74,17 @@ import {
 export interface InterruptContextValue {
   interrupts: readonly PendingInterrupt[];
   submitResume: (entries: readonly ResumeEntry[]) => Promise<void>;
+  /** The current conversation id + agent-host base URL, so the panel can hit
+   *  host endpoints (e.g. the per-viewer AWS can-approve check). */
+  conversationId: string;
+  baseUrl: string;
 }
 
 const InterruptContext = createContext<InterruptContextValue>({
   interrupts: [],
   submitResume: async () => {},
+  conversationId: "",
+  baseUrl: "",
 });
 
 export const useConversationInterrupts = () => useContext(InterruptContext);
@@ -227,8 +233,13 @@ function ConversationRuntime({
   }, [runtime, conversationId]);
 
   const interruptValue = useMemo<InterruptContextValue>(
-    () => ({ interrupts, submitResume: (entries) => agent.submitResume(entries) }),
-    [interrupts, agent],
+    () => ({
+      interrupts,
+      submitResume: (entries) => agent.submitResume(entries),
+      conversationId,
+      baseUrl: BASE_URL,
+    }),
+    [interrupts, agent, conversationId],
   );
 
   return (
