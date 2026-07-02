@@ -28,10 +28,11 @@ export function App() {
             <div className="min-h-0 flex-1">
               <Thread />
             </div>
-            {/* Agent option/permission requests (AG-UI interrupts) appear here as
-                inline buttons, between the thread and the composer. */}
-            <InterruptPanel />
           </main>
+          {/* Agent option/permission requests (AG-UI interrupts, e.g. an AWS
+              approval) slide in as a prominent right-side panel — a gate the user
+              can't miss. Renders nothing when nothing is pending. */}
+          <InterruptPanel />
         </div>
       </div>
     </RuntimeProvider>

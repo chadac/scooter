@@ -64,12 +64,20 @@ conversation you're talking in right now. A human opens the conversation, sees
 your request (account, the actions, your justification), and clicks Approve or
 Deny. So:
 
-- **Tell the requester where to go.** Your conversation has a shareable URL in
-  the `CONVERSATION_URL` environment variable. Share it via the channel you're
-  talking on (`slack_respond` / `github_comment` / etc.):
-  > "I need AWS access to continue — please approve here: $CONVERSATION_URL"
-  Read it with `echo "$CONVERSATION_URL"`. (If it's empty, just say approval is
-  pending "in this conversation" and describe what you asked for.)
+- **Tell the requester where to go — with the REAL link, not the variable name.**
+  Your conversation URL is in the `CONVERSATION_URL` env var. You MUST expand it
+  to its actual value first — get the value:
+  ```bash
+  echo "$CONVERSATION_URL"
+  # e.g. https://scooter.example.com/?thread=6f1c...
+  ```
+  then paste **that actual URL** into your message via `slack_respond` /
+  `github_comment` / etc. — for example:
+  > "I need AWS access to continue — please approve here:
+  >  https://scooter.example.com/?thread=6f1c..."
+  Do NOT send the literal text `$CONVERSATION_URL` (the requester can't click
+  that). If `echo "$CONVERSATION_URL"` prints nothing, omit the link and say the
+  approval is pending "in this conversation," describing what you asked for.
 - **Read-only requests may be auto-approved.** If the account is configured for
   it, a purely read-only policy (all `Get*`/`List*`/`Describe*` actions, no
   managed-policy ARNs) is granted immediately with no human — you'll get creds
