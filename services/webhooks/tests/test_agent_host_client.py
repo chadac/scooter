@@ -66,6 +66,43 @@ async def test_create_conversation_collects_final_message(monkeypatch):
     assert captured["json"]["threadId"] == result["conversation_id"]
 
 
+async def test_on_created_fires_with_conv_id_BEFORE_the_run(monkeypatch):
+    # The Slack "first message escapes the thread" fix: the agent may call a
+    # response tool on its first turn (before create_conversation returns), so
+    # the target link/mapping must be registered up front. on_created is awaited
+    # with the conversation_id BEFORE the /agui stream is opened.
+    order: list[str] = []
+
+    def fake_stream(self, method, url, **kwargs):  # noqa: ANN001
+        order.append("run")
+        return _FakeStream(_sse('{"type":"RUN_FINISHED","threadId":"t","runId":"r"}'))
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+
+    seen: dict = {}
+
+    async def on_created(conv_id: str) -> None:
+        order.append("on_created")
+        seen["conv_id"] = conv_id
+
+    result = await ahc.create_conversation("do a thing", on_created=on_created)
+    assert result is not None
+    # The hook ran, got the SAME id the conversation ended up with, and ran FIRST.
+    assert seen["conv_id"] == result["conversation_id"]
+    assert order == ["on_created", "run"]
+
+
+async def test_on_created_failure_is_non_fatal(monkeypatch):
+    _patch_stream(monkeypatch, _sse('{"type":"RUN_FINISHED","threadId":"t","runId":"r"}'))
+
+    async def boom(_conv_id: str) -> None:
+        raise RuntimeError("registration failed")
+
+    # A hook failure must NOT sink the run — the conversation still starts.
+    result = await ahc.create_conversation("do a thing", on_created=boom)
+    assert result is not None
+
+
 async def test_run_error_returns_none(monkeypatch):
     body = _sse(
         '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
