@@ -28,6 +28,7 @@ interface Meta { provider: Provider; argKey: string; action: string }
 /** Keyed by the underlying tool NAME (the stable identity). */
 const BY_TOOL: Record<string, Meta> = {
   slack_respond: { provider: "slack", argKey: "text", action: "replied in Slack" },
+  slack_react: { provider: "slack", argKey: "emoji", action: "reacted in Slack" },
   github_comment: { provider: "github", argKey: "body", action: "commented on GitHub" },
   gitlab_comment: { provider: "gitlab", argKey: "body", action: "commented on GitLab" },
   jira_comment: { provider: "jira", argKey: "body", action: "commented on Jira" },
@@ -37,6 +38,7 @@ const BY_TOOL: Record<string, Meta> = {
  *  surface the raw title instead of the "<server>: <Name>" form). */
 const BY_TITLE: Record<string, string> = {
   "respond in the slack thread": "slack_respond",
+  "react to the slack message": "slack_react",
   "comment on the github pr/issue": "github_comment",
   "comment on the gitlab mr": "gitlab_comment",
   "comment on the jira issue": "jira_comment",

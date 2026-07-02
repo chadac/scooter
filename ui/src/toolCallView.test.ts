@@ -49,6 +49,14 @@ describe("matchToolCall", () => {
     expect(matchToolCall("Respond in the Slack thread", { text: "hi" })).toMatchObject({ provider: "slack" });
   });
 
+  it("maps slack_react to a slack card, reading the `emoji` arg", () => {
+    expect(matchToolCall("Scooter-env: Slack React", { emoji: "eyes" })).toMatchObject({
+      provider: "slack", body: "eyes",
+    });
+    expect(matchToolCall("React to the Slack message", { emoji: "tada" })).toMatchObject({ provider: "slack" });
+    expect(matchToolCall("slack_react", { emoji: "white_check_mark" })?.action).toMatch(/react/i);
+  });
+
   it("normalizeToolName strips the server prefix + casing to the tool identity", () => {
     expect(normalizeToolName("Scooter-env: Slack Respond")).toBe("slack_respond");
     expect(normalizeToolName("slack_respond")).toBe("slack_respond");

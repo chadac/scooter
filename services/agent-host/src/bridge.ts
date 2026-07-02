@@ -278,6 +278,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     openReasoning?: string;
     // tool_call_id -> the messageId we attribute its result to.
     toolMessage: Map<string, string>;
+    // tool_call_ids for which we've already emitted TOOL_CALL_ARGS, so a later
+    // tool_call_update carrying rawInput doesn't double-emit the args.
+    argsEmitted: Set<string>;
     // Set once the run is finishing: late updates are ignored so we never
     // reopen a message after RUN_FINISHED.
     ended?: boolean;
@@ -295,6 +298,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       emit({ type: "REASONING_END", messageId: st.openReasoning });
       st.openReasoning = undefined;
     }
+  };
+  // Emit TOOL_CALL_ARGS exactly ONCE per tool call, from whichever ACP update
+  // first carries a non-empty rawInput (the initial tool_call OR a later
+  // tool_call_update — goose often uses the latter). Guards against a null/empty
+  // rawInput and against double-emitting the args.
+  const emitArgsOnce = (st: RunState, toolCallId: string, rawInput: unknown) => {
+    if (st.argsEmitted.has(toolCallId)) return;
+    if (rawInput === undefined || rawInput === null) return;
+    // An empty object ({}) carries nothing useful — wait for a real update.
+    if (typeof rawInput === "object" && Object.keys(rawInput as object).length === 0) return;
+    st.argsEmitted.add(toolCallId);
+    emit({ type: "TOOL_CALL_ARGS", toolCallId, delta: JSON.stringify(rawInput) });
   };
 
   const handleUpdate = (st: RunState, u: SessionUpdate) => {
@@ -348,14 +363,17 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         closeOpenText(st);
         closeOpenReasoning(st);
         emit({ type: "TOOL_CALL_START", toolCallId: u.toolCallId, toolCallName: u.title });
-        if (u.rawInput !== undefined) {
-          emit({ type: "TOOL_CALL_ARGS", toolCallId: u.toolCallId, delta: JSON.stringify(u.rawInput) });
-        }
+        emitArgsOnce(st, u.toolCallId, u.rawInput);
         emit({ type: "TOOL_CALL_END", toolCallId: u.toolCallId });
         st.toolMessage.set(u.toolCallId, nextId("msg"));
         break;
       }
       case "tool_call_update": {
+        // The args (the shell command / the slack text) often arrive HERE, not on
+        // the initial tool_call — goose sends the tool_call with no rawInput and
+        // fills it in on this update. Emit them now if we haven't yet, so the UI
+        // can show WHAT was requested (not just the result).
+        emitArgsOnce(st, u.toolCallId, u.rawInput);
         const messageId = st.toolMessage.get(u.toolCallId) ?? nextId("msg");
         emit({
           type: "TOOL_CALL_RESULT",
@@ -372,7 +390,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // time per bridge — see the runChain comment.
   const runPrompt = async (input: PromptInput): Promise<RunId> => {
     const runId = nextId("run");
-    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map() };
+    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set() };
     const startedAt = Date.now();
     let outcome: "ok" | "error" = "ok";
 
