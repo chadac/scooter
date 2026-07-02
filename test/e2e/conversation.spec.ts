@@ -21,7 +21,7 @@ test.describe("conversation happy path", () => {
     await expect(chat.userMessages().first()).toContainText(/review the auth module/i);
   });
 
-  test("!cmd runs a real sandbox command and shows its output", async ({ chat }) => {
+  test("!cmd runs a real sandbox command and shows its output", async ({ chat, page }) => {
     await chat.open();
     // The "!" prefix runs the rest as a bash command in the sandbox via the
     // REAL exec path (ACP createTerminal -> bridge -> ExecBackend; local
@@ -31,6 +31,14 @@ test.describe("conversation happy path", () => {
     await chat.send("!echo zxcvbnm-marker");
 
     await expect(chat.toolCalls().first()).toBeVisible({ timeout: 30_000 });
+    // The tool card shows the COMMAND the agent ran (not just an empty result) —
+    // the args ride a tool_call_update, which the bridge must surface as
+    // TOOL_CALL_ARGS, and the shell card renders it as "$ <command>". Scoped to the
+    // card body so it can't be satisfied by the echoed user message. Regression
+    // guard for the "empty tool card" bug.
+    await expect(
+      page.locator('[data-testid="provider-tool-body"]').filter({ hasText: /echo zxcvbnm-marker/ }),
+    ).toBeVisible({ timeout: 30_000 });
     // The command output (echo's result) flows back into the reply.
     await expect(chat.assistantMessages().last()).toContainText(/zxcvbnm-marker/i, { timeout: 30_000 });
   });

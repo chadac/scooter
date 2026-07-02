@@ -58,7 +58,12 @@ export type SessionUpdate =
   | { sessionUpdate: "agent_message_chunk"; content: ContentBlock }
   | { sessionUpdate: "agent_thought_chunk"; content: ContentBlock }
   | { sessionUpdate: "tool_call"; toolCallId: string; title: string; rawInput?: unknown }
-  | { sessionUpdate: "tool_call_update"; toolCallId: string; status: string; content?: unknown }
+  // rawInput/rawOutput ride the UPDATE too: goose typically sends the initial
+  // tool_call with no rawInput and fills it in on a subsequent tool_call_update
+  // (the command a Shell runs / the text slack_respond posts). Dropping them here
+  // is why the UI showed an empty tool card. rawOutput carries the structured
+  // result (e.g. the shell's stdout) when the provider supplies it.
+  | { sessionUpdate: "tool_call_update"; toolCallId: string; status: string; content?: unknown; rawInput?: unknown; rawOutput?: unknown }
   | { sessionUpdate: "plan"; entries: unknown[] };
 
 export interface PermissionRequest {
@@ -228,6 +233,8 @@ function normalizeUpdate(params: schema.SessionNotification): SessionUpdate | un
         toolCallId: u.toolCallId,
         status: u.status ?? "completed",
         content: u.content,
+        rawInput: u.rawInput,
+        rawOutput: u.rawOutput,
       };
     case "plan":
       return { sessionUpdate: "plan", entries: u.entries ?? [] };

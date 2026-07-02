@@ -52,11 +52,28 @@ describe("ToolCallView", () => {
     expect(html).toContain("LGTM");
   });
 
-  it("delegates to the generic ToolFallback for a non-provider tool", () => {
+  it("shows a Shell command card ($ command), suppressing the noisy terminal-handle result", () => {
     const html = renderToStaticMarkup(
-      createElement(ToolCallView, part({ toolName: "run ls", argsText: '{"command":"ls"}' })),
+      createElement(ToolCallView, part({
+        toolName: "Shell",
+        args: { command: "ls -la" },
+        // The real shell result: a terminal HANDLE, no stdout (that streams into
+        // the assistant text). Must NOT be dumped as raw JSON.
+        result: [{ terminalId: "term-1", type: "terminal" }],
+      })),
     );
-    // NOT a provider card; the stock fallback renders its own markup instead.
+    expect(html).toContain("provider-tool-card");
+    expect(html).toContain('data-provider="shell"');
+    expect(html).toContain("$ ls -la");                 // the command, shown
+    expect(html).not.toContain("terminalId");           // the handle blob suppressed
+    expect(html).not.toContain('"type":"terminal"');
+  });
+
+  it("delegates to the generic ToolFallback for a tool we don't specialize", () => {
+    const html = renderToStaticMarkup(
+      createElement(ToolCallView, part({ toolName: "Search the web (DuckDuckGo)", argsText: '{"query":"x"}' })),
+    );
+    // NOT a provider/shell card; the stock fallback renders its own markup instead.
     expect(html).not.toContain("provider-tool-card");
   });
 });

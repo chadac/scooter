@@ -343,6 +343,35 @@ describe("ACP -> AG-UI bridge", () => {
     expect(types.indexOf("TOOL_CALL_START")).toBeLessThan(types.indexOf("TOOL_CALL_RESULT"));
   });
 
+  it("emits TOOL_CALL_ARGS from the tool_call_update when the initial tool_call had no rawInput", async () => {
+    // The real-world goose shape: the tool_call arrives with NO rawInput (empty
+    // card), and the actual args (the shell command / the slack text) come on a
+    // later tool_call_update. We must still surface them ONCE — this is the "empty
+    // tool card" bug.
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "tool_call", toolCallId: "tc9", title: "Shell" } }, // no rawInput
+      { emit: { sessionUpdate: "tool_call_update", toolCallId: "tc9", status: "in_progress", rawInput: { command: "echo hi" } } },
+      { emit: { sessionUpdate: "tool_call_update", toolCallId: "tc9", status: "completed", content: "hi", rawInput: { command: "echo hi" } } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const bExec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec: bExec,
+      acpClient: acpClientFromTransport(agent.transport, bExec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "run it" });
+
+    const args = events.filter((e) => e.type === "TOOL_CALL_ARGS") as Array<{ toolCallId: string; delta: string }>;
+    // Exactly ONE args event (not zero, not one-per-update), carrying the command.
+    expect(args).toHaveLength(1);
+    expect(args[0].toolCallId).toBe("tc9");
+    expect(args[0].delta).toContain("echo hi");
+  });
+
   it("maps plan/thoughts to Reasoning events", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([

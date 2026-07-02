@@ -11,7 +11,7 @@
 import type { ComponentType } from "react";
 import { SiGithub, SiGitlab, SiJira } from "react-icons/si";
 // Simple Icons dropped the Slack mark (trademark); FontAwesome still ships it.
-import { FaSlack } from "react-icons/fa";
+import { FaSlack, FaTerminal } from "react-icons/fa";
 
 interface SourceMeta {
   label: string;
@@ -28,6 +28,8 @@ const SOURCES: Record<string, SourceMeta> = {
   // accent that reads on both themes.
   slack: { label: "Slack", Icon: FaSlack, color: "#E01E5A" },
   jira: { label: "Jira", Icon: SiJira, color: "#0052CC" },
+  // Not a linked-resource provider — the shell/command tool card (ToolCallView).
+  shell: { label: "Shell", Icon: FaTerminal, color: "currentColor" },
 };
 
 export function sourceLabel(source: string): string {

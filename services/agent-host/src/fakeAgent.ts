@@ -119,12 +119,22 @@ class FakeAgent implements Agent {
     let cmdOutput = "";
     let exitCode = 0;
     const toolCallId = `call_${++this.toolCallSeq}`;
+    // MATCH REAL GOOSE: emit the initial tool_call WITHOUT rawInput, then supply it
+    // on a tool_call_update. Goose does this (the args aren't known when the call is
+    // announced), and the agent-host bug where TOOL_CALL_ARGS was only emitted from
+    // the initial tool_call meant the command/args never rendered. Emitting the
+    // args on the update here keeps the e2e honest — it exercises that path.
     await u({
       sessionUpdate: "tool_call",
       toolCallId,
       title: `run: ${command}`,
       kind: "execute",
       status: "pending",
+    } as never);
+    await u({
+      sessionUpdate: "tool_call_update",
+      toolCallId,
+      status: "in_progress",
       rawInput: { command },
     } as never);
     try {
