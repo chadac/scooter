@@ -23,6 +23,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRouter, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
+import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
 import type { AguiEvent } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
@@ -237,6 +238,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
       checksum = chainAll(events);
     }
     return { json: { events, checksum } };
+  });
+
+  r.get("/conversations/:id/tail", async (ctx) => {
+    // A fast first-paint window: the events from the last N runs (default 8), so a
+    // client opening a LONG conversation can render the latest context instantly
+    // instead of waiting for the whole log to stream + fold. Windowed on RUN
+    // boundaries so every message/tool call in the tail is complete and folds
+    // identically to a full replay — the client then reconciles against the full
+    // integrity stream with no visible change. NOT checksummed (a partial window).
+    const runsParam = Number(ctx.query.get("runs"));
+    const runs = Number.isFinite(runsParam) && runsParam > 0 ? Math.min(runsParam, 100) : 8;
+    const all: AguiEvent[] = [];
+    for await (const e of store.readEvents(ctx.params.id)) all.push(e);
+    const events = tailByRuns(all, runs);
+    return { json: { events, runs, total: all.length, windowed: events.length < all.length } };
   });
 
   r.get("/conversations/:id/events", async (ctx) => {

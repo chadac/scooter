@@ -429,8 +429,43 @@ export class IntegrityAgent extends AbstractAgent {
     };
     this.stopPump?.();
     this.stopPump = stop;
-    void loop();
+    // FAST FIRST PAINT: fetch the recent tail and fold it now, so a long
+    // conversation shows its latest context immediately instead of waiting for the
+    // whole integrity log to stream. The loop below then re-folds the full log from
+    // empty and reconciles (identical fidelity — the tail used the same applier).
+    void this.seedTail().finally(() => { if (!closed) void loop(); });
     return stop;
+  }
+
+  /** Fetch the last N runs of the log (GET …/tail) and fold them into
+   *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
+   *  first paint before the full replay. Best-effort: any failure just skips the
+   *  seed and the full replay paints as before. */
+  private async seedTail(runs = 8): Promise<void> {
+    try {
+      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
+      const res = await this.doFetch(url, {
+        headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as { events?: BaseEvent[] };
+      const events = body.events ?? [];
+      if (events.length === 0) return;
+      // Fold the tail through the base applier into a fresh accumulator.
+      this.setMessages([]);
+      const tail$ = new Subject<BaseEvent>();
+      const done = new Promise<void>((resolve) => {
+        this.processApplyEvents(this.prepareRunAgentInput(), this.apply(this.prepareRunAgentInput(), tail$, this.subscribers), this.subscribers)
+          .pipe(catchError(() => EMPTY))
+          .subscribe({ error: () => resolve(), complete: () => resolve() });
+      });
+      for (const e of events) tail$.next(e);
+      tail$.complete();
+      await done;
+      this.notifyMessages(); // paint the tail now
+    } catch {
+      /* best-effort — the full replay will paint */
+    }
   }
 
   /**
