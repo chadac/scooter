@@ -64,9 +64,28 @@ export class Chat {
 
   /** Wait for an assistant reply containing `re` (default: any non-empty).
    *  Generous timeout: a freshly-created conversation lazily spawns its bridge
-   *  on the first prompt, so the very first reply can be slower than later ones. */
+   *  on the first prompt, so the very first reply can be slower than later ones.
+   *
+   *  NOTE for MULTI-TURN loops: this matches the FIRST occurrence of `re`, which
+   *  a PRIOR turn's identical reply already satisfies (the fake agent says the same
+   *  thing every turn) — so it returns immediately and the next send can race an
+   *  unfinished run, dropping a turn. Use `sendTurn` (count-based) for >1 turn. */
   async waitForReply(re: RegExp = /\S/, timeout = 45_000) {
     await expect(this.page.getByText(re).first()).toBeVisible({ timeout });
+  }
+
+  /** Send one turn and wait until THIS turn's assistant reply has landed — by
+   *  waiting for the assistant-message count to grow past the pre-send baseline,
+   *  not for matching text (which a prior identical reply already satisfies). This
+   *  is the race-free primitive for multi-turn conversations: it guarantees the run
+   *  finished (a new assistant message exists) before returning, so the next send
+   *  can't be dropped mid-run. */
+  async sendTurn(text: string, timeout = 45_000) {
+    const before = await this.assistantMessages().count();
+    await this.send(text);
+    await expect
+      .poll(async () => this.assistantMessages().count(), { timeout })
+      .toBeGreaterThan(before);
   }
 }
 

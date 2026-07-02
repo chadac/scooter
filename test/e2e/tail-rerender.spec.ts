@@ -20,8 +20,10 @@ test.describe("multi-turn re-render (tail + replay)", () => {
     // /tail window + full replay path (not the trivial 1-run case).
     const markers = ["alpha-111", "beta-222", "gamma-333", "delta-444", "epsilon-555"];
     for (const m of markers) {
-      await chat.send(`turn ${m}`);
-      await chat.waitForReply(/dummy agent/i);
+      // sendTurn waits for THIS turn's reply (count-based) — waitForReply matched a
+      // prior turn's identical "dummy agent" reply and let the next send race an
+      // unfinished run, dropping a turn (the flake).
+      await chat.sendTurn(`turn ${m}`);
     }
     // All five user turns are present in the live thread.
     await expect(chat.userMessages()).toHaveCount(markers.length, { timeout: 30_000 });
@@ -44,8 +46,7 @@ test.describe("multi-turn re-render (tail + replay)", () => {
   test("a longer conversation is populated after a full page reload", async ({ chat, page }) => {
     await chat.open();
     for (const m of ["one-aaa", "two-bbb", "three-ccc", "four-ddd"]) {
-      await chat.send(`turn ${m}`);
-      await chat.waitForReply(/dummy agent/i);
+      await chat.sendTurn(`turn ${m}`); // count-based wait — no dropped turns (see fixtures)
     }
     await expect(chat.userMessages()).toHaveCount(4, { timeout: 30_000 });
 

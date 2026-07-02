@@ -59,8 +59,9 @@ test.describe("conversation happy path", () => {
 
   test("multi-turn: a follow-up continues the same thread", async ({ chat }) => {
     await chat.open();
-    await chat.send("first message");
-    await chat.waitForReply(/dummy agent/i);
+    // sendTurn (count-based) guarantees the first run FINISHED before the second
+    // send, which otherwise races an unfinished run and gets dropped.
+    await chat.sendTurn("first message");
 
     await chat.send("second message");
     await expect(chat.userMessages()).toHaveCount(2, { timeout: 30_000 });
