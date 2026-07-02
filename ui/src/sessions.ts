@@ -37,6 +37,10 @@ type State = {
   currentId: string;
   /** The caller's id (from /whoami), for the Mine filter. "" until loaded. */
   currentUser: string;
+  /** The caller's email (from /whoami), for display. null when unknown/anonymous. */
+  currentUserEmail: string | null;
+  /** True when the caller is anonymous (no ingress identity — auth off / dev). */
+  currentUserAnonymous: boolean;
   /** Sidebar Mine/All toggle (default Mine). */
   scope: Scope;
   /** A deep-link target (from ?thread=<id>) to select AS SOON AS it's known — the
@@ -54,6 +58,8 @@ const freshState = (): State => {
     sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }],
     currentId: id,
     currentUser: "",
+    currentUserEmail: null,
+    currentUserAnonymous: true,
     scope: "mine",
   };
 };
@@ -76,7 +82,10 @@ const loadState = (): State => {
       : sessions[0].id;
     // currentUser is NOT persisted (it's re-fetched via /whoami on load); scope
     // persists so the toggle choice survives a refresh.
-    return { sessions, currentId, currentUser: "", scope: parsed.scope === "all" ? "all" : "mine" };
+    return {
+      sessions, currentId, currentUser: "", currentUserEmail: null,
+      currentUserAnonymous: true, scope: parsed.scope === "all" ? "all" : "mine",
+    };
   } catch (e) {
     // Finding #26: corrupt persisted state -> start fresh (recoverable), but log
     // it so a user silently losing their session list is diagnosable rather than
@@ -272,10 +281,13 @@ export const sessionStore = {
     });
   },
 
-  /** Record the caller's id (from /whoami), for the Mine view filter. */
-  setCurrentUser(id: string) {
-    if (state.currentUser === id) return;
-    setState({ ...state, currentUser: id });
+  /** Record the caller's identity (from /whoami): the id drives the Mine filter,
+   *  the email + anonymous flag drive the header user badge. */
+  setCurrentUser(user: { id: string; email?: string | null; anonymous?: boolean }) {
+    const email = user.email ?? null;
+    const anonymous = user.anonymous ?? false;
+    if (state.currentUser === user.id && state.currentUserEmail === email && state.currentUserAnonymous === anonymous) return;
+    setState({ ...state, currentUser: user.id, currentUserEmail: email, currentUserAnonymous: anonymous });
   },
 
   /** Flip the sidebar Mine/All filter. */
@@ -295,4 +307,11 @@ export function visibleSessions(state: State): Session[] {
 
 export function useSessions(): State {
   return useSyncExternalStore(sessionStore.subscribe, sessionStore.get);
+}
+
+/** The signed-in caller (from /whoami), for the header user badge. `id` is the
+ *  ingress identity; `anonymous` is true when auth is off / no identity header. */
+export function useCurrentUser(): { id: string; email: string | null; anonymous: boolean } {
+  const s = useSessions();
+  return { id: s.currentUser, email: s.currentUserEmail, anonymous: s.currentUserAnonymous };
 }

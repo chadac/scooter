@@ -24,6 +24,14 @@ test.describe("conversation ownership + Mine/All filter", () => {
     await expect(page.locator(sidebar.toggleMine)).toHaveAttribute("data-active", "true");
   });
 
+  test("the header user badge is HIDDEN when anonymous (no identity header)", async ({ chat, page }) => {
+    // The e2e stack sends no x-auth-user, so /whoami is anonymous — the badge must
+    // render nothing (never a meaningless 'anonymous' chip). With a real identity
+    // (auth enabled) it shows the user; that path is covered by the unit test.
+    await chat.open();
+    await expect(page.locator('[data-testid="user-badge"]')).toHaveCount(0);
+  });
+
   test("a conversation owned by another user is hidden under Mine, shown under All", async ({
     chat,
     page,

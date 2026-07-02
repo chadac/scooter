@@ -38,6 +38,46 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _aws_error_reasons(exc: Exception, *, context: str) -> list[str]:
+    """Turn an exception from the IAM/STS path into a verbose, fully-detailed list
+    of reasons — nothing hidden. For a botocore ClientError we surface the error
+    Code, the raw AWS Message, the failing operation, the HTTP status, the AWS
+    request id, and the invoked ARN when present; for anything else, the exception
+    type + str(). The `context` line (what we were trying to do + the likely
+    fix) is prepended so the agent gets both the diagnosis AND the raw AWS truth."""
+    reasons = [context]
+    err = getattr(exc, "response", None)
+    if isinstance(err, dict):
+        e = err.get("Error", {}) or {}
+        meta = err.get("ResponseMetadata", {}) or {}
+        code = e.get("Code")
+        msg = e.get("Message")
+        op = getattr(exc, "operation_name", None)
+        detail = "AWS error"
+        if op:
+            detail += f" on {op}"
+        if code:
+            detail += f" [{code}]"
+        if msg:
+            detail += f": {msg}"
+        reasons.append(detail)
+        http = meta.get("HTTPStatusCode")
+        rid = meta.get("RequestId")
+        extra = []
+        if http:
+            extra.append(f"HTTP {http}")
+        if rid:
+            extra.append(f"request-id {rid}")
+        arn = e.get("Type") or meta.get("HTTPHeaders", {}).get("x-amzn-invoked-arn")
+        if arn:
+            extra.append(f"arn {arn}")
+        if extra:
+            reasons.append("(" + ", ".join(extra) + ")")
+    else:
+        reasons.append(f"{type(exc).__name__}: {exc}")
+    return reasons
+
+
 @dataclass
 class ServiceConfig:
     """Durations (seconds) by risk + the role TTL (hours) + the broker principal."""
@@ -136,11 +176,27 @@ class PermissionService:
 
         request_id = uuid.uuid4().hex[:12]
         # Eagerly create the inline policy so policy errors surface before approval.
+        # An IAM/STS failure here (base role missing, ExternalId/trust mismatch, the
+        # broker IRSA lacking sts:AssumeRole — i.e. the per-account IAM isn't set up
+        # yet) must surface as a CLEAR RequestError to the agent, not an opaque 500.
         policy_arn = None
         if policy_document is not None:
-            policy_arn = self._iam.create_dynamic_policy(
-                target_account=target_account, request_id=request_id, policy_document=policy_document
-            )
+            try:
+                policy_arn = self._iam.create_dynamic_policy(
+                    target_account=target_account, request_id=request_id, policy_document=policy_document
+                )
+            except Exception as exc:
+                logger.exception("create_dynamic_policy failed for %s (%s)", target_account, request_id)
+                raise RequestError(_aws_error_reasons(
+                    exc,
+                    context=(
+                        f"AWS access could not be provisioned for account '{target_account}'. "
+                        "This usually means the account's broker IAM isn't set up yet "
+                        "(the agent-token-broker-base role + permission boundary in that "
+                        "account, and the broker IRSA's sts:AssumeRole into it with the "
+                        "matching ExternalId)."
+                    ),
+                )) from exc
 
         req = PermissionRequest(
             request_id=request_id,

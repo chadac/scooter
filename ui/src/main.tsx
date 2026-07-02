@@ -21,8 +21,9 @@ const refreshConversations = () =>
     sessionStore.mergeFromServer(convs);
   });
 
-// Who am I (the ingress identity) — used to label conversations "mine".
-void loadWhoami({ baseUrl: BASE_URL }).then((me) => sessionStore.setCurrentUser(me.id));
+// Who am I (the ingress identity) — labels conversations "mine" + shows the
+// signed-in user in the header.
+void loadWhoami({ baseUrl: BASE_URL }).then((me) => sessionStore.setCurrentUser(me));
 
 // Initial load with fast retry-and-backoff: during an agent-host restart
 // (deploy / node consolidation, ~30-60s) the first fetch fails and a fresh tab

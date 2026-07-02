@@ -95,6 +95,27 @@ class FailingTeardownIam(FakeIam):
         return False
 
 
+class _FakeClientError(Exception):
+    """Mimics botocore.exceptions.ClientError enough for _aws_error_reasons:
+    a `.response` dict + `.operation_name`."""
+
+    def __init__(self):
+        super().__init__("An error occurred (AccessDenied) when calling AssumeRole")
+        self.operation_name = "AssumeRole"
+        self.response = {
+            "Error": {"Code": "AccessDenied", "Message": "not authorized to perform sts:AssumeRole"},
+            "ResponseMetadata": {"HTTPStatusCode": 403, "RequestId": "req-123"},
+        }
+
+
+class PolicyFailingIam(FakeIam):
+    """create_dynamic_policy raises a boto-like ClientError (the account's broker
+    IAM isn't set up → STS AssumeRole denied) — the real 500-cause the user hit."""
+
+    def create_dynamic_policy(self, *, target_account, request_id, policy_document):
+        raise _FakeClientError()
+
+
 # --- request -------------------------------------------------------------
 async def test_request_creates_pending(tmp_path):
     svc = await make_service(tmp_path)
@@ -141,6 +162,22 @@ async def test_readonly_request_without_optin_stays_pending(tmp_path):
     svc = await make_service(tmp_path)
     req = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
     assert req.status == RequestStatus.PENDING
+
+
+async def test_iam_provisioning_failure_is_a_verbose_request_error_not_500(tmp_path):
+    # The user's bug: every inline --policy request 500'd because the account's
+    # broker IAM wasn't set up (STS AssumeRole denied on the eager create_policy).
+    # It must become a RequestError (→ 400 with reasons) carrying the FULL AWS
+    # detail — code, message, operation, HTTP status, request id — nothing hidden.
+    svc = await make_service(tmp_path, iam=PolicyFailingIam())
+    with pytest.raises(RequestError) as ei:
+        await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    blob = " | ".join(ei.value.reasons)
+    assert "AccessDenied" in blob
+    assert "sts:AssumeRole" in blob
+    assert "AssumeRole" in blob            # the failing operation
+    assert "403" in blob and "req-123" in blob  # HTTP status + request id
+    assert "isn't set up yet" in blob      # the actionable diagnosis
 
 
 async def test_request_rejects_blocked_action(tmp_path):
