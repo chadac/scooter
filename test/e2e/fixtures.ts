@@ -17,8 +17,11 @@ export const sel = {
   errorBox: ".aui-message-error-root",
   userMessage: ".aui-user-message-content",
   assistantMessage: ".aui-assistant-message-content, .aui-md", // styled content
-  // Tool calls render inside a collapsible group; fallback shows when expanded.
-  toolCall: ".aui-tool-group-root, .aui-tool-fallback-root",
+  // Count ONE node per tool call: the innermost rendered card — a provider card
+  // (slack/github/…) or the generic fallback. NOT the .aui-tool-group-root
+  // wrapper: groups now render EXPANDED (ToolGroupOpen), so the wrapper AND the
+  // inner fallback are both mounted at once — counting both double-counts.
+  toolCall: '.aui-tool-fallback-root, [data-testid="provider-tool-card"]',
   composerInput: '[aria-label="Message input"]',
 };
 
