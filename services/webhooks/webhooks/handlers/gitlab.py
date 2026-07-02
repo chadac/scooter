@@ -376,27 +376,38 @@ async def _background_create_conversation(
     conv_title: str, project_id: int, note_api_type: str,
     noteable_iid: int,
 ) -> None:
-    try:
-        result = await create_conversation(message, repository=repo, title=conv_title)
-        if not result:
-            await _clear_pending(source, res_type, res_id)
-            await post_gitlab_comment(
-                project_id=project_id, noteable_type=note_api_type,
-                noteable_iid=noteable_iid,
-                body="Scooter couldn't start on this one — failed to create the conversation.",
-            )
-            return
-
-        conv_id = result.get("conversation_id", "")
+    # Register the mapping + link AND post the "on it — follow along" comment
+    # BEFORE the agent runs. create_conversation blocks until the whole turn
+    # finishes, so posting the link comment after it returned delayed it by the
+    # entire run (the 5-10min lag). Only conv_id is needed, known in the hook.
+    async def _register(conv_id: str) -> None:
         await db.store_conversation(source, res_type, res_id, conv_id)
-        conv_link = conversation_url(conv_id)
-
-        # Surface the originating MR/issue and give the response tools a target.
         await push_link(
             conv_id, source="gitlab", resource_type=res_type,
             title=res_id,
             ref={"projectId": str(project_id), "mrIid": str(noteable_iid)},
         )
+        await post_gitlab_comment(
+            project_id=project_id, noteable_type=note_api_type,
+            noteable_iid=noteable_iid,
+            body=f"Scooter is on it — follow along: [View conversation]({conversation_url(conv_id)})",
+        )
+
+    try:
+        result = await create_conversation(
+            message, repository=repo, title=conv_title, on_created=_register,
+        )
+        if not result:
+            await _clear_pending(source, res_type, res_id)
+            # The optimistic "on it" comment already posted in _register; correct it.
+            await post_gitlab_comment(
+                project_id=project_id, noteable_type=note_api_type,
+                noteable_iid=noteable_iid,
+                body="…actually, Scooter couldn't start on this one — failed to create the conversation.",
+            )
+            return
+
+        conv_id = result.get("conversation_id", "")
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages(source, res_type, res_id)
@@ -404,12 +415,6 @@ async def _background_create_conversation(
             ok = await send_message(conv_id, msg)
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
-
-        await post_gitlab_comment(
-            project_id=project_id, noteable_type=note_api_type,
-            noteable_iid=noteable_iid,
-            body=f"Scooter is on it — follow along: [View conversation]({conv_link})",
-        )
     except Exception:
         await _clear_pending(source, res_type, res_id)
         logger.exception("Error in background conversation creation for %s", res_id)

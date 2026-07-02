@@ -201,20 +201,30 @@ async def _handle_issue_updated(payload: dict):
 async def _background_create_conversation(
     issue_key: str, message: str, conv_title: str,
 ) -> None:
+    # Register the mapping + link AND post the "on it — follow along" comment
+    # BEFORE the agent runs. create_conversation blocks until the whole turn
+    # finishes, so posting the link comment after it returned delayed it by the
+    # entire run (the 5-10min lag). Only conv_id is needed, known in the hook.
+    async def _register(conv_id: str) -> None:
+        await db.store_conversation("jira", "issue", issue_key, conv_id)
+        await db.link_jira_ticket(conv_id, issue_key)
+        await post_jira_comment(
+            issue_key=issue_key,
+            body=f"Scooter is on it — follow along: {conversation_url(conv_id)}",
+        )
+
     try:
-        result = await create_conversation(message, title=conv_title)
+        result = await create_conversation(message, title=conv_title, on_created=_register)
         if not result:
             await _clear_pending(issue_key)
+            # The optimistic "on it" comment already posted in _register; correct it.
             await post_jira_comment(
                 issue_key=issue_key,
-                body="Scooter couldn't start on this one — failed to create the conversation.",
+                body="…actually, Scooter couldn't start on this one — failed to create the conversation.",
             )
             return
 
         conv_id = result.get("conversation_id", "")
-        await db.store_conversation("jira", "issue", issue_key, conv_id)
-        await db.link_jira_ticket(conv_id, issue_key)
-        conv_link = conversation_url(conv_id)
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("jira", "issue", issue_key)
@@ -222,11 +232,6 @@ async def _background_create_conversation(
             ok = await send_message(conv_id, msg)
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
-
-        await post_jira_comment(
-            issue_key=issue_key,
-            body=f"Scooter is on it — follow along: {conv_link}",
-        )
     except Exception:
         await _clear_pending(issue_key)
         logger.exception("Error in background conversation creation for Jira %s", issue_key)
