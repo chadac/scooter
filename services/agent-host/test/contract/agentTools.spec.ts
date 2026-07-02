@@ -15,6 +15,8 @@ import { describe, it, expect, vi } from "vitest";
 import {
   handleSlackRespond,
   handleJiraComment,
+  handleGithubComment,
+  handleGitlabComment,
   handleWebFetch,
   inferRef,
   toToolResult,
@@ -139,6 +141,89 @@ describe("agent-tools: inferred defaults", () => {
     const out = await handleJiraComment({ broker }, ctxWith([]), { body: "hi" });
     expect(out.isError).toBe(true);
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+});
+
+describe("agent-tools: DB fallback for github/gitlab/jira (ref-less links)", () => {
+  const ok = (): BrokerResponse => ({ status: 201, raw: '{"id":1}', data: { id: 1 } });
+
+  it("github_comment FALLS BACK to the conversation_map (owner/repo#number) when the link has no ref", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async (source) =>
+        source === "github"
+          ? { source: "github", resourceType: "pull_request", resourceId: "octo/hello-world#7" }
+          : undefined,
+    };
+    const out = await handleGithubComment({ broker }, ctx, { body: "on it" });
+    expect(out.isError).toBeFalsy();
+    const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[2]).toBe("/github/repos/octo/hello-world/issues/7/comments");
+  });
+
+  it("github_comment errors when neither the ref nor the DB has the target", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = { conversationId: "c1", links: async () => [], resourceLookup: async () => undefined };
+    const out = await handleGithubComment({ broker }, ctx, { body: "hi" });
+    expect(out.isError).toBe(true);
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("gitlab_comment FALLS BACK to the conversation_map for an MR (repo!iid)", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async (source) =>
+        source === "gitlab"
+          ? { source: "gitlab", resourceType: "merge_request", resourceId: "group/proj!12" }
+          : undefined,
+    };
+    const out = await handleGitlabComment({ broker }, ctx, { body: "on it" });
+    expect(out.isError).toBeFalsy();
+    const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
+    // repo path is URL-encoded as the project id.
+    expect(call[2]).toBe("/gitlab/projects/group%2Fproj/merge_requests/12/notes");
+  });
+
+  it("gitlab_comment FALLS BACK to the conversation_map for an issue (repo#iid)", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async () => ({ source: "gitlab", resourceType: "issue", resourceId: "group/proj#5" }),
+    };
+    const out = await handleGitlabComment({ broker }, ctx, { body: "hi" });
+    expect(out.isError).toBeFalsy();
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/gitlab/projects/group%2Fproj/issues/5/notes");
+  });
+
+  it("jira_comment FALLS BACK to the conversation_map (resource_id IS the issue key)", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async (source) =>
+        source === "jira" ? { source: "jira", resourceType: "issue", resourceId: "ENG-99" } : undefined,
+    };
+    const out = await handleJiraComment({ broker }, ctx, { body: "done" });
+    expect(out.isError).toBeFalsy();
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/jira/rest/api/2/issue/ENG-99/comment");
+  });
+
+  it("the link ref WINS over the DB fallback when both are present", async () => {
+    const broker = fakeBroker(ok());
+    const jiraLink: ConversationLink = { source: "jira", resourceType: "issue", ref: { issueKey: "ENG-1" } };
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [jiraLink],
+      resourceLookup: async () => ({ source: "jira", resourceType: "issue", resourceId: "ENG-999" }),
+    };
+    const out = await handleJiraComment({ broker }, ctx, { body: "done" });
+    expect(out.isError).toBeFalsy();
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/jira/rest/api/2/issue/ENG-1/comment");
   });
 });
 
