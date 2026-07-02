@@ -31,9 +31,12 @@ export const ToolCallView: ToolCallMessagePartComponent = (props) => {
 
   const status = props.status?.type;
   const failed = status === "incomplete";
+  const isShell = visual.provider === "shell";
   // A CLEAN one-line status from the tool result — NOT the raw ACP content blob
   // (e.g. [{"content":{"text":"Posted to the Slack thread."}}]); the posted text
-  // is shown as the body above, the result is just a confirmation/error line.
+  // is shown as the body above, the result is just a confirmation/error line. For
+  // a shell tool this is usually "" (the terminal-handle result carries no stdout —
+  // the real output streams into the assistant reply), so no noisy result line.
   const resultText = resultStatusText(props.result);
 
   return (
@@ -46,11 +49,20 @@ export const ToolCallView: ToolCallMessagePartComponent = (props) => {
         <SourceBadge source={visual.provider} size={14} />
         <span className="font-medium text-foreground">{sourceLabel(visual.provider)}</span>
         <span>· {failed ? "failed to " + visual.action.replace(/ed /, " ") : visual.action}</span>
-        {status === "running" && <span className="ml-auto animate-pulse">sending…</span>}
+        {status === "running" && (
+          <span className="ml-auto animate-pulse">{isShell ? "running…" : "sending…"}</span>
+        )}
       </div>
       {visual.body && (
-        <div className="whitespace-pre-wrap px-3 py-2 text-sm" data-testid="provider-tool-body">
-          {visual.body}
+        <div
+          className={
+            isShell
+              ? "whitespace-pre-wrap px-3 py-2 font-mono text-xs"
+              : "whitespace-pre-wrap px-3 py-2 text-sm"
+          }
+          data-testid="provider-tool-body"
+        >
+          {isShell ? `$ ${visual.body}` : visual.body}
         </div>
       )}
       {resultText && (

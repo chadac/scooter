@@ -84,7 +84,23 @@ describe("matchToolCall", () => {
   it("returns null for tools we don't specialize (web search, modify_environment, unknown)", () => {
     expect(matchToolCall("Search the web (DuckDuckGo)", { query: "x" })).toBeNull();
     expect(matchToolCall("Modify the dev environment", { module_nix: "{}" })).toBeNull();
-    expect(matchToolCall("run ls", { command: "ls" })).toBeNull();
+    expect(matchToolCall("Some Random Tool", { x: 1 })).toBeNull();
+  });
+
+  it("maps a Shell/command tool to a shell card, reading the `command` arg", () => {
+    expect(matchToolCall("Shell", { command: "ls -la" })).toMatchObject({ provider: "shell", body: "ls -la" });
+    // goose's "run: <cmd>" title and a raw run_* name both count as shell.
+    expect(matchToolCall("run ls", { command: "ls" })).toMatchObject({ provider: "shell", body: "ls" });
+    expect(matchToolCall("Scooter-env: Shell", { command: "echo hi" })).toMatchObject({ provider: "shell" });
+    expect(matchToolCall("Shell", {})?.body).toBe(""); // missing command → empty, not a crash
+    // goose titles the shell tool "run: <cmd>" — normalizeToolName strips at the
+    // colon (dropping "run"), so we must match the RAW name too. The command still
+    // comes from args (TOOL_CALL_ARGS), not the title. This exact case broke e2e.
+    expect(matchToolCall("run: echo zxcvbnm-marker", { command: "echo zxcvbnm-marker" })).toMatchObject({
+      provider: "shell", body: "echo zxcvbnm-marker",
+    });
+    // Even with NO name signal, a `command` arg alone marks it a shell/command tool.
+    expect(matchToolCall("Some Tool", { command: "ls" })).toMatchObject({ provider: "shell", body: "ls" });
   });
 
   it("tolerates missing/garbage args (empty body, not a crash)", () => {

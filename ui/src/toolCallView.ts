@@ -14,12 +14,16 @@
  */
 
 export type Provider = "slack" | "github" | "gitlab" | "jira";
+/** The visual "kind": a provider message card, or a shell/command card. */
+export type ToolKind = Provider | "shell";
 
 export interface ToolCallVisual {
-  provider: Provider;
-  /** What the agent posted, e.g. the Slack text / the comment body. "" if absent. */
+  /** The provider (slack/…) or "shell". `provider` name kept for back-compat with
+   *  the icon lookup — "shell" renders a terminal glyph instead. */
+  provider: ToolKind;
+  /** What the agent posted / the command it ran. "" if absent. */
   body: string;
-  /** A short human verb for the header, e.g. "replied in Slack". */
+  /** A short human verb for the header, e.g. "replied in Slack" / "ran a command". */
   action: string;
 }
 
@@ -69,11 +73,40 @@ export function matchToolCall(toolName: string, args: unknown): ToolCallVisual |
   const norm = normalizeToolName(toolName);
   const tool = BY_TOOL[norm] ? norm : BY_TITLE[toolName.trim().toLowerCase()];
   const meta = tool ? BY_TOOL[tool] : undefined;
-  if (!meta) return null;
+  if (meta) {
+    const raw = asRecord(args)[meta.argKey];
+    const body = typeof raw === "string" ? raw : "";
+    return { provider: meta.provider, body, action: meta.action };
+  }
+  // Shell/command tools: goose surfaces them as "Shell" (or "run: <cmd>"). Show the
+  // COMMAND (from args.command) on a compact card, so the shell's noisy result — a
+  // terminal-handle blob like [{terminalId,type:terminal}] with no stdout (the real
+  // output streams into the assistant reply) — doesn't render as a raw JSON dump.
+  const cmd = shellCommand(toolName, norm, args);
+  if (cmd !== null) return { provider: "shell", body: cmd, action: "ran a command" };
+  return null;
+}
+
+/** The command a shell/terminal tool ran, or null if this isn't one. Recognized by
+ *  EITHER a shell-ish name OR a `command`/`cmd` string arg (the strongest signal —
+ *  a command arg means it runs a command). We check the RAW name too because goose
+ *  titles its shell tool "run: <cmd>", and normalizeToolName strips at the colon
+ *  (which would drop the "run" marker). Returns the command string (or "" when the
+ *  tool is shell-ish but the arg is absent). */
+function shellCommand(rawName: string, norm: string, args: unknown): string | null {
   const a = asRecord(args);
-  const raw = a[meta.argKey];
-  const body = typeof raw === "string" ? raw : "";
-  return { provider: meta.provider, body, action: meta.action };
+  const cmd = a.command ?? a.cmd;
+  const hasCmdArg = typeof cmd === "string";
+  const raw = rawName.trim().toLowerCase();
+  const shellish =
+    norm === "shell" ||
+    norm.startsWith("run_") ||
+    norm.startsWith("execute") ||
+    raw === "shell" ||
+    raw.startsWith("run:") ||
+    raw.startsWith("run ");
+  if (!shellish && !hasCmdArg) return null;
+  return hasCmdArg ? (cmd as string) : "";
 }
 
 /**
