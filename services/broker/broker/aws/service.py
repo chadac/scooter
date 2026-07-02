@@ -87,6 +87,10 @@ class ServiceConfig:
     duration_high: int = 900       # 15m
     role_ttl_hours: int = 12
     broker_principal_arn: str = "" # the broker IRSA role ARN (dynamic-role trust)
+    # Which identity claim to authorize an approver by — must match how the FGA
+    # `approver` tuples are seeded (accounts.<a>.approvers, conventionally emails).
+    # The agent-host sends {id, email, name}; this picks one. "email" | "id" | "name".
+    approver_claim: str = "email"
 
 
 class RequestError(Exception):
@@ -222,6 +226,22 @@ class PermissionService:
             except Exception:
                 logger.exception("on_request notify failed for %s", request_id)
         return req
+
+    # --- approver identity -------------------------------------------------
+    def resolve_approver(self, approver, *, fallback: str) -> str:
+        """Turn the request body's `approver` into the string the FGA check +
+        approved_by record use. Accepts a full identity dict {id, email, name}
+        (the agent-host sends the answering user's identity) and picks the
+        configured claim (approver_claim: email|id|name); or a plain string
+        (legacy/dev), used as-is. Falls back to `fallback` (the SA-token
+        conversation id) when nothing usable is present."""
+        if isinstance(approver, dict):
+            claim = self._config.approver_claim or "email"
+            return approver.get(claim) or approver.get("id") or fallback
+        if isinstance(approver, str) and approver:
+            # Strip a legacy "user:" prefix if present.
+            return approver[len("user:"):] if approver.startswith("user:") else approver
+        return fallback
 
     # --- approve / deny (approver) ----------------------------------------
     async def _authorize_approver(self, approver: str, target_account: str) -> None:

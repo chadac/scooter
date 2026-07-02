@@ -164,10 +164,13 @@ class AwsPermissions(Transport):
             return _request_view(req)
 
         # --- approver (admin seam) -----------------------------------------
+        # The `approver` in the body may be a full identity dict {id, email, name}
+        # (the agent-host sends the answering user's identity) or a plain string
+        # (legacy / dev). The service resolves the configured claim (email/id/name).
         @router.post("/aws/{request_id}/approve")
         async def approve(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):
             _admin_or_403(identity)
-            approver = body.get("approver") or identity.conversation_id
+            approver = _svc().resolve_approver(body.get("approver"), fallback=identity.conversation_id)
             try:
                 req = await _svc().approve(request_id=request_id, approver=approver)
             except RequestError as e:
@@ -177,7 +180,7 @@ class AwsPermissions(Transport):
         @router.post("/aws/{request_id}/deny")
         async def deny(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):
             _admin_or_403(identity)
-            approver = body.get("approver") or identity.conversation_id
+            approver = _svc().resolve_approver(body.get("approver"), fallback=identity.conversation_id)
             try:
                 req = await _svc().deny(request_id=request_id, approver=approver, reason=body.get("reason"))
             except RequestError as e:

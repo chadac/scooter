@@ -129,6 +129,17 @@ in
         description = "IRSA role ARN annotated on the broker SA (eks.amazonaws.com/role-arn). Usually == brokerPrincipalArn.";
       };
       roleTtlHours = mkOption { type = types.int; default = 12; description = "Dynamic-role TTL (refresh window)."; };
+      approverClaim = mkOption {
+        type = types.enum [ "email" "id" "name" ];
+        default = "email";
+        description = ''
+          Which identity claim authorizes an approver — must match how the FGA
+          `approver` tuples are seeded (accounts.<a>.approvers, conventionally
+          emails). The agent-host sends the answering user's {id, email, name}; the
+          broker checks THIS claim. "email" (default) suits ALB-OIDC (where the id
+          is an opaque sub); use "id" for header-auth that already carries emails.
+        '';
+      };
       accounts = mkOption {
         type = types.attrsOf (types.attrsOf types.anything);
         default = { };
@@ -313,6 +324,7 @@ in
                   { name = "AWS_BROKER_PRINCIPAL_ARN"; value = bcfg.aws.brokerPrincipalArn; }
                   { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-broker/accounts.json"; }
                   { name = "AWS_ROLE_TTL_HOURS"; value = toString bcfg.aws.roleTtlHours; }
+                  { name = "AWS_APPROVER_CLAIM"; value = bcfg.aws.approverClaim; }
                   { name = "AWS_AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
                   # The agent-host SA may approve/deny (it relays the user's pick).
                   { name = "AWS_APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }

@@ -100,6 +100,7 @@ def aws() -> Provider:
         config=ServiceConfig(
             role_ttl_hours=settings.aws_role_ttl_hours,
             broker_principal_arn=settings.aws_broker_principal_arn,
+            approver_claim=settings.aws_approver_claim,
         ),
         on_request=_notify_host,
         authorizer=authorizer,
