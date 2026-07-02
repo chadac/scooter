@@ -179,6 +179,64 @@ describe("SessionManager", () => {
     }
   });
 
+  it("hydrate keeps a SUSPENDED Sandbox's real ref so revive RESUMES it (not create -> 409)", async () => {
+    // Bug: reconcile() reported a suspended Sandbox (replicas unset/0) as
+    // running:false, and hydrateEntry threw away its namespace (namespace: "").
+    // revive() then read the empty namespace as "never existed" and called
+    // create() -> 409 AlreadyExists against the still-present suspended CRD.
+    // A suspended Sandbox EXISTS on the cluster, so revive() must resume() it.
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const conv = await m1.start("delta");
+      const sandboxName = m1.get(conv.id)!.sandbox.name;
+
+      // Fresh "process": the Sandbox still EXISTS but is SUSPENDED (running:false).
+      const prov2 = fakeProvisioner();
+      prov2.reconcile = vi.fn(async () => [
+        { ref: { name: sandboxName, namespace: "ns" }, running: false },
+      ]);
+      const m2 = createSessionManager({ provisioner: prov2, store: createFileConversationStore(root) });
+      await m2.hydrate();
+
+      // Suspended, but its real ref (with namespace) is retained — not "".
+      expect(m2.get(conv.id)?.status).toBe("suspended");
+      expect(m2.get(conv.id)?.sandbox).toMatchObject({ name: sandboxName, namespace: "ns" });
+
+      // Reviving RESUMES the existing Sandbox; it must NOT create() a duplicate.
+      await m2.revive(conv.id);
+      expect(prov2.resume).toHaveBeenCalledOnce();
+      expect(prov2.create).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("hydrate marks a GONE Sandbox (absent from reconcile) suspended, and revive re-creates it", async () => {
+    // The other side of the fix: if a conversation's Sandbox is NOT on the
+    // cluster at all (GC'd / never resumed), revive() must create() from scratch.
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const conv = await m1.start("epsilon");
+
+      // Fresh "process": reconcile finds NO Sandbox for this conversation.
+      const prov2 = fakeProvisioner();
+      prov2.reconcile = vi.fn(async () => []);
+      const m2 = createSessionManager({ provisioner: prov2, store: createFileConversationStore(root) });
+      await m2.hydrate();
+
+      expect(m2.get(conv.id)?.status).toBe("suspended");
+      await m2.revive(conv.id);
+      expect(prov2.create).toHaveBeenCalledOnce();
+      expect(prov2.resume).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("prompting a hydrated-but-running conversation revives it (builds the bridge)", async () => {
     // Regression: hydrate() marks a still-running conversation 'running' (pod up)
     // but it has NO bridge in this process. prompt() must revive on !bridge — NOT

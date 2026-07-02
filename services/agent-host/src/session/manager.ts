@@ -283,7 +283,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     const entry: Entry = {
       id: m.id,
       threadId: m.threadId,
-      sandbox: onCluster?.running ? onCluster.ref : { name, namespace: "" },
+      // Keep the real ref (with namespace) for ANY Sandbox that EXISTS on the
+      // cluster — running OR suspended — so revive() resume()s it. Only when the
+      // Sandbox is absent from reconcile (onCluster undefined: GC'd / never made)
+      // do we use the empty-namespace placeholder that revive() reads as
+      // "create from scratch". (A suspended-but-present Sandbox resumed via
+      // create() 409s AlreadyExists — the bug this distinction fixes.)
+      sandbox: onCluster ? onCluster.ref : { name, namespace: "" },
       bridge: undefined,
       status: onCluster?.running ? "running" : "suspended",
       title: m.title,
@@ -405,7 +411,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
       wireEventLog(entry);
-      saveMeta(entry);
+      await saveMeta(entry); // await (like start/create) so a persist failure propagates, not an unhandled rejection
       await entry.bridge?.start();
       // Event-log replay to a reattaching UI is driven by the AG-UI server's
       // onAttach handler reading store.readEvents(id); nothing to do here.
