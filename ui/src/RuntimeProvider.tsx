@@ -191,6 +191,13 @@ function ConversationRuntime({
     let disposed = false;
     const push = () => {
       if (disposed) return;
+      // While REPLAYING a conversation's history (on open / switch / reconnect),
+      // don't reset the thread on every folded event — that visibly builds the
+      // history top-down and looks ugly for a long conversation. Skip until the
+      // stream's `synced` marker, which fires one final render with the whole
+      // history at once (landing at the latest message). Live events after that
+      // render per-event as usual.
+      if (agent.isReplaying()) return;
       runtime.thread.reset(fromAgUiMessages(agent.messages as unknown as unknown[]));
       // Interrupts ride the log too; surface them (or clear them) on every change.
       setInterrupts(agent.getPendingInterrupts());

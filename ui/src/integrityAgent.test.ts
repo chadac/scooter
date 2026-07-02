@@ -164,6 +164,35 @@ describe("IntegrityAgent", () => {
     });
   }
 
+  it("SUPPRESSES per-event renders during replay, then renders once at `synced`", async () => {
+    // A long conversation must not visibly build top-down on switch: while
+    // replaying (before the `synced` marker) isReplaying() is true and the pump
+    // suppresses renders; at `synced` it flips false and fires once with the whole
+    // history. Model on RuntimeProvider.push (which reads isReplaying()).
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(FRAMES) });
+    let replayingWhenNotified: boolean[] = [];
+    let effectiveRenders = 0; // renders the pump would actually apply (isReplaying()===false)
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsub(); stop(); resolve(); };
+      const { unsubscribe: unsub } = agent.subscribe({
+        onMessagesChanged: () => {
+          replayingWhenNotified.push(agent.isReplaying());
+          if (!agent.isReplaying()) effectiveRenders += 1;
+          clearTimeout(timer); timer = setTimeout(done, 150);
+        },
+      });
+      setTimeout(done, 1200);
+    });
+    // FRAMES has 13 events; without suppression the pump would apply ~13 renders.
+    // With it, the effective (non-replaying) renders collapse to ~1 (the synced one).
+    expect(effectiveRenders).toBeLessThanOrEqual(2);
+    expect(effectiveRenders).toBeGreaterThan(0); // the history DID render (once)
+    expect(agent.isReplaying()).toBe(false);     // replay finished
+    agent.dispose();
+  });
+
   it("an external (ext-) interrupt SURVIVES a concurrent goose run's RUN_STARTED/RUN_FINISHED", async () => {
     // The AWS-request bug: raiseInterrupt emits RUN_FINISHED(runId ext-aws1); the
     // still-live goose run then emits its own RUN_STARTED/RUN_FINISHED (no
