@@ -12,6 +12,12 @@ triggers:
 - gitlab_comment
 - comment on jira
 - jira_comment
+- query jira
+- jira issue
+- jql
+- transition jira
+- broker endpoint
+- broker api
 - web search
 - web_search
 - search the web
@@ -62,10 +68,47 @@ don't repeat.
   on a URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)
 
+## Beyond a comment: the broker proxy (Jira, GitHub, GitLab APIs)
+
+The `*_comment` tools only *comment on the triggering resource*. For any OTHER
+provider API work — query a Jira issue, run a JQL search, transition a ticket,
+read a PR's files, list MRs — go through the **broker proxy**, which is already
+configured in your sandbox. You do NOT need to find tokens, cloud ids, or base
+URLs; the broker injects them. Don't rediscover this each time — it's fixed:
+
+```
+$BROKER_URL/<provider>/<the provider's own API path>
+```
+authenticated with a Bearer token read from `$BROKER_TOKEN_PATH`. Both env vars
+are always set in your sandbox.
+
+**Jira** (Atlassian Cloud REST v2/v3 — the broker maps `/jira/*` onto your site's
+`/ex/jira/<cloud-id>/*`, so you just use the normal Jira REST paths):
+
+```bash
+TOKEN=$(cat "$BROKER_TOKEN_PATH")
+# Read an issue:
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BROKER_URL/jira/rest/api/2/issue/ENG-123"
+# JQL search:
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BROKER_URL/jira/rest/api/2/search?jql=project=ENG+AND+status=Open"
+# Transition an issue (POST):
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "$BROKER_URL/jira/rest/api/2/issue/ENG-123/transitions" \
+  -d '{"transition":{"id":"31"}}'
+```
+
+The same shape works for **`$BROKER_URL/github/...`** (paths under
+api.github.com) and **`$BROKER_URL/gitlab/...`** (paths under gitlab.com/api/v4).
+To *comment* on the resource this conversation came from, still prefer the
+`jira_comment` / `github_comment` / `gitlab_comment` tools — they infer the
+target for you. Use the raw broker proxy for everything else.
+
 ## When to still use the shell
 
 The shell is for **doing work in your sandbox** — running code, tests, git, build
 tools, reading/writing files in the workspace. Use it freely there. Just don't use
 it to *respond to people or reach external services* when a tool above already does
-that reliably. The raw broker endpoints still exist and return the same errors, but
-the tools are the reliable path — reach for them first.
+that reliably. For provider APIs beyond a comment, use the broker proxy shape
+above rather than hunting for credentials.
