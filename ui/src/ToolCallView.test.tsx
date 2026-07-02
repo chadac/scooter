@@ -29,7 +29,8 @@ describe("ToolCallView", () => {
   it("renders a Slack message card with the icon, body, and result", () => {
     const html = renderToStaticMarkup(
       createElement(ToolCallView, part({
-        toolName: "Respond in the Slack thread",
+        // The REAL form the stream carries (server-prefixed, title-cased).
+        toolName: "Scooter-env: Slack Respond",
         args: { text: "on it" },
         result: "posted to the thread",
       })),
