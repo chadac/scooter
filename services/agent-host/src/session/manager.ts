@@ -35,8 +35,13 @@ export interface ChecksummedEvent {
 
 /** Provisions / suspends / resumes the per-conversation Sandbox. */
 export interface SandboxProvisioner {
-  /** Cold-create a Sandbox: SA sandbox-{id}, workspace + conversation PVCs. */
-  create(conversationId: string): Promise<SandboxRef>;
+  /** Cold-create a Sandbox: SA sandbox-{id}, workspace + conversation PVCs.
+   *  `conversationId` is the SHORT, DNS-1123-safe id used for k8s resource NAMES.
+   *  `threadId` is the FULL conversation id the UI deep-links on (`?thread=<id>`) —
+   *  used to build the sandbox's CONVERSATION_URL so the agent shares a link that
+   *  actually resolves to THIS conversation (not the short hash). Defaults to
+   *  `conversationId` when omitted (local/legacy). */
+  create(conversationId: string, threadId?: string): Promise<SandboxRef>;
   /** operatingMode: Suspended (drops Pod, keeps PVCs + Sandbox object). */
   suspend(ref: SandboxRef): Promise<void>;
   /** operatingMode: Running (recreates Pod, re-mounts PVCs, same SA). */
@@ -412,7 +417,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
       // short DNS-safe hash of it.
       const id: SessionId = threadId;
-      const sandbox = await provisioner.create(shortId(threadId));
+      // Short hash → k8s resource names; full threadId → the shareable
+      // CONVERSATION_URL (?thread=<id>), so the agent's link resolves to THIS
+      // conversation instead of the short hash.
+      const sandbox = await provisioner.create(shortId(threadId), threadId);
       const bridge = bridgeFactory?.({ conversationId: id, sandbox, model });
       const entry: Entry = {
         id, threadId, sandbox, bridge, status: "running",
@@ -440,7 +448,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // sandbox rather than resume a ref this process never owned.
       entry.sandbox = entry.sandbox.namespace
         ? await provisioner.resume(entry.sandbox)
-        : await provisioner.create(shortId(entry.threadId));
+        : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
       wireEventLog(entry);

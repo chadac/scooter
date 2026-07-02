@@ -54,6 +54,13 @@ describe("SessionManager", () => {
     const conv = await sessions.start("thread-1");
 
     expect(provisioner.create).toHaveBeenCalledOnce();
+    // create(shortDnsSafeId, FULL threadId): the 1st arg names k8s resources (a
+    // short hash), the 2nd is the full conversation id the shareable
+    // CONVERSATION_URL (?thread=<id>) must use — else the agent's link resolves to
+    // the wrong conversation and permission prompts land in the wrong place.
+    const [nameId, urlThread] = (provisioner.create as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(urlThread).toBe("thread-1");
+    expect(nameId).not.toBe("thread-1"); // the NAME id is the short hash, not the full id
     expect(conv.status).toBe("running");
     expect(conv.sandbox.name).toMatch(/^conv-/);
   });
