@@ -20,7 +20,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createRouter, type Router } from "../http/router.js";
+import { createRouter, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import type { AguiServer } from "../agui/server.js";
@@ -63,12 +63,15 @@ export interface ManagementDeps {
    *  modify_environment tool). It writes the response itself (the MCP transport
    *  streams), so it takes req/res directly. Optional (self-modify off). */
   mcpHandler?: (req: IncomingMessage, res: ServerResponse, body: unknown) => Promise<void>;
+  /** How to resolve the caller's identity per request (provider-agnostic; may be
+   *  store-enriched). Defaults to the env-configured resolver (header/alb-oidc). */
+  resolveUser?: ResolveUser;
 }
 
 export function createManagementApi(deps: ManagementDeps): Router {
   const { sessions, store, server } = deps;
   const models = deps.models ?? { available: [] };
-  const r = createRouter();
+  const r = createRouter(deps.resolveUser);
 
   // The agent-self-modify MCP endpoint (goose calls modify_environment here). The
   // MCP StreamableHTTP transport owns the response, so this handler reads the body

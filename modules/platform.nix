@@ -192,17 +192,36 @@ in
       # login itself. A missing header => the `anonymous` user (single-user/dev).
       # SECURITY: only expose the agent-host behind an ingress that SETS (and
       # strips any client-supplied) these headers — else identity is spoofable.
+      # Provider-agnostic: the "header" mode reads userHeader/emailHeader (Traefik,
+      # basic-auth, forward-auth, oauth2-proxy, …); "alb-oidc" reads AWS ALB's
+      # OIDC headers (sub from x-amzn-oidc-identity, email/name from the signed
+      # x-amzn-oidc-data JWT). More providers can be added without config churn.
+      mode = mkOption {
+        type = types.enum [ "header" "alb-oidc" ];
+        default = "header";
+        description = "Identity source: `header` (default; a proxy sets userHeader/emailHeader) or `alb-oidc` (AWS ALB OIDC).";
+      };
       userHeader = mkOption {
         type = types.str;
         default = "x-auth-user";
         example = "x-forwarded-user";
-        description = "Request header carrying the authenticated user id (set by the ingress).";
+        description = "header mode: request header carrying the authenticated user id (set by the ingress).";
       };
       emailHeader = mkOption {
         type = types.str;
         default = "x-auth-email";
         example = "x-forwarded-email";
-        description = "Request header carrying the user's email (optional; set by the ingress).";
+        description = "header mode: request header carrying the user's email (optional; set by the ingress).";
+      };
+      # ALB with OIDC only puts the `sub` in a header; the email is inside the
+      # signed x-amzn-oidc-data JWT. When available it's learned into a shared
+      # Postgres table (user_identity) so it can be filled in later; this static
+      # map seeds/overrides it for known users (sub -> email). Optional.
+      subEmailMap = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = { "cognito-sub-abc" = "alice@example.com"; };
+        description = "Optional static map of user id (OIDC sub) -> email, seeding the learned identity store.";
       };
     };
 
@@ -437,11 +456,18 @@ in
                   # to its own conversation (the agent can share the link, e.g. to
                   # have a human approve an AWS request).
                   { name = "PUBLIC_URL"; value = "https://${cfg.ingress.host}"; }
+                ++ lib.optional (cfg.auth.mode != "header")
+                  # Identity provider: header (default) or alb-oidc.
+                  { name = "AUTH_MODE"; value = cfg.auth.mode; }
                 ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
                   # Identity header the ingress injects (default x-auth-user).
                   { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
                 ++ lib.optional (cfg.auth.emailHeader != "x-auth-email")
                   { name = "AUTH_EMAIL_HEADER"; value = cfg.auth.emailHeader; }
+                ++ lib.optional (cfg.auth.subEmailMap != { })
+                  # Static sub->email seed for the learned identity store ("k=v,k=v").
+                  { name = "AUTH_SUB_EMAIL_MAP";
+                    value = lib.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.auth.subEmailMap); }
                 ++ lib.optionals (!cfg.fakeAgent) [
                   # Real `goose acp` on Bedrock (or another provider). The agent
                   # process inherits the pod's IRSA identity via the AWS SDK
