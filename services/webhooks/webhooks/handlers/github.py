@@ -279,21 +279,13 @@ async def _background_create_conversation(
     conv_title: str, owner: str, repo_name: str,
     issue_number: int,
 ) -> None:
-    try:
-        result = await create_conversation(message, repository=repo, git_provider="github", title=conv_title)
-        if not result:
-            await _clear_pending(res_type, res_id)
-            await post_github_comment(
-                owner=owner, repo=repo_name, issue_number=issue_number,
-                body="Scooter couldn't start on this one — failed to create the conversation.",
-            )
-            return
-
-        conv_id = result.get("conversation_id", "")
+    # Register the mapping + link AND post the "on it — follow along" comment
+    # BEFORE the agent runs. create_conversation blocks until the whole turn
+    # finishes, so doing this after it returned delayed the link comment by the
+    # entire run (the 5-10min lag). Everything here needs only conv_id (known in
+    # the hook), so fire it pre-run.
+    async def _register(conv_id: str) -> None:
         await db.store_conversation("github", res_type, res_id, conv_id)
-        conv_link = conversation_url(conv_id)
-
-        # Surface the originating PR/issue in the UI's linked-resources panel.
         gh_kind = "pull" if res_type == "pull_request" else "issues"
         await push_link(
             conv_id, source="github", resource_type=res_type,
@@ -301,6 +293,25 @@ async def _background_create_conversation(
             title=f"{owner}/{repo_name} #{issue_number}",
             ref={"owner": owner, "repo": repo_name, "number": issue_number},
         )
+        await post_github_comment(
+            owner=owner, repo=repo_name, issue_number=issue_number,
+            body=f"Scooter is on it — follow along: [View conversation]({conversation_url(conv_id)})",
+        )
+
+    try:
+        result = await create_conversation(
+            message, repository=repo, git_provider="github", title=conv_title, on_created=_register,
+        )
+        if not result:
+            await _clear_pending(res_type, res_id)
+            # The optimistic "on it" comment already posted in _register; correct it.
+            await post_github_comment(
+                owner=owner, repo=repo_name, issue_number=issue_number,
+                body="…actually, Scooter couldn't start on this one — failed to create the conversation.",
+            )
+            return
+
+        conv_id = result.get("conversation_id", "")
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("github", res_type, res_id)
@@ -308,11 +319,6 @@ async def _background_create_conversation(
             ok = await send_message(conv_id, msg)
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
-
-        await post_github_comment(
-            owner=owner, repo=repo_name, issue_number=issue_number,
-            body=f"Scooter is on it — follow along: [View conversation]({conv_link})",
-        )
     except Exception:
         await _clear_pending(res_type, res_id)
         logger.exception("Error in background conversation creation for %s", res_id)

@@ -349,20 +349,29 @@ async def _background_create_conversation(
             title=f"{channel} thread",
             ref={"channel": channel, "threadTs": thread_ts},
         )
+        # Post the "on it — follow along" link NOW, pre-run. create_conversation
+        # blocks until the whole agent turn finishes, so posting the link after it
+        # returned delayed it by the entire run (the 5-10min lag). The link only
+        # needs conv_id (known here), so post it immediately.
+        await post_slack_message(
+            channel=channel,
+            text=f"Scooter is on it — follow along: <{conversation_url(conv_id)}|View conversation>",
+            thread_ts=thread_ts,
+        )
 
     try:
         result = await create_conversation(message, title=conv_title, on_created=_register)
         if not result:
             await _clear_pending(res_id)
+            # The optimistic "on it" ack already posted in _register; correct it.
             await post_slack_message(
                 channel=channel,
-                text="Scooter couldn't start on this one — failed to create the conversation.",
+                text="…actually, Scooter couldn't start on this one — failed to create the conversation.",
                 thread_ts=thread_ts,
             )
             return
 
         conv_id = result.get("conversation_id", "")
-        conv_link = conversation_url(conv_id)
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("slack", "thread", res_id)
@@ -370,12 +379,6 @@ async def _background_create_conversation(
             ok = await send_message(conv_id, msg)
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
-
-        await post_slack_message(
-            channel=channel,
-            text=f"Scooter is on it — follow along: <{conv_link}|View conversation>",
-            thread_ts=thread_ts,
-        )
     except Exception:
         await _clear_pending(res_id)
         logger.exception("Error in background conversation creation for Slack %s", res_id)
