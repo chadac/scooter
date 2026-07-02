@@ -175,29 +175,12 @@ class PermissionService:
             summary = policy.summarize_policy(policy_document)
 
         request_id = uuid.uuid4().hex[:12]
-        # Eagerly create the inline policy so policy errors surface before approval.
-        # An IAM/STS failure here (base role missing, ExternalId/trust mismatch, the
-        # broker IRSA lacking sts:AssumeRole — i.e. the per-account IAM isn't set up
-        # yet) must surface as a CLEAR RequestError to the agent, not an opaque 500.
-        policy_arn = None
-        if policy_document is not None:
-            try:
-                policy_arn = self._iam.create_dynamic_policy(
-                    target_account=target_account, request_id=request_id, policy_document=policy_document
-                )
-            except Exception as exc:
-                logger.exception("create_dynamic_policy failed for %s (%s)", target_account, request_id)
-                raise RequestError(_aws_error_reasons(
-                    exc,
-                    context=(
-                        f"AWS access could not be provisioned for account '{target_account}'. "
-                        "This usually means the account's broker IAM isn't set up yet "
-                        "(the agent-token-broker-base role + permission boundary in that "
-                        "account, and the broker IRSA's sts:AssumeRole into it with the "
-                        "matching ExternalId)."
-                    ),
-                )) from exc
-
+        # NOTE: IAM provisioning (create the inline policy + role) is DEFERRED to
+        # approval (_provision), NOT done eagerly here. So the request is always
+        # stored PENDING and the human/agent SEES it, even when the account's broker
+        # IAM isn't set up yet — the provisioning error then surfaces on approve
+        # (and is fed back to the agent) instead of failing the request before it
+        # ever appears in the conversation.
         req = PermissionRequest(
             request_id=request_id,
             conversation_id=conversation_id,
@@ -211,7 +194,7 @@ class PermissionService:
             conversation_url=conversation_url,
             parent_request_id=parent_request_id,
             requested_at=_now(),
-            iam_policy_arn=policy_arn,
+            iam_policy_arn=None,
         )
         await self._store.insert(req)
 
@@ -251,28 +234,52 @@ class PermissionService:
             raise RequestError([f"'{approver}' is not authorized to approve account '{target_account}'"])
 
     async def _provision(self, req: PermissionRequest, approver: str) -> PermissionRequest:
-        """Provision the dynamic role + creds for an approved request and mark it
-        ACTIVE. Shared by human approve() and read-only auto-approval — `approver`
-        is the recorded approved_by (a real user, or a synthetic system principal)."""
+        """Provision the inline policy + dynamic role + creds for an approved request
+        and mark it ACTIVE. Shared by human approve() and read-only auto-approval —
+        `approver` is the recorded approved_by (a real user, or a synthetic system
+        principal). IAM provisioning (previously eager at request time) happens HERE,
+        so a provisioning failure surfaces on approval as a VERBOSE, actionable error
+        (fed back to the agent) instead of blocking the request from ever appearing."""
         approved_at = _now()
         role_expires_at = (
             datetime.now(timezone.utc) + timedelta(hours=self._config.role_ttl_hours)
         ).isoformat()
         duration = self._duration_for(req.risk_level)
+
+        # 1. Create the inline policy (deferred from request time).
+        policy_arn = req.iam_policy_arn
         try:
+            if policy_arn is None and req.policy_document is not None:
+                policy_arn = self._iam.create_dynamic_policy(
+                    target_account=req.target_account,
+                    request_id=req.request_id,
+                    policy_document=req.policy_document,
+                )
+                await self._store.update(req.request_id, iam_policy_arn=policy_arn)
+            # 2. Create the dynamic role + mint creds.
             role_arn, creds = self._iam.create_dynamic_role(
                 target_account=req.target_account,
                 request_id=req.request_id,
-                policy_arn=req.iam_policy_arn,
+                policy_arn=policy_arn,
                 managed_policy_arns=req.managed_policy_arns,
                 duration_seconds=duration,
             )
-        except Exception as exc:  # provisioning failed -> error state
+        except Exception as exc:  # provisioning failed -> error state, VERBOSE reason
+            reasons = _aws_error_reasons(
+                exc,
+                context=(
+                    f"AWS access could not be provisioned for account '{req.target_account}'. "
+                    "This usually means the account's broker IAM isn't set up yet: create the "
+                    "`agent-token-broker-base` role + the `agent-broker-permission-boundary` "
+                    "policy in that account, and grant the broker IRSA `sts:AssumeRole` into "
+                    "the base role with the matching ExternalId. See docs/AWS_PERMISSIONS_BROKER.md."
+                ),
+            )
             await self._store.update(
                 req.request_id, status=RequestStatus.ERROR, approved_at=approved_at,
-                approved_by=approver, deny_reason=f"provisioning failed: {exc}",
+                approved_by=approver, deny_reason=" | ".join(reasons),
             )
-            raise RequestError([f"IAM provisioning failed: {exc}"]) from exc
+            raise RequestError(reasons) from exc
 
         self._creds[req.request_id] = creds
         await self._store.update(

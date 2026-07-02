@@ -123,7 +123,9 @@ async def test_request_creates_pending(tmp_path):
     assert req.status == RequestStatus.PENDING
     assert req.request_id
     assert req.conversation_id == "c1"
-    assert req.iam_policy_arn  # inline policy created eagerly
+    # IAM provisioning is DEFERRED to approval now, so no policy ARN yet — the
+    # request always lands PENDING (and shows in the UI) regardless of IAM setup.
+    assert req.iam_policy_arn is None
 
 
 async def test_readonly_request_auto_approves_when_account_opts_in(tmp_path):
@@ -164,20 +166,36 @@ async def test_readonly_request_without_optin_stays_pending(tmp_path):
     assert req.status == RequestStatus.PENDING
 
 
-async def test_iam_provisioning_failure_is_a_verbose_request_error_not_500(tmp_path):
-    # The user's bug: every inline --policy request 500'd because the account's
-    # broker IAM wasn't set up (STS AssumeRole denied on the eager create_policy).
-    # It must become a RequestError (→ 400 with reasons) carrying the FULL AWS
-    # detail — code, message, operation, HTTP status, request id — nothing hidden.
+async def test_request_appears_pending_even_when_iam_is_unprovisioned(tmp_path):
+    # Notify-first: the request must land PENDING (and notify) even when the
+    # account's broker IAM isn't set up — provisioning is deferred to approve, so
+    # the request appears in the conversation instead of failing before it shows.
+    notified = []
     svc = await make_service(tmp_path, iam=PolicyFailingIam())
+    svc._on_request = lambda req: notified.append(req)  # type: ignore[assignment]
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    assert req.status == RequestStatus.PENDING
+    assert req.iam_policy_arn is None
+    assert len(notified) == 1  # the UI WAS notified (the interrupt will show)
+
+
+async def test_iam_provisioning_failure_at_APPROVE_is_a_verbose_error(tmp_path):
+    # When IAM isn't set up, the failure now surfaces on APPROVE with the FULL AWS
+    # detail (code, message, operation, HTTP status, request id) + the actionable
+    # "broker isn't set up" guidance — fed back to the agent so it can help fix it.
+    svc = await make_service(tmp_path, iam=PolicyFailingIam())
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
     with pytest.raises(RequestError) as ei:
-        await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+        await svc.approve(request_id=req.request_id, approver="admin@x.io")
     blob = " | ".join(ei.value.reasons)
     assert "AccessDenied" in blob
     assert "sts:AssumeRole" in blob
     assert "AssumeRole" in blob            # the failing operation
     assert "403" in blob and "req-123" in blob  # HTTP status + request id
     assert "isn't set up yet" in blob      # the actionable diagnosis
+    # The request is left in ERROR (not silently pending) with the detail recorded.
+    got = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got[0] is not None and got[0].status == RequestStatus.ERROR
 
 
 async def test_request_rejects_blocked_action(tmp_path):
