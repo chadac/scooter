@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 /**
@@ -24,6 +26,11 @@ export default defineConfig({
         },
       },
       {
+        // Match ui/vite.config.ts's "@" -> ui/ alias so tests can import the
+        // assistant-ui components (e.g. @/components/assistant-ui/...) the app uses.
+        resolve: {
+          alias: { "@": fileURLToPath(new URL("./ui/", import.meta.url)) },
+        },
         test: {
           name: "ui",
           include: ["ui/src/**/*.{test,spec}.{ts,tsx}"],

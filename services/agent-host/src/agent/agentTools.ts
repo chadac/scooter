@@ -426,6 +426,11 @@ function isBlockedIp(ip: string): boolean {
 // --- Registration --------------------------------------------------------------
 
 /** Register the five agent-tools on an McpServer bound to one conversation. */
+// NOTE: the `title` strings below are load-bearing for the UI. goose surfaces the
+// ACP tool `title` as the tool name in the AG-UI stream, and ui/src/toolCallView.ts
+// matches these EXACT strings to render slack/github/gitlab/jira tool calls as
+// provider message cards. If you rename a title, update that matcher (a guard test
+// in agentTools.spec.ts asserts these titles so a rename fails CI, not silently).
 export function registerAgentTools(
   server: McpServer,
   deps: AgentToolsDeps,
