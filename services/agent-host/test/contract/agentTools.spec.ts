@@ -14,6 +14,7 @@ import { describe, it, expect, vi } from "vitest";
 
 import {
   handleSlackRespond,
+  handleSlackReact,
   handleJiraComment,
   handleGithubComment,
   handleGitlabComment,
@@ -125,6 +126,36 @@ describe("agent-tools: inferred defaults", () => {
     const out = await handleSlackRespond({ broker }, ctx, { text: "hi" });
     expect(out.isError).toBeFalsy();
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][3]).toMatchObject({ channel: "C777", thread_ts: "1700.9" });
+  });
+
+  it("slack_react reacts to the inferred thread message, stripping colons from the emoji", async () => {
+    const broker = fakeBroker({ status: 200, raw: '{"ok":true}', data: { ok: true } });
+    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: ":eyes:" });
+    expect(out.isError).toBeFalsy();
+    const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[2]).toContain("/slack/reactions.add");
+    // channel + the thread anchor ts as the target message; name WITHOUT colons.
+    expect(call[3]).toMatchObject({ channel: "C123", timestamp: "1700.5", name: "eyes" });
+  });
+
+  it("slack_react FALLS BACK to the webhooks conversation_map when the link has no ref", async () => {
+    const refless: ConversationLink = { source: "slack", resourceType: "thread", title: "#eng thread" };
+    const broker = fakeBroker({ status: 200, raw: '{"ok":true}', data: { ok: true } });
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [refless],
+      resourceLookup: async () => ({ source: "slack", resourceType: "thread", resourceId: "C999:1699.42", slackChannel: "C999", slackTs: "1699.42" }),
+    };
+    const out = await handleSlackReact({ broker }, ctx, { emoji: "tada" });
+    expect(out.isError).toBeFalsy();
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][3]).toMatchObject({ channel: "C999", timestamp: "1699.42", name: "tada" });
+  });
+
+  it("slack_react errors clearly (not a guess) when neither ref nor DB has the target", async () => {
+    const broker = fakeBroker({ status: 200, raw: "{}", data: {} });
+    const out = await handleSlackReact({ broker }, ctxWith([]), { emoji: "eyes" });
+    expect(out.isError).toBe(true);
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
   it("jira_comment posts to the inferred issue via the v2 comment endpoint", async () => {
@@ -260,6 +291,7 @@ describe("agent-tools: registered titles (the UI's provider-card renderer keys o
       ctxWith([]),
     );
     expect(titles.get("slack_respond")).toBe("Respond in the Slack thread");
+    expect(titles.get("slack_react")).toBe("React to the Slack message");
     expect(titles.get("github_comment")).toBe("Comment on the GitHub PR/issue");
     expect(titles.get("gitlab_comment")).toBe("Comment on the GitLab MR");
     expect(titles.get("jira_comment")).toBe("Comment on the Jira issue");
