@@ -517,6 +517,19 @@ export async function main(
   // eslint-disable-next-line no-console
   console.log(`[agent-host] listening on :${config.port}`);
 
+  // Resume conversations interrupted by THIS restart (a run that started but never
+  // finished): revive + nudge them to continue. Fire-and-forget AFTER listen(), so
+  // the server is up to serve the resumed runs' events and boot isn't blocked. Not
+  // in fake mode (no real sandboxes/goose to revive).
+  if (!config.fakeSandbox) {
+    void sessions
+      .resumeInterrupted()
+      .then((ids) => {
+        if (ids.length) console.log(`[agent-host] resumed ${ids.length} interrupted conversation(s)`);
+      })
+      .catch((err) => console.error("[agent-host] resumeInterrupted failed:", err));
+  }
+
   // Idle-suspend sweep — kube-native-friendly: the agent-host owns the activity
   // signal, so it suspends idle conversations itself (drops the pod, keeps the
   // PVCs). Activity metadata is exposed via the API + persisted so an external

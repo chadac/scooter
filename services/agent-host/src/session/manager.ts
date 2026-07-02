@@ -13,6 +13,16 @@
 
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { SessionBridge, AguiEvent } from "../bridge.js";
+import { hasDanglingRun } from "./danglingRun.js";
+
+/** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
+ *  Not the user's literal prompt (which would re-do work / double-post): a nudge
+ *  to continue, leaning on the bridge's history reinjection for context. */
+const RESUME_NUDGE =
+  "[System: this conversation was interrupted by a restart while you were working. " +
+  "Continue where you left off — do NOT restart the task, re-introduce yourself, or " +
+  "repeat a message/comment you already posted. If you had already finished, a brief " +
+  "status is fine.]";
 
 /** An event plus the rolling integrity checksum through it. `prevChecksum` is
  *  the chain value before this event (so a client links each event to the one
@@ -191,6 +201,16 @@ export interface SessionManager {
    *  Persisted-but-not-live conversations come back as "suspended". */
   hydrate(): Promise<void>;
   /**
+   * Resume conversations INTERRUPTED by an agent-host restart: a run that started
+   * but never finished (the process died mid-run). For each, revive the bridge
+   * (spawns goose, reinjects history) and send a synthetic "continue where you
+   * left off" nudge — so the work resumes on its own without re-running the user's
+   * literal prompt. Call after hydrate() on boot. Bounded concurrency so a cold
+   * start with many interrupted conversations doesn't thundering-herd. Returns the
+   * ids resumed. Best-effort: a per-conversation failure is logged, not fatal.
+   */
+  resumeInterrupted(opts?: { concurrency?: number }): Promise<SessionId[]>;
+  /**
    * Suspend conversations that have been idle (no prompt/event) longer than
    * idleMs. Native-friendly: the agent-host owns the activity signal, so it
    * does this itself; the activity metadata is exposed so an external
@@ -236,6 +256,14 @@ interface Entry {
   lastActivityAt: number;
   model?: string;
   owner?: string;
+}
+
+/** Drain an async iterable of events into an array (fallback for stores without
+ *  readEventsTail — in-memory test stores, whose logs are tiny). */
+async function collectEvents(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]> {
+  const out: AguiEvent[] = [];
+  for await (const e of it) out.push(e);
+  return out;
 }
 
 /** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
@@ -536,6 +564,49 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         const name = `conv-${shortId(m.threadId)}`;
         hydrateEntry(m, live.get(name));
       }
+    },
+
+    async resumeInterrupted(opts) {
+      const concurrency = Math.max(1, opts?.concurrency ?? 3);
+      // Find hydrated conversations whose LAST run is dangling (started, never
+      // finished) — the tail is enough to decide, so read only that.
+      const candidates: SessionId[] = [];
+      for (const entry of entries.values()) {
+        if (entry.status === "ended") continue;
+        try {
+          // Read the log to check if its last run dangles. A one-time boot scan;
+          // hasDanglingRun only needs the tail, but reading the whole log here is
+          // fine (bounded per conversation, once).
+          const events = await collectEvents(store.readEvents(entry.id));
+          if (hasDanglingRun(events)) candidates.push(entry.id);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(`[manager] resumeInterrupted: reading ${entry.id}'s log failed (skipping):`, err);
+        }
+      }
+      if (candidates.length === 0) return [];
+      // eslint-disable-next-line no-console
+      console.log(`[manager] resuming ${candidates.length} interrupted conversation(s) after restart`);
+
+      // Bounded concurrency: revive + nudge each. A cold start could have many, so
+      // don't spawn every goose at once. prompt() revives if there's no bridge.
+      const resumed: SessionId[] = [];
+      const queue = [...candidates];
+      const worker = async () => {
+        for (;;) {
+          const id = queue.shift();
+          if (!id) return;
+          try {
+            await this.prompt(id, RESUME_NUDGE);
+            resumed.push(id);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(`[manager] resumeInterrupted: resuming ${id} failed:`, err);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+      return resumed;
     },
 
     async sweepIdle(idleMs, now = nowMs()) {

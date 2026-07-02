@@ -407,6 +407,11 @@ async def _background_create_conversation(
             )
             return
 
+        if result.get("interrupted"):
+            # Run cut short by an agent-host restart; the conversation exists and is
+            # resumed on boot. Don't post a failure and don't flush pending here.
+            return
+
         conv_id = result.get("conversation_id", "")
 
         # Flush pending messages
