@@ -54,6 +54,17 @@ maybe("agent self-modify live switch works in a real container", () => {
       .apply({ apiVersion: "v1", kind: "Namespace", metadata: { name: NS } })
       .catch(() => {});
 
+    // Idempotent boot: on a reused cluster a prior run's pod may linger (a crashed
+    // run skips afterAll). A Pod's immutable spec means apply() can't update it, so
+    // delete any leftover and wait until it's actually gone before recreating —
+    // otherwise beforeAll 409s ("already exists") and the whole suite skips.
+    await cluster.deletePod(POD, NS).catch(() => {});
+    for (let i = 0; i < 60; i++) {
+      const gone = await cluster.get("Pod", POD, NS).then(() => false).catch(() => true);
+      if (gone) break;
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+
     await cluster.apply({
       apiVersion: "v1",
       kind: "Pod",
