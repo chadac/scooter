@@ -6,6 +6,9 @@ triggers:
 - respond in slack
 - reply in slack
 - slack_respond
+- react in slack
+- slack_react
+- emoji reaction
 - comment on the PR
 - comment on the MR
 - github_comment
@@ -48,6 +51,10 @@ the target is **already known** — you only supply the message body:
 
 - **`slack_respond(text)`** — post to the current Slack thread. (Optional
   `thread_ts` to override; you almost never need it.)
+- **`slack_react(emoji)`** — add an emoji reaction to the triggering Slack
+  message (`emoji` is the name WITHOUT colons, e.g. `"eyes"`, `"white_check_mark"`,
+  `"tada"`). A quick 👀 to acknowledge or a ✅ when done — cheaper than a reply.
+  Don't spam it.
 - **`github_comment(body)`** — comment on the PR/issue this conversation came from.
   (Optional `in_reply_to` — a review-comment id — to reply inside a PR review
   thread.)
