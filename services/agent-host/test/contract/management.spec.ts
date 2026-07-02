@@ -263,6 +263,25 @@ describe("management API", () => {
     expect((json as any).events).toHaveLength(2);
   });
 
+  it("GET /conversations/:id/tail?runs=N windows the log to the last N runs", async () => {
+    const mkRun = (n: number): AguiEvent[] => [
+      { type: "RUN_STARTED", threadId: "c1", runId: `r${n}` },
+      { type: "TEXT_MESSAGE_START", messageId: `m${n}`, role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: `m${n}`, delta: `t${n}` },
+      { type: "TEXT_MESSAGE_END", messageId: `m${n}` },
+      { type: "RUN_FINISHED", threadId: "c1", runId: `r${n}` },
+    ];
+    const events = [...mkRun(1), ...mkRun(2), ...mkRun(3)];
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerPermission: async () => {} });
+    const { json } = await call(api, "GET", "/conversations/c1/tail?runs=1");
+    const body = json as any;
+    expect(body.windowed).toBe(true);
+    expect(body.total).toBe(15);
+    // Only the last run's events, starting at its RUN_STARTED.
+    expect(body.events[0]).toMatchObject({ type: "RUN_STARTED", runId: "r3" });
+    expect(body.events.filter((e: any) => e.type === "RUN_STARTED")).toHaveLength(1);
+  });
+
   it("POST /conversations stamps the caller (x-auth-user) as the owner", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });

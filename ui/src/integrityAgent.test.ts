@@ -34,10 +34,18 @@ const FRAMES = [
   { kind: "synced" },
 ];
 
-/** A fetch stub that serves the scripted frames as an SSE ReadableStream. */
-function sseFetch(frames: unknown[]): typeof fetch {
+/** A fetch stub: the SSE ReadableStream for the integrity stream, and an empty
+ *  JSON tail for the /tail fast-first-paint fetch (so seedTail no-ops in tests
+ *  that only script the stream). Pass `tailEvents` to exercise the tail seed. */
+function sseFetch(frames: unknown[], tailEvents: unknown[] = []): typeof fetch {
   const body = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
-  return vi.fn(async () => {
+  return vi.fn(async (url: string) => {
+    if (typeof url === "string" && url.includes("/tail")) {
+      return new Response(JSON.stringify({ events: tailEvents }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(body));
@@ -108,7 +116,11 @@ describe("IntegrityAgent", () => {
     expect(withTool[0].toolCalls![0].function.arguments).toBe('{"cmd":"ls"}');
     // Exactly one assistant-with-toolcall and one tool-result message (not two each).
     expect(agMsgs.filter((m) => m.id === "t1" && m.role === "assistant").length).toBe(1);
-    expect((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls.length, "one fetch per fold").toBe(1);
+    // Exactly ONE integrity-stream fetch drove this replay (the /tail seed is a
+    // separate fetch and doesn't re-fold the stream).
+    const streamFetches = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => String(c[0]).includes("events.integrity"));
+    expect(streamFetches.length, "one stream fetch per fold").toBe(1);
 
     // And it must survive the conversion the pump feeds the thread.
     const threadMsgs = fromAgUiMessages(agent.messages as never);
@@ -163,6 +175,38 @@ describe("IntegrityAgent", () => {
       setTimeout(done, 1200);
     });
   }
+
+  it("SEEDS the recent tail (fast first paint) before the full replay", async () => {
+    // The /tail fetch returns a couple of runs; the pump folds them + paints them
+    // immediately, then the (empty, in this test) stream re-folds. We assert the
+    // tail messages showed up — i.e. first paint didn't wait for the stream.
+    const tail = [
+      { type: "TEXT_MESSAGE_START", messageId: "tm1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "tm1", delta: "recent context" },
+      { type: "TEXT_MESSAGE_END", messageId: "tm1" },
+    ];
+    // Stream serves only a synced marker (no events) so it can't be the source of
+    // the message — only the tail seed can.
+    const fetchSpy = vi.fn(sseFetch([{ kind: "synced" }], tail)) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+    let sawTail = false;
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsub(); stop(); resolve(); };
+      const { unsubscribe: unsub } = agent.subscribe({
+        onMessagesChanged: () => {
+          if (JSON.stringify(agent.messages).includes("recent context")) sawTail = true;
+          clearTimeout(timer); timer = setTimeout(done, 150);
+        },
+      });
+      setTimeout(done, 1200);
+    });
+    expect(sawTail).toBe(true); // the tail painted (a /tail fetch happened)
+    expect((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).includes("/tail"))).toBe(true);
+    agent.dispose();
+  });
 
   it("SUPPRESSES per-event renders during replay, then renders once at `synced`", async () => {
     // A long conversation must not visibly build top-down on switch: while
