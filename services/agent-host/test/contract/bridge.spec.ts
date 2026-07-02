@@ -30,6 +30,43 @@ const collectPersist = (bridge: ReturnType<typeof createSessionBridge>) => {
 };
 
 describe("ACP -> AG-UI bridge", () => {
+  it("mints UNIQUE run/message ids across separate bridge instances (a restart must not reuse run-1/msg-1)", async () => {
+    // The bug: module-global counters (run-1, msg-1, …) reset to 0 on every
+    // agent-host restart, so a revived conversation re-minted ids that COLLIDED
+    // with ones already in its log — the UI folds by messageId + keys runs by
+    // runId, so unrelated turns merged (doubled args, scrambled runs, history that
+    // won't render while a live run is going). IDs must be unique across instances.
+    const idsFrom = async (): Promise<string[]> => {
+      const agent = createFakeAcpAgent();
+      agent.setScript([
+        { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } } },
+        { finish: { stopReason: "end_turn" } },
+      ]);
+      const exec = createSandboxExecBackend(createFakeSandboxApi());
+      const bridge = createSessionBridge({
+        config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+        exec,
+        acpClient: acpClientFromTransport(agent.transport, exec),
+      });
+      const events = collectPersist(bridge);
+      await bridge.start();
+      await bridge.prompt({ threadId: "t1", text: "go" });
+      // Every id that keys a message/run in the log.
+      return events.flatMap((e) => {
+        const anyE = e as { runId?: string; messageId?: string };
+        return [anyE.runId, anyE.messageId].filter((x): x is string => typeof x === "string");
+      });
+    };
+
+    // Two bridges = two processes (a restart between them).
+    const first = new Set(await idsFrom());
+    const second = new Set(await idsFrom());
+    expect(first.size).toBeGreaterThan(0);
+    // ZERO overlap — no id from the first bridge is reused by the second.
+    const overlap = [...second].filter((id) => first.has(id));
+    expect(overlap, `ids reused across restart: ${overlap.join(", ")}`).toEqual([]);
+  });
+
   it("maps an agent_message_chunk to TextMessage start/content/end", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([

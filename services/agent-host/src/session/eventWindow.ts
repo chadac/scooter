@@ -24,12 +24,36 @@ import type { AguiEvent } from "../bridge.js";
  */
 export function tailByRuns(events: AguiEvent[], runs: number): AguiEvent[] {
   if (runs <= 0) return [];
+  const ordered = orderByTime(events);
   // Index of each RUN_STARTED.
   const starts: number[] = [];
-  for (let i = 0; i < events.length; i++) {
-    if (events[i].type === "RUN_STARTED") starts.push(i);
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i].type === "RUN_STARTED") starts.push(i);
   }
-  if (starts.length <= runs) return events.slice(starts[0] ?? 0);
+  if (starts.length <= runs) return ordered.slice(starts[0] ?? 0);
   // Slice from the RUN_STARTED that begins the last `runs` runs.
-  return events.slice(starts[starts.length - runs]);
+  return ordered.slice(starts[starts.length - runs]);
+}
+
+/**
+ * STABLE-sort a log by each event's `ts` (epoch ms, stamped at emit). This makes
+ * the tail window robust when append order diverges from real time — e.g. a
+ * conversation that survived agent-host restarts, whose log concatenates runs from
+ * separate processes. The sort is stable (ties keep append order) and events with
+ * no `ts` (synthetic/legacy) keep their original position relative to their
+ * neighbors, so a fully-unstamped log is returned unchanged. Exported for reuse.
+ */
+export function orderByTime(events: AguiEvent[]): AguiEvent[] {
+  // Fast path: nothing stamped → don't reorder (preserves legacy behavior exactly).
+  if (!events.some((e) => typeof e.ts === "number")) return events;
+  return events
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) => {
+      const ta = a.event.ts;
+      const tb = b.event.ts;
+      // Missing ts sorts as its neighbor (use index) so it never jumps the log.
+      if (typeof ta === "number" && typeof tb === "number" && ta !== tb) return ta - tb;
+      return a.index - b.index; // stable tie-break: keep append order
+    })
+    .map((x) => x.event);
 }

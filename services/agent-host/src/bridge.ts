@@ -10,6 +10,8 @@
  * the seam is in the right place.
  */
 
+import { randomUUID } from "node:crypto";
+
 import type {
   SessionId,
   RunId,
@@ -39,8 +41,13 @@ export type AguiRunOutcome =
   | { type: "success" }
   | { type: "interrupt"; interrupts: AguiInterrupt[] };
 
-// AG-UI event union (subset used here; full set per AG-UI spec).
-export type AguiEvent =
+// AG-UI event union (subset used here; full set per AG-UI spec). Every persisted
+// event also carries an optional `ts` (epoch ms, stamped at emit time) — an
+// explicit chronological ordering key. It's absent on synthetic/test events and
+// ignored by the @ag-ui client (which folds by type + id).
+export type AguiEvent = AguiEventBase & { ts?: number };
+
+type AguiEventBase =
   // RUN_STARTED and RUN_FINISHED both REQUIRE threadId per the AG-UI schema —
   // the @ag-ui/client validates incoming events and rejects a missing threadId.
   | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId }
@@ -173,12 +180,20 @@ export interface BridgeDeps {
   loadHistory?: () => Promise<AguiEvent[]>;
 }
 
-let runCounter = 0;
-let idCounter = 0;
-const nextId = (prefix: string) => `${prefix}-${(idCounter += 1)}`;
+// Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
+// WHOLE life of a conversation's log — including across agent-host RESTARTS. They
+// used to be module-global counters (run-1, msg-1, …) that reset to 0 on every
+// process start, so a revived conversation re-minted run-1/msg-1/user-1 that
+// COLLIDED with ids already in its persisted log. The UI folds by messageId and
+// keys runs by runId, so colliding ids merged unrelated turns (doubled tool-call
+// args, scrambled run order, history that won't render while a new run is live).
+// A UUID per id makes collision impossible regardless of restarts. The readable
+// prefix is kept for debugging; nothing parses the id as a number (order comes
+// from the append-only log, not the id value).
+const nextId = (prefix: string) => `${prefix}-${randomUUID()}`;
 
 export function createSessionBridge(deps: BridgeDeps): SessionBridge {
-  const sessionId = `sess-${(idCounter += 1)}`;
+  const sessionId = nextId("sess");
   const listeners = new Set<(event: AguiEvent) => void>();
   let acpSessionId: string | undefined;
   let started = false;
@@ -222,17 +237,29 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     if (title) for (const cb of titleListeners) cb(title);
   };
 
+  // Stamp a wall-clock timestamp (epoch ms) on every event BEFORE it forks to the
+  // live-broadcast and persist paths, so both copies are byte-identical (the
+  // integrity self-heal compares their checksums — a ts on only one side would
+  // read as a false gap). `ts` is an explicit chronological ordering key that
+  // survives persistence, so the log / tail window can order by real time instead
+  // of trusting append order alone. The @ag-ui client folds by type+id and ignores
+  // this extra field. Stamped once here; never re-stamped on replay.
+  const stamp = <E extends AguiEvent>(event: E): E =>
+    ("ts" in event ? event : { ...event, ts: Date.now() }) as E;
+
   const emit = (event: AguiEvent) => {
     // Broadcast subscribers (UI) AND persist subscribers (store) both see live
     // events.
-    for (const cb of listeners) cb(event);
-    for (const cb of persistListeners) cb(event);
+    const e = stamp(event);
+    for (const cb of listeners) cb(e);
+    for (const cb of persistListeners) cb(e);
   };
 
   // Persist-only: the store records it, but the UI does NOT (avoids duplicating
   // something the UI already renders, like the user's own prompt).
   const persist = (event: AguiEvent) => {
-    for (const cb of persistListeners) cb(event);
+    const e = stamp(event);
+    for (const cb of persistListeners) cb(e);
   };
 
   // Flush pending stream notifications (a macrotask) so late session/update
@@ -344,7 +371,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // The actual run, executed serially via the prompt() chain above. One run at a
   // time per bridge — see the runChain comment.
   const runPrompt = async (input: PromptInput): Promise<RunId> => {
-    const runId = `run-${(runCounter += 1)}`;
+    const runId = nextId("run");
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map() };
     const startedAt = Date.now();
     let outcome: "ok" | "error" = "ok";

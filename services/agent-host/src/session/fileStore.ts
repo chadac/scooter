@@ -13,6 +13,7 @@ import type { AguiEvent } from "../bridge.js";
 import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
 import type { SessionId } from "../types.js";
 import { EMPTY_CHECKSUM, chainNext } from "../agui/integrity.js";
+import { tailByRuns } from "./eventWindow.js";
 
 // Atomic whole-file write: write a temp sibling then rename over the target.
 // rename(2) is atomic on POSIX, so a concurrent reader (e.g. listConversations()
@@ -156,10 +157,14 @@ export function createFileConversationStore(root: string): ConversationStore {
 
     async readEventsTail(id, runs) {
       // The RECENT tail only: the events from the last `runs` runs, for a fast
-      // first paint on a LONG conversation. We read the file (one syscall) but scan
-      // lines from the END to find the last `runs` RUN_STARTED boundaries by a cheap
-      // string test, and JSON.parse ONLY the windowed tail lines — not the whole
-      // log (which is what made the naive route as slow as a full replay).
+      // first paint on a LONG conversation. We read the file (one syscall), parse
+      // it, and window on RUN boundaries via tailByRuns — which FIRST orders by each
+      // event's `ts`. That time-ordering is load-bearing: a conversation that
+      // survived agent-host restarts has a log that concatenates runs from separate
+      // processes, so a naive scan-from-the-end for the last N RUN_STARTED (which
+      // assumed append order == time order) could window across a restart seam and
+      // fold a scrambled, half-rendered history. Parsing the whole log is the cost
+      // of that correctness; the window itself stays bounded to `runs`.
       let data: string;
       try {
         data = await readFile(logPath(id), "utf8");
@@ -168,20 +173,8 @@ export function createFileConversationStore(root: string): ConversationStore {
         throw e;
       }
       if (runs <= 0) return [];
-      const lines = data.split("\n").filter((l) => l.trim());
-      // Walk backward, counting RUN_STARTED markers; stop once we've passed `runs`.
-      let start = 0;
-      let seen = 0;
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].includes('"RUN_STARTED"')) {
-          seen += 1;
-          start = i;
-          if (seen >= runs) break;
-        }
-      }
-      // If there were fewer than `runs` RUN_STARTED markers, start stays at the
-      // first RUN_STARTED found (or 0). Parse only the windowed slice.
-      return lines.slice(start).map((l) => JSON.parse(l) as AguiEvent);
+      const all = data.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as AguiEvent);
+      return tailByRuns(all, runs);
     },
 
     async *readEventsWithChecksum(id): AsyncIterable<ChecksummedEvent> {
