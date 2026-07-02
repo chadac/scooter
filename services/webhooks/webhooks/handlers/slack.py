@@ -262,11 +262,13 @@ async def _handle_mention(event: dict):
         return
 
     if existing:
+        # Forward to the existing conversation OFF the request path — send_message
+        # blocks for the whole agent turn, which would blow Slack's retry window and
+        # get every delivery dropped as a duplicate. React so the user sees it landed.
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
-        ok = await send_message(existing, forward_msg)
-        if ok:
-            return
-        logger.warning("Failed to send to existing conversation %s, creating new one", existing)
+        await add_slack_reaction(channel, ts, "eyes")
+        asyncio.create_task(_background_forward(existing, forward_msg))
+        return
 
     # React to indicate we're processing
     await add_slack_reaction(channel, ts, "eyes")
@@ -335,10 +337,24 @@ async def _handle_thread_message(event: dict):
         await db.store_pending_message("slack", "thread", res_id, forward_msg)
         return
 
+    # Forward OFF the request path (send_message blocks for the whole agent turn;
+    # awaiting it here blows Slack's retry window → every delivery deduped).
     forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
+    asyncio.create_task(_background_forward(existing, forward_msg))
+
+
+async def _background_forward(existing: str, forward_msg: str) -> None:
+    """Forward a follow-up into an existing conversation OFF the request path.
+
+    send_message blocks until the agent's whole turn finishes (the /agui SSE runs
+    to RUN_FINISHED, minutes). Awaiting it inside the webhook handler blows Slack's
+    ~3s window, so Slack retries — and every retry is dropped as a duplicate, so the
+    channel looks dead ("everything classified as a duplicate on existing
+    conversations"). Run it as a task so the handler can 200 immediately; the reply
+    still streams into the thread via the agent's slack_respond."""
     ok = await send_message(existing, forward_msg)
     if not ok:
-        logger.warning("Failed to forward thread message to conversation %s", existing)
+        logger.warning("Failed to forward message to conversation %s", existing)
 
 
 async def _background_create_conversation(
