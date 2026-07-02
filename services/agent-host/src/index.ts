@@ -33,8 +33,9 @@ import { createModuleManager } from "./session/moduleManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
-import { resolverFromEnv } from "./auth/identity.js";
+import { resolverFromEnv, type AsyncIdentityResolver } from "./auth/identity.js";
 import { withIdentityStore, createPgIdentityStore } from "./auth/identityStore.js";
+import { withAlbVerification } from "./auth/albVerify.js";
 import type { IncomingMessage } from "node:http";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
@@ -353,13 +354,20 @@ export async function main(
   const webhooksDsn = webhooksResourceDsn();
   const resourceLookup = webhooksDsn ? createResourceLookup({ dsn: webhooksDsn }) : undefined;
 
-  // Identity resolution (provider-agnostic): the env-configured resolver (header
-  // by default; alb-oidc when AUTH_MODE=alb-oidc), optionally enriched with a
-  // learned sub->email store (Postgres on the shared DB) + a static map. All
-  // optional — with none configured this is the plain header behavior.
-  const identityResolver = resolverFromEnv();
+  // Identity resolution (provider-agnostic), composed as layers over the base
+  // resolver (header by default; alb-oidc when AUTH_MODE=alb-oidc):
+  //   base -> [ALB signature verify] -> [sub->email store + static map]
+  // Verification runs BEFORE the store so an UNVERIFIED email is never learned.
+  // All layers optional — with none configured this is the plain header behavior.
   const identityStore = webhooksDsn ? createPgIdentityStore({ dsn: webhooksDsn }) : undefined;
   const staticIdentityMap = parseIdentityMap(process.env.AUTH_SUB_EMAIL_MAP);
+  let identityResolver: AsyncIdentityResolver = resolverFromEnv();
+  if (process.env.AUTH_ALB_VERIFY === "1") {
+    identityResolver = withAlbVerification(identityResolver, {
+      region: process.env.AUTH_ALB_REGION || process.env.AWS_REGION || "us-east-1",
+      dataHeader: process.env.AUTH_ALB_DATA_HEADER || "x-amzn-oidc-data",
+    });
+  }
   const resolveUser =
     identityStore || staticIdentityMap
       ? withIdentityStore(identityResolver, { store: identityStore, staticMap: staticIdentityMap }).resolve
