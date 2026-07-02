@@ -87,8 +87,14 @@ class PermissionService:
                 continue
             out[name] = {
                 "account_id": acct.get("account_id"),
+                # Human-written summary of what this account is for, so the agent
+                # can pick the right one to request access to (empty if unset).
+                "description": acct.get("description", ""),
                 "allowed_policy": acct.get("allowed_policy"),
                 "allowed_managed_policies": acct.get("allowed_managed_policies", []),
+                # Lets the agent prefer an account where a read-only request needs
+                # no human (so it doesn't over-ask / wait needlessly).
+                "auto_approve_read_only": bool(acct.get("auto_approve_read_only", False)),
             }
         return out
 

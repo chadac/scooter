@@ -134,9 +134,13 @@ in
         default = { };
         description = ''
           The account registry: alias -> { account_id, broker_role_arn, enabled,
-          allowed_policy?, allowed_managed_policies?, region?, approvers?,
-          auto_approve_read_only? }. Rendered into a ConfigMap mounted at
-          /etc/agent-broker/accounts.json.
+          description?, allowed_policy?, allowed_managed_policies?, region?,
+          approvers?, auto_approve_read_only? }. Rendered into a ConfigMap mounted
+          at /etc/agent-broker/accounts.json.
+
+          `description` is a human-written summary of what the account is for. The
+          agent reads it (via `scooter-aws accounts` → GET /aws/accounts) to pick
+          the RIGHT account to request access to — set it on every account.
 
           Set `auto_approve_read_only = true` on an account to grant purely
           read-only requests (all actions Get*/List*/Describe*/… ; no managed-policy
@@ -148,6 +152,7 @@ in
               account_id = "123456789012";
               broker_role_arn = "arn:aws:iam::123456789012:role/agent-token-broker-base";
               enabled = true;
+              description = "Sandbox account for safe read-only exploration (S3, logs).";
               auto_approve_read_only = true;
             };
         '';
