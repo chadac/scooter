@@ -249,10 +249,18 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // integrity stream with no visible change. NOT checksummed (a partial window).
     const runsParam = Number(ctx.query.get("runs"));
     const runs = Number.isFinite(runsParam) && runsParam > 0 ? Math.min(runsParam, 100) : 8;
-    const all: AguiEvent[] = [];
-    for await (const e of store.readEvents(ctx.params.id)) all.push(e);
-    const events = tailByRuns(all, runs);
-    return { json: { events, runs, total: all.length, windowed: events.length < all.length } };
+    // Fast path: read ONLY the tail (scan from the end, parse the window). Falls
+    // back to reading + windowing the whole log for stores without the tail reader
+    // (in-memory test stores) — those logs are tiny so the cost is irrelevant.
+    let events: AguiEvent[];
+    if (store.readEventsTail) {
+      events = await store.readEventsTail(ctx.params.id, runs);
+    } else {
+      const all: AguiEvent[] = [];
+      for await (const e of store.readEvents(ctx.params.id)) all.push(e);
+      events = tailByRuns(all, runs);
+    }
+    return { json: { events, runs } };
   });
 
   r.get("/conversations/:id/events", async (ctx) => {

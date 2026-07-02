@@ -73,4 +73,31 @@ describe("fileStore integrity surface", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("readEventsTail returns ONLY the last N runs (fast window, parses just the tail)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "store-integ-"));
+    try {
+      const store = createFileConversationStore(root);
+      const run = (n: number): AguiEvent[] => [
+        { type: "RUN_STARTED", threadId: "c", runId: `r${n}` },
+        { type: "TEXT_MESSAGE_START", messageId: `m${n}`, role: "assistant" },
+        { type: "TEXT_MESSAGE_CONTENT", messageId: `m${n}`, delta: `t${n}` },
+        { type: "TEXT_MESSAGE_END", messageId: `m${n}` },
+        { type: "RUN_FINISHED", threadId: "c", runId: `r${n}` },
+      ];
+      for (let n = 1; n <= 5; n++) for (const e of run(n)) await store.appendEvent("conv-1", e);
+
+      const tail = await store.readEventsTail!("conv-1", 2);
+      // Last 2 runs, starting at r4's RUN_STARTED; every kept run is complete.
+      expect(tail[0]).toMatchObject({ type: "RUN_STARTED", runId: "r4" });
+      const runs = tail.filter((e) => e.type === "RUN_STARTED").map((e) => (e as { runId: string }).runId);
+      expect(runs).toEqual(["r4", "r5"]);
+
+      // Fewer runs than requested → the whole log; a missing conversation → [].
+      expect((await store.readEventsTail!("conv-1", 99)).filter((e) => e.type === "RUN_STARTED")).toHaveLength(5);
+      expect(await store.readEventsTail!("nope", 3)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

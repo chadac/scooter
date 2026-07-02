@@ -208,6 +208,33 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("does NOT blank the thread when the tail folds to nothing (in-flight final run)", async () => {
+    // The reported bug: /tail returns events, but they fold to NO renderable
+    // message (the tail's last run is still in-flight — RUN_STARTED + partial, no
+    // RUN_FINISHED). The seed must not blank the thread; the full replay (which
+    // has the complete history) must still populate it.
+    const inflightTail = [
+      { type: "RUN_STARTED", threadId: "c1", runId: "live" },
+      { type: "TEXT_MESSAGE_START", messageId: "p1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "p1", delta: "typing…" },
+      // no TEXT_MESSAGE_END, no RUN_FINISHED — an in-flight run
+    ];
+    // The full stream DOES have a complete message.
+    const stream = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "full history here" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(stream, inflightTail) });
+    await foldTo(agent);
+    // NOT blank — the full replay populated it despite the empty tail fold.
+    expect(JSON.stringify(agent.messages)).toContain("full history here");
+    agent.dispose();
+  });
+
   it("SUPPRESSES per-event renders during replay, then renders once at `synced`", async () => {
     // A long conversation must not visibly build top-down on switch: while
     // replaying (before the `synced` marker) isReplaying() is true and the pump
