@@ -340,3 +340,32 @@ async def test_accounts_exposes_description_and_auto_approve(tmp_path):
     assert accts["dev"]["description"] == ""
     assert accts["dev"]["auto_approve_read_only"] is False
     assert accts["dev"]["account_id"] == "123"
+
+
+# --- approver identity resolution (configurable claim) --------------------
+async def test_resolve_approver_picks_the_configured_claim(tmp_path):
+    svc = await make_service(tmp_path)  # default approver_claim = "email"
+    ident = {"id": "cognito-sub-abc", "email": "alice@x.io", "name": "Alice"}
+    assert svc.resolve_approver(ident, fallback="conv-1") == "alice@x.io"
+
+
+async def test_resolve_approver_claim_id(tmp_path):
+    from broker.aws.service import ServiceConfig
+    svc = await make_service(tmp_path)
+    svc._config = ServiceConfig(broker_principal_arn="arn", approver_claim="id")
+    ident = {"id": "sub-xyz", "email": "a@x.io"}
+    assert svc.resolve_approver(ident, fallback="conv-1") == "sub-xyz"
+
+
+async def test_resolve_approver_falls_back_when_claim_missing(tmp_path):
+    svc = await make_service(tmp_path)  # email claim
+    # No email in the identity → fall back to id, then to `fallback`.
+    assert svc.resolve_approver({"id": "sub-1"}, fallback="conv-1") == "sub-1"
+    assert svc.resolve_approver({}, fallback="conv-1") == "conv-1"
+
+
+async def test_resolve_approver_accepts_a_plain_string_and_strips_user_prefix(tmp_path):
+    svc = await make_service(tmp_path)
+    assert svc.resolve_approver("bob@x.io", fallback="conv-1") == "bob@x.io"
+    assert svc.resolve_approver("user:bob@x.io", fallback="conv-1") == "bob@x.io"
+    assert svc.resolve_approver(None, fallback="conv-1") == "conv-1"

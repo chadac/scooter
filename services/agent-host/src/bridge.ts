@@ -82,6 +82,15 @@ export interface PromptInput {
   text: string;
 }
 
+/** The identity of the human answering an external interrupt (e.g. approving an
+ *  AWS request). Sent to the broker, which authorizes the configured claim
+ *  (email/id/name). Anonymous when no ingress identity. */
+export interface ApproverIdentity {
+  id: string;
+  email?: string;
+  name?: string;
+}
+
 /**
  * Drives one ACP session and emits AG-UI events.
  *
@@ -101,19 +110,21 @@ export interface SessionBridge {
 
   /** Answer a pending permission/option request (resolves the blocked agent run,
    *  or fires the external onAnswer for a raiseInterrupt). optionId must be one
-   *  of the offered options; an unknown/empty id cancels. Returns true if a
-   *  matching pending request was found. */
-  answerPermission(toolCallId: string, optionId: string): boolean;
+   *  of the offered options; an unknown/empty id cancels. `approver` is the
+   *  identity of the human answering (for an external/AWS interrupt the broker
+   *  authorizes them); ignored for a blocked goose run. Returns true if a matching
+   *  pending request was found. */
+  answerPermission(toolCallId: string, optionId: string, approver?: ApproverIdentity): boolean;
 
   /** Raise an AG-UI interrupt NOT tied to a goose run (e.g. a broker AWS
    *  permission request). Emits the interrupt to the UI; when the user answers
-   *  (via answerPermission / the UI resume), `onAnswer(optionId|null)` fires.
-   *  `id` is the interrupt/answer key (e.g. the broker request_id). */
+   *  (via answerPermission / the UI resume), `onAnswer(optionId|null, approver?)`
+   *  fires with the answering user's identity. `id` is the interrupt/answer key. */
   raiseInterrupt(args: {
     id: string;
     message: string;
     options: Array<{ optionId: string; name: string; kind: string }>;
-    onAnswer: (optionId: string | null) => void;
+    onAnswer: (optionId: string | null, approver?: ApproverIdentity) => void;
   }): void;
 
   /** Subscribe to the AG-UI event stream broadcast to the UI (live). */
@@ -193,7 +204,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   interface Pending {
     resolve: (optionId: string | null) => void;
     validOptions: Set<string>;
-    onExternal?: (optionId: string | null) => void;
+    onExternal?: (optionId: string | null, approver?: ApproverIdentity) => void;
   }
   const pendingPermissions = new Map<string, Pending>();
 
@@ -529,17 +540,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       titleListeners.add(cb);
       return () => titleListeners.delete(cb);
     },
-    answerPermission(toolCallId, optionId) {
+    answerPermission(toolCallId, optionId, approver) {
       const pending = pendingPermissions.get(toolCallId);
       if (!pending) return false; // no such pending request (or already answered)
       // An unknown optionId cancels rather than forwarding a garbage selection.
       const chosen = pending.validOptions.has(optionId) ? optionId : null;
       if (pending.onExternal) {
         // External interrupt (e.g. broker AWS request): no blocked goose run —
-        // fire the callback + clean up + record the resolution for replay.
+        // fire the callback (with the answering user's identity) + clean up +
+        // record the resolution for replay.
         pendingPermissions.delete(toolCallId);
         persist({ type: "PERMISSION_RESOLVED", toolCallId, optionId: chosen });
-        pending.onExternal(chosen);
+        pending.onExternal(chosen, approver);
       } else {
         pending.resolve(chosen); // unblocks the goose ACP requestPermission call
       }

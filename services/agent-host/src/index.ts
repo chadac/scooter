@@ -460,7 +460,7 @@ export async function main(
           console.warn("[agent-host] no pending permission", { sessionId, toolCallId });
         }
       },
-      resolveAwsRequest: async (_sessionId, requestId, approved, approver) => {
+      resolveAwsRequest: async (sessionId, requestId, approved, approver) => {
         // The user answered a broker AWS approval interrupt -> approve/deny the
         // request on the broker. The broker URL + auth come from env (BROKER_URL
         // + the agent-host's SA token, same as the sandbox helpers).
@@ -490,21 +490,41 @@ export async function main(
           }
           /* ENOENT -> no token (local/dev) */
         }
-        // The broker expects the approver as an OpenFGA user object (user:<id>)
-        // and enforces their per-account rights. The agent-host SA token is the
-        // trust anchor (it vouches for this real user).
-        // Finding #5: the user's approve/deny is security-relevant — a broker
-        // 4xx/5xx (approver lacks rights, request expired) must NOT be treated as
-        // success. Check res.ok and FAIL LOUDLY (throw) so the dropped decision
-        // is observable rather than leaving the agent's request hanging while the
-        // user believes they answered.
+        // Send the answering user's FULL identity (id + email + name); the broker
+        // authorizes the CLAIM it's configured for (email/id/name). The agent-host
+        // SA token is the trust anchor (it vouches for this real user).
+        // Finding #5: approve/deny is security-relevant — a broker 4xx/5xx (approver
+        // lacks rights, request expired, provisioning failed) must NOT be treated as
+        // success. On failure, throw (observable) AND, for an APPROVE, feed the
+        // broker's detail back into the conversation so the agent can help the user
+        // fix the setup (e.g. the account's IAM isn't provisioned).
         const res = await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
           method: "POST",
           headers,
-          body: JSON.stringify({ approver: `user:${approver}` }),
+          body: JSON.stringify({ approver }),
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
+          if (approved) {
+            // Extract the broker's error reasons (JSON {detail:{errors:[...]}}) for
+            // a readable, actionable message; fall back to the raw body.
+            let detail = body.slice(0, 1500);
+            try {
+              const j = JSON.parse(body);
+              const errs = j?.detail?.errors ?? j?.errors;
+              if (Array.isArray(errs) && errs.length) detail = errs.join("\n");
+            } catch {
+              /* not JSON — use the raw body */
+            }
+            void sessions
+              .prompt(
+                sessionId as SessionId,
+                "[System: the AWS access you requested was approved, but the broker could NOT " +
+                  "provision it. Do NOT retry the request; instead, help the user fix the broker " +
+                  "setup, then they can re-approve. Broker error:\n\n" + detail,
+              )
+              .catch((e) => console.error("[agent-host] failed to feed AWS provisioning error to the agent:", e));
+          }
           throw new Error(
             `broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`,
           );

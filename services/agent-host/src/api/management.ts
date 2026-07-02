@@ -25,7 +25,7 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
-import type { AguiEvent } from "../bridge.js";
+import type { AguiEvent, ApproverIdentity } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
 /** Public (JSON-safe) view of a conversation — omits the in-memory bridge.
@@ -51,12 +51,21 @@ export interface ManagementDeps {
   sessions: SessionManager;
   store: ConversationStore;
   server: AguiServer;
-  /** Answer a pending tool permission (wired to the bridge in index.ts). */
-  answerPermission: (sessionId: string, toolCallId: string, optionId: string) => Promise<void>;
+  /** Answer a pending tool permission (wired to the bridge in index.ts). `approver`
+   *  is the identity of the human answering (for an AWS interrupt, the broker
+   *  authorizes them). */
+  answerPermission: (sessionId: string, toolCallId: string, optionId: string, approver?: ApproverIdentity) => Promise<void>;
   /** Approve/deny a broker AWS request after the user answers the interrupt
-   *  (POSTs to the broker's /aws/{id}/approve|deny). `approver` is the real user
-   *  id (the conversation owner) the broker enforces via OpenFGA. Optional. */
-  resolveAwsRequest?: (sessionId: string, requestId: string, approved: boolean, approver: string) => Promise<void>;
+   *  (POSTs to the broker's /aws/{id}/approve|deny). `approver` is the identity of
+   *  the human who answered — the broker authorizes the configured claim
+   *  (email/id/name) via OpenFGA. Optional. Returns the broker's error detail (a
+   *  provisioning failure) so the caller can feed it back to the agent. */
+  resolveAwsRequest?: (
+    sessionId: string,
+    requestId: string,
+    approved: boolean,
+    approver: ApproverIdentity,
+  ) => Promise<void>;
   /** Model catalog for per-conversation selection: the host default + the set
    *  offered to clients. Empty list = only the default is selectable. */
   models?: { default?: string; available: string[] };
@@ -329,7 +338,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.post("/conversations/:id/permission/:toolCallId", async (ctx) => {
     const body = await ctx.body<{ optionId?: string }>();
     if (!body.optionId) return { status: 400, json: { error: "optionId required" } };
-    await deps.answerPermission(ctx.params.id, ctx.params.toolCallId, body.optionId);
+    // The answering user's identity — the broker authorizes THIS person for an AWS
+    // approval (not the conversation owner). Anonymous → no identity claims.
+    const approver = ctx.user.anonymous
+      ? undefined
+      : { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name };
+    await deps.answerPermission(ctx.params.id, ctx.params.toolCallId, body.optionId, approver);
     return { status: 204, json: null };
   });
 
@@ -389,17 +403,19 @@ export function createManagementApi(deps: ManagementDeps): Router {
         { optionId: "approve", name: "Approve", kind: "allow_once" },
         { optionId: "deny", name: "Deny", kind: "reject_once" },
       ],
-      onAnswer: (optionId) => {
-        // The approver is the conversation's OWNER (the human who owns this
-        // in-conversation approval); the broker enforces their rights via
-        // OpenFGA. Fall back to the conversation id when unowned (FGA-off / dev).
-        const approver = conv?.owner || ctx.params.id;
-        // Finding #5: resolveAwsRequest now THROWS on a dropped approval (token
-        // unreadable / broker 4xx-5xx). It's still fire-and-forget here, so attach
-        // a handler — a swallowed rejection would put us right back to silently
-        // losing the user's security decision.
+      onAnswer: (optionId, approver) => {
+        // The approver is the HUMAN who answered (passed from the permission route
+        // via answerPermission), not the conversation owner — the broker authorizes
+        // the configured claim (email/id/name). Fall back to the conversation id
+        // when there's no identity (anonymous / FGA-off / dev).
+        const approverIdentity = approver ?? { id: ctx.params.id };
+        // Finding #5: resolveAwsRequest THROWS on a dropped approval (token
+        // unreadable / broker 4xx-5xx). Fire-and-forget, so handle the rejection —
+        // a swallowed one silently loses the user's security decision. A broker
+        // PROVISIONING error is also fed back into the conversation so the agent can
+        // help the user fix the broker setup.
         void deps
-          .resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve", approver)
+          .resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve", approverIdentity)
           .catch((err) => {
             // eslint-disable-next-line no-console
             console.error(

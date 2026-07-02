@@ -45,6 +45,9 @@ class BrokerSettings(BaseSettings):
     # {account_id, broker_role_arn, enabled, allowed_policy?, allowed_managed_policies?, region?}.
     aws_accounts_file: str = ""
     aws_role_ttl_hours: int = 12
+    # Which identity claim authorizes an approver (must match how the FGA approver
+    # tuples are seeded). "email" | "id" | "name". Default email.
+    aws_approver_claim: str = "email"
     # Store DSN components (shared Postgres; SQLite default). Mirrors webhooks.
     aws_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-aws.db"
     aws_db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
