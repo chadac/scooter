@@ -244,10 +244,15 @@ async def _handle_mention(event: dict):
         or await db.get_conversation_for_resource("slack", "thread", res_id)
     )
 
-    message_text = text.strip()
-    # Remove bot mention pattern (e.g., <@U12345>)
+    # Keep the message readable: rewrite the bot's own <@U…> mention to a plain
+    # "@scooter" (so "@scooter please review" stays meaningful instead of becoming
+    # "please review") and leave any OTHER user mentions intact.
     import re
-    message_text = re.sub(r"<@\w+>", "", message_text).strip()
+    bot_id = await _get_bot_id()
+    message_text = text.strip()
+    if bot_id:
+        message_text = re.sub(rf"<@{re.escape(bot_id)}>", settings.mention_pattern, message_text)
+    message_text = message_text.strip()
 
     comment_text = f"<@{user}> said:\n\n{message_text}"
 
@@ -305,6 +310,13 @@ async def _handle_thread_message(event: dict):
     if bot_id and user == bot_id:
         return
 
+    # A message that mentions @scooter ALSO arrives as a separate `app_mention`
+    # event, which _handle_mention owns. Forwarding it here too would send the
+    # agent TWO copies of the same message (the reported bug). Skip it — the
+    # mention handler gives it the clearer "you were mentioned" framing.
+    if _contains_mention(text):
+        return
+
     res_id = _resource_id(channel, thread_ts)
 
     existing = (
@@ -315,15 +327,15 @@ async def _handle_thread_message(event: dict):
     if not existing:
         return
 
-    has_mention = _contains_mention(text)
     comment_text = f"<@{user}> said:\n\n{text}"
 
+    # No mention (guarded above) → a for-awareness thread message.
     if is_pending(existing):
-        forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=has_mention)
+        forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
         await db.store_pending_message("slack", "thread", res_id, forward_msg)
         return
 
-    forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=has_mention)
+    forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
     ok = await send_message(existing, forward_msg)
     if not ok:
         logger.warning("Failed to forward thread message to conversation %s", existing)
