@@ -28,12 +28,19 @@ name: CI
 
 on:
   pull_request:
+    # `labeled` so adding `flake-check` (or `full-nixos-tests`) to an open PR
+    # re-triggers CI and runs the focused flake-repeat job below.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   # Nightly: run the FULL nixosTest set incl. the heavy ones (see HEAVY_TESTS
   # below) that are too slow for per-PR (a ~1h from-source NixOS toplevel build).
+  # Also runs the flake-detection job (the whole e2e suite, each test 5×).
   schedule:
     - cron: "0 7 * * *" # 07:00 UTC daily
+  # Manual trigger (Actions tab) — handy for running the flake-detection job on
+  # demand without waiting for the nightly.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
 concurrency:
@@ -274,3 +281,79 @@ jobs:
           name: e2e-results
           path: test-results/
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Flake detection — NIGHTLY. Run the WHOLE Playwright e2e suite with
+  # --repeat-each=5: each test executes 5×, and with playwright.config retries=0
+  # ANY single failure fails the job and names the flaky test. This surfaces
+  # timing/ordering flakes (a dropped turn, a replay race) that a single per-PR
+  # run misses. Not on PRs (5× the e2e wall-time); nightly + manual only.
+  flake-nightly:
+    name: flake detection (e2e ×5, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: e2e ×5 (report flaky)
+        env:
+          CI: "1"
+        # --repeat-each=5 runs every test 5×; the list reporter names each failing
+        # repetition. A non-zero exit = at least one repetition flaked.
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- --repeat-each=5 --reporter=list'
+      - name: upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-nightly-results
+          path: test-results/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Focused flake check — PR opt-in. A PR that FIXES a specific flake adds the
+  # `flake-check` label AND a structured line in its description naming the test:
+  #
+  #     flake-test: <playwright -g pattern>
+  #
+  # e.g.  flake-test: multi-turn re-render
+  # This job then runs ONLY that test 20× to prove the fix holds. Gated on the
+  # label so it never runs on unrelated PRs.
+  flake-focus:
+    name: flake focus (targeted ×20)
+    if: contains(github.event.pull_request.labels.*.name, 'flake-check')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Pull the `flake-test:` pattern out of the PR description. Fail loudly if the
+      # label is set but no pattern is given (so the check can't silently pass by
+      # running nothing).
+      - name: resolve flake-test pattern
+        id: pat
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: .github/scripts/flake-focus-pattern.sh
+
+      - name: e2e ×20 (targeted)
+        env:
+          CI: "1"
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+        # -g greps test titles; --repeat-each=20 hammers the match. retries=0 means
+        # one failure across the 20 fails the job.
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- -g "$FLAKE_PATTERN" --repeat-each=20 --reporter=list'
+      - name: upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-focus-results
+          path: test-results/
+          retention-days: 14

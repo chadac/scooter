@@ -50,6 +50,36 @@ model key) to prove the actual binary integrates.
 - `test/e2e/sessions.spec.ts` — list/view existing sessions and their logs.
 - `test/e2e/real-goose.spec.ts` — one real-Goose happy path.
 
+## Flake detection
+
+Playwright runs with `retries: 0` — a flake is a signal to fix or quarantine, not
+to paper over. Two CI jobs (`.github/workflows/ci.yml`) hunt flakes:
+
+- **Nightly (`flake-nightly`)** — runs the WHOLE e2e suite with
+  `--repeat-each=5` (every test 5×). Any single failing repetition fails the job
+  and names the test. Also runnable on demand from the Actions tab
+  (`workflow_dispatch`). Not on PRs (5× the wall-time).
+- **Focused (`flake-focus`)** — a PR that FIXES a flake opts in: add the
+  **`flake-check`** label AND a line in the PR description naming the test:
+
+  ```
+  flake-test: <playwright -g pattern>
+  ```
+
+  e.g. `flake-test: multi-turn re-render`. The job then runs ONLY that test **20×**
+  to prove the fix holds. The label alone with no `flake-test:` line FAILS the
+  check (so it can't pass by running nothing).
+
+Locally, hammer a suspect test the same way:
+
+```bash
+npm run test:e2e -- -g "multi-turn re-render" --repeat-each=20
+```
+
+When you write a multi-turn e2e, wait on a per-turn signal (a unique marker, or a
+message-COUNT delta via `Chat.sendTurn`) — never on non-unique reply text, which a
+prior turn already satisfies (that was the classic dropped-turn flake).
+
 ## Shared test doubles
 
 - **Fake ACP agent** (`test/fakes/fake-acp-agent/`) — a tiny stdio JSON-RPC
