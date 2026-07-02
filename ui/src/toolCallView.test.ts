@@ -8,9 +8,33 @@
 
 import { describe, it, expect } from "vitest";
 
-import { matchToolCall } from "./toolCallView.js";
+import { matchToolCall, normalizeToolName } from "./toolCallView.js";
 
 describe("matchToolCall", () => {
+  it("matches the REAL goose form 'Scooter-env: Slack Respond' (server-prefixed, title-cased)", () => {
+    // This is what actually arrives — the MCP server name + the title-cased tool
+    // name — NOT the registerTool `title`. The regression the card was missing on.
+    const v = matchToolCall("Scooter-env: Slack Respond", { text: "on it" });
+    expect(v).toMatchObject({ provider: "slack", body: "on it" });
+  });
+
+  it("matches the server-prefixed form for each comment tool", () => {
+    expect(matchToolCall("Scooter-env: Github Comment", { body: "LGTM" })).toMatchObject({ provider: "github" });
+    expect(matchToolCall("Scooter-env: Gitlab Comment", { body: "x" })).toMatchObject({ provider: "gitlab" });
+    expect(matchToolCall("Scooter-env: Jira Comment", { body: "x" })).toMatchObject({ provider: "jira" });
+  });
+
+  it("also matches a raw tool name and the registerTool title (fallbacks)", () => {
+    expect(matchToolCall("slack_respond", { text: "hi" })).toMatchObject({ provider: "slack" });
+    expect(matchToolCall("Respond in the Slack thread", { text: "hi" })).toMatchObject({ provider: "slack" });
+  });
+
+  it("normalizeToolName strips the server prefix + casing to the tool identity", () => {
+    expect(normalizeToolName("Scooter-env: Slack Respond")).toBe("slack_respond");
+    expect(normalizeToolName("slack_respond")).toBe("slack_respond");
+    expect(normalizeToolName("Github Comment")).toBe("github_comment");
+  });
+
   it("maps the Slack respond tool to a slack card, reading `text`", () => {
     const v = matchToolCall("Respond in the Slack thread", { text: "on it 👍" });
     expect(v).toMatchObject({ provider: "slack", body: "on it 👍" });
