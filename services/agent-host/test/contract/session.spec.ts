@@ -478,4 +478,55 @@ describe("SessionManager", () => {
     expect(suspended).toEqual([]);
     expect(provisioner.suspend).not.toHaveBeenCalled();
   });
+
+  it("resumeInterrupted revives + nudges ONLY conversations with a dangling run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      // First process: create two conversations, each with one completed run in
+      // the log, then leave ONE with a dangling run (RUN_STARTED, no RUN_FINISHED).
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const done = await m1.start("clean-thread");
+      const cut = await m1.start("interrupted-thread");
+      // A completed run for the clean one:
+      await store1.appendEvent(done.id, { type: "RUN_STARTED", threadId: "clean-thread", runId: "r1" });
+      await store1.appendEvent(done.id, { type: "RUN_FINISHED", threadId: "clean-thread", runId: "r1" });
+      // A DANGLING run for the interrupted one (started, never finished):
+      await store1.appendEvent(cut.id, { type: "RUN_STARTED", threadId: "interrupted-thread", runId: "r1" });
+      await store1.appendEvent(cut.id, { type: "TEXT_MESSAGE_CONTENT", messageId: "m", delta: "working" });
+
+      // Fresh process: a recording bridge to see which conversations get prompted.
+      const prompted: Array<{ id: string; text: string }> = [];
+      const bridgeFactory = (args: { conversationId: string }) =>
+        ({
+          start: vi.fn(async () => {}),
+          prompt: vi.fn(async ({ text }: { text: string }) => {
+            prompted.push({ id: args.conversationId, text });
+            return "run-x";
+          }),
+          stop: vi.fn(async () => {}),
+          onEvent: () => () => {},
+          onPersist: () => () => {},
+          onTitle: () => () => {},
+        }) as never;
+      const m2 = createSessionManager({
+        provisioner: fakeProvisioner(),
+        store: createFileConversationStore(root),
+        bridgeFactory,
+      });
+      await m2.hydrate();
+
+      const resumed = await m2.resumeInterrupted();
+
+      // Only the interrupted conversation was resumed, with the nudge (not the
+      // clean one, and not the user's literal prompt).
+      expect(resumed).toEqual([cut.id]);
+      expect(prompted.map((p) => p.id)).toEqual([cut.id]);
+      expect(prompted[0].text).toMatch(/interrupted by a restart/i);
+      expect(prompted[0].text).toMatch(/continue/i); // a nudge, not the user's prompt
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

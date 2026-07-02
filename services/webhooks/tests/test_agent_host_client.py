@@ -114,6 +114,31 @@ async def test_run_error_returns_none(monkeypatch):
     assert result is None
 
 
+async def test_connection_drop_mid_run_is_INTERRUPTED_not_failed(monkeypatch):
+    # The agent-host restarts mid-run: the SSE raises a transport error. This is
+    # transient (the agent-host resumes on boot) — create_conversation must signal
+    # `interrupted`, NOT return None (which would post "couldn't start").
+    class _DroppingStream(_FakeStream):
+        async def aiter_lines(self):
+            yield 'data: {"type":"RUN_STARTED","threadId":"t","runId":"r"}'
+            raise httpx.ReadError("connection reset")  # pod died mid-stream
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream", lambda *a, **k: _DroppingStream(b""))
+    result = await ahc.create_conversation("do a thing")
+    assert result is not None
+    assert result.get("interrupted") is True
+    assert result["conversation_id"]  # the conversation exists (resumes on boot)
+
+
+async def test_stream_ending_before_RUN_FINISHED_is_INTERRUPTED(monkeypatch):
+    # A graceful close mid-run (no transport error, but no RUN_FINISHED either) is
+    # also interrupted, not a completed run.
+    _patch_stream(monkeypatch, _sse('{"type":"RUN_STARTED","threadId":"t","runId":"r"}'))
+    result = await ahc.create_conversation("do a thing")
+    assert result is not None
+    assert result.get("interrupted") is True
+
+
 async def test_send_message_posts_to_same_thread(monkeypatch):
     captured: dict = {}
     _patch_stream(monkeypatch, _sse('{"type":"RUN_FINISHED","threadId":"c1","runId":"r"}'), captured)

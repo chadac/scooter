@@ -68,6 +68,12 @@ async def create_conversation(
 
     try:
         result_text = await _run_and_collect(payload)
+    except RunInterrupted:
+        # The run was interrupted (agent-host restart) — the conversation exists
+        # (created via on_created) and the agent-host resumes it on boot. Signal
+        # INTERRUPTED (not a failure) so the caller doesn't post "couldn't start".
+        logger.warning("create_conversation for %s was interrupted (restart) — agent-host will resume", conversation_id)
+        return {"conversation_id": conversation_id, "result": "", "interrupted": True}
     except Exception:
         logger.exception("create_conversation failed")
         return None
@@ -90,30 +96,52 @@ async def send_message(conversation_id: str, message: str) -> bool:
         return False
 
 
+class RunInterrupted(Exception):
+    """The /agui SSE dropped before RUN_FINISHED — e.g. the agent-host pod
+    restarted mid-run. This is TRANSIENT: the agent-host resumes interrupted
+    conversations on boot, so the caller must NOT declare a hard failure (no
+    "couldn't start" post). Distinct from a RUN_ERROR (the agent genuinely
+    failed)."""
+
+
 async def _run_and_collect(payload: dict) -> str:
     """POST a RunAgentInput to /agui and accumulate the final assistant text from
     the AG-UI SSE stream (TEXT_MESSAGE_CONTENT deltas), returning on RUN_FINISHED.
+
+    Raises RunInterrupted if the connection drops before RUN_FINISHED (a restart);
+    raises RuntimeError on a RUN_ERROR (a genuine agent failure).
     """
     text_parts: list[str] = []
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST", _agui_url(), json=payload, headers={"Accept": "text/event-stream"}
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                try:
-                    event = json.loads(line[len("data:"):].strip())
-                except json.JSONDecodeError:
-                    continue
-                etype = event.get("type")
-                if etype == "TEXT_MESSAGE_CONTENT":
-                    text_parts.append(event.get("delta", ""))
-                elif etype == "RUN_FINISHED":
-                    break
-                elif etype == "RUN_ERROR":
-                    raise RuntimeError(event.get("message", "agent run error"))
+    saw_finished = False
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST", _agui_url(), json=payload, headers={"Accept": "text/event-stream"}
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        event = json.loads(line[len("data:"):].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    etype = event.get("type")
+                    if etype == "TEXT_MESSAGE_CONTENT":
+                        text_parts.append(event.get("delta", ""))
+                    elif etype == "RUN_FINISHED":
+                        saw_finished = True
+                        break
+                    elif etype == "RUN_ERROR":
+                        raise RuntimeError(event.get("message", "agent run error"))
+    except httpx.HTTPError as e:
+        # Transport-level drop (connection reset, agent-host restart, read timeout).
+        # The run may be resuming on the agent-host — treat as interrupted, not failed.
+        raise RunInterrupted(str(e)) from e
+    if not saw_finished:
+        # The stream ended cleanly but before RUN_FINISHED (server closed mid-run,
+        # e.g. a graceful restart) — also interrupted, not a completed run.
+        raise RunInterrupted("stream ended before RUN_FINISHED")
     return "".join(text_parts).strip()
 
 
