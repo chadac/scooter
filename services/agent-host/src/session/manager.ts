@@ -411,7 +411,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
       wireEventLog(entry);
-      saveMeta(entry);
+      await saveMeta(entry); // await (like start/create) so a persist failure propagates, not an unhandled rejection
       await entry.bridge?.start();
       // Event-log replay to a reattaching UI is driven by the AG-UI server's
       // onAttach handler reading store.readEvents(id); nothing to do here.
