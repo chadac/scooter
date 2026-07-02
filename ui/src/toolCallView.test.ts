@@ -8,7 +8,27 @@
 
 import { describe, it, expect } from "vitest";
 
-import { matchToolCall, normalizeToolName } from "./toolCallView.js";
+import { matchToolCall, normalizeToolName, resultStatusText } from "./toolCallView.js";
+
+describe("resultStatusText", () => {
+  it("unwraps the ACP content-array result (what slack_respond returns)", () => {
+    // The ugly blob the user saw: [{content:{text:"Posted to the Slack thread."}}]
+    const r = [{ content: { text: "Posted to the Slack thread.", type: "text" }, type: "content" }];
+    expect(resultStatusText(r)).toBe("Posted to the Slack thread.");
+  });
+
+  it("handles a plain string, {text}, and MCP {content:[{text}]}", () => {
+    expect(resultStatusText("done")).toBe("done");
+    expect(resultStatusText({ text: "ok" })).toBe("ok");
+    expect(resultStatusText({ content: [{ type: "text", text: "posted" }] })).toBe("posted");
+  });
+
+  it("returns '' (not a JSON blob) for null/unrecognized shapes", () => {
+    expect(resultStatusText(null)).toBe("");
+    expect(resultStatusText(undefined)).toBe("");
+    expect(resultStatusText({ weird: 1 })).toBe("");
+  });
+});
 
 describe("matchToolCall", () => {
   it("matches the REAL goose form 'Scooter-env: Slack Respond' (server-prefixed, title-cased)", () => {

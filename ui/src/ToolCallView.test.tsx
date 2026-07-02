@@ -32,14 +32,16 @@ describe("ToolCallView", () => {
         // The REAL form the stream carries (server-prefixed, title-cased).
         toolName: "Scooter-env: Slack Respond",
         args: { text: "on it" },
-        result: "posted to the thread",
+        // The REAL result shape — the ACP content-array blob, NOT a plain string.
+        result: [{ content: { text: "Posted to the Slack thread.", type: "text" }, type: "content" }],
       })),
     );
     expect(html).toContain("provider-tool-card");
     expect(html).toContain('data-provider="slack"');
-    expect(html).toContain("on it");                 // the body
-    expect(html).toContain("posted to the thread");  // the result
-    expect(html).toContain("<svg");                  // the Slack icon rendered
+    expect(html).toContain("on it");                       // the POSTED text (body)
+    expect(html).toContain("Posted to the Slack thread.");  // the result — unwrapped, clean
+    expect(html).not.toContain('"type":"content"');         // NOT the raw JSON blob
+    expect(html).toContain("<svg");                         // the Slack icon rendered
   });
 
   it("shows a GitHub comment card", () => {
