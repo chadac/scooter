@@ -22,6 +22,20 @@ scoped, time-limited access** and a human **approves it in this very
 conversation**. The broker then vends short-lived STS credentials into your
 `~/.aws/config` (a profile per account), and `aws --profile <account> …` works.
 
+## First: discover which accounts exist
+
+Don't guess an account alias — **list them** to find the right one for the task:
+
+```bash
+scooter-aws accounts
+```
+
+This prints each available account with its `description` (what it's for),
+`account_id`, what policies are allowed, and `auto_approve_read_only` (whether a
+read-only request there is granted with no human). Read the descriptions, pick
+the account that matches the task, and use its alias as `--profile` below. Prefer
+an `auto_approve_read_only` account for read-only work — it's instant.
+
 ## How to request
 
 `--policy` takes a **file path** (or `-` for stdin), and the account is

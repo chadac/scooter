@@ -61,7 +61,7 @@ REGISTRY = {
     "off": {"account_id": "789", "broker_role_arn": "arn:...:base", "enabled": False},
     # Opt-in read-only auto-approval (no human needed for pure-read requests).
     "ro": {"account_id": "999", "broker_role_arn": "arn:...:base", "enabled": True,
-           "auto_approve_read_only": True,
+           "auto_approve_read_only": True, "description": "read-only sandbox",
            "allowed_policy": {"Statement": [{"Action": ["*"], "Resource": ["*"]}]}},
 }
 
@@ -270,3 +270,18 @@ async def test_sweep_expires_past_ttl(tmp_path):
     got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert got.status == RequestStatus.EXPIRED
     assert creds is None
+
+
+async def test_accounts_exposes_description_and_auto_approve(tmp_path):
+    # The agent discovers accounts via accounts() (GET /aws/accounts): each carries
+    # a human `description` + the `auto_approve_read_only` flag so it can pick the
+    # right one. Disabled accounts are omitted.
+    svc = await make_service(tmp_path)
+    accts = await svc.accounts()
+    assert "off" not in accts  # disabled -> not offered
+    assert accts["ro"]["description"] == "read-only sandbox"
+    assert accts["ro"]["auto_approve_read_only"] is True
+    # An account with no description/flag still reports safe defaults.
+    assert accts["dev"]["description"] == ""
+    assert accts["dev"]["auto_approve_read_only"] is False
+    assert accts["dev"]["account_id"] == "123"
