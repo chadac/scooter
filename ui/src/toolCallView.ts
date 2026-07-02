@@ -73,3 +73,36 @@ export function matchToolCall(toolName: string, args: unknown): ToolCallVisual |
   const body = typeof raw === "string" ? raw : "";
   return { provider: meta.provider, body, action: meta.action };
 }
+
+/**
+ * Extract a CLEAN one-line status from a tool result, unwrapping the ACP shapes so
+ * we don't dump a JSON blob into the card. Handles: a plain string; MCP
+ * `{content:[{type:"text",text}]}`; the ACP content-array
+ * `[{content:{type:"text",text}}]` (what slack_respond returns); `{text}`. Falls
+ * back to "" (show nothing) rather than a raw JSON.stringify.
+ */
+export function resultStatusText(result: unknown): string {
+  if (result == null) return "";
+  if (typeof result === "string") return result.trim();
+
+  const pickText = (v: unknown): string => {
+    const r = asRecord(v);
+    if (typeof r.text === "string") return r.text;
+    // { content: "..." } | { content: { text } } | { content: [{ text }] }
+    if (r.content !== undefined) {
+      if (typeof r.content === "string") return r.content;
+      if (Array.isArray(r.content)) return r.content.map(pickText).filter(Boolean).join("\n");
+      const c = asRecord(r.content);
+      if (typeof c.text === "string") return c.text;
+    }
+    return "";
+  };
+
+  if (Array.isArray(result)) {
+    const parts = result.map(pickText).filter(Boolean);
+    if (parts.length) return parts.join("\n").trim();
+    return "";
+  }
+  const single = pickText(result);
+  return single.trim();
+}

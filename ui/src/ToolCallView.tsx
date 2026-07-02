@@ -11,7 +11,7 @@ import type { ToolCallMessagePartComponent, ToolCallMessagePartProps } from "@as
 
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { SourceBadge, sourceLabel } from "./sourceIcon.js";
-import { matchToolCall } from "./toolCallView.js";
+import { matchToolCall, resultStatusText } from "./toolCallView.js";
 
 /** Parse the args object from the part (prefer the parsed `args`, else argsText). */
 function readArgs(props: ToolCallMessagePartProps): unknown {
@@ -31,9 +31,10 @@ export const ToolCallView: ToolCallMessagePartComponent = (props) => {
 
   const status = props.status?.type;
   const failed = status === "incomplete";
-  // The tool returns the upstream result string (or an error). Show it small.
-  const resultText =
-    typeof props.result === "string" ? props.result : props.result != null ? JSON.stringify(props.result) : "";
+  // A CLEAN one-line status from the tool result — NOT the raw ACP content blob
+  // (e.g. [{"content":{"text":"Posted to the Slack thread."}}]); the posted text
+  // is shown as the body above, the result is just a confirmation/error line.
+  const resultText = resultStatusText(props.result);
 
   return (
     <div

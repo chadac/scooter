@@ -9,6 +9,7 @@ import { Sidebar } from "./Sidebar.js";
 import { InterruptPanel } from "./InterruptPanel.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
+import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { Thread } from "@/components/assistant-ui/thread";
 
 export function App() {
@@ -29,8 +30,10 @@ export function App() {
             <div className="min-h-0 flex-1">
               {/* Provider "post" tool calls (slack/github/gitlab/jira) render as
                   message cards with the provider icon; other tools use the stock
-                  generic box. */}
-              <Thread components={{ ToolFallback: ToolCallView }} />
+                  generic box. ToolGroupOpen keeps grouped tool calls EXPANDED so
+                  the cards + shell commands are visible top-level, not hidden
+                  behind a "N tool calls" collapse. */}
+              <Thread components={{ ToolFallback: ToolCallView, ToolGroup: ToolGroupOpen }} />
             </div>
           </main>
           {/* Agent option/permission requests (AG-UI interrupts, e.g. an AWS
