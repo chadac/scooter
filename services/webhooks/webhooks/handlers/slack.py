@@ -333,8 +333,25 @@ async def _background_create_conversation(
     res_id: str, message: str, conv_title: str,
     channel: str, thread_ts: str,
 ) -> None:
+    # Register the Slack thread anchor BEFORE the agent runs. create_conversation
+    # blocks until the turn finishes, and the agent is instructed to acknowledge
+    # first — so its FIRST slack_respond fires before this returns. If the link
+    # (with ref.threadTs) isn't there yet, that first reply has no thread to infer
+    # and escapes to the channel top-level (the reported bug). Pushing it in the
+    # on_created hook (fired pre-run) guarantees the anchor exists from message 1.
+    async def _register(conv_id: str) -> None:
+        await db.store_conversation("slack", "thread", res_id, conv_id)
+        # Persist slack_channel/slack_ts too, so the agent-host DB fallback resolves
+        # the thread even if the link push is slow/lost.
+        await db.store_slack_metadata(conv_id, channel, thread_ts)
+        await push_link(
+            conv_id, source="slack", resource_type="thread",
+            title=f"{channel} thread",
+            ref={"channel": channel, "threadTs": thread_ts},
+        )
+
     try:
-        result = await create_conversation(message, title=conv_title)
+        result = await create_conversation(message, title=conv_title, on_created=_register)
         if not result:
             await _clear_pending(res_id)
             await post_slack_message(
@@ -345,15 +362,7 @@ async def _background_create_conversation(
             return
 
         conv_id = result.get("conversation_id", "")
-        await db.store_conversation("slack", "thread", res_id, conv_id)
         conv_link = conversation_url(conv_id)
-
-        # Surface the originating Slack thread in the UI's linked-resources panel.
-        await push_link(
-            conv_id, source="slack", resource_type="thread",
-            title=f"{channel} thread",
-            ref={"channel": channel, "threadTs": thread_ts},
-        )
 
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("slack", "thread", res_id)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -31,6 +32,7 @@ async def create_conversation(
     repository: str | None = None,
     git_provider: str = "github",
     title: str | None = None,
+    on_created: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict | None:
     """Spawn an agent conversation for `initial_message`.
 
@@ -39,6 +41,13 @@ async def create_conversation(
     assistant message. Returns {conversation_id, result} or None on failure.
 
     `repository` is woven into the task text (the agent works in its sandbox).
+
+    `on_created`, if given, is awaited with the conversation_id BEFORE the agent
+    run starts — the run blocks until RUN_FINISHED, and the agent may call a
+    response tool (e.g. slack_respond) on its very first turn, so the target
+    link/mapping MUST be registered up front or that first reply has nothing to
+    infer its thread from (the Slack "first message escapes the thread" bug). A
+    hook failure is logged, not fatal — the run proceeds.
     """
     conversation_id = str(uuid.uuid4())
     task = initial_message
@@ -50,6 +59,12 @@ async def create_conversation(
         "runId": str(uuid.uuid4()),
         "messages": [{"role": "user", "content": task}],
     }
+
+    if on_created is not None:
+        try:
+            await on_created(conversation_id)
+        except Exception:
+            logger.exception("create_conversation on_created hook failed (continuing)")
 
     try:
         result_text = await _run_and_collect(payload)
