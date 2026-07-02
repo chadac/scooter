@@ -116,7 +116,11 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   };
 
   return {
-    async create(id: string): Promise<SandboxRef> {
+    async create(id: string, threadId?: string): Promise<SandboxRef> {
+      // The URL deep-links on the FULL conversation id (threadId), NOT the short
+      // DNS-safe hash used for resource names — else the shared link resolves to a
+      // different (empty) conversation and permission prompts land in the wrong place.
+      const urlThread = threadId ?? id;
       // 1. per-conversation ServiceAccount (broker identity). Idempotent:
       // tolerate an SA left behind by a prior run (AlreadyExists / 409).
       await core
@@ -160,7 +164,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           // configured), so the agent can point a human at its own conversation.
           extraEnv: [
             ...(opts.publicUrl
-              ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${id}` }]
+              ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(urlThread)}` }]
               : []),
             ...(opts.extraEnv ?? []),
           ],
