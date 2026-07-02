@@ -37,9 +37,17 @@ export interface UserContext {
 export const ANONYMOUS_USER = "anonymous";
 
 /** Resolve identity from ONE request. Sync (header/JWT parse only); any DB-backed
- *  enrichment is layered on top via the identity store (identityStore.ts). */
+ *  enrichment / signature verification is layered on top via async wrappers
+ *  (identityStore.ts, albVerify.ts). */
 export interface IdentityResolver {
   resolve(req: IncomingMessage): UserContext;
+}
+
+/** A resolver that MAY be async (a wrapper doing a DB lookup or key fetch). Both
+ *  the base sync resolvers and the async wrappers satisfy this, so wrappers can
+ *  compose over each other. */
+export interface AsyncIdentityResolver {
+  resolve(req: IncomingMessage): UserContext | Promise<UserContext>;
 }
 
 // --- header helpers --------------------------------------------------------

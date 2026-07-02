@@ -201,6 +201,21 @@ in
         default = "header";
         description = "Identity source: `header` (default; a proxy sets userHeader/emailHeader) or `alb-oidc` (AWS ALB OIDC).";
       };
+      # Optional hardening for alb-oidc: cryptographically verify the ALB's
+      # x-amzn-oidc-data JWT signature (fetch the ALB public key by kid) before
+      # trusting its email/name claims. On a verify failure the id (from the
+      # separate header) is kept but the claims are dropped. Off by default (the
+      # ALB is already the trust boundary).
+      albVerify = mkOption {
+        type = types.bool;
+        default = false;
+        description = "alb-oidc: verify the x-amzn-oidc-data JWT signature (fetch ALB's public key) before trusting its claims.";
+      };
+      albRegion = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Region for the ALB public-key endpoint. REQUIRED when albVerify = true (no silent default — the public-key host is region-specific).";
+      };
       userHeader = mkOption {
         type = types.str;
         default = "x-auth-user";
@@ -459,6 +474,16 @@ in
                 ++ lib.optional (cfg.auth.mode != "header")
                   # Identity provider: header (default) or alb-oidc.
                   { name = "AUTH_MODE"; value = cfg.auth.mode; }
+                ++ lib.optional cfg.auth.albVerify
+                  # Verify the ALB x-amzn-oidc-data JWT signature before trusting
+                  # it. Requires a region (the public-key host is region-specific:
+                  # public-keys.auth.elb.<region>.amazonaws.com) — assert rather
+                  # than silently guessing.
+                  (assert lib.assertMsg (cfg.auth.albRegion != null)
+                    "agentSandbox.auth.albVerify = true requires agentSandbox.auth.albRegion to be set (the ALB public-key endpoint is region-specific).";
+                    { name = "AUTH_ALB_VERIFY"; value = "1"; })
+                ++ lib.optional cfg.auth.albVerify
+                  { name = "AUTH_ALB_REGION"; value = cfg.auth.albRegion; }
                 ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
                   # Identity header the ingress injects (default x-auth-user).
                   { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }

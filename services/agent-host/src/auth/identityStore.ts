@@ -18,7 +18,7 @@
 
 import { Pool } from "pg";
 
-import type { IdentityResolver, UserContext } from "./identity.js";
+import type { AsyncIdentityResolver, UserContext } from "./identity.js";
 
 export interface IdentityRecord {
   email?: string;
@@ -48,13 +48,13 @@ export interface EnrichOptions {
  * straight through (no id to enrich or persist).
  */
 export function withIdentityStore(
-  resolver: IdentityResolver,
+  resolver: AsyncIdentityResolver,
   opts: EnrichOptions = {},
 ): { resolve(req: import("node:http").IncomingMessage): Promise<UserContext> } {
   const { store, staticMap } = opts;
   return {
     async resolve(req) {
-      const user = resolver.resolve(req);
+      const user = await resolver.resolve(req);
       if (user.anonymous) return user;
 
       if (user.email) {
