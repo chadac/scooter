@@ -253,6 +253,9 @@ export async function main(
           .split(";").map((s) => s.trim()).filter(Boolean)
           .map((kv) => { const i = kv.indexOf("="); return { name: kv.slice(0, i), value: kv.slice(i + 1) }; })
           .filter((e) => e.name),
+        // Public chat UI base URL → each sandbox gets CONVERSATION_URL for its own
+        // conversation (so the agent can share a link, e.g. to approve an AWS req).
+        publicUrl: process.env.PUBLIC_URL || undefined,
       });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead

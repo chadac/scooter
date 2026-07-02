@@ -80,27 +80,56 @@ export class IntegrityAgent extends AbstractAgent {
    *  the trailing assistant message's status/metadata. */
   private logInterrupts: PendingInterrupt[] = [];
 
-  /** The interrupt(s) the conversation is currently paused on (empty if none). */
+  /** EXTERNAL interrupts (e.g. a broker AWS approval) raised OUT OF BAND via
+   *  raiseInterrupt — they ride a RUN_FINISHED with runId "ext-<id>" that is NOT
+   *  tied to the goose run. A concurrent goose run's RUN_STARTED/RUN_FINISHED must
+   *  NOT clear these (that was the "AWS request vanishes on reload" bug); they are
+   *  settled only by a matching PERMISSION_RESOLVED. Keyed by interrupt id. */
+  private externalInterrupts = new Map<string, PendingInterrupt>();
+
+  /** The interrupt(s) the conversation is currently paused on (empty if none) —
+   *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
-    return this.logInterrupts;
+    if (this.externalInterrupts.size === 0) return this.logInterrupts;
+    return [...this.logInterrupts, ...this.externalInterrupts.values()];
   }
 
-  /** Update pendingInterrupts from a single log event: RUN_STARTED clears (the run
-   *  resumed / a new turn began), RUN_FINISHED(outcome=interrupt) sets. Only the
-   *  LATEST run's outcome matters, so a later RUN_STARTED always supersedes. */
+  /** Update pendingInterrupts from a single log event:
+   *   - RUN_STARTED clears the RUN-SCOPED set (a new turn began);
+   *   - RUN_FINISHED(interrupt) with runId "ext-*" ADDS an external interrupt
+   *     (survives concurrent runs); a normal RUN_FINISHED(interrupt) sets the
+   *     run-scoped set; a normal RUN_FINISHED without interrupt clears it;
+   *   - PERMISSION_RESOLVED settles an external interrupt by id.
+   *  External interrupts are cleared ONLY by PERMISSION_RESOLVED — never by run
+   *  boundaries — so a still-pending broker request replays after a reload. */
   private trackInterrupt(e: BaseEvent): void {
     const ev = e as unknown as {
       type?: string;
+      runId?: string;
+      toolCallId?: string;
+      optionId?: string | null;
       outcome?: { type?: string; interrupts?: PendingInterrupt[] };
     };
-    const before = this.logInterrupts;
-    if (ev.type === "RUN_STARTED") {
+    const before = this.getPendingInterrupts().length;
+    if (ev.type === "PERMISSION_RESOLVED") {
+      if (ev.toolCallId && this.externalInterrupts.delete(ev.toolCallId)) {
+        // fall through to the change-nudge below
+      } else {
+        return;
+      }
+    } else if (ev.type === "RUN_STARTED") {
       this.logInterrupts = [];
     } else if (ev.type === "RUN_FINISHED") {
-      this.logInterrupts =
+      const interrupts =
         ev.outcome?.type === "interrupt" && Array.isArray(ev.outcome.interrupts)
           ? ev.outcome.interrupts
           : [];
+      if (typeof ev.runId === "string" && ev.runId.startsWith("ext-")) {
+        // Out-of-band external interrupt: add (don't replace the run-scoped set).
+        for (const it of interrupts) this.externalInterrupts.set(it.id, it);
+      } else {
+        this.logInterrupts = interrupts;
+      }
     } else {
       return;
     }
@@ -108,7 +137,7 @@ export class IntegrityAgent extends AbstractAgent {
     // applier (empty state => no AgentStateMessage), so the render subscribers
     // wouldn't otherwise refresh to show the interrupt. Nudge them when the pending
     // set actually changes so RuntimeProvider re-folds + surfaces (or clears) it.
-    if (before.length !== this.logInterrupts.length) {
+    if (before !== this.getPendingInterrupts().length) {
       for (const s of this.subscribers) {
         s.onMessagesChanged?.({
           messages: this.messages,
@@ -305,8 +334,12 @@ export class IntegrityAgent extends AbstractAgent {
         // subscription; it completes only when the connection actually ends.
         this.setMessages([]);
         // A fresh connection re-replays the whole log; recompute pending interrupts
-        // from scratch too (they are derived from the trailing RUN_FINISHED).
+        // from scratch too. Run-scoped ones derive from the trailing RUN_FINISHED;
+        // external (broker) ones are rebuilt as their ext- RUN_FINISHED and any
+        // settling PERMISSION_RESOLVED replay in order — so a still-open request
+        // survives the reload, and a resolved one stays gone.
         this.logInterrupts = [];
+        this.externalInterrupts.clear();
         controller = new AbortController();
         this.controllers.add(controller);
         const events$ = new Subject<BaseEvent>();

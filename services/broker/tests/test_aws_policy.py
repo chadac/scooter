@@ -116,3 +116,31 @@ def test_empty_bounds_denies_all():
 def test_summary_is_human_readable():
     s = policy.summarize_policy(stmt(["s3:GetObject", "s3:PutObject"], "arn:aws:s3:::mybucket/*"))
     assert "s3:GetObject" in s and "mybucket" in s
+
+
+# --- read-only detection (auto-approval gate) ----------------------------
+def test_is_read_only_policy_true_for_all_read_actions():
+    assert policy.is_read_only_policy(stmt(["s3:GetObject", "s3:ListBucket", "ec2:DescribeInstances"]))
+
+
+def test_is_read_only_policy_false_when_any_write():
+    assert not policy.is_read_only_policy(stmt(["s3:GetObject", "s3:PutObject"]))
+
+
+def test_is_read_only_policy_false_for_wildcard():
+    # "*" and "service:*" grant writes -> NOT auto-approvable.
+    assert not policy.is_read_only_policy(stmt("s3:*"))
+    assert not policy.is_read_only_policy(stmt("*"))
+
+
+def test_is_read_only_policy_false_for_empty():
+    assert not policy.is_read_only_policy({"Statement": []})
+
+
+def test_is_read_only_policy_ignores_deny_statements():
+    # A Deny can't grant anything, so a Deny on a write action doesn't disqualify.
+    doc = {"Statement": [
+        {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"},
+        {"Effect": "Deny", "Action": "s3:DeleteObject", "Resource": "*"},
+    ]}
+    assert policy.is_read_only_policy(doc)
