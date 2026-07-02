@@ -8,6 +8,7 @@ import { RuntimeProvider } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
 import { InterruptPanel } from "./InterruptPanel.js";
 import { UserBadge } from "./UserBadge.js";
+import { ToolCallView } from "./ToolCallView.js";
 import { Thread } from "@/components/assistant-ui/thread";
 
 export function App() {
@@ -26,7 +27,10 @@ export function App() {
           <Sidebar />
           <main className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1">
-              <Thread />
+              {/* Provider "post" tool calls (slack/github/gitlab/jira) render as
+                  message cards with the provider icon; other tools use the stock
+                  generic box. */}
+              <Thread components={{ ToolFallback: ToolCallView }} />
             </div>
           </main>
           {/* Agent option/permission requests (AG-UI interrupts, e.g. an AWS

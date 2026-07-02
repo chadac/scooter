@@ -20,6 +20,7 @@ import {
   handleWebFetch,
   inferRef,
   toToolResult,
+  registerAgentTools,
   type BrokerClient,
   type BrokerResponse,
   type ToolContext,
@@ -238,5 +239,29 @@ describe("agent-tools: web_fetch SSRF guard", () => {
   ])("refuses %s", async (url) => {
     const out = await handleWebFetch(deps, { url });
     expect(out.isError).toBe(true);
+  });
+});
+
+describe("agent-tools: registered titles (the UI's provider-card renderer keys off these)", () => {
+  // The UI's ToolCallView (ui/src/toolCallView.ts) matches these EXACT title
+  // strings to render slack/github/gitlab/jira as message cards. goose surfaces
+  // the ACP `title` as the tool name in the UI, so a rename here silently reverts
+  // the card to the generic tool box. If you change a title, update the UI matcher.
+  it("keeps the titles the UI depends on", () => {
+    const titles = new Map<string, string>();
+    const server = {
+      registerTool: (name: string, meta: { title?: string }) => {
+        titles.set(name, meta.title ?? "");
+      },
+    } as unknown as Parameters<typeof registerAgentTools>[0];
+    registerAgentTools(
+      server,
+      { broker: fakeBroker({ status: 200, raw: "", data: undefined }) },
+      ctxWith([]),
+    );
+    expect(titles.get("slack_respond")).toBe("Respond in the Slack thread");
+    expect(titles.get("github_comment")).toBe("Comment on the GitHub PR/issue");
+    expect(titles.get("gitlab_comment")).toBe("Comment on the GitLab MR");
+    expect(titles.get("jira_comment")).toBe("Comment on the Jira issue");
   });
 });
