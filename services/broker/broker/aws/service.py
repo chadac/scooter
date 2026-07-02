@@ -344,6 +344,23 @@ class PermissionService:
         )
         return await self._store.get(request_id)  # type: ignore[return-value]
 
+    async def can_approve(self, *, request_id: str, approver: str) -> bool:
+        """Read-only: may `approver` approve THIS request's account? Powers the
+        UI's greyed-out Approve button (per-VIEWER — the interrupt is raised once
+        server-side but seen by many users). Resolves the account from the request
+        (never trusts a client-supplied alias) and runs the same OpenFGA `approver`
+        check as approve()/deny() — WITHOUT mutating. FGA off -> NoopAuthorizer ->
+        True. Fails CLOSED (False) if the request is unknown or FGA is unreachable."""
+        req = await self._store.get(request_id)
+        if req is None:
+            return False
+        try:
+            return await self._authz.check(
+                user=approver, relation="approver", obj=aws_account_object(req.target_account)
+            )
+        except Exception:  # FGA unreachable -> fail closed (greyed button, not a false-allow)
+            return False
+
     # --- retrieve / refresh / revoke (agent) -------------------------------
     async def status(
         self, *, request_id: str, conversation_id: str

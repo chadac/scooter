@@ -126,6 +126,62 @@ def test_cross_conversation_isolation_over_http(tmp_path):
         assert client.get(f"/aws/aws/{rid}").status_code == 404
 
 
+class _FakeAuthorizer:
+    def __init__(self, allowed):
+        self.allowed = allowed
+
+    async def check(self, *, user, relation, obj):
+        return (user, relation, obj) in self.allowed
+
+    async def grant(self, *, user, relation, obj):
+        pass
+
+
+def test_can_approve_route_reflects_the_openfga_check(tmp_path):
+    """The read-only /can-approve route answers per-viewer without mutating —
+    true for an account approver, false otherwise. Powers the greyed Approve
+    button; no admin gate (anyone may ASK)."""
+    # The route runs resolve_approver, which STRIPS a leading "user:" — so the FGA
+    # check receives the BARE principal (same as approve()/deny() do). Seed the
+    # authorizer with the bare id so can-approve mirrors real approve behavior.
+    authz = _FakeAuthorizer({("alice@x", "approver", "aws_account:dev")})
+    store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'ca.db'}"))
+    service = PermissionService(
+        store=store, iam=FakeIam(), account_registry=REGISTRY,
+        config=ServiceConfig(broker_principal_arn="arn:...:broker"), authorizer=authz,
+    )
+    transport = AwsPermissions()
+    transport.set_service(service, is_admin=None)
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        await store.init()
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+    app.include_router(transport.routes(provider=None, authed=authenticate), prefix="/aws")
+    app.dependency_overrides[authenticate] = _identity("conv-1")
+
+    with TestClient(app) as client:
+        rid = client.post(
+            "/aws/aws/request",
+            json={"target_account": "dev", "policy_document": POLICY, "justification": "x"},
+        ).json()["request_id"]
+
+        # alice can approve dev (an identity dict, as the agent-host sends).
+        r = client.post(f"/aws/aws/{rid}/can-approve", json={"approver": {"id": "alice@x", "email": "alice@x"}})
+        assert r.status_code == 200 and r.json()["can_approve"] is True
+
+        # bob cannot.
+        r = client.post(f"/aws/aws/{rid}/can-approve", json={"approver": {"id": "bob@x", "email": "bob@x"}})
+        assert r.status_code == 200 and r.json()["can_approve"] is False
+
+        # The request is untouched (still pending) — the check is read-only.
+        assert client.get(f"/aws/aws/{rid}").json()["status"] == "pending"
+
+
 def test_approve_requires_approver_identity(tmp_path):
     """approve/deny are gated on is_approver — a sandbox identity gets 403."""
     store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'b.db'}"))

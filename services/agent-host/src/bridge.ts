@@ -125,6 +125,9 @@ export interface SessionBridge {
     message: string;
     options: Array<{ optionId: string; name: string; kind: string }>;
     onAnswer: (optionId: string | null, approver?: ApproverIdentity) => void;
+    /** Extra metadata merged into the emitted interrupt (alongside `options`),
+     *  e.g. `{ aws: true }` so the UI knows to run a per-viewer can-approve check. */
+    metadata?: Record<string, unknown>;
   }): void;
 
   /** Subscribe to the AG-UI event stream broadcast to the UI (live). */
@@ -557,7 +560,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }
       return true;
     },
-    raiseInterrupt({ id, message, options, onAnswer }) {
+    raiseInterrupt({ id, message, options, onAnswer, metadata }) {
       pendingPermissions.set(id, {
         resolve: () => {},
         validOptions: new Set(options.map((o) => o.optionId)),
@@ -572,7 +575,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         runId: `ext-${id}`,
         outcome: {
           type: "interrupt",
-          interrupts: [{ id, reason: "confirmation", message, metadata: { options } }],
+          interrupts: [{ id, reason: "confirmation", message, metadata: { ...metadata, options } }],
         },
       });
     },
