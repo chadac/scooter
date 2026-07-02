@@ -24,4 +24,22 @@ test.describe(run ? "real goose" : "real goose (skipped)", () => {
     await expect(chat.toolCalls().first()).toBeVisible({ timeout: 120_000 });
     await expect(chat.assistantMessages().last()).toContainText(/kubenix/i, { timeout: 120_000 });
   });
+
+  test("real goose tool calls survive a page refresh", async ({ chat, page }) => {
+    // The fake agent emits a single, tidy tool call; REAL goose emits richer
+    // shapes (tool calls with no parent assistant text, multiple calls per turn).
+    // This is where "tool calls vanish after refresh" would actually reproduce —
+    // the fake-stack refresh test can't exercise it. Drive a real tool-using
+    // turn, reload, and assert the tool call replays from the persisted log.
+    await chat.open();
+    await chat.send("Run `echo kubenix-refresh-marker` in the shell and report the output.");
+    await expect(chat.toolCalls().first()).toBeVisible({ timeout: 120_000 });
+    await expect(chat.assistantMessages().last()).toContainText(/kubenix-refresh-marker/i, { timeout: 120_000 });
+
+    await page.reload();
+    await expect(chat.input()).toBeVisible({ timeout: 20_000 });
+
+    // The tool call must rebuild from events.integrity replay, not the live stream.
+    await expect(chat.toolCalls().first()).toBeVisible({ timeout: 60_000 });
+  });
 });
