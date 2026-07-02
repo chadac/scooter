@@ -105,6 +105,11 @@ export interface ConversationStore {
    *  the chain. Computed deterministically from the persisted log order, so it
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
+  /** The RECENT tail only: the events from the last `runs` runs, read WITHOUT
+   *  parsing the whole log (scan from the end for RUN_STARTED boundaries) — so a
+   *  fast first-paint window on a long conversation stays cheap. Optional (an
+   *  in-memory store can fall back to reading all of readEvents). */
+  readEventsTail?(id: SessionId, runs: number): Promise<AguiEvent[]>;
   /** Subscribe to events as they are durably appended, each carrying its rolling
    *  checksum (folded in persisted order). This is the authority the live
    *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's

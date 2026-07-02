@@ -275,9 +275,9 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerPermission: async () => {} });
     const { json } = await call(api, "GET", "/conversations/c1/tail?runs=1");
     const body = json as any;
-    expect(body.windowed).toBe(true);
-    expect(body.total).toBe(15);
-    // Only the last run's events, starting at its RUN_STARTED.
+    expect(body.runs).toBe(1);
+    // Only the last run's events, starting at its RUN_STARTED (the store here has
+    // no readEventsTail, so this exercises the read-all + tailByRuns fallback).
     expect(body.events[0]).toMatchObject({ type: "RUN_STARTED", runId: "r3" });
     expect(body.events.filter((e: any) => e.type === "RUN_STARTED")).toHaveLength(1);
   });

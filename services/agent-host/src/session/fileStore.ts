@@ -154,6 +154,36 @@ export function createFileConversationStore(root: string): ConversationStore {
       }
     },
 
+    async readEventsTail(id, runs) {
+      // The RECENT tail only: the events from the last `runs` runs, for a fast
+      // first paint on a LONG conversation. We read the file (one syscall) but scan
+      // lines from the END to find the last `runs` RUN_STARTED boundaries by a cheap
+      // string test, and JSON.parse ONLY the windowed tail lines — not the whole
+      // log (which is what made the naive route as slow as a full replay).
+      let data: string;
+      try {
+        data = await readFile(logPath(id), "utf8");
+      } catch (e) {
+        if (isENOENT(e)) return [];
+        throw e;
+      }
+      if (runs <= 0) return [];
+      const lines = data.split("\n").filter((l) => l.trim());
+      // Walk backward, counting RUN_STARTED markers; stop once we've passed `runs`.
+      let start = 0;
+      let seen = 0;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].includes('"RUN_STARTED"')) {
+          seen += 1;
+          start = i;
+          if (seen >= runs) break;
+        }
+      }
+      // If there were fewer than `runs` RUN_STARTED markers, start stays at the
+      // first RUN_STARTED found (or 0). Parse only the windowed slice.
+      return lines.slice(start).map((l) => JSON.parse(l) as AguiEvent);
+    },
+
     async *readEventsWithChecksum(id): AsyncIterable<ChecksummedEvent> {
       let prev = EMPTY_CHECKSUM;
       for await (const event of this.readEvents(id)) {
