@@ -9,11 +9,19 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
-  userFromRequest,
-  identityConfigFromEnv,
-  type IdentityConfig,
+  resolverFromEnv,
   type UserContext,
 } from "../auth/identity.js";
+
+/** How the router resolves the caller's identity per request. Async so a resolver
+ *  can enrich via a store (identityStore.ts). Defaults to the env-configured
+ *  resolver (header by default; alb-oidc when AUTH_MODE=alb-oidc), no store. */
+export type ResolveUser = (req: IncomingMessage) => Promise<UserContext> | UserContext;
+
+function defaultResolveUser(): ResolveUser {
+  const resolver = resolverFromEnv();
+  return (req) => resolver.resolve(req);
+}
 
 export interface Ctx {
   req: IncomingMessage;
@@ -44,7 +52,7 @@ export interface Router {
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
 }
 
-export function createRouter(identityConfig: IdentityConfig = identityConfigFromEnv()): Router {
+export function createRouter(resolveUser: ResolveUser = defaultResolveUser()): Router {
   const routes: Route[] = [];
 
   const readBody = (req: IncomingMessage): Promise<string> =>
@@ -99,7 +107,7 @@ export function createRouter(identityConfig: IdentityConfig = identityConfigFrom
           res,
           params,
           query: url.searchParams,
-          user: userFromRequest(req, identityConfig),
+          user: await resolveUser(req),
           body: async <T,>() => {
             cachedBody ??= await readBody(req);
             return (cachedBody ? JSON.parse(cachedBody) : {}) as T;

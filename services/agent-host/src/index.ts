@@ -33,6 +33,9 @@ import { createModuleManager } from "./session/moduleManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
+import { resolverFromEnv } from "./auth/identity.js";
+import { withIdentityStore, createPgIdentityStore } from "./auth/identityStore.js";
+import type { IncomingMessage } from "node:http";
 import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
@@ -207,6 +210,23 @@ function webhooksResourceDsn(): string {
   return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
 }
 
+/** Parse an optional static id->email map from AUTH_SUB_EMAIL_MAP ("sub=email"
+ *  pairs, comma or semicolon separated). Undefined when unset/empty. Used to seed
+ *  identity email resolution for a known set of users (e.g. before the learned
+ *  store has seen them). */
+function parseIdentityMap(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, string> = {};
+  for (const pair of raw.split(/[;,]/)) {
+    const i = pair.indexOf("=");
+    if (i <= 0) continue;
+    const k = pair.slice(0, i).trim();
+    const v = pair.slice(i + 1).trim();
+    if (k && v) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function bedrockEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of [
@@ -332,6 +352,18 @@ export async function main(
   // Absent -> the tools rely on `ref` alone (unchanged behavior).
   const webhooksDsn = webhooksResourceDsn();
   const resourceLookup = webhooksDsn ? createResourceLookup({ dsn: webhooksDsn }) : undefined;
+
+  // Identity resolution (provider-agnostic): the env-configured resolver (header
+  // by default; alb-oidc when AUTH_MODE=alb-oidc), optionally enriched with a
+  // learned sub->email store (Postgres on the shared DB) + a static map. All
+  // optional — with none configured this is the plain header behavior.
+  const identityResolver = resolverFromEnv();
+  const identityStore = webhooksDsn ? createPgIdentityStore({ dsn: webhooksDsn }) : undefined;
+  const staticIdentityMap = parseIdentityMap(process.env.AUTH_SUB_EMAIL_MAP);
+  const resolveUser =
+    identityStore || staticIdentityMap
+      ? withIdentityStore(identityResolver, { store: identityStore, staticMap: staticIdentityMap }).resolve
+      : (req: IncomingMessage) => identityResolver.resolve(req);
   const agentToolsWiring = brokerUrl
     ? {
         broker: createBrokerClient({
@@ -410,6 +442,7 @@ export async function main(
       store,
       server,
       models: { default: config.model, available: config.availableModels },
+      resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId) => {
         // Route the user's choice to the conversation's bridge, which resolves
