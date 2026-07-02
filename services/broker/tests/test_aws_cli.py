@@ -63,3 +63,38 @@ def test_credentials_helper_fails_closed_with_actionable_error(monkeypatch, caps
     err = capsys.readouterr().err
     assert rc == 1
     assert "not granted" in err and "scooter-aws request --profile dev" in err
+
+
+def test_request_sends_conversation_url_from_env(monkeypatch, tmp_path, capsys):
+    """`scooter-aws request` attaches CONVERSATION_URL (the agent's own convo link)
+    so the approval UI / requester can jump to it; and tells the agent to share it."""
+    captured = {}
+
+    def fake_call(method, path, body=None):
+        captured["body"] = body
+        return 201, {"request_id": "abc123", "status": "pending"}
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    monkeypatch.setenv("CONVERSATION_URL", "https://ui/?thread=conv-1")
+    pol = tmp_path / "p.json"
+    pol.write_text('{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}')
+
+    rc = cli.cli_main(["request", "--profile", "dev", "--policy", str(pol), "--justification", "read"])
+    assert rc == 0
+    assert captured["body"]["conversation_url"] == "https://ui/?thread=conv-1"
+    out = capsys.readouterr().out
+    assert "https://ui/?thread=conv-1" in out  # the agent is told to share the link
+
+
+def test_request_reports_auto_approval(monkeypatch, tmp_path, capsys):
+    """A read-only auto-approved request (status 'active') tells the agent creds
+    are ready, not 'waiting for approval'."""
+    monkeypatch.setattr(cli, "_call", lambda *a, **k: (201, {"request_id": "abc123", "status": "active"}))
+    monkeypatch.delenv("CONVERSATION_URL", raising=False)
+    pol = tmp_path / "p.json"
+    pol.write_text('{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}')
+
+    rc = cli.cli_main(["request", "--profile", "dev", "--policy", str(pol), "--justification", "read"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "AUTO-APPROVED" in out and "waiting" not in out.lower()

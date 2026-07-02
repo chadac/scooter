@@ -30,6 +30,10 @@ from .models import PermissionRequest, RequestStatus, RiskLevel, StsCredentials
 from .store import PermissionStore
 
 
+# Recorded as `approved_by` when a read-only request is auto-approved (no human).
+AUTO_APPROVE_PRINCIPAL = "system:auto-approve-read-only"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -148,8 +152,25 @@ class PermissionService:
             iam_policy_arn=policy_arn,
         )
         await self._store.insert(req)
-        # Notify the agent-host so it raises the approval interrupt (best-effort —
-        # a notify failure must not fail the request; the user can also poll).
+
+        # OPT-IN read-only auto-approval: if the account enables it and the request
+        # is a pure read-only inline policy (no managed ARNs — those can grant
+        # writes), grant it immediately with a synthetic system approver instead of
+        # waiting for a human. Gated per-account (default off) so nothing is
+        # auto-granted unless the deployment explicitly opted in for that account.
+        if (
+            acct.get("auto_approve_read_only", False)
+            and not managed_policy_arns
+            and policy_document is not None
+            and policy.is_read_only_policy(policy_document)
+        ):
+            logger.info(
+                "auto-approving read-only request %s for account '%s'", request_id, target_account
+            )
+            return await self._provision(req, approver=AUTO_APPROVE_PRINCIPAL)
+
+        # Otherwise notify the agent-host so it raises the approval interrupt
+        # (best-effort — a notify failure must not fail the request; user can poll).
         if self._on_request is not None:
             try:
                 await self._on_request(req)
@@ -167,14 +188,10 @@ class PermissionService:
         if not allowed:
             raise RequestError([f"'{approver}' is not authorized to approve account '{target_account}'"])
 
-    async def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
-        req = await self._store.get(request_id)
-        if req is None:
-            raise RequestError([f"Unknown request '{request_id}'"])
-        if req.status != RequestStatus.PENDING:
-            raise RequestError([f"Request is {req.status.value}, not pending"])
-        await self._authorize_approver(approver, req.target_account)
-
+    async def _provision(self, req: PermissionRequest, approver: str) -> PermissionRequest:
+        """Provision the dynamic role + creds for an approved request and mark it
+        ACTIVE. Shared by human approve() and read-only auto-approval — `approver`
+        is the recorded approved_by (a real user, or a synthetic system principal)."""
         approved_at = _now()
         role_expires_at = (
             datetime.now(timezone.utc) + timedelta(hours=self._config.role_ttl_hours)
@@ -190,14 +207,14 @@ class PermissionService:
             )
         except Exception as exc:  # provisioning failed -> error state
             await self._store.update(
-                request_id, status=RequestStatus.ERROR, approved_at=approved_at,
+                req.request_id, status=RequestStatus.ERROR, approved_at=approved_at,
                 approved_by=approver, deny_reason=f"provisioning failed: {exc}",
             )
             raise RequestError([f"IAM provisioning failed: {exc}"]) from exc
 
-        self._creds[request_id] = creds
+        self._creds[req.request_id] = creds
         await self._store.update(
-            request_id,
+            req.request_id,
             status=RequestStatus.ACTIVE,
             approved_at=approved_at,
             approved_by=approver,
@@ -206,7 +223,16 @@ class PermissionService:
             credentials_issued_at=approved_at,
             expires_at=creds.expires_at,
         )
-        return await self._store.get(request_id)  # type: ignore[return-value]
+        return await self._store.get(req.request_id)  # type: ignore[return-value]
+
+    async def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
+        req = await self._store.get(request_id)
+        if req is None:
+            raise RequestError([f"Unknown request '{request_id}'"])
+        if req.status != RequestStatus.PENDING:
+            raise RequestError([f"Request is {req.status.value}, not pending"])
+        await self._authorize_approver(approver, req.target_account)
+        return await self._provision(req, approver)
 
     async def deny(self, *, request_id: str, approver: str, reason: str | None = None) -> PermissionRequest:
         req = await self._store.get(request_id)

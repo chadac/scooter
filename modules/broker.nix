@@ -134,8 +134,22 @@ in
         default = { };
         description = ''
           The account registry: alias -> { account_id, broker_role_arn, enabled,
-          allowed_policy?, allowed_managed_policies?, region? }. Rendered into a
-          ConfigMap mounted at /etc/agent-broker/accounts.json.
+          allowed_policy?, allowed_managed_policies?, region?, approvers?,
+          auto_approve_read_only? }. Rendered into a ConfigMap mounted at
+          /etc/agent-broker/accounts.json.
+
+          Set `auto_approve_read_only = true` on an account to grant purely
+          read-only requests (all actions Get*/List*/Describe*/… ; no managed-policy
+          ARNs) immediately, WITHOUT a human approver — recorded as approved_by
+          "system:auto-approve-read-only". Anything with a write action or a managed
+          ARN still needs a human. Default off (every request needs approval).
+          Example:
+            accounts.readonly-sandbox = {
+              account_id = "123456789012";
+              broker_role_arn = "arn:aws:iam::123456789012:role/agent-token-broker-base";
+              enabled = true;
+              auto_approve_read_only = true;
+            };
         '';
       };
       agentHostUrl = mkOption {

@@ -150,4 +150,52 @@ describe("IntegrityAgent", () => {
     expect(sent.resume[0]).toMatchObject({ interruptId: "i1", status: "resolved" });
     agent.dispose();
   });
+
+  // --- external (broker AWS) interrupts survive concurrent runs + reload -------
+  async function foldTo(agent: ReturnType<typeof createIntegrityAgent>) {
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsub(); stop(); resolve(); };
+      const { unsubscribe: unsub } = agent.subscribe({
+        onMessagesChanged: () => { clearTimeout(timer); timer = setTimeout(done, 150); },
+      });
+      setTimeout(done, 1200);
+    });
+  }
+
+  it("an external (ext-) interrupt SURVIVES a concurrent goose run's RUN_STARTED/RUN_FINISHED", async () => {
+    // The AWS-request bug: raiseInterrupt emits RUN_FINISHED(runId ext-aws1); the
+    // still-live goose run then emits its own RUN_STARTED/RUN_FINISHED (no
+    // interrupt), which used to CLEAR the pending interrupt → gone on reload.
+    const frames = [
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-aws1",
+        outcome: { type: "interrupt", interrupts: [{ id: "aws1", reason: "confirmation", message: "approve AWS?" }] } } },
+      // The concurrent goose run continues and finishes normally:
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "g9" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m9", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m9", delta: "still working" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m9" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "g9" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    const pending = agent.getPendingInterrupts();
+    expect(pending.map((p) => p.id)).toContain("aws1"); // NOT cleared by the goose run
+    agent.dispose();
+  });
+
+  it("a PERMISSION_RESOLVED settles the external interrupt (so a resolved one stays gone on reload)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-aws1",
+        outcome: { type: "interrupt", interrupts: [{ id: "aws1", reason: "confirmation", message: "approve AWS?" }] } } },
+      { kind: "event", event: { type: "PERMISSION_RESOLVED", toolCallId: "aws1", optionId: "approve" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getPendingInterrupts().map((p) => p.id)).not.toContain("aws1");
+    agent.dispose();
+  });
 });

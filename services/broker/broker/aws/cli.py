@@ -190,14 +190,27 @@ def cli_main(argv: list[str] | None = None) -> int:
             policy_doc = json.loads(raw)
         if policy_doc is None and not args.managed:
             ap.error("provide --policy and/or --managed")
-        status, body = _call("POST", "request", {
+        req_body = {
             "target_account": args.profile,
             "policy_document": policy_doc,
             "managed_policy_arns": args.managed,
             "justification": args.justification,
-        })
+        }
+        # A link to THIS conversation (where the human approves) — the agent-host
+        # injects CONVERSATION_URL into the sandbox. Lets the approval UI / the
+        # requester jump straight to the request.
+        conv_url = os.environ.get("CONVERSATION_URL")
+        if conv_url:
+            req_body["conversation_url"] = conv_url
+        status, body = _call("POST", "request", req_body)
         if status == 201:
-            print(f"requested: {body['request_id']} (status: {body['status']}); waiting for approval.")
+            if body.get("status") == "active":
+                print(f"requested: {body['request_id']} — AUTO-APPROVED (read-only). Credentials are ready; use `aws --profile {args.profile} …`.")
+            else:
+                msg = f"requested: {body['request_id']} (status: {body['status']}); a human must approve in this conversation."
+                if conv_url:
+                    msg += f" Share this link so they can: {conv_url}"
+                print(msg)
             return 0
         sys.stderr.write(f"request failed ({status}): {json.dumps(body.get('detail', body))}\n")
         return 1

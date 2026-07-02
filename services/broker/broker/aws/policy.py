@@ -191,6 +191,24 @@ def classify_risk(policy_document: dict, target_account: str) -> RiskLevel:
     return RiskLevel.LOW
 
 
+def is_read_only_policy(policy_document: dict) -> bool:
+    """True iff EVERY action in the policy is read-only (Get*/List*/Describe*/…),
+    with at least one statement/action present. Used for opt-in auto-approval of
+    read-only requests — a wildcard (`*` or `service:*`) is NOT read-only (it grants
+    writes), so it fails this check and still needs a human. Deny statements are
+    ignored (a Deny can't grant anything)."""
+    saw_action = False
+    for stmt in policy_document.get("Statement", []):
+        if stmt.get("Effect", "Allow") != "Allow":
+            continue
+        actions = _normalize_actions(stmt.get("Action", []))
+        for a in actions:
+            saw_action = True
+            if not _is_read_only_action(a):
+                return False
+    return saw_action
+
+
 def validate_policy_within_bounds(policy_document: dict, allowed_policy: dict) -> list[str]:
     """Layer 3: every requested action+resource must be covered by the account's
     allowed_policy (same Statement structure, fnmatch patterns). An unrestricted

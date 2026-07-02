@@ -76,6 +76,11 @@ export interface K8sProvisionerOptions {
   /** Additional environment variables a deployment's tools need (e.g. a service
    *  URL). DEPLOYMENT-supplied; this platform sets none of its own here. */
   extraEnv?: Array<{ name: string; value: string }>;
+  /** Public base URL of the chat UI (e.g. https://scooter.example.com). When set,
+   *  each sandbox gets CONVERSATION_URL = <publicUrl>/?thread=<id> — a ready
+   *  shareable link to THIS conversation, so the agent can point a human at it
+   *  (e.g. "approve my AWS request here") without knowing the deployment host. */
+  publicUrl?: string;
   kubeConfig?: KubeConfig;
 }
 
@@ -151,7 +156,14 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false, {
           scooterConfigMap: opts.scooterConfigMap,
           extraTokenAudiences: opts.extraTokenAudiences ?? [],
-          extraEnv: opts.extraEnv ?? [],
+          // A ready shareable link to THIS conversation (when a public URL is
+          // configured), so the agent can point a human at its own conversation.
+          extraEnv: [
+            ...(opts.publicUrl
+              ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${id}` }]
+              : []),
+            ...(opts.extraEnv ?? []),
+          ],
           overlayStore: opts.overlayStore ?? false,
           overlayStorage: opts.overlayStorage,
           moduleConfigMap: moduleCmName(id),

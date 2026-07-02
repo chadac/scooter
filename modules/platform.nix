@@ -432,7 +432,12 @@ in
                   # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
                   { name = "AGENT_NAME"; value = cfg.agent.name; }
                   { name = "SKILLS_DIR"; value = "/etc/agent-sandbox/skills"; }
-                ] ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
+                ] ++ lib.optional (cfg.ingress.enable && cfg.ingress.host != "")
+                  # Public chat UI base URL → each sandbox gets a CONVERSATION_URL
+                  # to its own conversation (the agent can share the link, e.g. to
+                  # have a human approve an AWS request).
+                  { name = "PUBLIC_URL"; value = "https://${cfg.ingress.host}"; }
+                ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
                   # Identity header the ingress injects (default x-auth-user).
                   { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
                 ++ lib.optional (cfg.auth.emailHeader != "x-auth-email")

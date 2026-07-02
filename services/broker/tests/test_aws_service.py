@@ -59,7 +59,13 @@ REGISTRY = {
     "prod": {"account_id": "456", "broker_role_arn": "arn:...:base", "enabled": True,
              "allowed_policy": {"Statement": [{"Action": ["s3:Get*"], "Resource": ["*"]}]}},
     "off": {"account_id": "789", "broker_role_arn": "arn:...:base", "enabled": False},
+    # Opt-in read-only auto-approval (no human needed for pure-read requests).
+    "ro": {"account_id": "999", "broker_role_arn": "arn:...:base", "enabled": True,
+           "auto_approve_read_only": True,
+           "allowed_policy": {"Statement": [{"Action": ["*"], "Resource": ["*"]}]}},
 }
+
+WRITE = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::b/*"}]}
 
 READ = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}]}
 
@@ -97,6 +103,44 @@ async def test_request_creates_pending(tmp_path):
     assert req.request_id
     assert req.conversation_id == "c1"
     assert req.iam_policy_arn  # inline policy created eagerly
+
+
+async def test_readonly_request_auto_approves_when_account_opts_in(tmp_path):
+    # The "ro" account has auto_approve_read_only=true; a pure-read request is
+    # granted immediately (ACTIVE + creds), no human, recorded as the system approver.
+    from broker.aws.service import AUTO_APPROVE_PRINCIPAL
+
+    notified = []
+    svc = await make_service(tmp_path)
+    svc._on_request = lambda req: notified.append(req)  # type: ignore[assignment]
+
+    req = await svc.request(conversation_id="c1", target_account="ro", justification="read", policy_document=READ)
+    assert req.status == RequestStatus.ACTIVE
+    assert req.approved_by == AUTO_APPROVE_PRINCIPAL
+    assert req.iam_role_arn  # a role was provisioned
+    # Creds are cached (status() returns them) and NO approval interrupt was raised.
+    got_req, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got_req is not None and creds is not None
+    assert notified == []  # auto-approved -> the host was never notified
+
+
+async def test_write_request_on_autoapprove_account_still_needs_a_human(tmp_path):
+    # Same opt-in account, but a WRITE action -> stays PENDING (auto-approve is
+    # read-only only), and the host IS notified.
+    notified = []
+    svc = await make_service(tmp_path)
+    svc._on_request = lambda req: notified.append(req)  # type: ignore[assignment]
+
+    req = await svc.request(conversation_id="c1", target_account="ro", justification="write", policy_document=WRITE)
+    assert req.status == RequestStatus.PENDING
+    assert len(notified) == 1
+
+
+async def test_readonly_request_without_optin_stays_pending(tmp_path):
+    # The "dev" account does NOT opt in -> even a read-only request needs a human.
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    assert req.status == RequestStatus.PENDING
 
 
 async def test_request_rejects_blocked_action(tmp_path):
