@@ -62,6 +62,12 @@ let
         }
         location /sessions      { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
         location /models        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        # The caller's identity (used by the UI for the Mine/All filter + the user
+        # badge). MUST be proxied — otherwise it falls through to `location /` and
+        # returns index.html instead of the JSON, and the badge/filter break. The
+        # ingress-injected identity headers (x-auth-* or x-amzn-oidc-*) pass through
+        # by default (only Host is overridden).
+        location /whoami        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
 
         # SPA: serve the app, fall back to index.html for client routes.
         location / { try_files $uri $uri/ /index.html; }
