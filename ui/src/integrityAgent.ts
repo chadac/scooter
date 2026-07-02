@@ -451,21 +451,36 @@ export class IntegrityAgent extends AbstractAgent {
       const body = (await res.json()) as { events?: BaseEvent[] };
       const events = body.events ?? [];
       if (events.length === 0) return;
-      // Fold the tail through the base applier into a fresh accumulator.
-      this.setMessages([]);
-      const tail$ = new Subject<BaseEvent>();
-      const done = new Promise<void>((resolve) => {
-        this.processApplyEvents(this.prepareRunAgentInput(), this.apply(this.prepareRunAgentInput(), tail$, this.subscribers), this.subscribers)
-          .pipe(catchError(() => EMPTY))
-          .subscribe({ error: () => resolve(), complete: () => resolve() });
-      });
-      for (const e of events) tail$.next(e);
-      tail$.complete();
-      await done;
-      this.notifyMessages(); // paint the tail now
+      // Fold the tail in a THROWAWAY clone first, so a fold that yields nothing
+      // renderable (e.g. the tail's final run is still in-flight — no RUN_FINISHED —
+      // so the base applier produces no message state) can't blank the real thread.
+      // Adopt + paint only if the fold actually produced messages.
+      const folded = await this.foldTail(events);
+      if (folded.length === 0) return; // nothing renderable → let the full replay paint
+      this.setMessages(folded as never);
+      this.notifyMessages();
     } catch {
       /* best-effort — the full replay will paint */
     }
+  }
+
+  /** Fold tail events into messages in a THROWAWAY clone (no effect on this
+   *  agent's messages/subscribers). Returns the folded messages — possibly empty
+   *  when the window has no complete, renderable run. */
+  private async foldTail(events: BaseEvent[]): Promise<unknown[]> {
+    const scratch = this.clone();
+    scratch.setMessages([]);
+    const tail$ = new Subject<BaseEvent>();
+    const done = new Promise<void>((resolve) => {
+      scratch
+        .processApplyEvents(scratch.prepareRunAgentInput(), scratch.apply(scratch.prepareRunAgentInput(), tail$, []), [])
+        .pipe(catchError(() => EMPTY))
+        .subscribe({ error: () => resolve(), complete: () => resolve() });
+    });
+    for (const e of events) tail$.next(e);
+    tail$.complete();
+    await done;
+    return scratch.messages as unknown[];
   }
 
   /**
