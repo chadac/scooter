@@ -76,8 +76,16 @@ in
       env = mkOption {
         type = types.attrsOf types.str;
         default = { };
-        example = { EXAMPLE_TOOL_URL = "http://example-tool.ns.svc:8080"; };
-        description = "Extra env vars a deployment's tools need, set on each sandbox.";
+        example = {
+          EXAMPLE_TOOL_URL = "http://example-tool.ns.svc:8080";
+          # Multi-line values are fine (carried as JSON, not k=v;k=v):
+          NIX_CONFIG = "extra-substituters = http://cache/itops\nflake-registry = /etc/nix/registry.json";
+        };
+        description = ''
+          Extra env vars a deployment's tools need, set on each sandbox. Values may
+          contain newlines, `;`, and `=` — they're carried to the pod as JSON
+          (SCOOTER_ENV), so a multi-line NIX_CONFIG survives intact.
+        '';
       };
     };
     uiImage = mkOption {
@@ -524,7 +532,11 @@ in
                 ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
                   { name = "SCOOTER_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
                 ++ lib.optional (cfg.deployTools.env != { })
-                  { name = "SCOOTER_ENV"; value = lib.concatStringsSep ";" (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.deployTools.env); }
+                  # JSON, not `k=v;k=v` — a value with a newline (a multi-line
+                  # NIX_CONFIG), a `;`, or a `=` cannot survive the flat encoding
+                  # (it splits/mangles, and the parser's trim() ate the newlines).
+                  # toJSON round-trips every value losslessly into the pod env.
+                  { name = "SCOOTER_ENV"; value = builtins.toJSON cfg.deployTools.env; }
                 ++ lib.optionals cfg.observability.otel.enable ([
                   # OTel metrics ON. The OTLP endpoint/headers come from the
                   # OTEL_EXPORTER_OTLP_* env in observability.otel.env (the SDK
