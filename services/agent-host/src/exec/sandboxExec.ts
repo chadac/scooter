@@ -72,8 +72,15 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
       let exit: { exitCode: number } | undefined;
       let buffered = ""; // retain output for subscribers that attach after exec
 
+      // Cancellation: an AbortController closes the exec's pods/exec WebSocket,
+      // which SIGTERMs the command's shell (a foreground command dies with it).
+      // This covers the common "stop a running command" case. A thorough
+      // process-group reap of orphaned background children (setsid/pkill) is a
+      // follow-up (needs util-linux/procps in the sandbox image + a cluster test).
+      const controller = new AbortController();
+
       const exitPromise = api
-        .execute(req)
+        .execute(req, controller.signal)
         .then((res): { exitCode: number } => {
           const chunk = res.stdout + (res.stderr ? res.stderr : "");
           buffered += chunk;
@@ -111,7 +118,8 @@ export function createSandboxExecBackend(api: SandboxApiClient): ExecBackend {
           return exit ?? (await exitPromise);
         },
         async kill() {
-          /* no-op: single-shot exec cannot be signalled mid-flight */
+          // Close this exec's WebSocket → SIGTERM to the command's shell. Idempotent.
+          controller.abort();
         },
         async release() {
           outputCbs.clear();

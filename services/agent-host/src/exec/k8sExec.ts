@@ -119,11 +119,17 @@ export function createK8sSandboxApiClient(
   const execRaw = (
     command: string[],
     stdin?: Readable,
+    signal?: AbortSignal,
   ): Promise<ExecResult> =>
     new Promise((resolve, reject) => {
       const out = sink();
       const err = sink();
       let status: V1Status | undefined;
+      if (signal?.aborted) {
+        // Already cancelled before we even opened the stream.
+        resolve({ stdout: out.text(), stderr: "aborted", exitCode: 130 });
+        return;
+      }
       freshExec()
         .exec(
           ref.namespace,
@@ -139,11 +145,25 @@ export function createK8sSandboxApiClient(
           },
         )
         .then((ws) => {
+          // Honor a cancel: closing the pods/exec WebSocket tears down the remote
+          // exec (SIGTERM/HUP to its process). Retained so kill()/abort can end a
+          // long-running command mid-flight (the whole point of cancel).
+          const onAbort = () => {
+            try {
+              (ws as { close?: () => void }).close?.();
+            } catch {
+              /* already closing */
+            }
+          };
+          if (signal) {
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          }
           ws.on("close", () =>
             resolve({
               stdout: out.text(),
               stderr: err.text(),
-              exitCode: exitCodeFromStatus(status),
+              exitCode: signal?.aborted ? 130 : exitCodeFromStatus(status),
             }),
           );
           ws.on("error", (e: unknown) => {
@@ -166,9 +186,9 @@ export function createK8sSandboxApiClient(
   return {
     mode: "k8s-exec",
 
-    execute(req: ExecRequest): Promise<ExecResult> {
+    execute(req: ExecRequest, signal?: AbortSignal): Promise<ExecResult> {
       const cmd = wrapCommand(req);
-      return execRaw(cmd);
+      return execRaw(cmd, undefined, signal);
     },
 
     async download(path: string): Promise<string> {
