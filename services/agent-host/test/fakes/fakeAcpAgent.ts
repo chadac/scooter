@@ -37,18 +37,33 @@ export interface FakeAcpTransport {
     },
   ): Promise<{ stopReason: string }>;
   cancel(sessionId: string): Promise<void>;
+  /** Optional: a cancel test can set this to assert active terminals were killed. */
+  killActiveTerminals?(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface FakeAcpAgent {
   setScript(steps: ScriptStep[]): void;
   readonly transport: FakeAcpTransport;
+  /** Hold every prompt in flight until releaseGate() (so a test can inspect the
+   *  queue mid-run / drive a cancel). Off by default. */
+  gate(): void;
+  releaseGate(): void;
+  /** Number of times killActiveTerminals was called (cancel assertions). */
+  killCount(): number;
+  /** Number of prompts that have STARTED (entered the fake's prompt()). */
+  startedCount(): number;
   close(): void;
 }
 
 export function createFakeAcpAgent(): FakeAcpAgent {
   let script: ScriptStep[] = [];
   let sessionCounter = 0;
+  let gated = false;
+  let releaseGateFn: (() => void) | undefined;
+  let kills = 0;
+  let starts = 0;
+  const cancelledSessions = new Set<string>();
 
   const transport: FakeAcpTransport = {
     async initialize() {
@@ -59,6 +74,7 @@ export function createFakeAcpAgent(): FakeAcpAgent {
       return { sessionId: `fake-session-${sessionCounter}` };
     },
     async prompt(sessionId, handlers) {
+      starts += 1;
       let stopReason = "end_turn";
       for (const step of script) {
         if ("emit" in step) {
@@ -74,10 +90,23 @@ export function createFakeAcpAgent(): FakeAcpAgent {
         // ACP client method path in higher tiers; the in-process fake focuses
         // on update emission + permission flow for bridge assertions.
       }
+      // Optional gate: hold the run in flight until releaseGate(), so a test can
+      // inspect the queue / drive a cancel while this run is "running".
+      if (gated) {
+        await new Promise<void>((res) => { releaseGateFn = res; });
+      }
+      // A cancel that landed while gated resolves the prompt as cancelled.
+      if (cancelledSessions.delete(sessionId)) stopReason = "cancelled";
       return { stopReason };
     },
-    async cancel() {
-      /* no-op for the fake */
+    async cancel(sessionId: string) {
+      cancelledSessions.add(sessionId);
+      // Release a gated run so its prompt() resolves (as cancelled).
+      releaseGateFn?.();
+      releaseGateFn = undefined;
+    },
+    async killActiveTerminals() {
+      kills += 1;
     },
     async close() {
       /* no-op */
@@ -89,6 +118,20 @@ export function createFakeAcpAgent(): FakeAcpAgent {
       script = steps;
     },
     transport,
+    gate() {
+      gated = true;
+    },
+    releaseGate() {
+      gated = false;
+      releaseGateFn?.();
+      releaseGateFn = undefined;
+    },
+    killCount() {
+      return kills;
+    },
+    startedCount() {
+      return starts;
+    },
     close() {
       script = [];
     },

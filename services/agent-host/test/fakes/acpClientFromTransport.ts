@@ -43,6 +43,11 @@ export function acpClientFromTransport(
     async cancel(sessionId: string) {
       await transport.cancel(sessionId);
     },
+    async killActiveTerminals() {
+      // The in-process transport tracks its own terminals; expose a hook if set so
+      // a cancel test can assert terminals were killed. No-op otherwise.
+      await transport.killActiveTerminals?.();
+    },
     onSessionUpdate(cb) {
       updateCbs.add(cb);
       return () => updateCbs.delete(cb);

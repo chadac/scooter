@@ -28,6 +28,9 @@ export interface SandboxClientHandlers {
     p: schema.ReleaseTerminalRequest,
   ): Promise<schema.ReleaseTerminalResponse | void>;
   killTerminal(p: schema.KillTerminalCommandRequest): Promise<schema.KillTerminalResponse | void>;
+  /** Kill EVERY live terminal for this session (a user cancel / force-interrupt).
+   *  Best-effort — a kill that finds a finished terminal is a no-op. */
+  killAllTerminals(): Promise<void>;
 }
 
 export function createSandboxClientHandlers(exec: ExecBackend): SandboxClientHandlers {
@@ -97,6 +100,13 @@ export function createSandboxClientHandlers(exec: ExecBackend): SandboxClientHan
 
     async killTerminal(params) {
       await terminals.get(params.terminalId)?.kill();
+    },
+
+    async killAllTerminals() {
+      // Cancel: kill every live terminal so a running command (a stuck shell) is
+      // actually stopped, not just left orphaned. Kills concurrently; a failure on
+      // one must not skip the rest.
+      await Promise.allSettled([...terminals.values()].map((h) => h.kill()));
     },
   };
 }

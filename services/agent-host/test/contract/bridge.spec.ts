@@ -544,3 +544,107 @@ describe("revive history reinjection", () => {
     expect(userContent?.delta).toBe("the new message"); // raw, no preamble folded in
   });
 });
+
+describe("bridge run queue + cancel", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, priorityInterruptMs?: number) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      priorityInterruptMs,
+    });
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+
+  it("runs a PRIORITY prompt ahead of queued normal prompts", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the first run in flight so the others queue behind it
+    const bridge = mkBridge(agent);
+    const order: string[] = [];
+    const events = collect(bridge);
+    // Tag each run's user turn so we can read the execution order from the log.
+    bridge.onPersist((e) => {
+      if (e.type === "TEXT_MESSAGE_CONTENT" && (e as { delta?: string }).delta) {
+        order.push((e as { delta: string }).delta);
+      }
+    });
+
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "first (running)" });
+    await tick();
+    // While the first run is gated, queue a normal then a priority prompt.
+    void bridge.prompt({ threadId: "t1", text: "normal" }, { priority: 0 });
+    void bridge.prompt({ threadId: "t1", text: "priority" }, { priority: 10 });
+    await tick();
+    expect(bridge.queueState().queued).toBe(2);
+    expect(bridge.queueState().maxQueuedPriority).toBe(10);
+
+    agent.releaseGate(); // let the queue drain
+    await tick();
+    await tick();
+    await tick();
+    // The priority prompt ran BEFORE the normal one (which was queued earlier).
+    expect(order[0]).toBe("first (running)");
+    expect(order.indexOf("priority")).toBeLessThan(order.indexOf("normal"));
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(3);
+  });
+
+  it("cancel() ends the running turn as RUN_FINISHED{cancelled} and kills the active tool call", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "do a long thing" });
+    await tick();
+    expect(bridge.queueState().running).toBe(true);
+
+    await bridge.cancel();
+    await tick();
+
+    // Killed the active terminal + told goose to stop.
+    expect(agent.killCount()).toBe(1);
+    // The run ended as a CLEAN cancelled RUN_FINISHED, not a RUN_ERROR.
+    const fin = events.find((e) => e.type === "RUN_FINISHED") as { cancelled?: boolean } | undefined;
+    expect(fin).toBeTruthy();
+    expect(fin?.cancelled).toBe(true);
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+  });
+
+  it("cancel() is a no-op when nothing is running", async () => {
+    const agent = createFakeAcpAgent();
+    const bridge = mkBridge(agent);
+    await bridge.start();
+    await bridge.cancel(); // must not throw
+    expect(agent.killCount()).toBe(0);
+    expect(bridge.queueState().running).toBe(false);
+  });
+
+  it("force-interrupts the running turn when a PRIORITY item waits past the timeout", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // the running turn never finishes on its own
+    const bridge = mkBridge(agent, 20); // 20ms priority-interrupt timeout
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "long running turn" });
+    await tick();
+    // A priority (mention) prompt queues behind the stuck run.
+    void bridge.prompt({ threadId: "t1", text: "@scooter urgent" }, { priority: 10 });
+    // Wait past the timeout — the force-interrupt should fire.
+    await new Promise((r) => setTimeout(r, 60));
+    agent.releaseGate();
+    await tick();
+    await tick();
+
+    // The first run was force-cancelled (killed) so the priority item could run.
+    expect(agent.killCount()).toBeGreaterThanOrEqual(1);
+    const finishes = events.filter((e) => e.type === "RUN_FINISHED") as Array<{ cancelled?: boolean }>;
+    expect(finishes.some((f) => f.cancelled === true)).toBe(true);
+    // Both runs started (the interrupted one + the priority takeover).
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2);
+  });
+});
