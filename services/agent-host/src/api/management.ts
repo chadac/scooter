@@ -411,9 +411,28 @@ export function createManagementApi(deps: ManagementDeps): Router {
       justification?: string;
     }>();
     if (!body.request_id) return { status: 400, json: { error: "request_id required" } };
-    const conv = sessions.get(ctx.params.id);
-    const bridge = conv?.bridge;
-    if (!bridge) return { status: 404, json: { error: "no active conversation" } };
+    if (!sessions.get(ctx.params.id)) {
+      // A genuinely unknown conversation — nothing to raise the interrupt on.
+      return { status: 404, json: { error: "unknown conversation" } };
+    }
+    // The conversation exists but its in-memory BRIDGE may be absent — it was
+    // idle-suspended, or hydrated-but-not-revived after an agent-host restart, or
+    // torn down by a model switch. The agent that called `scooter-aws request` is
+    // still running in the sandbox, so we MUST NOT drop the approval on the floor:
+    // revive to rebuild the bridge, then raise. Without this the route 404'd and
+    // the broker (fire-and-forget) swallowed it — "the approval window never
+    // appeared." raiseInterrupt persists the interrupt, so it also survives a
+    // reload once raised.
+    let bridge = sessions.get(ctx.params.id)?.bridge;
+    if (!bridge) {
+      try {
+        await sessions.revive(ctx.params.id as never);
+        bridge = sessions.get(ctx.params.id)?.bridge;
+      } catch (err) {
+        console.error(`[agent-host] aws-request could not revive ${ctx.params.id}:`, err);
+      }
+    }
+    if (!bridge) return { status: 503, json: { error: "could not activate conversation to raise the approval" } };
 
     const summary =
       `Scooter is requesting AWS access to ${body.target_account} ` +
