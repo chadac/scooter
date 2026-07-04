@@ -33,6 +33,7 @@ import { createModuleManager } from "./session/moduleManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
+import { parseScooterEnv } from "./config/scooterEnv.js";
 import { resolverFromEnv, type AsyncIdentityResolver } from "./auth/identity.js";
 import { withIdentityStore, createPgIdentityStore } from "./auth/identityStore.js";
 import { withAlbVerification } from "./auth/albVerify.js";
@@ -266,14 +267,12 @@ export async function main(
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).
-        // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (k=v;k=v).
+        // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (JSON —
+        // lossless for multi-line values like NIX_CONFIG; legacy k=v;k=v accepted).
         scooterConfigMap: process.env.SCOOTER_CONFIGMAP || undefined,
         extraTokenAudiences: (process.env.SCOOTER_TOKEN_AUDIENCES || "")
           .split(",").map((s) => s.trim()).filter(Boolean),
-        extraEnv: (process.env.SCOOTER_ENV || "")
-          .split(";").map((s) => s.trim()).filter(Boolean)
-          .map((kv) => { const i = kv.indexOf("="); return { name: kv.slice(0, i), value: kv.slice(i + 1) }; })
-          .filter((e) => e.name),
+        extraEnv: parseScooterEnv(process.env.SCOOTER_ENV),
         // Public chat UI base URL → each sandbox gets CONVERSATION_URL for its own
         // conversation (so the agent can share a link, e.g. to approve an AWS req).
         publicUrl: process.env.PUBLIC_URL || undefined,
