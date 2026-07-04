@@ -417,22 +417,29 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
       // short DNS-safe hash of it.
       const id: SessionId = threadId;
-      // Short hash → k8s resource names; full threadId → the shareable
-      // CONVERSATION_URL (?thread=<id>), so the agent's link resolves to THIS
-      // conversation instead of the short hash.
-      const sandbox = await provisioner.create(shortId(threadId), threadId);
-      const bridge = bridgeFactory?.({ conversationId: id, sandbox, model });
+      // REGISTER THE ENTRY FIRST — before the (slow) sandbox provisioning below.
+      // The UI POSTs /agui then IMMEDIATELY opens GET .../events.integrity; if the
+      // entry isn't in `entries` yet, that route 404s ("unknown conversation") and
+      // the UI gives up reconnecting → a new chat looks broken. So the conversation
+      // must be visible from the moment start() begins. The sandbox + bridge are
+      // filled in after provisioning; the integrity stream just waits for events.
       const entry: Entry = {
-        id, threadId, sandbox, bridge, status: "running",
+        id, threadId, sandbox: { name: `conv-${shortId(threadId)}`, namespace: "" },
+        bridge: undefined, status: "running",
         title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(), model, owner,
       };
       entries.set(id, entry);
-      wireEventLog(entry);
-      // Await the persist so a started conversation is durable before we return
-      // (a crash right after start() must not lose it; and hydrate() in another
-      // process must see it). setTitle stays fire-and-forget.
       await saveMeta(entry);
-      emitChange(entry); // push the new conversation to the sidebar stream
+      emitChange(entry); // push the new conversation to the sidebar stream (live)
+
+      // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
+      // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).
+      entry.sandbox = await provisioner.create(shortId(threadId), threadId);
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model });
+      wireEventLog(entry); // wire AFTER the bridge exists (it no-ops on a null bridge)
+      // Re-persist with the real sandbox ref (a crash mid-provision must not leave a
+      // dangling entry with no namespace that revive() then can't resume).
+      await saveMeta(entry);
       // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
       // on its ACP newSession. bridge.prompt() lazily starts on first use, after
       // emitting RUN_STARTED, so the UI always sees the run begin.
