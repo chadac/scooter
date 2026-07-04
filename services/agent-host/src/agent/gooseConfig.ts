@@ -14,12 +14,19 @@
  * advertise on initialize (fs + terminal), goose then routes every shell/file
  * tool call to our ACP handlers -> the sandbox.
  *
- * IMPORTANT — `available_tools` (allowlist): goose's AcpTools only REDIRECTS
- * read/write/edit/shell to the ACP client; `tree` and `read_image` fall through
- * to goose's LOCAL developer impl (std::fs in the agent-host pod, not the
- * sandbox) — so a `tree`/list would show the wrong filesystem. We restrict the
- * developer extension to ONLY the sandbox-routed tools via available_tools, so
- * the agent uses `shell` (ls/find) for listing — which goes to the sandbox.
+ * `available_tools` (allowlist) — INEFFECTIVE on current goose, kept as intent:
+ * goose's AcpTools only REDIRECTS read/write/edit/shell to the ACP client; `tree`
+ * and `read_image` fall through to goose's LOCAL developer impl (std::fs in the
+ * agent-host pod, not the sandbox) — so a `tree`/list would show the WRONG
+ * filesystem. We'd like to restrict the developer extension to only the
+ * sandbox-routed tools via available_tools — BUT goose (verified on 1.28.0)
+ * rewrites config.yaml on every launch, expanding all bundled extensions and
+ * resetting every `available_tools` back to `[]` (= all tools). So the allowlist
+ * we write here does NOT survive; `tree`/`read_image` remain callable and run
+ * locally. We still write it (harmless; correct for a goose that honors it), but
+ * the ACTUAL guard against `tree` is an instruction in the agent's identity
+ * prompt (see identityPrompt in skills.ts) telling it to use `shell` (ls/find)
+ * for listing instead of the host-reading `tree`/`read_image` tools.
  * (Empty available_tools = all tools; a non-empty list is an allowlist.)
  */
 

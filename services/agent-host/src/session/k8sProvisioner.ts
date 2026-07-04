@@ -99,6 +99,17 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // read-only into the pod; scooter-apply-module reads it.
   const moduleCmName = (id: string) => `conv-${id}-module`;
 
+  // A ref's namespace may be EMPTY: hydrateEntry() (manager.ts) hands out a
+  // placeholder ref { name, namespace: "" } for a conversation whose Sandbox is
+  // absent from reconcile (GC'd / suspended-and-gone). A k8s namespaced call with
+  // namespace:"" is sent at the CLUSTER scope, which the namespaced Role can't
+  // authorize → a 403 "cannot patch sandboxes at the cluster scope" that floods
+  // every idle sweep. The provisioner only ever manages Sandboxes in its own `ns`,
+  // so an empty ref namespace ALWAYS means `ns` — normalize it here. (If the
+  // Sandbox is genuinely gone, the call then 404s in-namespace, which suspend()'s
+  // callers already tolerate — far better than a cluster-scope auth failure.)
+  const refNs = (ref: SandboxRef) => ref.namespace || ns;
+
   // v1alpha1: replicas 0 = suspended (pod dropped, PVCs kept), 1 = running.
   // A plain-object body negotiates application/merge-patch+json.
   const setReplicas = async (ref: SandboxRef, replicas: 0 | 1) => {
@@ -106,7 +117,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       {
         group: GROUP,
         version: VERSION,
-        namespace: ref.namespace,
+        namespace: refNs(ref),
         plural: PLURAL,
         name: ref.name,
         body: { spec: { replicas } },
@@ -178,7 +189,12 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     },
 
     async suspend(ref: SandboxRef): Promise<void> {
-      await setReplicas(ref, 0);
+      // A Sandbox that's already GONE (GC'd / never re-created after a restart)
+      // is, for suspend's purposes, already suspended — there is nothing to drop.
+      // Swallow the 404 so the idle sweep marks the conversation suspended and
+      // stops re-attempting every tick (a stale hydrated entry would otherwise
+      // churn the same failing patch forever). Any other error still propagates.
+      await setReplicas(ref, 0).catch(ignoreDeleteNotFound);
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
@@ -214,20 +230,23 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // workspace PVC (#7) or the per-conversation ServiceAccount = the broker
       // identity (#8). Rethrow so end() doesn't report a clean teardown that
       // actually left live resources behind.
+      // Same empty-namespace hazard as setReplicas: a placeholder ref would send
+      // these deletes to the cluster scope (403). Normalize to the provisioner ns.
+      const dns = refNs(ref);
       await custom
         .deleteNamespacedCustomObject({
           group: GROUP,
           version: VERSION,
-          namespace: ref.namespace,
+          namespace: dns,
           plural: PLURAL,
           name: ref.name,
         })
         .catch(ignoreDeleteNotFound);
       await core
-        .deleteNamespacedServiceAccount({ name: saName(id), namespace: ref.namespace })
+        .deleteNamespacedServiceAccount({ name: saName(id), namespace: dns })
         .catch(ignoreDeleteNotFound);
       await core
-        .deleteNamespacedConfigMap({ name: moduleCmName(id), namespace: ref.namespace })
+        .deleteNamespacedConfigMap({ name: moduleCmName(id), namespace: dns })
         .catch(ignoreDeleteNotFound);
     },
 

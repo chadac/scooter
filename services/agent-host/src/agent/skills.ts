@@ -33,6 +33,14 @@ export function identityPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
     `your shell commands run. Packages are managed with Nix (see the skills`,
     `below if present). Be concise and act directly — run commands to inspect and`,
     `change the workspace rather than guessing.`,
+    // Tool routing caveat: only the developer extension's read/write/edit/shell
+    // tools run in the sandbox. The `tree` and `read_image` tools do NOT — they
+    // read the host's filesystem, not yours, so their output is misleading. We
+    // can't disable them on this goose version, so avoid them by instruction:
+    `IMPORTANT: do NOT use the \`tree\` or \`read_image\` tools — they read a`,
+    `different machine's filesystem, not your sandbox, so their results are wrong.`,
+    `To list or explore directories, use the \`shell\` tool with \`ls\`, \`ls -R\`,`,
+    `or \`find\` instead — those run in your sandbox and see the real workspace.`,
     // Conversation titling: the host extracts a <title>…</title> marker from the
     // very start of your reply and uses it to name the conversation, then strips
     // it from what the user sees.

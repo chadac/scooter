@@ -65,6 +65,11 @@
     # STAGE 5: set this to a concrete fixed rev.
     defaultNixpkgs = lib.mkDefault "github:NixOS/nixpkgs/nixos-unstable";
     tools.uv = { package = "uv"; };
+    # `tree` as a lazy stub: the agent reaches for it to list directories, and its
+    # goose developer `tree` tool reads the WRONG filesystem (the agent-host pod,
+    # not the sandbox) — so we steer it to `shell` + `tree` (see identityPrompt).
+    # Ship it lazily so that shell `tree` actually resolves in the sandbox.
+    tools.tree = { package = "tree"; };
   };
 
   # --- the PoC sample service ------------------------------------------------
