@@ -195,8 +195,15 @@ export const sessionStore = {
     // the server already has real conversations, an empty "New chat" the user
     // never touched shouldn't linger as a phantom extra row. (We keep local
     // sessions that have a non-default title or that exist on the server.)
+    //
+    // EXCEPTION: never drop the CURRENTLY-SELECTED pristine session. The user
+    // just clicked "New chat" and is about to type — the server won't know about
+    // it until the first message POSTs /agui, so a background poll would otherwise
+    // yank the conversation out from under them (and jump the selection to another
+    // row) within one poll interval. The selected new chat is live intent, not a
+    // stale phantom; keep it until it either gains a title or the user leaves it.
     let sessions = [...byId.values()].filter(
-      (s) => serverIds.has(s.id) || !isPristine(s),
+      (s) => serverIds.has(s.id) || !isPristine(s) || s.id === state.currentId,
     );
     // Never end up with zero rows (e.g. server has convs but all local were
     // pristine and got dropped — the server ones remain, which is fine).

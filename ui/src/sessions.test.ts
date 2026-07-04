@@ -49,3 +49,37 @@ describe("deep-link selection (requestSelect)", () => {
     expect(sessionStore.get().currentId).toBe("a");
   });
 });
+
+describe("a brand-new conversation survives the background merge", () => {
+  it("does NOT drop the currently-selected 'New chat' the server hasn't seen yet", () => {
+    // A real server conversation already exists (so the merge has 'truth' to
+    // reconcile against — the condition that used to trigger the phantom-drop).
+    sessionStore.mergeFromServer([{ id: "server-conv", title: "Existing" }]);
+
+    // The user clicks "New chat": a pristine, server-unknown, SELECTED session.
+    // The server won't learn about it until the first message POSTs /agui.
+    const fresh = sessionStore.newSession();
+    expect(sessionStore.get().currentId).toBe(fresh);
+
+    // The 10s poll fires: the server list still doesn't include the new chat.
+    // The fresh conversation (pristine + unknown to the server) must NOT be
+    // dropped, and the selection must NOT jump to the existing conversation.
+    sessionStore.mergeFromServer([{ id: "server-conv", title: "Existing" }]);
+
+    expect(sessionStore.get().sessions.some((s) => s.id === fresh)).toBe(true);
+    expect(sessionStore.get().currentId).toBe(fresh);
+  });
+
+  it("still drops a pristine placeholder the user has LEFT (not selected)", () => {
+    // Two conversations: a real one and a pristine placeholder. Select the real
+    // one, so the pristine placeholder is NOT current — it's a genuine phantom.
+    const pristine = sessionStore.get().currentId; // the initial fresh "New chat"
+    sessionStore.mergeFromServer([{ id: "real", title: "Real" }]);
+    sessionStore.switchTo("real");
+    expect(sessionStore.get().currentId).toBe("real");
+
+    // A later merge (server still doesn't know the untouched placeholder) drops it.
+    sessionStore.mergeFromServer([{ id: "real", title: "Real" }]);
+    expect(sessionStore.get().sessions.some((s) => s.id === pristine)).toBe(false);
+  });
+});
