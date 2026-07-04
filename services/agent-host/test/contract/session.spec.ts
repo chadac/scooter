@@ -65,6 +65,33 @@ describe("SessionManager", () => {
     expect(conv.sandbox.name).toMatch(/^conv-/);
   });
 
+  it("registers the conversation BEFORE the (slow) sandbox provisioning finishes", async () => {
+    // The 'new chat' 404 race: the UI POSTs /agui then IMMEDIATELY opens
+    // events.integrity, which sessions.get(id)s. If start() only registers the
+    // conversation AFTER awaiting provisioning (seconds), that fetch 404s and the
+    // UI gives up → a new chat looks broken. So the conversation must be
+    // get()-able from the moment start() begins provisioning.
+    let releaseCreate!: () => void;
+    const gate = new Promise<void>((r) => { releaseCreate = r; });
+    const provisioner: SandboxProvisioner = {
+      create: vi.fn(async (id) => { await gate; return { name: `conv-${id}`, namespace: "ns" }; }),
+      suspend: vi.fn(async () => {}),
+      resume: vi.fn(async (ref) => ref),
+      destroy: vi.fn(async () => {}),
+    };
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+
+    const startP = sessions.start("thread-race"); // provisioning is gated (in flight)
+    await Promise.resolve(); // let start() run up to the awaited create()
+    // The UI would hit events.integrity now — the conversation MUST already exist.
+    expect(sessions.get("thread-race"), "conversation must be registered before provisioning completes").toBeTruthy();
+    expect(sessions.get("thread-race")?.status).toBe("running");
+
+    releaseCreate(); // provisioning completes
+    await startP;
+    expect(sessions.get("thread-race")?.sandbox.namespace).toBe("ns"); // real ref attached
+  });
+
   it("suspend() keeps the conversation handle (suspend-don't-delete)", async () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
