@@ -32,6 +32,16 @@ describe("agent skills -> .goosehints", () => {
     expect(identityPrompt({ name: "Ziggy" })).toContain("You are Ziggy");
   });
 
+  it("identityPrompt steers the agent away from the host-reading `tree`/`read_image` tools", () => {
+    // goose's `tree`/`read_image` developer tools run in the agent-host pod, not
+    // the sandbox, and can't be disabled via config (goose wipes available_tools).
+    // The instruction is the only guard — it must be present and name the fix.
+    const p = identityPrompt();
+    expect(p).toContain("tree");
+    expect(p).toContain("read_image");
+    expect(p).toMatch(/shell|ls|find/); // points at the sandbox-routed alternative
+  });
+
   it("loadSkills reads *.md, sorted; missing dir -> []", () => {
     writeFileSync(join(skillsDir, "b.md"), "B");
     writeFileSync(join(skillsDir, "a.md"), "A");
