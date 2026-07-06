@@ -119,6 +119,83 @@ describe("SessionManager", () => {
     expect(revived.status).toBe("running");
   });
 
+  describe("revive() restores the self-modified environment from the PVC", () => {
+    // A provisioner + store that records call order, so we can assert the CM sync
+    // happens BEFORE the pod boots (resume) — the pod must mount the fresh CM.
+    const instrumented = () => {
+      const order: string[] = [];
+      const store = inMemoryStore();
+      const modules = new Map<SessionId, string>();
+      store.saveModule = async (id, m) => { modules.set(id, m); };
+      store.readModule = async (id) => modules.get(id) ?? null;
+      const base = fakeProvisioner();
+      const provisioner: SandboxProvisioner = {
+        ...base,
+        ensureModuleMount: vi.fn(async () => { order.push("ensureModuleMount"); }),
+        writeModule: vi.fn(async () => { order.push("writeModule"); }),
+        resume: vi.fn(async (ref) => { order.push("resume"); return ref; }),
+      };
+      return { provisioner, store, order, modules };
+    };
+
+    it("syncs the saved module into the CM (with mount repair) BEFORE resume", async () => {
+      const { provisioner, store, order } = instrumented();
+      const sessions = createSessionManager({ provisioner, store });
+      const conv = await sessions.start("thread-1");
+      // The agent modified its env: the module is the durable PVC source of truth.
+      await store.saveModule!(conv.id, "{ environment.systemPackages = [ pkgs.nodejs_22 ]; }");
+      await sessions.suspend(conv.id);
+      order.length = 0; // only care about the revive ordering
+
+      await sessions.revive(conv.id);
+
+      // The CM must be repaired + synced from the PVC, and BOTH must precede the
+      // pod boot (resume) — else the booting pod mounts a stale/empty CM.
+      expect(provisioner.ensureModuleMount).toHaveBeenCalled();
+      expect(provisioner.writeModule).toHaveBeenCalled();
+      expect(order.indexOf("writeModule")).toBeLessThan(order.indexOf("resume"));
+      expect(order.indexOf("ensureModuleMount")).toBeLessThan(order.indexOf("resume"));
+    });
+
+    it("passes the SAVED module content to the CM sync", async () => {
+      const { provisioner, store } = instrumented();
+      const sessions = createSessionManager({ provisioner, store });
+      const conv = await sessions.start("thread-1");
+      const mod = "{ environment.systemPackages = [ pkgs.jq ]; }";
+      await store.saveModule!(conv.id, mod);
+      await sessions.suspend(conv.id);
+
+      await sessions.revive(conv.id);
+
+      const call = (provisioner.writeModule as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(call[1]).toBe(mod); // the module text synced to the CM is the saved one
+    });
+
+    it("does NOT sync the CM for a pristine conversation (no module → no rebuild cost)", async () => {
+      const { provisioner, store } = instrumented();
+      const sessions = createSessionManager({ provisioner, store });
+      const conv = await sessions.start("thread-1"); // never modified its env
+      await sessions.suspend(conv.id);
+
+      await sessions.revive(conv.id);
+
+      expect(provisioner.writeModule).not.toHaveBeenCalled();
+      expect(provisioner.ensureModuleMount).not.toHaveBeenCalled();
+    });
+
+    it("treats a whitespace-only module as pristine (skips the sync)", async () => {
+      const { provisioner, store } = instrumented();
+      const sessions = createSessionManager({ provisioner, store });
+      const conv = await sessions.start("thread-1");
+      await store.saveModule!(conv.id, "   \n  ");
+      await sessions.suspend(conv.id);
+
+      await sessions.revive(conv.id);
+
+      expect(provisioner.writeModule).not.toHaveBeenCalled();
+    });
+  });
+
   it("end() destroys the sandbox and GCs the conversation", async () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });

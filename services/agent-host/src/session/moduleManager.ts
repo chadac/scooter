@@ -47,6 +47,9 @@ export interface ModuleManagerDeps {
   /** Resolve a conversation's exec client (the same one the bridge uses). */
   client: (id: SessionId) => SandboxApiClient | Promise<SandboxApiClient>;
   configMap: ConfigMapWriter;
+  /** Persist the module to the DURABLE PVC store (source of truth). The CM is
+   *  synced from this. Optional so tests/fakes can omit it. */
+  saveModule?: (id: SessionId, module: string) => Promise<void>;
   /** In-pod path to upload the module to before applying (tmpfs, writable). */
   uploadPath?: string;
 }
@@ -84,9 +87,19 @@ export function createModuleManager(deps: ModuleManagerDeps): ModuleManager {
         return { ok: false, error: (res.stderr || res.stdout || "apply failed").trim() };
       }
 
-      // 3. Clean switch -> persist durably (survives suspend/resume; the boot
-      //    oneshot re-applies it on a fresh pod).
-      await deps.configMap.writeModule(id, module);
+      // 3. Clean switch -> persist. The PVC is the DURABLE source of truth
+      //    (survives suspend/resume + agent-host restart); the ConfigMap is the
+      //    in-pod delivery copy the boot re-converge reads. Write the PVC FIRST
+      //    (it can't 404), then eagerly sync it into the CM. A CM sync failure is
+      //    non-fatal to the live apply — the change already switched in-pod and the
+      //    PVC holds it, so revive() will re-sync the CM next time.
+      await deps.saveModule?.(id, module);
+      try {
+        await deps.configMap.writeModule(id, module);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[moduleManager] CM sync failed for ${id} (PVC persisted; revive will re-sync):`, e);
+      }
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error)?.message ?? String(e) };

@@ -337,6 +337,9 @@ export async function main(
         // Resolve each conversation's sandbox to an exec client (same path the
         // bridge uses) so the apply runs in the right pod.
         client: (id) => deferredSandboxApi(sessions.get(id as SessionId)!.sandbox),
+        // Durable source of truth: persist the module to the state PVC. revive()
+        // re-syncs the CM from this. The CM write is the in-pod delivery copy.
+        saveModule: (id, m) => store.saveModule!(id as SessionId, m),
         configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
       })
     : undefined;

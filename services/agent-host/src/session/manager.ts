@@ -56,9 +56,18 @@ export interface SandboxProvisioner {
    *  Optional: provisioners that can't enumerate return undefined. */
   reconcile?(): Promise<Array<{ ref: SandboxRef; running: boolean }>>;
   /** Persist the agent's self-authored module into the per-conversation module
-   *  ConfigMap (durable across suspend/resume). Called after a clean live apply.
-   *  Optional (the noop/local provisioner has no ConfigMap). */
+   *  ConfigMap (upsert: creates it if missing). The PVC is the source of truth;
+   *  this is the in-pod delivery copy the boot re-converge reads. Called after a
+   *  clean live apply AND on revive() (synced from the PVC). Optional (the
+   *  noop/local provisioner has no ConfigMap). */
   writeModule?(conversationId: string, module: string): Promise<void>;
+  /** Ensure the Sandbox's podTemplate MOUNTS the per-conversation module
+   *  ConfigMap at the boot re-converge path. A one-time self-heal for Sandboxes
+   *  created before module-CM provisioning existed (their podTemplate lacks the
+   *  volume/mount, so a CM sync would never reach the pod). Must run BEFORE the
+   *  pod boots (i.e. before resume flips replicas). No-op / returns false when the
+   *  mount is already present. Optional. */
+  ensureModuleMount?(conversationId: string): Promise<void>;
 }
 
 /** Durable, restart-surviving metadata for one conversation. */
@@ -153,6 +162,14 @@ export interface ConversationStore {
   addLink?(id: SessionId, link: ConversationLink): Promise<void>;
   /** The conversation's external resource links (for the UI panel). Optional. */
   listLinks?(id: SessionId): Promise<ConversationLink[]>;
+  /** Persist the agent-authored module.nix — the DURABLE source of truth for the
+   *  conversation's self-modified environment (survives suspend/resume + restart).
+   *  The agent-host syncs it into the per-conversation ConfigMap on modify + on
+   *  revive, so the in-pod boot re-converge restores it. Optional. */
+  saveModule?(id: SessionId, module: string): Promise<void>;
+  /** Read the saved module.nix, or null if the conversation never modified its
+   *  environment (revive skips the CM sync / re-apply for a pristine wake). */
+  readModule?(id: SessionId): Promise<string | null>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";
@@ -449,6 +466,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async revive(id) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
+
+      // Restore the conversation's self-modified environment from the DURABLE PVC
+      // source of truth. The PVC survives suspend/resume + agent-host restart; the
+      // per-conversation ConfigMap is the in-pod delivery copy the boot re-converge
+      // reads. This MUST happen BEFORE the pod boots (before resume flips replicas /
+      // create makes the pod), so the booting pod mounts the fresh CM and the boot
+      // re-converge applies it — hence the sync is ordered ahead of resume/create.
+      // A pristine conversation (no saved module, or empty) skips this entirely and
+      // wakes on the base config with no rebuild cost.
+      const rid = shortId(entry.threadId); // the k8s-name id writeModule/ensureModuleMount key on
+      const savedModule = (await store.readModule?.(id)) ?? null;
+      if (savedModule && savedModule.trim() !== "") {
+        // Old Sandboxes (created before module-CM provisioning) don't mount the CM;
+        // repair the podTemplate so the sync actually reaches the pod on this boot.
+        await provisioner.ensureModuleMount?.(rid);
+        await provisioner.writeModule?.(rid, savedModule); // upsert the CM from the PVC
+      }
+
       // A HYDRATED conversation (restored from disk after a restart) has a
       // placeholder sandbox ref with no namespace — its pod was never created in
       // THIS process (and a suspended Sandbox may have been GC'd). Re-create the
