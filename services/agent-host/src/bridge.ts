@@ -61,6 +61,10 @@ type AguiEventBase =
        *  pending interrupts; the user's answer resumes via the next run's
        *  RunAgentInput.resume[]. */
       outcome?: AguiRunOutcome;
+      /** The run was stopped by the user (a "stop" click) or a priority
+       *  force-interrupt — a clean end, NOT an error. The UI shows "you stopped
+       *  this turn." */
+      cancelled?: boolean;
     }
   | { type: "RUN_ERROR"; message: string; code?: string }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
@@ -89,6 +93,18 @@ export interface PromptInput {
   text: string;
 }
 
+/** Per-prompt options for the bridge's run queue. */
+export interface PromptOptions {
+  /** Higher runs sooner among queued items. A PRIORITY prompt (>0, e.g. an
+   *  @scooter mention) may also force-interrupt the running turn after the
+   *  configured timeout — a normal prompt (0) only waits its turn. Default 0. */
+  priority?: number;
+}
+
+/** Normal (waits its turn) vs. priority (may force-interrupt) prompt levels. */
+export const PRIORITY_NORMAL = 0;
+export const PRIORITY_INTERRUPT = 10;
+
 /** The identity of the human answering an external interrupt (e.g. approving an
  *  AWS request). Sent to the broker, which authorizes the configured claim
  *  (email/id/name). Anonymous when no ingress identity. */
@@ -111,9 +127,17 @@ export interface SessionBridge {
   readonly sessionId: SessionId;
 
   start(): Promise<void>;
-  prompt(input: PromptInput): Promise<RunId>;
-  cancel(runId: RunId): Promise<void>;
+  prompt(input: PromptInput, opts?: PromptOptions): Promise<RunId>;
+  /** Cancel the RUNNING turn (a user "stop" or a priority force-interrupt): tell
+   *  goose to stop (ACP session/cancel), KILL its active tool call (a running
+   *  shell), and end the run cleanly (RUN_FINISHED marked cancelled). `runId` is
+   *  optional — omitted cancels whatever run is currently active. A no-op if
+   *  nothing is running. Queued prompts are NOT dropped; the next runs after. */
+  cancel(runId?: RunId): Promise<void>;
   stop(): Promise<void>;
+  /** Snapshot of the run queue (for observability / the force-interrupt timer):
+   *  whether a run is active, how long it's been going, and the queued backlog. */
+  queueState(): { running: boolean; currentRunMs: number; queued: number; maxQueuedPriority: number };
 
   /** Answer a pending permission/option request (resolves the blocked agent run,
    *  or fires the external onAnswer for a raiseInterrupt). optionId must be one
@@ -178,6 +202,14 @@ export interface BridgeDeps {
    * Absent in tests / when there's nothing to inject → no prepend.
    */
   loadHistory?: () => Promise<AguiEvent[]>;
+
+  /**
+   * Force-interrupt timeout (ms). When a queued PRIORITY prompt (an @scooter
+   * mention) has waited longer than this while a run is active, the queue cancels
+   * the running turn so the priority item can take over. 0 (default) disables it —
+   * a priority item then only jumps the queue order, never force-cancels.
+   */
+  priorityInterruptMs?: number;
 }
 
 // Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
@@ -206,9 +238,25 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // the agent is mid-run) must QUEUE, not clobber currentRun — otherwise the
   // first run's open text message never gets its END and RUN_FINISHED is emitted
   // while it's still open (the @ag-ui client rejects that, and the reply is lost).
-  let runChain: Promise<unknown> = Promise.resolve();
-  // The run currently receiving ACP updates (set during prompt()).
+  // The run queue. A bridge has ONE goose session, so runs are serialized — but
+  // via an INSPECTABLE queue (not an opaque promise chain), so we can order by
+  // priority, see the backlog, and force-interrupt the current run when a priority
+  // item waits too long. The invariant is unchanged: each run fully completes (its
+  // text closed + RUN_FINISHED emitted) BEFORE the next RUN_STARTED — a second run
+  // whose RUN_FINISHED fired while the first's message was still open corrupts the
+  // @ag-ui stream. `pump()` guarantees that by awaiting each runPrompt fully.
+  interface QueueItem {
+    input: PromptInput;
+    priority: number;
+    enqueuedAt: number;
+    resolve: (runId: RunId) => void;
+    reject: (err: unknown) => void;
+  }
+  const queue: QueueItem[] = [];
+  let pumping = false;
+  // The run currently receiving ACP updates (set during runPrompt()).
   let currentRun: RunState | undefined;
+  const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   // Resolved on first start(); a ready client or the result of the factory.
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
@@ -284,6 +332,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // Set once the run is finishing: late updates are ignored so we never
     // reopen a message after RUN_FINISHED.
     ended?: boolean;
+    // Set by cancel(): the run was stopped by a user / force-interrupt, so it
+    // ends with a RUN_FINISHED marked { cancelled: true } (not an error).
+    cancelled?: boolean;
+    // When the run actually began executing (RUN_STARTED) — for the queue's
+    // force-interrupt age check.
+    startedAt?: number;
   }
 
   const closeOpenText = (st: RunState) => {
@@ -392,6 +446,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     const runId = nextId("run");
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set() };
     const startedAt = Date.now();
+    st.startedAt = startedAt;
+    currentRun = st; // visible to cancel() from the moment the run begins
     let outcome: "ok" | "error" = "ok";
 
     // Emit RUN_STARTED before any awaiting so the UI sees the run begin even if
@@ -425,7 +481,6 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     try {
       if (!started || !acpSessionId) await self.start();
-      currentRun = st; // route session/update notifications to this run
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Prepend the history preamble as a separate text block on the first prompt
       // of a revived session (empty → omitted).
@@ -446,18 +501,27 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       st.ended = true; // stop routing further late updates into this run
       closeOpenText(st);
       closeOpenReasoning(st);
-      if (stopReason === "error") {
+      if (st.cancelled || stopReason === "cancelled") {
+        // Stopped by the user / a force-interrupt — a CLEAN end, not an error.
+        emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+      } else if (stopReason === "error") {
         outcome = "error";
         emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
       } else {
         emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
       }
     } catch (err) {
-      outcome = "error";
       st.ended = true;
       closeOpenText(st);
       closeOpenReasoning(st);
-      emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+      if (st.cancelled) {
+        // A cancel that made the ACP prompt reject (e.g. session/cancel aborted
+        // the call) is still a clean user stop — don't surface it as an error.
+        emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+      } else {
+        outcome = "error";
+        emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+      }
     } finally {
       if (currentRun === st) currentRun = undefined;
       // Metrics hook — fire-and-forget, never let it break the run.
@@ -468,6 +532,67 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }
     }
     return runId;
+  };
+
+  // Force-interrupt: while a run is active, if the highest-priority QUEUED item is
+  // a priority item that has waited past the timeout, cancel the running turn so it
+  // can take over. Armed only when priorityInterruptMs > 0 and a priority item is
+  // waiting; re-checked each pump tick + on a timer.
+  let interruptTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearInterruptTimer = () => {
+    if (interruptTimer) { clearTimeout(interruptTimer); interruptTimer = undefined; }
+  };
+  const armInterruptTimer = () => {
+    clearInterruptTimer();
+    if (priorityInterruptMs <= 0 || !currentRun) return;
+    const head = topPriorityItem();
+    if (!head || head.priority < PRIORITY_INTERRUPT) return;
+    const waited = Date.now() - head.enqueuedAt;
+    const remaining = Math.max(0, priorityInterruptMs - waited);
+    interruptTimer = setTimeout(() => {
+      // Still a run going + a priority item still waiting past the timeout → stop
+      // the current turn so the priority item runs next.
+      const stillWaiting = (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
+      if (currentRun && stillWaiting) {
+        void self.cancel().catch(() => {});
+      }
+    }, remaining);
+    // Don't keep the process alive just for this timer.
+    (interruptTimer as { unref?: () => void }).unref?.();
+  };
+
+  const topPriorityItem = (): QueueItem | undefined => {
+    if (queue.length === 0) return undefined;
+    // Highest priority, ties broken by earliest enqueue (stable FIFO within tier).
+    return queue.reduce((best, it) =>
+      it.priority > best.priority || (it.priority === best.priority && it.enqueuedAt < best.enqueuedAt) ? it : best,
+    );
+  };
+
+  // Drain the queue one run at a time (the single goose session), highest priority
+  // first. Preserves the "one run fully completes before the next RUN_STARTED"
+  // invariant by awaiting each runPrompt fully.
+  const pump = async () => {
+    if (pumping) return;
+    pumping = true;
+    try {
+      while (queue.length > 0) {
+        const item = topPriorityItem()!;
+        queue.splice(queue.indexOf(item), 1);
+        clearInterruptTimer(); // the item is now running, not waiting
+        try {
+          const runId = await runPrompt(item.input);
+          item.resolve(runId);
+        } catch (err) {
+          item.reject(err);
+        }
+        // A new priority item may have queued during that run — re-arm.
+        armInterruptTimer();
+      }
+    } finally {
+      pumping = false;
+      clearInterruptTimer();
+    }
   };
 
   const self: SessionBridge = {
@@ -556,22 +681,50 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       started = true;
     },
 
-    prompt(input: PromptInput): Promise<RunId> {
-      // Chain after any in-flight run so prompts are processed one at a time on
-      // this bridge's single goose session. Each run fully completes (its text
-      // closed + RUN_FINISHED emitted) before the next RUN_STARTED — preventing
-      // the concurrent-run corruption where one run's open message is left
-      // unclosed when another run's RUN_FINISHED fires. Errors don't break the chain.
-      const next = runChain.catch(() => {}).then(() => runPrompt(input));
-      runChain = next;
-      return next;
+    prompt(input: PromptInput, opts?: PromptOptions): Promise<RunId> {
+      // Enqueue and let the pump drain one run at a time on this bridge's single
+      // goose session — highest priority first, FIFO within a tier. Each run fully
+      // completes (its text closed + RUN_FINISHED emitted) before the next
+      // RUN_STARTED (the concurrent-run corruption guard). A priority prompt jumps
+      // ahead of queued normal prompts AND can force-interrupt the running turn
+      // (armInterruptTimer) after the configured timeout.
+      const priority = opts?.priority ?? PRIORITY_NORMAL;
+      const p = new Promise<RunId>((resolve, reject) => {
+        queue.push({ input, priority, enqueuedAt: Date.now(), resolve, reject });
+      });
+      if (priority >= PRIORITY_INTERRUPT) armInterruptTimer();
+      void pump();
+      return p;
     },
 
-    async cancel(_runId: RunId) {
-      if (acpSessionId && acpClient) await acpClient.cancel(acpSessionId);
+    async cancel(_runId?: RunId) {
+      // Stop the RUNNING turn: mark it cancelled (so it ends as RUN_FINISHED
+      // cancelled, not an error), KILL its active tool call (a running shell), then
+      // tell goose to stop (session/cancel unblocks the prompt). A no-op if nothing
+      // is running. Queued prompts stay queued — the next runs after.
+      const run = currentRun;
+      if (!run || !acpClient) return;
+      run.cancelled = true;
+      try {
+        await acpClient.killActiveTerminals();
+      } catch {
+        /* best-effort — session/cancel below still stops goose */
+      }
+      if (acpSessionId) await acpClient.cancel(acpSessionId);
+    },
+
+    queueState() {
+      const head = topPriorityItem();
+      return {
+        running: currentRun !== undefined,
+        currentRunMs: currentRun?.startedAt ? Date.now() - currentRun.startedAt : 0,
+        queued: queue.length,
+        maxQueuedPriority: head?.priority ?? 0,
+      };
     },
 
     async stop() {
+      clearInterruptTimer();
       if (acpClient) await acpClient.close();
       started = false;
     },

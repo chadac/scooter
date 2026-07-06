@@ -201,12 +201,14 @@ export interface SessionManager {
   revive(id: SessionId): Promise<Conversation>;
   /** Forward a user prompt into the conversation's goose session. An optional
    *  `model` switches the conversation's model: if it differs from the current
-   *  one, the live goose session is rebuilt with the new model. */
-  prompt(id: SessionId, text: string, model?: string): Promise<void>;
+   *  one, the live goose session is rebuilt with the new model. `priority`
+   *  (PRIORITY_INTERRUPT) lets an @mention force-interrupt a running turn after the
+   *  bridge's priority timeout; normal prompts (default) wait their turn. */
+  prompt(id: SessionId, text: string, model?: string, priority?: number): Promise<void>;
   /** Find-or-start the conversation for an AG-UI thread, then prompt it. A
    *  `model` on the FIRST prompt picks the conversation's model; on a later
-   *  prompt it switches it (rebuilds the goose session). */
-  promptByThread(threadId: ThreadId, text: string, model?: string): Promise<void>;
+   *  prompt it switches it (rebuilds the goose session). `priority` as in prompt(). */
+  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number): Promise<void>;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
 
@@ -509,7 +511,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return toConversation(entry);
     },
 
-    async prompt(id, text, model) {
+    async prompt(id, text, model, priority) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
@@ -519,10 +521,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // (its pod is up, per hydrate's reconcile) yet have no bridge in THIS
       // process, so the prompt would silently no-op (bridge?.prompt on undefined).
       if (!entry.bridge) await this.revive(id);
-      await entry.bridge?.prompt({ threadId: entry.threadId, text });
+      await entry.bridge?.prompt({ threadId: entry.threadId, text }, priority ? { priority } : undefined);
     },
 
-    async promptByThread(threadId, text, model) {
+    async promptByThread(threadId, text, model, priority) {
       // Find the conversation for this thread. Three cases:
       //  1. in the in-memory map -> use it (revive if no live bridge).
       //  2. NOT in the map but PERSISTED (store has it) -> hydrate it on demand and
@@ -549,7 +551,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       touch(entry);
-      await entry.bridge?.prompt({ threadId, text });
+      await entry.bridge?.prompt({ threadId, text }, priority ? { priority } : undefined);
     },
 
     async suspend(id) {

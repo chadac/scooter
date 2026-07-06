@@ -277,7 +277,7 @@ async def _handle_note(payload: dict):
             comment_body, project_id, note_api_type, noteable_iid,
             discussion_id=discussion_id, has_mention=has_mention,
         )
-        ok = await send_message(existing, forward_msg)
+        ok = await send_message(existing, forward_msg, priority=has_mention)
         if ok:
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)

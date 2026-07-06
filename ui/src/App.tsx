@@ -7,6 +7,7 @@
 import { RuntimeProvider } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
 import { InterruptPanel } from "./InterruptPanel.js";
+import { RunStatusBar } from "./RunStatusBar.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
@@ -35,6 +36,9 @@ export function App() {
                   behind a "N tool calls" collapse. */}
               <Thread components={{ ToolFallback: ToolCallView, ToolGroup: ToolGroupOpen }} />
             </div>
+            {/* Thinking indicator + Stop button while a run is in flight (any
+                source — local, Slack, another tab). Renders nothing when idle. */}
+            <RunStatusBar />
           </main>
           {/* Agent option/permission requests (AG-UI interrupts, e.g. an AWS
               approval) slide in as a prominent right-side panel — a gate the user

@@ -239,6 +239,18 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 202, json: { ok: true } };
   });
 
+  // Stop the RUNNING turn — the UI's Stop button. cancel() ends the in-flight run
+  // cleanly (kills the active tool call via the exec seam, ACP session/cancel, and
+  // emits a RUN_FINISHED{cancelled:true}). No-op-OK: a conversation with no live
+  // bridge or nothing running still returns 202 (stopping "nothing" succeeded), so
+  // a stale Stop click never errors. 404 only for a genuinely unknown conversation.
+  r.post("/conversations/:id/cancel", async (ctx) => {
+    const conv = sessions.get(ctx.params.id);
+    if (!conv) return { status: 404, json: { error: "not found" } };
+    await conv.bridge?.cancel();
+    return { status: 202, json: { ok: true } };
+  });
+
   r.get("/conversations/:id/history", async (ctx) => {
     // Return events + the rolling integrity checksum through the last one, so a
     // streaming client can verify it has replayed the complete, in-order log

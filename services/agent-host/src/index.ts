@@ -418,7 +418,7 @@ export async function main(
       requested && (requested === config.model || config.availableModels.includes(requested))
         ? requested
         : undefined;
-    await sessions.promptByThread(sessionId, input.text, model);
+    await sessions.promptByThread(sessionId, input.text, model, input.priority);
   });
 
   // A user's answer to a permission/option request -> resolve the blocked run.

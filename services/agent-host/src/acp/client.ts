@@ -82,6 +82,9 @@ export interface AcpClient {
   newSession(params: NewSessionParams): Promise<{ sessionId: string }>;
   prompt(params: PromptParams): Promise<{ stopReason: string }>;
   cancel(sessionId: string): Promise<void>;
+  /** Kill every live sandbox terminal for this client (a user cancel / force-
+   *  interrupt) — stops a running command, not just future ones. Best-effort. */
+  killActiveTerminals(): Promise<void>;
 
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   onPermissionRequest(
@@ -198,6 +201,9 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     },
     async cancel(sessionId) {
       await conn.cancel({ sessionId });
+    },
+    async killActiveTerminals() {
+      await sandbox.killAllTerminals();
     },
     onSessionUpdate(cb) {
       updateCbs.add(cb);

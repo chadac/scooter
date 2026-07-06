@@ -137,7 +137,7 @@ async def _handle_comment(payload: dict):
 
     if existing:
         forward_msg = _format_forwarded_message(comment_text, issue_key, has_mention)
-        ok = await send_message(existing, forward_msg)
+        ok = await send_message(existing, forward_msg, priority=has_mention)
         if ok:
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)
