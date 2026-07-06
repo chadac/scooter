@@ -58,6 +58,11 @@ function fakeRegistry() {
       async listJobs(id: string) {
         return jobs.get(id) ?? [];
       },
+      async updateJob(id: string, job: JobRecord) {
+        const list = jobs.get(id) ?? [];
+        const i = list.findIndex((j) => j.jobId === job.jobId);
+        if (i >= 0) list[i] = job;
+      },
     },
     jobs,
   };
@@ -190,5 +195,46 @@ describe("jobManager.list", () => {
     await m.start("conv-1", "cmd A");
     const list = await m.list("conv-1");
     expect(list.map((j) => j.command)).toContain("cmd A");
+  });
+});
+
+describe("jobManager.pollCompletions (the completion-watcher)", () => {
+  const exitedProbe = () => probeOut("0", 5, "all done\n");
+  const runningProbe = () => probeOut("", 3, "working\n");
+
+  it("returns a job that has EXITED and marks it notified (once)", async () => {
+    const { client } = fakeClient((cmd) => (cmd.includes("__STATUS__") ? { stdout: exitedProbe() } : undefined));
+    const { registry, jobs } = fakeRegistry();
+    await registry.saveJob("conv-1", { jobId: "job-1", command: "npm test", startedAt: 1 });
+
+    const first = await mgr(client, registry).pollCompletions("conv-1");
+    expect(first.map((s) => s.jobId)).toEqual(["job-1"]);
+    expect(first[0].state).toBe("exited");
+    expect(first[0].output).toContain("all done");
+    // The registry record is now marked notified.
+    expect(jobs.get("conv-1")?.[0].notifiedAt).toBeTruthy();
+
+    // A SECOND poll does NOT re-announce it (announce-at-most-once).
+    const second = await mgr(client, registry).pollCompletions("conv-1");
+    expect(second).toEqual([]);
+  });
+
+  it("does NOT return a still-RUNNING job (and doesn't mark it)", async () => {
+    const { client } = fakeClient((cmd) => (cmd.includes("__STATUS__") ? { stdout: runningProbe() } : undefined));
+    const { registry, jobs } = fakeRegistry();
+    await registry.saveJob("conv-1", { jobId: "job-1", command: "sleep 999", startedAt: 1 });
+
+    const done = await mgr(client, registry).pollCompletions("conv-1");
+    expect(done).toEqual([]);
+    expect(jobs.get("conv-1")?.[0].notifiedAt).toBeUndefined(); // not marked — still running
+  });
+
+  it("skips jobs already marked notified", async () => {
+    const { client } = fakeClient((cmd) => (cmd.includes("__STATUS__") ? { stdout: exitedProbe() } : undefined));
+    const { registry } = fakeRegistry();
+    await registry.saveJob("conv-1", { jobId: "job-1", command: "x", startedAt: 1, notifiedAt: 999 });
+
+    const done = await mgr(client, registry).pollCompletions("conv-1");
+    expect(done).toEqual([]); // already announced
   });
 });

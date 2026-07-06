@@ -13,7 +13,7 @@
 
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
-import type { SessionBridge, AguiEvent } from "../bridge.js";
+import type { SessionBridge, AguiEvent, InterruptPolicy } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
 
 /** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
@@ -176,6 +176,8 @@ export interface ConversationStore {
   saveJob?(id: SessionId, job: JobRecord): Promise<void>;
   /** The conversation's background-job records (newest first; [] if none). */
   listJobs?(id: SessionId): Promise<JobRecord[]>;
+  /** Update a job record in place (by jobId), e.g. to mark notifiedAt. Optional. */
+  updateJob?(id: SessionId, job: JobRecord): Promise<void>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";
@@ -210,7 +212,7 @@ export interface SessionManager {
    *  one, the live goose session is rebuilt with the new model. `priority`
    *  (PRIORITY_INTERRUPT) lets an @mention force-interrupt a running turn after the
    *  bridge's priority timeout; normal prompts (default) wait their turn. */
-  prompt(id: SessionId, text: string, model?: string, priority?: number): Promise<void>;
+  prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: InterruptPolicy): Promise<void>;
   /** Find-or-start the conversation for an AG-UI thread, then prompt it. A
    *  `model` on the FIRST prompt picks the conversation's model; on a later
    *  prompt it switches it (rebuilds the goose session). `priority` as in prompt(). */
@@ -517,7 +519,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return toConversation(entry);
     },
 
-    async prompt(id, text, model, priority) {
+    async prompt(id, text, model, priority, interrupt) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
@@ -527,7 +529,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // (its pod is up, per hydrate's reconcile) yet have no bridge in THIS
       // process, so the prompt would silently no-op (bridge?.prompt on undefined).
       if (!entry.bridge) await this.revive(id);
-      await entry.bridge?.prompt({ threadId: entry.threadId, text }, priority ? { priority } : undefined);
+      const opts = priority || interrupt ? { priority, interrupt } : undefined;
+      await entry.bridge?.prompt({ threadId: entry.threadId, text }, opts);
     },
 
     async promptByThread(threadId, text, model, priority) {
