@@ -22,7 +22,7 @@ import { createSessionManager } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { createSessionBridge, type AguiEvent } from "./bridge.js";
+import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createDeferredConnector } from "./exec/deferredConnect.js";
@@ -30,7 +30,7 @@ import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { createModuleManager } from "./session/moduleManager.js";
-import { createJobManager } from "./session/jobManager.js";
+import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
@@ -360,6 +360,7 @@ export async function main(
         registry: {
           saveJob: (id, job) => store.saveJob!(id as SessionId, job),
           listJobs: (id) => store.listJobs!(id as SessionId),
+          updateJob: store.updateJob ? (id, job) => store.updateJob!(id as SessionId, job) : undefined,
         },
         cleanupTtlMs: Number(process.env.BACKGROUND_JOB_TTL_MS ?? 10 * 60 * 1000),
       })
@@ -659,9 +660,43 @@ export async function main(
     jobCleanupTimer.unref?.();
   }
 
+  // Background-job completion WATCHER: poll running conversations for jobs that
+  // finished since last tick and inject a "job finished" turn so the agent reacts
+  // WITHOUT the user having to ask it to check. The injection uses interrupt:
+  // "thinking" — it preempts idle text generation but NEVER kills an in-flight tool
+  // call (don't cancel a build to announce another job). prompt() revives the
+  // conversation if its bridge went idle, so a completion still lands. Best-effort.
+  const jobWatchEnabled = jobManager && process.env.BACKGROUND_JOB_WATCH !== "0";
+  let jobWatchTimer: ReturnType<typeof setInterval> | undefined;
+  if (jobWatchEnabled) {
+    jobWatchTimer = setInterval(() => {
+      for (const c of sessions.list()) {
+        // Poll conversations whose pod is up (running) — a suspended conversation's
+        // completions are announced on its next revive (the watcher sees them then).
+        if (c.status !== "running") continue;
+        void (async () => {
+          const done = await jobManager!.pollCompletions(c.id).catch(() => [] as JobStatus[]);
+          for (const st of done) {
+            const tail = st.output.trim();
+            const more = st.truncated ? `\n(output truncated — full log: check_background("${st.jobId}"))` : "";
+            const text =
+              `[System] Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.\n` +
+              (tail ? `Recent output:\n${tail}${more}\n\n` : "") +
+              `React to this result if it's relevant to your task; otherwise acknowledge briefly.`;
+            await sessions
+              .prompt(c.id as SessionId, text, undefined, PRIORITY_INTERRUPT, "thinking")
+              .catch((e) => console.error(`[agent-host] job-completion inject failed for ${c.id}:`, e));
+          }
+        })();
+      }
+    }, config.idleSweepIntervalMs);
+    jobWatchTimer.unref?.();
+  }
+
   return async () => {
     if (sweepTimer) clearInterval(sweepTimer);
     if (jobCleanupTimer) clearInterval(jobCleanupTimer);
+    if (jobWatchTimer) clearInterval(jobWatchTimer);
     await metrics.shutdown();
     await server.close();
   };

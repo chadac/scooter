@@ -241,6 +241,17 @@ export function createFileConversationStore(root: string): ConversationStore {
       }
     },
 
+    /** Rewrite an existing job record IN PLACE (by jobId) — e.g. to mark
+     *  notifiedAt so the completion-watcher announces exactly once. No-op if the
+     *  job isn't found (or no registry yet). */
+    async updateJob(id: SessionId, job: JobRecord) {
+      const existing = await this.listJobs!(id);
+      const i = existing.findIndex((j) => j.jobId === job.jobId);
+      if (i < 0) return;
+      existing[i] = job;
+      await writeFileAtomic(jobsPath(id), JSON.stringify(existing));
+    },
+
     async addLink(id: SessionId, link: ConversationLink) {
       await ensureDir(id);
       const existing = await this.listLinks!(id);

@@ -18,9 +18,11 @@
  * A small per-conversation registry lives on the agent-host STATE PVC (via the
  * ConversationStore) so `list` knows a conversation's jobs across a restart.
  *
- * v1 is POLL-ON-DEMAND: the agent calls check()/list(). A completion-watcher that
- * PUSHES a "job finished" turn (preempting thinking via the interrupt queue) is a
- * tracked follow-up (see the graduated-interrupt-levels TODO).
+ * The agent can poll (check()/list()), AND a completion-WATCHER pushes a "job
+ * finished" turn when a job exits: pollCompletions() returns newly-exited jobs
+ * (marked notifiedAt so it announces exactly once), and the agent-host injects a
+ * prompt with interrupt: "thinking" — preempting idle text generation but never
+ * killing an in-flight tool call (don't cancel a build to announce another job).
  */
 
 import type { SandboxApiClient } from "../exec/sandboxExec.js";
@@ -32,6 +34,10 @@ export interface JobRecord {
   command: string;
   /** ms epoch when start() launched it. */
   startedAt: number;
+  /** ms epoch when the completion-watcher announced this job's exit to the agent.
+   *  Set once so the watcher notifies EXACTLY ONCE (survives a restart via the
+   *  persisted registry). Absent = not yet announced. */
+  notifiedAt?: number;
 }
 
 /** The live state of a job, read from its in-pod files. */
@@ -69,6 +75,12 @@ export interface JobManager {
    *  `status` file older than the TTL). Running jobs are never touched. Called
    *  periodically by the agent-host. Best-effort; a missing jobs dir is a no-op. */
   cleanup(id: SessionId): Promise<void>;
+  /** Find jobs that have EXITED since the last poll and haven't been announced
+   *  yet, MARK them announced (notifiedAt), and return their finished status. The
+   *  completion-watcher calls this per running conversation and injects a "job
+   *  finished" turn for each result. Marks BEFORE returning so a slow/failed
+   *  injection doesn't cause a re-notify next tick (announce-at-most-once). */
+  pollCompletions(id: SessionId): Promise<JobStatus[]>;
 }
 
 /** Persist/read the per-conversation job registry (agent-host state PVC in prod;
@@ -76,6 +88,10 @@ export interface JobManager {
 export interface JobRegistry {
   saveJob(id: SessionId, job: JobRecord): Promise<void>;
   listJobs(id: SessionId): Promise<JobRecord[]>;
+  /** Update an existing record in place (by jobId) — e.g. to set notifiedAt.
+   *  A no-op if no such job. Optional; when absent the watcher can't mark
+   *  once-only across a restart (it falls back to in-memory de-dupe). */
+  updateJob?(id: SessionId, job: JobRecord): Promise<void>;
 }
 
 export interface JobManagerDeps {
@@ -118,6 +134,9 @@ export function createJobManager(deps: JobManagerDeps): JobManager {
 
   const dir = (jobId: string) => `${jobsDir}/${jobId}`;
   const clientFor = (id: SessionId) => Promise.resolve(deps.client(id));
+  // In-memory de-dupe backstop for registries without updateJob (so we never
+  // notify twice within a process even if the persisted mark didn't take).
+  const notifiedMem = new Set<string>();
 
   return {
     async start(id, command): Promise<StartResult> {
@@ -194,6 +213,26 @@ export function createJobManager(deps: JobManagerDeps): JobManager {
       await client.execute({ command: "sh", args: ["-c", script] }).catch(() => {
         /* best-effort cleanup — a failure just retries next sweep */
       });
+    },
+
+    async pollCompletions(id): Promise<JobStatus[]> {
+      const jobs = await deps.registry.listJobs(id);
+      // Only jobs not yet announced (notifiedAt unset) AND not marked notified in
+      // this process's memory (covers registries without updateJob).
+      const pending = jobs.filter((j) => !j.notifiedAt && !notifiedMem.has(j.jobId));
+      if (pending.length === 0) return [];
+      const done: JobStatus[] = [];
+      for (const j of pending) {
+        const st = await this.check(id, j.jobId).catch(() => undefined);
+        if (!st || st.state === "running") continue; // still running — check next tick
+        // "exited" OR "unknown" (files gone) both count as terminal → mark + report
+        // (an "unknown" is reported too so a job whose files were cleaned before we
+        // saw it doesn't loop forever; the handler treats unknown as "can't detail").
+        notifiedMem.add(j.jobId);
+        await deps.registry.updateJob?.(id, { ...j, notifiedAt: now() }).catch(() => {});
+        if (st.state === "exited") done.push(st); // only announce a real completion
+      }
+      return done;
     },
   };
 

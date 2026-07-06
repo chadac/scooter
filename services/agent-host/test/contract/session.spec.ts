@@ -119,6 +119,30 @@ describe("SessionManager", () => {
     expect(revived.status).toBe("running");
   });
 
+  it("prompt() threads priority + interrupt policy through to the bridge (job-completion watcher path)", async () => {
+    const optsSeen: Array<{ priority?: number; interrupt?: string } | undefined> = [];
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt: vi.fn(async (_input: unknown, opts?: { priority?: number; interrupt?: string }) => {
+          optsSeen.push(opts);
+          return "run-x";
+        }),
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory });
+    const conv = await sessions.start("thread-1");
+
+    // The watcher injects with PRIORITY_INTERRUPT + "thinking" so it preempts idle
+    // thinking but never kills an in-flight tool call.
+    await sessions.prompt(conv.id, "[System] job x finished", undefined, 10, "thinking");
+
+    expect(optsSeen.at(-1)).toEqual({ priority: 10, interrupt: "thinking" });
+  });
+
   describe("revive() restores the self-modified environment from the PVC", () => {
     // A provisioner + store that records call order, so we can assert the CM sync
     // happens BEFORE the pod boots (resume) — the pod must mount the fresh CM.
