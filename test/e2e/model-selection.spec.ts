@@ -41,18 +41,14 @@ test.describe("model selection", () => {
     });
   });
 
-  // QUARANTINED (fixme) — CI-only failure, tracked for a real fix. In CI's slower
-  // environment the 2nd turn's reply comes back with the PREVIOUS model
-  // ("model=model-fast" instead of "model=model-smart"). The CLIENT is verified
-  // correct (the 2nd POST /agui carries X-Agent-Model=model-smart), so the race is
-  // SERVER-SIDE: a mid-conversation model switch does bridge.stop() + revive()
-  // (relaunch the agent with the new GOOSE_MODEL); under slow timing the rebuilt
-  // process / its GOOSE_MODEL env appears to race the prompt, so the reply reflects
-  // the old model. Passes reliably locally (too fast to race). Un-fixme once the
-  // server-side model-switch rebuild is made race-free (await ready before prompt).
-  // NOTE: the OTHER model-selection tests (default, pick-once) stay ON — only the
-  // mid-conversation SWITCH is quarantined.
-  test.fixme("switching the model mid-conversation takes effect on the next prompt", async ({ chat, page }) => {
+  // Was QUARANTINED (fixme) — a SERVER-SIDE race: a mid-conversation switch does
+  // bridge.stop() -> close() -> revive() (relaunch goose with the new GOOSE_MODEL).
+  // close() used to fire-and-forget child.kill(), so under slow timing the OLD
+  // goose could still be alive (sharing the per-conversation cwd) when the new one
+  // spawned, and the reply reflected the old model. FIXED: close() now awaits the
+  // child's actual exit (SIGTERM -> wait -> SIGKILL after a grace), so the old
+  // process is gone before the new one starts. Un-fixme'd.
+  test("switching the model mid-conversation takes effect on the next prompt", async ({ chat, page }) => {
     await chat.open();
     await page.getByTestId("model-picker").selectOption("model-fast");
     await chat.send("~model");

@@ -55,11 +55,13 @@ class FakeAgent implements Agent {
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
     const sessionId = params.sessionId;
-    const userText =
-      params.prompt
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join(" ")
-        .trim() || "(no text)";
+    // The user's actual message is the LAST text block. On a revived session the
+    // bridge prepends a history-reinjection preamble as an EARLIER, separate block
+    // (real goose keeps the blocks distinct); joining them would break directive
+    // detection ("[preamble] ~model" doesn't startsWith "~model"). So read the last
+    // text block for the directive — the same distinction a real agent makes.
+    const textBlocks = params.prompt.filter((b) => b.type === "text").map((b) => b.text);
+    const userText = (textBlocks.at(-1) ?? "").trim() || "(no text)";
 
     const u = (update: Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"]) =>
       this.conn.sessionUpdate({ sessionId, update });

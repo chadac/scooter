@@ -54,7 +54,7 @@
  * /agui with resume[] whose continuation streams back through the same log.
  */
 
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AbstractAgent, RunAgentInput } from "@ag-ui/client";
 import { useAgUiRuntime, fromAgUiMessages } from "@assistant-ui/react-ag-ui";
@@ -83,6 +83,9 @@ export interface InterruptContextValue {
   isRunning: boolean;
   /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
   cancel: () => Promise<void>;
+  /** Bumps on every render-pump push (message change). Used as the Thread error
+   *  boundary's reset key so a transient runtime crash recovers on the next frame. */
+  renderTick: number;
 }
 
 const InterruptContext = createContext<InterruptContextValue>({
@@ -92,6 +95,7 @@ const InterruptContext = createContext<InterruptContextValue>({
   baseUrl: "",
   isRunning: false,
   cancel: async () => {},
+  renderTick: 0,
 });
 
 export const useConversationInterrupts = () => useContext(InterruptContext);
@@ -200,6 +204,11 @@ function ConversationRuntime({
   // on the same single-source path as messages.
   const [interrupts, setInterrupts] = useState<readonly PendingInterrupt[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [renderTick, setRenderTick] = useState(0);
+  // Highest message count applied so far — suppresses a SHRINKING reset during a
+  // reconnect re-fold (see push() below). Reset per conversation (this component
+  // remounts on currentId).
+  const lastLen = useRef(0);
 
   useEffect(() => {
     let disposed = false;
@@ -212,11 +221,26 @@ function ConversationRuntime({
       // history at once (landing at the latest message). Live events after that
       // render per-event as usual.
       if (agent.isReplaying()) return;
-      runtime.thread.reset(fromAgUiMessages(agent.messages as unknown as unknown[]));
+      // Guard against a SHRINKING reset within THIS conversation. A reconnect
+      // re-folds agent.messages from empty (0,1,2,…back up to N); a reset applied
+      // while that fold is still climbing hands assistant-ui a SHORTER list than it
+      // is mid-rendering → "useClientLookup: Index N out of bounds" → the page
+      // blanks (the model-switch flake). The full history only ever GROWS back to
+      // (at least) its prior length, so suppressing shrinking resets drops only the
+      // transient mid-reconnect frames, not any real state. (A thread SWITCH remounts
+      // this component — keyed on currentId — so lastLen resets and can't wrongly
+      // suppress the new, shorter conversation.)
+      const folded = agent.messages as unknown as unknown[];
+      if (folded.length < lastLen.current) return;
+      lastLen.current = folded.length;
+      runtime.thread.reset(fromAgUiMessages(folded));
       // Interrupts ride the log too; surface them (or clear them) on every change.
       setInterrupts(agent.getPendingInterrupts());
       // Run-in-flight state (Stop button + thinking indicator) rides the log too.
       setIsRunning(agent.runIsActive());
+      // Advance the error-boundary reset key so a transient runtime crash during
+      // this reset recovers on the next push.
+      setRenderTick((n) => n + 1);
     };
     const { unsubscribe } = agent.subscribe({ onMessagesChanged: () => push() });
     const stopPump = agent.renderPump();
@@ -250,8 +274,9 @@ function ConversationRuntime({
       baseUrl: BASE_URL,
       isRunning,
       cancel: () => agent.cancel(),
+      renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning],
+    [interrupts, agent, conversationId, isRunning, renderTick],
   );
 
   return (

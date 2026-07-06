@@ -213,9 +213,41 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       permissionHandler = handler;
     },
     async close() {
-      child.kill();
+      await closeChild(child);
     },
   };
+}
+
+/** Minimal shape of a child process `closeChild` needs (testable without spawning). */
+export interface KillableChild {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals): boolean;
+  once(event: "exit", cb: () => void): void;
+}
+
+/**
+ * Gracefully terminate the goose child and AWAIT its actual exit — not just
+ * fire-and-forget kill(). A mid-conversation model switch does bridge.stop() ->
+ * close() -> revive() -> spawn a NEW goose with the new GOOSE_MODEL. If close()
+ * returned before the OLD goose died, the two would briefly coexist and share the
+ * per-conversation cwd (goose sessions DB + .goosehints), so under slow timing the
+ * reply could come from the old process (old model) — the model-switch race.
+ * SIGTERM, wait for exit; SIGKILL after `graceMs` so a hung goose can't block the
+ * switch forever; resolve once it's truly gone.
+ */
+export function closeChild(child: KillableChild, graceMs = 10_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(); // already dead
+  return new Promise<void>((resolve) => {
+    let killTimer: ReturnType<typeof setTimeout>;
+    child.once("exit", () => {
+      clearTimeout(killTimer);
+      resolve();
+    });
+    child.kill("SIGTERM");
+    killTimer = setTimeout(() => child.kill("SIGKILL"), graceMs);
+    (killTimer as { unref?: () => void }).unref?.();
+  });
 }
 
 /** Maps the SDK's SessionNotification.update to our normalized SessionUpdate. */
