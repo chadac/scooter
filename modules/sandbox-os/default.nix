@@ -56,6 +56,10 @@
   environment.systemPackages = with pkgs; [
     bashInteractive coreutils findutils gnugrep gnused gawk
     git curl jq gnutar gzip cacert
+    # util-linux for `setsid` — background jobs (run_background) detach into their
+    # own session/process-group so they survive the exec shell and can be reaped
+    # as a group later. coreutils' nohup alone can't create a process group.
+    util-linux
   ];
 
   # --- the lazy-tool stubs (extensible; uv shipped) --------------------------

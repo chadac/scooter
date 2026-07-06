@@ -18,6 +18,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 import type { ModuleManager } from "../session/moduleManager.js";
+import type { JobManager } from "../session/jobManager.js";
 import type { ConversationLink } from "../session/manager.js";
 import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
 
@@ -64,6 +65,59 @@ export async function handleModifyEnvironment(
   };
 }
 
+/** Pure handlers for the background-job tools (run_background / check_background /
+ *  list_background), testable without the MCP plumbing. */
+export async function handleRunBackground(
+  jobs: JobManager,
+  conversationId: string,
+  args: { command: string },
+): Promise<ToolResult> {
+  const command = (args.command ?? "").trim();
+  if (!command) {
+    return { isError: true, content: [{ type: "text", text: "command is empty — provide a shell command to run in the background." }] };
+  }
+  const { jobId } = await jobs.start(conversationId, command);
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          `Started background job \`${jobId}\`: ${command}\n` +
+          `Check it with check_background("${jobId}"). It keeps running while you work.`,
+      },
+    ],
+  };
+}
+
+export async function handleCheckBackground(
+  jobs: JobManager,
+  conversationId: string,
+  args: { job_id: string },
+): Promise<ToolResult> {
+  const jobId = (args.job_id ?? "").trim();
+  if (!jobId) return { isError: true, content: [{ type: "text", text: "job_id is required." }] };
+  const st = await jobs.check(conversationId, jobId);
+  if (st.state === "unknown") {
+    return { isError: true, content: [{ type: "text", text: `Job \`${jobId}\` is unknown (its files were cleaned up or the pod was recreated).` }] };
+  }
+  const header =
+    st.state === "running"
+      ? `Job \`${jobId}\` is still RUNNING: ${st.command}`
+      : `Job \`${jobId}\` EXITED with code ${st.exitCode}: ${st.command}`;
+  const more = st.truncated ? `\n(output truncated to the tail — full log in the pod at ${st.logPath})` : "";
+  return { content: [{ type: "text", text: `${header}\n\n${st.output}${more}` }] };
+}
+
+export async function handleListBackground(
+  jobs: JobManager,
+  conversationId: string,
+): Promise<ToolResult> {
+  const list = await jobs.list(conversationId);
+  if (list.length === 0) return { content: [{ type: "text", text: "No background jobs for this conversation." }] };
+  const lines = list.map((j) => `- ${j.jobId}: ${j.command}`).join("\n");
+  return { content: [{ type: "text", text: `Background jobs (newest first):\n${lines}` }] };
+}
+
 /** The extra deps buildServer needs to ALSO register the agent-tools (slack/
  *  gitlab/github/web). Optional — when absent, only modify_environment registers
  *  (a modify_environment-only endpoint never crashes for lack of a broker). */
@@ -83,7 +137,12 @@ export interface AgentToolsWiring {
  *  capabilities are present: modify_environment when `manager` is given (self-
  *  modify enabled), and the five typed agent-tools when `agentTools` is given
  *  (broker wired). The two are independent — the endpoint serves either or both. */
-function buildServer(manager: ModuleManager | undefined, conversationId: string, agentTools?: AgentToolsWiring): McpServer {
+function buildServer(
+  manager: ModuleManager | undefined,
+  conversationId: string,
+  agentTools?: AgentToolsWiring,
+  jobs?: JobManager,
+): McpServer {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (manager) {
     server.registerTool(
@@ -99,6 +158,39 @@ function buildServer(manager: ModuleManager | undefined, conversationId: string,
         inputSchema: { module_nix: z.string().describe("The full NixOS module.nix text to apply.") },
       },
       async (args) => handleModifyEnvironment(manager, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
+  if (jobs) {
+    server.registerTool(
+      "run_background",
+      {
+        title: "Run a command in the background",
+        description:
+          "Start a long-running shell command (a build, a test suite) DETACHED in your sandbox and keep " +
+          "working — it does NOT block this turn. Returns a job id; poll it with check_background. Output is " +
+          "captured to a log in the pod. Use this instead of a normal shell tool call for anything that takes " +
+          "more than a few seconds.",
+        inputSchema: { command: z.string().describe("The shell command to run in the background.") },
+      },
+      async (args) => handleRunBackground(jobs, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+    server.registerTool(
+      "check_background",
+      {
+        title: "Check a background job",
+        description: "Report a background job's state (running / exited + exit code) and its recent output tail.",
+        inputSchema: { job_id: z.string().describe("The job id returned by run_background.") },
+      },
+      async (args) => handleCheckBackground(jobs, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+    server.registerTool(
+      "list_background",
+      {
+        title: "List background jobs",
+        description: "List this conversation's background jobs (newest first) with their commands.",
+        inputSchema: {},
+      },
+      async () => handleListBackground(jobs, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
   }
   if (agentTools) {
@@ -141,6 +233,9 @@ export function createMcpEndpoint(deps: {
    *  agent-tools (slack/gitlab/github/web). Omit to expose only
    *  modify_environment (e.g. when no broker is configured). */
   agentTools?: AgentToolsWiring;
+  /** When provided, exposes the background-job tools (run_background /
+   *  check_background / list_background). Omit to leave them off. */
+  jobs?: JobManager;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
@@ -157,7 +252,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(deps.manager, conv, deps.agentTools);
+      const server = buildServer(deps.manager, conv, deps.agentTools, deps.jobs);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },

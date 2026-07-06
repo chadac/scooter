@@ -30,6 +30,7 @@ import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { createModuleManager } from "./session/moduleManager.js";
+import { createJobManager } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
@@ -343,6 +344,22 @@ export async function main(
         configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
       })
     : undefined;
+
+  // Background jobs (run_background): the agent starts a long command detached in
+  // its sandbox and keeps working. Gated the same way as self-modify (a real
+  // sandbox with a durable registry). The registry is the state PVC (store).
+  const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!store.saveJob;
+  const jobManager = jobsEnabled
+    ? createJobManager({
+        client: (id) => deferredSandboxApi(sessions.get(id as SessionId)!.sandbox),
+        registry: {
+          saveJob: (id, job) => store.saveJob!(id as SessionId, job),
+          listJobs: (id) => store.listJobs!(id as SessionId),
+        },
+        cleanupTtlMs: Number(process.env.BACKGROUND_JOB_TTL_MS ?? 10 * 60 * 1000),
+      })
+    : undefined;
+
   // The typed agent-tools (slack/gitlab/github/web) call the broker server-side
   // under the agent-host's OWN identity (BROKER_URL + SA token, same anchor as
   // resolveAwsRequest below). When BROKER_URL is unset (local/fake) the tools
@@ -392,13 +409,14 @@ export async function main(
   // self-modify is off, and vice-versa. buildServer registers whichever deps are
   // present.
   const mcpEndpoint =
-    moduleManager !== undefined || agentToolsWiring !== undefined
+    moduleManager !== undefined || agentToolsWiring !== undefined || jobManager !== undefined
       ? createMcpEndpoint({
           manager: moduleManager,
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
           agentTools: agentToolsWiring,
+          jobs: jobManager,
         })
       : undefined;
 
@@ -623,8 +641,22 @@ export async function main(
     sweepTimer.unref?.();
   }
 
+  // Background-job cleanup: periodically remove EXITED jobs' on-disk files past the
+  // TTL, per RUNNING conversation (a suspended pod has no fs to sweep). Best-effort.
+  let jobCleanupTimer: ReturnType<typeof setInterval> | undefined;
+  if (jobManager) {
+    jobCleanupTimer = setInterval(() => {
+      for (const c of sessions.list()) {
+        if (c.status !== "running") continue;
+        void jobManager.cleanup(c.id).catch(() => {});
+      }
+    }, config.idleSweepIntervalMs);
+    jobCleanupTimer.unref?.();
+  }
+
   return async () => {
     if (sweepTimer) clearInterval(sweepTimer);
+    if (jobCleanupTimer) clearInterval(jobCleanupTimer);
     await metrics.shutdown();
     await server.close();
   };

@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
 import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
+import type { JobRecord } from "./jobManager.js";
 import type { SessionId } from "../types.js";
 import { EMPTY_CHECKSUM, chainNext } from "../agui/integrity.js";
 import { tailByRuns } from "./eventWindow.js";
@@ -47,6 +48,10 @@ export function createFileConversationStore(root: string): ConversationStore {
   // restart on the same PVC the event log lives on). The agent-host syncs it into
   // the per-conversation ConfigMap so the in-pod boot re-converge applies it.
   const modulePath = (id: SessionId) => join(root, id, "module.nix");
+  // The conversation's background-job registry (run_background) — small JSON index
+  // of {jobId, command, startedAt}. The job's OUTPUT lives in-pod on the workspace
+  // PVC; this is just the durable list so `list_background` survives a restart.
+  const jobsPath = (id: SessionId) => join(root, id, "jobs.json");
   const ensureDir = (id: SessionId) => mkdir(join(root, id), { recursive: true });
 
   // Per-conversation write chain: appendEvent is fired-and-forgotten (void) for
@@ -217,6 +222,22 @@ export function createFileConversationStore(root: string): ConversationStore {
         return await readFile(modulePath(id), "utf8");
       } catch {
         return null;
+      }
+    },
+
+    /** Append a background-job record to the conversation's registry (newest first). */
+    async saveJob(id: SessionId, job: JobRecord) {
+      await ensureDir(id);
+      const existing = await this.listJobs!(id);
+      await writeFileAtomic(jobsPath(id), JSON.stringify([job, ...existing]));
+    },
+
+    /** The conversation's background-job records (for list_background). [] if none. */
+    async listJobs(id: SessionId): Promise<JobRecord[]> {
+      try {
+        return JSON.parse(await readFile(jobsPath(id), "utf8")) as JobRecord[];
+      } catch {
+        return [];
       }
     },
 
