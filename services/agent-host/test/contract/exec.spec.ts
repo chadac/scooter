@@ -5,9 +5,10 @@
  * /download against a fake sandbox API. RED against Design interfaces.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
-import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
+import { createSandboxExecBackend, type SandboxApiClient } from "../../src/exec/sandboxExec.js";
+import type { ExecResult } from "../../src/types.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
 
 describe("ExecBackend (agent-sandbox SDK)", () => {
@@ -83,5 +84,77 @@ describe("ExecBackend (agent-sandbox SDK)", () => {
     const exits = await Promise.all(terms.map((t) => t.waitForExit()));
 
     expect(exits.map((e) => e.exitCode).sort()).toEqual([0, 1, 2]);
+  });
+});
+
+describe("ExecBackend hard command timeout (P0 — runaway-command deadlock fix)", () => {
+  /** An api whose execute() HANGS until its AbortSignal fires, then rejects like
+   *  the real pods/exec WS does on close. Lets us drive the deadline. */
+  function hangingApi(): SandboxApiClient {
+    return {
+      mode: "k8s-exec",
+      async execute(_req, signal): Promise<ExecResult> {
+        return new Promise<ExecResult>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted (WS closed)")));
+        });
+      },
+      async download() { return ""; },
+      async upload() {},
+    };
+  }
+
+  it("aborts a command that outruns the deadline and returns exit 124 + a timeout message", async () => {
+    vi.useFakeTimers();
+    try {
+      const exec = createSandboxExecBackend(hangingApi(), { commandTimeoutMs: 5000 });
+      const term = exec.spawn({ command: "grep", args: ["-r", "x", "/"] });
+      const chunks: string[] = [];
+      term.onOutput((c) => chunks.push(c));
+      const exitP = term.waitForExit();
+
+      await vi.advanceTimersByTimeAsync(5000); // cross the deadline
+      const { exitCode } = await exitP;
+
+      expect(exitCode).toBe(124); // conventional timeout exit code
+      expect(chunks.join("")).toMatch(/timed out after 5s/i);
+      expect(chunks.join("")).toMatch(/narrow it|background/i); // actionable guidance
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT time out a command that finishes in time", async () => {
+    vi.useFakeTimers();
+    try {
+      const api: SandboxApiClient = {
+        mode: "k8s-exec",
+        async execute() { return { stdout: "done", stderr: "", exitCode: 0 }; },
+        async download() { return ""; },
+        async upload() {},
+      };
+      const exec = createSandboxExecBackend(api, { commandTimeoutMs: 5000 });
+      const term = exec.spawn({ command: "echo", args: ["hi"] });
+      const { exitCode } = await term.waitForExit();
+      // Advancing past the deadline must NOT re-fire / change the settled result.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(exitCode).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("commandTimeoutMs=0 disables the timeout (a long command is not aborted by a timer)", async () => {
+    vi.useFakeTimers();
+    try {
+      const exec = createSandboxExecBackend(hangingApi(), { commandTimeoutMs: 0 });
+      const term = exec.spawn({ command: "sleep", args: ["999"] });
+      let settled = false;
+      void term.waitForExit().then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000); // an hour — no timer to fire
+      expect(settled).toBe(false); // still running (only a user kill() would end it)
+      await term.kill(); // clean up (aborts the hanging api)
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
