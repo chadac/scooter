@@ -141,10 +141,11 @@ def test_can_approve_route_reflects_the_openfga_check(tmp_path):
     """The read-only /can-approve route answers per-viewer without mutating —
     true for an account approver, false otherwise. Powers the greyed Approve
     button; no admin gate (anyone may ASK)."""
-    # The route runs resolve_approver, which STRIPS a leading "user:" — so the FGA
-    # check receives the BARE principal (same as approve()/deny() do). Seed the
-    # authorizer with the bare id so can-approve mirrors real approve behavior.
-    authz = _FakeAuthorizer({("alice@x", "approver", "aws_account:dev")})
+    # The route runs resolve_approver (STRIPS "user:" / picks a bare claim), then
+    # the service WRAPS it back to `user:<id>` for the check — matching how
+    # seed_approver_tuples() grants the tuple. So seed the authorizer the way the
+    # real seeder does: `user:alice@x` (NOT bare — that was the prefix-mismatch bug).
+    authz = _FakeAuthorizer({("user:alice@x", "approver", "aws_account:dev")})
     store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'ca.db'}"))
     service = PermissionService(
         store=store, iam=FakeIam(), account_registry=REGISTRY,
