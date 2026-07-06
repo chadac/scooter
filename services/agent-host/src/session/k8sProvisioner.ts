@@ -98,6 +98,11 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // self-authored module.nix lives here (durable across suspend/resume). Mounted
   // read-only into the pod; scooter-apply-module reads it.
   const moduleCmName = (id: string) => `conv-${id}-module`;
+  // The module CM volume + mount shape — MUST match sandboxManifest's (the
+  // "scooter-conv" volume mounted read-only at scooterModule.dir). ensureModuleMount
+  // patches these into an old Sandbox's podTemplate that predates the module CM.
+  const MODULE_VOLUME_NAME = "scooter-conv";
+  const MODULE_MOUNT_PATH = "/etc/agent-sandbox/scooter";
 
   // A ref's namespace may be EMPTY: hydrateEntry() (manager.ts) hands out a
   // placeholder ref { name, namespace: "" } for a conversation whose Sandbox is
@@ -256,11 +261,92 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     // moduleManager build-before-persist gate), so the CM only ever holds a
     // switch-clean module. Merge-patch just the module.nix key.
     async writeModule(conversationId: string, module: string): Promise<void> {
-      await core.patchNamespacedConfigMap(
+      // UPSERT, not patch-only: a merge-patch 404s when the ConfigMap doesn't
+      // exist, which happens for conversations created before module-CM
+      // provisioning, or a hydrated/revived conversation whose CM was GC'd —
+      // making modify_environment fail with a bewildering k8s 404 even though the
+      // Nix build succeeded. Patch first (the common case: the CM exists and is
+      // mounted, so a merge-patch propagates to the running pod live); on 404,
+      // create it so the module at least persists for the next pod's boot
+      // re-converge. NOTE: a CM created here is NOT mounted into an ALREADY-running
+      // pod (kubelet only live-updates the contents of a CM mounted at pod birth)
+      // — the durable persistence is the win; the live apply still needs the CM to
+      // have existed at create() time.
+      const cmName = moduleCmName(conversationId);
+      await core
+        .patchNamespacedConfigMap(
+          { name: cmName, namespace: ns, body: { data: { "module.nix": module } } },
+          setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+        )
+        .catch(async (e: { code?: number }) => {
+          if (e?.code !== 404) throw e;
+          await core.createNamespacedConfigMap({
+            namespace: ns,
+            body: {
+              metadata: { name: cmName, namespace: ns },
+              data: { "module.nix": module },
+            },
+          });
+        });
+    },
+
+    // Self-heal: ensure the Sandbox podTemplate MOUNTS the module CM so the boot
+    // re-converge (which reads MODULE_MOUNT_PATH/module.nix) actually sees the
+    // agent's module. Sandboxes created before module-CM provisioning have no such
+    // volume/mount — a CM sync would never reach their pod. Idempotent: a Sandbox
+    // that already mounts it is left untouched (no needless generation bump). Must
+    // run BEFORE the pod boots (revive orders it ahead of resume) so the recreated
+    // pod picks up the volume. Read-modify-write the arrays (a merge-patch REPLACES
+    // arrays, so we must send the full, augmented lists).
+    async ensureModuleMount(conversationId: string): Promise<void> {
+      const name = sandboxName(conversationId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let sb: any;
+      try {
+        sb = await custom.getNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name,
+        });
+      } catch (e) {
+        // No Sandbox yet (never created / GC'd) — nothing to repair; create() will
+        // make one WITH the mount. A 404 here is benign; anything else propagates.
+        if ((e as { code?: number })?.code === 404) return;
+        throw e;
+      }
+      const podSpec = sb?.spec?.podTemplate?.spec;
+      if (!podSpec) return; // malformed / unexpected shape — leave it alone
+      const volumes: Array<{ name: string }> = podSpec.volumes ?? [];
+      const container = (podSpec.containers ?? [])[0];
+      if (!container) return;
+      const mounts: Array<{ name: string }> = container.volumeMounts ?? [];
+
+      const hasVolume = volumes.some((v) => v.name === MODULE_VOLUME_NAME);
+      const hasMount = mounts.some((m) => m.name === MODULE_VOLUME_NAME);
+      if (hasVolume && hasMount) return; // already wired — idempotent no-op
+
+      const newVolumes = hasVolume
+        ? volumes
+        : [...volumes, { name: MODULE_VOLUME_NAME, configMap: { name: moduleCmName(conversationId) } }];
+      const newMounts = hasMount
+        ? mounts
+        : [...mounts, { name: MODULE_VOLUME_NAME, mountPath: MODULE_MOUNT_PATH, readOnly: true }];
+
+      // Merge-patch the podTemplate.spec: replace volumes (top-level) and the
+      // container list (the container array is atomic under merge-patch, so we send
+      // the whole container[0] with its augmented volumeMounts).
+      const patchedContainer = { ...container, volumeMounts: newMounts };
+      await custom.patchNamespacedCustomObject(
         {
-          name: moduleCmName(conversationId),
-          namespace: ns,
-          body: { data: { "module.nix": module } },
+          group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name,
+          body: {
+            spec: {
+              podTemplate: {
+                spec: {
+                  volumes: newVolumes,
+                  containers: [patchedContainer, ...(podSpec.containers ?? []).slice(1)],
+                },
+              },
+            },
+          },
         },
         setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
       );
