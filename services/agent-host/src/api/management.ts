@@ -411,9 +411,37 @@ export function createManagementApi(deps: ManagementDeps): Router {
       justification?: string;
     }>();
     if (!body.request_id) return { status: 400, json: { error: "request_id required" } };
-    const conv = sessions.get(ctx.params.id);
-    const bridge = conv?.bridge;
-    if (!bridge) return { status: 404, json: { error: "no active conversation" } };
+    // Resolve the conversation. The BROKER identifies it by the SHORT DNS-safe
+    // hash (from the sandbox SA name `sandbox-{shortId}`), NOT the full threadId
+    // the session map is keyed by — so a plain get(ctx.params.id) MISSES and the
+    // approval 404s (the "window never appears" root cause). Try the full id first
+    // (webhooks/UI use it), then fall back to the short-id resolution (which also
+    // hydrates a persisted-but-evicted conversation).
+    const conv =
+      sessions.get(ctx.params.id) ?? (await sessions.getByShortId(ctx.params.id));
+    if (!conv) {
+      // A genuinely unknown conversation — nothing to raise the interrupt on.
+      return { status: 404, json: { error: "unknown conversation" } };
+    }
+    // The conversation exists but its in-memory BRIDGE may be absent — it was
+    // idle-suspended, or hydrated-but-not-revived after an agent-host restart, or
+    // torn down by a model switch. The agent that called `scooter-aws request` is
+    // still running in the sandbox, so we MUST NOT drop the approval on the floor:
+    // revive to rebuild the bridge, then raise. Without this the route dropped it
+    // and the broker (fire-and-forget) swallowed it — "the approval window never
+    // appeared." raiseInterrupt persists the interrupt, so it also survives a
+    // reload once raised. Key off the RESOLVED conversation's real id (conv.id),
+    // not ctx.params.id, which may be the short hash.
+    let bridge = sessions.get(conv.id)?.bridge;
+    if (!bridge) {
+      try {
+        await sessions.revive(conv.id);
+        bridge = sessions.get(conv.id)?.bridge;
+      } catch (err) {
+        console.error(`[agent-host] aws-request could not revive ${conv.id}:`, err);
+      }
+    }
+    if (!bridge) return { status: 503, json: { error: "could not activate conversation to raise the approval" } };
 
     const summary =
       `Scooter is requesting AWS access to ${body.target_account} ` +
@@ -435,18 +463,18 @@ export function createManagementApi(deps: ManagementDeps): Router {
         // via answerPermission), not the conversation owner — the broker authorizes
         // the configured claim (email/id/name). Fall back to the conversation id
         // when there's no identity (anonymous / FGA-off / dev).
-        const approverIdentity = approver ?? { id: ctx.params.id };
+        const approverIdentity = approver ?? { id: conv.id };
         // Finding #5: resolveAwsRequest THROWS on a dropped approval (token
         // unreadable / broker 4xx-5xx). Fire-and-forget, so handle the rejection —
         // a swallowed one silently loses the user's security decision. A broker
         // PROVISIONING error is also fed back into the conversation so the agent can
         // help the user fix the broker setup.
         void deps
-          .resolveAwsRequest?.(ctx.params.id, body.request_id!, optionId === "approve", approverIdentity)
+          .resolveAwsRequest?.(conv.id, body.request_id!, optionId === "approve", approverIdentity)
           .catch((err) => {
             // eslint-disable-next-line no-console
             console.error(
-              `[agent-host] AWS approval NOT recorded for ${ctx.params.id} ` +
+              `[agent-host] AWS approval NOT recorded for ${conv.id} ` +
                 `(request ${body.request_id}, ${optionId}):`,
               err,
             );

@@ -26,6 +26,14 @@ const conv = (over: Partial<Conversation> = {}): Conversation => ({
   ...over,
 });
 
+/** The SAME short DNS-safe hash the manager uses (session/manager.ts shortId) —
+ *  the broker sends this, extracted from the sandbox SA name `sandbox-{shortId}`. */
+function shortIdOf(threadId: string): string {
+  let h = 0;
+  for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) | 0;
+  return Math.abs(h).toString(36);
+}
+
 function fakeSessions(): SessionManager {
   const store = new Map<string, Conversation>([["c1", conv()]]);
   return {
@@ -48,6 +56,10 @@ function fakeSessions(): SessionManager {
       store.set(id, conv({ id, status: "ended" }));
     }),
     get: (id) => store.get(id),
+    // Resolve by the short DNS-safe hash of the threadId (what the broker sends).
+    getByShortId: vi.fn(async (shortHash) =>
+      [...store.values()].find((c) => shortHash === shortIdOf(c.threadId)),
+    ),
     list: () => [...store.values()],
     setTitle: vi.fn((id, title) => {
       const c = store.get(id);
@@ -390,5 +402,76 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status } = await call(api, "GET", "/conversations/nope");
     expect(status).toBe(404);
+  });
+
+  describe("POST /conversations/:id/aws-request (approval interrupt)", () => {
+    // A full-UUID conversation with a live bridge — so its short hash != its id,
+    // reproducing the broker keying that used to 404.
+    const UUID = "aee8b191-a4ca-4cb5-81f0-ffd058a89663";
+    const SHORT = shortIdOf(UUID);
+
+    const sessionsWithBridge = (opts: { bridge?: boolean } = {}) => {
+      const raiseInterrupt = vi.fn();
+      const bridge = opts.bridge === false ? undefined : ({ raiseInterrupt } as never);
+      const c = conv({ id: UUID, threadId: UUID, bridge });
+      const map = new Map<string, Conversation>([[UUID, c]]);
+      const sessions = {
+        ...fakeSessions(),
+        get: (id: string) => map.get(id),
+        getByShortId: vi.fn(async (h: string) =>
+          [...map.values()].find((cc) => shortIdOf(cc.threadId) === h),
+        ),
+        revive: vi.fn(async (id: string) => {
+          // Revive rebuilds the bridge on the existing conversation.
+          const cc = conv({ id, threadId: id, status: "running", bridge: { raiseInterrupt } as never });
+          map.set(id, cc);
+          return cc;
+        }),
+      } as unknown as SessionManager;
+      return { sessions, raiseInterrupt };
+    };
+
+    const awsBody = { request_id: "req-1", target_account: "dev", risk_level: "low", policy_summary: "s3:GetObject", justification: "read state" };
+
+    it("resolves by the SHORT id the broker sends (not just the full threadId) and raises the interrupt", async () => {
+      const { sessions, raiseInterrupt } = sessionsWithBridge();
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      // The broker POSTs the SHORT hash — the pre-fix route did get(SHORT) -> 404.
+      const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, awsBody);
+      expect(status).toBe(202);
+      expect(raiseInterrupt).toHaveBeenCalledOnce();
+      expect((raiseInterrupt.mock.calls[0][0] as { id: string }).id).toBe("req-1");
+    });
+
+    it("still resolves by the FULL threadId (UI/webhooks path unchanged)", async () => {
+      const { sessions, raiseInterrupt } = sessionsWithBridge();
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", `/conversations/${UUID}/aws-request`, awsBody);
+      expect(status).toBe(202);
+      expect(raiseInterrupt).toHaveBeenCalledOnce();
+    });
+
+    it("REVIVES a conversation with no live bridge, then raises (idle-suspended path)", async () => {
+      const { sessions, raiseInterrupt } = sessionsWithBridge({ bridge: false });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, awsBody);
+      expect(sessions.revive).toHaveBeenCalledWith(UUID); // revived by the RESOLVED id
+      expect(status).toBe(202);
+      expect(raiseInterrupt).toHaveBeenCalledOnce();
+    });
+
+    it("404s a genuinely unknown conversation (neither full nor short id matches)", async () => {
+      const { sessions } = sessionsWithBridge();
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", `/conversations/totally-unknown/aws-request`, awsBody);
+      expect(status).toBe(404);
+    });
+
+    it("400s without a request_id", async () => {
+      const { sessions } = sessionsWithBridge();
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, { target_account: "dev" });
+      expect(status).toBe(400);
+    });
   });
 });
