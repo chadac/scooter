@@ -474,4 +474,37 @@ describe("management API", () => {
       expect(status).toBe(400);
     });
   });
+
+  describe("POST /conversations/:id/cancel (Stop button)", () => {
+    const sessionsWithCancel = (opts: { bridge?: boolean } = {}) => {
+      const cancel = vi.fn(async () => {});
+      const bridge = opts.bridge === false ? undefined : ({ cancel } as never);
+      const c = conv({ id: "c1", threadId: "c1", bridge });
+      const map = new Map<string, Conversation>([["c1", c]]);
+      const sessions = { ...fakeSessions(), get: (id: string) => map.get(id) } as unknown as SessionManager;
+      return { sessions, cancel };
+    };
+
+    it("calls bridge.cancel() on the running conversation (202)", async () => {
+      const { sessions, cancel } = sessionsWithCancel();
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", "/conversations/c1/cancel");
+      expect(status).toBe(202);
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+
+    it("is a no-op-OK (202) when the conversation has no live bridge", async () => {
+      const { sessions } = sessionsWithCancel({ bridge: false });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", "/conversations/c1/cancel");
+      expect(status).toBe(202); // stopping "nothing" still succeeds — a stale click never errors
+    });
+
+    it("404s an unknown conversation", async () => {
+      const { sessions } = sessionsWithCancel();
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const { status } = await call(api, "POST", "/conversations/nope/cancel");
+      expect(status).toBe(404);
+    });
+  });
 });
