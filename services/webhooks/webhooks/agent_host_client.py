@@ -81,13 +81,21 @@ async def create_conversation(
     return {"conversation_id": conversation_id, "result": result_text}
 
 
-async def send_message(conversation_id: str, message: str) -> bool:
-    """Send a follow-up message into an existing conversation (same thread)."""
+async def send_message(conversation_id: str, message: str, *, priority: bool = False) -> bool:
+    """Send a follow-up message into an existing conversation (same thread).
+
+    `priority=True` (an @mention to an ACTIVE conversation) tags the forward so the
+    agent-host can force-interrupt a stuck turn after its priority timeout. The
+    agent-host owns the timer; webhooks only flags intent. PRIORITY_INTERRUPT=10
+    mirrors the agent-host's bridge constant.
+    """
     payload = {
         "threadId": conversation_id,
         "runId": str(uuid.uuid4()),
         "messages": [{"role": "user", "content": message}],
     }
+    if priority:
+        payload["priority"] = 10  # PRIORITY_INTERRUPT (agent-host bridge.ts)
     try:
         await _run_and_collect(payload)
         return True

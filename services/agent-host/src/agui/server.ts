@@ -25,6 +25,11 @@ export interface RunAgentInput {
   /** Per-conversation model pick/switch (from the X-Agent-Model header on the
    *  /agui POST). Undefined = keep the conversation's current model. */
   model?: string;
+  /** Priority tier (PRIORITY_INTERRUPT) for a force-interrupting message — a
+   *  webhooks `@scooter` mention to an ACTIVE conversation sets this so it can
+   *  preempt a stuck turn after the bridge's priority timeout. The UI (a human
+   *  typing) never sets it. Undefined/0 = normal (waits its turn). */
+  priority?: number;
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -166,6 +171,8 @@ export function createAguiServer(): AguiServer {
         threadId: string;
         runId?: string;
         messages?: Array<{ role: string; content?: string }>;
+        /** Priority tier for a force-interrupting message (webhooks @mention). */
+        priority?: number;
         /** Per-interrupt responses (assistant-ui resumes a paused run with these
          *  instead of a new user message). */
         resume?: Array<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>;
@@ -200,7 +207,7 @@ export function createAguiServer(): AguiServer {
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
       const model = (Array.isArray(hdr) ? hdr[0] : hdr) || undefined;
-      await promptHandler?.(sessionId, { threadId: sessionId, text, model });
+      await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority });
       // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       return;
     }

@@ -77,8 +77,9 @@ async def test_mention_is_rewritten_to_readable_pattern_not_stripped():
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
-        async def rec_send(conv, msg):
+        async def rec_send(conv, msg, *, priority=False):
             captured["msg"] = msg
+            captured["priority"] = priority
             return True
         send.side_effect = rec_send
 
@@ -91,3 +92,6 @@ async def test_mention_is_rewritten_to_readable_pattern_not_stripped():
         await asyncio.sleep(0)
         assert "@scooter" in captured["msg"]
         assert "please review the PR" in captured["msg"]
+        # An @mention to an ACTIVE conversation forwards as PRIORITY so the
+        # agent-host can force-interrupt a stuck turn (the interrupt-queue feature).
+        assert captured["priority"] is True

@@ -25,7 +25,7 @@ async def _assert_nonblocking(handler_coro):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_send(conv_id, msg):
+    async def blocking_send(conv_id, msg, *, priority=False):
         started.set()
         await release.wait()  # the whole-turn block
         return True

@@ -267,7 +267,9 @@ async def _handle_mention(event: dict):
         # get every delivery dropped as a duplicate. React so the user sees it landed.
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
         await add_slack_reaction(channel, ts, "eyes")
-        asyncio.create_task(_background_forward(existing, forward_msg))
+        # A mention to an ACTIVE conversation is priority: force-interrupt a stuck
+        # turn after the agent-host's timeout (it owns the timer).
+        asyncio.create_task(_background_forward(existing, forward_msg, priority=True))
         return
 
     # React to indicate we're processing
@@ -343,7 +345,7 @@ async def _handle_thread_message(event: dict):
     asyncio.create_task(_background_forward(existing, forward_msg))
 
 
-async def _background_forward(existing: str, forward_msg: str) -> None:
+async def _background_forward(existing: str, forward_msg: str, *, priority: bool = False) -> None:
     """Forward a follow-up into an existing conversation OFF the request path.
 
     send_message blocks until the agent's whole turn finishes (the /agui SSE runs
@@ -351,8 +353,11 @@ async def _background_forward(existing: str, forward_msg: str) -> None:
     ~3s window, so Slack retries — and every retry is dropped as a duplicate, so the
     channel looks dead ("everything classified as a duplicate on existing
     conversations"). Run it as a task so the handler can 200 immediately; the reply
-    still streams into the thread via the agent's slack_respond."""
-    ok = await send_message(existing, forward_msg)
+    still streams into the thread via the agent's slack_respond.
+
+    `priority=True` (an @mention to an active conversation, from _handle_mention)
+    force-interrupts a stuck turn after the agent-host's priority timeout."""
+    ok = await send_message(existing, forward_msg, priority=priority)
     if not ok:
         logger.warning("Failed to forward message to conversation %s", existing)
 
