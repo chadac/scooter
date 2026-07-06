@@ -211,6 +211,14 @@ export interface SessionManager {
   end(id: SessionId): Promise<void>;
 
   get(id: SessionId): Conversation | undefined;
+  /** Resolve a conversation by its SHORT DNS-safe hash (the `shortId(threadId)`
+   *  used for k8s resource names). The broker identifies a conversation by this
+   *  short id (extracted from the sandbox SA name `sandbox-{shortId}`), NOT the
+   *  full threadId the session map is keyed by — so the aws-request route must
+   *  resolve via this, else `get(shortId)` misses and the approval 404s. May
+   *  hydrate a persisted-but-not-in-memory conversation. Returns undefined only
+   *  when no conversation has that short id. */
+  getByShortId(shortHash: string): Promise<Conversation | undefined>;
   /** All conversations, newest first. */
   list(): Conversation[];
   /** Set a conversation's title (e.g. agent-assigned). */
@@ -569,6 +577,28 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     get(id) {
       const entry = entries.get(id);
+      return entry ? toConversation(entry) : undefined;
+    },
+
+    async getByShortId(shortHash) {
+      // In-memory first: match any live entry whose threadId hashes to shortHash.
+      const live = [...entries.values()].find((e) => shortId(e.threadId) === shortHash);
+      if (live) return toConversation(live);
+      // Not in memory (idle-suspended out, or not yet hydrated after a restart):
+      // scan the persisted conversations and hydrate the match on demand, so the
+      // aws-request route can revive it. Mirrors hydrateByThread's find, keyed by
+      // the short hash instead of the full threadId.
+      let metas: ConversationMeta[];
+      try {
+        metas = (await store.listConversations?.()) ?? [];
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[manager] getByShortId(${shortHash}) store lookup FAILED:`, err);
+        return undefined;
+      }
+      const m = metas.find((x) => shortId(x.threadId) === shortHash);
+      if (!m) return undefined;
+      const entry = (await hydrateByThread(m.threadId)) ?? entries.get(m.id);
       return entry ? toConversation(entry) : undefined;
     },
 
