@@ -70,6 +70,9 @@ export interface AgentHostConfig {
   idleSuspendMs: number;
   /** How often the idle sweep runs (ms). */
   idleSweepIntervalMs: number;
+  /** Hard per-command exec timeout (ms). A runaway shell command is aborted after
+   *  this so it can't deadlock the conversation. 0 = off. Default 5 min. */
+  commandTimeoutMs: number;
   /** OpenTelemetry metrics (cost + usage + operational), exported over OTLP.
    *  OFF by default. Endpoint/headers come from the standard OTEL_* env. */
   observability: {
@@ -109,6 +112,8 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
+    // Hard per-command exec timeout. Default 5 min; COMMAND_TIMEOUT_MS=0 disables.
+    commandTimeoutMs: Number(process.env.COMMAND_TIMEOUT_MS ?? 5 * 60 * 1000),
     fakeSandbox,
     model: process.env.GOOSE_MODEL,
     availableModels: (process.env.AGENT_AVAILABLE_MODELS ?? "")
@@ -676,6 +681,7 @@ export async function main(
     // factory the bridge calls on first start().
     const exec = createSandboxExecBackend(
       config.fakeSandbox ? createLocalSandboxApiClient() : deferredSandboxApi(sandbox),
+      { commandTimeoutMs: config.commandTimeoutMs },
     );
     // Per-conversation model override: GOOSE_MODEL in the agent's launch env.
     const resolved = resolveModel(model, cfg);
