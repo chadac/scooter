@@ -187,6 +187,39 @@ describe("jobManager.cleanup", () => {
   });
 });
 
+describe("jobManager.kill", () => {
+  it("SIGTERM+SIGKILLs the job's PROCESS GROUP (kill -- -PGID) when running", async () => {
+    const { client, execs } = fakeClient((cmd) =>
+      // The kill probe: no status file (running), a pid present → it kills.
+      cmd.includes("__KILLED__") ? { stdout: "__KILLED__\n" } : undefined,
+    );
+    const { registry } = fakeRegistry();
+    await registry.saveJob("conv-1", { jobId: "job-1", command: "npm run build", startedAt: 1 });
+
+    const res = await mgr(client, registry).kill("conv-1", "job-1");
+    expect(res.outcome).toBe("killed");
+    const killExec = execs.find((c) => c.includes("kill -TERM"));
+    expect(killExec, "a kill exec").toBeTruthy();
+    expect(killExec).toMatch(/kill -TERM -- -/); // negative PGID = the process GROUP
+    expect(killExec).toMatch(/kill -KILL -- -/); // escalates to SIGKILL after a grace
+  });
+
+  it("reports already-exited when the job has finished (no kill)", async () => {
+    const { client } = fakeClient((cmd) => (cmd.includes("__KILLED__") ? { stdout: "__EXITED__\n" } : undefined));
+    const { registry } = fakeRegistry();
+    await registry.saveJob("conv-1", { jobId: "job-1", command: "x", startedAt: 1 });
+    const res = await mgr(client, registry).kill("conv-1", "job-1");
+    expect(res.outcome).toBe("already-exited");
+  });
+
+  it("reports unknown when the job dir is gone", async () => {
+    const { client } = fakeClient((cmd) => (cmd.includes("__KILLED__") ? { stdout: "__UNKNOWN__\n" } : undefined));
+    const { registry } = fakeRegistry();
+    const res = await mgr(client, registry).kill("conv-1", "nope");
+    expect(res.outcome).toBe("unknown");
+  });
+});
+
 describe("jobManager.list", () => {
   it("returns the conversation's registered jobs (durable registry)", async () => {
     const { client } = fakeClient();

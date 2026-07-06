@@ -122,4 +122,36 @@ maybe("run_background detached-job mechanism works in a real pod", () => {
     const log = await cluster.exec(SELECTOR, ["sh", "-c", `cat ${JOBS}/job-c/log`], NS);
     expect(log.stdout).toContain("boom-c");
   });
+
+  it("kill -- -PGID reaps the whole process GROUP (the job AND its children)", async () => {
+    // A job that spawns a child (a background sleep) and writes both pids, so we can
+    // verify BOTH die when we signal the group — not just the leader.
+    const cmd =
+      `sleep 300 & echo $! > ${JOBS}/job-k/child_pid; ` +
+      `echo started; sleep 300`;
+    await cluster.exec(SELECTOR, ["sh", "-c", launch("job-k", cmd)], NS);
+    // Wait until the child pid file exists (the job is up + spawned its child).
+    let childPid = "";
+    for (let i = 0; i < 30; i++) {
+      const c = await cluster.exec(SELECTOR, ["sh", "-c", `cat ${JOBS}/job-k/child_pid 2>/dev/null`], NS);
+      if (c.stdout.trim() !== "") { childPid = c.stdout.trim(); break; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(childPid).not.toBe("");
+    const leaderPid = (await cluster.exec(SELECTOR, ["sh", "-c", `cat ${JOBS}/job-k/pid`], NS)).stdout.trim();
+
+    // Both processes are alive before the kill.
+    const alive = async (pid: string) =>
+      (await cluster.exec(SELECTOR, ["sh", "-c", `kill -0 ${pid} 2>/dev/null && echo yes || echo no`], NS)).stdout.trim();
+    expect(await alive(leaderPid)).toBe("yes");
+    expect(await alive(childPid)).toBe("yes");
+
+    // Kill the process GROUP (the same command jobManager.kill emits).
+    await cluster.exec(SELECTOR, ["sh", "-c", `kill -TERM -- -${leaderPid} 2>/dev/null; sleep 2; kill -KILL -- -${leaderPid} 2>/dev/null; true`], NS);
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // BOTH the leader and its child are gone — the group reap worked.
+    expect(await alive(leaderPid)).toBe("no");
+    expect(await alive(childPid)).toBe("no");
+  });
 });

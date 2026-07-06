@@ -81,6 +81,20 @@ export interface JobManager {
    *  finished" turn for each result. Marks BEFORE returning so a slow/failed
    *  injection doesn't cause a re-notify next tick (announce-at-most-once). */
   pollCompletions(id: SessionId): Promise<JobStatus[]>;
+  /** Kill a RUNNING job — SIGTERM then (after a grace period) SIGKILL to the job's
+   *  whole PROCESS GROUP, so a command that spawned children (a build, a pipeline)
+   *  is fully reaped, not just its leader. Works because start() uses setsid (the
+   *  job is its own process-group leader; PGID == the recorded pid). Returns the
+   *  result: killed, already-exited, or unknown (no such job / gone). Idempotent. */
+  kill(id: SessionId, jobId: string): Promise<KillResult>;
+}
+
+export interface KillResult {
+  jobId: string;
+  /** "killed"        — a SIGTERM/SIGKILL was sent to the job's process group.
+   *  "already-exited" — the job had already finished (a status file exists).
+   *  "unknown"        — no such job / its files are gone. */
+  outcome: "killed" | "already-exited" | "unknown";
 }
 
 /** Persist/read the per-conversation job registry (agent-host state PVC in prod;
@@ -233,6 +247,29 @@ export function createJobManager(deps: JobManagerDeps): JobManager {
         if (st.state === "exited") done.push(st); // only announce a real completion
       }
       return done;
+    },
+
+    async kill(id, jobId): Promise<KillResult> {
+      const d = dir(jobId);
+      const client = await clientFor(id);
+      // One exec decides + acts. No dir -> unknown; a status file -> already-exited
+      // (nothing to kill); else read the pid and SIGTERM the whole PROCESS GROUP
+      // (`kill -- -PGID`, PGID == pid because start() used setsid), sleep a grace
+      // period, then SIGKILL the group. Signalling the GROUP reaps children too.
+      const script =
+        `if [ ! -d ${d} ]; then echo __UNKNOWN__; exit 0; fi; ` +
+        `if [ -f ${d}/status ]; then echo __EXITED__; exit 0; fi; ` +
+        `pid=$(cat ${d}/pid 2>/dev/null); ` +
+        `if [ -z "$pid" ]; then echo __UNKNOWN__; exit 0; fi; ` +
+        `kill -TERM -- -"$pid" 2>/dev/null; ` +
+        `sleep 3; ` +
+        `kill -KILL -- -"$pid" 2>/dev/null; ` +
+        `echo __KILLED__`;
+      const res = await client.execute({ command: "sh", args: ["-c", script] }).catch(() => undefined);
+      const out = res?.stdout ?? "";
+      if (out.includes("__UNKNOWN__")) return { jobId, outcome: "unknown" };
+      if (out.includes("__EXITED__")) return { jobId, outcome: "already-exited" };
+      return { jobId, outcome: "killed" };
     },
   };
 

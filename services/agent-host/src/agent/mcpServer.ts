@@ -118,6 +118,23 @@ export async function handleListBackground(
   return { content: [{ type: "text", text: `Background jobs (newest first):\n${lines}` }] };
 }
 
+export async function handleKillBackground(
+  jobs: JobManager,
+  conversationId: string,
+  args: { job_id: string },
+): Promise<ToolResult> {
+  const jobId = (args.job_id ?? "").trim();
+  if (!jobId) return { isError: true, content: [{ type: "text", text: "job_id is required." }] };
+  const res = await jobs.kill(conversationId, jobId);
+  const text =
+    res.outcome === "killed"
+      ? `Killed background job \`${jobId}\` (SIGTERM then SIGKILL to its process group).`
+      : res.outcome === "already-exited"
+        ? `Job \`${jobId}\` had already finished — nothing to kill (check_background for its result).`
+        : `Job \`${jobId}\` is unknown (no such job, or its files were cleaned up).`;
+  return { content: [{ type: "text", text }], isError: res.outcome === "unknown" };
+}
+
 /** The extra deps buildServer needs to ALSO register the agent-tools (slack/
  *  gitlab/github/web). Optional — when absent, only modify_environment registers
  *  (a modify_environment-only endpoint never crashes for lack of a broker). */
@@ -167,9 +184,9 @@ function buildServer(
         title: "Run a command in the background",
         description:
           "Start a long-running shell command (a build, a test suite) DETACHED in your sandbox and keep " +
-          "working — it does NOT block this turn. Returns a job id; poll it with check_background. Output is " +
-          "captured to a log in the pod. Use this instead of a normal shell tool call for anything that takes " +
-          "more than a few seconds.",
+          "working — it does NOT block this turn. Returns a job id; poll it with check_background (you'll also " +
+          "be told automatically when it finishes), or stop it with kill_background. Output is captured to a log " +
+          "in the pod. Use this instead of a normal shell tool call for anything that takes more than a few seconds.",
         inputSchema: { command: z.string().describe("The shell command to run in the background.") },
       },
       async (args) => handleRunBackground(jobs, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
@@ -191,6 +208,17 @@ function buildServer(
         inputSchema: {},
       },
       async () => handleListBackground(jobs, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+    server.registerTool(
+      "kill_background",
+      {
+        title: "Kill a background job",
+        description:
+          "Stop a running background job — SIGTERM then SIGKILL to its whole process group (so a build's " +
+          "child processes are reaped too). Use it to abort a job you started that's no longer needed or is stuck.",
+        inputSchema: { job_id: z.string().describe("The job id returned by run_background.") },
+      },
+      async (args) => handleKillBackground(jobs, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
   }
   if (agentTools) {
