@@ -97,6 +97,29 @@ export class IntegrityAgent extends AbstractAgent {
     return this.replaying;
   }
 
+  /** True while a goose RUN is in flight (a real turn — NOT an out-of-band `ext-`
+   *  interrupt run). Derived from the log: RUN_STARTED -> true, RUN_FINISHED /
+   *  RUN_ERROR -> false. Drives the composer's Stop button + the thinking
+   *  indicator. `ext-*` runs (broker interrupts) are ignored — they don't mean the
+   *  agent is thinking. */
+  private running = false;
+  runIsActive(): boolean {
+    return this.running;
+  }
+
+  /** Update `running` from a single log event, ignoring out-of-band `ext-` runs.
+   *  Returns true if the value changed (so the caller can nudge subscribers). */
+  private trackRunning(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; runId?: string };
+    const isExt = typeof ev.runId === "string" && ev.runId.startsWith("ext-");
+    let next = this.running;
+    if (ev.type === "RUN_STARTED" && !isExt) next = true;
+    else if ((ev.type === "RUN_FINISHED" || ev.type === "RUN_ERROR") && !isExt) next = false;
+    if (next === this.running) return false;
+    this.running = next;
+    return true;
+  }
+
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
@@ -384,6 +407,10 @@ export class IntegrityAgent extends AbstractAgent {
             // interrupt outcome pauses the run awaiting a user answer. The base
             // applier ignores this, so we surface it via getPendingInterrupts().
             this.trackInterrupt(e);
+            // Track run-in-flight for the Stop button / thinking indicator. The
+            // base applier doesn't signal this, so nudge subscribers on a change
+            // (suppressed during replay — the final `synced` render carries it).
+            if (this.trackRunning(e) && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
           () => {
@@ -503,6 +530,25 @@ export class IntegrityAgent extends AbstractAgent {
    */
   async submitResume(entries: readonly ResumeEntry[]): Promise<void> {
     await this.postAgui({ threadId: this.cfg.conversationId, resume: [...entries] });
+  }
+
+  /** Stop the running turn — the composer's Stop button. POSTs the agent-host
+   *  cancel endpoint, which ends the in-flight run (kills the active tool call,
+   *  ACP session/cancel, emits RUN_FINISHED{cancelled}). The terminal event
+   *  arrives via the integrity stream, so `running` flips false there — we don't
+   *  optimistically clear it here. Best-effort: a failed cancel leaves the run as
+   *  it was (the stream stays the source of truth). */
+  async cancel(): Promise<void> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
+    };
+    await this.doFetch(`${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/cancel`, {
+      method: "POST",
+      headers,
+    }).catch(() => {
+      /* best-effort; the integrity stream reflects the real run state */
+    });
   }
 
   /** Fire-and-forget POST /agui; deliberately does NOT consume the response body. */

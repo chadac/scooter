@@ -78,6 +78,11 @@ export interface InterruptContextValue {
    *  host endpoints (e.g. the per-viewer AWS can-approve check). */
   conversationId: string;
   baseUrl: string;
+  /** True while a goose run is in flight — drives the Stop button + thinking
+   *  indicator. Sourced from the IntegrityAgent's log-derived isRunning(). */
+  isRunning: boolean;
+  /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
+  cancel: () => Promise<void>;
 }
 
 const InterruptContext = createContext<InterruptContextValue>({
@@ -85,6 +90,8 @@ const InterruptContext = createContext<InterruptContextValue>({
   submitResume: async () => {},
   conversationId: "",
   baseUrl: "",
+  isRunning: false,
+  cancel: async () => {},
 });
 
 export const useConversationInterrupts = () => useContext(InterruptContext);
@@ -192,6 +199,7 @@ function ConversationRuntime({
   // context (useConversationInterrupts) rather than the runtime — keeping interrupts
   // on the same single-source path as messages.
   const [interrupts, setInterrupts] = useState<readonly PendingInterrupt[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -207,6 +215,8 @@ function ConversationRuntime({
       runtime.thread.reset(fromAgUiMessages(agent.messages as unknown as unknown[]));
       // Interrupts ride the log too; surface them (or clear them) on every change.
       setInterrupts(agent.getPendingInterrupts());
+      // Run-in-flight state (Stop button + thinking indicator) rides the log too.
+      setIsRunning(agent.runIsActive());
     };
     const { unsubscribe } = agent.subscribe({ onMessagesChanged: () => push() });
     const stopPump = agent.renderPump();
@@ -238,8 +248,10 @@ function ConversationRuntime({
       submitResume: (entries) => agent.submitResume(entries),
       conversationId,
       baseUrl: BASE_URL,
+      isRunning,
+      cancel: () => agent.cancel(),
     }),
-    [interrupts, agent, conversationId],
+    [interrupts, agent, conversationId, isRunning],
   );
 
   return (

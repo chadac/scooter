@@ -298,4 +298,71 @@ describe("IntegrityAgent", () => {
     expect(agent.getPendingInterrupts().map((p) => p.id)).not.toContain("aws1");
     agent.dispose();
   });
+
+  // --- run-in-flight (Stop button + thinking indicator) ------------------------
+
+  it("runIsActive() is true after RUN_STARTED and false after RUN_FINISHED", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "hi" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    // The stream ran a full turn to completion -> not running.
+    expect(agent.runIsActive()).toBe(false);
+    agent.dispose();
+  });
+
+  it("runIsActive() STAYS running when a run has started but not finished", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "synced" }, // stream synced mid-run (still working)
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.runIsActive()).toBe(true);
+    agent.dispose();
+  });
+
+  it("runIsActive() IGNORES out-of-band ext- runs (a broker interrupt isn't 'thinking')", async () => {
+    const frames = [
+      // An external interrupt run — must NOT flip runIsActive on.
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "ext-aws1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-aws1",
+        outcome: { type: "interrupt", interrupts: [{ id: "aws1", reason: "confirmation" }] } } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.runIsActive()).toBe(false);
+    agent.dispose();
+  });
+
+  it("runIsActive() flips false on RUN_ERROR too", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_ERROR", threadId: "c1", runId: "r1", message: "boom" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.runIsActive()).toBe(false);
+    agent.dispose();
+  });
+
+  it("cancel() POSTs the agent-host cancel endpoint for the conversation", async () => {
+    const fetchSpy = vi.fn(async () => new Response("", { status: 202 })) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+    await agent.cancel();
+
+    const call = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe("http://host/conversations/c1/cancel");
+    expect(call[1].method).toBe("POST");
+    agent.dispose();
+  });
 });
