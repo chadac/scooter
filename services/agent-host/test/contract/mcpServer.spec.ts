@@ -16,6 +16,7 @@ import {
   handleRunBackground,
   handleCheckBackground,
   handleListBackground,
+  handleKillBackground,
 } from "../../src/agent/mcpServer.js";
 import type { ModuleManager } from "../../src/session/moduleManager.js";
 import type { JobManager, JobStatus, JobRecord } from "../../src/session/jobManager.js";
@@ -73,6 +74,8 @@ function fakeJobs(over: Partial<JobManager> = {}): { jobs: JobManager; calls: st
     async check(id, jobId) { calls.push(`check:${id}:${jobId}`); return { jobId, command: "npm run build", state: "running", output: "building...", truncated: false, logPath: "/workspace/.scooter/jobs/job-1/log" } as JobStatus; },
     async list() { return [] as JobRecord[]; },
     async cleanup() {},
+    async pollCompletions() { return []; },
+    async kill(_id, jobId) { calls.push(`kill:${jobId}`); return { jobId, outcome: "killed" as const }; },
     ...over,
   };
   return { jobs, calls };
@@ -142,5 +145,34 @@ describe("list_background MCP tool handler", () => {
     const { jobs } = fakeJobs({ async list() { return []; } });
     const res = await handleListBackground(jobs, "conv1");
     expect(res.content[0].text).toMatch(/no background jobs/i);
+  });
+});
+
+describe("kill_background MCP tool handler", () => {
+  it("kills the job and reports it", async () => {
+    const { jobs, calls } = fakeJobs();
+    const res = await handleKillBackground(jobs, "conv1", { job_id: "job-1" });
+    expect(calls).toContain("kill:job-1");
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/killed/i);
+  });
+
+  it("reports already-exited (not an error) for a finished job", async () => {
+    const { jobs } = fakeJobs({ async kill(_id, jobId) { return { jobId, outcome: "already-exited" }; } });
+    const res = await handleKillBackground(jobs, "conv1", { job_id: "job-1" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/already finished/i);
+  });
+
+  it("errors on an unknown job", async () => {
+    const { jobs } = fakeJobs({ async kill(_id, jobId) { return { jobId, outcome: "unknown" }; } });
+    const res = await handleKillBackground(jobs, "conv1", { job_id: "gone" });
+    expect(res.isError).toBe(true);
+  });
+
+  it("rejects an empty job_id", async () => {
+    const { jobs } = fakeJobs();
+    const res = await handleKillBackground(jobs, "conv1", { job_id: "  " });
+    expect(res.isError).toBe(true);
   });
 });
