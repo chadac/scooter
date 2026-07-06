@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 from . import policy
-from ..core.authz import Authorizer, NoopAuthorizer, aws_account_object
+from ..core.authz import Authorizer, NoopAuthorizer, aws_account_object, user_object
 from .iam import IamProvisioner
 from .models import PermissionRequest, RequestStatus, RiskLevel, StsCredentials
 from .store import PermissionStore
@@ -247,8 +247,13 @@ class PermissionService:
     async def _authorize_approver(self, approver: str, target_account: str) -> None:
         """Enforce that `approver` may approve THIS account (OpenFGA). FGA off ->
         NoopAuthorizer -> always allowed. Fails closed if FGA is unreachable."""
+        # user_object() wraps the bare principal as `user:<id>` — matching how
+        # seed_approver_tuples() grants the tuple (providers/aws.py) and the
+        # already-wrapped object side (aws_account_object). Without this, the check
+        # user `alice@x` never matches the seeded `user:alice@x`, so an authorized
+        # approver is WRONGLY denied under real OpenFGA (NoopAuthorizer hid it).
         allowed = await self._authz.check(
-            user=approver, relation="approver", obj=aws_account_object(target_account)
+            user=user_object(approver), relation="approver", obj=aws_account_object(target_account)
         )
         if not allowed:
             raise RequestError([f"'{approver}' is not authorized to approve account '{target_account}'"])
@@ -355,8 +360,11 @@ class PermissionService:
         if req is None:
             return False
         try:
+            # Wrap the approver to `user:<id>` — same alignment as
+            # _authorize_approver() so the greyed-out button reflects the ACTUAL
+            # approve() authorization (not a false grey from a prefix mismatch).
             return await self._authz.check(
-                user=approver, relation="approver", obj=aws_account_object(req.target_account)
+                user=user_object(approver), relation="approver", obj=aws_account_object(req.target_account)
             )
         except Exception:  # FGA unreachable -> fail closed (greyed button, not a false-allow)
             return False

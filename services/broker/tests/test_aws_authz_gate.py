@@ -79,9 +79,9 @@ async def test_approve_allowed_when_user_is_account_approver(tmp_path):
     authz = FakeAuthorizer({("user:alice", "approver", "aws_account:dev")})
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
-    out = await svc.approve(request_id=req.request_id, approver="user:alice")
+    out = await svc.approve(request_id=req.request_id, approver="alice")
     assert out.status == RequestStatus.ACTIVE
-    assert out.approved_by == "user:alice"
+    assert out.approved_by == "alice"
 
 
 async def test_approve_denied_when_user_not_approver_for_account(tmp_path):
@@ -90,7 +90,7 @@ async def test_approve_denied_when_user_not_approver_for_account(tmp_path):
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
     with pytest.raises(RequestError):
-        await svc.approve(request_id=req.request_id, approver="user:alice")
+        await svc.approve(request_id=req.request_id, approver="alice")
     # The request stays PENDING (not approved) on an authz failure.
     again = await svc._store.get(req.request_id)
     assert again.status == RequestStatus.PENDING
@@ -101,7 +101,7 @@ async def test_deny_also_gated_on_account_approver(tmp_path):
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
     with pytest.raises(RequestError):
-        await svc.deny(request_id=req.request_id, approver="user:bob", reason="no")
+        await svc.deny(request_id=req.request_id, approver="bob", reason="no")
 
 
 async def test_noop_authorizer_allows_approve(tmp_path):
@@ -118,7 +118,7 @@ async def test_can_approve_true_for_account_approver(tmp_path):
     authz = FakeAuthorizer({("user:alice", "approver", "aws_account:dev")})
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
-    assert await svc.can_approve(request_id=req.request_id, approver="user:alice") is True
+    assert await svc.can_approve(request_id=req.request_id, approver="alice") is True
     # It is READ-ONLY: the request is untouched (still PENDING, no side effects).
     assert (await svc._store.get(req.request_id)).status == RequestStatus.PENDING
 
@@ -127,13 +127,13 @@ async def test_can_approve_false_when_not_approver_for_account(tmp_path):
     authz = FakeAuthorizer({("user:alice", "approver", "aws_account:prod")})  # not dev
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
-    assert await svc.can_approve(request_id=req.request_id, approver="user:alice") is False
+    assert await svc.can_approve(request_id=req.request_id, approver="alice") is False
 
 
 async def test_can_approve_false_for_unknown_request(tmp_path):
     # Fails closed: no request -> no account to resolve -> not approvable.
     svc = await _service(tmp_path, FakeAuthorizer(set()))
-    assert await svc.can_approve(request_id="nope", approver="user:alice") is False
+    assert await svc.can_approve(request_id="nope", approver="alice") is False
 
 
 async def test_can_approve_false_when_authz_unreachable(tmp_path):
@@ -144,7 +144,7 @@ async def test_can_approve_false_when_authz_unreachable(tmp_path):
     svc = await _service(tmp_path, BoomAuthorizer(set()))
     req = await _pending(svc)
     # FGA unreachable must NOT surface a live Approve button -> fail closed.
-    assert await svc.can_approve(request_id=req.request_id, approver="user:alice") is False
+    assert await svc.can_approve(request_id=req.request_id, approver="alice") is False
 
 
 async def test_can_approve_true_with_noop_authorizer(tmp_path):
@@ -152,3 +152,52 @@ async def test_can_approve_true_with_noop_authorizer(tmp_path):
     svc = await _service(tmp_path, NoopAuthorizer())
     req = await _pending(svc)
     assert await svc.can_approve(request_id=req.request_id, approver="anyone") is True
+
+
+# --- check-time / seed-time PREFIX ALIGNMENT (the latent authz bug) -----------
+#
+# The other tests hand approve() an ALREADY-prefixed `user:alice`. But in
+# production the approver reaches the FGA check via resolve_approver(), which
+# STRIPS `user:` (or picks a bare email/id claim), so check() sees `alice` — while
+# seed_approver_tuples() grants `user:alice`. If the check user isn't re-wrapped,
+# an authorized approver is WRONGLY denied. These tests seed the way the seeder
+# does (user:<id>) and feed the approver the way production does (bare / dict).
+
+
+async def test_check_wraps_the_bare_approver_to_match_the_seeded_user_tuple(tmp_path):
+    # The CORE of the fix. seed_approver_tuples() grants `user:alice` (user_object).
+    # The approver reaching approve() is BARE `alice` (the transport resolved it via
+    # resolve_approver, which strips `user:` / picks a plain claim). The check must
+    # re-wrap to `user:alice` — record what actually hits the authorizer to prove it.
+    class RecordingAuthorizer(FakeAuthorizer):
+        def __init__(self):
+            super().__init__({("user:alice", "approver", "aws_account:dev")})
+            self.checked: list[str] = []
+
+        async def check(self, *, user, relation, obj):
+            self.checked.append(user)
+            return await super().check(user=user, relation=relation, obj=obj)
+
+    authz = RecordingAuthorizer()
+    svc = await _service(tmp_path, authz)
+    req = await _pending(svc)
+    out = await svc.approve(request_id=req.request_id, approver="alice")
+    assert out.status == RequestStatus.ACTIVE
+    # The authorizer saw the WRAPPED principal, not the bare one (the bug: it used
+    # to see `alice` and miss the seeded `user:alice`).
+    assert authz.checked == ["user:alice"]
+
+
+async def test_dict_approver_resolves_to_the_email_claim_then_matches(tmp_path):
+    # End-to-end shape the agent-host sends: a full identity dict. The transport
+    # resolve_approver() picks the email claim -> bare `alice@x`; approve() then
+    # wraps to `user:alice@x`, matching the seeded tuple.
+    authz = FakeAuthorizer({("user:alice@x", "approver", "aws_account:dev")})
+    svc = await _service(tmp_path, authz)
+    req = await _pending(svc)
+    resolved = svc.resolve_approver(
+        {"id": "u-1", "email": "alice@x", "name": "Alice"}, fallback="c1"
+    )
+    assert resolved == "alice@x"  # bare claim, no user: prefix
+    out = await svc.approve(request_id=req.request_id, approver=resolved)
+    assert out.status == RequestStatus.ACTIVE
