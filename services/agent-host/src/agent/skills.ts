@@ -41,6 +41,13 @@ export function identityPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
     `different machine's filesystem, not your sandbox, so their results are wrong.`,
     `To list or explore directories, use the \`shell\` tool with \`ls\`, \`ls -R\`,`,
     `or \`find\` instead — those run in your sandbox and see the real workspace.`,
+    // Runaway-command guardrail: this is a NixOS box, so /nix/store is enormous.
+    // A recursive search from / never finishes and is killed at a ~5min timeout.
+    `Your work lives under \`/workspace\`. NEVER search the whole filesystem`,
+    `(\`grep -r … /\`, \`find / …\`) — /nix/store is huge and the command will be`,
+    `killed at a ~5min timeout. Scope searches to \`/workspace\` (or a specific`,
+    `repo). For a long job (a build, a test suite), use the \`run_background\` tool`,
+    `so it doesn't block your turn or hit the timeout.`,
     // Conversation titling: the host extracts a <title>…</title> marker from the
     // very start of your reply and uses it to name the conversation, then strips
     // it from what the user sees.

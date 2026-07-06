@@ -42,6 +42,16 @@ describe("agent skills -> .goosehints", () => {
     expect(p).toMatch(/shell|ls|find/); // points at the sandbox-routed alternative
   });
 
+  it("identityPrompt warns against scanning the whole filesystem + points at run_background (P2)", () => {
+    // A NixOS box: /nix/store is huge, so `grep -r … /` never finishes and hits
+    // the P0 timeout. The prompt must steer to /workspace-scoped searches and
+    // run_background for long jobs — proactive avoidance, not just the timeout catch.
+    const p = identityPrompt();
+    expect(p).toContain("/workspace");
+    expect(p).toMatch(/nix\/store/);
+    expect(p).toContain("run_background");
+  });
+
   it("loadSkills reads *.md, sorted; missing dir -> []", () => {
     writeFileSync(join(skillsDir, "b.md"), "B");
     writeFileSync(join(skillsDir, "a.md"), "A");
