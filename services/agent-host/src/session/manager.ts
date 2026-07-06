@@ -435,13 +435,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   /** Switch a conversation's model. A no-op when `model` is undefined or already
    *  the current one. Otherwise updates entry.model, tears down the live bridge
    *  (so goose is relaunched with the new GOOSE_MODEL on the next prompt's
-   *  revive), and persists the change so a restart keeps it. */
+   *  revive), and persists the change so a restart keeps it.
+   *
+   *  The old goose's teardown is FIRE-AND-FORGET: bridge.stop() awaits the old
+   *  process's exit (so it doesn't linger), which can take a couple seconds — but
+   *  we must NOT block the NEXT prompt on it, or the model switch adds that latency
+   *  before turn 2 even starts (it stacked with slow CI to push the reply past the
+   *  e2e's timeout — the model-switch flake). The new goose spawns immediately with
+   *  the new GOOSE_MODEL; the old one dies in the background. They briefly share the
+   *  per-conversation cwd (goose sessions DB), which is safe — the new bridge does a
+   *  fresh newSession (distinct session row) and SQLite tolerates the overlap. */
   const applyModelSwitch = async (e: Entry, model?: string): Promise<void> => {
     if (model === undefined || model === e.model) return;
     e.model = model;
     if (e.bridge) {
-      await e.bridge.stop();
+      const old = e.bridge;
       e.bridge = undefined; // prompt()/promptByThread revive -> rebuild with e.model
+      // Fire-and-forget: don't block the next prompt on the old goose's exit.
+      void old.stop().catch(() => {});
     }
     await saveMeta(e);
   };

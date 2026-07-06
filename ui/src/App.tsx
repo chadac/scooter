@@ -4,14 +4,27 @@
  * live as the agent works in the sandbox.
  */
 
-import { RuntimeProvider } from "./RuntimeProvider.js";
+import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
 import { InterruptPanel } from "./InterruptPanel.js";
 import { RunStatusBar } from "./RunStatusBar.js";
+import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { Thread } from "@/components/assistant-ui/thread";
+
+/** The Thread wrapped in an error boundary keyed to the render tick, so a
+ *  transient assistant-ui runtime crash (e.g. during a model-switch rebuild)
+ *  recovers on the next frame instead of blanking the page. */
+function GuardedThread() {
+  const { renderTick } = useConversationInterrupts();
+  return (
+    <ThreadErrorBoundary resetKey={renderTick}>
+      <Thread components={{ ToolFallback: ToolCallView, ToolGroup: ToolGroupOpen }} />
+    </ThreadErrorBoundary>
+  );
+}
 
 export function App() {
   return (
@@ -34,7 +47,7 @@ export function App() {
                   generic box. ToolGroupOpen keeps grouped tool calls EXPANDED so
                   the cards + shell commands are visible top-level, not hidden
                   behind a "N tool calls" collapse. */}
-              <Thread components={{ ToolFallback: ToolCallView, ToolGroup: ToolGroupOpen }} />
+              <GuardedThread />
             </div>
             {/* Thinking indicator + Stop button while a run is in flight (any
                 source — local, Slack, another tab). Renders nothing when idle. */}
