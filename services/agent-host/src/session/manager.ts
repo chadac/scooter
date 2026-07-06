@@ -12,6 +12,7 @@
  */
 
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
+import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
 
@@ -170,6 +171,11 @@ export interface ConversationStore {
   /** Read the saved module.nix, or null if the conversation never modified its
    *  environment (revive skips the CM sync / re-apply for a pristine wake). */
   readModule?(id: SessionId): Promise<string | null>;
+  /** Append a background-job record (run_background). The durable registry so
+   *  list_background survives an agent-host restart. Optional. */
+  saveJob?(id: SessionId, job: JobRecord): Promise<void>;
+  /** The conversation's background-job records (newest first; [] if none). */
+  listJobs?(id: SessionId): Promise<JobRecord[]>;
 }
 
 export type ConversationStatus = "running" | "suspended" | "ended";
