@@ -442,7 +442,19 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   // The actual run, executed serially via the prompt() chain above. One run at a
   // time per bridge — see the runChain comment.
-  const runPrompt = async (input: PromptInput): Promise<RunId> => {
+  // Combine a batch of queued user messages into the single text sent to goose.
+  // When the user fired several messages while a run was in flight, they all
+  // queued; sending them as ONE turn (instead of one-at-a-time) means the agent
+  // reads the whole burst at once — it never answers message 1, then re-reads a
+  // now-stale message 2 and gets confused. A single message is passed through
+  // verbatim; a burst is joined so each is a distinct, ordered block.
+  const combineTexts = (texts: string[]): string =>
+    texts.length === 1
+      ? texts[0]
+      : "The user sent several messages while you were working — handle them together as one request:\n\n" +
+        texts.map((t, i) => `[Message ${i + 1}]\n${t}`).join("\n\n");
+
+  const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<RunId> => {
     const runId = nextId("run");
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set() };
     const startedAt = Date.now();
@@ -468,25 +480,32 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }
     }
 
-    // Persist the user's prompt as a message so the conversation history is
+    // Persist the user's prompt(s) as messages so the conversation history is
     // complete — switching to / reviving a conversation must replay the user
     // turns too. PERSIST-ONLY: the live UI already renders the message the user
     // just sent, so broadcasting it would echo a duplicate. NOTE: persist the RAW
-    // input.text (not the history-prefixed prompt), so the transcript is never
-    // folded back into itself on the next revive.
-    const userMsgId = nextId("user");
-    persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
-    persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: input.text });
-    persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
+    // texts (not the history-prefixed / batch-joined prompt), so the transcript is
+    // never folded back into itself on the next revive. A batched turn persists
+    // EACH original message as its own user message — history stays faithful even
+    // though goose received them combined as one prompt.
+    for (const b of batch) {
+      const userMsgId = nextId("user");
+      persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
+      persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: b.text });
+      persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
+    }
 
     try {
       if (!started || !acpSessionId) await self.start();
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Prepend the history preamble as a separate text block on the first prompt
-      // of a revived session (empty → omitted).
+      // of a revived session (empty → omitted). The user text is the COMBINED batch
+      // (a burst of queued messages sent as one turn), so the agent reads them all
+      // at once instead of one-at-a-time.
+      const combined = combineTexts(batch.map((b) => b.text));
       const promptBlocks = historyPreamble
-        ? [{ type: "text" as const, text: historyPreamble }, { type: "text" as const, text: input.text }]
-        : [{ type: "text" as const, text: input.text }];
+        ? [{ type: "text" as const, text: historyPreamble }, { type: "text" as const, text: combined }]
+        : [{ type: "text" as const, text: combined }];
       const { stopReason } = await acpClient!.prompt({
         sessionId: acpSessionId!,
         prompt: promptBlocks,
@@ -578,13 +597,23 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     try {
       while (queue.length > 0) {
         const item = topPriorityItem()!;
-        queue.splice(queue.indexOf(item), 1);
-        clearInterruptTimer(); // the item is now running, not waiting
+        // BATCH: coalesce every OTHER queued item of the SAME priority tier into
+        // this run, in FIFO (enqueue) order. When the user fired a burst of
+        // messages while a run was in flight, they all queued at the same tier;
+        // sending them as ONE turn means the agent reads the whole burst at once
+        // instead of answering the first then re-reading a stale later one. Only
+        // same-tier items batch — a priority @mention never merges with normal
+        // messages (it may need to force-interrupt on its own terms). The picked
+        // item leads (it's the highest-priority / earliest); its tier-mates follow.
+        const batch = [item, ...queue.filter((q) => q !== item && q.priority === item.priority)]
+          .sort((a, b) => a.enqueuedAt - b.enqueuedAt);
+        for (const b of batch) queue.splice(queue.indexOf(b), 1);
+        clearInterruptTimer(); // the batch is now running, not waiting
         try {
-          const runId = await runPrompt(item.input);
-          item.resolve(runId);
+          const runId = await runPrompt(batch[0].input, batch.map((b) => b.input));
+          for (const b of batch) b.resolve(runId); // all coalesced items share the run
         } catch (err) {
-          item.reject(err);
+          for (const b of batch) b.reject(err);
         }
         // A new priority item may have queued during that run — re-arm.
         armInterruptTimer();
