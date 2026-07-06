@@ -591,6 +591,72 @@ describe("bridge run queue + cancel", () => {
     expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(3);
   });
 
+  it("BATCHES a burst of queued same-tier messages into ONE run (not one-at-a-time)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the first run so the burst queues behind it
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    const userTexts: string[] = [];
+    bridge.onPersist((e) => {
+      if (e.type === "TEXT_MESSAGE_START" && (e as { role?: string }).role === "user") userTexts.push("");
+      if (e.type === "TEXT_MESSAGE_CONTENT" && userTexts.length) {
+        userTexts[userTexts.length - 1] += (e as { delta?: string }).delta ?? "";
+      }
+    });
+
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "first (running)" });
+    await tick();
+    // Three messages fired while the first run is in flight — they all queue at the
+    // normal tier and must coalesce into a SINGLE follow-up run.
+    void bridge.prompt({ threadId: "t1", text: "msg A" });
+    void bridge.prompt({ threadId: "t1", text: "msg B" });
+    void bridge.prompt({ threadId: "t1", text: "msg C" });
+    await tick();
+    expect(bridge.queueState().queued).toBe(3);
+
+    agent.releaseGate();
+    await tick();
+    await tick();
+    await tick();
+
+    // TWO runs total: the gated first one, then ONE batched run for A+B+C (not
+    // three separate runs — that's the "answer msg 1, get confused by stale msg 2"
+    // problem this fixes).
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2);
+    // History stays faithful: each original message is persisted as its own user
+    // message (goose received them combined, but the transcript shows all three).
+    expect(userTexts).toContain("msg A");
+    expect(userTexts).toContain("msg B");
+    expect(userTexts).toContain("msg C");
+  });
+
+  it("does NOT batch across priority tiers (a priority @mention stays its own run)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "first (running)" });
+    await tick();
+    void bridge.prompt({ threadId: "t1", text: "normal 1" }, { priority: 0 });
+    void bridge.prompt({ threadId: "t1", text: "normal 2" }, { priority: 0 });
+    void bridge.prompt({ threadId: "t1", text: "priority" }, { priority: 10 });
+    await tick();
+
+    agent.releaseGate();
+    await tick();
+    await tick();
+    await tick();
+
+    // Three runs: gated first, the priority one (its own tier), and the two normals
+    // batched into one. Priority never merges with normal messages.
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(3);
+  });
+
   it("cancel() ends the running turn as RUN_FINISHED{cancelled} and kills the active tool call", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([{ finish: { stopReason: "end_turn" } }]);
