@@ -713,4 +713,80 @@ describe("bridge run queue + cancel", () => {
     // Both runs started (the interrupted one + the priority takeover).
     expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2);
   });
+
+  // --- graduated interrupt LEVELS (tool-call / thinking / timeout) -------------
+
+  it('interrupt "tool-call" cancels IMMEDIATELY (kills the running tool call)', async () => {
+    const agent = createFakeAcpAgent();
+    // Emit a tool_call (a tool is now in flight), then gate — the run hangs mid-tool.
+    agent.setScript([
+      { emit: { sessionUpdate: "tool_call", toolCallId: "tc1", title: "run: sleep 999" } as never },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent); // no timeout configured — tool-call preempts regardless
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "long tool" });
+    await tick();
+
+    // A tool-call-level priority prompt preempts NOW, even though a tool is running.
+    void bridge.prompt({ threadId: "t1", text: "stop now" }, { priority: 10, interrupt: "tool-call" });
+    await tick();
+    await tick();
+
+    expect(agent.killCount()).toBeGreaterThanOrEqual(1); // the running tool was killed
+    const fin = events.find((e) => e.type === "RUN_FINISHED") as { cancelled?: boolean } | undefined;
+    expect(fin?.cancelled).toBe(true);
+  });
+
+  it('interrupt "thinking" DEFERS while a tool call is in flight, then fires at the tool boundary', async () => {
+    const agent = createFakeAcpAgent();
+    // A tool call starts (in flight); the run gates BEFORE the tool's result.
+    agent.setScript([
+      { emit: { sessionUpdate: "tool_call", toolCallId: "tc1", title: "run: build" } as never },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "building" });
+    await tick();
+
+    // A thinking-level priority prompt arrives while the tool is in flight — it must
+    // NOT cancel yet (don't kill the build to preempt idle thinking).
+    void bridge.prompt({ threadId: "t1", text: "job done" }, { priority: 10, interrupt: "thinking" });
+    await tick();
+    await tick();
+    expect(agent.killCount()).toBe(0); // deferred — tool call still running, not killed
+    const finishedYet = events.some((e) => e.type === "RUN_FINISHED" && (e as { cancelled?: boolean }).cancelled);
+    expect(finishedYet).toBe(false);
+
+    // The tool call completes (its result update) → the deferred cancel fires now.
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "tc1", status: "completed", content: "ok" } as never);
+    await tick();
+    await tick();
+    expect(agent.killCount()).toBeGreaterThanOrEqual(1); // cancelled at the tool boundary
+  });
+
+  it('interrupt "thinking" cancels IMMEDIATELY when NO tool call is in flight (idle thinking)', async () => {
+    const agent = createFakeAcpAgent();
+    // No tool call — the run is just "thinking" (gated with nothing in flight).
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "thinking..." });
+    await tick();
+
+    void bridge.prompt({ threadId: "t1", text: "job done" }, { priority: 10, interrupt: "thinking" });
+    await tick();
+    await tick();
+
+    // No tool in flight → preempt now.
+    const fin = events.find((e) => e.type === "RUN_FINISHED") as { cancelled?: boolean } | undefined;
+    expect(fin?.cancelled).toBe(true);
+  });
 });

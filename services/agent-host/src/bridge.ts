@@ -93,12 +93,27 @@ export interface PromptInput {
   text: string;
 }
 
+/** How a priority item PREEMPTS the running turn (graduated interrupt levels).
+ *  Applies only to a priority prompt (priority > 0); a normal prompt always waits.
+ *   - "timeout"   : the default — wait priorityInterruptMs, then cancel (kills the
+ *                   in-flight tool call). What an @scooter mention uses.
+ *   - "thinking"  : preempt idle text generation, but let an IN-FLIGHT TOOL CALL
+ *                   finish first — cancel fires at the next tool-call boundary (or
+ *                   immediately if none is running). What the run_background
+ *                   completion-watcher wants (don't kill a build to announce a job).
+ *   - "tool-call" : the most aggressive — cancel NOW, killing any running tool
+ *                   call. What an explicit user Stop does. */
+export type InterruptPolicy = "timeout" | "thinking" | "tool-call";
+
 /** Per-prompt options for the bridge's run queue. */
 export interface PromptOptions {
   /** Higher runs sooner among queued items. A PRIORITY prompt (>0, e.g. an
-   *  @scooter mention) may also force-interrupt the running turn after the
-   *  configured timeout — a normal prompt (0) only waits its turn. Default 0. */
+   *  @scooter mention) may also force-interrupt the running turn — a normal prompt
+   *  (0) only waits its turn. Default 0. */
   priority?: number;
+  /** How a priority prompt preempts the running turn. Default "timeout" (the
+   *  historical behavior). Ignored for a normal (priority 0) prompt. */
+  interrupt?: InterruptPolicy;
 }
 
 /** Normal (waits its turn) vs. priority (may force-interrupt) prompt levels. */
@@ -248,6 +263,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   interface QueueItem {
     input: PromptInput;
     priority: number;
+    /** How this item preempts the running turn (only meaningful when priority>0). */
+    interrupt: InterruptPolicy;
     enqueuedAt: number;
     resolve: (runId: RunId) => void;
     reject: (err: unknown) => void;
@@ -338,6 +355,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // When the run actually began executing (RUN_STARTED) — for the queue's
     // force-interrupt age check.
     startedAt?: number;
+    // Count of tool calls STARTED but whose result hasn't arrived yet. The
+    // "thinking" interrupt policy defers its cancel while this is > 0 (don't kill
+    // an in-flight tool call to preempt idle thinking) and fires at the boundary
+    // when it drops to 0.
+    inFlightTools: number;
+    // Set when a "thinking"-policy interrupt wanted to cancel but a tool call was
+    // in flight: fire the cancel the moment inFlightTools hits 0.
+    cancelWhenToolsIdle?: boolean;
   }
 
   const closeOpenText = (st: RunState) => {
@@ -420,6 +445,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         emitArgsOnce(st, u.toolCallId, u.rawInput);
         emit({ type: "TOOL_CALL_END", toolCallId: u.toolCallId });
         st.toolMessage.set(u.toolCallId, nextId("msg"));
+        st.inFlightTools++; // a tool call is now running (see the "thinking" policy)
         break;
       }
       case "tool_call_update": {
@@ -428,6 +454,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // fills it in on this update. Emit them now if we haven't yet, so the UI
         // can show WHAT was requested (not just the result).
         emitArgsOnce(st, u.toolCallId, u.rawInput);
+        // A tool_call_update carrying content/status is the RESULT — the tool call
+        // finished. (An args-only update has no content and doesn't complete it.)
+        const isResult = u.content !== undefined || (u as { status?: string }).status === "completed" || (u as { status?: string }).status === "failed";
+        if (isResult && st.inFlightTools > 0) {
+          st.inFlightTools--;
+          // A "thinking" interrupt that deferred while a tool call ran fires now
+          // that the tool boundary is reached (and no other tool call is in flight).
+          if (st.cancelWhenToolsIdle && st.inFlightTools === 0) {
+            st.cancelWhenToolsIdle = false;
+            void self.cancel().catch(() => {});
+          }
+        }
         const messageId = st.toolMessage.get(u.toolCallId) ?? nextId("msg");
         emit({
           type: "TOOL_CALL_RESULT",
@@ -456,7 +494,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<RunId> => {
     const runId = nextId("run");
-    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set() };
+    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0 };
     const startedAt = Date.now();
     st.startedAt = startedAt;
     currentRun = st; // visible to cancel() from the moment the run begins
@@ -561,22 +599,37 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const clearInterruptTimer = () => {
     if (interruptTimer) { clearTimeout(interruptTimer); interruptTimer = undefined; }
   };
-  const armInterruptTimer = () => {
+  // Apply the waiting priority item's interrupt policy against the running turn:
+  //   - "tool-call": cancel NOW (cancel() kills the in-flight tool call).
+  //   - "thinking" : cancel now IF no tool call is in flight; else defer to the
+  //                  next tool-call boundary (cancelWhenToolsIdle).
+  //   - "timeout"  : arm the timer; cancel after priorityInterruptMs still waiting.
+  // Re-evaluated on each enqueue + pump tick. A no-op with no run / no priority item.
+  const applyPreemption = () => {
     clearInterruptTimer();
-    if (priorityInterruptMs <= 0 || !currentRun) return;
+    if (!currentRun) return;
     const head = topPriorityItem();
     if (!head || head.priority < PRIORITY_INTERRUPT) return;
-    const waited = Date.now() - head.enqueuedAt;
-    const remaining = Math.max(0, priorityInterruptMs - waited);
-    interruptTimer = setTimeout(() => {
-      // Still a run going + a priority item still waiting past the timeout → stop
-      // the current turn so the priority item runs next.
-      const stillWaiting = (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
-      if (currentRun && stillWaiting) {
-        void self.cancel().catch(() => {});
+
+    if (head.interrupt === "tool-call") {
+      void self.cancel().catch(() => {}); // immediate, kills the running tool call
+      return;
+    }
+    if (head.interrupt === "thinking") {
+      if (currentRun.inFlightTools === 0) {
+        void self.cancel().catch(() => {}); // idle thinking — preempt now
+      } else {
+        currentRun.cancelWhenToolsIdle = true; // let the tool call finish, then cancel
       }
+      return;
+    }
+    // "timeout": the historical behavior. Disabled when priorityInterruptMs <= 0.
+    if (priorityInterruptMs <= 0) return;
+    const remaining = Math.max(0, priorityInterruptMs - (Date.now() - head.enqueuedAt));
+    interruptTimer = setTimeout(() => {
+      const stillWaiting = (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
+      if (currentRun && stillWaiting) void self.cancel().catch(() => {});
     }, remaining);
-    // Don't keep the process alive just for this timer.
     (interruptTimer as { unref?: () => void }).unref?.();
   };
 
@@ -615,8 +668,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         } catch (err) {
           for (const b of batch) b.reject(err);
         }
-        // A new priority item may have queued during that run — re-arm.
-        armInterruptTimer();
+        // A new priority item may have queued during that run — re-evaluate its
+        // preemption against the (next) run.
+        applyPreemption();
       }
     } finally {
       pumping = false;
@@ -715,13 +769,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // goose session — highest priority first, FIFO within a tier. Each run fully
       // completes (its text closed + RUN_FINISHED emitted) before the next
       // RUN_STARTED (the concurrent-run corruption guard). A priority prompt jumps
-      // ahead of queued normal prompts AND can force-interrupt the running turn
-      // (armInterruptTimer) after the configured timeout.
+      // ahead of queued normal prompts AND can PREEMPT the running turn per its
+      // interrupt policy (timeout / thinking / tool-call).
       const priority = opts?.priority ?? PRIORITY_NORMAL;
+      const interrupt: InterruptPolicy = opts?.interrupt ?? "timeout";
       const p = new Promise<RunId>((resolve, reject) => {
-        queue.push({ input, priority, enqueuedAt: Date.now(), resolve, reject });
+        queue.push({ input, priority, interrupt, enqueuedAt: Date.now(), resolve, reject });
       });
-      if (priority >= PRIORITY_INTERRUPT) armInterruptTimer();
+      if (priority >= PRIORITY_INTERRUPT) applyPreemption();
       void pump();
       return p;
     },

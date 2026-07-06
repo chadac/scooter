@@ -53,6 +53,9 @@ export interface FakeAcpAgent {
   killCount(): number;
   /** Number of prompts that have STARTED (entered the fake's prompt()). */
   startedCount(): number;
+  /** Push a session update to the CURRENTLY-RUNNING prompt's onUpdate — for a
+   *  test to deliver a tool_call_update result while the run is gated. */
+  emit(u: SessionUpdate): void;
   close(): void;
 }
 
@@ -64,6 +67,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
   let kills = 0;
   let starts = 0;
   const cancelledSessions = new Set<string>();
+  // The live onUpdate of the currently-running prompt, so a test can push an
+  // update MID-RUN (e.g. a tool_call_update result while the run is gated).
+  let liveUpdate: ((u: SessionUpdate) => void) | undefined;
 
   const transport: FakeAcpTransport = {
     async initialize() {
@@ -75,6 +81,7 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     async prompt(sessionId, handlers) {
       starts += 1;
+      liveUpdate = handlers.onUpdate; // exposed via emit() for mid-run pushes
       let stopReason = "end_turn";
       for (const step of script) {
         if ("emit" in step) {
@@ -131,6 +138,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     startedCount() {
       return starts;
+    },
+    emit(u: SessionUpdate) {
+      liveUpdate?.(u);
     },
     close() {
       script = [];
