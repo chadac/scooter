@@ -69,6 +69,28 @@ test.describe("Stop button + thinking indicator", () => {
     await expect(page.locator('[data-testid="composer-stop"]')).toHaveCount(0, { timeout: 15_000 });
   });
 
+  test("a running tool call shows a spinner; it clears when the tool finishes", async ({ chat, page }) => {
+    // A shell tool used to render as already "complete" the instant it started: the
+    // bridge emitted a premature (empty) TOOL_CALL_RESULT on the args-only
+    // in_progress update, so the folded part carried a result and assistant-ui
+    // showed no spinner while e.g. `sleep 20` ran — the agent looked idle. The
+    // running indicator must be visible while the tool runs and clear when it ends.
+    await chat.open();
+    await chat.send("!sleep 20");
+    await expect(page.locator('[data-testid="provider-tool-running"]')).toBeVisible({ timeout: 30_000 });
+    // When the sleep finishes the run ends and the spinner goes away.
+    await expect(page.locator('[data-testid="provider-tool-running"]')).toHaveCount(0, { timeout: 30_000 });
+  });
+
+  test("a fast tool call never shows a lingering spinner", async ({ chat, page }) => {
+    // An instant command completes before we can meaningfully catch the spinner;
+    // what matters is that after it finishes there is NO stuck running indicator.
+    await chat.open();
+    await chat.sendTurn("!echo quick");
+    await expect(page.getByText(/quick/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="provider-tool-running"]')).toHaveCount(0);
+  });
+
   test("no spurious branch picker (2/2) on a single-turn message", async ({ chat, page }) => {
     // The render pump's reset() used to collide with the composer's optimistic
     // append, making assistant-ui show a phantom "2 / 2" branch. There are no real

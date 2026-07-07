@@ -455,9 +455,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // can show WHAT was requested (not just the result).
         emitArgsOnce(st, u.toolCallId, u.rawInput);
         // A tool_call_update carrying content/status is the RESULT — the tool call
-        // finished. (An args-only update has no content and doesn't complete it.)
+        // finished. (An args-only update — goose fills in rawInput on an
+        // `in_progress` update with NO content — does NOT complete it.)
         const isResult = u.content !== undefined || (u as { status?: string }).status === "completed" || (u as { status?: string }).status === "failed";
-        if (isResult && st.inFlightTools > 0) {
+        // An args-only `in_progress` update is NOT a result. Emitting a
+        // TOOL_CALL_RESULT for it stamps the folded part with an (empty) result, so
+        // the UI renders a still-running tool as already complete — no spinner while
+        // e.g. a `sleep 20` runs. Only emit the result once the tool finishes.
+        if (!isResult) break;
+        if (st.inFlightTools > 0) {
           st.inFlightTools--;
           // A "thinking" interrupt that deferred while a tool call ran fires now
           // that the tool boundary is reached (and no other tool call is in flight).

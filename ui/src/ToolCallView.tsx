@@ -7,11 +7,13 @@
  * Wired in App.tsx: <Thread components={{ ToolFallback: ToolCallView }} />.
  */
 
+import { Loader2Icon } from "lucide-react";
 import type { ToolCallMessagePartComponent, ToolCallMessagePartProps } from "@assistant-ui/react";
 
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { SourceBadge, sourceLabel } from "./sourceIcon.js";
 import { matchToolCall, resultStatusText } from "./toolCallView.js";
+import { useConversationInterrupts } from "./RuntimeProvider.js";
 
 /** Parse the args object from the part (prefer the parsed `args`, else argsText). */
 function readArgs(props: ToolCallMessagePartProps): unknown {
@@ -26,11 +28,21 @@ function readArgs(props: ToolCallMessagePartProps): unknown {
 
 export const ToolCallView: ToolCallMessagePartComponent = (props) => {
   const visual = matchToolCall(props.toolName, readArgs(props));
-  // Not a provider "post" tool → the stock generic tool box.
-  if (!visual) return <ToolFallback {...props} />;
+  // Whether the turn is live. In the single-source render model assistant-ui
+  // FORCES every folded tool-call part's status to "complete" (ExternalThread's
+  // usePartResource clobbers it), so props.status is useless as a liveness signal.
+  // Derive "still running" from OUR run state instead: the turn is in flight AND
+  // this part has no result yet (the bridge emits the result on the tool_call
+  // update, so "no result" ⇔ "not finished").
+  const { isRunning } = useConversationInterrupts();
+  const stillRunning = isRunning && props.result === undefined;
+
+  // Not a provider "post" tool → the stock generic tool box (told the real
+  // running state, since its own status prop is likewise forced to complete).
+  if (!visual) return <ToolFallback {...props} forceRunning={stillRunning} />;
 
   const status = props.status?.type;
-  const failed = status === "incomplete";
+  const failed = status === "incomplete" && !stillRunning;
   const isShell = visual.provider === "shell";
   // A CLEAN one-line status from the tool result — NOT the raw ACP content blob
   // (e.g. [{"content":{"text":"Posted to the Slack thread."}}]); the posted text
@@ -49,8 +61,14 @@ export const ToolCallView: ToolCallMessagePartComponent = (props) => {
         <SourceBadge source={visual.provider} size={14} />
         <span className="font-medium text-foreground">{sourceLabel(visual.provider)}</span>
         <span>· {failed ? "failed to " + visual.action.replace(/ed /, " ") : visual.action}</span>
-        {status === "running" && (
-          <span className="ml-auto animate-pulse">{isShell ? "running…" : "sending…"}</span>
+        {stillRunning && (
+          <span
+            className="ml-auto flex items-center gap-1.5 text-foreground"
+            data-testid="provider-tool-running"
+          >
+            <Loader2Icon className="size-3.5 animate-spin [animation-duration:0.7s]" />
+            <span className="animate-pulse">{isShell ? "running…" : "sending…"}</span>
+          </span>
         )}
       </div>
       {visual.body && (

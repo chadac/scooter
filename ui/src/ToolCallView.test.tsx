@@ -11,6 +11,22 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { ToolCallView } from "./ToolCallView.js";
+import { InterruptContext, type InterruptContextValue } from "./RuntimeProvider.js";
+
+/** Render a tool card inside an InterruptContext with the given run state, so we
+ *  can exercise the "still running" spinner (which reads useConversationInterrupts). */
+function renderWithRun(el: React.ReactElement, isRunning: boolean): string {
+  const value = {
+    interrupts: [],
+    submitResume: async () => {},
+    conversationId: "c1",
+    baseUrl: "",
+    isRunning,
+    cancel: async () => {},
+    renderTick: 0,
+  } as InterruptContextValue;
+  return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, el));
+}
 
 // Minimal ToolCallMessagePartProps — only the fields ToolCallView reads.
 function part(over: Record<string, unknown>) {
@@ -75,5 +91,36 @@ describe("ToolCallView", () => {
     );
     // NOT a provider/shell card; the stock fallback renders its own markup instead.
     expect(html).not.toContain("provider-tool-card");
+  });
+
+  it("shows a running spinner on a shell card while the turn is in flight and no result yet", () => {
+    // result === undefined => not finished; isRunning => the live turn. The single-
+    // source model FORCES status to complete, so the spinner comes from OUR run state.
+    const html = renderWithRun(
+      createElement(ToolCallView, part({ toolName: "Shell", args: { command: "sleep 20" }, result: undefined })),
+      true,
+    );
+    expect(html).toContain("provider-tool-running"); // the spinner + "running…"
+    expect(html).toContain("running…");
+  });
+
+  it("shows NO spinner once the shell tool has a result (finished), even mid-run", () => {
+    const html = renderWithRun(
+      createElement(ToolCallView, part({
+        toolName: "Shell",
+        args: { command: "ls" },
+        result: [{ terminalId: "term-1", type: "terminal" }], // finished
+      })),
+      true,
+    );
+    expect(html).not.toContain("provider-tool-running");
+  });
+
+  it("shows NO spinner when the turn is idle (no run in flight)", () => {
+    const html = renderWithRun(
+      createElement(ToolCallView, part({ toolName: "Shell", args: { command: "sleep 20" }, result: undefined })),
+      false,
+    );
+    expect(html).not.toContain("provider-tool-running");
   });
 });

@@ -88,7 +88,7 @@ export interface InterruptContextValue {
   renderTick: number;
 }
 
-const InterruptContext = createContext<InterruptContextValue>({
+export const InterruptContext = createContext<InterruptContextValue>({
   interrupts: [],
   submitResume: async () => {},
   conversationId: "",

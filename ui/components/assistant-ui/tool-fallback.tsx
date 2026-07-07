@@ -525,7 +525,9 @@ function ToolFallbackApproval({
   );
 }
 
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+const ToolFallbackImpl: ToolCallMessagePartComponent & {
+  (props: ToolCallMessagePartProps & { forceRunning?: boolean }): React.ReactNode;
+} = ({
   toolName,
   argsText,
   result,
@@ -535,10 +537,18 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   interrupt,
   approval,
   respondToApproval,
-}) => {
+  // Our single-source render model FORCES `status` to "complete" for every folded
+  // tool part (ExternalThread clobbers it), so a still-running generic tool would
+  // never spin. ToolCallView derives the real liveness from our run state and
+  // passes it here to override the (useless) status to "running".
+  forceRunning,
+}: ToolCallMessagePartProps & { forceRunning?: boolean }) => {
+  const effectiveStatus: ToolCallMessagePartStatus | undefined = forceRunning
+    ? ({ type: "running" } as ToolCallMessagePartStatus)
+    : status;
   const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
-  const isRequiresAction = status?.type === "requires-action";
+    effectiveStatus?.type === "incomplete" && effectiveStatus.reason === "cancelled";
+  const isRequiresAction = effectiveStatus?.type === "requires-action";
 
   const [open, setOpen] = useState(isRequiresAction);
   const [prevRequiresAction, setPrevRequiresAction] =
@@ -550,9 +560,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
-      <ToolFallbackTrigger toolName={toolName} status={status} />
+      <ToolFallbackTrigger toolName={toolName} status={effectiveStatus} />
       <ToolFallbackContent>
-        <ToolFallbackError status={status} />
+        <ToolFallbackError status={effectiveStatus} />
         <ToolFallbackArgs
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
@@ -566,15 +576,24 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
             respondToApproval={respondToApproval}
           />
         )}
-        {!isCancelled && <ToolFallbackResult result={result} />}
+        {/* While running, no result yet — the folded result is stale/absent. */}
+        {!isCancelled && !forceRunning && <ToolFallbackResult result={result} />}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
 };
 
+/** The component accepts the stock part props PLUS our `forceRunning` override,
+ *  so callers (ToolCallView) can drive the spinner from our own run state. */
+type ToolFallbackComponent = ((
+  props: ToolCallMessagePartProps & { forceRunning?: boolean },
+) => React.ReactNode) & {
+  displayName?: string;
+};
+
 const ToolFallback = memo(
   ToolFallbackImpl,
-) as unknown as ToolCallMessagePartComponent & {
+) as unknown as ToolFallbackComponent & {
   Root: typeof ToolFallbackRoot;
   Trigger: typeof ToolFallbackTrigger;
   Content: typeof ToolFallbackContent;
