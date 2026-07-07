@@ -382,6 +382,42 @@ describe("ACP -> AG-UI bridge", () => {
     expect(results[0].content).toContain("hi");
   });
 
+  it("a TERMINAL HANDOFF update does NOT complete the tool call — only the later finish does", async () => {
+    // THE real-goose shell shape (captured live): the shell tool hands off a live
+    // terminal, marking the update status="completed" the instant the terminal is
+    // created — but the COMMAND runs async in it and only finishes on a LATER
+    // update. Sequence: tool_call(Shell) -> update{completed, no content} ->
+    // update{completed, content:[{terminalId,type:"terminal"}]}  (command STARTED,
+    // not done) -> ... -> update{completed, no content}  (the REAL finish).
+    // A premature TOOL_CALL_RESULT on the terminal-handoff folds a result onto the
+    // part, so a long command (sleep 30) renders as already complete — no spinner.
+    // We must emit EXACTLY ONE result, at the final update.
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "tool_call", toolCallId: "sh1", title: "Shell" } },
+      { emit: { sessionUpdate: "tool_call_update", toolCallId: "sh1", status: "completed" } },
+      { emit: { sessionUpdate: "tool_call_update", toolCallId: "sh1", status: "completed", content: [{ terminalId: "term-1", type: "terminal" }] } },
+      { emit: { sessionUpdate: "tool_call_update", toolCallId: "sh1", status: "completed" } }, // the real finish (command done)
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const bExec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec: bExec,
+      acpClient: acpClientFromTransport(agent.transport, bExec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "run sleep" });
+
+    // EXACTLY ONE result — the terminal handoff must not count as the finish.
+    const results = events.filter((e) => e.type === "TOOL_CALL_RESULT");
+    expect(results).toHaveLength(1);
+    // And it must come AFTER the START (the tool ran, then finished).
+    const types = events.map((e) => e.type);
+    expect(types.indexOf("TOOL_CALL_START")).toBeLessThan(types.indexOf("TOOL_CALL_RESULT"));
+  });
+
   it("maps plan/thoughts to Reasoning events", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([
