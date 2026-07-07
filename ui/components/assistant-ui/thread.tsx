@@ -20,6 +20,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/src/ModelPicker";
+import { useConversationInterrupts } from "@/src/RuntimeProvider";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -283,36 +284,48 @@ const ComposerAction: FC = () => {
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        <AuiIf condition={(s) => !s.thread.isRunning}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-send size-7 rounded-full"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
-        <AuiIf condition={(s) => s.thread.isRunning}>
-          <ComposerPrimitive.Cancel asChild>
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-cancel size-7 rounded-full"
-              aria-label="Stop generating"
-            >
-              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
-        </AuiIf>
+        {/* Send vs Stop is gated on OUR run state (useConversationInterrupts), NOT
+            the runtime's thread.isRunning — the latter is ALWAYS false in the
+            single-source model (the runtime never sees a real run), so the stock
+            Cancel never appeared. ComposerSendOrStop shows Stop-in-the-composer
+            while a goose run is in flight and wires it to our cancel(). */}
+        <ComposerSendOrStop />
       </div>
     </div>
+  );
+};
+
+const ComposerSendOrStop: FC = () => {
+  const { isRunning, cancel } = useConversationInterrupts();
+  if (isRunning) {
+    return (
+      <Button
+        type="button"
+        variant="default"
+        size="icon"
+        className="aui-composer-cancel size-7 rounded-full"
+        aria-label="Stop generating"
+        data-testid="composer-stop"
+        onClick={() => void cancel()}
+      >
+        <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+      </Button>
+    );
+  }
+  return (
+    <ComposerPrimitive.Send asChild>
+      <TooltipIconButton
+        tooltip="Send message"
+        side="bottom"
+        type="button"
+        variant="default"
+        size="icon"
+        className="aui-composer-send size-7 rounded-full"
+        aria-label="Send message"
+      >
+        <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+      </TooltipIconButton>
+    </ComposerPrimitive.Send>
   );
 };
 
@@ -420,7 +433,12 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-footer"
         className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
       >
-        <BranchPicker />
+        {/* No BranchPicker: this UI renders SOLELY from the integrity log (a single
+            timeline), so message "branches" (versions) aren't a real feature. The
+            picker only ever surfaced a SPURIOUS "2/2" — the composer optimistically
+            appends the user message, then our render pump's runtime.thread.reset()
+            re-adds it from the log, which assistant-ui records as a 2nd branch.
+            Hiding the picker removes the confusing artifact. */}
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
@@ -494,10 +512,9 @@ const UserMessage: FC = () => {
         </div>
       </div>
 
-      <BranchPicker
-        data-slot="aui_user-branch-picker"
-        className="col-span-full col-start-1 row-start-3 -me-1 justify-end"
-      />
+      {/* No BranchPicker on the user message either — see the assistant-message
+          note: the "2/2" was a spurious branch from the reset-vs-append collision,
+          not a real message version. */}
     </MessagePrimitive.Root>
   );
 };
