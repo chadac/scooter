@@ -26,6 +26,15 @@
     ./dbus-container.nix
   ];
 
+  # nix-stubs' lib (mkLazyPackage), consumed by carry-over.nix to lazy-shim awscli2.
+  # Default it to null HERE so importers that DON'T provide it — the nixosTests,
+  # which import modules/sandbox-os directly, not through pkgs/sandbox-os — still
+  # evaluate (carry-over.nix then falls back to the real package). The image build
+  # (pkgs/sandbox-os) overrides this with the real lib via its own _module.args
+  # (a plain definition outranks this mkDefault). Without the default, referencing
+  # `nixStubsLib` as a module arg errors "attribute 'nixStubsLib' missing".
+  _module.args.nixStubsLib = lib.mkDefault null;
+
   # --- systemd base ----------------------------------------------------------
   system.stateVersion = "24.11";
 
