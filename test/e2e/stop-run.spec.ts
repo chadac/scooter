@@ -56,4 +56,26 @@ test.describe("Stop button + thinking indicator", () => {
     await expect(page.getByText(/hi/i).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(bar.root)).toHaveCount(0);
   });
+
+  test("the COMPOSER shows a Stop button while a run is in flight (not just the bottom bar)", async ({ chat, page }) => {
+    // The composer's native Stop is dead in the single-source model (thread.isRunning
+    // is always false); it must be gated on OUR run state instead. Users look at the
+    // composer, so the stop belongs there.
+    await chat.open();
+    await chat.send("!sleep 20");
+    await expect(page.locator('[data-testid="composer-stop"]')).toBeVisible({ timeout: 30_000 });
+    // Clicking it stops the run (same cancel path as the bottom-bar Stop).
+    await page.locator('[data-testid="composer-stop"]').click();
+    await expect(page.locator('[data-testid="composer-stop"]')).toHaveCount(0, { timeout: 15_000 });
+  });
+
+  test("no spurious branch picker (2/2) on a single-turn message", async ({ chat, page }) => {
+    // The render pump's reset() used to collide with the composer's optimistic
+    // append, making assistant-ui show a phantom "2 / 2" branch. There are no real
+    // message branches in the single-source model — the picker must not appear.
+    await chat.open();
+    await chat.sendTurn("!echo one");
+    await expect(page.getByText(/one/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".aui-branch-picker-root")).toHaveCount(0);
+  });
 });
