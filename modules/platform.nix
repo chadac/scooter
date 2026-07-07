@@ -87,6 +87,29 @@ in
           (SCOOTER_ENV), so a multi-line NIX_CONFIG survives intact.
         '';
       };
+      configFiles = mkOption {
+        type = types.attrsOf types.lines;
+        default = { };
+        example = {
+          "nix.conf" = ''
+            extra-substituters = http://atticd.nix-cache.svc:8080/itops
+            extra-trusted-public-keys = itops:AAAA…=
+          '';
+          "registry.json" = ''{"flakes":[],"version":2}'';
+        };
+        description = ''
+          Config FILES to mount into every sandbox, as a flat directory at
+          `/etc/agent-sandbox/config/`. Keys are plain filenames (no slashes),
+          values are file contents; files sit side-by-side so one can reference
+          another by relative name (e.g. `import ./module.nix`).
+
+          Use this — not `env` — for multi-line config a tool reads as a file (e.g.
+          a nix.conf). ConfigMap data is mounted byte-for-byte by the kubelet, so it
+          sidesteps the sandbox CRD controller's env-var newline corruption (a
+          multi-line value passed via `env` arrives with literal `\n`). Mounted
+          read-only.
+        '';
+      };
     };
     uiImage = mkOption {
       type = types.str;
@@ -541,6 +564,11 @@ in
                   # (it splits/mangles, and the parser's trim() ate the newlines).
                   # toJSON round-trips every value losslessly into the pod env.
                   { name = "SCOOTER_ENV"; value = builtins.toJSON cfg.deployTools.env; }
+                ++ lib.optional (cfg.deployTools.configFiles != { })
+                  # The agent-host mounts this ConfigMap (filename -> contents) as a
+                  # flat dir at /etc/agent-sandbox/config in each sandbox. File-based
+                  # (not env) so multi-line config survives the CRD controller.
+                  { name = "SCOOTER_CONFIG_FILES_CONFIGMAP"; value = "deploy-config-files"; }
                 ++ lib.optionals cfg.observability.otel.enable ([
                   # OTel metrics ON. The OTLP endpoint/headers come from the
                   # OTEL_EXPORTER_OTLP_* env in observability.otel.env (the SDK
@@ -617,6 +645,15 @@ in
         agent-skills = {
           metadata = { name = "agent-skills"; namespace = cfg.namespace; };
           data = cfg.agent.skills;
+        };
+      } // lib.optionalAttrs (cfg.deployTools.configFiles != { }) {
+        # Deployment config FILES (filename -> contents), mounted as a flat dir at
+        # /etc/agent-sandbox/config in each sandbox. File-based, so multi-line config
+        # (e.g. a nix.conf) survives the sandbox CRD controller's env-var newline
+        # corruption. The agent-host provisioner mounts it (SCOOTER_CONFIG_FILES_CONFIGMAP).
+        deploy-config-files = {
+          metadata = { name = "deploy-config-files"; namespace = cfg.namespace; };
+          data = cfg.deployTools.configFiles;
         };
       } // lib.optionalAttrs (cfg.observability.otel.enable && cfg.observability.otel.pricing != { }) {
         # Per-model price table (USD per 1M tokens) -> cost derivation. Serialized

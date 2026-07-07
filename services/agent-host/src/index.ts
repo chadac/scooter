@@ -276,6 +276,10 @@ export async function main(
         // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (JSON —
         // lossless for multi-line values like NIX_CONFIG; legacy k=v;k=v accepted).
         scooterConfigMap: process.env.SCOOTER_CONFIGMAP || undefined,
+        // A ConfigMap of deployment config FILES (filename -> contents) mounted as a
+        // flat dir at /etc/agent-sandbox/config. File-based (not SCOOTER_ENV) so
+        // multi-line config survives the sandbox CRD controller's newline mangling.
+        configFilesConfigMap: process.env.SCOOTER_CONFIG_FILES_CONFIGMAP || undefined,
         extraTokenAudiences: (process.env.SCOOTER_TOKEN_AUDIENCES || "")
           .split(",").map((s) => s.trim()).filter(Boolean),
         extraEnv: parseScooterEnv(process.env.SCOOTER_ENV),

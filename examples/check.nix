@@ -19,7 +19,8 @@ let
   expect = {
     deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
     services = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
-    configMaps = [ "agent-skills" ];
+    # deploy-config-files: the deployTools.configFiles ConfigMap (enabled below).
+    configMaps = [ "agent-skills" "deploy-config-files" ];
   };
 
   missingFor = kind: want:
@@ -41,8 +42,20 @@ let
   ddWired = builtins.any (e: e.name == "DATADOG_API_KEY") brokerEnv;
   ddProblems = if ddWired then [ ] else [ "broker.env.DATADOG_API_KEY (datadog provider not wired)" ];
 
-  allProblems = problems ++ ddProblems;
+  # deployTools.configFiles (enabled in the example) must (a) render the
+  # deploy-config-files ConfigMap with the file, and (b) tell the agent-host to
+  # mount it via SCOOTER_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files.
+  hostEnv =
+    let ctrs = builtins.attrValues (res.deployments.agent-host.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  cfWired = builtins.any (e: e.name == "SCOOTER_CONFIG_FILES_CONFIGMAP") hostEnv;
+  cfHasFile = (res.configMaps.deploy-config-files.data or { }) ? "nix.conf";
+  cfProblems =
+    (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
+    ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
+
+  allProblems = problems ++ ddProblems ++ cfProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog wired\n"
+then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

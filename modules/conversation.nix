@@ -78,6 +78,10 @@ let
               # The AWS account registry — the entrypoint renders ~/.aws/config
               # from it (one [profile <name>] per account → the credential helper).
               { name = "aws-accounts"; mountPath = "/etc/agent-sandbox/aws"; readOnly = true; }
+            ] ++ lib.optionals (cfg.deployTools.configFiles or { } != { }) [
+              # Deployment config files as a flat read-only dir (filename -> contents).
+              # File-based so multi-line config survives the CRD controller.
+              { name = "deploy-config"; mountPath = "/etc/agent-sandbox/config"; readOnly = true; }
             ];
             env = [
               { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
@@ -102,6 +106,8 @@ let
             { name = "scooter-conv"; configMap.name = "conv-${id}-module"; }
           ] ++ lib.optionals cfg.broker.aws.enable [
             { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
+          ] ++ lib.optionals (cfg.deployTools.configFiles or { } != { }) [
+            { name = "deploy-config"; configMap.name = "deploy-config-files"; }
           ];
         };
         # Workspace PVC (body). Conversation-state PVC is mounted by the
