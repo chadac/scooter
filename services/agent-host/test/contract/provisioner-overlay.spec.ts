@@ -80,3 +80,26 @@ describe("sandboxManifest per-conversation module ConfigMap", () => {
     expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-conv")).toBeUndefined();
   });
 });
+
+describe("sandboxManifest deployment config-files ConfigMap", () => {
+  it("mounts the config-files CM read-only as a flat dir at /etc/agent-sandbox/config", () => {
+    // File-based config injection: multi-line files (e.g. a nix.conf) survive the
+    // CRD controller's env-var newline corruption because the kubelet mounts
+    // ConfigMap data byte-for-byte.
+    const m = render({ configFilesConfigMap: "deploy-config-files" });
+    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
+    const mount = mounts.find((v) => v.name === "deploy-config");
+    expect(mount?.mountPath).toBe("/etc/agent-sandbox/config");
+    expect(mount?.readOnly).toBe(true);
+
+    const vol = (m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "deploy-config");
+    expect(vol?.configMap?.name).toBe("deploy-config-files");
+  });
+
+  it("adds no config-files mount/volume when none is given", () => {
+    const m = render({});
+    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
+    expect(mounts.find((v) => v.name === "deploy-config")).toBeUndefined();
+    expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "deploy-config")).toBeUndefined();
+  });
+});

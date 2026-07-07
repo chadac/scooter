@@ -69,6 +69,10 @@ export interface K8sProvisionerOptions {
    *  /etc/agent-sandbox/scooter, where lazyTools `localFlake` builds them. The
    *  CONTENT is deployment-specific (this platform doesn't know what's in it). */
   scooterConfigMap?: string;
+  /** A deployment's config-FILES ConfigMap (filename -> contents), mounted as a
+   *  flat dir at /etc/agent-sandbox/config. File-based (vs SCOOTER_ENV) so multi-
+   *  line config survives the sandbox CRD controller's env-var newline corruption. */
+  configFilesConfigMap?: string;
   /** Additional projected SA token audiences a deployment's tools authenticate
    *  with — each mounted at /var/run/secrets/<audience>/token. The audiences are
    *  DEPLOYMENT-supplied (this platform doesn't hardcode any). */
@@ -175,6 +179,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         plural: PLURAL,
         body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false, {
           scooterConfigMap: opts.scooterConfigMap,
+          configFilesConfigMap: opts.configFilesConfigMap,
           extraTokenAudiences: opts.extraTokenAudiences ?? [],
           // A ready shareable link to THIS conversation (when a public URL is
           // configured), so the agent can point a human at its own conversation.
@@ -367,6 +372,7 @@ export function sandboxManifest(
   systemdImage = false,
   deploy: {
     scooterConfigMap?: string;
+    configFilesConfigMap?: string;
     extraTokenAudiences?: string[];
     extraEnv?: Array<{ name: string; value: string }>;
     overlayStore?: boolean;
@@ -375,6 +381,10 @@ export function sandboxManifest(
   } = {},
 ): object {
   const scooter = deploy.scooterConfigMap;
+  // Deployment config files (filename -> contents) mounted as a flat dir. See the
+  // deploy option type. Byte-for-byte via the kubelet, so multi-line config is safe.
+  const configFilesCm = deploy.configFilesConfigMap;
+  const configFilesMountPath = "/etc/agent-sandbox/config";
   const extraAudiences = deploy.extraTokenAudiences ?? [];
   const extraEnv = deploy.extraEnv ?? [];
   // Overlay-store writable upper: a disk-backed PVC at the module's upperPath
@@ -445,6 +455,11 @@ export function sandboxManifest(
                 // The agent-host-owned per-conversation module ConfigMap (the
                 // agent's self-authored module.nix). scooter-apply-module reads it.
                 ...(moduleCm ? [{ name: "scooter-conv", mountPath: moduleMountPath, readOnly: true }] : []),
+                // Deployment config files (filename -> contents) as a flat read-only
+                // dir. File-based so multi-line config survives the CRD controller.
+                ...(configFilesCm
+                  ? [{ name: "deploy-config", mountPath: configFilesMountPath, readOnly: true }]
+                  : []),
               ],
               env: [
                 {
@@ -498,6 +513,9 @@ export function sandboxManifest(
               : []),
             ...(moduleCm
               ? [{ name: "scooter-conv", configMap: { name: moduleCm } }]
+              : []),
+            ...(configFilesCm
+              ? [{ name: "deploy-config", configMap: { name: configFilesCm } }]
               : []),
             ...extraAudiences.map((aud) => ({
               name: `tok-${aud}`,

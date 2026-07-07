@@ -62,6 +62,18 @@
       };
     };
 
+    # Deployment-supplied sandbox extras (generic — the platform doesn't know what
+    # they're for). `configFiles` mounts config FILES as a flat dir at
+    # /etc/agent-sandbox/config; use it (not `env`) for multi-line config a tool
+    # reads as a file — ConfigMap data is mounted byte-for-byte, sidestepping the
+    # CRD controller's env-var newline corruption.
+    deployTools.configFiles = {
+      "nix.conf" = ''
+        extra-substituters = http://atticd.nix-cache.svc.cluster.local:8080/itops
+        extra-trusted-public-keys = itops:EXAMPLEKEY=
+      '';
+    };
+
     webhooks = {
       enable = true;
       testWebhook = true;
