@@ -18,9 +18,18 @@
       url = "github:hall/kubenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Lazy package shims (compiled dispatcher): a tool is on PATH as a shim that
+    # realises its .drv on first use, then execs the real binary. Only the .drv is
+    # baked into the image (tiny) — the built package materializes into the writable
+    # store on first call, keeping rarely-used heavies (awscli2) out of the base
+    # image closure. Replaces the homegrown modules/sandbox-os/lazy-tools.nix.
+    nix-stubs = {
+      url = "github:chadac/nix-stubs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix }:
+  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
@@ -66,10 +75,14 @@
           # directly (carry-over.nix), one source of truth (pkgs/broker-tools).
           brokerTools = pkgs.callPackage ./pkgs/broker-tools { };
 
+          # nix-stubs' lib for this system (mkLazyPackage / mkOverlay) — passed into
+          # the sandbox-os build so its modules can declare lazy tool shims.
+          nixStubsLib = nix-stubs.lib.${system};
+
           # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
           # services). Built from the shared modules/sandbox-os config.
           sandboxOsImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib;
+            inherit pkgs lib nixStubsLib;
           };
 
           # Same image with the read-only-base + writable-upper local-overlay store
@@ -77,7 +90,7 @@
           # real container — where the lower is the baked store and there's no VM
           # register-nix-paths — to prove the prod topology the nixosTest can't.
           sandboxOsOverlayImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib;
+            inherit pkgs lib nixStubsLib;
             name = "agent-sandbox-os-overlay";
             extraModules = [ { programs.overlayStore.enable = true; } ];
           };
