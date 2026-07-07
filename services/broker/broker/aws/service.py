@@ -37,6 +37,13 @@ AUTO_APPROVE_PRINCIPAL = "system:auto-approve-read-only"
 # out a token that expires mid-call (covers clock skew + the call's own duration).
 _CREDS_REFRESH_SKEW = 300  # 5 min
 
+# If sweep_expired can't tear down a role (IAM AccessDenied) but the request's creds
+# lapsed longer ago than this, force it to EXPIRED anyway — so a zombie whose teardown
+# is permanently failing stops appearing as 'active' (and can't be re-selected as a
+# stale credential source). The orphaned IAM role is reclaimed when teardown perms are
+# restored, or by manual reconciliation. See the aws-broker-stale-credentials report.
+_FORCE_EXPIRE_GRACE_HOURS = 2
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -471,6 +478,22 @@ class PermissionService:
             if req.iam_role_arn and not self._iam.delete_dynamic_role(
                 target_account=req.target_account, role_arn=req.iam_role_arn, policy_arn=req.iam_policy_arn,
             ):
+                # Teardown failed (e.g. IAM AccessDenied). Normally leave the request
+                # non-terminal so the NEXT sweep retries — BUT if its creds lapsed long
+                # ago, a permanently-failing teardown would keep it 'active' forever,
+                # and the credential helper could pick it as a stale source. Force it to
+                # EXPIRED past a grace window (the orphaned role is reclaimed later);
+                # only KEEP retrying while it's within grace.
+                if self._creds_expired_beyond_grace(req):
+                    logger.warning(
+                        "sweep_expired: force-expiring %s (IAM teardown failing but creds "
+                        "lapsed > %dh ago); role %s may be orphaned until teardown perms are restored",
+                        req.request_id, _FORCE_EXPIRE_GRACE_HOURS, req.iam_role_arn,
+                    )
+                    self._creds.pop(req.request_id, None)
+                    await self._store.update(req.request_id, status=RequestStatus.EXPIRED)
+                    swept.append(req.request_id)
+                    continue
                 logger.error(
                     "sweep_expired: IAM teardown failed for %s; leaving non-terminal for retry",
                     req.request_id,
@@ -480,6 +503,19 @@ class PermissionService:
             await self._store.update(req.request_id, status=RequestStatus.EXPIRED)
             swept.append(req.request_id)
         return swept
+
+    def _creds_expired_beyond_grace(self, req: PermissionRequest) -> bool:
+        """True if this request's STS creds lapsed more than the force-expire grace
+        window ago — used to stop retrying teardown on a permanent-failure zombie."""
+        if not req.expires_at:
+            return False
+        try:
+            exp = datetime.fromisoformat(req.expires_at)
+        except ValueError:
+            return False
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return exp + timedelta(hours=_FORCE_EXPIRE_GRACE_HOURS) < datetime.now(timezone.utc)
 
     async def list_for_conversation(self, conversation_id: str) -> list[PermissionRequest]:
         """The caller's own requests (isolation)."""

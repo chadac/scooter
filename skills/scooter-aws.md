@@ -83,7 +83,36 @@ Deny. So:
   managed-policy ARNs) is granted immediately with no human — you'll get creds
   right away. Anything with a write action always needs a human.
 - Once approved, use it: `aws --profile <account-alias> s3 ls …`. Credentials
-  are short-lived; if they expire mid-task, request again.
+  are short-lived; the profile refreshes them for you automatically.
+
+## After you request: how to WAIT for approval
+
+Requesting does **not** pause you and you are **not** auto-notified when a human
+approves — a write request comes back `pending` and you must **poll** until it's
+`active`. Do this:
+
+1. Post the approval link (above) so a human knows to act.
+2. Poll the request until it flips to `active`:
+   ```bash
+   scooter-aws status <request_id>     # -> "status": "pending" | "active" | "denied"
+   ```
+   Check every ~15–30s. It stays `pending` until a human approves — that can take
+   minutes. Keep waiting; don't give up after one check.
+3. When it's `active`, the credentials are ready — just run `aws --profile
+   <account-alias> …` (the profile pulls them; you don't copy tokens).
+4. If it goes `denied`, read the reason, adjust the scope, and ask the human —
+   don't silently re-request the same thing.
+
+**Do NOT create a NEW request while one is still `pending`** for the same account.
+Duplicate requests pile up and confuse which grant is live — poll the ONE you
+already made. (If you truly need MORE than you asked for, use
+`scooter-aws request` again only after the first is resolved, or escalate.)
+
+If `aws --profile … ` ever fails with an expired/invalid token even though your
+request is `active`, force a fresh token instead of re-requesting:
+```bash
+scooter-aws refresh <request_id>
+```
 
 ## Don't
 
