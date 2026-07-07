@@ -31,7 +31,18 @@ let
     expect));
 
   haveDeps = builtins.concatStringsSep ", " (builtins.attrNames (res.deployments or { }));
+
+  # The datadog provider (enabled in the example) must wire its two-key secret
+  # env into the broker deployment — otherwise the provider stays disabled and
+  # /datadog/* 404s. Assert DATADOG_API_KEY lands in a broker container's env.
+  brokerEnv =
+    let ctrs = builtins.attrValues (res.deployments.agent-broker.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  ddWired = builtins.any (e: e.name == "DATADOG_API_KEY") brokerEnv;
+  ddProblems = if ddWired then [ ] else [ "broker.env.DATADOG_API_KEY (datadog provider not wired)" ];
+
+  allProblems = problems ++ ddProblems;
 in
-if problems == [ ]
-then "ok: deployments = ${haveDeps}\n"
-else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " problems}"
+if allProblems == [ ]
+then "ok: deployments = ${haveDeps}; datadog wired\n"
+else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

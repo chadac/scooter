@@ -40,18 +40,23 @@ class HttpProxy(Transport):
                 k: v for k, v in request.headers.items()
                 if k.lower() not in _HOP_BY_HOP
             }
-            if credential_source is not None:
-                cred = await credential_source.get(identity)
-                headers = cred.inject(headers)
             body = await request.body()
             async with httpx.AsyncClient(timeout=30) as client:
-                upstream_resp = await client.request(
+                # Build the outbound request, then let the credential mutate it in
+                # place (headers, and in future params/body). Passing the whole
+                # request — not just a header dict — is what lets a provider like
+                # Datadog set MULTIPLE auth headers (DD-API-KEY + DD-APPLICATION-KEY).
+                outbound = client.build_request(
                     request.method,
                     f"{upstream}/{path}",
                     headers=headers,
                     content=body or None,
                     params=dict(request.query_params),
                 )
+                if credential_source is not None:
+                    cred = await credential_source.get(identity)
+                    cred.inject(outbound)
+                upstream_resp = await client.send(outbound)
             return Response(
                 content=upstream_resp.content,
                 status_code=upstream_resp.status_code,
