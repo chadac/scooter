@@ -363,7 +363,27 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // Set when a "thinking"-policy interrupt wanted to cancel but a tool call was
     // in flight: fire the cancel the moment inFlightTools hits 0.
     cancelWhenToolsIdle?: boolean;
+    // tool_call_ids whose LAST update handed off a live TERMINAL HANDLE
+    // (content: [{terminalId, type:"terminal"}]) — goose marks the update
+    // status="completed" the instant the terminal is created, but the COMMAND is
+    // still running async in that terminal; the real finish is a LATER update. We
+    // must not emit a TOOL_CALL_RESULT (which folds a result onto the part and makes
+    // the UI show the tool as done) until that later update — otherwise a long
+    // command (sleep 30) shows no running state. See handleUpdate.
+    terminalPending: Set<string>;
   }
+
+  /** A tool_call_update's content is JUST a live terminal HANDLE
+   *  ([{terminalId, type:"terminal"}]) — goose created the terminal and considers
+   *  the tool call structurally "completed", but the command runs async in it; the
+   *  actual finish arrives on a LATER update. Such an update is NOT the real result. */
+  const isTerminalHandoff = (content: unknown): boolean => {
+    if (!Array.isArray(content) || content.length === 0) return false;
+    return content.every((c) => {
+      const o = c as { type?: string; terminalId?: unknown };
+      return o?.type === "terminal" && o.terminalId !== undefined;
+    });
+  };
 
   const closeOpenText = (st: RunState) => {
     if (st.openText) {
@@ -454,15 +474,34 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // fills it in on this update. Emit them now if we haven't yet, so the UI
         // can show WHAT was requested (not just the result).
         emitArgsOnce(st, u.toolCallId, u.rawInput);
-        // A tool_call_update carrying content/status is the RESULT — the tool call
-        // finished. (An args-only update — goose fills in rawInput on an
-        // `in_progress` update with NO content — does NOT complete it.)
-        const isResult = u.content !== undefined || (u as { status?: string }).status === "completed" || (u as { status?: string }).status === "failed";
-        // An args-only `in_progress` update is NOT a result. Emitting a
-        // TOOL_CALL_RESULT for it stamps the folded part with an (empty) result, so
-        // the UI renders a still-running tool as already complete — no spinner while
-        // e.g. a `sleep 20` runs. Only emit the result once the tool finishes.
-        if (!isResult) break;
+        // Deciding when a tool call is REALLY finished, from goose's shell shape
+        // (captured live):
+        //   tool_call(Shell)
+        //   update{completed, no content}                    ← speculative, NOT done
+        //   update{completed, content:[{terminalId,…}]}      ← command STARTED in a terminal
+        //   … (command runs; sleep 30 blocks here) …
+        //   update{completed, no content}                    ← the REAL finish
+        // goose marks EVERY update status="completed", and the empty ones bracket the
+        // real work, so `status==="completed"` alone is not "done". We emit the
+        // TOOL_CALL_RESULT (which folds a result onto the part → UI shows the tool as
+        // finished) only on a genuine finish; until then the part stays result-less so
+        // the UI shows a running spinner (e.g. across a `sleep 30`).
+        const status = (u as { status?: string }).status;
+        const hasRealContent = u.content !== undefined && !isTerminalHandoff(u.content);
+        // A TERMINAL HANDOFF means the command is now running async in that terminal.
+        // Remember it and DON'T finish — the real finish is a later update.
+        if (isTerminalHandoff(u.content)) {
+          st.terminalPending.add(u.toolCallId);
+          break;
+        }
+        const terminalWasPending = st.terminalPending.has(u.toolCallId);
+        // The tool is finished when EITHER: it produced real (non-terminal) content,
+        // OR it completed/failed AFTER a terminal was handed off (the post-terminal
+        // update). A bare completed/failed with NO content and NO prior terminal is
+        // goose's SPECULATIVE marker — skip it, or we'd finish the tool before it ran.
+        const isFinish = hasRealContent || ((status === "completed" || status === "failed") && terminalWasPending);
+        if (!isFinish) break;
+        st.terminalPending.delete(u.toolCallId);
         if (st.inFlightTools > 0) {
           st.inFlightTools--;
           // A "thinking" interrupt that deferred while a tool call ran fires now
@@ -500,7 +539,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<RunId> => {
     const runId = nextId("run");
-    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0 };
+    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0, terminalPending: new Set() };
     const startedAt = Date.now();
     st.startedAt = startedAt;
     currentRun = st; // visible to cancel() from the moment the run begins
