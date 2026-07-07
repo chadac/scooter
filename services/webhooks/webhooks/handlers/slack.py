@@ -45,19 +45,19 @@ from collections import OrderedDict
 _SEEN_EVENT_IDS: "OrderedDict[str, None]" = OrderedDict()
 _SEEN_EVENT_IDS_MAX = 4096
 
-# Mentions ALREADY dispatched to the agent, keyed on the message (channel:ts). One
-# @mention arrives as BOTH an `app_mention` AND a `message` event with DIFFERENT
-# event_ids (so _already_handled misses the pair) but the SAME message `ts`. Only
-# the mention OWNER (_handle_mention) records here, and ONLY at the moment it
-# actually dispatches — so:
-#   • the `message` twin (which _handle_thread_message skips as a mention) never
-#     records, and therefore can't pre-empt the real dispatch;
-#   • a redelivered `app_mention` (new event_id, same ts) is caught as a dup.
-# This is why #83 broke intake: it recorded in _handle_event BEFORE dispatch and
-# for EITHER twin — so whichever arrived first (often the skipping `message`)
-# stamped the ts and the real mention was dropped. Record-on-dispatch fixes that.
-_DISPATCHED_MENTIONS: "OrderedDict[str, None]" = OrderedDict()
-_DISPATCHED_MENTIONS_MAX = 4096
+# Messages ALREADY dispatched to the agent, keyed on the message (channel:ts). ONE
+# user message can reach us as MULTIPLE Slack events:
+#   • an @mention arrives as BOTH an `app_mention` AND a `message` event (DIFFERENT
+#     event_ids, so _already_handled misses the pair) with the SAME message `ts`;
+#   • a redelivery arrives with a new event_id, same ts.
+# BOTH handlers (_handle_mention and _handle_thread_message) consult this guard and
+# record on dispatch, so a given (channel, ts) is forwarded to the agent AT MOST
+# ONCE regardless of which event type arrives first — text-independent, so it holds
+# even when Slack strips/rewrites the mention on one twin. #83 broke intake by
+# recording BEFORE dispatch in _handle_event, so a skipping twin stamped the ts and
+# the real message was dropped; record-ON-dispatch (never before) fixes that.
+_DISPATCHED_MESSAGES: "OrderedDict[str, None]" = OrderedDict()
+_DISPATCHED_MESSAGES_MAX = 4096
 
 
 def _already_handled(event_id: str) -> bool:
@@ -72,23 +72,23 @@ def _already_handled(event_id: str) -> bool:
     return False
 
 
-def _mention_already_dispatched(channel: str, ts: str) -> bool:
-    """True if this mention (channel:ts) was ALREADY dispatched. Read-only — does
-    NOT record. Call before dispatching an @mention; record with
-    _record_mention_dispatched only once you actually dispatch."""
+def _message_already_dispatched(channel: str, ts: str) -> bool:
+    """True if this message (channel:ts) was ALREADY dispatched to the agent by
+    EITHER handler. Read-only — does NOT record. Call before dispatching; record
+    with _record_message_dispatched only once you actually dispatch."""
     if not ts:
         return False  # no ts to dedupe on — let it through
-    return f"{channel}:{ts}" in _DISPATCHED_MENTIONS
+    return f"{channel}:{ts}" in _DISPATCHED_MESSAGES
 
 
-def _record_mention_dispatched(channel: str, ts: str) -> None:
-    """Mark a mention (channel:ts) as dispatched, so its twin / a redelivery is
-    dropped. Called ONLY at the point _handle_mention actually forwards/creates."""
+def _record_message_dispatched(channel: str, ts: str) -> None:
+    """Mark a message (channel:ts) as dispatched, so a twin event / a redelivery is
+    dropped. Called ONLY at the point a handler actually forwards/creates."""
     if not ts:
         return
-    _DISPATCHED_MENTIONS[f"{channel}:{ts}"] = None
-    while len(_DISPATCHED_MENTIONS) > _DISPATCHED_MENTIONS_MAX:
-        _DISPATCHED_MENTIONS.popitem(last=False)
+    _DISPATCHED_MESSAGES[f"{channel}:{ts}"] = None
+    while len(_DISPATCHED_MESSAGES) > _DISPATCHED_MESSAGES_MAX:
+        _DISPATCHED_MESSAGES.popitem(last=False)
 
 
 def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
@@ -276,7 +276,7 @@ async def _handle_mention(event: dict):
     # only — we record ONLY when we actually dispatch below, so the twin `message`
     # event (which _handle_thread_message skips, never dispatching) can't pre-empt
     # us. Keyed on the message `ts` (what the twins share), not thread_ts.
-    if _mention_already_dispatched(channel, ts):
+    if _message_already_dispatched(channel, ts):
         logger.info("Slack mention %s:%s already dispatched — dropping the twin", channel, ts)
         return
 
@@ -300,7 +300,7 @@ async def _handle_mention(event: dict):
     comment_text = f"<@{user}> said:\n\n{message_text}"
 
     if is_pending(existing):
-        _record_mention_dispatched(channel, ts)
+        _record_message_dispatched(channel, ts)
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
         await db.store_pending_message("slack", "thread", res_id, forward_msg)
         return
@@ -309,7 +309,7 @@ async def _handle_mention(event: dict):
         # Forward to the existing conversation OFF the request path — send_message
         # blocks for the whole agent turn, which would blow Slack's retry window and
         # get every delivery dropped as a duplicate. React so the user sees it landed.
-        _record_mention_dispatched(channel, ts)
+        _record_message_dispatched(channel, ts)
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
         await add_slack_reaction(channel, ts, "eyes")
         # A mention to an ACTIVE conversation is priority: force-interrupt a stuck
@@ -318,7 +318,7 @@ async def _handle_mention(event: dict):
         return
 
     # React to indicate we're processing
-    _record_mention_dispatched(channel, ts)
+    _record_message_dispatched(channel, ts)
     await add_slack_reaction(channel, ts, "eyes")
 
     await db.store_conversation("slack", "thread", res_id, PENDING_CONVERSATION_ID)
@@ -360,14 +360,23 @@ async def _handle_thread_message(event: dict):
     if bot_id and user == bot_id:
         return
 
+    ts = event.get("ts", "")
+
     # A message that mentions the bot ALSO arrives as a separate `app_mention`
     # event, which _handle_mention owns. Forwarding it here too would send the
-    # agent a 2nd (non-priority) copy. Skip it — the mention handler owns it.
-    # Detect BOTH the configured `@scooter` pattern AND the raw `<@BOTID>` form
-    # Slack actually puts in the event text (the pattern alone misses the raw
-    # form). This skip only DROPS a would-be duplicate here; it never suppresses
-    # the real dispatch (that's _handle_mention, guarded by its own dedup).
+    # agent a 2nd (non-priority) copy. PRIMARY skip: detect BOTH the configured
+    # `@scooter` pattern AND the raw `<@BOTID>` form Slack actually puts in the
+    # event text (the pattern alone misses the raw form).
     if _contains_mention(text) or (bot_id and f"<@{bot_id}>" in text):
+        return
+
+    # BACKSTOP skip (order-independent, text-independent): if this exact message
+    # (channel:ts) was ALREADY dispatched — e.g. its `app_mention` twin already
+    # forwarded it as a priority mention, in EITHER arrival order — don't forward it
+    # again here. Covers the case where the mention text was stripped/rewritten on
+    # this `message` twin so the text skip above missed it (the reported duplicate).
+    if _message_already_dispatched(channel, ts):
+        logger.info("Slack message %s:%s already dispatched — skipping the thread-message twin", channel, ts)
         return
 
     res_id = _resource_id(channel, thread_ts)
@@ -384,12 +393,14 @@ async def _handle_thread_message(event: dict):
 
     # No mention (guarded above) → a for-awareness thread message.
     if is_pending(existing):
+        _record_message_dispatched(channel, ts)
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
         await db.store_pending_message("slack", "thread", res_id, forward_msg)
         return
 
     # Forward OFF the request path (send_message blocks for the whole agent turn;
     # awaiting it here blows Slack's retry window → every delivery deduped).
+    _record_message_dispatched(channel, ts)
     forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
     asyncio.create_task(_background_forward(existing, forward_msg))
 
