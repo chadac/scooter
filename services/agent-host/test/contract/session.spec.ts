@@ -143,6 +143,34 @@ describe("SessionManager", () => {
     expect(optsSeen.at(-1)).toEqual({ priority: 10, interrupt: "thinking" });
   });
 
+  it("promptByThread() sends a PRIORITY @mention with the \"thinking\" policy (preempt thinking, spare a running tool call)", async () => {
+    const optsSeen: Array<{ priority?: number; interrupt?: string } | undefined> = [];
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt: vi.fn(async (_input: unknown, opts?: { priority?: number; interrupt?: string }) => {
+          optsSeen.push(opts);
+          return "run-x";
+        }),
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory });
+    await sessions.start("thread-1");
+
+    // A priority @mention (webhook -> priority=10) must interrupt the agent's
+    // THINKING but NOT a running tool call — so it rides the "thinking" policy, not
+    // the bridge default "timeout" (which hard-cancels the tool call).
+    await sessions.promptByThread("thread-1", "<@BOT> take a look", undefined, 10);
+    expect(optsSeen.at(-1)).toEqual({ priority: 10, interrupt: "thinking" });
+
+    // A NORMAL (non-priority) prompt waits its turn — no priority/interrupt opts.
+    await sessions.promptByThread("thread-1", "just a heads up", undefined, undefined);
+    expect(optsSeen.at(-1)).toBeUndefined();
+  });
+
   describe("revive() restores the self-modified environment from the PVC", () => {
     // A provisioner + store that records call order, so we can assert the CM sync
     // happens BEFORE the pod boots (resume) — the pod must mount the fresh CM.

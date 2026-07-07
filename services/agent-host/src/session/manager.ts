@@ -571,7 +571,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       touch(entry);
-      await entry.bridge?.prompt({ threadId, text }, priority ? { priority } : undefined);
+      // A priority prompt is a webhook @mention to an ACTIVE conversation (the only
+      // priority source). Preempt with the "thinking" policy: interrupt idle text
+      // generation right away, but let an IN-FLIGHT TOOL CALL finish first — don't
+      // kill a running build/exec just to deliver a mention. (Without an explicit
+      // policy the bridge defaults to "timeout", which HARD-cancels after the timer,
+      // killing the tool call.) The bridge defers a "thinking" cancel while
+      // inFlightTools > 0 and fires it at the next tool boundary.
+      await entry.bridge?.prompt(
+        { threadId, text },
+        priority ? { priority, interrupt: "thinking" } : undefined,
+      );
     },
 
     async suspend(id) {
