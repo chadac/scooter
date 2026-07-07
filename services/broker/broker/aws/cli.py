@@ -111,10 +111,7 @@ def credentials_main(argv: list[str] | None = None) -> int:
     status, body = _call("GET", f"requests?target_account={profile}")
     active = None
     if status == 200:
-        for r in body.get("requests", []):
-            if r.get("status") == "active" and r.get("target_account") == profile:
-                active = r
-                break
+        active = _pick_active_request(body.get("requests", []), profile)
 
     if active is None:
         sys.stderr.write(_not_granted_message(profile))
@@ -135,6 +132,37 @@ def credentials_main(argv: list[str] | None = None) -> int:
         "Expiration": creds["expires_at"],
     }))
     return 0
+
+
+def _pick_active_request(requests: list, profile: str) -> dict | None:
+    """Pick the request whose credentials the AWS SDK should use for `profile`.
+
+    The broker can hold MULTIPLE 'active' requests for one account: a re-request
+    creates a new one, and zombie requests can linger in 'active' when the sweep
+    can't tear down their IAM role (teardown AccessDenied — see the bug report). The
+    list is oldest-first, so taking the FIRST match hands the SDK the OLDEST request,
+    whose STS token expired hours ago → ExpiredTokenException.
+
+    Instead: among the active requests for this account, prefer those NOT past their
+    STS `expires_at`, and pick the NEWEST by `requested_at` (most likely to have — or
+    be refreshable to — a live token). Fall back to the newest active regardless of
+    expiry (the broker auto-refreshes on status(), so even a lapsed one may re-vend)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _is_active(r: dict) -> bool:
+        return r.get("status") == "active" and r.get("target_account") == profile
+
+    active = [r for r in requests if _is_active(r)]
+    if not active:
+        return None
+
+    def _newest(rs: list) -> dict:
+        return max(rs, key=lambda r: r.get("requested_at") or "")
+
+    fresh = [r for r in active if (r.get("expires_at") or "9999") > now]
+    return _newest(fresh) if fresh else _newest(active)
 
 
 def _not_granted_message(profile: str) -> str:
@@ -211,12 +239,23 @@ def cli_main(argv: list[str] | None = None) -> int:
             req_body["conversation_url"] = conv_url
         status, body = _call("POST", "request", req_body)
         if status == 201:
+            rid = body["request_id"]
             if body.get("status") == "active":
-                print(f"requested: {body['request_id']} — AUTO-APPROVED (read-only). Credentials are ready; use `aws --profile {args.profile} …`.")
+                print(f"requested: {rid} — AUTO-APPROVED (read-only). Credentials are ready; use `aws --profile {args.profile} …`.")
             else:
-                msg = f"requested: {body['request_id']} (status: {body['status']}); a human must approve in this conversation."
+                # Requesting does NOT pause the agent and there is NO auto-notify on
+                # grant — so tell the agent explicitly to WAIT + POLL (a common failure
+                # is re-requesting in a loop or giving up). See skills/scooter-aws.md.
+                msg = (
+                    f"requested: {rid} (status: {body['status']}). A human must approve this "
+                    f"in this conversation — you are NOT notified automatically.\n"
+                    f"WAIT for it: poll every ~15-30s with `scooter-aws status {rid}` until it "
+                    f"shows \"status\": \"active\" (can take minutes), THEN use "
+                    f"`aws --profile {args.profile} …`. Do NOT create another request for this "
+                    f"account while this one is pending."
+                )
                 if conv_url:
-                    msg += f" Share this link so they can: {conv_url}"
+                    msg += f"\nShare this link so a human can approve: {conv_url}"
                 print(msg)
             return 0
         sys.stderr.write(f"request failed ({status}): {json.dumps(body.get('detail', body))}\n")

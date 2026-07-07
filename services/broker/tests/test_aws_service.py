@@ -346,16 +346,36 @@ async def test_deny_does_not_mark_denied_when_policy_teardown_fails(tmp_path):
 
 
 async def test_sweep_leaves_request_active_when_teardown_fails(tmp_path):
-    """Finding #6: the sweep must NOT mark EXPIRED on a failed teardown — leave it
-    selectable so the next sweep retries instead of orphaning the role."""
+    """Finding #6: the sweep must NOT mark EXPIRED on a failed teardown WITHIN the
+    grace window — leave it selectable so the next sweep retries instead of orphaning
+    the role. (Its STS creds are still recent here, so it's inside the grace window.)"""
     svc = await make_service(tmp_path, iam=FailingTeardownIam())
     req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
     await svc.approve(request_id=req.request_id, approver="a")
     await svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00Z")  # type: ignore[attr-defined]
     swept = await svc.sweep_expired()
-    assert req.request_id not in swept  # teardown failed -> not swept
+    assert req.request_id not in swept  # teardown failed, still in grace -> not swept
     got, _ = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert got.status == RequestStatus.ACTIVE  # left for retry
+
+
+async def test_sweep_FORCE_expires_a_zombie_whose_creds_lapsed_past_grace(tmp_path):
+    """The bug report's zombie: teardown PERMANENTLY fails (IAM AccessDenied), so a
+    request whose STS creds lapsed hours ago would stay 'active' forever — and the
+    credential helper could keep picking it as a stale source. Past the grace window
+    the sweep force-expires it anyway (the orphaned role is reclaimed later)."""
+    svc = await make_service(tmp_path, iam=FailingTeardownIam())
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    # Role TTL past (so the sweep considers it) AND STS creds lapsed long ago (> grace).
+    await svc._store.update(  # type: ignore[attr-defined]
+        req.request_id, role_expires_at="2000-01-01T00:00:00Z", expires_at="2000-01-01T00:00:00Z",
+    )
+    swept = await svc.sweep_expired()
+    assert req.request_id in swept  # force-expired despite teardown failure
+    got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got.status == RequestStatus.EXPIRED
+    assert creds is None
 
 
 # --- expiry sweep --------------------------------------------------------
