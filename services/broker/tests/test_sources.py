@@ -36,22 +36,29 @@ def _rsa_key() -> str:
     ).decode()
 
 
+def _req() -> httpx.Request:
+    """A throwaway outbound request for inject() to mutate."""
+    return httpx.Request("GET", "https://example.test/x")
+
+
 @pytest.mark.asyncio
 async def test_static_token_source():
     src = StaticTokenSource(token="abc", kind="bearer")
     cred = await src.get(_identity())
     assert cred.kind == "bearer"
     assert cred.value == "abc"
-    headers = cred.inject({})
-    assert headers["Authorization"] == "Bearer abc"
+    req = _req()
+    cred.inject(req)
+    assert req.headers["Authorization"] == "Bearer abc"
 
 
 @pytest.mark.asyncio
 async def test_static_token_header_kind():
     src = StaticTokenSource(token="glpat-x", kind="header", header_name="PRIVATE-TOKEN")
     cred = await src.get(_identity())
-    headers = cred.inject({})
-    assert headers["PRIVATE-TOKEN"] == "glpat-x"
+    req = _req()
+    cred.inject(req)
+    assert req.headers["PRIVATE-TOKEN"] == "glpat-x"
 
 
 @pytest.mark.asyncio

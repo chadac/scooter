@@ -50,6 +50,16 @@
     broker = {
       enable = true;
       testProvider = true; # whoami + test git-credential transports
+
+      # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
+      # keys injected, so the agent can query metrics/logs/monitors without
+      # seeing them. Point the secrets at a Secret in the broker namespace.
+      datadog = {
+        enable = true;
+        site = "datadoghq.com";
+        apiKeySecret = { name = "datadog-keys"; key = "DATADOG_API_KEY"; };
+        appKeySecret = { name = "datadog-keys"; key = "DATADOG_APP_KEY"; };
+      };
     };
 
     webhooks = {

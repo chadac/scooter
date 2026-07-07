@@ -105,6 +105,42 @@ in
       };
     };
 
+    # --- Datadog (two-key header auth; http-proxy to api.<site>) --------------
+    # The broker's datadog provider proxies /datadog/* -> https://api.<site> with
+    # DD-API-KEY + DD-APPLICATION-KEY injected, so the agent can query
+    # metrics/logs/monitors WITHOUT seeing the keys. Enabled iff BOTH keys are set
+    # on the broker (without them the /datadog/* routes never mount and calls 404).
+    datadog = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable the Datadog provider (http-proxy to api.<site> with the two keys injected).";
+      };
+      site = mkOption {
+        type = types.str;
+        default = "datadoghq.com";
+        description = "Datadog site/region host suffix (datadoghq.com | datadoghq.eu | us3.datadoghq.com | us5.datadoghq.com | ap1.datadoghq.com | ddog-gov.com). Upstream is https://api.<site>.";
+      };
+      apiKeySecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
+            key = mkOption { type = types.str; default = "DATADOG_API_KEY"; description = "Secret key holding the Datadog API key."; };
+          };
+        };
+        description = "Secret holding the Datadog API key. Injected as DATADOG_API_KEY. The secret must exist in the broker namespace.";
+      };
+      appKeySecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
+            key = mkOption { type = types.str; default = "DATADOG_APP_KEY"; description = "Secret key holding the Datadog application key."; };
+          };
+        };
+        description = "Secret holding the Datadog application key. Injected as DATADOG_APP_KEY. The secret must exist in the broker namespace.";
+      };
+    };
+
     # --- AWS permissions broker (dynamic, approval-gated AWS access) --------
     aws = {
       enable = mkOption {
@@ -315,6 +351,25 @@ in
                     valueFrom.secretKeyRef = {
                       name = bcfg.gitlab.tokenSecret.name;
                       key = bcfg.gitlab.tokenSecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.datadog.enable [
+                  # Datadog keys -> the broker's datadog provider proxies /datadog/*
+                  # to https://api.<site> with both injected. Enabled iff BOTH keys
+                  # are present; without them the /datadog/* routes never mount.
+                  { name = "DATADOG_SITE"; value = bcfg.datadog.site; }
+                  {
+                    name = "DATADOG_API_KEY";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.datadog.apiKeySecret.name;
+                      key = bcfg.datadog.apiKeySecret.key;
+                    };
+                  }
+                  {
+                    name = "DATADOG_APP_KEY";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.datadog.appKeySecret.name;
+                      key = bcfg.datadog.appKeySecret.key;
                     };
                   }
                 ] ++ lib.optionals bcfg.aws.enable ([
