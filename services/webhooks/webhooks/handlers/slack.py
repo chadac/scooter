@@ -45,15 +45,6 @@ from collections import OrderedDict
 _SEEN_EVENT_IDS: "OrderedDict[str, None]" = OrderedDict()
 _SEEN_EVENT_IDS_MAX = 4096
 
-# A SECOND dedup, keyed on the message itself (channel:ts) rather than the Slack
-# event_id. An @mention arrives as BOTH an `app_mention` AND a `message` event —
-# DIFFERENT event_ids (so _already_handled misses it) but the SAME message `ts`.
-# Text-based skipping (_contains_mention) is unreliable here: the raw event text
-# encodes the mention as `<@U0BOTID>`, not the literal `@scooter` pattern, so it
-# doesn't match. Deduping on (channel, ts) catches the twin events regardless.
-_SEEN_MESSAGE_TS: "OrderedDict[str, None]" = OrderedDict()
-_SEEN_MESSAGE_TS_MAX = 4096
-
 
 def _already_handled(event_id: str) -> bool:
     """True if this Slack event_id was seen before (a retry / duplicate delivery)."""
@@ -64,20 +55,6 @@ def _already_handled(event_id: str) -> bool:
     _SEEN_EVENT_IDS[event_id] = None
     while len(_SEEN_EVENT_IDS) > _SEEN_EVENT_IDS_MAX:
         _SEEN_EVENT_IDS.popitem(last=False)
-    return False
-
-
-def _already_dispatched(channel: str, ts: str) -> bool:
-    """True if this specific Slack MESSAGE (channel:ts) was already dispatched to
-    the agent — catches the app_mention + message twin-event double-dispatch."""
-    if not ts:
-        return False  # no ts to dedupe on — let it through
-    key = f"{channel}:{ts}"
-    if key in _SEEN_MESSAGE_TS:
-        return True
-    _SEEN_MESSAGE_TS[key] = None
-    while len(_SEEN_MESSAGE_TS) > _SEEN_MESSAGE_TS_MAX:
-        _SEEN_MESSAGE_TS.popitem(last=False)
     return False
 
 
@@ -205,15 +182,6 @@ async def _handle_event(event: dict):
     bot_id = await _get_bot_id()
     user = event.get("user", "")
     if bot_id and user == bot_id:
-        return
-
-    # Message-level dedup: an @mention delivers BOTH an app_mention AND a message
-    # event (different event_ids, same message ts). Drop whichever arrives second so
-    # the agent isn't prompted twice. Keyed on the message, so it's independent of
-    # which event type won the race. Non-mention messages arrive once and pass.
-    if _already_dispatched(event.get("channel", ""), event.get("ts", "")):
-        logger.info("Slack message %s:%s already dispatched — skipping the twin event",
-                    event.get("channel", ""), event.get("ts", ""))
         return
 
     if event_type == "app_mention":
@@ -346,15 +314,11 @@ async def _handle_thread_message(event: dict):
     if bot_id and user == bot_id:
         return
 
-    # A message that mentions the bot ALSO arrives as a separate `app_mention`
+    # A message that mentions @scooter ALSO arrives as a separate `app_mention`
     # event, which _handle_mention owns. Forwarding it here too would send the
-    # agent TWO copies (the reported bug). Skip it — the mention handler gives it
-    # the clearer "you were mentioned" framing. Detect BOTH the configured
-    # `@scooter` pattern AND the raw `<@BOTID>` encoding Slack actually puts in the
-    # event text (the pattern alone misses the raw form — the primary reason the
-    # twin events slipped through; the channel:ts dedup in _handle_event is the
-    # backstop for whichever event wins the race).
-    if _contains_mention(text) or (bot_id and f"<@{bot_id}>" in text):
+    # agent TWO copies of the same message (the reported bug). Skip it — the
+    # mention handler gives it the clearer "you were mentioned" framing.
+    if _contains_mention(text):
         return
 
     res_id = _resource_id(channel, thread_ts)
