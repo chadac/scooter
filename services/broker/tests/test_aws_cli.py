@@ -86,6 +86,23 @@ def test_request_sends_conversation_url_from_env(monkeypatch, tmp_path, capsys):
     assert "https://ui/?thread=conv-1" in out  # the agent is told to share the link
 
 
+def test_refresh_posts_to_the_refresh_route(monkeypatch, capsys):
+    """`scooter-aws refresh <id>` POSTs /{id}/refresh — the manual escape hatch to
+    force a fresh STS token when the cached one has expired within the role TTL."""
+    captured = {}
+
+    def fake_call(method, path, body=None):
+        captured["method"] = method
+        captured["path"] = path
+        return 200, {"request_id": "abc123", "credentials": {"access_key_id": "AKIA"}}
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    rc = cli.cli_main(["refresh", "abc123"])
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "abc123/refresh"
+
+
 def test_request_reports_auto_approval(monkeypatch, tmp_path, capsys):
     """A read-only auto-approved request (status 'active') tells the agent creds
     are ready, not 'waiting for approval'."""

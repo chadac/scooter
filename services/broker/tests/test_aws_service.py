@@ -147,6 +147,51 @@ async def test_readonly_request_auto_approves_when_account_opts_in(tmp_path):
     assert notified == []  # auto-approved -> the host was never notified
 
 
+class ExpiringIam(FakeIam):
+    """Mints an ALREADY-EXPIRED token on create (the role-chained STS token that has
+    outlived its ~1h cap), and a FRESH far-future token on refresh — so we can prove
+    status() re-vends instead of handing back the stale cached token."""
+
+    def create_dynamic_role(self, *, target_account, request_id, policy_arn, managed_policy_arns, duration_seconds):
+        self._n += 1
+        arn = f"arn:aws:iam::123:role/agent-broker-{request_id}"
+        self.roles[arn] = {"policy_arn": policy_arn, "managed": managed_policy_arns}
+        # expires in the PAST (the reported bug: cached token already stale)
+        return arn, StsCredentials("AKIA", "secret", "STALE", "us-east-1", "2000-01-01T00:00:00Z")
+
+    def assume_dynamic_role(self, *, target_account, role_arn, request_id, duration_seconds):
+        self._n += 1
+        return StsCredentials("AKIA", "secret", "FRESH", "us-east-1", "2030-01-01T00:00:00Z")
+
+
+async def test_status_auto_refreshes_an_expired_cached_token(tmp_path):
+    # THE bug: the dynamic role is valid for 12h but the STS token is capped at ~1h,
+    # so the cached token expires while the request is still ACTIVE. status() (the
+    # path the sandbox credential_process hits every call) must detect the stale token
+    # and re-vend a fresh one from the still-valid role — not return the expired one.
+    svc = await make_service(tmp_path, iam=ExpiringIam())
+    req = await svc.request(conversation_id="c1", target_account="ro", justification="read", policy_document=READ)
+    assert req.status == RequestStatus.ACTIVE
+
+    got_req, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got_req is not None and creds is not None
+    assert creds.session_token == "FRESH", "status() must auto-refresh the stale token"
+    assert creds.expires_at == "2030-01-01T00:00:00Z"
+
+
+async def test_status_returns_no_creds_when_role_TTL_has_passed(tmp_path):
+    # If even the ROLE TTL has elapsed, a refresh can't help — return no creds so the
+    # agent re-requests (rather than looping on a dead role).
+    svc = await make_service(tmp_path, iam=ExpiringIam())
+    req = await svc.request(conversation_id="c1", target_account="ro", justification="read", policy_document=READ)
+    # Force the role TTL into the past.
+    await svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00Z")
+
+    got_req, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got_req is not None
+    assert creds is None, "role TTL gone -> no creds; the agent must request again"
+
+
 async def test_write_request_on_autoapprove_account_still_needs_a_human(tmp_path):
     # Same opt-in account, but a WRITE action -> stays PENDING (auto-approve is
     # read-only only), and the host IS notified.
