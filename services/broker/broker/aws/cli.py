@@ -163,6 +163,8 @@ def cli_main(argv: list[str] | None = None) -> int:
     sub.add_parser("accounts", help="list available account profiles")
     p_st = sub.add_parser("status", help="show a request's status")
     p_st.add_argument("request_id")
+    p_rf = sub.add_parser("refresh", help="force fresh STS credentials for an active request (within the role TTL)")
+    p_rf.add_argument("request_id")
     p_rv = sub.add_parser("revoke", help="revoke a request")
     p_rv.add_argument("request_id")
 
@@ -175,6 +177,11 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "status":
         status, body = _call("GET", args.request_id)
+        print(json.dumps(body, indent=2))
+        return 0 if status == 200 else 1
+
+    if args.cmd == "refresh":
+        status, body = _call("POST", f"{args.request_id}/refresh")
         print(json.dumps(body, indent=2))
         return 0 if status == 200 else 1
 

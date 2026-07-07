@@ -33,6 +33,10 @@ from .store import PermissionStore
 # Recorded as `approved_by` when a read-only request is auto-approved (no human).
 AUTO_APPROVE_PRINCIPAL = "system:auto-approve-read-only"
 
+# Re-vend an STS token this many seconds BEFORE its expiry, so status() never hands
+# out a token that expires mid-call (covers clock skew + the call's own duration).
+_CREDS_REFRESH_SKEW = 300  # 5 min
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -376,8 +380,39 @@ class PermissionService:
         req = await self._store.get_for_conversation(request_id, conversation_id)
         if req is None:
             return None, None
-        creds = self._creds.get(request_id) if req.status == RequestStatus.ACTIVE else None
+        if req.status != RequestStatus.ACTIVE:
+            return req, None
+        creds = self._creds.get(request_id)
+        # The dynamic ROLE lives for role_ttl_hours (default 12h), but a role-chained
+        # STS TOKEN is capped at ~1h (and by risk-level duration). So a cached token
+        # EXPIRES long before the request goes inactive — and status() is the path the
+        # in-sandbox credential_process hits on EVERY aws call. Returning the stale
+        # cached token here is why creds arrive already-expired (ExpiredTokenException,
+        # "refreshed credentials are still expired"). Auto-REFRESH when the token is
+        # expired/near-expiry (skew margin) while the role TTL is still valid, so the
+        # client transparently gets a live token; if the role TTL has passed, return
+        # none so the agent re-requests.
+        if creds is not None and self._creds_stale(creds):
+            if req.role_expires_at and req.role_expires_at <= _now():
+                return req, None  # role TTL gone — a refresh can't help; re-request
+            try:
+                _, creds = await self.refresh(request_id=request_id, conversation_id=conversation_id)
+            except RequestError:
+                return req, None
         return req, creds
+
+    def _creds_stale(self, creds: StsCredentials) -> bool:
+        """True if the STS token is expired or within the refresh skew window — so we
+        proactively re-vend instead of handing out a token that will fail mid-call."""
+        if not creds.expires_at:
+            return False
+        try:
+            exp = datetime.fromisoformat(creds.expires_at)
+        except ValueError:
+            return True  # unparseable expiry -> treat as stale, refresh
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return exp <= datetime.now(timezone.utc) + timedelta(seconds=_CREDS_REFRESH_SKEW)
 
     async def refresh(self, *, request_id: str, conversation_id: str) -> tuple[PermissionRequest, StsCredentials]:
         req = await self._store.get_for_conversation(request_id, conversation_id)
