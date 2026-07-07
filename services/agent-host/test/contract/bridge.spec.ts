@@ -370,6 +370,16 @@ describe("ACP -> AG-UI bridge", () => {
     expect(args).toHaveLength(1);
     expect(args[0].toolCallId).toBe("tc9");
     expect(args[0].delta).toContain("echo hi");
+
+    // And EXACTLY ONE result — from the `completed` update, NOT the args-only
+    // `in_progress` one. A premature (empty) result on the in_progress update
+    // stamps the folded UI part with a result, so a still-running tool renders as
+    // already complete (no spinner while e.g. `sleep 20` runs). The result must be
+    // the real content, and it must arrive after the args.
+    const results = events.filter((e) => e.type === "TOOL_CALL_RESULT") as Array<{ toolCallId: string; content: string }>;
+    expect(results).toHaveLength(1);
+    expect(results[0].toolCallId).toBe("tc9");
+    expect(results[0].content).toContain("hi");
   });
 
   it("maps plan/thoughts to Reasoning events", async () => {
