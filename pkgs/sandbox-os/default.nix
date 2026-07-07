@@ -24,6 +24,11 @@
 , name ? "agent-sandbox-os"
 , tag ? "latest"
 , extraModules ? [ ]   # let consumers layer extra NixOS config (extra tools/services)
+  # nix-stubs' lib (mkLazyPackage / mkOverlay). Exposed to modules as the
+  # `nixStubsLib` module arg so they can declare lazy tool shims (only the .drv is
+  # baked; the built package lands in the writable store on first use). Optional so
+  # the nixosTests (which import modules/sandbox-os directly) can pass null.
+, nixStubsLib ? null
 }:
 
 let
@@ -41,6 +46,12 @@ let
 
   nixos = pkgs.nixos ({ lib, ... }: {
     imports = [ ../../modules/sandbox-os ] ++ extraModules;
+
+    # nix-stubs' mkLazyPackage, available to any module as `{ nixStubsLib, ... }:`
+    # (e.g. carry-over.nix declares `aws` as a lazy shim). Null in nixosTests that
+    # import modules/sandbox-os without the packaging layer — the lazy-tools module
+    # guards on it and falls back to a normal package there.
+    _module.args.nixStubsLib = nixStubsLib;
 
     # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
     boot.isContainer = true;

@@ -18,7 +18,7 @@
 # The writable Nix store the old entrypoint faked with an overlay is NATIVE here
 # (NixOS has a real store), so that job is dropped.
 
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, nixStubsLib ? null, ... }:
 
 let
   cfg = config.programs.scooterCarryOver;
@@ -30,6 +30,18 @@ let
   # too (the modulesTree vendors pkgs/broker-tools at the same layout).
   brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
   scooterAwsCredentials = brokerTools.scooter-aws-credentials;
+
+  # awscli2 (+ its python) is ~280MB — too heavy to bake into the base image for a
+  # tool most conversations never use. Ship it as a nix-stubs LAZY SHIM: only its
+  # .drv is baked (tiny), and the built package materializes into the writable store
+  # the first time the agent runs `aws` (fast against the baked nixpkgs / Attic
+  # cache). The credential_process (scooter-aws-credentials, python) is unaffected —
+  # it's a separate broker tool. Fall back to the real package when nix-stubs isn't
+  # wired (the nixosTests import this module without the packaging layer).
+  awscli =
+    if nixStubsLib != null
+    then nixStubsLib.mkLazyPackage { package = pkgs.awscli2; commands = [ "aws" "aws_completer" ]; }
+    else pkgs.awscli2;
 in
 {
   options.programs.scooterCarryOver = {
@@ -50,7 +62,7 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = brokerTools.all ++ [
       pkgs.git
-      pkgs.awscli2
+      awscli   # a lazy nix-stubs shim (realises awscli2 on first `aws` call)
     ];
 
     # configure_git_broker: point git's credential helper at the broker, once the

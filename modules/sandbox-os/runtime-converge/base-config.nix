@@ -40,6 +40,12 @@ let
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
       })
     ] ++ extraModules;
+    # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so
+    # carry-over.nix's `awscli` falls back to the FULL pkgs.awscli2 on a re-converge
+    # (the booted image ships it as a nix-stubs lazy shim). Correctness-safe, but a
+    # self-modify re-fattens ~145MB. FOLLOW-UP (todo-nix-stubs-reconverge-lockstep):
+    # vendor nix-stubs into modulesTree + reconstruct nixStubsLib here so the lazy
+    # shim survives re-converge — the "sandbox vends itself as a module" design.
   };
 in
 {

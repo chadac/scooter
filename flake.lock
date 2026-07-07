@@ -57,6 +57,26 @@
         "type": "github"
       }
     },
+    "nix-stubs": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783461836,
+        "narHash": "sha256-iiuFSPBTNkJjhOp5KcfPuGaK73/xn2Ydt/XDlglc+Uo=",
+        "owner": "chadac",
+        "repo": "nix-stubs",
+        "rev": "ec73ad810c093d97a9e8fa31f2354b571b00d82e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "chadac",
+        "repo": "nix-stubs",
+        "type": "github"
+      }
+    },
     "nix2container": {
       "inputs": {
         "nixpkgs": [
@@ -112,6 +132,7 @@
       "inputs": {
         "flake-parts": "flake-parts",
         "kubenix": "kubenix",
+        "nix-stubs": "nix-stubs",
         "nix2container": "nix2container",
         "nixpkgs": "nixpkgs"
       }
