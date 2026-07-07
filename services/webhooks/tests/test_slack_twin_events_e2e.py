@@ -50,11 +50,16 @@ def _callback(event_type: str, event_id: str) -> dict:
     }
 
 
-@pytest.fixture
-def env():
-    """A TestClient on the real app + a dispatch spy. Yields (client, dispatched)
-    where `dispatched` collects each (conversation, message) actually sent to the
-    agent — the true 'was the agent prompted?' signal."""
+from contextlib import contextmanager
+
+
+@contextmanager
+def _env(existing: str | None = None):
+    """Drive the REAL app with a dispatch spy. `existing` = the conversation already
+    on this thread (None -> a mention CREATES one; a value -> it FORWARDS into it,
+    the follow-up-mention case). Yields (client, dispatched) where `dispatched`
+    collects every real agent dispatch (send/create) — the 'was the agent prompted?'
+    signal."""
     dispatched: list[tuple] = []
 
     async def spy_send(conv, msg, *, priority=False):
@@ -86,7 +91,7 @@ def env():
 
     # Reset the module dedup state so tests don't leak into each other.
     slack_h._SEEN_EVENT_IDS.clear()
-    slack_h._DISPATCHED_MENTIONS.clear()
+    slack_h._DISPATCHED_MESSAGES.clear()
 
     with (
         patch.object(settings, "slack_enabled", True),
@@ -108,14 +113,30 @@ def env():
     ):
         app_db.init_db = AsyncMock()
         app_db.close_db = AsyncMock()
-        # No pre-existing conversation -> the mention CREATES one (create path).
-        db.lookup_conversation = AsyncMock(return_value=None)
-        db.get_conversation_for_resource = AsyncMock(return_value=None)
+        # existing=None -> mention CREATES a conversation; a value -> it FORWARDS
+        # into that existing one (the follow-up-mention path).
+        db.lookup_conversation = AsyncMock(return_value=existing)
+        db.get_conversation_for_resource = AsyncMock(return_value=existing)
         db.store_conversation = AsyncMock()
         db.store_slack_metadata = AsyncMock()
         db.store_pending_message = AsyncMock()
         with TestClient(webhooks.app.app) as c:
             yield c, dispatched
+
+
+@pytest.fixture
+def env():
+    """New-conversation case: a mention creates the conversation."""
+    with _env(existing=None) as e:
+        yield e
+
+
+@pytest.fixture
+def env_existing():
+    """Follow-up-mention case: a conversation already exists on the thread, so a
+    mention FORWARDS into it (and the message twin must not double-forward)."""
+    with _env(existing="conv-1") as e:
+        yield e
 
 
 def _post(client, envelope: dict):
@@ -171,3 +192,51 @@ def test_two_DISTINCT_mentions_each_dispatch(env):
     second["event"]["thread_ts"] = "1720368999.500000"
     _post(client, second)
     assert len(dispatched) == 2, dispatched
+
+
+# --- Follow-up mention into an EXISTING conversation (the reported duplicate) -----
+# Here a mention forwards (priority) into an already-active thread, and the twin
+# `message` event must NOT ALSO forward. Both orderings AND the case where Slack
+# strips/rewrites the mention out of the `message` twin's text (so the text-skip
+# can't catch it and the channel:ts backstop must).
+
+def _message_stripped(event_id: str) -> dict:
+    """A `message` twin whose text has NO mention marker (Slack sometimes delivers
+    the thread message with the <@BOT> already resolved away). The text-skip can't
+    catch this — only the channel:ts dedup can."""
+    cb = _callback("message", event_id)
+    cb["event"]["text"] = "please review the PR"   # mention stripped
+    return cb
+
+
+def test_existing_conv_app_mention_then_message_forwards_once(env_existing):
+    client, dispatched = env_existing
+    # app_mention forwards (priority) into the existing conv; the message twin (even
+    # with the mention stripped) must NOT forward a 2nd copy.
+    _post(client, _callback("app_mention", "ev_app"))
+    _post(client, _message_stripped("ev_msg"))
+    assert len(dispatched) == 1, dispatched
+    assert dispatched[0][0] == "send" and dispatched[0][3] is True, dispatched  # priority forward
+
+
+def test_existing_conv_message_FIRST_then_app_mention_forwards_once(env_existing):
+    client, dispatched = env_existing
+    # THE order you asked about: the regular `message` webhook arrives FIRST (mention
+    # stripped, so the text-skip misses it) → it forwards as awareness AND records
+    # channel:ts. The app_mention that follows must then be dropped by the ts guard
+    # → still exactly ONE forward (no double dispatch).
+    _post(client, _message_stripped("ev_msg"))
+    _post(client, _callback("app_mention", "ev_app"))
+    assert len(dispatched) == 1, dispatched
+
+
+def test_existing_conv_plain_followup_still_forwards(env_existing):
+    client, dispatched = env_existing
+    # A genuine non-mention follow-up in the thread (distinct ts) still forwards for
+    # awareness — the dedup must not suppress real thread activity.
+    msg = _callback("message", "ev_plain")
+    msg["event"]["text"] = "here's an update, no action needed"
+    msg["event"]["ts"] = "1720369100.700000"
+    _post(client, msg)
+    assert len(dispatched) == 1, dispatched
+    assert dispatched[0][0] == "send" and dispatched[0][3] is False, dispatched  # awareness (non-priority)
