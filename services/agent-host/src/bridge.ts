@@ -647,9 +647,21 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Apply the waiting priority item's interrupt policy against the running turn:
   //   - "tool-call": cancel NOW (cancel() kills the in-flight tool call).
   //   - "thinking" : cancel now IF no tool call is in flight; else defer to the
-  //                  next tool-call boundary (cancelWhenToolsIdle).
+  //                  next tool-call boundary (cancelWhenToolsIdle) — AND arm the
+  //                  timeout fallback, so a tool that NEVER yields (a real
+  //                  `sleep 3600`, not a short poll) still gets hard-cancelled after
+  //                  priorityInterruptMs rather than deferring forever.
   //   - "timeout"  : arm the timer; cancel after priorityInterruptMs still waiting.
   // Re-evaluated on each enqueue + pump tick. A no-op with no run / no priority item.
+  const armTimeoutFallback = (head: QueueItem) => {
+    if (priorityInterruptMs <= 0) return; // fallback disabled
+    const remaining = Math.max(0, priorityInterruptMs - (Date.now() - head.enqueuedAt));
+    interruptTimer = setTimeout(() => {
+      const stillWaiting = (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
+      if (currentRun && stillWaiting) void self.cancel().catch(() => {});
+    }, remaining);
+    (interruptTimer as { unref?: () => void }).unref?.();
+  };
   const applyPreemption = () => {
     clearInterruptTimer();
     if (!currentRun) return;
@@ -665,17 +677,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         void self.cancel().catch(() => {}); // idle thinking — preempt now
       } else {
         currentRun.cancelWhenToolsIdle = true; // let the tool call finish, then cancel
+        armTimeoutFallback(head); // ...but don't wait forever on a non-yielding tool
       }
       return;
     }
     // "timeout": the historical behavior. Disabled when priorityInterruptMs <= 0.
-    if (priorityInterruptMs <= 0) return;
-    const remaining = Math.max(0, priorityInterruptMs - (Date.now() - head.enqueuedAt));
-    interruptTimer = setTimeout(() => {
-      const stillWaiting = (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
-      if (currentRun && stillWaiting) void self.cancel().catch(() => {});
-    }, remaining);
-    (interruptTimer as { unref?: () => void }).unref?.();
+    armTimeoutFallback(head);
   };
 
   const topPriorityItem = (): QueueItem | undefined => {

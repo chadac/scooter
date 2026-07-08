@@ -160,7 +160,15 @@ function ConversationRuntime({
           .reverse()
           .find((m) => m.role === "user");
         const text = typeof lastUser?.content === "string" ? lastUser.content : "";
-        if (text) await agent.send(text);
+        if (text) {
+          // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
+          // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
+          // the running turn (bridge "thinking" policy) instead of queuing the message
+          // behind a turn that may never end. Read the LIVE run state (not React
+          // state) so there's no stale-closure race. PRIORITY_INTERRUPT = 10.
+          const priority = agent.runIsActive() ? 10 : undefined;
+          await agent.send(text, { priority });
+        }
       }
       return { result: undefined, newMessages: [], newState: agent.state };
     }) as unknown as AbstractAgent["runAgent"];

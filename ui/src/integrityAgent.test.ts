@@ -148,6 +148,19 @@ describe("IntegrityAgent", () => {
     const sent = JSON.parse(call[1].body);
     expect(sent.threadId).toBe("c1");
     expect(sent.messages[0]).toMatchObject({ role: "user", content: "hello world" });
+    expect(sent.priority).toBeUndefined(); // a plain send carries no priority
+    agent.dispose();
+  });
+
+  it("send({priority}) tags the POST with priority (to force-interrupt a running turn)", async () => {
+    const fetchSpy = vi.fn(async () => new Response(new ReadableStream(), { status: 200 })) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+    await agent.send("cancel that", { priority: 10 });
+
+    const call = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const sent = JSON.parse(call[1].body);
+    expect(sent.priority).toBe(10); // preempts the running turn (uninterruptible-loop fix)
     agent.dispose();
   });
 
