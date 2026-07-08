@@ -196,28 +196,48 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
 
       // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
       const name = sandboxName(id);
-      await custom.createNamespacedCustomObject({
-        group: GROUP,
-        version: VERSION,
-        namespace: ns,
-        plural: PLURAL,
-        body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false, {
-          scooterConfigMap: opts.scooterConfigMap,
-          configFilesConfigMap: opts.configFilesConfigMap,
-          extraTokenAudiences: opts.extraTokenAudiences ?? [],
-          // A ready shareable link to THIS conversation (when a public URL is
-          // configured), so the agent can point a human at its own conversation.
-          extraEnv: [
-            ...(opts.publicUrl
-              ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(urlThread)}` }]
-              : []),
-            ...(opts.extraEnv ?? []),
-          ],
-          overlayStore: opts.overlayStore ?? false,
-          overlayStorage: opts.overlayStorage,
-          moduleConfigMap: moduleCmName(id),
-        }),
-      });
+      let alreadyExisted = false;
+      await custom
+        .createNamespacedCustomObject({
+          group: GROUP,
+          version: VERSION,
+          namespace: ns,
+          plural: PLURAL,
+          body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false, {
+            scooterConfigMap: opts.scooterConfigMap,
+            configFilesConfigMap: opts.configFilesConfigMap,
+            extraTokenAudiences: opts.extraTokenAudiences ?? [],
+            // A ready shareable link to THIS conversation (when a public URL is
+            // configured), so the agent can point a human at its own conversation.
+            extraEnv: [
+              ...(opts.publicUrl
+                ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(urlThread)}` }]
+                : []),
+              ...(opts.extraEnv ?? []),
+            ],
+            overlayStore: opts.overlayStore ?? false,
+            overlayStorage: opts.overlayStorage,
+            moduleConfigMap: moduleCmName(id),
+          }),
+        })
+        .catch((e: { code?: number }) => {
+          // 409 AlreadyExists = the Sandbox is already there. This is the recovery
+          // for a WRONG hydrate map (a boot reconcile failed → this conversation
+          // wasn't seen → we took the create path for a Sandbox that exists). Treat
+          // it as REUSE: adopt the existing Sandbox rather than throw the 409 up to
+          // /agui (where it became a silent no-run — the hydrate-silent-drop bug).
+          if (e?.code !== 409) throw e;
+          alreadyExisted = true;
+        });
+
+      // If it already existed it may be SUSPENDED (replicas=0) — ensure it's running
+      // so the run can actually execute. setReplicas(1) is idempotent (a running
+      // Sandbox stays running); a create-from-fresh already has replicas=1.
+      if (alreadyExisted) {
+        await setReplicas({ name, namespace: ns }, 1).catch((e) => {
+          console.warn(`[k8sProvisioner] adopted existing Sandbox ${name} but resume failed (may already be running):`, e);
+        });
+      }
 
       return { name, namespace: ns };
     },
