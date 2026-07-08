@@ -304,7 +304,21 @@ in
           replicas = 1;
           selector.matchLabels.app = "agent-broker";
           template = {
-            metadata.labels.app = "agent-broker";
+            metadata = {
+              labels.app = "agent-broker";
+              # Roll the broker pod when its config content changes. K8s only
+              # rolls a Deployment when the POD TEMPLATE mutates — a ConfigMap
+              # content change alone doesn't (the mounted file updates in-place, but
+              # the long-lived process has already read it, so it runs stale until a
+              # manual `rollout restart`). Hashing the ConfigMap data into a pod
+              # annotation mutates the template on any change → automatic rollout.
+              # (Standard k8s pattern; Helm does this with sha256sum.) Only the
+              # aws-accounts CM exists today; add more checksum/* as needed.
+              annotations = lib.optionalAttrs bcfg.aws.enable {
+                "checksum/aws-accounts" =
+                  builtins.hashString "sha256" (builtins.toJSON bcfg.aws.accounts);
+              };
+            };
             spec = {
               serviceAccountName = "agent-broker";
               containers.agent-broker = {
