@@ -45,20 +45,32 @@ export async function handleModifyEnvironment(
   }
   const res = await manager.apply(conversationId, module);
   if (res.ok) {
+    // The build+switch runs in the BACKGROUND now — the agent gets its turn back and
+    // keeps working. Tell it how to check on the switch (and where the error goes if
+    // it fails) so it doesn't assume the environment is ready yet.
     return {
       content: [
-        { type: "text", text: "Environment applied — the module built and switched live (registered as a new generation)." },
+        {
+          type: "text",
+          text:
+            "Environment change LAUNCHED — it's building + switching in the background, so you can keep working. " +
+            "It usually takes ~1-3 min. Run `scooter-env-status` in the shell to see progress; on failure it prints " +
+            "the full build/switch log so you can fix the module. Don't rely on a newly-added tool until the switch " +
+            "reports `done` (ready).",
+        },
       ],
     };
   }
+  // A LAUNCH failure (couldn't upload / a switch already in flight) — distinct from a
+  // build/switch failure, which now surfaces via scooter-env-status.
   return {
     isError: true,
     content: [
       {
         type: "text",
         text:
-          "The environment change FAILED and was not applied (a bad build never switches; a bad switch auto-rolls-back). " +
-          "Fix the module and try again. Error:\n" +
+          "The environment change could not be LAUNCHED (it was not applied). This is not a build error — " +
+          "check `scooter-env-status` (a switch may already be in progress) and try again. Error:\n" +
           (res.error ?? "unknown error"),
       },
     ],

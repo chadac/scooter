@@ -29,8 +29,12 @@ function fakeManager(result: { ok: boolean; error?: string }): {
   const mgr: ModuleManager = {
     async apply(id, module) {
       calls.push({ id, module });
-      return result;
+      return { ...result, async: result.ok };
     },
+    async status() {
+      return { state: "idle" };
+    },
+    async pollNow() {},
     isApplying() {
       return false;
     },
@@ -41,21 +45,24 @@ function fakeManager(result: { ok: boolean; error?: string }): {
 const MODULE = `{ ... }: { environment.systemPackages = [ ]; }`;
 
 describe("modify_environment MCP tool handler", () => {
-  it("routes to moduleManager.apply with the conversation id + returns success", async () => {
+  it("routes to moduleManager.apply + tells the agent it's LAUNCHED in the background", async () => {
     const { mgr, calls } = fakeManager({ ok: true });
     const res = await handleModifyEnvironment(mgr, "conv1", { module_nix: MODULE });
 
     expect(calls).toEqual([{ id: "conv1", module: MODULE }]);
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text.toLowerCase()).toContain("applied");
+    // async now — the switch runs in the background; the agent is pointed at the poll.
+    const text = res.content[0].text.toLowerCase();
+    expect(text).toContain("background");
+    expect(text).toContain("scooter-env-status");
   });
 
-  it("surfaces the build/switch error to the agent on failure (isError)", async () => {
-    const { mgr } = fakeManager({ ok: false, error: "error: undefined variable 'foo'" });
+  it("surfaces a LAUNCH failure to the agent (isError) — not a build error", async () => {
+    const { mgr } = fakeManager({ ok: false, error: "a switch is already in progress" });
     const res = await handleModifyEnvironment(mgr, "conv1", { module_nix: MODULE });
 
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("undefined variable 'foo'");
+    expect(res.content[0].text).toContain("already in progress");
   });
 
   it("rejects an empty module without calling apply", async () => {

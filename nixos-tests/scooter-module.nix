@@ -125,5 +125,22 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test \"$(ps -o comm= -p 1)\" = systemd")
     pid1_after = machine.succeed("stat -c %Y /proc/1").strip()
     assert pid1_before == pid1_after, f"PID 1 was restarted by the switch ({pid1_before} -> {pid1_after})"
+
+    # ASYNC path: --detach returns immediately (background build+switch) and writes
+    # the status/log protocol that scooter-env-status reads. Re-apply the same module
+    # detached (idempotent), then poll to `done`.
+    machine.succeed("scooter-apply-module --detach")   # returns fast, doesn't block
+    # It reports a real state (building -> switching -> done) via the status file.
+    machine.wait_until_succeeds("scooter-env-status | grep -q ready", timeout=120)
+    # The status file lives where the agent-host completion watcher reads it.
+    machine.succeed("test -f /run/scooter/env-switch/status")
+    machine.succeed("test -f /run/scooter/env-switch/log")
+    assert "done" in machine.succeed("cat /run/scooter/env-switch/status")
+
+    # A second --detach WHILE one is in progress is refused (no overlapping switches):
+    # simulate by planting an in-progress status, then confirm refusal (exit 3).
+    machine.succeed("printf building > /run/scooter/env-switch/status")
+    machine.fail("scooter-apply-module --detach")   # refused while building
+    machine.succeed("printf done > /run/scooter/env-switch/status")  # restore
   '';
 }

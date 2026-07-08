@@ -453,6 +453,19 @@ export async function main(
         // re-syncs the CM from this. The CM write is the in-pod delivery copy.
         saveModule: (id, m) => store.saveModule!(id as SessionId, m),
         configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
+        // The switch is async — when the background build+switch finishes, tell the
+        // agent the outcome (a PRIORITY "thinking" note so it lands promptly without
+        // killing an in-flight tool). On success it can now use what it added; on
+        // failure it gets the error to fix the module.
+        onApplied: (id, res) => {
+          const text = res.ok
+            ? "[System: your environment change finished building + switched live — the new config/tools are now active.]"
+            : "[System: your environment change FAILED and was rolled back (not applied). Run `scooter-env-status` for the " +
+              "full build/switch log, then fix the module. Error:\n" + (res.error ?? "unknown") + "]";
+          void sessions
+            .prompt(id, text, undefined, PRIORITY_INTERRUPT, "thinking")
+            .catch((e) => console.error(`[agent-host] failed to notify ${id} of env-switch outcome:`, e));
+        },
       })
     : undefined;
 
