@@ -23,6 +23,7 @@ function renderWithRun(el: React.ReactElement, isRunning: boolean): string {
     baseUrl: "",
     isRunning,
     cancel: async () => {},
+    cancelState: "idle",
     renderTick: 0,
   } as InterruptContextValue;
   return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, el));
