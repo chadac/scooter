@@ -88,6 +88,32 @@ describe("jobManager.start", () => {
     expect(jobs.get("conv-1")?.[0]).toMatchObject({ jobId: "job-1", command: "npm run build" });
   });
 
+  it("creates the job dir BEFORE the backgrounded job (mkdir not racing the pid write)", async () => {
+    // Regression: `mkdir -p $d && … & printf … > $d/pid` backgrounds the WHOLE chain,
+    // so the trailing pid-write races the not-yet-run mkdir and fails "No such file
+    // or directory" (the reported run_background launch failure). The mkdir must run
+    // in the FOREGROUND — before the `&` — so $d exists when pid is written.
+    const { client, execs } = fakeClient();
+    const { registry } = fakeRegistry();
+    await mgr(client, registry).start("conv-1", "sleep 1");
+
+    const launch = execs.find((c) => c.includes(`${JOBS_DIR}/job-1`))!;
+    // The mkdir must be FOREGROUND — separated from the backgrounded setsid by a
+    // statement terminator `;` (not chained into it with `&&`, which the trailing
+    // `&` would then background wholesale). So: the mkdir/cmd segment ends with `;`
+    // BEFORE `setsid`, and the pid write comes AFTER the detach `&`.
+    const setsidAt = launch.indexOf("setsid");
+    const mkdirAt = launch.indexOf("mkdir -p");
+    const bgAt = launch.indexOf("&");
+    const pidAt = launch.indexOf("/pid");
+    expect(mkdirAt).toBeGreaterThanOrEqual(0);
+    expect(mkdirAt).toBeLessThan(setsidAt);
+    // A `;` sits between the foreground setup and the backgrounded setsid — this is
+    // exactly what stops the `&` from backgrounding the mkdir (the bug).
+    expect(launch.slice(mkdirAt, setsidAt)).toContain(";");
+    expect(pidAt).toBeGreaterThan(bgAt); // pid write happens after the detach
+  });
+
   it("does NOT block on the command (start returns before it would finish)", async () => {
     // If start() awaited the command, this scripted long-runner would hang the test.
     const { client } = fakeClient((cmd) =>
