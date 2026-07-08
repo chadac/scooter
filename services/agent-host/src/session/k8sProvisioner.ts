@@ -108,6 +108,23 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   const MODULE_VOLUME_NAME = "scooter-conv";
   const MODULE_MOUNT_PATH = "/etc/agent-sandbox/scooter";
 
+  // The deployment's BASE module — read from its .scooter ConfigMap's `module.nix`
+  // (the same content its scooter-tools mount would have exposed at the converge
+  // path). Used to SEED each conversation's module CM so the deployment's injected
+  // tools land + the boot converge has real content. Best-effort: no CM configured,
+  // a missing CM, or a CM without a module.nix key all yield "" (base config only) —
+  // a read failure must never block conversation creation.
+  const deploymentBaseModule = async (cmName?: string): Promise<string> => {
+    if (!cmName) return "";
+    try {
+      const cm = await core.readNamespacedConfigMap({ name: cmName, namespace: ns });
+      return (cm.data?.["module.nix"] ?? "").trim() === "" ? "" : cm.data!["module.nix"];
+    } catch (e) {
+      console.warn(`[k8sProvisioner] could not read deployment scooterConfigMap '${cmName}' to seed the module (using base config):`, e);
+      return "";
+    }
+  };
+
   // A ref's namespace may be EMPTY: hydrateEntry() (manager.ts) hands out a
   // placeholder ref { name, namespace: "" } for a conversation whose Sandbox is
   // absent from reconcile (GC'd / suspended-and-gone). A k8s namespaced call with
@@ -152,18 +169,25 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           if (e?.code !== 409) throw e;
         });
 
-      // 1b. the per-conversation module ConfigMap (agent-host-owned), created
-      // EMPTY now — it must exist before the Sandbox so the podTemplate can mount
-      // it from pod birth (a ConfigMap created later won't appear as a volume; the
-      // kubelet only live-updates the CONTENTS of an already-mounted CM). The
-      // agent-host fills it in when the agent modifies its environment. Empty
-      // module.nix = scooter-apply-module no-ops. Idempotent on 409.
+      // 1b. the per-conversation module ConfigMap (agent-host-owned). It must exist
+      // BEFORE the Sandbox so the podTemplate can mount it from pod birth (a CM
+      // created later won't appear as a volume; the kubelet only live-updates the
+      // CONTENTS of an already-mounted CM).
+      //
+      // SEED it from the deployment's .scooter base module (the scooterConfigMap's
+      // module.nix), NOT empty. Because this per-conv CM OWNS the converge path
+      // (/etc/agent-sandbox/scooter), the deployment's own scooter-tools mount is
+      // skipped when it's present — so if we seeded "" the deployment's injected
+      // tools (e.g. a review CLI) would NEVER land, and the boot converge would
+      // no-op on a 0-byte module. Seeding the base means the boot --detach converge
+      // applies the deployment base, and the agent's self-mods layer on top of it.
+      const seedModule = await deploymentBaseModule(opts.scooterConfigMap);
       await core
         .createNamespacedConfigMap({
           namespace: ns,
           body: {
             metadata: { name: moduleCmName(id), namespace: ns },
-            data: { "module.nix": "" },
+            data: { "module.nix": seedModule },
           },
         })
         .catch((e: { code?: number }) => {
