@@ -60,6 +60,20 @@
         apiKeySecret = { name = "datadog-keys"; key = "DATADOG_API_KEY"; };
         appKeySecret = { name = "datadog-keys"; key = "DATADOG_APP_KEY"; };
       };
+
+      # AWS permissions broker: dynamic, approval-gated STS access per account. The
+      # account registry is rendered into a ConfigMap; the broker pod carries a
+      # checksum/aws-accounts annotation so editing an account auto-rolls the pod.
+      aws = {
+        enable = true;
+        accounts.readonly-sandbox = {
+          account_id = "123456789012";
+          broker_role_arn = "arn:aws:iam::123456789012:role/agent-token-broker-base";
+          enabled = true;
+          description = "Sandbox account for safe read-only exploration (S3, logs).";
+          auto_approve_read_only = true;
+        };
+      };
     };
 
     # Deployment-supplied sandbox extras (generic — the platform doesn't know what

@@ -54,8 +54,16 @@ let
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
 
-  allProblems = problems ++ ddProblems ++ cfProblems;
+  # broker.aws (enabled in the example) must stamp a checksum/aws-accounts annotation
+  # on the broker pod template, so editing an account rolls the pod (a ConfigMap
+  # content change alone doesn't trigger a rollout). Assert the annotation is present.
+  brokerAnno = res.deployments.agent-broker.spec.template.metadata.annotations or { };
+  awsChecksumWired = brokerAnno ? "checksum/aws-accounts";
+  csProblems = if awsChecksumWired then [ ]
+    else [ "broker.template.annotations.checksum/aws-accounts (config-rollout annotation missing)" ];
+
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired\n"
+then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"
