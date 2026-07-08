@@ -103,7 +103,7 @@ const err = (text: string): ToolResult => ({ isError: true, content: [{ type: "t
  */
 export function toToolResult(
   res: BrokerResponse,
-  opts: { successText: string; slackOkCheck?: boolean },
+  opts: { successText: string; slackOkCheck?: boolean; idempotentErrors?: string[] },
 ): ToolResult {
   if (res.status < 200 || res.status >= 300) {
     return err(`Request FAILED (HTTP ${res.status}). The service returned:\n${res.raw}`);
@@ -112,6 +112,14 @@ export function toToolResult(
     // Slack returns HTTP 200 even on logical failure: {ok:false, error:"..."}.
     const data = res.data as { ok?: boolean; error?: string } | undefined;
     if (data && data.ok === false) {
+      // Some Slack errors mean "the desired state already exists" — treat them as
+      // SUCCESS, not failure. e.g. reacting with an emoji the message already has
+      // (`already_reacted`) is a no-op that achieved the goal. Without this, the
+      // webhooks handler's pre-dispatch 👀 reaction makes the agent's own ack-react
+      // always fail (see the slack-react-already-reacted bug report).
+      if (data.error && opts.idempotentErrors?.includes(data.error)) {
+        return ok(`${opts.successText} (already done — ${data.error}.)`);
+      }
       return err(`Slack rejected the request: ${data.error ?? "unknown error"}\nFull response:\n${res.raw}`);
     }
   }
@@ -230,7 +238,14 @@ export async function handleSlackReact(
     timestamp: ts,
     name,
   });
-  return toToolResult(res, { successText: `Reacted with :${name}:.`, slackOkCheck: true });
+  // `already_reacted` = the emoji is already on the message → the goal is met. The
+  // webhooks handler adds 👀 pre-dispatch, so the agent's own ack-react hits this
+  // constantly; treat it as success, not a (noisy, wasted-turn) error.
+  return toToolResult(res, {
+    successText: `Reacted with :${name}:.`,
+    slackOkCheck: true,
+    idempotentErrors: ["already_reacted"],
+  });
 }
 
 /** Comment on the conversation's GitLab MR/issue (project + iid inferred). */

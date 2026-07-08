@@ -67,6 +67,22 @@ describe("agent-tools: error-echo (never hide)", () => {
     expect(out.isError).toBeFalsy();
     expect(out.content.map((c) => c.text).join("")).toContain("posted to the thread");
   });
+
+  it("treats an idempotent Slack error (already_reacted) as SUCCESS, not failure", () => {
+    // The webhooks handler adds 👀 pre-dispatch, so the agent's own ack-react hits
+    // `already_reacted` constantly — the desired state already exists, not an error.
+    const res: BrokerResponse = { status: 200, raw: '{"ok":false,"error":"already_reacted"}', data: { ok: false, error: "already_reacted" } };
+    const out = toToolResult(res, { successText: "Reacted", slackOkCheck: true, idempotentErrors: ["already_reacted"] });
+    expect(out.isError).toBeFalsy();
+    expect(out.content.map((c) => c.text).join("")).toContain("already");
+  });
+
+  it("still errors on a NON-idempotent Slack error even with idempotentErrors set", () => {
+    const res: BrokerResponse = { status: 200, raw: '{"ok":false,"error":"channel_not_found"}', data: { ok: false, error: "channel_not_found" } };
+    const out = toToolResult(res, { successText: "Reacted", slackOkCheck: true, idempotentErrors: ["already_reacted"] });
+    expect(out.isError).toBe(true);
+    expect(out.content.map((c) => c.text).join("")).toContain("channel_not_found");
+  });
 });
 
 describe("agent-tools: inferred defaults", () => {
@@ -136,6 +152,12 @@ describe("agent-tools: inferred defaults", () => {
     expect(call[2]).toContain("/slack/reactions.add");
     // channel + the thread anchor ts as the target message; name WITHOUT colons.
     expect(call[3]).toMatchObject({ channel: "C123", timestamp: "1700.5", name: "eyes" });
+  });
+
+  it("slack_react returns SUCCESS when Slack says already_reacted (webhooks 👀 got there first)", async () => {
+    const broker = fakeBroker({ status: 200, raw: '{"ok":false,"error":"already_reacted"}', data: { ok: false, error: "already_reacted" } });
+    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: ":eyes:" });
+    expect(out.isError).toBeFalsy(); // idempotent — not a (noisy) error
   });
 
   it("slack_react FALLS BACK to the webhooks conversation_map when the link has no ref", async () => {
