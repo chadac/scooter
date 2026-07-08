@@ -17,12 +17,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createAguiServer } from "./agui/server.js";
-import { createManagementApi } from "./api/management.js";
+import { createManagementApi, raiseAwsApprovalInterrupt, type AwsRequestSummary } from "./api/management.js";
 import { createSessionManager } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent } from "./bridge.js";
+import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createDeferredConnector } from "./exec/deferredConnect.js";
@@ -332,7 +332,109 @@ export async function main(
       bridge.onTitle((title) => sessions.setTitle(conversationId, title));
       return bridge;
     },
+    // After a revive rebuilds the bridge, re-raise any AWS approval interrupts a pod
+    // rollout dropped. The interrupt's in-memory answer-routing dies with the old
+    // pod, but the request still sits PENDING in the broker (source of truth) — so
+    // we re-query it and re-raise, restoring the Approve/Deny button + routing.
+    // Without this the agent deadlocks: it polls the pending request forever and the
+    // UI shows no button (the reported approval-interrupt-lost-on-rollout bug).
+    onRevived: (id) => {
+      void reRaisePendingAwsInterrupts(id).catch((err) =>
+        console.error(`[agent-host] re-raise pending AWS interrupts failed for ${id}:`, err),
+      );
+    },
   });
+
+  /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
+   *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
+   *  OTHER read error is surfaced (don't send an unauthenticated request). */
+  const brokerAuthHeaders = async (): Promise<Record<string, string>> => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
+    try {
+      const { readFileSync } = await import("node:fs");
+      headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
+    } catch (e) {
+      if ((e as { code?: string })?.code !== "ENOENT") {
+        throw new Error(`failed to read broker token at ${tokenPath}: ${(e as Error)?.message ?? e}`, { cause: e });
+      }
+    }
+    return headers;
+  };
+
+  /** On revive, ask the broker for this conversation's PENDING AWS requests and
+   *  re-raise an Approve/Deny interrupt for each — reconstructing the exact interrupt
+   *  the rollout lost (same builder as the live /aws-request route). raiseInterrupt
+   *  keys on the request id, so a re-raise of a still-open interrupt is idempotent. */
+  const reRaisePendingAwsInterrupts = async (id: string): Promise<void> => {
+    const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+    if (!brokerUrl) return; // no broker (local/dev) — nothing to re-raise
+    const bridge = sessions.get(id as SessionId)?.bridge;
+    if (!bridge) return;
+    const res = await fetch(`${brokerUrl}/aws/aws/pending?conversation_id=${encodeURIComponent(id)}`, {
+      method: "GET",
+      headers: await brokerAuthHeaders(),
+    });
+    if (!res.ok) {
+      // 404/501 = no AWS broker configured; anything else is worth a log but not fatal.
+      if (res.status !== 404 && res.status !== 501) {
+        console.warn(`[agent-host] broker /aws/pending for ${id}: HTTP ${res.status}`);
+      }
+      return;
+    }
+    const body = (await res.json().catch(() => ({}))) as { requests?: AwsRequestSummary[] };
+    for (const req of body.requests ?? []) {
+      if (!req.request_id) continue;
+      raiseAwsApprovalInterrupt(bridge, id, req, resolveAwsRequestForBroker);
+    }
+  };
+
+  /** Approve/deny a broker AWS request (POST /aws/{id}/approve|deny) after the user
+   *  answers the interrupt. Shared by the /aws-request route's onAnswer AND the
+   *  revive re-raise. Sends the answering user's identity; the broker authorizes the
+   *  configured claim. Throws on a dropped/failed approval (never silently lost); an
+   *  APPROVE provisioning failure is fed back into the conversation. */
+  const resolveAwsRequestForBroker = async (
+    sessionId: string,
+    requestId: string,
+    approved: boolean,
+    approver: ApproverIdentity,
+  ): Promise<void> => {
+    const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+    if (!brokerUrl) {
+      console.warn("[agent-host] BROKER_URL unset; cannot resolve AWS request", { requestId });
+      return;
+    }
+    const action = approved ? "approve" : "deny";
+    const res = await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
+      method: "POST",
+      headers: await brokerAuthHeaders(),
+      body: JSON.stringify({ approver }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (approved) {
+        // Extract the broker's error reasons for a readable, actionable message.
+        let detail = body.slice(0, 1500);
+        try {
+          const j = JSON.parse(body);
+          const errs = j?.detail?.errors ?? j?.errors;
+          if (Array.isArray(errs) && errs.length) detail = errs.join("\n");
+        } catch {
+          /* not JSON — use the raw body */
+        }
+        void sessions
+          .prompt(
+            sessionId as SessionId,
+            "[System: the AWS access you requested was approved, but the broker could NOT " +
+              "provision it. Do NOT retry the request; instead, help the user fix the broker " +
+              "setup, then they can re-approve. Broker error:\n\n" + detail,
+          )
+          .catch((e) => console.error("[agent-host] failed to feed AWS provisioning error to the agent:", e));
+      }
+      throw new Error(`broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`);
+    }
+  };
 
   // Agent self-modify: the moduleManager applies the agent's self-authored module
   // live (upload -> scooter-apply-module -> persist-on-success) and the MCP server
@@ -514,76 +616,9 @@ export async function main(
           console.warn("[agent-host] no pending permission", { sessionId, toolCallId });
         }
       },
-      resolveAwsRequest: async (sessionId, requestId, approved, approver) => {
-        // The user answered a broker AWS approval interrupt -> approve/deny the
-        // request on the broker. The broker URL + auth come from env (BROKER_URL
-        // + the agent-host's SA token, same as the sandbox helpers).
-        const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
-        if (!brokerUrl) {
-          console.warn("[agent-host] BROKER_URL unset; cannot resolve AWS request", { requestId });
-          return;
-        }
-        const action = approved ? "approve" : "deny";
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
-        try {
-          const { readFileSync } = await import("node:fs");
-          headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
-        } catch (e) {
-          // Finding #9: a MISSING token (ENOENT) is the genuine local/dev case.
-          // But an unreadable token (EACCES, etc.) that SHOULD be there would
-          // otherwise masquerade as dev mode -> we'd send an unauthenticated
-          // request -> broker 401 -> the user's approval silently lost. Only treat
-          // not-found as dev; surface any other read error.
-          if ((e as { code?: string })?.code !== "ENOENT") {
-            throw new Error(
-              `failed to read broker token at ${tokenPath} (would send an ` +
-                `unauthenticated approval): ${(e as Error)?.message ?? e}`,
-              { cause: e },
-            );
-          }
-          /* ENOENT -> no token (local/dev) */
-        }
-        // Send the answering user's FULL identity (id + email + name); the broker
-        // authorizes the CLAIM it's configured for (email/id/name). The agent-host
-        // SA token is the trust anchor (it vouches for this real user).
-        // Finding #5: approve/deny is security-relevant — a broker 4xx/5xx (approver
-        // lacks rights, request expired, provisioning failed) must NOT be treated as
-        // success. On failure, throw (observable) AND, for an APPROVE, feed the
-        // broker's detail back into the conversation so the agent can help the user
-        // fix the setup (e.g. the account's IAM isn't provisioned).
-        const res = await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ approver }),
-        });
-        if (!res.ok) {
-          const body = await res.text().catch(() => "");
-          if (approved) {
-            // Extract the broker's error reasons (JSON {detail:{errors:[...]}}) for
-            // a readable, actionable message; fall back to the raw body.
-            let detail = body.slice(0, 1500);
-            try {
-              const j = JSON.parse(body);
-              const errs = j?.detail?.errors ?? j?.errors;
-              if (Array.isArray(errs) && errs.length) detail = errs.join("\n");
-            } catch {
-              /* not JSON — use the raw body */
-            }
-            void sessions
-              .prompt(
-                sessionId as SessionId,
-                "[System: the AWS access you requested was approved, but the broker could NOT " +
-                  "provision it. Do NOT retry the request; instead, help the user fix the broker " +
-                  "setup, then they can re-approve. Broker error:\n\n" + detail,
-              )
-              .catch((e) => console.error("[agent-host] failed to feed AWS provisioning error to the agent:", e));
-          }
-          throw new Error(
-            `broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`,
-          );
-        }
-      },
+      // Approve/deny the broker AWS request the user answered. Shared with the
+      // revive re-raise (onRevived) so both paths route answers identically.
+      resolveAwsRequest: resolveAwsRequestForBroker,
       canApproveAwsRequest: async (_sessionId, requestId, approver) => {
         // Read-only: may THIS viewer approve THIS request? Per-viewer (the interrupt
         // is raised once but seen by many users), so the UI asks with the current

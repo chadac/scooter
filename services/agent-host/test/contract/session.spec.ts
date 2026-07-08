@@ -119,6 +119,35 @@ describe("SessionManager", () => {
     expect(revived.status).toBe("running");
   });
 
+  it("revive() calls onRevived (with a live bridge) so index.ts can re-raise dropped interrupts", async () => {
+    // A pod rollout loses in-memory approval interrupts; index.ts wires onRevived to
+    // re-query the broker for PENDING requests and re-raise them. Assert the hook
+    // fires on revive with the conversation id, AFTER the bridge is live.
+    const revived: string[] = [];
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt: vi.fn(async () => "run-x"),
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const store = inMemoryStore();
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store,
+      bridgeFactory,
+      onRevived: (id) => revived.push(id),
+    });
+    const conv = await sessions.start("thread-1");
+    await sessions.suspend(conv.id);
+    revived.length = 0; // ignore anything before the revive under test
+
+    await sessions.revive(conv.id);
+    expect(revived).toEqual([conv.id]);
+  });
+
   it("prompt() threads priority + interrupt policy through to the bridge (job-completion watcher path)", async () => {
     const optsSeen: Array<{ priority?: number; interrupt?: string } | undefined> = [];
     const bridgeFactory = () =>

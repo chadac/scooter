@@ -283,6 +283,12 @@ export interface SessionManagerDeps {
   /** Optional: how to build a bridge per conversation. Omitted in unit tests
    *  that only assert lifecycle/provisioning. */
   bridgeFactory?: BridgeFactory;
+  /** Optional: called after a conversation's bridge is (re)built by revive() — with
+   *  a live bridge. index.ts uses it to re-raise approval interrupts a pod rollout
+   *  dropped: the interrupt's in-memory answer-routing is lost on restart, but the
+   *  request still sits PENDING in the broker (source of truth), so on revive we
+   *  re-query + re-raise. Fire-and-forget; a failure must not fail the revive. */
+  onRevived?: (id: SessionId) => void;
 }
 
 interface Entry {
@@ -527,6 +533,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await entry.bridge?.start();
       // Event-log replay to a reattaching UI is driven by the AG-UI server's
       // onAttach handler reading store.readEvents(id); nothing to do here.
+      // Re-raise any interrupts the (now-live) bridge lost on the previous pod (a
+      // rollout drops the in-memory interrupt state). Fire-and-forget — a broker
+      // hiccup here must not fail the revive that just brought the pod back.
+      if (entry.bridge) {
+        try {
+          deps.onRevived?.(id);
+        } catch (err) {
+          console.error(`[manager] onRevived hook failed for ${id}:`, err);
+        }
+      }
       return toConversation(entry);
     },
 

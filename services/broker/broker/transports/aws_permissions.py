@@ -139,6 +139,25 @@ class AwsPermissions(Transport):
                 reqs = [r for r in reqs if r.target_account == target_account]
             return {"requests": [_request_view(r) for r in reqs]}
 
+        # --- approver/agent-host: pending requests for a NAMED conversation ---
+        # Registered BEFORE /aws/{request_id} so "pending" isn't captured as an id
+        # (the "not found" the naive ordering caused). Admin-gated (the agent-host
+        # SA), and takes an EXPLICIT conversation_id — unlike /aws/requests, which
+        # derives it from the CALLER's identity (a sandbox SA). The agent-host calls
+        # this on revive() to re-raise approval interrupts a pod rollout dropped: the
+        # interrupt's answer-routing is in-memory, so a restart loses it — but the
+        # request still sits PENDING in the broker DB (the source of truth).
+        @router.get("/aws/pending")
+        async def pending(
+            identity: Identity = Depends(authed), conversation_id: str = "",
+        ):
+            _admin_or_403(identity)
+            if not conversation_id:
+                raise HTTPException(status_code=400, detail="conversation_id required")
+            reqs = await _svc().list_for_conversation(conversation_id)
+            pend = [r for r in reqs if r.status == RequestStatus.PENDING]
+            return {"requests": [_request_view(r) for r in pend]}
+
         # --- agent: status / refresh / revoke (isolated) -------------------
         @router.get("/aws/{request_id}")
         async def status(request_id: str, identity: Identity = Depends(authed)):
