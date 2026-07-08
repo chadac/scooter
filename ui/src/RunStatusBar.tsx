@@ -13,8 +13,12 @@
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
 export function RunStatusBar() {
-  const { isRunning, cancel } = useConversationInterrupts();
+  const { isRunning, cancel, cancelState } = useConversationInterrupts();
   if (!isRunning) return null;
+
+  const stopping = cancelState === "stopping";
+  const failed = cancelState === "failed";
+
   return (
     <div
       data-testid="run-status-bar"
@@ -23,15 +27,21 @@ export function RunStatusBar() {
       <span data-testid="thinking-indicator" className="flex items-center gap-2 text-muted-foreground">
         {/* Pulsing dot — a lightweight "working" cue without a spinner dependency. */}
         <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" aria-hidden />
-        Scooter is working…
+        {stopping ? "Stopping…" : failed ? "Stop didn't land — the run is still going" : "Scooter is working…"}
       </span>
       <button
         type="button"
         data-testid="stop-run"
+        // While a stop is in flight the button is disabled + shows the pending
+        // state, so the click is visibly acknowledged (the run's terminal event
+        // still round-trips through the stream to actually clear the bar). If the
+        // stop failed to land, re-enable so the user can retry.
+        disabled={stopping}
+        aria-busy={stopping}
         onClick={() => void cancel()}
-        className="rounded-md border px-3 py-1 font-medium hover:bg-background"
+        className="rounded-md border px-3 py-1 font-medium hover:bg-background disabled:cursor-not-allowed disabled:opacity-60"
       >
-        Stop
+        {stopping ? "Stopping…" : failed ? "Retry stop" : "Stop"}
       </button>
     </div>
   );

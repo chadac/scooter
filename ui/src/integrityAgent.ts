@@ -538,23 +538,29 @@ export class IntegrityAgent extends AbstractAgent {
     await this.postAgui({ threadId: this.cfg.conversationId, resume: [...entries] });
   }
 
-  /** Stop the running turn — the composer's Stop button. POSTs the agent-host
-   *  cancel endpoint, which ends the in-flight run (kills the active tool call,
-   *  ACP session/cancel, emits RUN_FINISHED{cancelled}). The terminal event
-   *  arrives via the integrity stream, so `running` flips false there — we don't
-   *  optimistically clear it here. Best-effort: a failed cancel leaves the run as
-   *  it was (the stream stays the source of truth). */
+  /** Stop the running turn — the Stop button. POSTs the agent-host cancel
+   *  endpoint, which ends the in-flight run (kills the active tool call, ACP
+   *  session/cancel, emits RUN_FINISHED{cancelled}); the terminal event then
+   *  arrives via the integrity stream and flips `running` false. This method is
+   *  ONLY responsible for the POST landing — it does NOT wait for the run to
+   *  actually stop (that reconciliation lives in RuntimeProvider off the stream).
+   *
+   *  Crucially it does NOT swallow errors: if the POST itself fails (network
+   *  down, non-2xx), it THROWS so the caller can tell the user "couldn't send
+   *  stop" instead of the button looking dead while nothing happened. A stop the
+   *  user can't tell landed is a broken control (the Stop-no-feedback bug). */
   async cancel(): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
     };
-    await this.doFetch(`${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/cancel`, {
-      method: "POST",
-      headers,
-    }).catch(() => {
-      /* best-effort; the integrity stream reflects the real run state */
-    });
+    const res = await this.doFetch(
+      `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/cancel`,
+      { method: "POST", headers },
+    );
+    if (!res.ok) {
+      throw new Error(`cancel request failed: ${res.status} ${res.statusText}`);
+    }
   }
 
   /** Fire-and-forget POST /agui; deliberately does NOT consume the response body. */

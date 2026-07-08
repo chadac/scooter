@@ -54,7 +54,7 @@
  * /agui with resume[] whose continuation streams back through the same log.
  */
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AbstractAgent, RunAgentInput } from "@ag-ui/client";
 import { useAgUiRuntime, fromAgUiMessages } from "@assistant-ui/react-ag-ui";
@@ -83,6 +83,12 @@ export interface InterruptContextValue {
   isRunning: boolean;
   /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
   cancel: () => Promise<void>;
+  /** Optimistic Stop-button feedback (the run's terminal event round-trips through
+   *  the integrity stream, so a naive Stop looks dead until then). "stopping" the
+   *  instant the button is clicked; back to "idle" once the run actually ends;
+   *  "failed" if the cancel POST itself errored (network / non-2xx) so we can tell
+   *  the user the stop didn't land instead of leaving them staring. */
+  cancelState: "idle" | "stopping" | "failed";
   /** Bumps on every render-pump push (message change). Used as the Thread error
    *  boundary's reset key so a transient runtime crash recovers on the next frame. */
   renderTick: number;
@@ -95,6 +101,7 @@ export const InterruptContext = createContext<InterruptContextValue>({
   baseUrl: "",
   isRunning: false,
   cancel: async () => {},
+  cancelState: "idle",
   renderTick: 0,
 });
 
@@ -212,6 +219,7 @@ function ConversationRuntime({
   // on the same single-source path as messages.
   const [interrupts, setInterrupts] = useState<readonly PendingInterrupt[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [renderTick, setRenderTick] = useState(0);
   // Highest message count applied so far — suppresses a SHRINKING reset during a
   // reconnect re-fold (see push() below). Reset per conversation (this component
@@ -245,7 +253,13 @@ function ConversationRuntime({
       // Interrupts ride the log too; surface them (or clear them) on every change.
       setInterrupts(agent.getPendingInterrupts());
       // Run-in-flight state (Stop button + thinking indicator) rides the log too.
-      setIsRunning(agent.runIsActive());
+      const active = agent.runIsActive();
+      setIsRunning(active);
+      // The run's terminal event (RUN_FINISHED{cancelled}) is what actually
+      // confirms a Stop landed. When the run goes idle, clear any optimistic
+      // "stopping"/"failed" so the bar disappears cleanly. (If it's still active
+      // we leave cancelState alone — a pending stop is still pending.)
+      if (!active) setCancelState("idle");
       // Advance the error-boundary reset key so a transient runtime crash during
       // this reset recovers on the next push.
       setRenderTick((n) => n + 1);
@@ -274,6 +288,40 @@ function ConversationRuntime({
     });
   }, [runtime, conversationId]);
 
+  // Stop-button control flow with immediate feedback. The run's terminal event
+  // round-trips through the integrity stream (which flips isRunning false and
+  // resets cancelState to idle in push() above), so without an optimistic state
+  // the button looks dead between the click and that round-trip. Show "stopping"
+  // the instant it's clicked; surface a "failed" state if the POST itself errors;
+  // and, as a backstop for a run that never emits a terminal event (the hang
+  // class), fall back to "failed" if nothing has confirmed the stop after a grace
+  // period — so the user is never left in limbo.
+  const cancelTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const doCancel = useCallback(async () => {
+    if (cancelTimer.current) clearTimeout(cancelTimer.current);
+    setCancelState("stopping");
+    // If the run hasn't gone idle within the grace period, the stop didn't visibly
+    // land — surface that rather than spinning forever. push() clears this the
+    // moment the terminal event arrives, cancelling the effect of this timer.
+    cancelTimer.current = setTimeout(() => {
+      setCancelState((s) => (s === "stopping" ? "failed" : s));
+    }, 8000);
+    try {
+      await agent.cancel();
+    } catch {
+      // The POST itself failed (network / non-2xx) — the stop definitely didn't
+      // land. Fail immediately; don't wait out the grace timer.
+      if (cancelTimer.current) clearTimeout(cancelTimer.current);
+      setCancelState("failed");
+    }
+  }, [agent]);
+
+  useEffect(() => {
+    return () => {
+      if (cancelTimer.current) clearTimeout(cancelTimer.current);
+    };
+  }, []);
+
   const interruptValue = useMemo<InterruptContextValue>(
     () => ({
       interrupts,
@@ -281,10 +329,11 @@ function ConversationRuntime({
       conversationId,
       baseUrl: BASE_URL,
       isRunning,
-      cancel: () => agent.cancel(),
+      cancel: doCancel,
+      cancelState,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, renderTick],
+    [interrupts, agent, conversationId, isRunning, doCancel, cancelState, renderTick],
   );
 
   return (

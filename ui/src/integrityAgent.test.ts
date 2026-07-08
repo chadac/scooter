@@ -378,4 +378,20 @@ describe("IntegrityAgent", () => {
     expect(call[1].method).toBe("POST");
     agent.dispose();
   });
+
+  it("cancel() THROWS on a non-2xx response (so the UI can show the stop didn't land)", async () => {
+    const fetchSpy = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).rejects.toThrow(/cancel request failed: 500/);
+    agent.dispose();
+  });
+
+  it("cancel() THROWS on a network error (fetch rejects) rather than swallowing it", async () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).rejects.toThrow(/network down/);
+    agent.dispose();
+  });
 });
