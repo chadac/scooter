@@ -561,7 +561,27 @@ export async function main(
       requested && (requested === config.model || config.availableModels.includes(requested))
         ? requested
         : undefined;
-    await sessions.promptByThread(sessionId, input.text, model, input.priority);
+    try {
+      await sessions.promptByThread(sessionId, input.text, model, input.priority);
+    } catch (err) {
+      // The run couldn't even START (provision/revive failed — e.g. 409 on a wrong
+      // hydrate map, goose/ACP error). PERSIST a RUN_ERROR to the durable log so a
+      // reattaching/refreshing UI sees the failure (not just the live client — the
+      // server also emits a live RUN_ERROR when we rethrow). Without this, the run
+      // left no trace and the conversation looked silently dead.
+      const message = err instanceof Error ? err.message : String(err);
+      const runId = `err-${Date.now()}`;
+      try {
+        await store.appendEvent(sessionId as SessionId, { type: "RUN_STARTED", threadId: sessionId, runId });
+        await store.appendEvent(sessionId as SessionId, {
+          type: "RUN_ERROR",
+          message: `The agent could not start this run: ${message}`,
+        });
+      } catch (persistErr) {
+        console.error(`[agent-host] failed to persist RUN_ERROR for ${sessionId}:`, persistErr);
+      }
+      throw err; // rethrow so the /agui handler also emits a LIVE RUN_ERROR + closes
+    }
   });
 
   // A user's answer to a permission/option request -> resolve the blocked run.

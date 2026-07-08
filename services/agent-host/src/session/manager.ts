@@ -672,20 +672,40 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // is each one's pod still running? A restart loses the in-memory map but the
       // pods may NOT have been suspended — without this we'd assume-suspend them
       // and the idle sweep would never reclaim them (a pod leak).
+      // Reconcile with RETRY + backoff. A transient boot-time apiserver blip (EKS
+      // 429 "storage is (re)initializing", a connection reset) used to fail the
+      // reconcile ONCE, fall back to "assume all suspended", and serve FOREVER with
+      // an empty map — so every prompt took the create path and 409'd on an existing
+      // Sandbox (the hydrate-silent-drop outage). Retrying rides out the blip so the
+      // map is CORRECT. If it STILL fails after the retries, we fall back (+ the 409-
+      // reuse in create() is the backstop, and re-hydrate self-heals).
       const live = new Map<string, { ref: SandboxRef; running: boolean }>();
-      try {
-        for (const s of (await provisioner.reconcile?.()) ?? []) {
-          live.set(s.ref.name, s);
+      let reconciled = false;
+      const RETRIES = 5;
+      for (let attempt = 0; attempt < RETRIES; attempt++) {
+        try {
+          for (const s of (await provisioner.reconcile?.()) ?? []) {
+            live.set(s.ref.name, s);
+          }
+          reconciled = true;
+          break;
+        } catch (err) {
+          if (attempt === RETRIES - 1) {
+            // Exhausted retries — fall back (assume-suspended). The 409-reuse in
+            // create() recovers a wrong map per-prompt; a periodic re-hydrate would
+            // self-heal fully (a follow-up). Log loudly so it's observable.
+            // eslint-disable-next-line no-console
+            console.error(`[manager] hydrate reconcile FAILED after ${RETRIES} attempts — assuming all suspended (pod-leak risk if persistent):`, err);
+          } else {
+            // Exponential backoff (250ms, 500, 1s, 2s) to ride out a boot blip.
+            const delay = 250 * 2 ** attempt;
+            // eslint-disable-next-line no-console
+            console.warn(`[manager] hydrate reconcile attempt ${attempt + 1}/${RETRIES} failed (retrying in ${delay}ms):`, (err as Error)?.message ?? err);
+            await new Promise((r) => setTimeout(r, delay));
+          }
         }
-      } catch (err) {
-        // Finding #10: the fallback (assume-suspended) is correct, but swallowing
-        // SILENTLY hides a persistently-failing reconcile — and a reconcile that
-        // never succeeds means still-running pods are all marked 'suspended' and
-        // the idle sweep (running-only) never reclaims them: the exact pod leak
-        // this reconcile exists to prevent. Log loudly so it's observable.
-        // eslint-disable-next-line no-console
-        console.error("[manager] hydrate reconcile FAILED — assuming all suspended (pod-leak risk if persistent):", err);
       }
+      void reconciled; // (kept for readability; the fallback path already logged)
 
       for (const m of metas) {
         if (entries.has(m.id)) continue; // a live one already exists

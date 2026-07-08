@@ -371,6 +371,37 @@ describe("SessionManager", () => {
     }
   });
 
+  it("hydrate RETRIES a transient reconcile failure (rides out a boot apiserver blip)", async () => {
+    // The outage: a boot-time 429 ("storage is (re)initializing") failed the
+    // reconcile ONCE, and hydrate served forever with an EMPTY map -> every prompt
+    // took create -> 409. Retrying rides out the blip so the map is CORRECT.
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const conv = await m1.start("delta");
+      const sandboxName = m1.get(conv.id)!.sandbox.name;
+
+      // reconcile fails twice (transient 429), then succeeds.
+      let attempts = 0;
+      const prov2 = fakeProvisioner();
+      prov2.reconcile = vi.fn(async () => {
+        attempts++;
+        if (attempts < 3) throw Object.assign(new Error("storage is (re)initializing"), { code: 429 });
+        return [{ ref: { name: sandboxName, namespace: "ns" }, running: true }];
+      });
+      const m2 = createSessionManager({ provisioner: prov2, store: createFileConversationStore(root) });
+      await m2.hydrate();
+
+      expect(attempts).toBe(3); // retried past the two failures
+      // The map is CORRECT (running, real ref) despite the initial failures — NOT
+      // the empty-map / assume-suspended fallback.
+      expect(m2.get(conv.id)?.status).toBe("running");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("hydrate keeps a SUSPENDED Sandbox's real ref so revive RESUMES it (not create -> 409)", async () => {
     // Bug: reconcile() reported a suspended Sandbox (replicas unset/0) as
     // running:false, and hydrateEntry threw away its namespace (namespace: "").

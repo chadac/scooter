@@ -207,8 +207,27 @@ export function createAguiServer(): AguiServer {
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
       const model = (Array.isArray(hdr) ? hdr[0] : hdr) || undefined;
-      await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority });
-      // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
+      // Drive the run. If promptHandler THROWS before the run ever emits a terminal
+      // event (the big one: revive/provision fails — e.g. 409 AlreadyExists from a
+      // wrong hydrate map, goose spawn/ACP-connect error), the SSE 200 header is
+      // ALREADY sent, so the outer handle().catch can't send a 500 — it would just
+      // res.end() a raw error string that assistant-ui can't parse, and the UI hangs
+      // with NO error (the hydrate-silent-drop bug). Emit a proper RUN_ERROR event on
+      // THIS stream + close it, so the UI has something to render as a failed send.
+      try {
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority });
+        // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.error(`[agui] prompt failed for ${sessionId} (surfacing RUN_ERROR to the client):`, err);
+        try {
+          write(res, { type: "RUN_ERROR", message: `The agent could not start this run: ${message}` });
+        } catch {
+          /* stream already torn down */
+        }
+        res.end();
+      }
       return;
     }
 
