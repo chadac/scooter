@@ -107,6 +107,33 @@ def test_request_approve_status_flow(tmp_path):
         assert r.json()["credentials"]["session_token"]
 
 
+def test_pending_route_lists_a_named_conversations_pending_requests(tmp_path):
+    # The agent-host (admin) rediscovers pending approvals for a NAMED conversation
+    # after a rollout dropped the in-memory interrupt. Unlike /aws/requests, it takes
+    # an explicit conversation_id (not the caller's identity).
+    app = _app(tmp_path)
+    # A sandbox in conv-A creates a pending (write) request.
+    app.dependency_overrides[authenticate] = _identity("conv-A")
+    with TestClient(app) as client:
+        r = client.post("/aws/aws/request", json={"target_account": "dev", "policy_document": POLICY, "justification": "write"})
+        assert r.status_code == 201 and r.json()["status"] == "pending"
+        rid = r.json()["request_id"]
+
+    # The admin (agent-host) queries pending FOR conv-A by name.
+    app.dependency_overrides[authenticate] = _identity("agent-host")
+    with TestClient(app) as client:
+        r = client.get("/aws/aws/pending", params={"conversation_id": "conv-A"})
+        assert r.status_code == 200, r.text
+        ids = [x["request_id"] for x in r.json()["requests"]]
+        assert rid in ids, ids
+        # A DIFFERENT conversation has no pending requests.
+        r = client.get("/aws/aws/pending", params={"conversation_id": "conv-OTHER"})
+        assert r.json()["requests"] == []
+        # conversation_id is required.
+        r = client.get("/aws/aws/pending")
+        assert r.status_code == 400
+
+
 def test_blocked_policy_is_rejected(tmp_path):
     app = _app(tmp_path)
     app.dependency_overrides[authenticate] = _identity("conv-1")

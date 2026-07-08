@@ -10,7 +10,7 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi } from "../../src/api/management.js";
+import { createManagementApi, raiseAwsApprovalInterrupt } from "../../src/api/management.js";
 import type { Conversation, SessionManager, ConversationStore, ConversationLink } from "../../src/session/manager.js";
 import type { AguiServer } from "../../src/agui/server.js";
 import type { AguiEvent } from "../../src/bridge.js";
@@ -472,6 +472,33 @@ describe("management API", () => {
       const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
       const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, { target_account: "dev" });
       expect(status).toBe(400);
+    });
+  });
+
+  describe("raiseAwsApprovalInterrupt (shared builder — route + revive re-raise)", () => {
+    it("raises an Approve/Deny interrupt tagged aws, and routes the answer to resolveAwsRequest", async () => {
+      const raiseInterrupt = vi.fn();
+      const bridge = { raiseInterrupt } as never;
+      const resolveAwsRequest = vi.fn(async () => {});
+      raiseAwsApprovalInterrupt(bridge, "conv-1", { request_id: "req-9", target_account: "prod", risk_level: "high" }, resolveAwsRequest);
+
+      const arg = raiseInterrupt.mock.calls[0][0] as {
+        id: string; metadata: { aws: boolean; requestId: string };
+        options: Array<{ optionId: string }>; onAnswer: (o: string, a?: unknown) => void;
+      };
+      expect(arg.id).toBe("req-9");
+      expect(arg.metadata).toMatchObject({ aws: true, requestId: "req-9" });
+      expect(arg.options.map((o) => o.optionId)).toEqual(["approve", "deny"]);
+
+      // Answering "approve" routes to the broker with approved=true.
+      arg.onAnswer("approve", { id: "u@x" });
+      await Promise.resolve();
+      expect(resolveAwsRequest).toHaveBeenCalledWith("conv-1", "req-9", true, { id: "u@x" });
+
+      // Answering "deny" -> approved=false; the approver falls back to the conv id.
+      arg.onAnswer("deny", undefined);
+      await Promise.resolve();
+      expect(resolveAwsRequest).toHaveBeenCalledWith("conv-1", "req-9", false, { id: "conv-1" });
     });
   });
 

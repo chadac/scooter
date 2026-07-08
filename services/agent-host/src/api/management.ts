@@ -25,7 +25,7 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
-import type { AguiEvent, ApproverIdentity } from "../bridge.js";
+import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
 /** Public (JSON-safe) view of a conversation — omits the in-memory bridge.
@@ -85,6 +85,64 @@ export interface ManagementDeps {
   /** How to resolve the caller's identity per request (provider-agnostic; may be
    *  store-enriched). Defaults to the env-configured resolver (header/alb-oidc). */
   resolveUser?: ResolveUser;
+}
+
+/** The fields of a broker AWS request needed to render its approval interrupt.
+ *  Matches the broker's request-view + the /aws-request POST body. */
+export interface AwsRequestSummary {
+  request_id: string;
+  target_account?: string;
+  risk_level?: string;
+  policy_summary?: string;
+  justification?: string;
+}
+
+/** Raise the Approve/Deny interrupt for a broker AWS request on a conversation's
+ *  bridge, wiring the answer back to the broker via `resolveAwsRequest`. Shared by
+ *  the /aws-request route (broker notifies at request time) AND the revive re-raise
+ *  (index.ts onRevived, which rediscovers PENDING requests after a pod rollout
+ *  dropped the in-memory interrupt). Keeping ONE builder means both paths produce an
+ *  identical interrupt (same id/options/metadata/answer-routing). */
+export function raiseAwsApprovalInterrupt(
+  bridge: SessionBridge,
+  conversationId: string,
+  req: AwsRequestSummary,
+  resolveAwsRequest?: ManagementDeps["resolveAwsRequest"],
+): void {
+  const summary =
+    `Scooter is requesting AWS access to ${req.target_account} ` +
+    `(risk: ${req.risk_level}).\n${req.policy_summary || ""}\n` +
+    `Reason: ${req.justification || "(none)"}`;
+  bridge.raiseInterrupt({
+    id: req.request_id,
+    message: summary,
+    options: [
+      { optionId: "approve", name: "Approve", kind: "allow_once" },
+      { optionId: "deny", name: "Deny", kind: "reject_once" },
+    ],
+    // Tag it AWS so the UI runs a per-viewer can-approve check (greys the Approve
+    // button for users who can't approve). requestId == the interrupt id, but carry
+    // it explicitly so the UI needn't assume that.
+    metadata: { aws: true, requestId: req.request_id },
+    onAnswer: (optionId, approver) => {
+      // The approver is the HUMAN who answered (from the permission route), not the
+      // conversation owner — the broker authorizes the configured claim. Fall back
+      // to the conversation id when there's no identity (anonymous / FGA-off / dev).
+      const approverIdentity = approver ?? { id: conversationId };
+      // resolveAwsRequest THROWS on a dropped approval (token unreadable / broker
+      // 4xx-5xx); fire-and-forget, so handle the rejection — a swallowed one silently
+      // loses the user's security decision.
+      void resolveAwsRequest?.(conversationId, req.request_id, optionId === "approve", approverIdentity).catch(
+        (err) => {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[agent-host] AWS approval NOT recorded for ${conversationId} (request ${req.request_id}, ${optionId}):`,
+            err,
+          );
+        },
+      );
+    },
+  });
 }
 
 export function createManagementApi(deps: ManagementDeps): Router {
@@ -455,44 +513,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     }
     if (!bridge) return { status: 503, json: { error: "could not activate conversation to raise the approval" } };
 
-    const summary =
-      `Scooter is requesting AWS access to ${body.target_account} ` +
-      `(risk: ${body.risk_level}).\n${body.policy_summary || ""}\n` +
-      `Reason: ${body.justification || "(none)"}`;
-    bridge.raiseInterrupt({
-      id: body.request_id,
-      message: summary,
-      options: [
-        { optionId: "approve", name: "Approve", kind: "allow_once" },
-        { optionId: "deny", name: "Deny", kind: "reject_once" },
-      ],
-      // Tag it AWS so the UI runs a per-viewer can-approve check (greys the
-      // Approve button for users who can't approve this account). `requestId` ==
-      // the interrupt id, but carry it explicitly so the UI needn't assume that.
-      metadata: { aws: true, requestId: body.request_id },
-      onAnswer: (optionId, approver) => {
-        // The approver is the HUMAN who answered (passed from the permission route
-        // via answerPermission), not the conversation owner — the broker authorizes
-        // the configured claim (email/id/name). Fall back to the conversation id
-        // when there's no identity (anonymous / FGA-off / dev).
-        const approverIdentity = approver ?? { id: conv.id };
-        // Finding #5: resolveAwsRequest THROWS on a dropped approval (token
-        // unreadable / broker 4xx-5xx). Fire-and-forget, so handle the rejection —
-        // a swallowed one silently loses the user's security decision. A broker
-        // PROVISIONING error is also fed back into the conversation so the agent can
-        // help the user fix the broker setup.
-        void deps
-          .resolveAwsRequest?.(conv.id, body.request_id!, optionId === "approve", approverIdentity)
-          .catch((err) => {
-            // eslint-disable-next-line no-console
-            console.error(
-              `[agent-host] AWS approval NOT recorded for ${conv.id} ` +
-                `(request ${body.request_id}, ${optionId}):`,
-              err,
-            );
-          });
-      },
-    });
+    raiseAwsApprovalInterrupt(bridge, conv.id, body as AwsRequestSummary, deps.resolveAwsRequest);
     return { status: 202, json: { ok: true } };
   });
 
