@@ -816,6 +816,36 @@ describe("bridge run queue + cancel", () => {
     expect(agent.killCount()).toBeGreaterThanOrEqual(1); // cancelled at the tool boundary
   });
 
+  it('interrupt "thinking" ESCALATES to a hard cancel if the tool call never yields (timeout fallback)', async () => {
+    // A "thinking" interrupt defers while a tool is in flight — but a tool that NEVER
+    // finishes (a real `sleep 3600`, not a short poll) would defer forever. With a
+    // priorityInterruptMs set, the fallback timer hard-cancels after the timeout so
+    // the user's interrupting message can't be stuck behind a non-yielding tool.
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "tool_call", toolCallId: "tc1", title: "run: sleep 3600" } as never },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 20); // 20ms fallback
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "sleeping" });
+    await tick();
+
+    // "thinking" priority arrives while the (never-completing) tool is in flight.
+    void bridge.prompt({ threadId: "t1", text: "cancel that" }, { priority: 10, interrupt: "thinking" });
+    // The tool NEVER emits a result — so the boundary cancel can't fire. Wait past
+    // the fallback timeout: the hard cancel must fire anyway.
+    await new Promise((r) => setTimeout(r, 60));
+    agent.releaseGate();
+    await tick();
+    await tick();
+    expect(agent.killCount()).toBeGreaterThanOrEqual(1); // hard-cancelled by the fallback
+    const finishes = events.filter((e) => e.type === "RUN_FINISHED") as Array<{ cancelled?: boolean }>;
+    expect(finishes.some((f) => f.cancelled === true)).toBe(true);
+  });
+
   it('interrupt "thinking" cancels IMMEDIATELY when NO tool call is in flight (idle thinking)', async () => {
     const agent = createFakeAcpAgent();
     // No tool call — the run is just "thinking" (gated with nothing in flight).

@@ -516,11 +516,17 @@ export class IntegrityAgent extends AbstractAgent {
    * reply comes back via `run()`'s integrity subscription. Resolves once the POST
    * is accepted (not when the run finishes).
    */
-  async send(text: string): Promise<void> {
+  async send(text: string, opts?: { priority?: number }): Promise<void> {
     await this.postAgui({
       threadId: this.cfg.conversationId,
       runId: `send-${this.cfg.conversationId}-${text.length}`,
       messages: [{ id: `u-${text.length}`, role: "user", content: text }],
+      // When the user sends WHILE a run is active (a loop they want to interrupt),
+      // the caller passes priority so the agent-host FORCE-INTERRUPTS the running
+      // turn (bridge "thinking" policy — cancels at the next tool boundary). Without
+      // it the message queues behind the never-ending turn and is never delivered
+      // (the uninterruptible-polling-loop bug).
+      ...(opts?.priority ? { priority: opts.priority } : {}),
     });
   }
 
