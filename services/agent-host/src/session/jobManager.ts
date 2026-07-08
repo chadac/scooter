@@ -163,9 +163,15 @@ export function createJobManager(deps: JobManagerDeps): JobManager {
       // ONLY when the command finishes — check() keys "running" vs "exited" on that
       // file's existence. `startedAt`/mtime drives the cleanup TTL. The whole thing
       // is backgrounded (`&`) so the exec returns immediately, not after the command.
+      // Create the job dir + record the command SYNCHRONOUSLY, THEN background the
+      // job. The `&` backgrounds only the setsid line — critically NOT the mkdir:
+      // if `mkdir -p $d && … &` backgrounds the whole chain, the trailing
+      // `printf … > $d/pid` races the not-yet-run mkdir and fails "No such file or
+      // directory" (the reported run_background launch failure). So the mkdir + cmd
+      // write run first (foreground, `;`-sequenced), and only the detached job is `&`.
       const script =
         `mkdir -p ${d} && ` +
-        `printf %s ${shSingleQuote(command)} > ${d}/cmd && ` +
+        `printf %s ${shSingleQuote(command)} > ${d}/cmd; ` +
         `setsid sh -c ${shSingleQuote(`${command}; printf %s "$?" > ${d}/status`)} ` +
         `> ${d}/log 2>&1 < /dev/null & ` +
         `printf %s "$!" > ${d}/pid`;
