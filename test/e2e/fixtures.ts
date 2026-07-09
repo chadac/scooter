@@ -61,6 +61,15 @@ export class Chat {
   toolCalls(): Locator {
     return this.page.locator(sel.toolCall);
   }
+  /** The scrolling thread viewport (assistant-ui ThreadPrimitive.Viewport). */
+  viewport(): Locator {
+    return this.page.locator('[data-slot="aui_thread-viewport"]').first();
+  }
+
+  /** How far the viewport is from the bottom, in px (0 == pinned to bottom). */
+  async distanceFromBottom(): Promise<number> {
+    return this.viewport().evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+  }
 
   /** Wait for an assistant reply containing `re` (default: any non-empty).
    *  Generous timeout: a freshly-created conversation lazily spawns its bridge

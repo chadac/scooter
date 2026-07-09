@@ -120,7 +120,15 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
       }}
     >
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
+        // Scroll-LOCK to the bottom by default: as the agent streams tokens / new
+        // messages arrive, the view follows the latest content. turnAnchor="bottom"
+        // flips assistant-ui's autoScroll on (it's OFF under the "top" anchor, which
+        // pins the latest user turn to the top and does NOT follow streaming — the
+        // "it doesn't stick to the bottom" bug). The lock releases automatically when
+        // the user scrolls UP (isAtBottom goes false in the viewport store) and
+        // re-engages when they click the scroll-to-bottom arrow (ThreadScrollToBottom
+        // below, which fires scrollToBottom + restores isAtBottom).
+        turnAnchor="bottom"
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
