@@ -73,6 +73,10 @@ export interface AgentHostConfig {
   /** Hard per-command exec timeout (ms). A runaway shell command is aborted after
    *  this so it can't deadlock the conversation. 0 = off. Default 5 min. */
   commandTimeoutMs: number;
+  /** Dead-on-arrival run watchdog (ms): if a run emits no ACP activity within this
+   *  window, surface a RUN_ERROR so the conversation unfreezes (the goose-Bedrock-
+   *  credential hang produced zero events and never returned). 0 = off. Default 60s. */
+  firstActivityTimeoutMs: number;
   /** OpenTelemetry metrics (cost + usage + operational), exported over OTLP.
    *  OFF by default. Endpoint/headers come from the standard OTEL_* env. */
   observability: {
@@ -114,6 +118,10 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
     // Hard per-command exec timeout. Default 5 min; COMMAND_TIMEOUT_MS=0 disables.
     commandTimeoutMs: Number(process.env.COMMAND_TIMEOUT_MS ?? 5 * 60 * 1000),
+    // Dead-on-arrival run watchdog: if a run emits no ACP activity within this many
+    // ms, surface a RUN_ERROR so the conversation unfreezes (the goose-Bedrock-
+    // credential hang). Default 60s; FIRST_ACTIVITY_TIMEOUT_MS=0 disables.
+    firstActivityTimeoutMs: Number(process.env.FIRST_ACTIVITY_TIMEOUT_MS ?? 60 * 1000),
     fakeSandbox,
     model: process.env.GOOSE_MODEL,
     availableModels: (process.env.AGENT_AVAILABLE_MODELS ?? "")
@@ -819,6 +827,7 @@ export async function main(
     const bridge = createSessionBridge({
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
+      firstActivityTimeoutMs: config.firstActivityTimeoutMs,
       acpClient: () =>
         createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
