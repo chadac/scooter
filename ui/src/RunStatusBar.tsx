@@ -13,8 +13,27 @@
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
 export function RunStatusBar() {
-  const { isRunning, cancel, cancelState } = useConversationInterrupts();
-  if (!isRunning) return null;
+  const { isRunning, cancel, cancelState, runError } = useConversationInterrupts();
+
+  // A failed run (RUN_ERROR) clears `isRunning` but the base applier renders no
+  // message — so when the run isn't in flight but errored, show a visible error
+  // banner instead of nothing (the silent-failure half of the hydrate bug). A live
+  // run takes precedence (its own indicator below).
+  if (!isRunning) {
+    if (!runError) return null;
+    return (
+      <div
+        data-testid="run-error-bar"
+        role="alert"
+        className="flex items-start gap-2 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive"
+      >
+        <span aria-hidden className="mt-0.5 font-semibold">
+          ⚠
+        </span>
+        <span data-testid="run-error-message">{runError}</span>
+      </div>
+    );
+  }
 
   const stopping = cancelState === "stopping";
   const failed = cancelState === "failed";

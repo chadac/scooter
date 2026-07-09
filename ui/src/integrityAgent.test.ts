@@ -367,6 +367,56 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("getRunError() surfaces the RUN_ERROR message (the base applier renders none)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_ERROR", threadId: "c1", runId: "r1", message: "The agent could not start this run: 409" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunError()).toBe("The agent could not start this run: 409");
+    agent.dispose();
+  });
+
+  it("getRunError() is null when the last run succeeded", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunError()).toBeNull();
+    agent.dispose();
+  });
+
+  it("getRunError() CLEARS when a subsequent run starts (stale error doesn't linger)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_ERROR", threadId: "c1", runId: "r1", message: "boom" } },
+      // The user retries — a new run begins; the old error must not stick.
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunError()).toBeNull();
+    expect(agent.runIsActive()).toBe(true);
+    agent.dispose();
+  });
+
+  it("getRunError() IGNORES an out-of-band ext- run error (a broker run isn't a turn failure)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_ERROR", threadId: "c1", runId: "ext-aws1", message: "broker hiccup" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunError()).toBeNull();
+    agent.dispose();
+  });
+
   it("cancel() POSTs the agent-host cancel endpoint for the conversation", async () => {
     const fetchSpy = vi.fn(async () => new Response("", { status: 202 })) as unknown as typeof fetch;
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
