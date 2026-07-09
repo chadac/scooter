@@ -120,6 +120,32 @@ export class IntegrityAgent extends AbstractAgent {
     return true;
   }
 
+  /** The last RUN_ERROR's message (null if the current/last run didn't error).
+   *  The base @ag-ui/client applier delegates RUN_ERROR to an `onRunErrorEvent`
+   *  callback and appends NO message — so a failed run would otherwise just go
+   *  silent (the spinner clears with no explanation). We track the message here so
+   *  RuntimeProvider can surface it as a visible banner. This is the UI half of the
+   *  hydrate-silent-drop fix (the server now EMITS + PERSISTS RUN_ERROR; this is
+   *  what renders it). Cleared when a new (non-ext) RUN_STARTED begins. */
+  private lastRunError: string | null = null;
+  getRunError(): string | null {
+    return this.lastRunError;
+  }
+
+  /** Update `lastRunError` from a single log event, ignoring out-of-band `ext-`
+   *  runs (a broker interrupt isn't a run failure). Returns true if it changed. */
+  private trackRunError(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; runId?: string; message?: string };
+    const isExt = typeof ev.runId === "string" && ev.runId.startsWith("ext-");
+    if (isExt) return false;
+    let next = this.lastRunError;
+    if (ev.type === "RUN_STARTED") next = null; // a fresh run — clear the stale error
+    else if (ev.type === "RUN_ERROR") next = ev.message ?? "The run failed.";
+    if (next === this.lastRunError) return false;
+    this.lastRunError = next;
+    return true;
+  }
+
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
@@ -378,6 +404,10 @@ export class IntegrityAgent extends AbstractAgent {
         // survives the reload, and a resolved one stays gone.
         this.logInterrupts = [];
         this.externalInterrupts.clear();
+        // Re-derived from the replayed log (a trailing RUN_ERROR re-sets it, an
+        // intervening RUN_STARTED clears it) — reset so a reconnect doesn't keep a
+        // stale error the newer history has moved past.
+        this.lastRunError = null;
         // Entering (re)replay: suppress per-event renders until `synced`.
         this.replaying = true;
         controller = new AbortController();
@@ -410,7 +440,12 @@ export class IntegrityAgent extends AbstractAgent {
             // Track run-in-flight for the Stop button / thinking indicator. The
             // base applier doesn't signal this, so nudge subscribers on a change
             // (suppressed during replay — the final `synced` render carries it).
-            if (this.trackRunning(e) && !this.replaying) this.notifyMessages();
+            let changed = this.trackRunning(e);
+            // Track a RUN_ERROR message so a failed run surfaces a visible banner
+            // instead of silently clearing (the base applier renders no message for
+            // RUN_ERROR). Same nudge discipline as trackRunning.
+            changed = this.trackRunError(e) || changed;
+            if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
           () => {

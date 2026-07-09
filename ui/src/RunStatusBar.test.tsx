@@ -24,6 +24,7 @@ function render(over: Partial<InterruptContextValue>): string {
     isRunning: true,
     cancel: async () => {},
     cancelState: "idle",
+    runError: null,
     renderTick: 0,
     ...over,
   } as InterruptContextValue;
@@ -31,8 +32,8 @@ function render(over: Partial<InterruptContextValue>): string {
 }
 
 describe("RunStatusBar Stop feedback", () => {
-  it("renders nothing when no run is active", () => {
-    expect(render({ isRunning: false })).toBe("");
+  it("renders nothing when no run is active and no error", () => {
+    expect(render({ isRunning: false, runError: null })).toBe("");
   });
 
   // React renders a boolean `disabled` attribute as the bare `disabled=""` on the
@@ -62,5 +63,20 @@ describe("RunStatusBar Stop feedback", () => {
     expect(buttonDisabled(html)).toBe(false);
     // (the apostrophe is HTML-escaped in static markup, so match up to it)
     expect(html).toContain("the run is still going");
+  });
+
+  it("run error (not running): shows the RUN_ERROR message as a visible banner", () => {
+    const html = render({ isRunning: false, runError: "The agent could not start this run: 409" });
+    expect(html).toContain('data-testid="run-error-bar"');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("The agent could not start this run: 409");
+    // Not the working/stop UI — this is a terminal error state.
+    expect(html).not.toContain("Scooter is working");
+  });
+
+  it("a LIVE run takes precedence over a stale error (the working bar wins)", () => {
+    const html = render({ isRunning: true, runError: "old boom" });
+    expect(html).toContain("Scooter is working…");
+    expect(html).not.toContain("run-error-bar");
   });
 });

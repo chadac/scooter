@@ -89,6 +89,11 @@ export interface InterruptContextValue {
    *  "failed" if the cancel POST itself errored (network / non-2xx) so we can tell
    *  the user the stop didn't land instead of leaving them staring. */
   cancelState: "idle" | "stopping" | "failed";
+  /** The last run's RUN_ERROR message, or null. The base applier renders NO
+   *  message for a RUN_ERROR, so a failed run (e.g. the agent couldn't start —
+   *  the hydrate-silent-drop class) would go silent. Surfaced here so the UI can
+   *  show a visible error banner. Cleared when the next run starts. */
+  runError: string | null;
   /** Bumps on every render-pump push (message change). Used as the Thread error
    *  boundary's reset key so a transient runtime crash recovers on the next frame. */
   renderTick: number;
@@ -102,6 +107,7 @@ export const InterruptContext = createContext<InterruptContextValue>({
   isRunning: false,
   cancel: async () => {},
   cancelState: "idle",
+  runError: null,
   renderTick: 0,
 });
 
@@ -220,6 +226,7 @@ function ConversationRuntime({
   const [interrupts, setInterrupts] = useState<readonly PendingInterrupt[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
+  const [runError, setRunError] = useState<string | null>(null);
   const [renderTick, setRenderTick] = useState(0);
   // Highest message count applied so far — suppresses a SHRINKING reset during a
   // reconnect re-fold (see push() below). Reset per conversation (this component
@@ -260,6 +267,10 @@ function ConversationRuntime({
       // "stopping"/"failed" so the bar disappears cleanly. (If it's still active
       // we leave cancelState alone — a pending stop is still pending.)
       if (!active) setCancelState("idle");
+      // A RUN_ERROR message rides the log too (the base applier renders none), so
+      // surface it as a visible banner. Cleared automatically when the next run
+      // starts (trackRunError resets it on RUN_STARTED).
+      setRunError(agent.getRunError());
       // Advance the error-boundary reset key so a transient runtime crash during
       // this reset recovers on the next push.
       setRenderTick((n) => n + 1);
@@ -331,9 +342,10 @@ function ConversationRuntime({
       isRunning,
       cancel: doCancel,
       cancelState,
+      runError,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, doCancel, cancelState, renderTick],
+    [interrupts, agent, conversationId, isRunning, doCancel, cancelState, runError, renderTick],
   );
 
   return (
