@@ -25,6 +25,7 @@ function render(over: Partial<InterruptContextValue>): string {
     cancel: async () => {},
     cancelState: "idle",
     runError: null,
+    queuedMessages: [],
     renderTick: 0,
     ...over,
   } as InterruptContextValue;

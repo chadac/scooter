@@ -417,6 +417,36 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("getQueuedMessages() re-derives the queue from the last QUEUE_UPDATED snapshot", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "QUEUE_UPDATED", items: [{ id: "q1", text: "queued A", priority: 0 }] } },
+      { kind: "event", event: { type: "QUEUE_UPDATED", items: [
+        { id: "q1", text: "queued A", priority: 0 },
+        { id: "q2", text: "queued B", priority: 0 },
+      ] } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    // Latest snapshot wins — both queued messages, in order.
+    expect(agent.getQueuedMessages().map((m) => m.text)).toEqual(["queued A", "queued B"]);
+    agent.dispose();
+  });
+
+  it("getQueuedMessages() clears when the queue drains (empty snapshot)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "QUEUE_UPDATED", items: [{ id: "q1", text: "queued A", priority: 0 }] } },
+      // The run pulled it out to run — queue is now empty.
+      { kind: "event", event: { type: "QUEUE_UPDATED", items: [] } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getQueuedMessages()).toEqual([]);
+    agent.dispose();
+  });
+
   it("cancel() POSTs the agent-host cancel endpoint for the conversation", async () => {
     const fetchSpy = vi.fn(async () => new Response("", { status: 202 })) as unknown as typeof fetch;
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });

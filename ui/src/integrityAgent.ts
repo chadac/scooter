@@ -146,6 +146,30 @@ export class IntegrityAgent extends AbstractAgent {
     return true;
   }
 
+  /** The messages currently QUEUED behind the active run (empty if none). The
+   *  bridge run-queue lives server-side; it emits a QUEUE_UPDATED snapshot on the
+   *  integrity stream whenever the queue changes, so a refreshing/reattaching UI
+   *  re-derives the queue from the log instead of losing it (it used to be
+   *  client-only and vanished on refresh). Latest-snapshot-wins. */
+  private queued: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+  getQueuedMessages(): ReadonlyArray<{ id: string; text: string; priority: number }> {
+    return this.queued;
+  }
+
+  /** Update `queued` from a QUEUE_UPDATED snapshot. Returns true if it changed
+   *  (shallow: length or any id/text differs) so the caller can nudge subscribers. */
+  private trackQueue(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; items?: Array<{ id: string; text: string; priority: number }> };
+    if (ev.type !== "QUEUE_UPDATED") return false;
+    const next = ev.items ?? [];
+    const same =
+      next.length === this.queued.length &&
+      next.every((it, i) => it.id === this.queued[i]?.id && it.text === this.queued[i]?.text);
+    if (same) return false;
+    this.queued = next;
+    return true;
+  }
+
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
@@ -408,6 +432,8 @@ export class IntegrityAgent extends AbstractAgent {
         // intervening RUN_STARTED clears it) — reset so a reconnect doesn't keep a
         // stale error the newer history has moved past.
         this.lastRunError = null;
+        // Likewise re-derive the queue from the log's last QUEUE_UPDATED snapshot.
+        this.queued = [];
         // Entering (re)replay: suppress per-event renders until `synced`.
         this.replaying = true;
         controller = new AbortController();
@@ -445,6 +471,9 @@ export class IntegrityAgent extends AbstractAgent {
             // instead of silently clearing (the base applier renders no message for
             // RUN_ERROR). Same nudge discipline as trackRunning.
             changed = this.trackRunError(e) || changed;
+            // Track the QUEUE_UPDATED snapshot so queued-behind-a-run messages render
+            // durably (they used to be client-only and vanished on refresh).
+            changed = this.trackQueue(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
