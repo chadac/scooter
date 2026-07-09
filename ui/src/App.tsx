@@ -8,6 +8,7 @@ import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js
 import { Sidebar } from "./Sidebar.js";
 import { InterruptPanel } from "./InterruptPanel.js";
 import { RunStatusBar } from "./RunStatusBar.js";
+import { QueuedMessages } from "./QueuedMessages.js";
 import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
@@ -49,6 +50,10 @@ export function App() {
                   behind a "N tool calls" collapse. */}
               <GuardedThread />
             </div>
+            {/* Messages queued behind the active run (durable — sourced from the
+                bridge run-queue via the integrity stream, so they survive a
+                refresh). Renders nothing when the queue is empty. */}
+            <QueuedMessages />
             {/* Thinking indicator + Stop button while a run is in flight (any
                 source — local, Slack, another tab). Renders nothing when idle. */}
             <RunStatusBar />

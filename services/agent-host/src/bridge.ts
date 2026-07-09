@@ -85,7 +85,16 @@ type AguiEventBase =
   // reattaching/late UI (history replay) knows the request is settled and which
   // option was chosen. The REQUEST itself rides RUN_FINISHED's interrupt outcome
   // (assistant-ui's native interrupt mechanism), not a bespoke event.
-  | { type: "PERMISSION_RESOLVED"; toolCallId: string; optionId: string | null };
+  | { type: "PERMISSION_RESOLVED"; toolCallId: string; optionId: string | null }
+  // A SNAPSHOT of the run queue's pending items, emitted whenever the queue
+  // changes (a prompt enqueued behind an active run, or drained as it starts to
+  // run). Persist-only + broadcast: the @ag-ui client folds by type+id and ignores
+  // this bespoke event, so it never corrupts the message stream — but it rides the
+  // SAME single-source (integrity) path the UI reattaches to, so queued messages
+  // survive a refresh + show across tabs (the old queued-message-vanishes bug: the
+  // queue lived only in client memory). Latest-wins: the UI renders the items from
+  // the most recent QUEUE_UPDATED; an empty `items` means the queue drained.
+  | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number }> };
 
 /** A user prompt entering the run (maps to ACP session/prompt). */
 export interface PromptInput {
@@ -261,6 +270,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // whose RUN_FINISHED fired while the first's message was still open corrupts the
   // @ag-ui stream. `pump()` guarantees that by awaiting each runPrompt fully.
   interface QueueItem {
+    /** Stable id for this queued item, so the QUEUE_UPDATED snapshot is diffable
+     *  by the UI (it can keep a queued bubble stable across snapshots). */
+    id: string;
     input: PromptInput;
     priority: number;
     /** How this item preempts the running turn (only meaningful when priority>0). */
@@ -270,6 +282,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     reject: (err: unknown) => void;
   }
   const queue: QueueItem[] = [];
+
+  // Broadcast + persist a snapshot of what's currently QUEUED (waiting behind the
+  // active run), so a refreshing/reattaching UI re-derives the queue from the log
+  // instead of losing it (it used to be client-only). Called on every enqueue and
+  // whenever the pump pulls items out to run. Ordered highest-priority-then-FIFO,
+  // matching the drain order the user will see them run in.
+  const emitQueueSnapshot = () => {
+    const items = [...queue]
+      .sort((a, b) => b.priority - a.priority || a.enqueuedAt - b.enqueuedAt)
+      .map((q) => ({ id: q.id, text: q.input.text, priority: q.priority }));
+    emit({ type: "QUEUE_UPDATED", items });
+  };
   let pumping = false;
   // The run currently receiving ACP updates (set during runPrompt()).
   let currentRun: RunState | undefined;
@@ -713,6 +737,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const batch = [item, ...queue.filter((q) => q !== item && q.priority === item.priority)]
           .sort((a, b) => a.enqueuedAt - b.enqueuedAt);
         for (const b of batch) queue.splice(queue.indexOf(b), 1);
+        // The batch just left the queue to run — surface the shrunk queue (the
+        // running batch will render as normal user messages via runPrompt's
+        // persist). An empty queue emits items:[] so the UI clears its queued list.
+        emitQueueSnapshot();
         clearInterruptTimer(); // the batch is now running, not waiting
         try {
           const runId = await runPrompt(batch[0].input, batch.map((b) => b.input));
@@ -826,8 +854,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const priority = opts?.priority ?? PRIORITY_NORMAL;
       const interrupt: InterruptPolicy = opts?.interrupt ?? "timeout";
       const p = new Promise<RunId>((resolve, reject) => {
-        queue.push({ input, priority, interrupt, enqueuedAt: Date.now(), resolve, reject });
+        queue.push({ id: nextId("queue"), input, priority, interrupt, enqueuedAt: Date.now(), resolve, reject });
       });
+      // Surface the (now longer) queue so a message waiting behind an active run
+      // shows up durably — and doesn't vanish on refresh. When nothing is running,
+      // pump() drains it immediately and emits the empty snapshot on the way out,
+      // so a normal single prompt just flashes through.
+      emitQueueSnapshot();
       if (priority >= PRIORITY_INTERRUPT) applyPreemption();
       void pump();
       return p;

@@ -88,8 +88,10 @@ describe("ACP -> AG-UI bridge", () => {
     await bridge.prompt({ threadId: "t1", text: "hi" });
 
     // BROADCAST (what the UI gets): NO user message — the UI already renders the
-    // message it sent, so re-broadcasting it would echo a duplicate.
-    expect(broadcast.map((e) => e.type)).toEqual([
+    // message it sent, so re-broadcasting it would echo a duplicate. QUEUE_UPDATED
+    // snapshots (enqueue then drain-to-empty) bracket the run but are orthogonal to
+    // the message mapping under test, so filter them out here (covered separately).
+    expect(broadcast.filter((e) => e.type !== "QUEUE_UPDATED").map((e) => e.type)).toEqual([
       "RUN_STARTED",
       "TEXT_MESSAGE_START",
       "TEXT_MESSAGE_CONTENT",
@@ -635,6 +637,43 @@ describe("bridge run queue + cancel", () => {
     expect(order[0]).toBe("first (running)");
     expect(order.indexOf("priority")).toBeLessThan(order.indexOf("normal"));
     expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(3);
+  });
+
+  it("emits a QUEUE_UPDATED snapshot when a prompt queues behind an active run, and drains it to empty", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the first run in flight so the next prompt queues behind it
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    const queueSnaps = () =>
+      events.filter((e) => e.type === "QUEUE_UPDATED") as Array<{
+        type: "QUEUE_UPDATED";
+        items: Array<{ id: string; text: string; priority: number }>;
+      }>;
+
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "first (running)" });
+    await tick();
+    // While the first run is gated, a second prompt queues behind it.
+    void bridge.prompt({ threadId: "t1", text: "queued msg" });
+    await tick();
+
+    // A snapshot showing the queued message is now on the stream (durable — it
+    // rides the same integrity path a refresh replays), so it no longer lives only
+    // in client memory.
+    const withItem = queueSnaps().find((s) => s.items.some((i) => i.text === "queued msg"));
+    expect(withItem).toBeDefined();
+    expect(withItem!.items.map((i) => i.text)).toContain("queued msg");
+
+    agent.releaseGate(); // let the queue drain
+    await tick();
+    await tick();
+    await tick();
+
+    // The LAST snapshot is empty — the queue drained (the message is now a normal
+    // user turn), so the UI clears its queued list.
+    const snaps = queueSnaps();
+    expect(snaps.at(-1)!.items).toEqual([]);
   });
 
   it("BATCHES a burst of queued same-tier messages into ONE run (not one-at-a-time)", async () => {

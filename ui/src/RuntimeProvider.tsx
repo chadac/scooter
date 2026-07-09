@@ -94,6 +94,10 @@ export interface InterruptContextValue {
    *  the hydrate-silent-drop class) would go silent. Surfaced here so the UI can
    *  show a visible error banner. Cleared when the next run starts. */
   runError: string | null;
+  /** Messages QUEUED behind the active run (empty if none). Sourced from the
+   *  bridge run-queue's QUEUE_UPDATED snapshots on the integrity stream, so they
+   *  survive a refresh + show across tabs (they used to be client-only). */
+  queuedMessages: ReadonlyArray<{ id: string; text: string; priority: number }>;
   /** Bumps on every render-pump push (message change). Used as the Thread error
    *  boundary's reset key so a transient runtime crash recovers on the next frame. */
   renderTick: number;
@@ -108,6 +112,7 @@ export const InterruptContext = createContext<InterruptContextValue>({
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
+  queuedMessages: [],
   renderTick: 0,
 });
 
@@ -227,6 +232,9 @@ function ConversationRuntime({
   const [isRunning, setIsRunning] = useState(false);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
+  const [queuedMessages, setQueuedMessages] = useState<
+    ReadonlyArray<{ id: string; text: string; priority: number }>
+  >([]);
   const [renderTick, setRenderTick] = useState(0);
   // Highest message count applied so far — suppresses a SHRINKING reset during a
   // reconnect re-fold (see push() below). Reset per conversation (this component
@@ -271,6 +279,8 @@ function ConversationRuntime({
       // surface it as a visible banner. Cleared automatically when the next run
       // starts (trackRunError resets it on RUN_STARTED).
       setRunError(agent.getRunError());
+      // Queued-behind-a-run messages ride the log's QUEUE_UPDATED snapshots.
+      setQueuedMessages(agent.getQueuedMessages());
       // Advance the error-boundary reset key so a transient runtime crash during
       // this reset recovers on the next push.
       setRenderTick((n) => n + 1);
@@ -343,9 +353,10 @@ function ConversationRuntime({
       cancel: doCancel,
       cancelState,
       runError,
+      queuedMessages,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, doCancel, cancelState, runError, renderTick],
+    [interrupts, agent, conversationId, isRunning, doCancel, cancelState, runError, queuedMessages, renderTick],
   );
 
   return (
