@@ -905,3 +905,73 @@ describe("bridge run queue + cancel", () => {
     expect(fin?.cancelled).toBe(true);
   });
 });
+
+describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, firstActivityTimeoutMs: number) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      firstActivityTimeoutMs,
+    });
+  };
+  const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+
+  it("fires RUN_ERROR when a run emits NO ACP activity within the timeout (the aeonai freeze)", async () => {
+    const agent = createFakeAcpAgent();
+    // Empty script + gate: prompt() emits nothing, then hangs — dead on arrival,
+    // exactly like goose wedged on a Bedrock credential failure.
+    agent.setScript([]);
+    agent.gate();
+    const bridge = mkBridge(agent, 30); // 30ms so the test is fast
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+
+    // RUN_STARTED emits immediately; then no activity → watchdog fires.
+    await tick(60);
+    const started = events.filter((e) => e.type === "RUN_STARTED");
+    const runError = events.find((e) => e.type === "RUN_ERROR") as { code?: string; message?: string } | undefined;
+    expect(started.length).toBe(1);
+    expect(runError).toBeDefined();
+    expect(runError!.code).toBe("no_activity_timeout");
+    // EXACTLY ONE terminal event — the watchdog's cancel makes the gated prompt()
+    // resolve, but st.terminated must suppress a second RUN_FINISHED/RUN_ERROR.
+    const terminals = events.filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
+    expect(terminals.length).toBe(1);
+  });
+
+  it("does NOT fire when the run emits activity before the timeout (a live run is untouched)", async () => {
+    const agent = createFakeAcpAgent();
+    // The run streams a chunk then finishes — real activity disarms the watchdog.
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi from the agent" } } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const bridge = mkBridge(agent, 30);
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "hello?" });
+    // Wait PAST the timeout to prove it was disarmed, not merely not-yet-fired.
+    await tick(60);
+
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+    const fin = events.filter((e) => e.type === "RUN_FINISHED");
+    expect(fin.length).toBe(1); // a normal, single, clean finish
+  });
+
+  it("is disabled when firstActivityTimeoutMs is 0 (opt-out)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate();
+    const bridge = mkBridge(agent, 0);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+    await tick(60);
+    // No watchdog → the gated run stays running, no RUN_ERROR.
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+    agent.releaseGate();
+  });
+});

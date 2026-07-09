@@ -234,6 +234,19 @@ export interface BridgeDeps {
    * a priority item then only jumps the queue order, never force-cancels.
    */
   priorityInterruptMs?: number;
+
+  /**
+   * Watchdog for a run that goes DEAD ON ARRIVAL: after RUN_STARTED we arm a timer,
+   * and if the agent emits NO ACP activity (not a single session/update) within this
+   * many ms, we conclude it's wedged — the observed aeonai freeze was goose hanging
+   * on an AssumeRoleWithWebIdentity/Bedrock credential failure, producing zero events
+   * and never returning from the prompt, so the conversation sat "running" forever.
+   * On timeout we cancel the stuck run and emit RUN_ERROR so the UI unfreezes and
+   * shows why. The FIRST ACP update disarms it — a legitimately long-thinking run
+   * that has started streaming is never touched (this only catches silence from the
+   * start). Default 60_000; 0 disables.
+   */
+  firstActivityTimeoutMs?: number;
 }
 
 // Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
@@ -298,6 +311,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // The run currently receiving ACP updates (set during runPrompt()).
   let currentRun: RunState | undefined;
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
+  const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
   // Resolved on first start(); a ready client or the result of the factory.
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
@@ -395,6 +409,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // the UI show the tool as done) until that later update — otherwise a long
     // command (sleep 30) shows no running state. See handleUpdate.
     terminalPending: Set<string>;
+    // The dead-on-arrival watchdog (see firstActivityTimeoutMs): armed at
+    // RUN_STARTED, disarmed by the FIRST ACP update. `sawActivity` guards against a
+    // late update re-firing anything once the run is alive.
+    sawActivity?: boolean;
+    activityTimer?: ReturnType<typeof setTimeout>;
+    // Set once a terminal event (RUN_FINISHED/RUN_ERROR) has been emitted for this
+    // run — by the watchdog OR the normal path — so the other path can't emit a
+    // SECOND terminal (which would corrupt the @ag-ui stream).
+    terminated?: boolean;
   }
 
   /** A tool_call_update's content is JUST a live terminal HANDLE
@@ -437,6 +460,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   const handleUpdate = (st: RunState, u: SessionUpdate) => {
     if (st.ended) return; // never reopen a message after the run is finishing
+    // First ACP activity — the run is ALIVE, so disarm the dead-on-arrival
+    // watchdog. (Guarded by st.ended above: an update arriving after the watchdog
+    // already fired is ignored, not treated as a late revival.)
+    if (!st.sawActivity) {
+      st.sawActivity = true;
+      if (st.activityTimer) {
+        clearTimeout(st.activityTimer);
+        st.activityTimer = undefined;
+      }
+    }
     switch (u.sessionUpdate) {
       case "agent_message_chunk": {
         // Reasoning and text are distinct streams; close reasoning first.
@@ -573,6 +606,34 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // agent startup is slow or fails (e.g. goose needs a model provider).
     emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
 
+    // DEAD-ON-ARRIVAL watchdog: if the agent emits no ACP activity within
+    // firstActivityTimeoutMs, treat the run as wedged and surface a RUN_ERROR so the
+    // conversation unfreezes (the aeonai freeze: goose hung on a Bedrock credential
+    // failure, emitted nothing, and never returned from prompt()). Disarmed by the
+    // first update in handleUpdate. We mark the run ended + cancel goose so the stuck
+    // subprocess unblocks; the prompt()'s own resolution/rejection is then ignored
+    // (st.ended guards it, and the finally clears everything).
+    if (firstActivityTimeoutMs > 0) {
+      st.activityTimer = setTimeout(() => {
+        if (st.sawActivity || st.ended) return;
+        st.ended = true;
+        st.terminated = true; // the watchdog owns this run's terminal event now
+        closeOpenText(st);
+        closeOpenReasoning(st);
+        outcome = "error";
+        emit({
+          type: "RUN_ERROR",
+          message:
+            "The agent didn't respond — it started but produced nothing. This usually " +
+            "means a model/credential error (e.g. the Bedrock role can't be assumed). " +
+            "Try again; if it persists, check the agent-host logs.",
+          code: "no_activity_timeout",
+        });
+        // Unblock the wedged goose so the next prompt gets a fresh run.
+        void self.cancel(runId).catch(() => {});
+      }, firstActivityTimeoutMs);
+    }
+
     // REVIVE reinjection: on this bridge's FIRST prompt, snapshot the persisted
     // log (the PRIOR turns) BEFORE we append the current user turn below, so the
     // transcript never includes — and can't duplicate — the message we're about
@@ -627,28 +688,43 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       st.ended = true; // stop routing further late updates into this run
       closeOpenText(st);
       closeOpenReasoning(st);
-      if (st.cancelled || stopReason === "cancelled") {
-        // Stopped by the user / a force-interrupt — a CLEAN end, not an error.
-        emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
-      } else if (stopReason === "error") {
-        outcome = "error";
-        emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
-      } else {
-        emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
+      // If the dead-on-arrival watchdog already terminated this run (goose finally
+      // returned AFTER we gave up), don't emit a second terminal event.
+      if (!st.terminated) {
+        st.terminated = true;
+        if (st.cancelled || stopReason === "cancelled") {
+          // Stopped by the user / a force-interrupt — a CLEAN end, not an error.
+          emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+        } else if (stopReason === "error") {
+          outcome = "error";
+          emit({ type: "RUN_ERROR", message: "agent reported an error", code: stopReason });
+        } else {
+          emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
+        }
       }
     } catch (err) {
       st.ended = true;
       closeOpenText(st);
       closeOpenReasoning(st);
-      if (st.cancelled) {
-        // A cancel that made the ACP prompt reject (e.g. session/cancel aborted
-        // the call) is still a clean user stop — don't surface it as an error.
-        emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
-      } else {
-        outcome = "error";
-        emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+      // The watchdog's self.cancel() makes the pending prompt() reject here — but the
+      // watchdog already emitted RUN_ERROR, so skip a duplicate terminal.
+      if (!st.terminated) {
+        st.terminated = true;
+        if (st.cancelled) {
+          // A cancel that made the ACP prompt reject (e.g. session/cancel aborted
+          // the call) is still a clean user stop — don't surface it as an error.
+          emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+        } else {
+          outcome = "error";
+          emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+        }
       }
     } finally {
+      // Always clear the watchdog timer (normal completion, error, or already fired).
+      if (st.activityTimer) {
+        clearTimeout(st.activityTimer);
+        st.activityTimer = undefined;
+      }
       if (currentRun === st) currentRun = undefined;
       // Metrics hook — fire-and-forget, never let it break the run.
       try {
