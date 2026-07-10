@@ -40,7 +40,13 @@ let
 
   applyModule = pkgs.writeShellApplication {
     name = "scooter-apply-module";
-    runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.systemd pkgs.gnugrep pkgs.gawk ];
+    # util-linux for `setsid` — the --detach path re-execs itself under setsid to
+    # detach the background converge from the caller. writeShellApplication builds a
+    # RESTRICTED PATH from runtimeInputs only (not the system profile), so even though
+    # util-linux is in environment.systemPackages, setsid isn't found here without it
+    # → `setsid: command not found` and the detached converge never launches (the
+    # status wedges at "building" forever).
+    runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.systemd pkgs.gnugrep pkgs.gawk pkgs.util-linux ];
     checkPhase = "";
     text = ''
       # scooter-apply-module — re-converge this sandbox to include a NixOS module,
