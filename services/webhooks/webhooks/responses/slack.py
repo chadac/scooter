@@ -21,7 +21,16 @@ def _headers() -> dict[str, str]:
 async def post_slack_message(channel: str, text: str, thread_ts: str | None = None) -> str | None:
     """Post a message to Slack. Returns message timestamp or None."""
     try:
-        payload: dict = {"channel": channel, "text": text}
+        # unfurl_* off: Scooter's messages are status/link notices (e.g. the "on it —
+        # follow along: <chat url|View conversation>" and PR links). Slack's default
+        # link/media unfurl renders a large, useless preview card that eats vertical
+        # space — suppress it for every bot message.
+        payload: dict = {
+            "channel": channel,
+            "text": text,
+            "unfurl_links": False,
+            "unfurl_media": False,
+        }
         if thread_ts:
             payload["thread_ts"] = thread_ts
         async with httpx.AsyncClient(timeout=15) as client:
@@ -50,7 +59,15 @@ async def update_slack_message(channel: str, ts: str, text: str) -> None:
             resp = await client.post(
                 f"{SLACK_API}/chat.update",
                 headers=_headers(),
-                json={"channel": channel, "ts": ts, "text": text},
+                # unfurl off (as in post_slack_message) — this edits the same
+                # status/link messages, so keep the preview suppressed on updates too.
+                json={
+                    "channel": channel,
+                    "ts": ts,
+                    "text": text,
+                    "unfurl_links": False,
+                    "unfurl_media": False,
+                },
             )
             resp.raise_for_status()
             data = resp.json()
