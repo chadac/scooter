@@ -32,6 +32,17 @@ in
       default = false;
       description = "Enable the `test` (whoami) provider for credential e2e tests.";
     };
+    jiraSiteUrl = mkOption {
+      type = types.str;
+      default = "";
+      example = "https://acme.atlassian.net";
+      description = ''
+        The Jira SITE base URL, used to build a human /browse/{KEY} link when the
+        broker auto-links an issue an agent creates via the Jira proxy (the
+        create-issue API response carries no human URL). Empty -> auto-link uses
+        the API `self` URL instead.
+      '';
+    };
     githubApp = {
       enable = mkOption {
         type = types.bool;
@@ -340,7 +351,15 @@ in
                   { name = "TOKEN_AUDIENCE"; value = "agent-broker"; }
                   { name = "SANDBOX_NAMESPACE"; value = cfg.namespace; }
                   { name = "TEST_PROVIDER_ENABLED"; value = lib.boolToString bcfg.testProvider; }
-                ] ++ lib.optionals bcfg.githubApp.enable [
+                  # Auto-linking: when an agent creates a PR/MR/issue via the proxy,
+                  # the broker POSTs it to the agent-host /conversations/{id}/links.
+                  # Same agent-host URL the AWS approval notify uses.
+                  { name = "AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
+                ] ++ lib.optional (bcfg.jiraSiteUrl != "")
+                  # Jira create-issue responses have no human URL; the broker builds
+                  # <site>/browse/{KEY} from this to auto-link the created issue.
+                  { name = "JIRA_SITE_URL"; value = bcfg.jiraSiteUrl; }
+                ++ lib.optionals bcfg.githubApp.enable [
                   # GitHub App -> the broker's github provider vends installation
                   # tokens (git-credentials for HTTPS push + the API proxy). The
                   # private key (PEM) comes from a Secret in the broker namespace.

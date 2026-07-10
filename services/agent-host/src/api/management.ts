@@ -443,8 +443,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // External resource links (the GitHub PR / Slack thread a conversation came
   // from). The webhooks service POSTs them on create; the UI GETs them for the
   // linked-resources panel.
+  // Resolve a conversation id that MIGHT be the broker's short DNS hash
+  // (`sandbox-{shortId}`) rather than the full threadId the store keys by. The
+  // broker (auto-link injector + explicit /link) identifies the conversation
+  // from the SA token, which carries the short id — a plain store.*(ctx.params.id)
+  // would miss it (the same shortId mismatch that broke aws-request). Falls back
+  // to the raw id for UI/webhooks callers that already pass the full threadId.
+  const resolveConvId = async (id: string): Promise<string | null> => {
+    const conv = sessions.get(id) ?? (await sessions.getByShortId(id));
+    return conv?.id ?? null;
+  };
+
   r.get("/conversations/:id/links", async (ctx) => {
-    const links = (await store.listLinks?.(ctx.params.id)) ?? [];
+    const id = (await resolveConvId(ctx.params.id)) ?? ctx.params.id;
+    const links = (await store.listLinks?.(id)) ?? [];
     return { json: { links } };
   });
 
@@ -459,7 +471,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!body.source || !body.resourceType) {
       return { status: 400, json: { error: "source and resourceType required" } };
     }
-    await store.addLink?.(ctx.params.id, {
+    const id = await resolveConvId(ctx.params.id);
+    if (!id) return { status: 404, json: { error: "unknown conversation" } };
+    await store.addLink?.(id, {
       source: body.source,
       resourceType: body.resourceType,
       url: body.url,

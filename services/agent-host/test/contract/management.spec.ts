@@ -390,6 +390,37 @@ describe("management API", () => {
     expect(status).toBe(400);
   });
 
+  it("links routes resolve the broker's SHORT id to the full conversation", async () => {
+    // The broker (auto-link injector + /link) identifies the conversation by the
+    // short DNS hash from the SA token, NOT the full threadId. A link posted under
+    // the short id must land on — and read back under — the full conversation, or
+    // it's the same silent shortId mismatch that broke aws-request.
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const short = shortIdOf("c1");
+    const post = await call(api, "POST", `/conversations/${short}/links`, {
+      source: "github",
+      resourceType: "pr",
+      url: "https://github.com/example-org/example-app/pull/7",
+    });
+    expect(post.status).toBe(201);
+    // Readable back under BOTH the short id and the full threadId.
+    const viaShort = await call(api, "GET", `/conversations/${short}/links`);
+    const viaFull = await call(api, "GET", "/conversations/c1/links");
+    expect((viaShort.json as any).links).toHaveLength(1);
+    expect((viaFull.json as any).links).toHaveLength(1);
+    expect((viaFull.json as any).links[0].url).toBe("https://github.com/example-org/example-app/pull/7");
+  });
+
+  it("POST /conversations/:id/links 404s on a genuinely unknown conversation", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "POST", "/conversations/nope/links", {
+      source: "github",
+      resourceType: "pr",
+      url: "https://x/1",
+    });
+    expect(status).toBe(404);
+  });
+
   it("DELETE /conversations/:id ends it", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });

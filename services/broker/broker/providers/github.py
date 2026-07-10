@@ -8,12 +8,28 @@ routes (/github/{path} and /github/git-credentials) fall out automatically.
 from __future__ import annotations
 
 from ..config import settings
+from ..core.autolink import Link, rule
 from ..core.registry import register_provider
 from ..core.types import Provider
 from ..sources.github_app import GitHubAppSource
 from ..sources.static_token import StaticTokenSource
 from ..transports.git_credential import GitCredential
 from ..transports.http_proxy import HttpProxy
+
+
+# Auto-link the PRs / issues an agent creates via the proxy. GitHub's create
+# responses carry `html_url` (the human link) + `title`. The /issues create
+# endpoint only makes issues (a PR is created via /pulls), so the two are distinct.
+_GITHUB_LINK_RULES = [
+    rule(
+        "POST", r"^repos/[^/]+/[^/]+/pulls/?$",
+        lambda r: Link(source="github", resource_type="pr", url=r.get("html_url", ""), title=r.get("title")),
+    ),
+    rule(
+        "POST", r"^repos/[^/]+/[^/]+/issues/?$",
+        lambda r: Link(source="github", resource_type="issue", url=r.get("html_url", ""), title=r.get("title")),
+    ),
+]
 
 
 @register_provider
@@ -41,7 +57,11 @@ def github() -> Provider:
         # (404). FastAPI matches routes in registration order.
         transports=[
             GitCredential(host="github.com", username="x-access-token"),
-            HttpProxy(upstream="https://api.github.com"),
+            HttpProxy(
+                upstream="https://api.github.com",
+                link_rules=_GITHUB_LINK_RULES,
+                agent_host_url=settings.agent_host_url,
+            ),
         ],
         enabled=enabled,
     )

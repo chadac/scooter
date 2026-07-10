@@ -7,12 +7,17 @@ upstream response. The agent sees normal API responses and never the token.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import logging
+from dataclasses import dataclass, field
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
 
+from ..core.autolink import Link, LinkRule, post_link
 from ..core.types import AuthDependency, Identity, Provider, Transport
+
+logger = logging.getLogger(__name__)
 
 # Headers we never forward upstream.
 _HOP_BY_HOP = frozenset({
@@ -26,6 +31,12 @@ class HttpProxy(Transport):
     upstream: str = ""                  # e.g. "https://api.github.com"
     name: str = "http-proxy"
     methods: tuple[str, ...] = ("GET", "POST", "PUT", "PATCH", "DELETE")
+    # Auto-link rules: when a proxied request matches one AND returns 2xx, the
+    # created resource (PR/MR/issue) is associated with the agent's conversation
+    # by POSTing to agent_host_url/conversations/{id}/links. Empty = no auto-link.
+    link_rules: list[LinkRule] = field(default_factory=list)
+    # Where to POST the link. Set from settings (broker's agent-host URL).
+    agent_host_url: str = ""
 
     def routes(self, provider: Provider, authed: AuthDependency) -> APIRouter:
         router = APIRouter()
@@ -57,6 +68,13 @@ class HttpProxy(Transport):
                     cred = await credential_source.get(identity)
                     cred.inject(outbound)
                 upstream_resp = await client.send(outbound)
+
+            # Auto-link: if this was a create-a-resource request that succeeded,
+            # associate the created PR/MR/issue with the caller's conversation.
+            # Best-effort — never let it affect the response the agent gets back.
+            if self.link_rules and 200 <= upstream_resp.status_code < 300 and identity.conversation_id:
+                await self._maybe_autolink(request.method, path, upstream_resp, identity.conversation_id)
+
             return Response(
                 content=upstream_resp.content,
                 status_code=upstream_resp.status_code,
@@ -67,3 +85,27 @@ class HttpProxy(Transport):
             )
 
         return router
+
+    async def _maybe_autolink(
+        self, method: str, path: str, resp: httpx.Response, conversation_id: str
+    ) -> None:
+        """Try each link rule against a successful proxied request; on the first
+        match, extract the created resource and post it as a conversation link.
+        Fully best-effort: any parse/extract error is swallowed."""
+        rule = next((r for r in self.link_rules if r.matches(method, path)), None)
+        if rule is None:
+            return
+        try:
+            data = json.loads(resp.content)
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("auto-link: response for %s %s wasn't JSON — skipping", method, path)
+            return
+        if not isinstance(data, dict):
+            return
+        try:
+            link: Link | None = rule.extract(data)
+        except Exception as e:  # a bad response shape must not break the proxy
+            logger.warning("auto-link extract failed for %s %s: %s", method, path, e)
+            return
+        if link is not None and link.url:
+            await post_link(self.agent_host_url, conversation_id, link)
