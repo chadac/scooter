@@ -20,7 +20,14 @@ let
   cfg = config.agentSandbox;
 
   # Shape of one conversation's resources. `id` = conversationId.
-  mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker", overlayStore ? false, overlayStorage ? "20Gi" }: {
+  mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker", overlayStore ? false, overlayStorage ? "20Gi"
+    # MUST mirror the agent-host k8sProvisioner's sandboxResources default: requests
+    # spread sandboxes across nodes, memory limit protects the node from a runaway
+    # build, no cpu limit (bursty builds burst on spare CPU). This file is the
+    # Nix-rendered contract for a directly-created Sandbox; a mismatch drifts from
+    # what the provisioner produces at runtime.
+  , sandboxResources ? { requests = { cpu = "500m"; memory = "1Gi"; }; limits = { memory = "4Gi"; }; }
+  }: {
     # ServiceAccount sandbox-${id}  (unique per conversation; broker identity)
     serviceAccount = {
       apiVersion = "v1";
@@ -53,6 +60,7 @@ let
           containers = [{
             name = "sandbox";
             image = sandboxImage;
+            resources = sandboxResources;
             ports = [{ containerPort = 8888; }];
             # The sandbox is the NixOS systemd-PID-1 image: systemd needs a
             # privileged context (writable cgroup + CAP_SYS_ADMIN). Mirrors the

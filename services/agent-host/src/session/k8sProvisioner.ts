@@ -55,6 +55,17 @@ export interface K8sProvisionerOptions {
   /** Overlay-store upper PVC size, e.g. "20Gi" (module rebuild closures are
    *  hundreds of MB). Only used when overlayStore is true. */
   overlayStorage?: string;
+  /** Resource requests/limits for the sandbox container. Without these the
+   *  scheduler treats a sandbox as ~free and packs many onto one node; a burst of
+   *  in-pod nix builds then overwhelms the container runtime and the kubelet's PLEG
+   *  stalls the whole node (the node-death we hit). Default: request cpu 500m /
+   *  memory 1Gi so the scheduler SPREADS sandboxes across nodes, limit memory 4Gi so
+   *  a runaway build is OOM-killed instead of taking the node down, and NO cpu limit
+   *  so bursty builds use spare node CPU freely. Deployment-overridable. */
+  sandboxResources?: {
+    requests?: { cpu?: string; memory?: string };
+    limits?: { cpu?: string; memory?: string };
+  };
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
   /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
@@ -95,6 +106,13 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   const ns = opts.namespace;
   const audience = opts.brokerAudience ?? "agent-broker";
   const storage = opts.workspaceStorage ?? "10Gi";
+  // Sandbox container resources (see the option doc): default requests spread pods
+  // across nodes; a memory limit protects the node from a runaway build; no cpu
+  // limit lets bursty nix builds use spare CPU.
+  const sandboxResources = opts.sandboxResources ?? {
+    requests: { cpu: "500m", memory: "1Gi" },
+    limits: { memory: "4Gi" },
+  };
 
   const sandboxName = (id: string) => `conv-${id}`;
   const saName = (id: string) => `sandbox-${id}`;
@@ -230,6 +248,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             overlayStore: opts.overlayStore ?? false,
             overlayStorage: opts.overlayStorage,
             moduleConfigMap: moduleCmName(id),
+            resources: sandboxResources,
           }),
         })
         .catch((e: { code?: number }) => {
@@ -434,6 +453,10 @@ export function sandboxManifest(
     overlayStore?: boolean;
     overlayStorage?: string;
     moduleConfigMap?: string;
+    resources?: {
+      requests?: { cpu?: string; memory?: string };
+      limits?: { cpu?: string; memory?: string };
+    };
   } = {},
 ): object {
   const scooter = deploy.scooterConfigMap;
@@ -474,6 +497,10 @@ export function sandboxManifest(
               // Always pull so a re-pushed :latest sandbox image is picked up
               // (IfNotPresent would keep a node's stale cached image).
               imagePullPolicy: "Always",
+              // Requests spread sandboxes across nodes; the memory limit stops a
+              // runaway build from OOM-ing the node. Omitted keys (e.g. no cpu limit)
+              // simply aren't emitted.
+              ...(deploy.resources ? { resources: deploy.resources } : {}),
               // The systemd NixOS dev image runs systemd as PID 1 — it needs a
               // privileged context (writable cgroup + CAP_SYS_ADMIN). Accepted on
               // dev; tighten post-PoC. The legacy generic image runs unprivileged.
