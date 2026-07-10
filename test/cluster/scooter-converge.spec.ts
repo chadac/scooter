@@ -161,11 +161,20 @@ maybe("scooter .scooter injection: seed → boot converge → tool on PATH (k3d,
     // The lazyTools stub resolves path:${SCOOTER_MOUNT}#${TOOL} from the mounted
     // flake; after the switch it's on the new system's PATH. Query the CURRENT
     // system's sw/bin (a long-lived exec shell may still hold the pre-switch PATH).
+    // The STUB being present on PATH is the product assertion (the seed + converge
+    // wired the deployment tool in) — this is what the two bugs broke.
     const current = (await cluster.exec(SELECTOR, ["readlink", "-f", "/run/current-system"], NS)).stdout.trim();
     const which = await cluster.exec(SELECTOR, ["sh", "-c", `ls ${current}/sw/bin/${TOOL}; echo $?`], NS);
     expect(which.stdout.trim().split("\n").pop()).toBe("0");
-    // And it actually runs (the stub builds it from the mounted flake on first call).
+
+    // And it RUNS: the stub builds the tool from the mounted flake on FIRST call
+    // (nix build, substituting from cache), whose build logs interleave with the
+    // tool's own output — and land on stderr/stdout unpredictably. So warm the build
+    // with a throwaway first call, then assert on the SECOND (cached, clean) run, and
+    // match against stdout+stderr combined so build noise on either stream can't hide
+    // the tool's marker. Generous timeout for the cold first build.
+    await cluster.exec(SELECTOR, ["sh", "-lc", `${current}/sw/bin/${TOOL} || true`], NS);
     const run = await cluster.exec(SELECTOR, ["sh", "-lc", `${current}/sw/bin/${TOOL}`], NS);
-    expect(run.stdout).toContain("review-app");
+    expect(`${run.stdout}${run.stderr}`).toContain("review-app");
   }, 300_000);
 });
