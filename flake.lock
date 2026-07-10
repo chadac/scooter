@@ -64,11 +64,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1783461836,
-        "narHash": "sha256-iiuFSPBTNkJjhOp5KcfPuGaK73/xn2Ydt/XDlglc+Uo=",
+        "lastModified": 1783646154,
+        "narHash": "sha256-Zztks+2J72iFyhdU35UI1bnhikXoguuGDP4pXngeas8=",
         "owner": "chadac",
         "repo": "nix-stubs",
-        "rev": "ec73ad810c093d97a9e8fa31f2354b571b00d82e",
+        "rev": "3d3d56974bf0a8c153c510dbedef04905985eb9d",
         "type": "github"
       },
       "original": {
