@@ -80,6 +80,30 @@ jobs:
       - name: broker + webhooks tests (nix build runs pytest)
         run: nix build .#broker .#webhooks --print-build-logs
 
+  # Build the OCI images — REQUIRED, always-on. The `dockerTools.streamLayeredImage`
+  # TAR step (which lays out the whole closure) is a distinct failure surface the
+  # nixosTests never touch (they build the NixOS toplevel, not the tar) and the
+  # heavier path-gated k3d boot job (`cluster-image-boot`, continue-on-error) doesn't
+  # gate on. A musl/static path leaking into the layer closure via a lazy-tool `.drv`
+  # broke this build while every required check stayed green (the bug that shipped in
+  # #95, only caught later at deploy). So build the tar here on EVERY PR — including
+  # ones that only bump a flake input (e.g. nix-stubs) — so a broken image fails the
+  # PR red. Cheap-ish and Cachix-backed; no cluster needed.
+  image-build:
+    name: build sandbox-os images (tar)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # Build BOTH image tarballs to completion (the streamLayeredImage step that
+      # `os.lstat`s every layered path — where an unrealised closure member fails).
+      - name: nix build .#sandbox-os-image .#sandbox-os-overlay-image
+        run: nix build .#sandbox-os-image .#sandbox-os-overlay-image --print-build-logs
+
   # Enumerate the dev-env-* nixosTests into a matrix so each VM test runs in its
   # OWN parallel job. This generate job is cheap (eval only). By default the
   # HEAVY tests (a ~1h from-source NixOS toplevel build — see HEAVY_TESTS) are
