@@ -50,13 +50,19 @@ const MODULE_NIX = `{ config, lib, pkgs, ... }:
 }
 `;
 
+// Mirrors the real deployment .scooter flake: nixpkgs is a declared input, and the
+// lazy stub builds --impure so `github:NixOS/nixpkgs` resolves against the sandbox's
+// PINNED registry (devEnvNix) — the closure is already present in the image, no cold
+// fetch. A bare `nixpkgs` with no input url falls to `flake:nixpkgs` registry lookup,
+// which isn't resolvable in the pod (the cause of the first CI failure here).
 const FLAKE_NIX = `{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs";
   outputs = { self, nixpkgs }:
-    let
-      system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
+    let system = "x86_64-linux";
     in {
-      packages.\${system}.${TOOL} = pkgs.writeShellScriptBin "${TOOL}" (builtins.readFile ./review-app.sh);
+      packages.\${system}.${TOOL} =
+        nixpkgs.legacyPackages.\${system}.writeShellScriptBin "${TOOL}"
+          (builtins.readFile ./review-app.sh);
     };
 }
 `;
