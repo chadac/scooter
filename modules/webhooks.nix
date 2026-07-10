@@ -70,13 +70,16 @@ in
     # The public UI base URL, so a webhook-created conversation's "View
     # conversation" link (posted back to Slack/GitHub/GitLab/Jira) is a real,
     # directly-visitable deep-link (<managerUrl>/?thread=<id>). Defaults to
-    # https://<chat-ingress-host> when the platform's chat ingress is enabled;
-    # override for a different UI hostname. Empty -> the link degrades to the raw
-    # conversation id (set this so the links work).
+    # https://<chat ingress.host> WHENEVER the host is set — NOT gated on
+    # ingress.enable: the host IS the public URL even when scooter doesn't render its
+    # own Ingress (e.g. an oauth2-proxy reverse-proxy fronts the host instead). Gating
+    # on ingress.enable left AGENT_MANAGER_URL empty in exactly that setup, so the
+    # Slack/GitHub link degraded to a bare conversation id. Override for a different UI
+    # hostname; empty (no host) -> the link degrades to the raw id.
     managerUrl = mkOption {
       type = types.str;
-      default = if cfg.ingress.enable && cfg.ingress.host != "" then "https://${cfg.ingress.host}" else "";
-      defaultText = lib.literalExpression ''"https://''${agentSandbox.ingress.host}" (when the chat ingress is enabled)'';
+      default = if cfg.ingress.host != "" then "https://${cfg.ingress.host}" else "";
+      defaultText = lib.literalExpression ''"https://''${agentSandbox.ingress.host}" (when the chat host is set)'';
       description = "Public UI base URL for the 'View conversation' deep-links (AGENT_MANAGER_URL).";
     };
 
