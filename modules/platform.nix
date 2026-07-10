@@ -482,6 +482,15 @@ in
                 name = "agent-host";
                 image = cfg.agentHostImage;
                 imagePullPolicy = cfg.pullPolicy;
+                # Requests so the scheduler places the platform pods deliberately
+                # (they were resource-less, which let them all pack onto one node
+                # that then fell over). Memory-limited to protect the node; no cpu
+                # limit (bursty provisioning uses spare CPU). agent-host hosts goose +
+                # drives provisioning, so it gets the largest platform reservation.
+                resources = lib.mkDefault {
+                  requests = { cpu = "250m"; memory = "512Mi"; };
+                  limits = { memory = "1Gi"; };
+                };
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
                   { name = "PORT"; value = "8080"; }
@@ -694,6 +703,11 @@ in
               name = "ui";
               image = cfg.uiImage;
               imagePullPolicy = cfg.pullPolicy;
+              # A static file server — small footprint.
+              resources = lib.mkDefault {
+                requests = { cpu = "50m"; memory = "64Mi"; };
+                limits = { memory = "256Mi"; };
+              };
               ports = [{ containerPort = 8080; name = "http"; }];
               env = [{
                 name = "AGENT_HOST_URL";

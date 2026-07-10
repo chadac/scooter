@@ -326,6 +326,11 @@ in
                 image = bcfg.image;
                 imagePullPolicy = cfg.pullPolicy;
                 command = [ "agent-broker" ];
+                # A lightweight credential-vending service.
+                resources = lib.mkDefault {
+                  requests = { cpu = "50m"; memory = "128Mi"; };
+                  limits = { memory = "512Mi"; };
+                };
                 ports = [{ containerPort = 8080; name = "http"; }];
                 env = [
                   { name = "PORT"; value = "8080"; }

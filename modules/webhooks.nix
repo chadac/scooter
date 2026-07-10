@@ -204,6 +204,11 @@ in
                 image = wcfg.image;
                 imagePullPolicy = cfg.pullPolicy;
                 command = [ "agent-webhooks" ];
+                # A lightweight webhook intake service.
+                resources = lib.mkDefault {
+                  requests = { cpu = "50m"; memory = "128Mi"; };
+                  limits = { memory = "512Mi"; };
+                };
                 ports = [{ containerPort = 8080; name = "http"; }];
                 env = [
                   { name = "PORT"; value = "8080"; }
@@ -292,6 +297,13 @@ in
               containers.postgres = {
                 name = "postgres";
                 image = wcfg.postgres.image;
+                # The shared Postgres (webhooks + conversation metadata) — a memory
+                # request/limit protects the node; Postgres is IO/mem-bound, so give
+                # it a real reservation and no cpu limit.
+                resources = lib.mkDefault {
+                  requests = { cpu = "100m"; memory = "256Mi"; };
+                  limits = { memory = "1Gi"; };
+                };
                 ports = [{ containerPort = 5432; name = "pg"; }];
                 env = [
                   { name = "POSTGRES_DB"; value = wcfg.postgres.database; }
