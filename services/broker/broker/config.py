@@ -31,6 +31,11 @@ class BrokerSettings(BaseSettings):
     atlassian_client_id: str = ""
     atlassian_client_secret: str = ""
     atlassian_cloud_id: str = ""
+    # The Jira SITE base URL (e.g. https://acme.atlassian.net), used to build a
+    # human `/browse/{KEY}` link for an auto-linked issue (the create-issue API
+    # response only carries the API `self` URL). Empty -> auto-link falls back to
+    # the API self URL.
+    jira_site_url: str = ""
 
     # Datadog (two-key header auth: DD-API-KEY + DD-APPLICATION-KEY). The provider
     # proxies /datadog/* -> https://api.<site> with both keys injected, so the
@@ -71,6 +76,12 @@ class BrokerSettings(BaseSettings):
     # Notify the agent-host when a request is created so it raises the approval
     # interrupt. Empty = no notify (local/dev).
     aws_agent_host_url: str = ""
+
+    # --- Agent-host callback (auto-linking) ---------------------------------
+    # The agent-host base URL the broker calls to associate a created PR/MR/issue
+    # with the caller's conversation (POST /conversations/{id}/links). Empty =
+    # auto-linking off (local/dev). Set to the same in-cluster agent-host URL.
+    agent_host_url: str = ""
     # Sweep interval (seconds) for expired dynamic roles.
     aws_sweep_interval: int = 300
 

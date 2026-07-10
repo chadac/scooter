@@ -17,7 +17,7 @@ let
   # pod's projected SA token (so `agent-broker test/whoami` Just Works).
   agent-broker = pkgs.writeShellApplication {
     name = "agent-broker";
-    runtimeInputs = [ pkgs.curl pkgs.coreutils ];
+    runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
     text = builtins.readFile ./agent-broker.sh;
   };
 
