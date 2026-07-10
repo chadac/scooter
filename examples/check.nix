@@ -81,7 +81,36 @@ let
   dbProblems = if dbTimeoutOk then [ ]
     else [ "postgres probe timeoutSeconds too tight (< 3s) — the 1s default caused a restart-loop outage" ];
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems;
+  # publicUrl decoupled from ingress.enable: when the chat ingress is DISABLED but a
+  # host IS set (the aeonai case — an oauth2-proxy reverse-proxy fronts the host, so
+  # scooter must not render a competing Ingress), PUBLIC_URL (agent-host) and
+  # AGENT_MANAGER_URL (webhooks) must STILL populate from the host — else the
+  # "View conversation" deep-links degrade to a raw conversation id. Render a second
+  # platform with ingress disabled and assert the URLs are set AND no chat Ingress
+  # was rendered.
+  ingressOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.ingress.enable = lib.mkForce false;
+    };
+  };
+  ioRes = ingressOffPlatform.config.kubernetes.resources;
+  envVal = dep: name:
+    let
+      ctrs = builtins.attrValues (ioRes.deployments.${dep}.spec.template.spec.containers or { });
+      env = builtins.concatMap (c: c.env or [ ]) ctrs;
+      m = builtins.filter (e: e.name == name) env;
+    in if m == [ ] then "" else (builtins.head m).value;
+  publicUrlSet = builtins.match "https://.+" (envVal "agent-host" "PUBLIC_URL") != null;
+  managerUrlSet = builtins.match "https://.+" (envVal "agent-webhooks" "AGENT_MANAGER_URL") != null;
+  # And crucially it must NOT render a competing chat Ingress when disabled.
+  noChatIngress = !(ioRes.ingresses.agent-host or null != null);
+  puProblems =
+    (if publicUrlSet then [ ] else [ "ingress-disabled: PUBLIC_URL empty (should derive from host)" ])
+    ++ (if managerUrlSet then [ ] else [ "ingress-disabled: AGENT_MANAGER_URL empty (should derive from host)" ])
+    ++ (if noChatIngress then [ ] else [ "ingress-disabled: a chat Ingress was rendered anyway (competing router)" ]);
+
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired\n"

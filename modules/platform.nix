@@ -510,10 +510,14 @@ in
                   # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
                   { name = "AGENT_NAME"; value = cfg.agent.name; }
                   { name = "SKILLS_DIR"; value = "/etc/agent-sandbox/skills"; }
-                ] ++ lib.optional (cfg.ingress.enable && cfg.ingress.host != "")
+                ] ++ lib.optional (cfg.ingress.host != "")
                   # Public chat UI base URL → each sandbox gets a CONVERSATION_URL
                   # to its own conversation (the agent can share the link, e.g. to
-                  # have a human approve an AWS request).
+                  # have a human approve an AWS request). Set WHENEVER the host is
+                  # configured — NOT gated on ingress.enable: the host is the public
+                  # URL even when scooter doesn't render its own Ingress (e.g. an
+                  # oauth2-proxy reverse-proxy fronts it). Gating on enable left
+                  # PUBLIC_URL/CONVERSATION_URL empty in that setup.
                   { name = "PUBLIC_URL"; value = "https://${cfg.ingress.host}"; }
                 ++ lib.optional (cfg.auth.mode != "header")
                   # Identity provider: header (default) or alb-oidc.
