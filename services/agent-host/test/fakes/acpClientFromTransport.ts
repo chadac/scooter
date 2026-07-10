@@ -19,6 +19,7 @@ export function acpClientFromTransport(
   _exec: ExecBackend,
 ): AcpClient {
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
+  const terminalCreatedCbs = new Set<(terminalId: string, command: string, args: string[]) => void>();
   let permissionHandler:
     | ((req: PermissionRequest) => Promise<{ optionId: string }>)
     | undefined;
@@ -51,6 +52,16 @@ export function acpClientFromTransport(
     onSessionUpdate(cb) {
       updateCbs.add(cb);
       return () => updateCbs.delete(cb);
+    },
+    onTerminalCreated(cb) {
+      // A test can drive this via transport.emitTerminalCreated (if it models a
+      // terminal-based shell tool); otherwise it simply never fires. This keeps the
+      // fake AcpClient shape-complete without every test needing terminal plumbing.
+      terminalCreatedCbs.add(cb);
+      transport.onTerminalCreated?.((terminalId, command, args) => {
+        for (const c of terminalCreatedCbs) c(terminalId, command, args);
+      });
+      return () => terminalCreatedCbs.delete(cb);
     },
     onPermissionRequest(handler) {
       permissionHandler = handler;

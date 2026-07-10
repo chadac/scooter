@@ -67,6 +67,42 @@ describe("ACP -> AG-UI bridge", () => {
     expect(overlap, `ids reused across restart: ${overlap.join(", ")}`).toEqual([]);
   });
 
+  it("surfaces a shell command from terminal/create as TOOL_CALL_ARGS (goose's shell shape)", async () => {
+    // Real goose's shell tool carries the command in terminal/create, NOT in the
+    // tool_call's rawInput (which is empty), then hands off a live terminal. The
+    // bridge must correlate the terminal-create command to the tool call by
+    // terminalId and emit it as the tool call's args, so the UI can show `$ <cmd>`.
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const agent = createFakeAcpAgent();
+    agent.gate(); // hold the run so we can interleave terminal/create + the handoff
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "ls it" });
+    await tick();
+
+    // tool_call with NO rawInput (goose doesn't put the command here).
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c1", title: "run: ls -la", kind: "execute", status: "pending" } as never);
+    // terminal/create — the command lives HERE. `sh -c "ls -la"` collapses to `ls -la`.
+    agent.terminalCreated("term-1", "sh", ["-c", "ls -la"]);
+    // The handoff update carrying the terminalId — this is where the bridge looks it up.
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", content: [{ type: "terminal", terminalId: "term-1" }] } as never);
+    await tick();
+
+    const args = events.find((e) => e.type === "TOOL_CALL_ARGS" && (e as { toolCallId?: string }).toolCallId === "c1") as
+      | { delta: string }
+      | undefined;
+    expect(args, "no TOOL_CALL_ARGS emitted for the shell tool").toBeDefined();
+    expect(JSON.parse(args!.delta)).toEqual({ command: "ls -la" });
+
+    agent.releaseGate();
+  });
+
   it("maps an agent_message_chunk to TextMessage start/content/end", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([
@@ -510,6 +546,9 @@ describe("revive history reinjection", () => {
       },
       async cancel() {},
       onSessionUpdate() {
+        return () => {};
+      },
+      onTerminalCreated() {
         return () => {};
       },
       onPermissionRequest() {},

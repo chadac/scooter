@@ -87,6 +87,10 @@ export interface AcpClient {
   killActiveTerminals(): Promise<void>;
 
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
+  /** Notified when goose creates a terminal to run a shell command. The command
+   *  text lives ONLY here (terminal/create), not in the tool_call's rawInput — the
+   *  bridge correlates it to the tool call by terminalId so the UI can show it. */
+  onTerminalCreated(cb: (terminalId: string, command: string, args: string[]) => void): () => void;
   onPermissionRequest(
     handler: (req: PermissionRequest) => Promise<PermissionAnswer>,
   ): void;
@@ -115,13 +119,18 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   const stream: Stream = ndJsonStream(toAgent, fromAgent);
 
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
+  const terminalCreatedCbs = new Set<(terminalId: string, command: string, args: string[]) => void>();
   let permissionHandler:
     | ((req: PermissionRequest) => Promise<PermissionAnswer>)
     | undefined;
 
   // fs/* + terminal/* handlers live in a standalone, testable factory (each call
-  // gets a fresh handler set with its own unique-id-keyed terminal maps).
-  const sandbox = createSandboxClientHandlers(deps.exec);
+  // gets a fresh handler set with its own unique-id-keyed terminal maps). Forward
+  // terminal-create (the only place goose's shell command text is available) to
+  // subscribers so the bridge can surface it as the tool call's args.
+  const sandbox = createSandboxClientHandlers(deps.exec, (terminalId, command, args) => {
+    for (const cb of terminalCreatedCbs) cb(terminalId, command, args);
+  });
 
   // Our Client implementation: what Goose calls back into. sessionUpdate +
   // requestPermission need the bridge's callbacks (closures below); everything
@@ -208,6 +217,10 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     onSessionUpdate(cb) {
       updateCbs.add(cb);
       return () => updateCbs.delete(cb);
+    },
+    onTerminalCreated(cb) {
+      terminalCreatedCbs.add(cb);
+      return () => terminalCreatedCbs.delete(cb);
     },
     onPermissionRequest(handler) {
       permissionHandler = handler;

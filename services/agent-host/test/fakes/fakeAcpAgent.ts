@@ -39,6 +39,9 @@ export interface FakeAcpTransport {
   cancel(sessionId: string): Promise<void>;
   /** Optional: a cancel test can set this to assert active terminals were killed. */
   killActiveTerminals?(): Promise<void>;
+  /** Subscribe to terminal/create (goose's shell command source). A test drives it
+   *  via FakeAcpAgent.terminalCreated(...). */
+  onTerminalCreated?(cb: (terminalId: string, command: string, args: string[]) => void): void;
   close(): Promise<void>;
 }
 
@@ -56,6 +59,9 @@ export interface FakeAcpAgent {
   /** Push a session update to the CURRENTLY-RUNNING prompt's onUpdate — for a
    *  test to deliver a tool_call_update result while the run is gated. */
   emit(u: SessionUpdate): void;
+  /** Simulate goose creating a terminal for a shell command (the terminal/create
+   *  call where the command text lives). Fires the bridge's onTerminalCreated. */
+  terminalCreated(terminalId: string, command: string, args: string[]): void;
   close(): void;
 }
 
@@ -70,6 +76,7 @@ export function createFakeAcpAgent(): FakeAcpAgent {
   // The live onUpdate of the currently-running prompt, so a test can push an
   // update MID-RUN (e.g. a tool_call_update result while the run is gated).
   let liveUpdate: ((u: SessionUpdate) => void) | undefined;
+  const terminalCreatedCbs = new Set<(terminalId: string, command: string, args: string[]) => void>();
 
   const transport: FakeAcpTransport = {
     async initialize() {
@@ -115,6 +122,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     async killActiveTerminals() {
       kills += 1;
     },
+    onTerminalCreated(cb) {
+      terminalCreatedCbs.add(cb);
+    },
     async close() {
       /* no-op */
     },
@@ -141,6 +151,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     emit(u: SessionUpdate) {
       liveUpdate?.(u);
+    },
+    terminalCreated(terminalId, command, args) {
+      for (const cb of terminalCreatedCbs) cb(terminalId, command, args);
     },
     close() {
       script = [];
