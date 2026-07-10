@@ -121,11 +121,13 @@ class FakeAgent implements Agent {
     let cmdOutput = "";
     let exitCode = 0;
     const toolCallId = `call_${++this.toolCallSeq}`;
-    // MATCH REAL GOOSE: emit the initial tool_call WITHOUT rawInput, then supply it
-    // on a tool_call_update. Goose does this (the args aren't known when the call is
-    // announced), and the agent-host bug where TOOL_CALL_ARGS was only emitted from
-    // the initial tool_call meant the command/args never rendered. Emitting the
-    // args on the update here keeps the e2e honest — it exercises that path.
+    // MATCH REAL GOOSE's shell shape (see the goose-shell-terminal-handoff capture):
+    // the tool_call carries NO rawInput and NO command — goose runs the command via
+    // terminal/create and HANDS OFF a terminal ([{terminalId,type:"terminal"}]) as
+    // the tool_call_update content. The command text lives ONLY in the terminal/create
+    // call, so the agent-host must surface it from THERE (keyed by terminalId) — this
+    // sequence keeps the e2e honest by exercising exactly that path (an earlier fake
+    // put the command in rawInput, which real goose never sends, hiding the bug).
     await u({
       sessionUpdate: "tool_call",
       toolCallId,
@@ -133,18 +135,21 @@ class FakeAgent implements Agent {
       kind: "execute",
       status: "pending",
     } as never);
-    await u({
-      sessionUpdate: "tool_call_update",
-      toolCallId,
-      status: "in_progress",
-      rawInput: { command },
-    } as never);
+    let terminalId = "";
     try {
       const term = await this.conn.createTerminal({
         sessionId,
         command: "sh",
         args: ["-c", command],
       });
+      terminalId = term.id;
+      // Hand off the live terminal (the command now runs async in it) — NO rawInput.
+      await u({
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "completed",
+        content: [{ type: "terminal", terminalId }],
+      } as never);
       const exit = await term.waitForExit();
       exitCode = exit.exitCode ?? 0;
       const out = await term.currentOutput();
@@ -154,6 +159,7 @@ class FakeAgent implements Agent {
       cmdOutput = `exec error: ${String(e)}`;
       exitCode = 1;
     }
+    // The REAL finish (post-terminal), carrying the command's output as content.
     await u({
       sessionUpdate: "tool_call_update",
       toolCallId,

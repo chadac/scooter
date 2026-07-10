@@ -311,6 +311,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   let pumping = false;
   // The run currently receiving ACP updates (set during runPrompt()).
   let currentRun: RunState | undefined;
+  // terminalId -> the command goose asked to run in it (from terminal/create).
+  // Consumed by the tool_call_update that hands off the terminal, to surface the
+  // command as the tool call's args. Bridge-lifetime (terminalIds are unique per
+  // spawn); pruned on lookup so it doesn't grow unbounded across a long session.
+  const terminalCommands = new Map<string, string>();
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
   // Resolved on first start(); a ready client or the result of the factory.
@@ -433,6 +438,23 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     });
   };
 
+  // The terminalIds in a handoff update's content (to look up the command that ran).
+  const handoffTerminalIds = (content: unknown): string[] =>
+    Array.isArray(content)
+      ? content
+          .map((c) => (c as { terminalId?: unknown }).terminalId)
+          .filter((t): t is string => typeof t === "string")
+      : [];
+
+  // goose's shell tool is usually invoked as `<shell> -c "<script>"` — collapse that
+  // to just the script (what the user cares about); otherwise join command + args.
+  const formatCommand = (command: string, args: string[]): string => {
+    if ((command === "sh" || command === "bash" || command.endsWith("/sh") || command.endsWith("/bash")) && args[0] === "-c" && args[1] !== undefined) {
+      return args[1];
+    }
+    return [command, ...args].join(" ").trim();
+  };
+
   const closeOpenText = (st: RunState) => {
     if (st.openText) {
       emit({ type: "TEXT_MESSAGE_END", messageId: st.openText });
@@ -550,6 +572,17 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // Remember it and DON'T finish — the real finish is a later update.
         if (isTerminalHandoff(u.content)) {
           st.terminalPending.add(u.toolCallId);
+          // Surface the command that ran (goose put it in terminal/create, not in
+          // the tool_call's rawInput) as this tool call's args, so the UI shows
+          // `$ <command>` instead of an empty shell card. Look it up by terminalId.
+          for (const tid of handoffTerminalIds(u.content)) {
+            const cmd = terminalCommands.get(tid);
+            if (cmd !== undefined) {
+              terminalCommands.delete(tid); // consume — ids are unique per spawn
+              emitArgsOnce(st, u.toolCallId, { command: cmd });
+              break;
+            }
+          }
           break;
         }
         const terminalWasPending = st.terminalPending.has(u.toolCallId);
@@ -864,6 +897,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // mis-wired updates across runs).
       acpClient.onSessionUpdate((_sid, u) => {
         if (currentRun) handleUpdate(currentRun, u);
+      });
+
+      // goose's shell tool carries the COMMAND in terminal/create, not in the
+      // tool_call's rawInput — so this is the only place we learn what ran. Stash it
+      // by terminalId; the tool_call_update that hands off this terminal
+      // (content:[{terminalId,…}]) looks it up and emits it as the tool call's args,
+      // so the UI can show `$ <command>` instead of an empty shell card.
+      acpClient.onTerminalCreated((terminalId, command, args) => {
+        terminalCommands.set(terminalId, formatCommand(command, args));
       });
 
       // The agent asks the user to choose (ACP session/request_permission). We

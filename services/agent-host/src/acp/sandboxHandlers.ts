@@ -33,7 +33,15 @@ export interface SandboxClientHandlers {
   killAllTerminals(): Promise<void>;
 }
 
-export function createSandboxClientHandlers(exec: ExecBackend): SandboxClientHandlers {
+export function createSandboxClientHandlers(
+  exec: ExecBackend,
+  // Notified when goose creates a terminal to run a command. goose's shell tool
+  // carries the command HERE (terminal/create), NOT in the tool_call's rawInput —
+  // so this is the ONLY place the actual command text is available. The bridge uses
+  // it to surface the command as the tool call's args (keyed by terminalId), which
+  // the UI renders as `$ <command>`. Optional so tests/other callers can omit it.
+  onTerminalCreated?: (terminalId: string, command: string, args: string[]) => void,
+): SandboxClientHandlers {
   // Per-terminal handle + accumulated output, keyed by the (unique) handle id.
   const terminals = new Map<string, ReturnType<ExecBackend["spawn"]>>();
   const terminalBuffers = new Map<string, string>();
@@ -69,6 +77,11 @@ export function createSandboxClientHandlers(exec: ExecBackend): SandboxClientHan
       handle.onOutput((chunk) => {
         terminalBuffers.set(handle.id, (terminalBuffers.get(handle.id) ?? "") + chunk);
       });
+      // Surface the command so the bridge can attribute it to the tool call
+      // (keyed by this terminalId) and the UI can show WHAT ran. Pass the ORIGINAL
+      // command/args goose requested (not the sandboxCwd-adjusted spawn), which is
+      // what the user means by "the command".
+      onTerminalCreated?.(handle.id, params.command, params.args ?? []);
       return { terminalId: handle.id };
     },
 
