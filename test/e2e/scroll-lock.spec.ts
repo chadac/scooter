@@ -38,17 +38,18 @@ test.describe("conversation scroll-lock", () => {
     expect(scrollable, "thread never grew tall enough to scroll — assertion would be vacuous").toBeGreaterThan(0);
 
     // With scroll-lock on, the viewport rode each new turn down to the bottom.
-    await expect.poll(() => chat.distanceFromBottom(), { timeout: 10_000 }).toBeLessThanOrEqual(AT_BOTTOM_PX);
+    await chat.settleAtBottom();
     // The canonical signal: at the bottom, the scroll-to-bottom arrow is DISABLED
-    // (assistant-ui hides it via `disabled:invisible`).
-    await expect(chat.scrollToBottomButton()).toBeDisabled();
+    // (assistant-ui hides it via `disabled:invisible`). Generous timeout — the store's
+    // isAtBottom flag updates on a scroll event, which can trail the settle in slow CI.
+    await expect(chat.scrollToBottomButton()).toBeDisabled({ timeout: 10_000 });
   });
 
   test("scrolling up releases the lock; the arrow re-engages it", async ({ chat }) => {
     await chat.open();
     const scrollable = await fillUntilScrollable(chat);
     expect(scrollable, "thread never grew tall enough to scroll").toBeGreaterThan(0);
-    await expect.poll(() => chat.distanceFromBottom(), { timeout: 10_000 }).toBeLessThanOrEqual(AT_BOTTOM_PX);
+    await chat.settleAtBottom();
 
     // Scroll UP to the top. The lock releases — assert via the ARROW becoming enabled
     // (the UI's own "not at bottom" signal), which is deterministic regardless of how

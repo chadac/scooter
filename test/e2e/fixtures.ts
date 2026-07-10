@@ -77,6 +77,20 @@ export class Chat {
     return this.viewport().evaluate((el) => el.scrollHeight - el.clientHeight);
   }
 
+  /** Deterministically settle the viewport at the bottom before asserting the
+   *  at-bottom state. assistant-ui's `isAtBottom` flag (which drives the arrow's
+   *  disabled state) updates from a SCROLL EVENT — after auto-scroll settles there
+   *  may be no further scroll event to fire, so the flag can trail the real position
+   *  (the CI-only "arrow still enabled at the bottom" flake). An explicit
+   *  scrollTo(bottom) forces a scroll event → the store recomputes; then poll the
+   *  measured distance to confirm we're actually pinned. */
+  async settleAtBottom(px = 40): Promise<void> {
+    await this.viewport().evaluate((el) =>
+      el.scrollTo({ top: el.scrollHeight, behavior: "instant" as ScrollBehavior }),
+    );
+    await expect.poll(() => this.distanceFromBottom(), { timeout: 10_000 }).toBeLessThanOrEqual(px);
+  }
+
   /** The scroll-to-bottom arrow. assistant-ui's ScrollToBottom primitive DISABLES it
    *  (CSS `disabled:invisible`) while pinned to the bottom and ENABLES it once the
    *  user scrolls up — so its enabled/visible state is the authoritative "the lock
