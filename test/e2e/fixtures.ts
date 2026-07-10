@@ -71,6 +71,20 @@ export class Chat {
     return this.viewport().evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
   }
 
+  /** How much the viewport CAN scroll (scrollHeight - clientHeight). 0 == the thread
+   *  fits with nothing to scroll — a scroll-lock assertion would be vacuous. */
+  async scrollableHeight(): Promise<number> {
+    return this.viewport().evaluate((el) => el.scrollHeight - el.clientHeight);
+  }
+
+  /** The scroll-to-bottom arrow. assistant-ui's ScrollToBottom primitive DISABLES it
+   *  (CSS `disabled:invisible`) while pinned to the bottom and ENABLES it once the
+   *  user scrolls up — so its enabled/visible state is the authoritative "the lock
+   *  released" signal (more robust than a pixel threshold). */
+  scrollToBottomButton(): Locator {
+    return this.page.locator(".aui-thread-scroll-to-bottom").first();
+  }
+
   /** Wait for an assistant reply containing `re` (default: any non-empty).
    *  Generous timeout: a freshly-created conversation lazily spawns its bridge
    *  on the first prompt, so the very first reply can be slower than later ones.
