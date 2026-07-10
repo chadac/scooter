@@ -299,9 +299,12 @@ in
                 image = wcfg.postgres.image;
                 # The shared Postgres (webhooks + conversation metadata) — a memory
                 # request/limit protects the node; Postgres is IO/mem-bound, so give
-                # it a real reservation and no cpu limit.
+                # it a real reservation and no cpu limit. 512Mi request (not 256Mi):
+                # under load / a rolling restart the smaller reservation left it
+                # CPU/IO-starved and pg_isready couldn't answer in time (see the probe
+                # timeouts below).
                 resources = lib.mkDefault {
-                  requests = { cpu = "100m"; memory = "256Mi"; };
+                  requests = { cpu = "100m"; memory = "512Mi"; };
                   limits = { memory = "1Gi"; };
                 };
                 ports = [{ containerPort = 5432; name = "pg"; }];
@@ -319,8 +322,24 @@ in
                   { name = "PGDATA"; value = "/var/lib/postgresql/data/pgdata"; }
                 ];
                 volumeMounts = [{ name = "data"; mountPath = "/var/lib/postgresql/data"; }];
-                readinessProbe.exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
-                livenessProbe.exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
+                # pg_isready probes with a GENEROUS timeout + an initial delay. The
+                # k8s DEFAULT timeoutSeconds is 1s, which pg_isready couldn't meet
+                # during startup / a rolling restart under load → the liveness probe
+                # killed Postgres in a loop, taking the broker (and every conversation)
+                # down with it. 5s timeout + a startup delay give it room.
+                readinessProbe = {
+                  exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
+                  timeoutSeconds = 5;
+                  initialDelaySeconds = 10;
+                  periodSeconds = 10;
+                };
+                livenessProbe = {
+                  exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
+                  timeoutSeconds = 5;
+                  initialDelaySeconds = 15;
+                  periodSeconds = 10;
+                  failureThreshold = 6;
+                };
               };
               volumes = [{
                 name = "data";

@@ -62,7 +62,26 @@ let
   csProblems = if awsChecksumWired then [ ]
     else [ "broker.template.annotations.checksum/aws-accounts (config-rollout annotation missing)" ];
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems;
+  # Shared Postgres probe timeout: the k8s DEFAULT pg_isready probe timeout (1s) once
+  # killed the DB in a restart loop (pg_isready couldn't answer in 1s under load),
+  # cascading to the broker + every conversation. Render the DB (postgres is gated
+  # off in the base example) and assert both probes carry a GENEROUS timeout so this
+  # can't silently regress.
+  dbPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.webhooks.postgres = {
+        enable = lib.mkForce true;
+        passwordSecret = { name = "db"; key = "password"; };
+      };
+    };
+  };
+  dbCtr = dbPlatform.config.kubernetes.resources.deployments.agent-shared-db.spec.template.spec.containers.postgres;
+  dbTimeoutOk = (dbCtr.livenessProbe.timeoutSeconds or 1) >= 3 && (dbCtr.readinessProbe.timeoutSeconds or 1) >= 3;
+  dbProblems = if dbTimeoutOk then [ ]
+    else [ "postgres probe timeoutSeconds too tight (< 3s) — the 1s default caused a restart-loop outage" ];
+
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired\n"

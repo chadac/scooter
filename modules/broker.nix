@@ -326,10 +326,13 @@ in
                 image = bcfg.image;
                 imagePullPolicy = cfg.pullPolicy;
                 command = [ "agent-broker" ];
-                # A lightweight credential-vending service.
+                # A credential-vending service. 1Gi limit (not 512Mi): the broker holds
+                # per-account STS cred caches + the provider registry, and 512Mi ran it
+                # close enough that a liveness-kill during a DB-outage restart loop
+                # looked like an OOM (exit 137). Give real headroom.
                 resources = lib.mkDefault {
-                  requests = { cpu = "50m"; memory = "128Mi"; };
-                  limits = { memory = "512Mi"; };
+                  requests = { cpu = "50m"; memory = "256Mi"; };
+                  limits = { memory = "1Gi"; };
                 };
                 ports = [{ containerPort = 8080; name = "http"; }];
                 env = [
