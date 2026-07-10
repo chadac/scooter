@@ -209,6 +209,10 @@ jobs:
               - 'flake.nix'
               - 'test/cluster/sandbox-os.spec.ts'
               - 'test/cluster/overlay-store.spec.ts'
+              - 'test/cluster/scooter-converge.spec.ts'
+              # the .scooter seed lives in the provisioner — a seed change must run the
+              # k3d converge/tool-on-PATH spec too.
+              - 'services/agent-host/src/session/k8sProvisioner.ts'
               - 'test/support/cluster.ts'
 
   # Tier-2 image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
@@ -222,9 +226,11 @@ jobs:
     needs: cluster-changes
     if: needs.cluster-changes.outputs.run == 'true'
     runs-on: ubuntu-latest
-    # Non-required while the runner-side k3d path is being confirmed; promote to
-    # required once it's consistently green.
-    continue-on-error: true
+    # Required: this is the ONLY tier that boots the real OCI image in a pod (the prod
+    # container topology — minimal PATH, the .scooter CM mount, the in-pod switch under
+    # systemd cgroups). Two bugs shipped green because nothing required exercised it
+    # (the sandbox-os-image musl leak; the .scooter seed/converge tool-on-PATH path). A
+    # failure here now blocks the PR.
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
@@ -266,7 +272,7 @@ jobs:
         # privileged systemd-PID-1 pod; two at once on a single-node k3d contend
         # for resources (slow boots → flaky readiness) and share the test
         # namespace. One at a time is reliable and still fast.
-        run: nix develop --command bash -c 'npm install && npm run test:cluster -- sandbox-os overlay-store --no-file-parallelism'
+        run: nix develop --command bash -c 'npm install && npm run test:cluster -- sandbox-os overlay-store scooter-converge --no-file-parallelism'
 
       - name: tear down k3d
         if: always()

@@ -108,20 +108,29 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   const MODULE_VOLUME_NAME = "scooter-conv";
   const MODULE_MOUNT_PATH = "/etc/agent-sandbox/scooter";
 
-  // The deployment's BASE module — read from its .scooter ConfigMap's `module.nix`
-  // (the same content its scooter-tools mount would have exposed at the converge
-  // path). Used to SEED each conversation's module CM so the deployment's injected
-  // tools land + the boot converge has real content. Best-effort: no CM configured,
-  // a missing CM, or a CM without a module.nix key all yield "" (base config only) —
-  // a read failure must never block conversation creation.
-  const deploymentBaseModule = async (cmName?: string): Promise<string> => {
-    if (!cmName) return "";
+  // The deployment's BASE .scooter files — read from its scooterConfigMap. Used to
+  // SEED each conversation's module CM so the deployment's injected tools land + the
+  // boot converge has real content. Returns ALL data keys, not just module.nix: the
+  // .scooter mount is a DIRECTORY (module.nix + flake.nix + the tool sources, e.g. a
+  // review-app CLI script), and the LAZY tool path resolves
+  // `path:/etc/agent-sandbox/scooter#<tool>` from the mounted flake — so module.nix
+  // ALONE (the old behavior) declares a lazy stub whose `flake.nix` isn't there, and
+  // the tool never lands on PATH (the deployment-scooter-injection bug: copy ALL keys,
+  // not just module.nix). Best-effort: no CM configured, a missing CM, or a CM with an
+  // empty/absent module.nix all yield {} (base config only) — a read failure must
+  // never block conversation creation.
+  const deploymentScooterFiles = async (cmName?: string): Promise<Record<string, string>> => {
+    if (!cmName) return {};
     try {
       const cm = await core.readNamespacedConfigMap({ name: cmName, namespace: ns });
-      return (cm.data?.["module.nix"] ?? "").trim() === "" ? "" : cm.data!["module.nix"];
+      const data = cm.data ?? {};
+      // Treat an empty/whitespace module.nix as "nothing to seed" (base config only),
+      // to preserve the prior semantics — don't seed sibling files onto a hollow module.
+      if ((data["module.nix"] ?? "").trim() === "") return {};
+      return data;
     } catch (e) {
       console.warn(`[k8sProvisioner] could not read deployment scooterConfigMap '${cmName}' to seed the module (using base config):`, e);
-      return "";
+      return {};
     }
   };
 
@@ -174,20 +183,23 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // created later won't appear as a volume; the kubelet only live-updates the
       // CONTENTS of an already-mounted CM).
       //
-      // SEED it from the deployment's .scooter base module (the scooterConfigMap's
-      // module.nix), NOT empty. Because this per-conv CM OWNS the converge path
+      // SEED it from the deployment's .scooter files (the scooterConfigMap), NOT
+      // empty. Because this per-conv CM OWNS the converge path
       // (/etc/agent-sandbox/scooter), the deployment's own scooter-tools mount is
       // skipped when it's present — so if we seeded "" the deployment's injected
       // tools (e.g. a review CLI) would NEVER land, and the boot converge would
-      // no-op on a 0-byte module. Seeding the base means the boot --detach converge
-      // applies the deployment base, and the agent's self-mods layer on top of it.
-      const seedModule = await deploymentBaseModule(opts.scooterConfigMap);
+      // no-op on a 0-byte module. Seed ALL keys (module.nix + flake.nix + the tool
+      // sources): the lazy tool path resolves `path:/etc/agent-sandbox/scooter#<tool>`
+      // from the mounted flake, so module.nix alone leaves the stub without its
+      // flake.nix and the tool never lands on PATH. Always ensure a module.nix key
+      // exists so the converge + the merge-patch path below have something to write.
+      const seedFiles = await deploymentScooterFiles(opts.scooterConfigMap);
       await core
         .createNamespacedConfigMap({
           namespace: ns,
           body: {
             metadata: { name: moduleCmName(id), namespace: ns },
-            data: { "module.nix": seedModule },
+            data: { "module.nix": "", ...seedFiles },
           },
         })
         .catch((e: { code?: number }) => {

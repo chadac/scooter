@@ -1,12 +1,16 @@
 /**
  * Tier 1 contract — create() SEEDS the per-conversation module CM from the
- * deployment's .scooter base module (its scooterConfigMap's `module.nix`), not empty.
+ * deployment's .scooter files (ALL keys of its scooterConfigMap), not empty and not
+ * just module.nix.
  *
- * WHY: the per-conv module CM owns the converge path, so the deployment's own
- * scooter-tools mount is skipped when it's present. If the CM were seeded empty, the
- * deployment's injected tools (e.g. a review CLI) would NEVER land + the boot converge
- * would no-op on a 0-byte module. Seeding the base means the boot --detach converge
- * applies the deployment base, and the agent's self-mods layer on it.
+ * WHY: the per-conv module CM owns the converge path (mounted at
+ * /etc/agent-sandbox/scooter), so the deployment's own scooter-tools mount is skipped
+ * when it's present. If the CM were seeded empty, the deployment's injected tools
+ * (e.g. a review CLI) would NEVER land + the boot converge would no-op on a 0-byte
+ * module. And the mount is a DIRECTORY: the lazy tool path resolves
+ * `path:/etc/agent-sandbox/scooter#<tool>` from the mounted flake, so seeding ONLY
+ * module.nix leaves the declared stub without its flake.nix + tool sources and the
+ * tool never lands on PATH (the deployment-scooter-injection bug — copy ALL keys).
  */
 
 import { describe, it, expect } from "vitest";
@@ -49,6 +53,21 @@ describe("k8sProvisioner.create — module CM seeding", () => {
     await provisioner(kc, "deploy-scooter").create("conv1", "conv1");
     expect(reads).toContain("deploy-scooter"); // read the deployment CM to seed
     expect(moduleCm()?.data?.["module.nix"]).toBe(BASE_MODULE); // seeded, not empty
+  });
+
+  it("seeds ALL keys (flake.nix + tool sources), not just module.nix", async () => {
+    // A realistic deployment .scooter dir: module.nix declares a lazy tool that
+    // resolves from ./flake.nix, which builds ./review-app.sh. Seeding only
+    // module.nix would leave the lazy stub without its flake and the tool off PATH.
+    const deploymentCm = {
+      "module.nix": BASE_MODULE,
+      "flake.nix": `{ outputs = _: { }; }`,
+      "review-app.sh": `#!/bin/sh\necho review`,
+    };
+    const { kc, moduleCm } = fakeKc({ deploymentCm });
+    await provisioner(kc, "deploy-scooter").create("conv1", "conv1");
+    // Every key from the deployment CM is copied into the per-conv module CM.
+    expect(moduleCm()?.data).toEqual(deploymentCm);
   });
 
   it("seeds EMPTY when no deployment scooterConfigMap is configured", async () => {

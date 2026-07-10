@@ -40,6 +40,8 @@ let
 
   applyModule = pkgs.writeShellApplication {
     name = "scooter-apply-module";
+    # systemd provides `systemd-run` (the --detach path launches the background
+    # converge as its own transient unit so it survives the boot unit's restart).
     runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.systemd pkgs.gnugrep pkgs.gawk ];
     checkPhase = "";
     text = ''
@@ -85,11 +87,22 @@ let
         [ $# -ge 2 ] && printf '%s\n' "$2" > "$status_dir/error" || : > "$status_dir/error"
       }
 
-      # --- --detach: re-exec THIS run in the background, then return ------------
-      # setsid detaches from the caller (the agent-host exec / the boot unit) so the
-      # switch outlives it; all output -> the log; the background run writes status.
-      # mkdir the status dir FIRST (foreground) so the log redirect can't race it
-      # (the run_background mkdir-before-& lesson). A switch already in flight
+      # --- --detach: re-exec THIS run in a SEPARATE systemd unit, then return ---
+      # The background converge must OUTLIVE its caller. setsid alone is NOT enough:
+      # setsid escapes the controlling terminal + process group, but the child stays
+      # in the CALLER'S cgroup — and the boot unit (scooter-apply-module.service) is
+      # exactly a unit that switch-to-configuration RESTARTS (its own diff includes
+      # itself), so systemd tears down that cgroup mid-switch and kills the child
+      # BEFORE it writes `done`. The status then wedges at `switching` forever even
+      # though the switch itself succeeded (system-path activates earlier, so the
+      # tool still lands — but scooter-env-status reads a perpetual in-progress).
+      #
+      # Run the child as its OWN transient systemd unit (systemd-run) so it lives in
+      # a separate cgroup, unmanaged by the switch, and survives the restart to write
+      # its terminal status. --collect reaps the unit when it exits. The foreground
+      # child does the real work WITHOUT --detach and maintains status/log. mkdir the
+      # status dir FIRST (foreground) so the log redirect can't race it (the
+      # run_background mkdir-before-& lesson). A switch already in flight
       # (status=building|switching) is refused — no overlapping switches in one pod.
       if [ "$detach" -eq 1 ]; then
         mkdir -p "$status_dir"
@@ -99,10 +112,16 @@ let
           exit 3
         fi
         write_status building
-        # Re-exec the SAME command (on PATH via systemPackages) WITHOUT --detach so
-        # the child does the real foreground work + maintains status. "$0" resolves
-        # to this script's store path, so it's the exact same build.
-        setsid "$0" --module "$module" > "$status_dir/log" 2>&1 < /dev/null &
+        # Re-exec the SAME command ("$0" = this script's store path, the exact same
+        # build) WITHOUT --detach, as a transient unit. StandardOutput/Error -> the
+        # log file (append so the caller's building status line is preserved). It is
+        # NOT tied to this unit's lifetime, so it survives switch-to-configuration
+        # restarting the boot unit.
+        systemd-run --collect --quiet \
+          --unit="scooter-env-switch-$$" \
+          --property=StandardOutput="append:$status_dir/log" \
+          --property=StandardError="append:$status_dir/log" \
+          "$0" --module "$module"
         echo "scooter-apply-module: applying in the background — poll scooter-env-status"
         exit 0
       fi

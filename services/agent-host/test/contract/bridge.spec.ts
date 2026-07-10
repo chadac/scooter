@@ -918,10 +918,10 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
   };
   const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
-  it("fires RUN_ERROR when a run emits NO ACP activity within the timeout (the aeonai freeze)", async () => {
+  it("fires RUN_ERROR when a run emits NO ACP activity within the timeout (dead-on-arrival hang)", async () => {
     const agent = createFakeAcpAgent();
     // Empty script + gate: prompt() emits nothing, then hangs — dead on arrival,
-    // exactly like goose wedged on a Bedrock credential failure.
+    // exactly like the agent wedged on a model-provider credential failure.
     agent.setScript([]);
     agent.gate();
     const bridge = mkBridge(agent, 30); // 30ms so the test is fast

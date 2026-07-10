@@ -238,10 +238,11 @@ export interface BridgeDeps {
   /**
    * Watchdog for a run that goes DEAD ON ARRIVAL: after RUN_STARTED we arm a timer,
    * and if the agent emits NO ACP activity (not a single session/update) within this
-   * many ms, we conclude it's wedged — the observed aeonai freeze was goose hanging
-   * on an AssumeRoleWithWebIdentity/Bedrock credential failure, producing zero events
-   * and never returning from the prompt, so the conversation sat "running" forever.
-   * On timeout we cancel the stuck run and emit RUN_ERROR so the UI unfreezes and
+   * many ms, we conclude it's wedged — the observed failure was the agent hanging on
+   * a model-provider credential error (e.g. an STS assume-role denial for Bedrock),
+   * producing zero events and never returning from the prompt, so the conversation
+   * sat "running" forever. On timeout we cancel the stuck run and emit RUN_ERROR so
+   * the UI unfreezes and
    * shows why. The FIRST ACP update disarms it — a legitimately long-thinking run
    * that has started streaming is never touched (this only catches silence from the
    * start). Default 60_000; 0 disables.
@@ -608,7 +609,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     // DEAD-ON-ARRIVAL watchdog: if the agent emits no ACP activity within
     // firstActivityTimeoutMs, treat the run as wedged and surface a RUN_ERROR so the
-    // conversation unfreezes (the aeonai freeze: goose hung on a Bedrock credential
+    // conversation unfreezes (observed: goose hung on a model-provider credential
     // failure, emitted nothing, and never returned from prompt()). Disarmed by the
     // first update in handleUpdate. We mark the run ended + cancel goose so the stuck
     // subprocess unblocks; the prompt()'s own resolution/rejection is then ignored
