@@ -2,44 +2,37 @@
  * Web-service reverse proxy — forwards `/c/<id>/<service>/...` from the browser
  * (via UI nginx) into the conversation's sandbox pod, over HTTP AND WebSocket.
  *
- * DESIGN BOILERPLATE (PoC stage 2): interfaces + signatures + the wiring contract.
- * No implementation — bodies throw NOT_IMPLEMENTED. See docs/WEB_SERVICES_PROXY.md.
- *
  * Why this lives in the agent-host (not nginx): nginx can't resolve <id> -> pod IP
  * (dynamic IPs, no per-conversation Service, agent-host lacks create-Service RBAC).
  * The agent-host already resolves the pod (exec/k8sExec.ts) and knows the caller.
  *
  * Attaches at two seams in agui/server.ts:
  *   - HTTP:  a fallback in handle(req,res) BEFORE the 404, when the path is /c/*.
- *   - WS:    a `server.on("upgrade", ...)` listener registered in listen() — the
- *            agent-host http.Server has NONE today; this adds it.
+ *   - WS:    a `server.on("upgrade", ...)` listener registered in listen().
+ *
+ * Auth is whatever the ingress already applied (x-auth-user) — NO extra
+ * per-conversation check (any authenticated user, matching today's view-filter
+ * model). See docs/WEB_SERVICES_PROXY.md.
  */
 
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 
 import type { SessionManager } from "../session/manager.js";
+import type { SandboxRef } from "../types.js";
 
 // --- pod target resolution ----------------------------------------------------
 
 /** A conversation pod's reachable address for direct in-cluster HTTP/WS. */
 export interface PodTarget {
-  /** The pod name (as resolvePodName returns today). */
   name: string;
-  /** The pod's routable cluster IP (status.podIP). Re-resolve after suspend/resume
-   *  — the IP changes; never cache it across a suspend. */
+  /** status.podIP — re-resolve after suspend/resume (the IP changes). */
   podIP: string;
 }
 
-/**
- * Sibling to resolvePodName in exec/k8sExec.ts, but also returns status.podIP
- * (already fetched from the ready pod object today, then discarded). Same 90s
- * ready-poll. Throws if no ready pod (proxy maps that to 503).
- * TODO(impl): implement in exec/k8sExec.ts and import here.
- */
-export type ResolvePodTarget = (
-  ref: { name: string; namespace: string },
-) => Promise<PodTarget>;
+/** Resolve a sandbox ref to its pod name + IP (exec/k8sExec.ts resolvePodTarget). */
+export type ResolvePodTarget = (ref: SandboxRef) => Promise<PodTarget>;
 
 // --- service discovery (id + name -> port) -----------------------------------
 
@@ -59,14 +52,10 @@ export interface WebServiceDescriptor {
 /**
  * Reads a conversation's declared web services from the in-pod discovery manifest
  * (/run/scooter/web-services.json) via exec/download, and caches per conversation.
- * Cache is invalidated on suspend/resume and after a start (a newly-enabled
- * service may have just appeared).
- * TODO(impl).
+ * Cache is invalidated on suspend/resume and after a start.
  */
 export interface WebServiceRegistry {
-  /** All declared services for a conversation (empty if none / pod asleep). */
   list(conversationId: string): Promise<WebServiceDescriptor[]>;
-  /** One service by name, or null if not declared. */
   get(conversationId: string, name: string): Promise<WebServiceDescriptor | null>;
   /** Liveness: `systemctl is-active webservice-<name>` via exec. */
   isRunning(conversationId: string, name: string): Promise<boolean>;
@@ -83,8 +72,7 @@ export interface WebServiceProxyDeps {
   sessions: SessionManager;
   resolvePodTarget: ResolvePodTarget;
   registry: WebServiceRegistry;
-  /** The external host (for marimo `--proxy` / absolute-URL correctness and for
-   *  Host-header rewriting). From PUBLIC_URL. */
+  /** The external host (marimo `--proxy` / absolute-URL correctness). From PUBLIC_URL. */
   publicHost: string;
 }
 
@@ -98,64 +86,149 @@ export interface ParsedProxyPath {
 
 /**
  * Split a URL path into its proxy parts, or null if it isn't a /c/<id>/<service>
- * path. Note `/c/<id>` alone (the UI deep-link space) is NOT a proxy path — a
- * service segment is required.
- * TODO(impl).
+ * path. `/c/<id>` alone (the UI deep-link space) is NOT a proxy path — a service
+ * segment is required.
  */
-export function parseProxyPath(_pathname: string): ParsedProxyPath | null {
-  throw new Error("NOT_IMPLEMENTED");
+export function parseProxyPath(pathname: string): ParsedProxyPath | null {
+  const parts = pathname.split("/").filter(Boolean);
+  // ["c", "<id>", "<service>", ...rest]
+  if (parts.length < 3 || parts[0] !== "c") return null;
+  const conversationId = decodeURIComponent(parts[1]);
+  const service = decodeURIComponent(parts[2]);
+  if (!conversationId || !service) return null;
+  const restParts = parts.slice(3);
+  const rest = "/" + restParts.map(encodeURIComponent).join("/");
+  return { conversationId, service, rest };
 }
 
 export interface WebServiceProxy {
-  /** True if this request path is ours (`/c/<id>/<service>/...`). Both the HTTP
-   *  fallback and the upgrade listener gate on this. */
   matches(pathname: string): boolean;
-
-  /**
-   * Handle an HTTP request: resolve conversation -> pod -> service port, then
-   * stream the request to http://<podIP>:<port><rest> and pipe the response back
-   * (no buffering; forward+strip headers appropriately). Auth is whatever the
-   * ingress already applied — NO extra per-conversation check (any authed user).
-   * Failure modes:
-   *   - unknown conversation / service      -> 404
-   *   - pod suspended / unreachable / no IP -> 503 (friendly "service asleep")
-   *   - service declared but unit not running -> a friendly 502 HTML page
-   *     ("<service> isn't running — start it from the Services panel", with a
-   *     link back to /?thread=<id>). NOT an auto-start (that's the lazy-start
-   *     follow-up). renderNotStartedPage() below produces it.
-   * TODO(impl).
-   */
   handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void>;
-
-  /**
-   * Handle a WebSocket upgrade: same resolution as handleHttp, then splice the
-   * client socket to a raw upstream connection to http://<podIP>:<port><rest>
-   * with Upgrade/Connection headers intact (marimo kernel, VS Code RPC, xterm PTY).
-   * On any resolution failure, write a 4xx/5xx handshake response and destroy the
-   * socket.
-   * TODO(impl).
-   */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void>;
 }
 
-/**
- * The friendly "service isn't running" page (HTTP 502) shown when a user opens a
- * declared-but-unstarted service before pressing Start. `threadId` links back to
- * the conversation UI. TODO(impl).
- */
-export function renderNotStartedPage(_service: string, _threadId: string): string {
-  throw new Error("NOT_IMPLEMENTED");
+/** Resolve a proxy request to its concrete pod target + service, or an error the
+ *  caller renders as an HTTP/handshake status. */
+type Resolution =
+  | { ok: true; podIP: string; port: number; rest: string; threadId: string; service: string }
+  | { ok: false; status: 404 | 502 | 503; service: string; threadId: string };
+
+export function renderNotStartedPage(service: string, threadId: string): string {
+  const safe = (s: string) => s.replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] ?? c));
+  const back = `/?thread=${encodeURIComponent(threadId)}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${safe(service)} isn't running</title>
+<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222}
+a{color:#2563eb}</style></head><body>
+<h2>${safe(service)} isn't running</h2>
+<p>This service hasn't been started for the conversation yet. Start it from the
+<strong>Services</strong> panel, then reload this page.</p>
+<p><a href="${back}">← Back to the conversation</a></p>
+</body></html>`;
 }
 
-/**
- * Construct the proxy. Wired into agui/server.ts:
- *   - handle(): `if (proxy.matches(url.pathname)) return proxy.handleHttp(req,res);`
- *     placed just before the final 404.
- *   - listen(): `server.on("upgrade", (req, sock, head) => { if
- *     (proxy.matches(new URL(req.url,'http://x').pathname)) proxy.handleUpgrade(...);
- *     else sock.destroy(); });`
- * TODO(impl).
- */
-export function createWebServiceProxy(_deps: WebServiceProxyDeps): WebServiceProxy {
-  throw new Error("NOT_IMPLEMENTED");
+export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProxy {
+  const { sessions, resolvePodTarget, registry } = deps;
+
+  const matches = (pathname: string): boolean => parseProxyPath(pathname) !== null;
+
+  async function resolve(pathname: string): Promise<Resolution | null> {
+    const parsed = parseProxyPath(pathname);
+    if (!parsed) return null;
+    const { conversationId, service, rest } = parsed;
+
+    // The URL id may be the full threadId (UI) or the short hash — try both.
+    const conv = sessions.get(conversationId) ?? (await sessions.getByShortId(conversationId));
+    const threadId = conv?.threadId ?? conversationId;
+    if (!conv) return { ok: false, status: 404, service, threadId };
+
+    const desc = await registry.get(conv.id, service);
+    if (!desc) return { ok: false, status: 404, service, threadId };
+
+    if (!(await registry.isRunning(conv.id, service))) {
+      return { ok: false, status: 502, service, threadId };
+    }
+
+    let target: PodTarget;
+    try {
+      target = await resolvePodTarget(conv.sandbox);
+    } catch {
+      // Pod suspended / not ready / no IP.
+      return { ok: false, status: 503, service, threadId };
+    }
+    return { ok: true, podIP: target.podIP, port: desc.port, rest, threadId, service };
+  }
+
+  async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const r = await resolve(url.pathname);
+    if (!r) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (!r.ok) {
+      if (r.status === 502) {
+        const page = renderNotStartedPage(r.service, r.threadId);
+        res.writeHead(502, { "content-type": "text/html; charset=utf-8" }).end(page);
+      } else if (r.status === 503) {
+        res.writeHead(503, { "content-type": "text/plain" })
+          .end(`${r.service} is asleep — resume the conversation and try again.`);
+      } else {
+        res.writeHead(404).end();
+      }
+      return;
+    }
+
+    // Preserve the FULL external path so the sub-path-aware service (marimo
+    // --base-url, code-server --server-base-path) sees the prefix it expects.
+    const upstreamPath = url.pathname + (url.search ?? "");
+    const headers = { ...req.headers, host: `${r.podIP}:${r.port}` };
+    const upstream = httpRequest(
+      { host: r.podIP, port: r.port, method: req.method, path: upstreamPath, headers },
+      (up) => {
+        res.writeHead(up.statusCode ?? 502, up.headers);
+        up.pipe(res);
+      },
+    );
+    upstream.on("error", () => {
+      if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+      res.end("upstream error");
+    });
+    req.pipe(upstream);
+  }
+
+  async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const r = await resolve(url.pathname);
+    if (!r || !r.ok) {
+      const status = !r ? 404 : r.status;
+      const text = status === 503 ? "service asleep" : status === 502 ? "service not running" : "not found";
+      socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
+      socket.destroy();
+      return;
+    }
+
+    // Splice: open a raw TCP connection to the pod, replay the upgrade handshake
+    // (with the Host rewritten), forward the buffered head, then pipe both ways.
+    const upstreamPath = url.pathname + (url.search ?? "");
+    const upstream: Socket = connect(r.port, r.podIP, () => {
+      const lines = [
+        `${req.method ?? "GET"} ${upstreamPath} HTTP/1.1`,
+        `Host: ${r.podIP}:${r.port}`,
+      ];
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (k === "host") continue;
+        for (const val of Array.isArray(v) ? v : [v]) if (val != null) lines.push(`${k}: ${val}`);
+      }
+      upstream.write(lines.join("\r\n") + "\r\n\r\n");
+      if (head?.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    const teardown = () => { socket.destroy(); upstream.destroy(); };
+    upstream.on("error", teardown);
+    socket.on("error", teardown);
+  }
+
+  return { matches, handleHttp, handleUpgrade };
 }
