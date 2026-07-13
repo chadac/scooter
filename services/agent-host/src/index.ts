@@ -549,8 +549,20 @@ export async function main(
   // the agent-tools (slack/gitlab/github/web) must reach goose even when
   // self-modify is off, and vice-versa. buildServer registers whichever deps are
   // present.
+  // Model self-selection tools (list_models / switch_model) — offered when the
+  // deployment has >1 model to choose from. Sourced from the catalog + the manager's
+  // immediate-switch primitive.
+  const modelToolsWiring =
+    config.modelCatalog.models.length > 1
+      ? {
+          catalog: config.modelCatalog,
+          currentModel: (id: string) => sessions.get(id)?.model,
+          switchModel: (id: string, model: string) => sessions.switchModelNow(id, model),
+        }
+      : undefined;
+
   const mcpEndpoint =
-    moduleManager !== undefined || agentToolsWiring !== undefined || jobManager !== undefined
+    moduleManager !== undefined || agentToolsWiring !== undefined || jobManager !== undefined || modelToolsWiring !== undefined
       ? createMcpEndpoint({
           manager: moduleManager,
           // The URL goose connects to. The agent-host serves it on its own port;
@@ -558,6 +570,7 @@ export async function main(
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
           agentTools: agentToolsWiring,
           jobs: jobManager,
+          models: modelToolsWiring,
         })
       : undefined;
 

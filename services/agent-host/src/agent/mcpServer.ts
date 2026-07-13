@@ -21,6 +21,7 @@ import type { ModuleManager } from "../session/moduleManager.js";
 import type { JobManager } from "../session/jobManager.js";
 import type { ConversationLink } from "../session/manager.js";
 import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
+import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
 
 /** An MCP tool result (the shape the SDK callback returns). */
 export interface ToolResult {
@@ -171,6 +172,7 @@ function buildServer(
   conversationId: string,
   agentTools?: AgentToolsWiring,
   jobs?: JobManager,
+  models?: ModelToolsWiring,
 ): McpServer {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (manager) {
@@ -246,6 +248,35 @@ function buildServer(
       },
     );
   }
+  // Model self-selection: list the offered models (+ deployment hints) and switch
+  // this conversation's model mid-run. Registered only when more than one model is
+  // offered (a single-model deployment has nothing to switch to).
+  if (models && models.catalog.models.length > 1) {
+    server.registerTool(
+      "list_models",
+      {
+        title: "List available models",
+        description:
+          "List the models you can run on, with a deployment hint for each (fast/cheap vs slow/powerful) " +
+          "and which is current/default. Use this before switch_model to pick the right model for the task.",
+        inputSchema: {},
+      },
+      async () => handleListModels(models, conversationId) as { content: Array<{ type: "text"; text: string }>; isError?: boolean },
+    );
+    server.registerTool(
+      "switch_model",
+      {
+        title: "Switch your model",
+        description:
+          "Switch the model YOU run on for the rest of this conversation. Escalate to a more powerful model " +
+          "for complex planning / research / hard debugging; drop to a faster/cheaper one for simple work. " +
+          "Applies immediately: your current turn ends and you continue on the new model — no need to repeat " +
+          "anything. Pass an exact model id from list_models.",
+        inputSchema: { model: z.string().describe("The exact model id to switch to (from list_models).") },
+      },
+      async (args) => handleSwitchModel(models, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
   return server;
 }
 
@@ -276,6 +307,9 @@ export function createMcpEndpoint(deps: {
   /** When provided, exposes the background-job tools (run_background /
    *  check_background / list_background). Omit to leave them off. */
   jobs?: JobManager;
+  /** When provided (and >1 model is offered), exposes list_models / switch_model
+   *  so the agent can pick + switch its own model. */
+  models?: ModelToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
@@ -292,7 +326,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(deps.manager, conv, deps.agentTools, deps.jobs);
+      const server = buildServer(deps.manager, conv, deps.agentTools, deps.jobs, deps.models);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },
