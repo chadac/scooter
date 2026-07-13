@@ -28,14 +28,16 @@ export function QueuedMessages() {
         <div
           key={m.id}
           data-testid="queued-message"
-          className="flex items-center gap-2 text-muted-foreground"
+          className="flex items-start gap-2 text-muted-foreground"
           title={m.priority > 0 ? "Will interrupt the current turn" : "Waiting for the current turn to finish"}
         >
           {/* A hollow clock-ish cue that these haven't been sent to the agent yet. */}
-          <span aria-hidden className="text-muted-foreground/70">
+          <span aria-hidden className="shrink-0 text-muted-foreground/70">
             ⧗
           </span>
-          <span className="truncate">{m.text}</span>
+          {/* Wrap long messages (incl. unbroken strings) instead of stretching the
+              page width. min-w-0 lets the flex item shrink so break-words applies. */}
+          <span className="min-w-0 whitespace-pre-wrap break-words">{m.text}</span>
         </div>
       ))}
     </div>
