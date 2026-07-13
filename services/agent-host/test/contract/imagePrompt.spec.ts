@@ -105,6 +105,38 @@ describe("bridge: image content blocks", () => {
     expect(readAsset).toHaveBeenCalledWith("img1.png");
   });
 
+  it("persists a MESSAGE_IMAGES ref event (assetId+url, NOT bytes) after the user message", async () => {
+    const { client } = capturingAcp();
+    const readAsset = vi.fn(async () => ({ data: Buffer.from([9]), mimeType: "image/png" }));
+    const bridge = createSessionBridge({ ...cfg, acpClient: client, readAsset });
+    const persisted: Array<Record<string, unknown>> = [];
+    bridge.onPersist((e) => persisted.push(e as never));
+    await bridge.start();
+    await bridge.prompt({ threadId: "conv-9", text: "see", images: [{ assetId: "img1.png", mimeType: "image/png" }] });
+
+    const ev = persisted.find((e) => e.type === "MESSAGE_IMAGES") as
+      | { messageId: string; images: Array<{ assetId: string; url: string; mimeType: string }> }
+      | undefined;
+    expect(ev).toBeTruthy();
+    expect(ev!.images[0]).toMatchObject({ assetId: "img1.png", mimeType: "image/png", url: "/conversations/conv-9/assets/img1.png" });
+    // The ref carries NO base64 bytes (keeps the log compact).
+    expect(JSON.stringify(ev)).not.toContain("data");
+    // It follows a user TEXT_MESSAGE_END with the same messageId.
+    const endIdx = persisted.findIndex((e) => e.type === "TEXT_MESSAGE_END" && e.messageId === ev!.messageId);
+    const imgIdx = persisted.indexOf(ev as never);
+    expect(imgIdx).toBeGreaterThan(endIdx);
+  });
+
+  it("a text-only prompt persists NO MESSAGE_IMAGES event", async () => {
+    const { client } = capturingAcp();
+    const bridge = createSessionBridge({ ...cfg, acpClient: client, readAsset: vi.fn() });
+    const persisted: Array<Record<string, unknown>> = [];
+    bridge.onPersist((e) => persisted.push(e as never));
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "no images" });
+    expect(persisted.some((e) => e.type === "MESSAGE_IMAGES")).toBe(false);
+  });
+
   it("a text-only prompt sends NO image block (unchanged path)", async () => {
     const { client, lastPrompt } = capturingAcp();
     const bridge = createSessionBridge({ ...cfg, acpClient: client, readAsset: vi.fn() });

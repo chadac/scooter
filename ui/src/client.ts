@@ -201,11 +201,21 @@ export async function loadConversationsResult(
   }
 }
 
+/** An image attached to a replayed message (from a MESSAGE_IMAGES event). The UI
+ *  renders each via its `url` (GET /conversations/:id/assets/:assetId). */
+export interface MessageImage {
+  assetId: string;
+  mimeType: string;
+  url: string;
+}
+
 /** A minimal AG-UI message (what HttpAgent.initialMessages expects). */
 export interface AguiMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  /** Attached images (multimodal), folded from MESSAGE_IMAGES on replay. */
+  images?: MessageImage[];
 }
 
 /**
@@ -262,10 +272,20 @@ export async function loadHistory(
         if (m) m.content += (e.delta as string) ?? "";
         break;
       }
+      // Attached images: fold onto the matching user message (it was emitted right
+      // after the message's TEXT_MESSAGE_END, so byId already has it).
+      case "MESSAGE_IMAGES": {
+        if (!id) break;
+        const m = byId.get(id);
+        const imgs = (e.images as MessageImage[] | undefined) ?? [];
+        if (m && imgs.length) m.images = [...(m.images ?? []), ...imgs];
+        break;
+      }
       // TEXT_MESSAGE_END / tool / reasoning events need no folding here.
       default:
         break;
     }
   }
-  return order.map((id) => byId.get(id)!).filter((m) => m.content.trim() !== "");
+  // Keep a message if it has text OR images (an image-only message has empty text).
+  return order.map((id) => byId.get(id)!).filter((m) => m.content.trim() !== "" || (m.images?.length ?? 0) > 0);
 }

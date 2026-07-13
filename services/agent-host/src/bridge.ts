@@ -94,7 +94,18 @@ type AguiEventBase =
   // survive a refresh + show across tabs (the old queued-message-vanishes bug: the
   // queue lived only in client memory). Latest-wins: the UI renders the items from
   // the most recent QUEUE_UPDATED; an empty `items` means the queue drained.
-  | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number }> };
+  | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number }> }
+  // Image REFERENCES attached to a user message (multimodal). Carries only the
+  // assetId + mimeType + fetch url — NEVER the base64 bytes — so the event log stays
+  // compact + checksum-stable; the UI renders each via its url on replay. Bespoke
+  // like QUEUE_UPDATED: the @ag-ui client folds by type and ignores it, so it never
+  // corrupts the message stream; the UI reads it explicitly (keyed to the user
+  // messageId it follows). Persist + broadcast, so it survives a refresh.
+  | {
+      type: "MESSAGE_IMAGES";
+      messageId: string;
+      images: Array<{ assetId: string; mimeType: string; url: string }>;
+    };
 
 /** An image attached to a user prompt — a reference the bridge resolves to base64
  *  (from the AssetStore) when it builds the ACP image content block. */
@@ -712,6 +723,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
       persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: b.text });
       persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
+      // Attach the message's images as REFERENCES (assetId + url, not bytes) so a
+      // refresh re-renders them under this user message. The url is the fixed
+      // assets-route shape (same as AssetStore.urlFor); the UI fetches it.
+      if (b.images && b.images.length) {
+        persist({
+          type: "MESSAGE_IMAGES",
+          messageId: userMsgId,
+          images: b.images.map((img) => ({
+            assetId: img.assetId,
+            mimeType: img.mimeType,
+            url: `/conversations/${encodeURIComponent(b.threadId)}/assets/${encodeURIComponent(img.assetId)}`,
+          })),
+        });
+      }
     }
 
     try {
