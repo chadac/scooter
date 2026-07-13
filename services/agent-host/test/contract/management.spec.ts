@@ -411,14 +411,27 @@ describe("management API", () => {
     expect((viaFull.json as any).links[0].url).toBe("https://github.com/example-org/example-app/pull/7");
   });
 
-  it("POST /conversations/:id/links 404s on a genuinely unknown conversation", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const { status } = await call(api, "POST", "/conversations/nope/links", {
-      source: "github",
-      resourceType: "pr",
-      url: "https://x/1",
+  it("accepts a link for a NOT-YET-EXISTENT conversation (the Slack on_created pre-run flow)", async () => {
+    // REGRESSION (broker-autolink #118 gated POST /links behind resolveConvId and
+    // 404'd when the conversation didn't exist yet). The Slack webhook registers
+    // the thread link in its on_created hook — BEFORE /agui creates the session —
+    // to anchor the first reply to the thread. That POST must be accepted and
+    // written under the (full threadId) raw id, so it's readable once the
+    // conversation materializes. A 404 here silently dropped every Slack link.
+    const store = fakeStore([]);
+    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerPermission: async () => {} });
+    const threadId = "brand-new-thread-uuid";
+    const post = await call(api, "POST", `/conversations/${threadId}/links`, {
+      source: "slack",
+      resourceType: "thread",
+      title: "#eng thread",
+      ref: { channel: "C1", threadTs: "1700.5" },
     });
-    expect(status).toBe(404);
+    expect(post.status).toBe(201);
+    // Readable back under that same id (what the conversation will be keyed by).
+    const { json } = await call(api, "GET", `/conversations/${threadId}/links`);
+    expect((json as any).links).toHaveLength(1);
+    expect((json as any).links[0]).toMatchObject({ source: "slack", resourceType: "thread" });
   });
 
   it("DELETE /conversations/:id ends it", async () => {

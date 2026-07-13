@@ -471,8 +471,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!body.source || !body.resourceType) {
       return { status: 400, json: { error: "source and resourceType required" } };
     }
-    const id = await resolveConvId(ctx.params.id);
-    if (!id) return { status: 404, json: { error: "unknown conversation" } };
+    // Fall back to the raw path id when resolution misses — a link may be
+    // registered BEFORE the conversation materializes: the Slack webhook flow
+    // posts the thread link in its on_created hook (to anchor the first reply to
+    // the thread) which fires before /agui creates the session. 404-ing here
+    // silently dropped that link (the broker-autolink regression). The store keys
+    // by the full threadId, which is exactly what the webhook posts, so writing
+    // under the raw id makes it resolvable once the conversation exists (GET does
+    // the same fallback).
+    const id = (await resolveConvId(ctx.params.id)) ?? ctx.params.id;
     await store.addLink?.(id, {
       source: body.source,
       resourceType: body.resourceType,
