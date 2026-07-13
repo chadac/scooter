@@ -474,4 +474,72 @@ describe("IntegrityAgent", () => {
     await expect(agent.cancel()).rejects.toThrow(/network down/);
     agent.dispose();
   });
+
+  // --- send() multimodal (stage 4) -------------------------------------------
+
+  /** Capture the /agui POST body a send() produces. */
+  function captureSend(): { fetchImpl: typeof fetch; body: () => any } {
+    let captured: any;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/agui") && init?.method === "POST") {
+        captured = JSON.parse(init.body as string);
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, body: () => captured };
+  }
+
+  it("send() with NO images posts content as a plain STRING (unchanged path)", async () => {
+    const { fetchImpl, body } = captureSend();
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl });
+    await agent.send("hello");
+    expect(body().messages[0].content).toBe("hello");
+    agent.dispose();
+  });
+
+  it("send() WITH images posts content as a text+image parts ARRAY", async () => {
+    const { fetchImpl, body } = captureSend();
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl });
+    await agent.send("what is this?", { images: [{ data: "QUJD", mimeType: "image/png" }] });
+    const content = body().messages[0].content;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content).toContainEqual({ type: "text", text: "what is this?" });
+    expect(content).toContainEqual({ type: "image", data: "QUJD", mimeType: "image/png" });
+    agent.dispose();
+  });
+
+  it("send() with an image but NO text omits the text part", async () => {
+    const { fetchImpl, body } = captureSend();
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl });
+    await agent.send("", { images: [{ data: "QUJD", mimeType: "image/png" }] });
+    const content = body().messages[0].content;
+    expect(content).toEqual([{ type: "image", data: "QUJD", mimeType: "image/png" }]);
+    agent.dispose();
+  });
+
+  it("tracks a MESSAGE_IMAGES event from the stream -> getMessageImages (replay render)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "see this" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "u1" } },
+      {
+        kind: "event",
+        event: {
+          type: "MESSAGE_IMAGES",
+          messageId: "u1",
+          images: [{ assetId: "a.png", mimeType: "image/png", url: "/conversations/c1/assets/a.png" }],
+        },
+      },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getMessageImages("u1")).toEqual([
+      { assetId: "a.png", mimeType: "image/png", url: "/conversations/c1/assets/a.png" },
+    ]);
+    expect(agent.getMessageImages("nope")).toBeUndefined();
+    agent.dispose();
+  });
 });
