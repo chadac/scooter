@@ -61,8 +61,9 @@ returns a clean success text OR `isError:true` with the real upstream error.
 ### 2. `gitlab_comment(body, discussion_id?)`
 - Infer project + MR iid (+ optional discussion to reply to) from the
   conversation's `gitlab`/`merge_request` link.
-- Calls broker `POST /gitlab/projects/{id}/merge_requests/{iid}/notes` (or the
-  discussions endpoint for a reply). Echoes GitLab's error faithfully.
+- Calls broker `POST /gitlab/api/v4/projects/{id}/merge_requests/{iid}/notes` (or
+  the discussions endpoint for a reply) — the gitlab proxy is transparent to
+  gitlab.com, so use the full `api/v4/...` path. Echoes GitLab's error faithfully.
 
 ### 3. `github_comment(body, in_reply_to?)`
 - Infer owner/repo + PR/issue number from the conversation's `github` link.

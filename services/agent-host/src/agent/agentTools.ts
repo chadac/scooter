@@ -278,7 +278,10 @@ export async function handleGitlabComment(
     );
   }
   const kind = isMr ? "merge_requests" : "issues";
-  const base = `/gitlab/projects/${encodeURIComponent(projectId)}/${kind}/${iid}`;
+  // The broker gitlab proxy is transparent to gitlab.com (bare-host upstream), so
+  // use the FULL api/v4 path — /gitlab/api/v4/projects/... — else it 404s (the
+  // /api/v4 double-prefix fix flipped the upstream from .../api/v4 to the host).
+  const base = `/gitlab/api/v4/projects/${encodeURIComponent(projectId)}/${kind}/${iid}`;
   const path = args.discussion_id
     ? `${base}/discussions/${encodeURIComponent(args.discussion_id)}/notes`
     : `${base}/notes`;
