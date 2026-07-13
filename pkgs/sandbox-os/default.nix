@@ -137,7 +137,13 @@ in
       # systemd's container detection: set explicitly (Docker won't).
       Env = [
         "container=docker"
-        "PATH=/run/current-system/sw/bin:/usr/bin:/bin"
+        # PID 1's PATH — inherited by every kubelet `exec` (non-login `bash -c`,
+        # which sources no profile). Prepend the writable per-user nix profile bin
+        # (HOME is pinned to /workspace) + the setuid wrappers, so a tool from
+        # `nix profile install` is immediately runnable without a login shell.
+        # (sandbox-nix-profile-not-in-path bug: exec'd commands only got the minimal
+        # /run/current-system/sw/bin:/usr/bin:/bin.)
+        "PATH=/workspace/.nix-profile/bin:/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin"
       ];
       # systemd's clean-shutdown signal differs from k8s's default SIGTERM.
       StopSignal = "SIGRTMIN+3";

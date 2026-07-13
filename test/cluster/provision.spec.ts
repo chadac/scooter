@@ -77,4 +77,19 @@ maybe("cold Sandbox per conversation", () => {
     expect(exitCode).toBe(0);
     expect(stdout.length).toBeGreaterThan(0);
   });
+
+  it("a NON-LOGIN exec (bash -c) has the nix profile bin on PATH", async () => {
+    // The agent-host execs commands as non-login `bash -c`, which sources no
+    // profile — it inherits PID 1's env (the container-image PATH). That PATH must
+    // include the writable per-user nix profile bin, else a `nix profile install`
+    // tool "isn't found" (the sandbox-nix-profile-not-in-path bug). This is the
+    // faithful check — a nixosTest VM boot doesn't exercise the image Env layer.
+    const { stdout, exitCode } = await cluster.exec(
+      `agents.x-k8s.io/sandbox-name=conv-${id}`,
+      ["bash", "-c", "echo $PATH"],
+      NS,
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("/workspace/.nix-profile/bin");
+  });
 });
