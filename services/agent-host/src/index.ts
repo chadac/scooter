@@ -25,6 +25,7 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
+import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
@@ -331,6 +332,12 @@ export async function main(
   // on a fake/dev sandbox there's no real goose, so it's best-effort.
   ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
   const store = createFileConversationStore(config.statePath);
+  // Image/media assets (uploaded images) live alongside the event log on the
+  // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
+  const assets = createPvcAssetStore({
+    root: config.statePath,
+    maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+  });
   const server = createAguiServer();
   // The privileged /agui `owner` field (a webhook-resolved Scooter user) is honored
   // ONLY for the TRUSTED webhooks caller — its SA token verified via k8s TokenReview.
@@ -682,6 +689,7 @@ export async function main(
       server,
       webServices,
       identityStore,
+      assets,
       models: {
         default: config.model,
         available: config.availableModels,
