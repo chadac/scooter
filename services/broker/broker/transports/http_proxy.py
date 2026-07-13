@@ -75,13 +75,21 @@ class HttpProxy(Transport):
             if self.link_rules and 200 <= upstream_resp.status_code < 300 and identity.conversation_id:
                 await self._maybe_autolink(request.method, path, upstream_resp, identity.conversation_id)
 
+            resp_headers = {
+                k: v for k, v in upstream_resp.headers.items()
+                if k.lower() not in {"transfer-encoding", "content-encoding", "content-length"}
+            }
+            # On a failure, surface the URL the proxy actually requested (path only,
+            # never the query — it may carry secrets) in a response header. A
+            # mis-prefixed path (e.g. the /api/v4 double-prefix footgun) then shows
+            # up directly instead of as an opaque upstream 404.
+            if upstream_resp.status_code >= 400:
+                resp_headers["X-Broker-Upstream-Url"] = str(outbound.url.copy_with(query=None))
+
             return Response(
                 content=upstream_resp.content,
                 status_code=upstream_resp.status_code,
-                headers={
-                    k: v for k, v in upstream_resp.headers.items()
-                    if k.lower() not in {"transfer-encoding", "content-encoding", "content-length"}
-                },
+                headers=resp_headers,
             )
 
         return router

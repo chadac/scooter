@@ -93,8 +93,9 @@ in
       };
     };
 
-    # --- GitLab (static token; http-proxy to gitlab.com/api/v4) --------------
-    # The broker's gitlab provider proxies /gitlab/* -> https://gitlab.com/api/v4
+    # --- GitLab (static token; transparent http-proxy to gitlab.com) ----------
+    # The broker's gitlab provider proxies /gitlab/<path> -> https://gitlab.com/<path>
+    # (transparent, like github) — so agents call /gitlab/api/v4/... in full.
     # with the token injected (PRIVATE-TOKEN header), so the agent can comment on
     # MRs / create notes WITHOUT seeing the token. Enabled iff GITLAB_TOKEN is set
     # on the broker — hence this option (without it the /gitlab/* routes never
@@ -103,7 +104,7 @@ in
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Enable the GitLab provider (http-proxy to gitlab.com/api/v4 with the token injected).";
+        description = "Enable the GitLab provider (transparent http-proxy to gitlab.com with the token injected).";
       };
       tokenSecret = mkOption {
         type = types.submodule {
@@ -385,7 +386,7 @@ in
                   }
                 ] ++ lib.optionals bcfg.gitlab.enable [
                   # GitLab token -> the broker's gitlab provider proxies /gitlab/*
-                  # to gitlab.com/api/v4 with this injected. Without it the provider
+                  # to gitlab.com with this injected. Without it the provider
                   # is disabled and the agent's /gitlab/* calls 404.
                   {
                     name = "GITLAB_TOKEN";

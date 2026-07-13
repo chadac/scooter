@@ -239,7 +239,7 @@ describe("agent-tools: DB fallback for github/gitlab/jira (ref-less links)", () 
     expect(out.isError).toBeFalsy();
     const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
     // repo path is URL-encoded as the project id.
-    expect(call[2]).toBe("/gitlab/projects/group%2Fproj/merge_requests/12/notes");
+    expect(call[2]).toBe("/gitlab/api/v4/projects/group%2Fproj/merge_requests/12/notes");
   });
 
   it("gitlab_comment FALLS BACK to the conversation_map for an issue (repo#iid)", async () => {
@@ -251,7 +251,7 @@ describe("agent-tools: DB fallback for github/gitlab/jira (ref-less links)", () 
     };
     const out = await handleGitlabComment({ broker }, ctx, { body: "hi" });
     expect(out.isError).toBeFalsy();
-    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/gitlab/projects/group%2Fproj/issues/5/notes");
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/gitlab/api/v4/projects/group%2Fproj/issues/5/notes");
   });
 
   it("jira_comment FALLS BACK to the conversation_map (resource_id IS the issue key)", async () => {

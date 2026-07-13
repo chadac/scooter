@@ -107,7 +107,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 ```
 
 The same shape works for **`$BROKER_URL/github/...`** (paths under
-api.github.com) and **`$BROKER_URL/gitlab/...`** (paths under gitlab.com/api/v4).
+api.github.com) and **`$BROKER_URL/gitlab/...`** (paths under gitlab.com — use the
+FULL API path, e.g. `$BROKER_URL/gitlab/api/v4/projects/123/merge_requests`, just
+as you would against GitLab directly). Each provider proxy is transparent: the
+path after `/<provider>/` is exactly the upstream API path.
 To *comment* on the resource this conversation came from, still prefer the
 `jira_comment` / `github_comment` / `gitlab_comment` tools — they infer the
 target for you. Use the raw broker proxy for everything else.
