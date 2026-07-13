@@ -1,6 +1,33 @@
-# Web Services Proxy — research spec
+# Web Services Proxy — design + implementation
 
-**Status:** Research (Stage 1 of the PoC process). Design/tests/impl follow.
+**Status:** IMPLEMENTED (marimo built-in; xterm/vscode are follow-ups). All tiers
+green except the Tier-2 k3s e2e, which is written + typechecked and runs under
+`just test-cluster` (gated `RUN_CLUSTER_TESTS=1`).
+
+Built:
+- Proxy core — `resolvePodTarget` (pod IP), `handleHttp` (stream pipe),
+  `handleUpgrade` (raw WebSocket splice), 404/502/503 maps
+  (`services/agent-host/src/proxy/webServiceProxy.ts`).
+- `WebServiceRegistry` — reads `/run/scooter/web-services.json` via exec,
+  `systemctl is-active`/`start` (`.../proxy/webServiceRegistry.ts`).
+- Server wiring — `useProxy`, HTTP fallback + new `upgrade` listener
+  (`agui/server.ts`); `CONVERSATION_ID` injected by the provisioner.
+- `webServices.<name>` NixOS option (top-level) + `extraConfig` escape hatch +
+  marimo built-in (`modules/sandbox-os/web-services{.nix,/marimo.nix}`); nixosTest
+  `dev-env-web-services`.
+- Management API — `GET/POST /conversations/:id/web-services[/:name/start]`.
+- UI Services panel (`ui/src/ServicesPanel.tsx`) + client fns; nginx `/c/` forward
+  with WebSocket upgrade (`pkgs/ui-image`).
+- Skill `skills/scooter-web-services.md` (+ marimo-pair as an agent skill).
+- Tests: proxy 7, registry 6, management 5, UI 4, nixosTest, Tier-2 k3s e2e.
+
+Follow-ups (out of this cut): lazy start-on-first-request; xterm + vscode
+built-ins; running the Tier-2 e2e in CI.
+
+Original research spec follows.
+
+---
+
 
 Let a user open a web service running *inside* a conversation's sandbox pod —
 a marimo notebook, web VS Code, an xterm terminal — from the conversation UI at:
