@@ -36,7 +36,7 @@ export type ResolvePodTarget = (ref: SandboxRef) => Promise<PodTarget>;
 
 // --- service discovery (id + name -> port) -----------------------------------
 
-/** One proxyable service as declared by the in-pod `services.webServices` option
+/** One proxyable service as declared by the in-pod `webServices` option
  *  (mirrors the discovery manifest entry rendered by web-services.nix). */
 export interface WebServiceDescriptor {
   name: string;

@@ -1,35 +1,36 @@
-# services.webServices.<name> — declarative in-pod web services the platform
+# webServices.<name> — declarative in-pod web services the platform
 # reverse-proxies at https://<host>/c/<id>/<name>/ (marimo, web VS Code, xterm…).
-#
-# DESIGN BOILERPLATE (PoC stage 2). Signatures + rendered-output contract only —
-# no working ExecStart bodies yet (built-ins land in web-services/<name>.nix, and
-# the lazy-tool packaging is wired in implementation). See docs/WEB_SERVICES_PROXY.md.
 #
 # The option is the single source of truth for BOTH:
 #   1. the systemd unit `webservice-<name>` that runs the service, AND
-#   2. the discovery manifest `/run/scooter/web-services.json` the agent-host reads
-#      to learn <name> -> in-pod port (so the proxy knows where to forward).
+#   2. the discovery manifest /run/scooter/web-services.json the agent-host reads
+#      (via exec) to learn <name> -> in-pod port, so the proxy knows where to
+#      forward and the UI can list/start services.
 #
 # Explicit-start model: units are NOT wantedBy multi-user.target — the agent or the
 # user (UI Start button -> agent-host -> `systemctl start webservice-<name>` via
-# exec) starts them on demand. The proxy only routes.
+# exec) starts them on demand. The proxy only routes. See docs/WEB_SERVICES_PROXY.md.
 
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.services.webServices;
+  cfg = config.webServices;
+  enabled = lib.filterAttrs (_: s: s.enable) cfg;
 
-  # The discovery manifest the agent-host reads (via exec/download) to resolve
-  # <name> -> { port, displayName, basePath, running? }. Rendered from the enabled
-  # services. SHAPE (contract with the agent-host WebServiceRegistry):
-  #   { "services": [ { "name", "displayName", "port", "basePath", "unit" }, ... ] }
-  # `running` is NOT in the manifest (it's static config); the agent-host derives
-  # liveness separately (systemctl is-active via exec) when the UI asks.
-  manifest = null; # TODO(impl): pkgs.writeText "web-services.json" (builtins.toJSON { services = ...; });
-
-  # Per-service systemd unit name. Kept stable + prefixed so the agent-host can
-  # `systemctl start/stop webservice-<name>` deterministically.
   unitName = name: "webservice-${name}";
+
+  # The discovery manifest (contract with the agent-host WebServiceRegistry):
+  #   { "services": [ { name, displayName, port, basePath, unit }, ... ] }
+  manifestJSON = builtins.toJSON {
+    services = lib.mapAttrsToList (name: s: {
+      inherit name;
+      displayName = s.displayName;
+      port = s.port;
+      basePath = s.basePath;
+      unit = unitName name;
+    }) enabled;
+  };
+  manifestFile = pkgs.writeText "web-services.json" manifestJSON;
 
   serviceOpts = { name, ... }: {
     options = {
@@ -76,7 +77,13 @@ let
       user = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Run as this user; null => DynamicUser. Marimo/VS Code need a real HOME + workspace, so built-ins set a concrete user.";
+        description = "Run as this user; null => DynamicUser. Services needing a real HOME + the workspace set a concrete user.";
+      };
+
+      workingDirectory = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "ExecStart working directory (e.g. the workspace PVC mount).";
       };
 
       environment = lib.mkOption {
@@ -89,36 +96,51 @@ let
 in
 {
   imports = [
-    # Built-in service definitions (each sets services.webServices.<name> defaults
-    # + its lazy-tool). Enabled individually by the deployment/agent module.
-    # ./web-services/marimo.nix   # TODO(impl) — proven first
-    # ./web-services/xterm.nix    # TODO(impl)
-    # ./web-services/vscode.nix   # TODO(impl)
+    ./web-services/marimo.nix
   ];
 
-  options.services.webServices = lib.mkOption {
+  options.webServices = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule serviceOpts);
     default = { };
     description = "Declarative in-pod web services, reverse-proxied at /c/<id>/<name>/.";
   };
 
-  config = lib.mkIf (cfg != { }) {
-    # TODO(impl): for each enabled service render
-    #   systemd.services.${unitName name} = {
-    #     description = "web service: ${svc.displayName}";
-    #     # NOT wantedBy multi-user.target — explicit start.
-    #     serviceConfig = {
-    #       ExecStart = svc.command;
-    #       Restart = "on-failure";
-    #       RestartIfChanged = false;   # survive a live switch-to-configuration
-    #     } // (if svc.user != null then { User = svc.user; } else { DynamicUser = true; });
-    #     environment = svc.environment;
-    #   };
-    #
-    # TODO(impl): render the discovery manifest to /run/scooter/web-services.json
-    #   via a tmpfiles rule or a oneshot, from `manifest` above.
-    assertions = [
-      # TODO(impl): assert unique ports across enabled services.
+  config = lib.mkIf (enabled != { }) {
+    # One systemd unit per enabled service. NOT wantedBy multi-user.target —
+    # explicit start. RestartIfChanged=false so a live switch-to-configuration
+    # (scooter-apply-module) doesn't bounce a running service.
+    systemd.services = lib.mapAttrs' (name: s:
+      lib.nameValuePair (unitName name) {
+        description = "web service: ${s.displayName}";
+        # A live switch-to-configuration (scooter-apply-module) must not bounce a
+        # running service — restartIfChanged is a systemd.services.<name> option
+        # (NixOS level), NOT a [Service] key.
+        restartIfChanged = false;
+        # The service reads CONVERSATION_ID (proxy base path) + PATH (lazy-tool
+        # stubs) from the pod environment.
+        serviceConfig = {
+          ExecStart = s.command;
+          Restart = "on-failure";
+        }
+        // (if s.user != null then { User = s.user; } else { DynamicUser = true; })
+        // (lib.optionalAttrs (s.workingDirectory != null) { WorkingDirectory = s.workingDirectory; });
+        environment = s.environment;
+      }
+    ) enabled;
+
+    # Render the discovery manifest at boot (tmpfiles → /run, so it's present
+    # before the agent-host reads it and survives nothing across restarts, which
+    # is fine — it's static config re-created each boot).
+    systemd.tmpfiles.rules = [
+      "d /run/scooter 0755 root root -"
+      "L+ /run/scooter/web-services.json - - - - ${manifestFile}"
     ];
+
+    assertions = [{
+      assertion =
+        let ports = lib.mapAttrsToList (_: s: s.port) enabled;
+        in lib.length ports == lib.length (lib.unique ports);
+      message = "webServices: enabled services must have unique ports.";
+    }];
   };
 }

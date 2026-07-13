@@ -20,7 +20,7 @@ sandbox; the platform reverse-proxies HTTP **and WebSocket** traffic to it.
 |----------|----------|
 | **Proxy tier** | **The agent-host.** UI nginx forwards `/c/<id>/*` straight to the agent-host, which resolves the conversation's pod and reverse-proxies to it (incl. WebSocket upgrade). |
 | **Auth** | **Existing auth only.** The ingress already injects `x-auth-user`; conversation access is a *view filter*, not a boundary — any authenticated user may reach any conversation's services. No new per-conversation check in this cut. |
-| **Service declaration** | **A declarative NixOS option** — `services.webServices.<name> = { port; … }`. The agent sets it via `modify_environment` (the existing `scooter-apply-module` path). Ship built-ins: `xterm`, `vscode`, `marimo`. |
+| **Service declaration** | **A declarative NixOS option** — `webServices.<name> = { port; … }`. The agent sets it via `modify_environment` (the existing `scooter-apply-module` path). Ship built-ins: `xterm`, `vscode`, `marimo`. |
 | **Lifecycle** | **Explicit start** for this cut (agent/user starts the systemd unit; the proxy only routes). Lazy start-on-first-request is a follow-up. |
 | **marimo** | Wire up [marimo-pair](https://github.com/marimo-team/marimo-pair) for the marimo built-in. |
 | **First service proven** | **marimo (+ marimo-pair)** — build this one end-to-end first. |
@@ -70,7 +70,7 @@ New NixOS module (in `modules/sandbox-os/`), enabled in the base config and
 extendable at runtime by the agent's module.
 
 ```nix
-services.webServices.<name> = {
+webServices.<name> = {
   enable      = mkEnableOption "the <name> web service";
   port        = mkOption { type = types.port; };          # in-pod listen port
   command     = mkOption { type = types.str; };            # ExecStart

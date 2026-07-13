@@ -1,7 +1,7 @@
 /**
  * WebServiceRegistry — reads a conversation's declared web services from the
  * in-pod discovery manifest (/run/scooter/web-services.json, rendered by the
- * `services.webServices` NixOS option) via the exec API, and drives their systemd
+ * `webServices` NixOS option) via the exec API, and drives their systemd
  * units (is-active / start). Descriptors are cached per conversation; the cache is
  * invalidated on suspend/resume and after a start.
  *

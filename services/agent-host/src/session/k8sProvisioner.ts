@@ -243,6 +243,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
               ...(opts.publicUrl
                 ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(urlThread)}` }]
                 : []),
+              // The full threadId (what the browser deep-links on and the proxy
+              // path uses) — web services read it to serve under /c/$CONVERSATION_ID/
+              // <name> (marimo --base-url etc.). Always set, even without publicUrl.
+              { name: "CONVERSATION_ID", value: urlThread },
               ...(opts.extraEnv ?? []),
             ],
             overlayStore: opts.overlayStore ?? false,
