@@ -40,5 +40,10 @@ pkgs.testers.runNixOSTest {
     hello = machine.succeed("bash -l -c 'command -v hello'").strip()
     assert "nix-profile" in hello, f"hello not under the nix profile: {hello!r}"
     machine.succeed("bash -l -c 'hello' >/dev/null")
+
+    # NOTE: the NON-LOGIN exec PATH (the sandbox-nix-profile-not-in-path bug) is
+    # fixed at the CONTAINER-IMAGE Env layer (pkgs/sandbox-os PID-1 PATH), which a
+    # nixosTest VM boot doesn't exercise — see nixos-tests/image-env.nix (checks the
+    # built image config) + the Tier-2 cluster exec test.
   '';
 }

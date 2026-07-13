@@ -46,7 +46,13 @@ in
       else { type = "github"; owner = "NixOS"; repo = "nixpkgs"; };
 
     # Ensure the per-user nix profile (where `nix profile install` puts things) is
-    # on PATH for exec'd shells, so an installed tool is immediately runnable.
+    # on PATH so an installed tool is immediately runnable. `sessionVariables` (below)
+    # only reaches LOGIN/interactive shells; the agent-host execs NON-LOGIN `bash -c`
+    # (k8s exec API), which inherits systemd PID 1's environment — the minimal
+    # container-image PATH — so it did NOT fix "install succeeds but tool not found".
+    # The container-image Env.PATH (pkgs/sandbox-os) is the real source the exec
+    # inherits; it prepends the profile bin. HOME is pinned to /workspace
+    # (carry-over.nix), so the profile path is literal here.
     environment.sessionVariables.PATH = lib.mkAfter [ "$HOME/.nix-profile/bin" ];
   };
 }
