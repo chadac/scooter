@@ -60,6 +60,10 @@ async def create_conversation(
         "runId": str(uuid.uuid4()),
         "messages": [{"role": "user", "content": task}],
     }
+    if owner:
+        # The resolved Scooter owner rides the body; the agent-host honors it only for
+        # this TRUSTED caller (our SA token, verified via TokenReview — see _sa_token).
+        payload["owner"] = owner
 
     if on_created is not None:
         try:
@@ -68,7 +72,7 @@ async def create_conversation(
             logger.exception("create_conversation on_created hook failed (continuing)")
 
     try:
-        result_text = await _run_and_collect(payload, owner=owner)
+        result_text = await _run_and_collect(payload)
     except RunInterrupted:
         # The run was interrupted (agent-host restart) — the conversation exists
         # (created via on_created) and the agent-host resumes it on boot. Signal
@@ -113,14 +117,24 @@ class RunInterrupted(Exception):
     failed)."""
 
 
-async def _run_and_collect(payload: dict, owner: str | None = None) -> str:
+def _sa_token() -> str | None:
+    """Read the projected ServiceAccount token the agent-host TokenReview verifies
+    (proving we're the trusted webhooks caller, so it honors `payload.owner`). None
+    if not mounted — the owner is then ignored agent-host-side (unowned)."""
+    path = settings.agent_host_token_path
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+async def _run_and_collect(payload: dict) -> str:
     """POST a RunAgentInput to /agui and accumulate the final assistant text from
     the AG-UI SSE stream (TEXT_MESSAGE_CONTENT deltas), returning on RUN_FINISHED.
 
-    `owner` (a resolved Scooter user id) is sent as the TRUSTED x-scooter-owner
-    HEADER — never in the body — so the agent-host stamps it as the conversation
-    owner. (The header is honored only from this in-cluster path; the ingress strips
-    it from browser requests.)
+    Sends our SA token as `Authorization: Bearer` so the agent-host can verify us as
+    the trusted webhooks caller (TokenReview) and honor `payload.owner`.
 
     Raises RunInterrupted if the connection drops before RUN_FINISHED (a restart);
     raises RuntimeError on a RUN_ERROR (a genuine agent failure).
@@ -128,8 +142,9 @@ async def _run_and_collect(payload: dict, owner: str | None = None) -> str:
     text_parts: list[str] = []
     saw_finished = False
     headers = {"Accept": "text/event-stream"}
-    if owner:
-        headers["x-scooter-owner"] = owner
+    token = _sa_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(

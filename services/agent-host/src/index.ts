@@ -40,6 +40,7 @@ import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
 import { parseScooterEnv } from "./config/scooterEnv.js";
 import { resolverFromEnv, type AsyncIdentityResolver } from "./auth/identity.js";
+import { createWebhooksCallerVerifier } from "./auth/webhooksCaller.js";
 import { withIdentityStore, createPgIdentityStore } from "./auth/identityStore.js";
 import { withAlbVerification } from "./auth/albVerify.js";
 import type { IncomingMessage } from "node:http";
@@ -314,6 +315,15 @@ export async function main(
   ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
   const store = createFileConversationStore(config.statePath);
   const server = createAguiServer();
+  // The privileged /agui `owner` field (a webhook-resolved Scooter user) is honored
+  // ONLY for the TRUSTED webhooks caller — its SA token verified via k8s TokenReview.
+  // WEBHOOKS_SERVICE_ACCOUNT unset => owner is never honored (safe default).
+  server.useOwnerVerifier(
+    createWebhooksCallerVerifier({
+      expectedServiceAccount: process.env.WEBHOOKS_SERVICE_ACCOUNT,
+      audience: process.env.WEBHOOKS_TOKEN_AUDIENCE || "agent-host",
+    }),
+  );
 
   // Metrics (OFF unless OTEL_METRICS_ENABLED=1). Cost needs goose's per-session
   // token usage, which it persists under its $HOME; the reader degrades to "no
