@@ -34,6 +34,9 @@ let
       proxy_http_version 1.1;
       proxy_read_timeout 3600s;
       proxy_buffering off;
+      # WebSocket upgrade passthrough for the /c/ web-service proxy (marimo kernel,
+      # xterm PTY, vscode RPC): "upgrade" when the client requests it, else "".
+      map $http_upgrade $connection_upgrade { default upgrade; "" ""; }
 
       server {
         listen 8080;
@@ -68,6 +71,20 @@ let
         # ingress-injected identity headers (x-auth-* or x-amzn-oidc-*) pass through
         # by default (only Host is overridden).
         location /whoami        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+
+        # Web-service reverse proxy: /c/<id>/<service>/... -> the agent-host, which
+        # resolves the conversation's pod and forwards to the in-pod service. Needs
+        # WebSocket upgrade (marimo kernel / xterm PTY / vscode RPC) and no
+        # buffering. The agent-host owns id->pod resolution + the (existing) auth.
+        location /c/ {
+          proxy_pass ''${AGENT_HOST_URL};
+          proxy_set_header Host $host;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+        }
 
         # SPA: serve the app, fall back to index.html for client routes.
         location / { try_files $uri $uri/ /index.html; }

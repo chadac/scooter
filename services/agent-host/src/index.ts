@@ -663,6 +663,16 @@ export async function main(
     return { url, headers };
   };
 
+  // In-pod web-service registry (list/start via exec) — shared by the management
+  // API (UI Services panel) and the reverse proxy. Real k8s only; fake/local
+  // sandboxes have no pod, so it's left undefined and the routes report none.
+  const webServices = config.fakeSandbox
+    ? undefined
+    : createWebServiceRegistry({
+        sandboxFor: (id) => sessions.get(id)?.sandbox,
+        connect: (ref) => connectSandbox(ref),
+      });
+
   // Management REST API (conversation CRUD + lifecycle + history), mounted on
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
@@ -670,6 +680,7 @@ export async function main(
       sessions,
       store,
       server,
+      webServices,
       models: {
         default: config.model,
         available: config.availableModels,
@@ -716,16 +727,12 @@ export async function main(
   // Web-service reverse proxy (/c/<id>/<service>/... -> the conversation's pod).
   // Real k8s only — needs pod IPs + in-pod systemd. Fake/local sandboxes have no
   // pod to proxy to, so it's left unmounted there (the routes just 404).
-  if (!config.fakeSandbox) {
-    const registry = createWebServiceRegistry({
-      sandboxFor: (id) => sessions.get(id)?.sandbox,
-      connect: (ref) => connectSandbox(ref),
-    });
+  if (webServices) {
     server.useProxy(
       createWebServiceProxy({
         sessions,
         resolvePodTarget: (ref) => resolvePodTarget(ref),
-        registry,
+        registry: webServices,
         publicHost: (() => {
           try {
             return process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).host : "";
