@@ -19,7 +19,7 @@ import type {
   SessionConfig,
   ExecBackend,
 } from "./types.js";
-import type { AcpClient, SessionUpdate } from "./acp/client.js";
+import type { AcpClient, SessionUpdate, ContentBlock } from "./acp/client.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
@@ -96,10 +96,20 @@ type AguiEventBase =
   // the most recent QUEUE_UPDATED; an empty `items` means the queue drained.
   | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number }> };
 
+/** An image attached to a user prompt — a reference the bridge resolves to base64
+ *  (from the AssetStore) when it builds the ACP image content block. */
+export interface PromptImage {
+  assetId: string;
+  mimeType: string;
+}
+
 /** A user prompt entering the run (maps to ACP session/prompt). */
 export interface PromptInput {
   threadId: ThreadId;
   text: string;
+  /** Images the user attached (UI upload / Slack). Empty/undefined = text-only
+   *  (the unchanged hot path). Resolved to ACP image blocks when the run prompts. */
+  images?: PromptImage[];
 }
 
 /** How a priority item PREEMPTS the running turn (graduated interrupt levels).
@@ -226,6 +236,13 @@ export interface BridgeDeps {
    * Absent in tests / when there's nothing to inject → no prepend.
    */
   loadHistory?: () => Promise<AguiEvent[]>;
+
+  /**
+   * Resolve an attached image's bytes (from the AssetStore) so the run can build
+   * the ACP image content block goose sees. Absent → image parts are ignored (the
+   * text-only path is unchanged). Returns null for an unknown/unreadable asset.
+   */
+  readAsset?: (assetId: string) => Promise<{ data: Buffer; mimeType: string } | null>;
 
   /**
    * Force-interrupt timeout (ms). When a queued PRIORITY prompt (an @scooter
@@ -705,9 +722,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // (a burst of queued messages sent as one turn), so the agent reads them all
       // at once instead of one-at-a-time.
       const combined = combineTexts(batch.map((b) => b.text));
-      const promptBlocks = historyPreamble
-        ? [{ type: "text" as const, text: historyPreamble }, { type: "text" as const, text: combined }]
-        : [{ type: "text" as const, text: combined }];
+      const textBlocks: ContentBlock[] = historyPreamble
+        ? [{ type: "text", text: historyPreamble }, { type: "text", text: combined }]
+        : [{ type: "text", text: combined }];
+      // Resolve attached images to ACP image blocks (base64), appended after the
+      // text so the model sees them with the message. Missing/unreadable assets are
+      // skipped (best-effort — a dropped image must not fail the turn). No images
+      // (or no readAsset dep) → the text-only prompt is unchanged.
+      const imageBlocks: ContentBlock[] = [];
+      const images = batch.flatMap((b) => b.images ?? []);
+      if (images.length && deps.readAsset) {
+        for (const img of images) {
+          const bytes = await deps.readAsset(img.assetId).catch(() => null);
+          if (bytes) imageBlocks.push({ type: "image", data: bytes.data.toString("base64"), mimeType: bytes.mimeType });
+        }
+      }
+      const promptBlocks = [...textBlocks, ...imageBlocks];
       const { stopReason } = await acpClient!.prompt({
         sessionId: acpSessionId!,
         prompt: promptBlocks,

@@ -51,7 +51,9 @@ export interface PromptParams {
 
 export type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "resource_link"; uri: string };
+  | { type: "resource_link"; uri: string }
+  // A base64 image the model can SEE (ACP native image block: {data, mimeType}).
+  | { type: "image"; data: string; mimeType: string };
 
 /** Normalized session/update variants the bridge consumes. */
 export type SessionUpdate =

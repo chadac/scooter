@@ -600,8 +600,21 @@ export async function main(
       requested && (requested === config.model || config.availableModels.includes(requested))
         ? requested
         : undefined;
+    // Store any attached images in the AssetStore -> pass small refs to the bridge
+    // (which resolves them to base64 ACP image blocks). Oversize/unsupported images
+    // are dropped best-effort (a bad image must not fail the whole turn); the
+    // AssetStore enforces the cap + MIME allow-list.
+    const promptImages: Array<{ assetId: string; mimeType: string }> = [];
+    for (const img of input.images ?? []) {
+      try {
+        const stored = await assets.put(sessionId, { data: Buffer.from(img.data, "base64"), mimeType: img.mimeType });
+        promptImages.push({ assetId: stored.assetId, mimeType: stored.mimeType });
+      } catch (e) {
+        console.warn(`[agent-host] dropped an attached image for ${sessionId}:`, (e as Error).message);
+      }
+    }
     try {
-      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner);
+      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages);
     } catch (err) {
       // The run couldn't even START (provision/revive failed — e.g. 409 on a wrong
       // hydrate map, goose/ACP error). PERSIST a RUN_ERROR to the durable log so a
@@ -918,6 +931,8 @@ export async function main(
         for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
         return events;
       },
+      // Resolve an attached image's bytes so the run builds the ACP image block.
+      readAsset: (assetId) => assets.read(conversationId as SessionId, assetId),
     });
 
     // Mirror bridge events to UI subscribers.

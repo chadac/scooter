@@ -19,6 +19,55 @@ import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
 import type { WebServiceProxy } from "../proxy/webServiceProxy.js";
 
+/** A raw inbound image on a user message (base64 bytes + mime) — before it's
+ *  stored in the AssetStore. The promptHandler (index.ts) stores it and passes the
+ *  resulting assetId to the bridge. */
+export interface InboundImage {
+  data: string; // base64
+  mimeType: string;
+}
+
+/** One part of a multimodal message content array. Text or image; other AG-UI part
+ *  shapes are tolerated (ignored). */
+export type ContentPart =
+  | { type: "text"; text?: string }
+  | { type: "image"; data?: string; mimeType?: string; image?: string; [k: string]: unknown }
+  | { type: string; [k: string]: unknown };
+
+/** Normalize a message's `content` (string | ContentPart[]) into prompt text + the
+ *  inbound images. A plain string is the text (no images) — the unchanged path. */
+export function normalizeContent(content: string | ContentPart[] | undefined): {
+  text: string;
+  images: InboundImage[];
+} {
+  if (content == null) return { text: "", images: [] };
+  if (typeof content === "string") return { text: content, images: [] };
+  const texts: string[] = [];
+  const images: InboundImage[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" && typeof (part as { text?: unknown }).text === "string") {
+      texts.push((part as { text: string }).text);
+    } else if (part.type === "image") {
+      // Accept {data, mimeType} (our shape) or {image} (assistant-ui data URL).
+      const p = part as { data?: string; mimeType?: string; image?: string };
+      const parsed = p.data && p.mimeType
+        ? { data: p.data, mimeType: p.mimeType }
+        : p.image
+          ? parseDataUrl(p.image)
+          : null;
+      if (parsed) images.push(parsed);
+    }
+  }
+  return { text: texts.join("\n\n"), images };
+}
+
+/** Parse a `data:<mime>;base64,<data>` URL into {data, mimeType}, or null. */
+function parseDataUrl(url: string): InboundImage | null {
+  const m = /^data:([^;,]+);base64,(.+)$/s.exec(url);
+  return m ? { mimeType: m[1], data: m[2] } : null;
+}
+
 /** A user prompt arriving from the UI (AG-UI RunAgentInput, subset). */
 export interface RunAgentInput {
   threadId: ThreadId;
@@ -38,6 +87,9 @@ export interface RunAgentInput {
    *  claim a conversation. Undefined = no owner set here (the UI path stamps the
    *  ingress identity on POST /conversations instead). */
   owner?: string;
+  /** Images attached to the latest user message (base64), from a multimodal
+   *  content array. Empty/undefined = a text-only message (the unchanged path). */
+  images?: InboundImage[];
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -190,7 +242,9 @@ export function createAguiServer(): AguiServer {
       const input = JSON.parse((await readBody(req)) || "{}") as {
         threadId: string;
         runId?: string;
-        messages?: Array<{ role: string; content?: string }>;
+        // content is a plain string (text-only, the common case) OR an array of
+        // content parts (multimodal: text + image parts).
+        messages?: Array<{ role: string; content?: string | ContentPart[] }>;
         /** Priority tier for a force-interrupting message (webhooks @mention). */
         priority?: number;
         /** The Scooter user to OWN a webhook-spawned conversation. Honored ONLY for
@@ -223,9 +277,11 @@ export function createAguiServer(): AguiServer {
         return;
       }
 
-      // The latest user message is the prompt text.
+      // The latest user message is the prompt. Its content is either a plain
+      // string (text-only) or an array of parts (multimodal); normalize to text +
+      // inbound images.
       const lastUser = [...(input.messages ?? [])].reverse().find((m) => m.role === "user");
-      const text = lastUser?.content ?? "";
+      const { text, images } = normalizeContent(lastUser?.content);
       // The UI rides the per-conversation model on a header (the assistant-ui
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
@@ -247,7 +303,7 @@ export function createAguiServer(): AguiServer {
       // with NO error (the hydrate-silent-drop bug). Emit a proper RUN_ERROR event on
       // THIS stream + close it, so the UI has something to render as a failed send.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner, images });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
