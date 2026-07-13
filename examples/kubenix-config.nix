@@ -30,8 +30,17 @@
     agent = {
       name = "Scooter"; # the agent's user-facing identity
       provider = "aws_bedrock";
-      model = "us.anthropic.claude-opus-4-6-v1";
-      availableModels = [ "us.anthropic.claude-opus-4-6-v1" ];
+      # The models a conversation may run on. `default` marks the fallback; `hint`
+      # guides the agent's own model choice (surfaced by the list_models MCP tool).
+      availableModels = {
+        "us.anthropic.claude-sonnet-4-6" = {
+          default = true;
+          hint = "Fast + cheap. Use for simple edits, config/CI fixes, straightforward PRs.";
+        };
+        "us.anthropic.claude-opus-4-8" = {
+          hint = "Slow + powerful. Escalate for architecture, novel implementations, hard debugging.";
+        };
+      };
       region = "us-east-1";
 
       # Skills injected into the agent as .goosehints (filename -> markdown).

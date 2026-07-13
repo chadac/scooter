@@ -29,6 +29,7 @@ import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
+import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createModuleManager } from "./session/moduleManager.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
@@ -58,9 +59,14 @@ export interface AgentHostConfig {
   /** ACP agent launch (goose). */
   agent: { command: string; args: string[]; env: Record<string, string> };
   /** Default model (GOOSE_MODEL) and the models offered for per-conversation
-   *  selection. A conversation may override the model; unset = default only. */
+   *  selection. A conversation may override the model; unset = default only.
+   *  `model` (the default) + `availableModels` (the ids) are derived from
+   *  `modelCatalog` (the rich source of truth with per-model hints). */
   model?: string;
   availableModels: string[];
+  /** The full model catalog (ids + deployment hints + which is default), powering
+   *  the list_models / switch_model MCP tools + GET /models hints. */
+  modelCatalog: ModelCatalog;
   /** Agent display name (the assistant introduces itself as this). */
   agentName: string;
   /** Directory of markdown skills injected into the agent (a ConfigMap mount in
@@ -96,6 +102,7 @@ export interface AgentHostConfigExtra {
 }
 
 export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
+  const catalog = catalogFromEnv();
   // GOOSE_BIN=fake runs the bundled dummy ACP agent (no model, no AWS).
   const useFakeAgent = process.env.GOOSE_BIN === "fake";
   const fakeAgentPath = new URL("./fakeAgent.js", import.meta.url).pathname;
@@ -123,11 +130,12 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     // credential hang). Default 60s; FIRST_ACTIVITY_TIMEOUT_MS=0 disables.
     firstActivityTimeoutMs: Number(process.env.FIRST_ACTIVITY_TIMEOUT_MS ?? 60 * 1000),
     fakeSandbox,
-    model: process.env.GOOSE_MODEL,
-    availableModels: (process.env.AGENT_AVAILABLE_MODELS ?? "")
-      .split(",")
-      .map((m) => m.trim())
-      .filter(Boolean),
+    // The model catalog (rich: ids + hints + default) is the source of truth;
+    // `model` (the default) + `availableModels` (the ids) are derived so
+    // resolveModel / GET /models / metrics keep working unchanged.
+    modelCatalog: catalog,
+    model: catalog.defaultId,
+    availableModels: availableIds(catalog),
     agentName: process.env.AGENT_NAME ?? "Scooter",
     skillsDir: process.env.SKILLS_DIR ?? "/etc/agent-sandbox/skills",
     observability: {
@@ -646,7 +654,13 @@ export async function main(
       sessions,
       store,
       server,
-      models: { default: config.model, available: config.availableModels },
+      models: {
+        default: config.model,
+        available: config.availableModels,
+        hints: Object.fromEntries(
+          config.modelCatalog.models.filter((m) => m.hint).map((m) => [m.id, m.hint]),
+        ),
+      },
       resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId) => {

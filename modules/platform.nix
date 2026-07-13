@@ -17,6 +17,30 @@ let
   # The ingress targets the UI when it's deployed (the UI proxies the API on the
   # same origin); otherwise it targets the agent-host API directly.
   ingressBackend = if cfg.ui.enable then "ui" else "agent-host";
+
+  # --- Model catalog: fold the availableModels attrset (+ the deprecated
+  # agent.model) into the rich list the agent-host reads as AGENT_MODELS_JSON.
+  enabledModels = lib.filterAttrs (_: m: m.enable) cfg.agent.availableModels;
+  # An explicit default = true wins; else the deprecated agent.model; else the
+  # first enabled model.
+  explicitDefault = lib.findFirst (id: enabledModels.${id}.default) null (lib.attrNames enabledModels);
+  defaultModelId =
+    if explicitDefault != null then explicitDefault
+    else if cfg.agent.model != null then cfg.agent.model
+    else if enabledModels != { } then lib.head (lib.attrNames enabledModels)
+    else null;
+  # The offered set: the enabled attrset ids, plus the deprecated agent.model if it
+  # isn't already present (back-compat).
+  modelIds = lib.unique (
+    (lib.attrNames enabledModels)
+    ++ lib.optional (cfg.agent.model != null && !(enabledModels ? ${cfg.agent.model})) cfg.agent.model
+  );
+  modelsJson = builtins.toJSON (map (id: {
+    inherit id;
+    hint = enabledModels.${id}.hint or "";
+    default = id == defaultModelId;
+  }) modelIds);
+  hasModels = modelIds != [ ];
 in
 {
   imports = [ kubenix.modules.k8s ./broker.nix ./webhooks.nix ];
@@ -156,21 +180,53 @@ in
         description = "GOOSE_PROVIDER for the real agent (e.g. aws_bedrock, anthropic).";
       };
       model = mkOption {
-        type = types.str;
-        default = "us.anthropic.claude-opus-4-7";
+        type = types.nullOr types.str;
+        default = null;
         description = ''
-          Default GOOSE_MODEL (the model used when a conversation doesn't pick
-          one). For Bedrock, the cross-region inference-profile id.
+          DEPRECATED — use `availableModels.<id>.default = true` instead. When set
+          (and no availableModels entry is marked default), it's the default model
+          and is added to the offered set (back-compat for existing deploys). For
+          Bedrock, the cross-region inference-profile id.
         '';
       };
       availableModels = mkOption {
-        type = types.listOf types.str;
-        default = [ ];
-        example = [ "us.anthropic.claude-opus-4-7" "us.anthropic.claude-sonnet-4-6" ];
+        type = types.attrsOf (types.submodule ({ name, ... }: {
+          options = {
+            enable = mkOption {
+              type = types.bool;
+              default = true;
+              description = "Offer this model for selection.";
+            };
+            default = mkOption {
+              type = types.bool;
+              default = false;
+              description = "Mark this as the default model (exactly one should be true).";
+            };
+            hint = mkOption {
+              type = types.str;
+              default = "";
+              example = "Fast + cheap — simple edits, config/CI fixes.";
+              description = ''
+                Deployment guidance shown to the agent by the `list_models` MCP
+                tool, steering when to pick this model (e.g. fast/cheap vs
+                slow/powerful). Empty = no hint.
+              '';
+            };
+          };
+        }));
+        default = { };
+        example = literalExpression ''
+          {
+            "us.anthropic.claude-sonnet-4-6" = { default = true; hint = "Fast + cheap — simple edits/CI fixes."; };
+            "us.anthropic.claude-opus-4-8" = { hint = "Slow + powerful — architecture, hard debugging."; };
+          }
+        '';
         description = ''
-          Models offered for per-conversation selection (AGENT_AVAILABLE_MODELS,
-          comma-separated). The UI/management API lets a conversation override
-          the default per-prompt. Empty = only the default model.
+          The models a conversation may run on, each with an optional `hint`
+          (surfaced by the list_models MCP tool so the agent can pick well) and a
+          `default` flag (exactly one). The agent switches its own model via
+          switch_model; the UI/management API can also override per-conversation.
+          Rendered to the agent-host as AGENT_MODELS_JSON. Empty = only the default.
         '';
       };
       region = mkOption {
@@ -546,13 +602,16 @@ in
                   # process inherits the pod's IRSA identity via the AWS SDK
                   # web-identity chain — no static keys.
                   { name = "GOOSE_PROVIDER"; value = cfg.agent.provider; }
-                  { name = "GOOSE_MODEL"; value = cfg.agent.model; }
                   { name = "AWS_REGION"; value = cfg.agent.region; }
                   { name = "AWS_DEFAULT_REGION"; value = cfg.agent.region; }
-                ] ++ lib.optional (!cfg.fakeAgent && cfg.agent.availableModels != [ ])
-                  # Models offered for per-conversation selection (the management
-                  # API/UI may override GOOSE_MODEL per conversation).
-                  { name = "AGENT_AVAILABLE_MODELS"; value = lib.concatStringsSep "," cfg.agent.availableModels; }
+                ] ++ lib.optional (!cfg.fakeAgent && defaultModelId != null)
+                  # The default model. Derived from availableModels.<id>.default
+                  # (or the deprecated agent.model).
+                  { name = "GOOSE_MODEL"; value = defaultModelId; }
+                ++ lib.optional (!cfg.fakeAgent && hasModels)
+                  # The rich catalog (ids + hints + default) the agent-host reads.
+                  # Powers list_models / switch_model + the per-conversation override.
+                  { name = "AGENT_MODELS_JSON"; value = modelsJson; }
                 ++ lib.optional cfg.fakeAgent
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.

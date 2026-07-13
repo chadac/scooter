@@ -76,8 +76,9 @@ export interface ManagementDeps {
     approver: ApproverIdentity,
   ) => Promise<boolean>;
   /** Model catalog for per-conversation selection: the host default + the set
-   *  offered to clients. Empty list = only the default is selectable. */
-  models?: { default?: string; available: string[] };
+   *  offered to clients (+ optional per-model hints). Empty list = only the
+   *  default is selectable. */
+  models?: { default?: string; available: string[]; hints?: Record<string, string> };
   /** Raw handler for the agent-self-modify MCP endpoint (goose's
    *  modify_environment tool). It writes the response itself (the MCP transport
    *  streams), so it takes req/res directly. Optional (self-modify off). */
@@ -171,7 +172,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // The model catalog — a UI populates its selector from this.
   r.get("/models", () => ({
-    json: { default: models.default ?? null, available: models.available },
+    json: { default: models.default ?? null, available: models.available, hints: models.hints ?? {} },
   }));
 
   // VIEW FILTER (not access control — conversations are public):
