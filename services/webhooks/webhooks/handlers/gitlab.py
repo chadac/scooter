@@ -18,6 +18,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
+from ..identity_resolve import resolve_owner
 from ..responses.gitlab import post_gitlab_comment
 
 logger = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ async def _handle_note(payload: dict):
             source="gitlab", res_type=res_type, res_id=res_id,
             message=full_message, repo=repo, conv_title=conv_title,
             project_id=project_id, note_api_type=note_api_type,
-            noteable_iid=noteable_iid,
+            noteable_iid=noteable_iid, invoking_user=user,
         )
     )
 
@@ -331,6 +332,7 @@ async def _handle_issue(payload: dict):
             message=message, repo=repo,
             conv_title=f"Issue #{issue_iid}: {issue_title}",
             project_id=project_id, note_api_type="issues",
+            invoking_user=payload.get("user", {}).get("username"),
             noteable_iid=issue_iid,
         )
     )
@@ -366,6 +368,7 @@ async def _handle_merge_request(payload: dict):
             message=message, repo=repo,
             conv_title=f"MR !{mr_iid}: {mr_title}",
             project_id=project_id, note_api_type="merge_requests",
+            invoking_user=payload.get("user", {}).get("username"),
             noteable_iid=mr_iid,
         )
     )
@@ -374,7 +377,7 @@ async def _handle_merge_request(payload: dict):
 async def _background_create_conversation(
     source: str, res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, project_id: int, note_api_type: str,
-    noteable_iid: int,
+    noteable_iid: int, invoking_user: str | None = None,
 ) -> None:
     # Register the mapping + link AND post the "on it — follow along" comment
     # BEFORE the agent runs. create_conversation blocks until the whole turn
@@ -393,9 +396,14 @@ async def _background_create_conversation(
             body=f"Scooter is on it — follow along: [View conversation]({conversation_url(conv_id)})",
         )
 
+    # Map the invoking GitLab user -> their Scooter user (by email) so the
+    # conversation gets a real owner. Best-effort -> None -> unowned.
+    conv_owner = await resolve_owner("gitlab", invoking_user) if invoking_user else None
+
     try:
         result = await create_conversation(
             message, repository=repo, title=conv_title, on_created=_register,
+            owner=conv_owner,
         )
         if not result:
             await _clear_pending(source, res_type, res_id)

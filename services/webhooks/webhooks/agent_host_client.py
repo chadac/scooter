@@ -33,6 +33,7 @@ async def create_conversation(
     git_provider: str = "github",
     title: str | None = None,
     on_created: Callable[[str], Awaitable[None]] | None = None,
+    owner: str | None = None,
 ) -> dict | None:
     """Spawn an agent conversation for `initial_message`.
 
@@ -67,7 +68,7 @@ async def create_conversation(
             logger.exception("create_conversation on_created hook failed (continuing)")
 
     try:
-        result_text = await _run_and_collect(payload)
+        result_text = await _run_and_collect(payload, owner=owner)
     except RunInterrupted:
         # The run was interrupted (agent-host restart) — the conversation exists
         # (created via on_created) and the agent-host resumes it on boot. Signal
@@ -112,19 +113,27 @@ class RunInterrupted(Exception):
     failed)."""
 
 
-async def _run_and_collect(payload: dict) -> str:
+async def _run_and_collect(payload: dict, owner: str | None = None) -> str:
     """POST a RunAgentInput to /agui and accumulate the final assistant text from
     the AG-UI SSE stream (TEXT_MESSAGE_CONTENT deltas), returning on RUN_FINISHED.
+
+    `owner` (a resolved Scooter user id) is sent as the TRUSTED x-scooter-owner
+    HEADER — never in the body — so the agent-host stamps it as the conversation
+    owner. (The header is honored only from this in-cluster path; the ingress strips
+    it from browser requests.)
 
     Raises RunInterrupted if the connection drops before RUN_FINISHED (a restart);
     raises RuntimeError on a RUN_ERROR (a genuine agent failure).
     """
     text_parts: list[str] = []
     saw_finished = False
+    headers = {"Accept": "text/event-stream"}
+    if owner:
+        headers["x-scooter-owner"] = owner
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
-                "POST", _agui_url(), json=payload, headers={"Accept": "text/event-stream"}
+                "POST", _agui_url(), json=payload, headers=headers
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
