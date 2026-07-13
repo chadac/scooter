@@ -27,6 +27,9 @@ import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
+import { resolvePodTarget } from "./exec/k8sExec.js";
+import { createWebServiceProxy } from "./proxy/webServiceProxy.js";
+import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
@@ -660,6 +663,16 @@ export async function main(
     return { url, headers };
   };
 
+  // In-pod web-service registry (list/start via exec) — shared by the management
+  // API (UI Services panel) and the reverse proxy. Real k8s only; fake/local
+  // sandboxes have no pod, so it's left undefined and the routes report none.
+  const webServices = config.fakeSandbox
+    ? undefined
+    : createWebServiceRegistry({
+        sandboxFor: (id) => sessions.get(id)?.sandbox,
+        connect: (ref) => connectSandbox(ref),
+      });
+
   // Management REST API (conversation CRUD + lifecycle + history), mounted on
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
@@ -667,6 +680,7 @@ export async function main(
       sessions,
       store,
       server,
+      webServices,
       models: {
         default: config.model,
         available: config.availableModels,
@@ -709,6 +723,26 @@ export async function main(
       },
     }),
   );
+
+  // Web-service reverse proxy (/c/<id>/<service>/... -> the conversation's pod).
+  // Real k8s only — needs pod IPs + in-pod systemd. Fake/local sandboxes have no
+  // pod to proxy to, so it's left unmounted there (the routes just 404).
+  if (webServices) {
+    server.useProxy(
+      createWebServiceProxy({
+        sessions,
+        resolvePodTarget: (ref) => resolvePodTarget(ref),
+        registry: webServices,
+        publicHost: (() => {
+          try {
+            return process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).host : "";
+          } catch {
+            return "";
+          }
+        })(),
+      }),
+    );
+  }
 
   await server.listen(config.port);
   // eslint-disable-next-line no-console

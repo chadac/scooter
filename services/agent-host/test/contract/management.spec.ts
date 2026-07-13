@@ -443,6 +443,70 @@ describe("management API", () => {
     expect((json as any).links[0]).toMatchObject({ source: "slack", resourceType: "thread" });
   });
 
+  // --- web services (Services panel: list + start) ----------------------------
+
+  function fakeWebServices(over: Partial<Record<string, unknown>> = {}) {
+    const running = new Set<string>();
+    return {
+      list: async () => [{ name: "marimo", displayName: "marimo", port: 2718, basePath: "/c/c1/marimo", unit: "webservice-marimo" }],
+      get: async (_id: string, name: string) =>
+        name === "marimo" ? { name, displayName: "marimo", port: 2718, basePath: "/c/c1/marimo", unit: "webservice-marimo" } : null,
+      isRunning: async (_id: string, name: string) => running.has(name),
+      start: async (_id: string, name: string) => { running.add(name); },
+      invalidate: () => {},
+      ...over,
+    } as never;
+  }
+
+  it("GET /conversations/:id/web-services lists services with a URL + running state", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, webServices: fakeWebServices(),
+    });
+    const { status, json } = await call(api, "GET", "/conversations/c1/web-services");
+    expect(status).toBe(200);
+    const svc = (json as any).services[0];
+    expect(svc).toMatchObject({ name: "marimo", running: false });
+    expect(svc.url).toBe("/c/c1/marimo/"); // opens under the full threadId
+  });
+
+  it("GET web-services returns [] when the registry is unwired (fake/local mode)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { json } = await call(api, "GET", "/conversations/c1/web-services");
+    expect((json as any).services).toEqual([]);
+  });
+
+  it("POST .../web-services/:name/start starts it (202) and it reads back running", async () => {
+    const web = fakeWebServices();
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, webServices: web,
+    });
+    const started = await call(api, "POST", "/conversations/c1/web-services/marimo/start");
+    expect(started.status).toBe(202);
+    const { json } = await call(api, "GET", "/conversations/c1/web-services");
+    expect((json as any).services[0].running).toBe(true);
+  });
+
+  it("POST start 404s an unknown service, 404s an unknown conversation", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, webServices: fakeWebServices(),
+    });
+    expect((await call(api, "POST", "/conversations/c1/web-services/nope/start")).status).toBe(404);
+    expect((await call(api, "POST", "/conversations/nope/web-services/marimo/start")).status).toBe(404);
+  });
+
+  it("POST start maps a systemctl failure to 502", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {},
+      webServices: fakeWebServices({ start: async () => { throw new Error("unit failed"); } }),
+    });
+    const { status } = await call(api, "POST", "/conversations/c1/web-services/marimo/start");
+    expect(status).toBe(502);
+  });
+
   it("DELETE /conversations/:id ends it", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });

@@ -20,6 +20,9 @@ in
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
   dev-env-service = runTest ./service.nix;
+  # The webServices option: renders a proxyable unit + discovery manifest,
+  # explicit-start, sub-path serving (the reverse-proxy target contract).
+  dev-env-web-services = runTest ./web-services.nix;
   dev-env-nix-build-skill = runTest ./nix-build-skill.nix;
   # SPIKE: runtime re-converge (warm-pod-specializes-on-claim primitive).
   dev-env-switch-specialisation = runTest ./switch-specialisation.nix;

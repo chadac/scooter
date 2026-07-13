@@ -17,6 +17,7 @@ import type { BaseEvent } from "@ag-ui/core";
 import type { AguiEvent } from "../bridge.js";
 import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
+import type { WebServiceProxy } from "../proxy/webServiceProxy.js";
 
 /** A user prompt arriving from the UI (AG-UI RunAgentInput, subset). */
 export interface RunAgentInput {
@@ -59,6 +60,10 @@ export interface AguiServer {
   onAttach(handler: (sessionId: SessionId, conn: AguiConnection) => Promise<void>): void;
   /** Mount a management router; tried before the built-in AG-UI routes. */
   use(router: Router): void;
+  /** Mount the web-service reverse proxy (/c/<id>/<service>/...): consulted as an
+   *  HTTP fallback before the 404, and wired to the server's `upgrade` event for
+   *  WebSocket services (marimo/xterm/vscode). */
+  useProxy(proxy: WebServiceProxy): void;
   /** Attach an SSE response to a session's persistent event stream (for the
    *  management API's GET .../events). Returns once replay (onAttach) is done. */
   subscribeSSE(sessionId: SessionId, res: ServerResponse): Promise<void>;
@@ -91,6 +96,7 @@ export function createAguiServer(): AguiServer {
 
   let server: Server | undefined;
   let mountedRouter: Router | undefined;
+  let mountedProxy: WebServiceProxy | undefined;
 
   const write = (res: ServerResponse, event: AguiEvent) => {
     res.write(encoder.encodeSSE(toBaseEvent(event)));
@@ -269,6 +275,13 @@ export function createAguiServer(): AguiServer {
       return;
     }
 
+    // Web-service reverse proxy (/c/<id>/<service>/...) — last, so it never
+    // shadows the API routes above.
+    if (mountedProxy && mountedProxy.matches(url.pathname)) {
+      await mountedProxy.handleHttp(req, res);
+      return;
+    }
+
     res.writeHead(404).end();
   };
 
@@ -280,6 +293,16 @@ export function createAguiServer(): AguiServer {
             if (!res.headersSent) res.writeHead(500);
             res.end(String(err));
           });
+        });
+        // WebSocket upgrades for proxied services (marimo kernel, xterm PTY,
+        // vscode RPC). The agent-host had no upgrade handler before this.
+        server.on("upgrade", (req, socket, head) => {
+          const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+          if (mountedProxy && mountedProxy.matches(pathname)) {
+            mountedProxy.handleUpgrade(req, socket, head).catch(() => socket.destroy());
+          } else {
+            socket.destroy();
+          }
         });
         server.listen(port, () => resolve());
       });
@@ -306,6 +329,9 @@ export function createAguiServer(): AguiServer {
     },
     use(router) {
       mountedRouter = router;
+    },
+    useProxy(proxy) {
+      mountedProxy = proxy;
     },
     subscribeSSE,
   };

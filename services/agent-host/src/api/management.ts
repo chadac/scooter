@@ -25,6 +25,7 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
+import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
@@ -86,6 +87,9 @@ export interface ManagementDeps {
   /** How to resolve the caller's identity per request (provider-agnostic; may be
    *  store-enriched). Defaults to the env-configured resolver (header/alb-oidc). */
   resolveUser?: ResolveUser;
+  /** In-pod web-service registry (list/start), powering the UI Services panel.
+   *  Optional — absent in fake/local mode (no pods), where the routes report none. */
+  webServices?: WebServiceRegistry;
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -489,6 +493,39 @@ export function createManagementApi(deps: ManagementDeps): Router {
       ref: body.ref,
     });
     return { status: 201, json: { ok: true } };
+  });
+
+  // Web services (marimo/xterm/vscode) declared in the conversation's sandbox and
+  // reverse-proxied at /c/<id>/<name>/. The UI Services panel lists them (with
+  // liveness) and Starts one. No extra auth — same view-filter model as the rest.
+  r.get("/conversations/:id/web-services", async (ctx) => {
+    const id = await resolveConvId(ctx.params.id);
+    if (!id || !deps.webServices) return { json: { services: [] } };
+    const services = await deps.webServices.list(id);
+    const withState = await Promise.all(
+      services.map(async (s) => ({
+        name: s.name,
+        displayName: s.displayName,
+        // The browser opens the service under the FULL threadId path.
+        url: `/c/${encodeURIComponent(sessions.get(id)?.threadId ?? id)}/${s.name}/`,
+        running: await deps.webServices!.isRunning(id, s.name).catch(() => false),
+      })),
+    );
+    return { json: { services: withState } };
+  });
+
+  r.post("/conversations/:id/web-services/:name/start", async (ctx) => {
+    const id = await resolveConvId(ctx.params.id);
+    if (!id) return { status: 404, json: { error: "unknown conversation" } };
+    if (!deps.webServices) return { status: 501, json: { error: "web services unavailable" } };
+    const svc = await deps.webServices.get(id, ctx.params.name);
+    if (!svc) return { status: 404, json: { error: "unknown web service" } };
+    try {
+      await deps.webServices.start(id, ctx.params.name);
+    } catch (e) {
+      return { status: 502, json: { error: `start failed: ${(e as Error).message}` } };
+    }
+    return { status: 202, json: { ok: true } };
   });
 
   // The broker calls this when an agent requests AWS access: raise an in-

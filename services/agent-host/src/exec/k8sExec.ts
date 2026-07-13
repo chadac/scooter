@@ -61,14 +61,23 @@ export async function connectSandbox(
   return createK8sSandboxApiClient(ref, { ...opts, kubeConfig: kc, podName });
 }
 
-async function resolvePodName(kc: KubeConfig, ref: SandboxRef): Promise<string> {
+/** The conversation pod's address for direct in-cluster HTTP/WS (the web-service
+ *  reverse proxy targets this). `podIP` changes across suspend/resume — never
+ *  cache it across a suspend; re-resolve. */
+export interface PodTarget {
+  name: string;
+  podIP: string;
+}
+
+type Pod = Awaited<ReturnType<CoreV1Api["readNamespacedPod"]>>;
+
+/** Poll until a RUNNING + Ready pod backs the sandbox, returning the pod object.
+ *  A freshly-provisioned sandbox may still be ContainerCreating when the first
+ *  request arrives; exec'ing / proxying to a not-ready pod fails, so we wait. */
+async function resolveReadyPod(kc: KubeConfig, ref: SandboxRef): Promise<Pod> {
   const core = kc.makeApiClient(CoreV1Api);
-  // Wait for a RUNNING + Ready pod. A freshly-provisioned sandbox may still be
-  // ContainerCreating when the agent's first tool call arrives; exec'ing a
-  // not-ready pod fails (an empty-object WS rejection that surfaces as goose's
-  // "terminal Internal error"). Poll briefly until the pod is execable.
   const deadline = Date.now() + 90_000;
-  let lastName: string | undefined;
+  let lastRunning: Pod | undefined;
   for (;;) {
     // Try both the label selector (v0.4.x) and direct pod name lookup (v0.5.0+
     // where the controller names the pod after the Sandbox but may not propagate
@@ -90,15 +99,39 @@ async function resolvePodName(kc: KubeConfig, ref: SandboxRef): Promise<string> 
         p.status?.phase === "Running" &&
         (p.status?.containerStatuses ?? []).every((c) => c.ready),
     );
-    if (ready?.metadata?.name) return ready.metadata.name;
-    lastName = candidates.find((p) => p.status?.phase === "Running")?.metadata?.name ?? lastName;
+    if (ready?.metadata?.name) return ready;
+    lastRunning = candidates.find((p) => p.status?.phase === "Running") ?? lastRunning;
     if (Date.now() > deadline) {
       // Fall back to any Running pod (or fail) rather than hang forever.
-      if (lastName) return lastName;
+      if (lastRunning) return lastRunning;
       throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}`);
     }
     await new Promise((r) => setTimeout(r, 1500));
   }
+}
+
+async function resolvePodName(kc: KubeConfig, ref: SandboxRef): Promise<string> {
+  const pod = await resolveReadyPod(kc, ref);
+  const name = pod.metadata?.name;
+  if (!name) throw new Error(`ready pod for sandbox ${ref.namespace}/${ref.name} has no name`);
+  return name;
+}
+
+/** Resolve a sandbox to its pod name + routable pod IP, for the web-service
+ *  reverse proxy (which HTTPs directly to podIP:port). Same 90s ready-poll as
+ *  exec. Throws if no ready pod, or a ready pod with no assigned IP. */
+export async function resolvePodTarget(
+  ref: SandboxRef,
+  opts: { kubeConfig?: KubeConfig } = {},
+): Promise<PodTarget> {
+  const kc = opts.kubeConfig ?? defaultKubeConfig();
+  const pod = await resolveReadyPod(kc, ref);
+  const name = pod.metadata?.name;
+  const podIP = pod.status?.podIP;
+  if (!name || !podIP) {
+    throw new Error(`ready pod for sandbox ${ref.namespace}/${ref.name} has no name/podIP`);
+  }
+  return { name, podIP };
 }
 
 export function createK8sSandboxApiClient(

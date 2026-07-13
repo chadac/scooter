@@ -20,6 +20,7 @@
     ./nix-config.nix
     ./lazy-tools.nix
     ./sample-service.nix
+    ./web-services.nix
     ./carry-over.nix
     ./runtime-converge.nix
     ./overlay-store.nix

@@ -93,6 +93,58 @@ export async function loadLinks(
   }
 }
 
+/** A web service running in the conversation's sandbox, reverse-proxied at
+ *  /c/<id>/<name>/ (GET /conversations/:id/web-services). */
+export interface WebService {
+  name: string;
+  displayName: string;
+  /** Path to open the service in the browser (under the full threadId). */
+  url: string;
+  running: boolean;
+}
+
+/** List the conversation's declared web services (marimo/xterm/…) with liveness.
+ *  Empty when none declared or the server/pod is unreachable. */
+export async function loadWebServices(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<WebService[]> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/web-services`,
+      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) {
+      console.warn(`[client] loadWebServices ${conversationId}: HTTP ${res.status}`);
+      return [];
+    }
+    return ((await res.json()) as { services?: WebService[] }).services ?? [];
+  } catch (e) {
+    console.warn(`[client] loadWebServices ${conversationId} failed:`, e);
+    return [];
+  }
+}
+
+/** Start a web service (systemctl start via the agent-host). Resolves true once
+ *  the start is issued (not once healthy — the caller polls/opens after). */
+export async function startWebService(
+  config: AgentHostConfig,
+  conversationId: string,
+  name: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/web-services/${encodeURIComponent(name)}/start`,
+      { method: "POST", headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) console.warn(`[client] startWebService ${conversationId}/${name}: HTTP ${res.status}`);
+    return res.ok;
+  } catch (e) {
+    console.warn(`[client] startWebService ${conversationId}/${name} failed:`, e);
+    return false;
+  }
+}
+
 /**
  * Load ALL conversations from the agent-host so the sidebar survives a page
  * refresh and every conversation is listed/searchable (not just the ones this
