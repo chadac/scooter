@@ -44,4 +44,12 @@ describe("QueuedMessages", () => {
     // Two message rows.
     expect(html.match(/data-testid="queued-message"/g)).toHaveLength(2);
   });
+
+  it("wraps long messages instead of truncating (no page-stretching)", () => {
+    const html = render([{ id: "q1", text: "x".repeat(400), priority: 0 }]);
+    // The message wraps (break-words) rather than forcing one line (truncate),
+    // which stretched the page on a long unbroken message.
+    expect(html).toContain("break-words");
+    expect(html).not.toContain("truncate");
+  });
 });
