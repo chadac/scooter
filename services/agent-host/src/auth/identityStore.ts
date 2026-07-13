@@ -31,6 +31,12 @@ export interface IdentityStore {
   get(id: string): Promise<IdentityRecord | undefined>;
   /** Upsert the learned mapping (best-effort; errors swallowed). */
   put(id: string, rec: IdentityRecord): Promise<void>;
+  /** Reverse lookup: the Scooter user id for an email (case-insensitive), or
+   *  undefined if no user has that email / on any error. Powers the external-user
+   *  identity mapping (a webhook resolves its invoking user's email → this id →
+   *  the conversation owner). A row = a real Scooter user (every ingress login
+   *  upserts one). If several rows share an email, returns the most recently seen. */
+  getByEmail(email: string): Promise<{ id: string } | undefined>;
   close(): Promise<void>;
 }
 
@@ -108,6 +114,11 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
            updated_at timestamptz NOT NULL DEFAULT now()
          )`,
       )
+      // A case-insensitive email index so the reverse lookup (getByEmail) is a
+      // single indexed scan. Separate statement (IF NOT EXISTS, idempotent).
+      .then(() =>
+        pool.query(`CREATE INDEX IF NOT EXISTS user_identity_email_lower ON user_identity (lower(email))`),
+      )
       .then(() => undefined)
       .catch((e) => {
         // eslint-disable-next-line no-console
@@ -146,6 +157,24 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
       } catch (e) {
         // eslint-disable-next-line no-console
         console.error(`[identityStore] put(${id}) failed (mapping not learned):`, (e as Error).message);
+      }
+    },
+    async getByEmail(email) {
+      const e = (email ?? "").trim();
+      if (!e) return undefined;
+      try {
+        await ensureTable();
+        // Case-insensitive; most-recently-updated wins if an email is shared.
+        const res = await pool.query(
+          `SELECT id FROM user_identity WHERE lower(email) = lower($1) ORDER BY updated_at DESC LIMIT 1`,
+          [e],
+        );
+        const row = res.rows[0];
+        return row ? { id: row.id as string } : undefined;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[identityStore] getByEmail failed (no match):`, (err as Error).message);
+        return undefined;
       }
     },
     async close() {

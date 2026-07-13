@@ -31,6 +31,13 @@ export interface RunAgentInput {
    *  preempt a stuck turn after the bridge's priority timeout. The UI (a human
    *  typing) never sets it. Undefined/0 = normal (waits its turn). */
   priority?: number;
+  /** The Scooter user id to OWN a webhook-spawned conversation (the external-user
+   *  identity mapping resolved this). SECURITY: read ONLY from the trusted
+   *  `x-scooter-owner` header (which the ingress must strip from client requests,
+   *  like x-auth-*) — NEVER from the client-controlled JSON body — so a browser
+   *  can't claim someone else's conversation. Undefined = no owner set here
+   *  (the UI path stamps the ingress identity on POST /conversations instead). */
+  owner?: string;
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -42,6 +49,8 @@ export interface AguiConnection {
 
 export interface AguiServer {
   listen(port: number): Promise<void>;
+  /** The bound port after listen() (for tests binding to :0). undefined if not listening. */
+  port(): number | undefined;
   close(): Promise<void>;
   onPrompt(handler: (sessionId: SessionId, input: RunAgentInput) => Promise<void>): void;
   /** Answer a pending permission request (toolCallId -> optionId). */
@@ -213,6 +222,12 @@ export function createAguiServer(): AguiServer {
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
       const model = (Array.isArray(hdr) ? hdr[0] : hdr) || undefined;
+      // The conversation OWNER for a webhook-spawned run — from a TRUSTED header
+      // only (never the client body), so a browser (behind the ingress, which
+      // strips it) can't claim a conversation. The webhooks service, in-cluster,
+      // sets it after resolving the invoking external user to a Scooter user.
+      const ownerHdr = req.headers["x-scooter-owner"];
+      const owner = (Array.isArray(ownerHdr) ? ownerHdr[0] : ownerHdr) || undefined;
       // Drive the run. If promptHandler THROWS before the run ever emits a terminal
       // event (the big one: revive/provision fails — e.g. 409 AlreadyExists from a
       // wrong hydrate map, goose spawn/ACP-connect error), the SSE 200 header is
@@ -221,7 +236,7 @@ export function createAguiServer(): AguiServer {
       // with NO error (the hydrate-silent-drop bug). Emit a proper RUN_ERROR event on
       // THIS stream + close it, so the UI has something to render as a failed send.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -306,6 +321,10 @@ export function createAguiServer(): AguiServer {
         });
         server.listen(port, () => resolve());
       });
+    },
+    port() {
+      const addr = server?.address();
+      return addr && typeof addr === "object" ? addr.port : undefined;
     },
     close() {
       return new Promise((resolve) => {

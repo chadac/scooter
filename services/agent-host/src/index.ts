@@ -594,7 +594,7 @@ export async function main(
         ? requested
         : undefined;
     try {
-      await sessions.promptByThread(sessionId, input.text, model, input.priority);
+      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner);
     } catch (err) {
       // The run couldn't even START (provision/revive failed — e.g. 409 on a wrong
       // hydrate map, goose/ACP error). PERSIST a RUN_ERROR to the durable log so a
@@ -681,6 +681,7 @@ export async function main(
       store,
       server,
       webServices,
+      identityStore,
       models: {
         default: config.model,
         available: config.availableModels,

@@ -31,6 +31,12 @@ function fakeStore(seed: Record<string, { email?: string; name?: string }> = {})
       puts.push({ id, email: rec.email });
       data.set(id, rec);
     }),
+    getByEmail: vi.fn(async (email: string) => {
+      const target = email.trim().toLowerCase();
+      if (!target) return undefined;
+      for (const [id, rec] of data) if (rec.email?.toLowerCase() === target) return { id };
+      return undefined;
+    }),
     close: vi.fn(async () => {}),
   };
 }
@@ -88,5 +94,24 @@ describe("withIdentityStore", () => {
     const u = await r.resolve(req); // must NOT throw
     expect(u).toMatchObject({ id: "sub-5", anonymous: false });
     expect(u.email).toBeUndefined();
+  });
+});
+
+describe("IdentityStore.getByEmail (external-user reverse lookup)", () => {
+  it("returns the Scooter user id for a known email (case-insensitive)", async () => {
+    const store = fakeStore({ "sub-1": { email: "Alice@Example.com", name: "Alice" } });
+    expect(await store.getByEmail("alice@example.com")).toEqual({ id: "sub-1" });
+    expect(await store.getByEmail("ALICE@EXAMPLE.COM")).toEqual({ id: "sub-1" });
+  });
+
+  it("returns undefined when no user has that email", async () => {
+    const store = fakeStore({ "sub-1": { email: "alice@example.com" } });
+    expect(await store.getByEmail("bob@example.com")).toBeUndefined();
+  });
+
+  it("returns undefined for an empty email", async () => {
+    const store = fakeStore({ "sub-1": { email: "alice@example.com" } });
+    expect(await store.getByEmail("")).toBeUndefined();
+    expect(await store.getByEmail("   ")).toBeUndefined();
   });
 });
