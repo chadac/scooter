@@ -91,6 +91,26 @@ let
         default = { };
         description = "Extra environment for the unit.";
       };
+
+      extraConfig = lib.mkOption {
+        type = lib.types.attrsOf lib.types.anything;
+        default = { };
+        example = lib.literalExpression ''
+          {
+            after = [ "network-online.target" ];
+            serviceConfig.LimitNOFILE = 65536;
+            serviceConfig.ReadWritePaths = [ "/workspace" ];
+          }
+        '';
+        description = ''
+          Arbitrary extra `systemd.services.webservice-<name>` settings, recursively
+          merged OVER the option's own (so it can override them). The full
+          systemd-unit vocabulary is available (after/wants, serviceConfig
+          hardening, restart policy, …) — an escape hatch so the option needn't
+          enumerate every knob; a built-in or the agent's module attaches
+          service-specific tuning here.
+        '';
+      };
     };
   };
 in
@@ -107,25 +127,26 @@ in
 
   config = lib.mkIf (enabled != { }) {
     # One systemd unit per enabled service. NOT wantedBy multi-user.target —
-    # explicit start. RestartIfChanged=false so a live switch-to-configuration
-    # (scooter-apply-module) doesn't bounce a running service.
+    # explicit start. restartIfChanged=false so a live switch-to-configuration
+    # (scooter-apply-module) doesn't bounce a running service. The per-service
+    # extraConfig is recursively merged OVER the base (so it can override).
     systemd.services = lib.mapAttrs' (name: s:
-      lib.nameValuePair (unitName name) {
-        description = "web service: ${s.displayName}";
-        # A live switch-to-configuration (scooter-apply-module) must not bounce a
-        # running service — restartIfChanged is a systemd.services.<name> option
-        # (NixOS level), NOT a [Service] key.
-        restartIfChanged = false;
-        # The service reads CONVERSATION_ID (proxy base path) + PATH (lazy-tool
-        # stubs) from the pod environment.
-        serviceConfig = {
-          ExecStart = s.command;
-          Restart = "on-failure";
-        }
-        // (if s.user != null then { User = s.user; } else { DynamicUser = true; })
-        // (lib.optionalAttrs (s.workingDirectory != null) { WorkingDirectory = s.workingDirectory; });
-        environment = s.environment;
-      }
+      let
+        base = {
+          description = "web service: ${s.displayName}";
+          restartIfChanged = false;
+          # Reads CONVERSATION_ID (proxy base path) + PATH (lazy-tool stubs) from
+          # the pod environment.
+          serviceConfig = {
+            ExecStart = s.command;
+            Restart = "on-failure";
+          }
+          // (if s.user != null then { User = s.user; } else { DynamicUser = true; })
+          // (lib.optionalAttrs (s.workingDirectory != null) { WorkingDirectory = s.workingDirectory; });
+          environment = s.environment;
+        };
+      in
+      lib.nameValuePair (unitName name) (lib.recursiveUpdate base s.extraConfig)
     ) enabled;
 
     # Render the discovery manifest at boot (tmpfiles → /run, so it's present

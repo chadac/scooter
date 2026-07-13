@@ -47,6 +47,12 @@ pkgs.testers.runNixOSTest {
       # (visible to systemd units); a nixosTest `environment.variables` is only a
       # login-shell var, so pass it through the unit env to mirror production.
       environment.CONVERSATION_ID = "conv-test";
+      # extraConfig escape hatch: arbitrary generic systemd config merged into the
+      # unit (proves the deferredModule merge).
+      extraConfig = {
+        unitConfig.X-Web-Service-Test = "yes";
+        serviceConfig.LimitNOFILE = 4242;
+      };
     };
   };
 
@@ -65,6 +71,11 @@ pkgs.testers.runNixOSTest {
     # 2. Explicit-start: the unit exists but is NOT running until asked.
     machine.succeed("systemctl cat webservice-demo.service >/dev/null")
     machine.fail("systemctl is-active --quiet webservice-demo.service")
+
+    # extraConfig (deferredModule) merged into the unit.
+    unit = machine.succeed("systemctl cat webservice-demo.service")
+    assert "X-Web-Service-Test=yes" in unit, unit
+    assert "LimitNOFILE=4242" in unit, unit
     machine.fail("curl -fsS http://localhost:9911/c/conv-test/demo/ >/dev/null")
 
     # 3. Start it (the agent-host does this via exec on the UI Start button).
