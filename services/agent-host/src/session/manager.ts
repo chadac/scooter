@@ -25,6 +25,14 @@ const RESUME_NUDGE =
   "repeat a message/comment you already posted. If you had already finished, a brief " +
   "status is fine.]";
 
+/** The synthetic prompt sent after an agent-initiated model switch (switch_model):
+ *  the current turn was cancelled to swap the model, so nudge the agent to pick its
+ *  own work back up on the new model — without redoing or re-announcing anything. */
+const MODEL_SWITCH_NUDGE =
+  "[System: your model was switched at your request; the previous turn was ended to " +
+  "apply it. Continue where you left off on the new model — do NOT restart the task, " +
+  "re-introduce yourself, or repeat anything you already did or posted.]";
+
 /** An event plus the rolling integrity checksum through it. `prevChecksum` is
  *  the chain value before this event (so a client links each event to the one
  *  before); `checksum` is the value through and including it. */
@@ -217,6 +225,14 @@ export interface SessionManager {
    *  `model` on the FIRST prompt picks the conversation's model; on a later
    *  prompt it switches it (rebuilds the goose session). `priority` as in prompt(). */
   promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number): Promise<void>;
+  /** Switch a RUNNING conversation's model IMMEDIATELY and continue its work on
+   *  the new model. Unlike a model passed to prompt() (which applies on the next
+   *  turn), this is for the switch_model MCP tool the agent calls MID-TURN: it
+   *  cancels the in-flight run (so the tool's own run ends cleanly), rebuilds goose
+   *  with the new model, and re-nudges to continue where it left off. A no-op if
+   *  `model` is already current. Throws on an unknown conversation. Returns whether
+   *  a switch happened. */
+  switchModelNow(id: SessionId, model: string): Promise<boolean>;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
 
@@ -598,6 +614,28 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         { threadId, text },
         priority ? { priority, interrupt: "thinking" } : undefined,
       );
+    },
+
+    async switchModelNow(id, model) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      if (model === entry.model) return false; // already on it — no-op
+      touch(entry);
+      // Called MID-TURN by the switch_model tool (goose is running). We must NOT
+      // just tear the bridge down under the live run (applyModelSwitch's next-prompt
+      // model does that, which would strand the run that invoked the tool). Instead:
+      //   1. CANCEL the in-flight run cleanly (RUN_FINISHED cancelled, kills the
+      //      active tool call) — the tool's own turn ends here.
+      //   2. applyModelSwitch: set entry.model + tear down the (now-idle) bridge +
+      //      persist.
+      //   3. prompt() with the continue-nudge: revives -> rebuilds goose with the
+      //      new GOOSE_MODEL -> continues the work. Strictly AFTER the rebuild, so
+      //      this can't reintroduce the model-switch-midconvo race (the new goose is
+      //      fully up before the nudge is sent).
+      await entry.bridge?.cancel().catch(() => {});
+      await applyModelSwitch(entry, model);
+      await this.prompt(id, MODEL_SWITCH_NUDGE);
+      return true;
     },
 
     async suspend(id) {

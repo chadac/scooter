@@ -215,14 +215,23 @@ describe("management API", () => {
     expect(me.json).toEqual({ id: "anonymous", email: null, anonymous: true });
   });
 
-  it("GET /models returns the catalog", async () => {
+  it("GET /models returns the catalog (default + available + hints)", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
-      models: { default: "opus", available: ["opus", "sonnet"] },
+      models: { default: "opus", available: ["opus", "sonnet"], hints: { sonnet: "fast/cheap" } },
     });
     const { status, json } = await call(api, "GET", "/models");
     expect(status).toBe(200);
-    expect(json).toEqual({ default: "opus", available: ["opus", "sonnet"] });
+    expect(json).toEqual({ default: "opus", available: ["opus", "sonnet"], hints: { sonnet: "fast/cheap" } });
+  });
+
+  it("GET /models defaults hints to {} when unset", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      models: { default: "opus", available: ["opus"] },
+    });
+    const { json } = await call(api, "GET", "/models");
+    expect(json).toEqual({ default: "opus", available: ["opus"], hints: {} });
   });
 
   it("POST /conversations honors an offered model", async () => {

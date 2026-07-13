@@ -54,6 +54,31 @@ let
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
 
+  # The model catalog (agent.availableModels attrset) must render AGENT_MODELS_JSON
+  # (rich: ids + hints + default) into the agent-host env, and GOOSE_MODEL as the
+  # derived default. NOTE: the example sets fakeAgent, which gates these off — so
+  # render a NON-fake platform to force the model-env derivation + assert it.
+  modelPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.fakeAgent = lib.mkForce false;
+    };
+  };
+  mHostEnv =
+    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  mEnvVal = name: let m = builtins.filter (e: e.name == name) mHostEnv; in if m == [ ] then "" else (builtins.head m).value;
+  modelsJson = mEnvVal "AGENT_MODELS_JSON";
+  gooseModel = mEnvVal "GOOSE_MODEL";
+  parsedModels = if modelsJson == "" then [ ] else builtins.fromJSON modelsJson;
+  sonnetEntry = builtins.filter (m: m.id == "us.anthropic.claude-sonnet-4-6") parsedModels;
+  mdProblems =
+    (if parsedModels != [ ] then [ ] else [ "host.env.AGENT_MODELS_JSON (model catalog not rendered)" ])
+    ++ (if gooseModel == "us.anthropic.claude-sonnet-4-6" then [ ]
+        else [ "GOOSE_MODEL should be the default (sonnet), got '${gooseModel}'" ])
+    ++ (if sonnetEntry != [ ] && (builtins.head sonnetEntry).default && (builtins.head sonnetEntry).hint != "" then [ ]
+        else [ "AGENT_MODELS_JSON: sonnet should be default:true with a hint" ]);
+
   # broker.aws (enabled in the example) must stamp a checksum/aws-accounts annotation
   # on the broker pod template, so editing an account rolls the pod (a ConfigMap
   # content change alone doesn't trigger a rollout). Assert the annotation is present.
@@ -110,8 +135,8 @@ let
     ++ (if managerUrlSet then [ ] else [ "ingress-disabled: AGENT_MANAGER_URL empty (should derive from host)" ])
     ++ (if noChatIngress then [ ] else [ "ingress-disabled: a chat Ingress was rendered anyway (competing router)" ]);
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems;
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired\n"
+then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired; models wired\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"
