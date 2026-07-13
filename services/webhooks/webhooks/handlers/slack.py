@@ -20,6 +20,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 from ..config import require_relay_key, settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..identity_resolve import resolve_owner
+from .slack_files import download_images
 from ..responses.slack import (
     add_slack_reaction,
     get_bot_user_id,
@@ -300,6 +301,9 @@ async def _handle_mention(event: dict):
 
     comment_text = f"<@{user}> said:\n\n{message_text}"
 
+    # Download any attached images so the agent can SEE them (multimodal).
+    images = await download_images(event.get("files"))
+
     if is_pending(existing):
         _record_message_dispatched(channel, ts)
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
@@ -315,7 +319,7 @@ async def _handle_mention(event: dict):
         await add_slack_reaction(channel, ts, "eyes")
         # A mention to an ACTIVE conversation is priority: force-interrupt a stuck
         # turn after the agent-host's timeout (it owns the timer).
-        asyncio.create_task(_background_forward(existing, forward_msg, priority=True))
+        asyncio.create_task(_background_forward(existing, forward_msg, priority=True, images=images))
         return
 
     # React to indicate we're processing
@@ -339,7 +343,7 @@ async def _handle_mention(event: dict):
         _background_create_conversation(
             res_id=res_id, message=full_message,
             conv_title=f"Slack: {message_text[:50]}",
-            channel=channel, thread_ts=thread_ts, invoking_user=user,
+            channel=channel, thread_ts=thread_ts, invoking_user=user, images=images,
         )
     )
 
@@ -403,10 +407,13 @@ async def _handle_thread_message(event: dict):
     # awaiting it here blows Slack's retry window → every delivery deduped).
     _record_message_dispatched(channel, ts)
     forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
-    asyncio.create_task(_background_forward(existing, forward_msg))
+    images = await download_images(event.get("files"))
+    asyncio.create_task(_background_forward(existing, forward_msg, images=images))
 
 
-async def _background_forward(existing: str, forward_msg: str, *, priority: bool = False) -> None:
+async def _background_forward(
+    existing: str, forward_msg: str, *, priority: bool = False, images: list[dict] | None = None
+) -> None:
     """Forward a follow-up into an existing conversation OFF the request path.
 
     send_message blocks until the agent's whole turn finishes (the /agui SSE runs
@@ -418,7 +425,7 @@ async def _background_forward(existing: str, forward_msg: str, *, priority: bool
 
     `priority=True` (an @mention to an active conversation, from _handle_mention)
     force-interrupts a stuck turn after the agent-host's priority timeout."""
-    ok = await send_message(existing, forward_msg, priority=priority)
+    ok = await send_message(existing, forward_msg, priority=priority, images=images)
     if not ok:
         logger.warning("Failed to forward message to conversation %s", existing)
 
@@ -426,6 +433,7 @@ async def _background_forward(existing: str, forward_msg: str, *, priority: bool
 async def _background_create_conversation(
     res_id: str, message: str, conv_title: str,
     channel: str, thread_ts: str, invoking_user: str | None = None,
+    images: list[dict] | None = None,
 ) -> None:
     # Register the Slack thread anchor BEFORE the agent runs. create_conversation
     # blocks until the turn finishes, and the agent is instructed to acknowledge
@@ -458,7 +466,7 @@ async def _background_create_conversation(
     owner = await resolve_owner("slack", invoking_user) if invoking_user else None
 
     try:
-        result = await create_conversation(message, title=conv_title, on_created=_register, owner=owner)
+        result = await create_conversation(message, title=conv_title, on_created=_register, owner=owner, images=images)
         if not result:
             await _clear_pending(res_id)
             # The optimistic "on it" ack already posted in _register; correct it.

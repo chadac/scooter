@@ -62,11 +62,11 @@ def _env(existing: str | None = None):
     signal."""
     dispatched: list[tuple] = []
 
-    async def spy_send(conv, msg, *, priority=False):
+    async def spy_send(conv, msg, *, priority=False, images=None):
         dispatched.append(("send", conv, msg, priority))
         return True
 
-    async def spy_create(message, *, title=None, on_created=None, owner=None):
+    async def spy_create(message, *, title=None, on_created=None, owner=None, images=None):
         dispatched.append(("create", message, title))
         # Exercise the real on_created anchor-registration hook (pre-run), like
         # create_conversation does — so the test covers that path too.

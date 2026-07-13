@@ -66,6 +66,11 @@ class WebhooksSettings(BaseSettings):
     github_token: str = ""  # PAT fallback (used if github_app_id is empty)
     slack_bot_token: str = ""
 
+    # Max bytes for an inbound image (Slack file download) forwarded to the agent.
+    # Mirrors the agent-host ASSET_MAX_BYTES so a file the agent-host would reject is
+    # skipped up front. ~5MB default.
+    image_max_bytes: int = 5 * 1024 * 1024
+
     # GitHub App authentication
     github_app_id: str = ""
     github_app_private_key: str = ""  # PEM content or path to .pem file

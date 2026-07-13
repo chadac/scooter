@@ -77,7 +77,7 @@ async def test_mention_is_rewritten_to_readable_pattern_not_stripped():
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
-        async def rec_send(conv, msg, *, priority=False):
+        async def rec_send(conv, msg, *, priority=False, images=None):
             captured["msg"] = msg
             captured["priority"] = priority
             return True
