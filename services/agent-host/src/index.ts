@@ -34,6 +34,7 @@ import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createModuleManager } from "./session/moduleManager.js";
+import { validateResources, type SandboxResources } from "./session/resources.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
@@ -103,6 +104,16 @@ export interface AgentHostConfig {
 export interface AgentHostConfigExtra {
   /** Skip real Sandbox provisioning (local UI testing with the dummy agent). */
   fakeSandbox: boolean;
+}
+
+/** Parse the deployment-default sandbox resources from SANDBOX_DEFAULT_RESOURCES_JSON
+ *  (the friendly { requests?, limits? } shape). Returns undefined when unset/blank
+ *  (falls back to the platform default). A malformed value THROWS at startup — a
+ *  misconfigured default should fail loudly, not silently ship the wrong size. */
+export function parseDefaultResources(raw: string | undefined): SandboxResources | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  const parsed = JSON.parse(raw) as SandboxResources;
+  return validateResources(parsed);
 }
 
 export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
@@ -273,11 +284,19 @@ function bedrockEnv(): Record<string, string> {
 export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
+  // Deployment-wide default sandbox resources (the fallback when a conversation has
+  // no per-conversation override). SANDBOX_DEFAULT_RESOURCES_JSON is the friendly
+  // { requests?, limits? } shape (cpu/memory/gpu). Undefined -> the provisioner's own
+  // platform default. Fed to BOTH the provisioner (create()) and the session manager
+  // (resolveResources fallback) so they agree on the baseline.
+  const deploymentDefaultResources = parseDefaultResources(process.env.SANDBOX_DEFAULT_RESOURCES_JSON);
+
   const provisioner = config.fakeSandbox
     ? createNoopProvisioner()
     : createK8sProvisioner({
         namespace: config.namespace,
         sandboxImage: config.sandboxImage,
+        ...(deploymentDefaultResources ? { sandboxResources: deploymentDefaultResources } : {}),
         // When the AWS permissions broker is on, mount its account-registry
         // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
         awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,
@@ -349,6 +368,10 @@ export async function main(
 
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn
   // goose, and wire its AG-UI events out through the server.
+  // Forward-holder for moduleManager (built after sessions): lets the session
+  // manager's isSwitching guard reach it without a circular construction order.
+  const moduleManagerRef: { current: ReturnType<typeof createModuleManager> | undefined } = { current: undefined };
+
   const sessions = createSessionManager({
     provisioner,
     store,
@@ -372,6 +395,11 @@ export async function main(
         console.error(`[agent-host] re-raise pending AWS interrupts failed for ${id}:`, err),
       );
     },
+    deploymentDefaultResources,
+    // Refuse a resize-restart while an environment switch is in flight (one
+    // disruptive op at a time). moduleManager is built AFTER sessions, so read it
+    // through the holder — undefined until then means "not switching".
+    isSwitching: (id) => moduleManagerRef.current?.isApplying(id) ?? false,
   });
 
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
@@ -497,6 +525,9 @@ export async function main(
         },
       })
     : undefined;
+  // Publish moduleManager to the holder so the session manager's isSwitching guard
+  // (set_sandbox_resources) can see an in-flight environment switch.
+  moduleManagerRef.current = moduleManager;
 
   // Background jobs (run_background): the agent starts a long command detached in
   // its sandbox and keeps working. Gated the same way as self-modify (a real
@@ -574,8 +605,22 @@ export async function main(
         }
       : undefined;
 
+  // Sandbox right-sizing (show_/set_sandbox_resources) — only with real provisioning
+  // (a fake sandbox can't restart at a new size). set_sandbox_resources restarts the
+  // pod via the manager (persist override -> suspend -> resume with patched resources).
+  const resourceToolsWiring = !config.fakeSandbox
+    ? {
+        currentResources: (id: string) => sessions.effectiveResources(id as SessionId),
+        setResources: (id: string, r: SandboxResources) => sessions.setResourcesNow(id as SessionId, r),
+      }
+    : undefined;
+
   const mcpEndpoint =
-    moduleManager !== undefined || agentToolsWiring !== undefined || jobManager !== undefined || modelToolsWiring !== undefined
+    moduleManager !== undefined ||
+    agentToolsWiring !== undefined ||
+    jobManager !== undefined ||
+    modelToolsWiring !== undefined ||
+    resourceToolsWiring !== undefined
       ? createMcpEndpoint({
           manager: moduleManager,
           // The URL goose connects to. The agent-host serves it on its own port;
@@ -584,6 +629,7 @@ export async function main(
           agentTools: agentToolsWiring,
           jobs: jobManager,
           models: modelToolsWiring,
+          resources: resourceToolsWiring,
         })
       : undefined;
 

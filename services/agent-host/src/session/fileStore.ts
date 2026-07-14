@@ -321,6 +321,7 @@ export function createFileConversationStore(root: string): ConversationStore {
           lastActivityAt,
           model: meta.model,
           owner: meta.owner,
+          resources: meta.resources,
         });
       }
       return out;

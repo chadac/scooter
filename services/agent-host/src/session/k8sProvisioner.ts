@@ -24,6 +24,8 @@ import {
 
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
+import type { SandboxResources, K8sResourceBlock } from "./resources.js";
+import { renderResources } from "./resources.js";
 
 /** Delete-error policy (findings #7/#8): a 404 means the object is already gone
  *  (the delete's goal — fine to ignore); EVERY other error means the delete did
@@ -61,11 +63,10 @@ export interface K8sProvisionerOptions {
    *  stalls the whole node (the node-death we hit). Default: request cpu 500m /
    *  memory 1Gi so the scheduler SPREADS sandboxes across nodes, limit memory 4Gi so
    *  a runaway build is OOM-killed instead of taking the node down, and NO cpu limit
-   *  so bursty builds use spare node CPU freely. Deployment-overridable. */
-  sandboxResources?: {
-    requests?: { cpu?: string; memory?: string };
-    limits?: { cpu?: string; memory?: string };
-  };
+   *  so bursty builds use spare node CPU freely. Deployment-overridable. This is the
+   *  DEPLOYMENT DEFAULT — the fallback when a conversation has no per-conversation
+   *  override (resolveResources: conversation -> this -> platform default). */
+  sandboxResources?: SandboxResources;
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
   /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
@@ -179,6 +180,34 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     );
   };
 
+  // Merge-patch the Sandbox's container resources (the "restart at new size" step,
+  // run BEFORE setReplicas(1)). renderResources maps the friendly cpu/memory/gpu
+  // into the k8s block (gpu -> nvidia.com/gpu). A merge-patch REPLACES arrays, so we
+  // read-modify-write the container list (same pattern as ensureModuleMount): send
+  // the whole container[0] with its resources replaced. Throws on failure — resume()
+  // must NOT flip replicas up after a failed patch (never a half-patched state).
+  const patchSandboxResources = async (ref: SandboxRef, resources: SandboxResources): Promise<void> => {
+    const namespace = refNs(ref);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sb: any = await custom.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace, plural: PLURAL, name: ref.name,
+    });
+    const podSpec = sb?.spec?.podTemplate?.spec;
+    const containers: Array<Record<string, unknown>> = podSpec?.containers ?? [];
+    const container = containers[0];
+    if (!container) throw new Error(`Sandbox ${ref.name} has no container to resize`);
+    const patchedContainer = { ...container, resources: renderResources(resources) };
+    await custom.patchNamespacedCustomObject(
+      {
+        group: GROUP, version: VERSION, namespace, plural: PLURAL, name: ref.name,
+        body: {
+          spec: { podTemplate: { spec: { containers: [patchedContainer, ...containers.slice(1)] } } },
+        },
+      },
+      setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+    );
+  };
+
   return {
     async create(id: string, threadId?: string): Promise<SandboxRef> {
       // The URL deep-links on the FULL conversation id (threadId), NOT the short
@@ -252,7 +281,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             overlayStore: opts.overlayStore ?? false,
             overlayStorage: opts.overlayStorage,
             moduleConfigMap: moduleCmName(id),
-            resources: sandboxResources,
+            // Render the friendly deployment-default (cpu/memory/gpu) into the k8s
+            // block (gpu -> nvidia.com/gpu). Per-conversation override + the resolve
+            // order (conversation -> deploy default -> platform) wire in at stage 5.
+            resources: renderResources(sandboxResources),
           }),
         })
         .catch((e: { code?: number }) => {
@@ -286,7 +318,15 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       await setReplicas(ref, 0).catch(ignoreDeleteNotFound);
     },
 
-    async resume(ref: SandboxRef): Promise<SandboxRef> {
+    async resume(ref: SandboxRef, resources?: SandboxResources): Promise<SandboxRef> {
+      // Restart-at-new-size: when an override is given, PATCH the Sandbox container
+      // resources BEFORE flipping replicas up, so the recreated pod comes back at
+      // the new cpu/memory/gpu. A patch failure must NOT leave us flipping replicas
+      // into a half-patched state (fail-safe) — surface it, leave suspended.
+      // Design (stage 2): patch is stubbed; setReplicas keeps the current behavior.
+      if (resources) {
+        await patchSandboxResources(ref, resources);
+      }
       await setReplicas(ref, 1);
       return ref;
     },
@@ -457,10 +497,10 @@ export function sandboxManifest(
     overlayStore?: boolean;
     overlayStorage?: string;
     moduleConfigMap?: string;
-    resources?: {
-      requests?: { cpu?: string; memory?: string };
-      limits?: { cpu?: string; memory?: string };
-    };
+    /** ALREADY-RENDERED k8s resources block (spread verbatim onto the container).
+     *  The friendly SandboxResources (with gpu) is rendered via renderResources at
+     *  the call site; this stays k8s-shaped (nvidia.com/gpu already expanded). */
+    resources?: K8sResourceBlock;
   } = {},
 ): object {
   const scooter = deploy.scooterConfigMap;

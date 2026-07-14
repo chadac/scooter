@@ -12,6 +12,8 @@
  */
 
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
+import type { SandboxResources } from "./resources.js";
+import { resolveResources } from "./resources.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
@@ -53,8 +55,13 @@ export interface SandboxProvisioner {
   create(conversationId: string, threadId?: string): Promise<SandboxRef>;
   /** operatingMode: Suspended (drops Pod, keeps PVCs + Sandbox object). */
   suspend(ref: SandboxRef): Promise<void>;
-  /** operatingMode: Running (recreates Pod, re-mounts PVCs, same SA). */
-  resume(ref: SandboxRef): Promise<SandboxRef>;
+  /** operatingMode: Running (recreates Pod, re-mounts PVCs, same SA).
+   *  When `resources` is given, PATCH the Sandbox container resources FIRST (so
+   *  the recreated pod comes back up at those cpu/memory/gpu), THEN flip replicas
+   *  0->1 — the "restart at new size" path (a restart is just suspend then
+   *  resume-with-override). Omitted → keep the Sandbox's current resources.
+   *  A patch failure must NOT flip replicas up into a half-patched state. */
+  resume(ref: SandboxRef, resources?: SandboxResources): Promise<SandboxRef>;
   /** Delete the Sandbox + GC the per-conversation SA/RBAC. */
   destroy(ref: SandboxRef): Promise<void>;
   /** List the live per-conversation Sandboxes (name -> ref + whether its pod is
@@ -92,6 +99,10 @@ export interface ConversationMeta {
   /** Creating user (ingress identity). undefined = unowned/public. Persisted for
    *  the "my conversations" view filter (survives restart). */
   owner?: string;
+  /** Per-conversation resource override (undefined = fall back to the deployment
+   *  default, then the platform default). Persisted so a restart-at-new-size
+   *  survives an agent-host restart, like `model`. Set by set_sandbox_resources. */
+  resources?: SandboxResources;
 }
 
 /** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
@@ -235,6 +246,17 @@ export interface SessionManager {
    *  `model` is already current. Throws on an unknown conversation. Returns whether
    *  a switch happened. */
   switchModelNow(id: SessionId, model: string): Promise<boolean>;
+  /** Resize a conversation's sandbox and RESTART it at the new size (the
+   *  set_sandbox_resources MCP tool): persist the override, suspend, then resume
+   *  with the resources patched in (patch-then-flip). Returns whether a restart
+   *  happened (false = the requested size resolves to the current one — no-op).
+   *  Throws if an environment switch is in flight, or the resource patch fails
+   *  (fail-safe: the pod is not left half-patched with replicas up). */
+  setResourcesNow(id: SessionId, resources: SandboxResources): Promise<boolean>;
+  /** The EFFECTIVE resources a conversation currently runs with (its override, else
+   *  the deployment default, else the platform default) — for show_sandbox_resources.
+   *  Throws on an unknown conversation. */
+  effectiveResources(id: SessionId): SandboxResources;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
 
@@ -307,6 +329,14 @@ export interface SessionManagerDeps {
    *  request still sits PENDING in the broker (source of truth), so on revive we
    *  re-query + re-raise. Fire-and-forget; a failure must not fail the revive. */
   onRevived?: (id: SessionId) => void;
+  /** The deployment-wide default sandbox resources — the fallback when a
+   *  conversation has no override (resolveResources: conversation -> this ->
+   *  platform default). Undefined lets it fall straight to the platform default. */
+  deploymentDefaultResources?: SandboxResources;
+  /** True while a conversation has an environment switch (modify_environment) in
+   *  flight — set_sandbox_resources REFUSES a restart mid-switch (one disruptive op
+   *  at a time). Optional; omitted (tests) means "never switching". */
+  isSwitching?: (id: SessionId) => boolean;
 }
 
 interface Entry {
@@ -320,6 +350,9 @@ interface Entry {
   lastActivityAt: number;
   model?: string;
   owner?: string;
+  /** Per-conversation resource override (set by set_sandbox_resources); applied on
+   *  the next resume/revive and persisted so it survives a restart. */
+  resources?: SandboxResources;
 }
 
 /** Drain an async iterable of events into an array (fallback for stores without
@@ -394,6 +427,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       lastActivityAt: m.lastActivityAt,
       model: m.model,
       owner: m.owner,
+      resources: m.resources,
     };
     entries.set(m.id, entry);
     return entry;
@@ -441,7 +475,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       lastActivityAt: e.lastActivityAt,
       model: e.model,
       owner: e.owner,
+      resources: e.resources,
     }) ?? Promise.resolve();
+
+  // The effective resources for a conversation: its own override, else the
+  // deployment default, else the platform default (never undefined). Only omitted
+  // from resume() when it equals the deployment default would be identical anyway —
+  // but resolveResources always yields a concrete value the provisioner can patch.
+  const resolvedResources = (e: Entry): SandboxResources =>
+    resolveResources(e.resources, deps.deploymentDefaultResources);
 
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
@@ -541,8 +583,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // placeholder sandbox ref with no namespace — its pod was never created in
       // THIS process (and a suspended Sandbox may have been GC'd). Re-create the
       // sandbox rather than resume a ref this process never owned.
+      // Carry the conversation's resource override (if any) onto the revived pod:
+      // resume patches the Sandbox resources before flipping replicas up, so a
+      // resized conversation comes back at its chosen size across suspend/resume.
       entry.sandbox = entry.sandbox.namespace
-        ? await provisioner.resume(entry.sandbox)
+        ? await provisioner.resume(entry.sandbox, resolvedResources(entry))
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
@@ -640,6 +685,44 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await applyModelSwitch(entry, model);
       await this.prompt(id, MODEL_SWITCH_NUDGE);
       return true;
+    },
+
+    async setResourcesNow(id, resources) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      // One disruptive op at a time: never restart out from under an in-flight
+      // environment switch (modify_environment). The caller (the tool) surfaces this.
+      if (deps.isSwitching?.(id)) {
+        throw new Error("an environment change is in progress — try again once it finishes");
+      }
+      // No-op when the requested override resolves to the same effective size we're
+      // already running (avoids a pointless restart). Compare the RESOLVED values.
+      const next = resolveResources(resources, deps.deploymentDefaultResources);
+      const current = resolvedResources(entry);
+      if (JSON.stringify(next) === JSON.stringify(current)) return false;
+      touch(entry);
+      // Persist the override FIRST (so it survives even if the restart is slow /
+      // this process dies mid-restart — the next revive re-applies it), then restart:
+      // stop the bridge, suspend, resume WITH the new resources (patch-then-flip).
+      entry.resources = resources;
+      await saveMeta(entry);
+      await entry.bridge?.stop().catch(() => {});
+      entry.bridge = undefined;
+      await provisioner.suspend(entry.sandbox);
+      // resume patches the container resources before flipping replicas up; a patch
+      // failure throws WITHOUT flipping replicas (fail-safe) — surfaced to the tool.
+      entry.sandbox = await provisioner.resume(entry.sandbox, next);
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
+      entry.status = "running";
+      wireEventLog(entry);
+      await entry.bridge?.start();
+      return true;
+    },
+
+    effectiveResources(id) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      return resolvedResources(entry);
     },
 
     async suspend(id) {

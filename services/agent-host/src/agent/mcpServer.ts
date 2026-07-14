@@ -22,6 +22,11 @@ import type { JobManager } from "../session/jobManager.js";
 import type { ConversationLink } from "../session/manager.js";
 import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
+import {
+  handleShowSandboxResources,
+  handleSetSandboxResources,
+  type SandboxResourceToolsWiring,
+} from "./resourceTools.js";
 
 /** An MCP tool result (the shape the SDK callback returns). */
 export interface ToolResult {
@@ -173,6 +178,7 @@ function buildServer(
   agentTools?: AgentToolsWiring,
   jobs?: JobManager,
   models?: ModelToolsWiring,
+  resources?: SandboxResourceToolsWiring,
 ): McpServer {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (manager) {
@@ -277,6 +283,42 @@ function buildServer(
       async (args) => handleSwitchModel(models, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
   }
+  // Sandbox right-sizing: show the current cpu/memory/gpu and restart the sandbox
+  // at new resources. Registered only when the resources wiring is present (a
+  // provisioner that can restart-with-override is configured).
+  if (resources) {
+    server.registerTool(
+      "show_sandbox_resources",
+      {
+        title: "Show your sandbox resources",
+        description:
+          "Show your sandbox's current cpu / memory / gpu (requests and limits). Use this before " +
+          "set_sandbox_resources to see what you have.",
+        inputSchema: {},
+      },
+      () => handleShowSandboxResources(resources, conversationId) as { content: Array<{ type: "text"; text: string }>; isError?: boolean },
+    );
+    server.registerTool(
+      "set_sandbox_resources",
+      {
+        title: "Resize your sandbox",
+        description:
+          "Change the cpu / memory / gpu (requests and/or limits) YOUR sandbox runs with, then RESTART it " +
+          "so the change takes effect. Scale up for a heavy build/large model; scale down when idle. Omit a " +
+          "field to keep it. NOTE: this restarts your sandbox — in-flight foreground work is interrupted. " +
+          "Quantities are k8s-style (cpu \"500m\"/\"2\", memory \"1Gi\"/\"512Mi\", gpu a whole number).",
+        inputSchema: {
+          requestCpu: z.string().optional().describe('cpu request, e.g. "500m" or "2".'),
+          requestMemory: z.string().optional().describe('memory request, e.g. "1Gi".'),
+          requestGpu: z.number().int().nonnegative().optional().describe("whole GPUs to request (nvidia.com/gpu)."),
+          limitCpu: z.string().optional().describe('cpu limit, e.g. "2".'),
+          limitMemory: z.string().optional().describe('memory limit, e.g. "8Gi".'),
+          limitGpu: z.number().int().nonnegative().optional().describe("whole GPUs to limit (nvidia.com/gpu)."),
+        },
+      },
+      async (args) => handleSetSandboxResources(resources, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
   return server;
 }
 
@@ -310,6 +352,9 @@ export function createMcpEndpoint(deps: {
   /** When provided (and >1 model is offered), exposes list_models / switch_model
    *  so the agent can pick + switch its own model. */
   models?: ModelToolsWiring;
+  /** When provided, exposes show_sandbox_resources / set_sandbox_resources so the
+   *  agent can right-size + restart its own sandbox. Omit to leave them off. */
+  resources?: SandboxResourceToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
@@ -326,7 +371,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(deps.manager, conv, deps.agentTools, deps.jobs, deps.models);
+      const server = buildServer(deps.manager, conv, deps.agentTools, deps.jobs, deps.models, deps.resources);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },
