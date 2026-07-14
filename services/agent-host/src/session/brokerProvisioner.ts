@@ -17,7 +17,20 @@
 
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
+import type { SandboxResources } from "./resources.js";
 import { brokerAuthHeaders } from "./brokerAuth.js";
+
+/** The broker provisioner ALSO exposes the size-spec ops (GET/PUT /sandbox/{conv}/size).
+ *  These are distinct from the lifecycle interface: they key by the SHORT conv id the
+ *  broker stores sizes under (the same id ensure/resume use), not a SandboxRef. */
+export interface BrokerSizeClient {
+  /** GET /sandbox/{conv}/size — the stored friendly size spec, or undefined if none. */
+  getSize(conv: string): Promise<SandboxResources | undefined>;
+  /** PUT /sandbox/{conv}/size — write the size spec (applied on the next restart). */
+  setSize(conv: string, resources: SandboxResources): Promise<void>;
+}
+
+export type BrokerProvisioner = SandboxProvisioner & BrokerSizeClient;
 
 export interface BrokerProvisionerOptions {
   /** Broker base URL, e.g. http://agent-broker.<ns>.svc.cluster.local:8080. */
@@ -38,7 +51,7 @@ function convId(ref: SandboxRef): string {
   return ref.name.replace(/^conv-/, "");
 }
 
-export function createBrokerProvisioner(opts: BrokerProvisionerOptions): SandboxProvisioner {
+export function createBrokerProvisioner(opts: BrokerProvisionerOptions): BrokerProvisioner {
   const base = opts.brokerUrl.replace(/\/$/, "");
   const doFetch = opts.fetchImpl ?? fetch;
 
@@ -99,6 +112,21 @@ export function createBrokerProvisioner(opts: BrokerProvisionerOptions): Sandbox
         ref: { name: s.name, namespace: s.namespace },
         running: s.running ?? false,
       }));
+    },
+
+    // --- size spec (GET/PUT /sandbox/{conv}/size) -------------------------------
+    // Keyed by the SHORT conv id (the same id ensure/resume use), passed directly by
+    // the caller — NOT a SandboxRef. The broker applies a written size on the next
+    // sandbox restart (sizing is broker-owned).
+    async getSize(conv: string): Promise<SandboxResources | undefined> {
+      const res = await call("GET", `/sandbox/${encodeURIComponent(conv)}/size`);
+      const body = (await json(res, `get size ${conv}`)) as { size?: SandboxResources | null } | undefined;
+      return body?.size ?? undefined;
+    },
+
+    async setSize(conv: string, resources: SandboxResources): Promise<void> {
+      const res = await call("PUT", `/sandbox/${encodeURIComponent(conv)}/size`, resources);
+      await json(res, `set size ${conv}`);
     },
   };
 }

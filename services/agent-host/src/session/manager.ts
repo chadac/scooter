@@ -317,8 +317,10 @@ async function collectEvents(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]>
   return out;
 }
 
-/** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. */
-function shortId(threadId: string): string {
+/** Short, DNS-1123-safe id derived from a (possibly UUID) thread id. Exported so
+ *  callers keying broker-side per-conversation state (e.g. the size spec) use the
+ *  SAME short id ensure/resume/create key sandboxes under. */
+export function shortId(threadId: string): string {
   let h = 0;
   for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) | 0;
   return Math.abs(h).toString(36);

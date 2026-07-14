@@ -18,9 +18,10 @@ import { tmpdir } from "node:os";
 
 import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, type AwsRequestSummary } from "./api/management.js";
-import { createSessionManager } from "./session/manager.js";
+import { createSessionManager, shortId } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
-import { createBrokerProvisioner } from "./session/brokerProvisioner.js";
+import { createBrokerProvisioner, type BrokerProvisioner } from "./session/brokerProvisioner.js";
+import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
@@ -280,10 +281,17 @@ export async function main(
   // in-agent-host k8s provisioner (kept until PR1 St6 as a safe rollback).
   const brokerLifecycleUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
   const useBrokerProvisioner = process.env.SANDBOX_VIA_BROKER === "1" && brokerLifecycleUrl !== "";
+  // Keep a typed handle to the broker provisioner (it ALSO exposes the size-spec
+  // ops getSize/setSize used by the sandbox-resize tools). null unless the broker
+  // lifecycle path is on — a fake/local or legacy-k8s sandbox has no broker size spec.
+  const brokerProvisioner: BrokerProvisioner | null =
+    !config.fakeSandbox && useBrokerProvisioner
+      ? createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl })
+      : null;
   const provisioner = config.fakeSandbox
     ? createNoopProvisioner()
-    : useBrokerProvisioner
-    ? createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl })
+    : brokerProvisioner
+    ? brokerProvisioner
     : createK8sProvisioner({
         namespace: config.namespace,
         sandboxImage: config.sandboxImage,
@@ -536,8 +544,28 @@ export async function main(
         }
       : undefined;
 
+  // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources) —
+  // wired ONLY on the broker path (the broker owns + applies the size). The MCP
+  // `conv` param is the FULL conversationId (= threadId); the broker keys the size
+  // spec by the SHORT id (the same id ensure/resume/create use), so map through
+  // shortId() before every broker size call — otherwise the tool would write a spec
+  // the broker never reads at (re)provision time.
+  const resourceToolsWiring = brokerProvisioner
+    ? {
+        currentResources: async (id: string): Promise<SandboxResources> =>
+          (await brokerProvisioner.getSize(shortId(id))) ?? {},
+        setResources: async (id: string, r: SandboxResources): Promise<boolean> => {
+          await brokerProvisioner.setSize(shortId(id), r);
+          return true; // recorded — the broker applies it on the next sandbox restart
+        },
+      }
+    : undefined;
+
   const mcpEndpoint =
-    agentToolsWiring !== undefined || jobManager !== undefined || modelToolsWiring !== undefined
+    agentToolsWiring !== undefined ||
+    jobManager !== undefined ||
+    modelToolsWiring !== undefined ||
+    resourceToolsWiring !== undefined
       ? createMcpEndpoint({
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
@@ -545,6 +573,7 @@ export async function main(
           agentTools: agentToolsWiring,
           jobs: jobManager,
           models: modelToolsWiring,
+          resources: resourceToolsWiring,
         })
       : undefined;
 
