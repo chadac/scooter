@@ -98,6 +98,12 @@ class BrokerSettings(BaseSettings):
     # the size spec, and the lifecycle API the agent-host calls. See
     # todo/CONTROL_PLANE_REDESIGN.md.
     sandbox_lifecycle_enabled: bool = False
+    # SA usernames allowed to drive the sandbox LIFECYCLE (ensure/suspend/resume/
+    # end/list) — the CONTROL callers, i.e. the agent-host. CSV of
+    # system:serviceaccount:{ns}:{name}. A sandbox SA is NEVER allowed lifecycle
+    # (only its OWN size). Distinct from the AWS approver list so lifecycle auth
+    # doesn't depend on the AWS broker being enabled.
+    sandbox_control_service_accounts: str = ""
     sandbox_image: str = "agent-sandbox-os:latest"
     sandbox_workspace_storage: str = "10Gi"
     sandbox_overlay_store: bool = False
