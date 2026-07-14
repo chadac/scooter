@@ -113,11 +113,14 @@ class BrokerSettings(BaseSettings):
     sandbox_default_resources_json: str = ""
     # Deployment-supplied provisioning config (was K8sProvisionerOptions on the agent-host).
     sandbox_aws_accounts_configmap: str = ""
-    sandbox_scooter_configmap: str = ""
     sandbox_config_files_configmap: str = ""
     sandbox_token_audiences: str = ""   # CSV of extra projected-token audiences
     sandbox_extra_env_json: str = ""    # JSON list of {name,value}
     sandbox_public_url: str = ""
+    # A mounted directory of `.nix` files served as the deployment's DEFAULT modules
+    # at GET /modules/default.tar.gz (fetched by the pod at re-converge, unauthed).
+    # Empty/unset -> an empty tarball (the pod imports nothing).
+    sandbox_default_modules_dir: str = ""
     # Size store DSN (shared Postgres `broker` DB; SQLite default). The DSN
     # COMPONENTS are shared with AWS (same instance) — see config.py builder.
     sandbox_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-sandbox.db"

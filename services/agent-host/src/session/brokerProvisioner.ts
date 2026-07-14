@@ -100,15 +100,5 @@ export function createBrokerProvisioner(opts: BrokerProvisionerOptions): Sandbox
         running: s.running ?? false,
       }));
     },
-
-    async writeModule(conversationId: string, module: string): Promise<void> {
-      const res = await call("POST", `/sandbox/${encodeURIComponent(conversationId)}/module`, { module });
-      await json(res, `writeModule ${conversationId}`);
-    },
-
-    async ensureModuleMount(conversationId: string): Promise<void> {
-      const res = await call("POST", `/sandbox/${encodeURIComponent(conversationId)}/module-mount`);
-      await json(res, `ensureModuleMount ${conversationId}`);
-    },
   };
 }

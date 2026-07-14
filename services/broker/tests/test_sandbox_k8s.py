@@ -81,11 +81,12 @@ def _sb() -> SandboxK8s:
     return SandboxK8s(DeployConfig(namespace="agent-sandbox", sandbox_image="img"))
 
 
-def test_create_makes_sa_cm_sandbox(_mock_apis):
+def test_create_makes_sa_and_sandbox(_mock_apis):
+    # No module CM: create() only makes the SA + Sandbox (modules pull from the broker).
     ref = _sb().create("c1", "thread-1", resources=None)
     assert ref.name == "conv-c1"
     ops = [o[0] for o in _mock_apis]
-    assert ops == ["sa+", "cm+", "sb+"]
+    assert ops == ["sa+", "sb+"]
 
 
 def test_create_tolerates_existing_sa_and_sandbox(_mock_apis):
@@ -115,10 +116,10 @@ def test_resume_with_size_patches_resources_then_flips(_mock_apis):
     assert patches[1][2] == {"replicas": 1}
 
 
-def test_destroy_deletes_all_three_ignoring_404(_mock_apis):
+def test_destroy_deletes_sandbox_and_sa_ignoring_404(_mock_apis):
     _mock_apis.delete_status = 404
     _sb().destroy("c1")  # must not raise
-    assert [o[0] for o in _mock_apis] == ["sb-", "sa-", "cm-"]
+    assert [o[0] for o in _mock_apis] == ["sb-", "sa-"]
 
 
 def test_destroy_propagates_non_404(_mock_apis):

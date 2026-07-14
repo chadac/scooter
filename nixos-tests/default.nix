@@ -34,6 +34,10 @@ in
   # A deployment's .scooter/module.nix (a NixOS module declaring its own tools)
   # applied at runtime via switch-to-configuration. The no-rebuild injection path.
   dev-env-scooter-module = runTest ./scooter-module.nix;
+  # The deployment-DEFAULT module fetch: broker-modules.nix fetches the broker's
+  # default.tar.gz and imports the modules it contains; fail-safe to no imports when
+  # unconfigured. A fast pure-eval check (not a VM); the in-pod switch is Tier-2.
+  dev-env-broker-modules = runTest ./broker-modules.nix;
   # The read-only-lower + writable-upper local-overlay Nix store (clean immutable
   # base + a writable upper for runtime builds). Composes on top of whatever
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's

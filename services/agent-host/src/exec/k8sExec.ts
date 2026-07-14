@@ -57,7 +57,12 @@ export async function connectSandbox(
   opts: K8sExecOptions = {},
 ): Promise<SandboxApiClient> {
   const kc = opts.kubeConfig ?? defaultKubeConfig();
-  const podName = opts.podName ?? (await resolvePodName(kc, ref));
+  // Prefer a pod name the CALLER already knows (the broker provisioner returns the
+  // ready pod name on ensure/resume — the agent-sandbox controller names the pod
+  // after the Sandbox, so ref.name IS the pod name). That lets the agent-host exec
+  // WITHOUT `get/list pods` RBAC. Fall back to the k8s label lookup (legacy k8s
+  // provisioner path, whose ref carries no podIP).
+  const podName = opts.podName ?? (ref.podIP ? ref.name : await resolvePodName(kc, ref));
   return createK8sSandboxApiClient(ref, { ...opts, kubeConfig: kc, podName });
 }
 
@@ -124,6 +129,10 @@ export async function resolvePodTarget(
   ref: SandboxRef,
   opts: { kubeConfig?: KubeConfig } = {},
 ): Promise<PodTarget> {
+  // When the caller already knows the pod IP (the broker provisioner returned it on
+  // ensure/resume), use it directly — no `get pods` needed. The legacy k8s path has
+  // no podIP on the ref, so it falls through to the label lookup.
+  if (ref.podIP) return { name: ref.name, podIP: ref.podIP };
   const kc = opts.kubeConfig ?? defaultKubeConfig();
   const pod = await resolveReadyPod(kc, ref);
   const name = pod.metadata?.name;

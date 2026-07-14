@@ -15,7 +15,6 @@ GROUP = "agents.x-k8s.io"
 VERSION = "v1alpha1"
 PLURAL_SANDBOXES = "sandboxes"
 SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name"
-MODULE_MOUNT_PATH = "/etc/agent-sandbox/scooter"
 CONFIG_FILES_MOUNT_PATH = "/etc/agent-sandbox/config"
 
 
@@ -32,7 +31,6 @@ class DeployConfig:
     overlay_storage: str = "20Gi"
     systemd_image: bool = True
     aws_accounts_configmap: str | None = None
-    scooter_configmap: str | None = None
     config_files_configmap: str | None = None
     extra_token_audiences: list[str] = field(default_factory=list)
     extra_env: list[dict] = field(default_factory=list)  # [{name, value}]
@@ -46,20 +44,21 @@ def sandbox_manifest(
     service_account: str,
     deploy: DeployConfig,
     resources: dict | None = None,  # already-rendered k8s resources block
-    module_configmap: str | None = None,  # per-conversation module CM (self-modify)
     url_thread: str | None = None,  # full threadId for CONVERSATION_URL deep-link
 ) -> dict:
+    # NOTE: NO module ConfigMap. The pod pulls its module config (deployment defaults
+    # + registry modules) as a tarball from the broker (a root sandbox-os Nix module
+    # fetchTarballs it into /etc/scooter/modules on the workspace PVC), so there is no
+    # per-conversation module CM and no deployment .scooter CM mount here.
     ns = deploy.namespace
     image = deploy.sandbox_image
     audience = deploy.broker_audience
     systemd = deploy.systemd_image
     overlay = deploy.overlay_store
-    scooter = deploy.scooter_configmap
     config_files = deploy.config_files_configmap
     aws_cm = deploy.aws_accounts_configmap
     extra_auds = deploy.extra_token_audiences or []
     extra_env = deploy.extra_env or []
-    module_cm = module_configmap
     thread = url_thread or conversation_id
 
     # --- container volumeMounts ---
@@ -71,15 +70,10 @@ def sandbox_manifest(
         volume_mounts.append({"name": "aws-accounts", "mountPath": "/etc/agent-sandbox/aws", "readOnly": True})
     if systemd:
         volume_mounts += [{"name": "run", "mountPath": "/run"}, {"name": "tmp", "mountPath": "/tmp"}]
-    # Deployment .scooter tools — skipped when the per-conversation module CM owns the path.
-    if scooter and not module_cm:
-        volume_mounts.append({"name": "scooter-tools", "mountPath": MODULE_MOUNT_PATH, "readOnly": True})
     for aud in extra_auds:
         volume_mounts.append({"name": f"tok-{aud}", "mountPath": f"/var/run/secrets/{aud}", "readOnly": True})
     if overlay:
         volume_mounts.append({"name": "scooter-rw", "mountPath": "/nix/.scooter-rw"})
-    if module_cm:
-        volume_mounts.append({"name": "scooter-conv", "mountPath": MODULE_MOUNT_PATH, "readOnly": True})
     if config_files:
         volume_mounts.append({"name": "deploy-config", "mountPath": CONFIG_FILES_MOUNT_PATH, "readOnly": True})
 
@@ -121,10 +115,6 @@ def sandbox_manifest(
             {"name": "run", "emptyDir": {"medium": "Memory"}},
             {"name": "tmp", "emptyDir": {"medium": "Memory"}},
         ]
-    if scooter and not module_cm:
-        volumes.append({"name": "scooter-tools", "configMap": {"name": scooter}})
-    if module_cm:
-        volumes.append({"name": "scooter-conv", "configMap": {"name": module_cm}})
     if config_files:
         volumes.append({"name": "deploy-config", "configMap": {"name": config_files}})
     for aud in extra_auds:

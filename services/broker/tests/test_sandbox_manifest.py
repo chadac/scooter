@@ -82,17 +82,13 @@ def test_overlay_store_adds_upper_pvc_and_mount():
     assert any(v["metadata"]["name"] == "scooter-rw" for v in m["spec"]["volumeClaimTemplates"])
 
 
-def test_module_cm_and_scooter_tools_are_mutually_exclusive():
-    # With a module CM, the deployment scooter-tools mount is SKIPPED (the module CM owns the path).
-    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa",
-                         deploy=_deploy(scooter_configmap="dep-scooter"), module_configmap="conv-c1-module")
+def test_no_module_configmap_mount():
+    # Modules come from the broker tarball, not a CM — the manifest never mounts a
+    # per-conversation module CM or a deployment .scooter CM.
+    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa", deploy=_deploy())
     names = _mount_names(m)
-    assert "scooter-conv" in names
+    assert "scooter-conv" not in names
     assert "scooter-tools" not in names
-    # Without a module CM, scooter-tools mounts.
-    m2 = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa",
-                          deploy=_deploy(scooter_configmap="dep-scooter"))
-    assert "scooter-tools" in _mount_names(m2)
 
 
 def test_extra_token_audiences_project_tokens():

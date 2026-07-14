@@ -11,8 +11,10 @@ drives the pod lifecycle here instead of touching k8s itself:
     GET  /sandbox/{conv}/pod       -> ready-poll only (re-resolve podIP)
     PUT  /sandbox/{conv}/size      -> write the size spec
     GET  /sandbox/{conv}/size      -> read the size spec
-    POST /sandbox/{conv}/module        -> writeModule (agent self-modify persist)
-    POST /sandbox/{conv}/module-mount  -> ensureModuleMount (self-heal)
+
+Modules are NOT handled here: the pod pulls its module config as a tarball from the
+broker (a root sandbox-os Nix module fetchTarballs it), so there's no per-conversation
+module ConfigMap and no writeModule/ensureModuleMount.
 
 Auth (two tiers):
   - lifecycle + module ops: CONTROL SA only (identity.service_account in the control
@@ -122,18 +124,5 @@ def create_sandbox_router(k8s: SandboxK8s, store: SandboxSizeStore) -> APIRouter
         _require_control_or_owner(identity, conv)
         spec = await store.get(conv)
         return {"size": spec.to_dict() if spec else None}
-
-    @router.post("/sandbox/{conv}/module")
-    async def write_module(conv: str = Path(...), body: dict = Body(...), identity: Identity = Depends(authenticate)):
-        _require_control(identity)
-        module = body.get("module", "")
-        k8s.write_module(conv, module)
-        return {"written": True}
-
-    @router.post("/sandbox/{conv}/module-mount")
-    async def module_mount(conv: str = Path(...), identity: Identity = Depends(authenticate)):
-        _require_control(identity)
-        changed = k8s.ensure_module_mount(conv)
-        return {"changed": changed}
 
     return router

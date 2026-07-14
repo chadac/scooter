@@ -83,12 +83,6 @@ describe("brokerProvisioner", () => {
     ]);
   });
 
-  it("writeModule() POSTs the module body", async () => {
-    const { calls, fetchImpl } = fakeBroker(() => ({ status: 200, json: { written: true } }));
-    await prov(fetchImpl).writeModule!("c1", "{ ... }: {}");
-    expect(calls[0]).toMatchObject({ url: "http://broker/sandbox/c1/module", method: "POST", body: { module: "{ ... }: {}" } });
-  });
-
   it("surfaces a non-2xx (that isn't the tolerated status) as an error", async () => {
     const { fetchImpl } = fakeBroker(() => ({ status: 500, json: { detail: "boom" } }));
     await expect(prov(fetchImpl).create("c1")).rejects.toThrow(/ensure c1 failed: 500/);

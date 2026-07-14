@@ -55,6 +55,13 @@ def create_app() -> FastAPI:
     if sandbox_router is not None:
         app.include_router(sandbox_router)
 
+    # Deployment-default modules — GET /modules/default.tar.gz, UNAUTHENTICATED (the
+    # pod fetches at boot; module Nix isn't a secret). Always mounted; serves an empty
+    # tarball when no default-modules dir is configured.
+    from .default_modules import create_default_modules_router
+
+    app.include_router(create_default_modules_router())
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}

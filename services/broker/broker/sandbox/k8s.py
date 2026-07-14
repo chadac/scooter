@@ -22,8 +22,6 @@ from .manifest import GROUP, PLURAL_SANDBOXES, VERSION, DeployConfig, sandbox_ma
 
 logger = logging.getLogger(__name__)
 
-MODULE_MOUNT_PATH = "/etc/agent-sandbox/scooter"
-MODULE_VOLUME_NAME = "scooter-conv"
 SANDBOX_LABEL = "agents.x-k8s.io/sandbox-name"
 
 _core: client.CoreV1Api | None = None
@@ -58,10 +56,6 @@ def _sa_name(cid: str) -> str:
     return f"sandbox-{cid}"
 
 
-def _module_cm_name(cid: str) -> str:
-    return f"conv-{cid}-module"
-
-
 def _ignore(status: int, e: client.ApiException, ok: int) -> None:
     """Swallow ApiException with `ok` status; re-raise anything else."""
     if status != ok:
@@ -75,44 +69,18 @@ class SandboxK8s:
         self.deploy = deploy
         self.ns = deploy.namespace
 
-    # --- deployment .scooter seed (port of deploymentScooterFiles) ---
-    def _deployment_scooter_files(self) -> dict[str, str]:
-        cm_name = self.deploy.scooter_configmap
-        if not cm_name:
-            return {}
-        core, _ = _apis()
-        try:
-            cm = core.read_namespaced_config_map(name=cm_name, namespace=self.ns)
-        except client.ApiException as e:
-            logger.warning("could not read scooterConfigMap %s (base config only): %s", cm_name, e)
-            return {}
-        data = dict(cm.data or {})
-        if (data.get("module.nix") or "").strip() == "":
-            return {}
-        return data
-
-    # --- create (SA + module CM + Sandbox), 409-tolerant, adopt-and-resume ---
+    # --- create (SA + Sandbox), 409-tolerant, adopt-and-resume ---
+    # No module ConfigMap: the pod pulls its module config as a tarball from the
+    # broker (a root sandbox-os Nix module), so create() only makes the SA + Sandbox.
     def create(self, cid: str, thread_id: str | None, resources: dict | None) -> PodRef:
-        core, custom = _apis()
+        _, custom = _apis()
+        core, _ = _apis()
         name = _sandbox_name(cid)
 
         # 1. ServiceAccount (broker identity), tolerate a leftover 409.
         try:
             core.create_namespaced_service_account(
                 namespace=self.ns, body={"metadata": {"name": _sa_name(cid), "namespace": self.ns}}
-            )
-        except client.ApiException as e:
-            _ignore(e.status, e, 409)
-
-        # 1b. per-conversation module CM, seeded from the deployment .scooter files.
-        seed = self._deployment_scooter_files()
-        try:
-            core.create_namespaced_config_map(
-                namespace=self.ns,
-                body={
-                    "metadata": {"name": _module_cm_name(cid), "namespace": self.ns},
-                    "data": {"module.nix": "", **seed},
-                },
             )
         except client.ApiException as e:
             _ignore(e.status, e, 409)
@@ -125,7 +93,6 @@ class SandboxK8s:
             service_account=_sa_name(cid),
             deploy=self.deploy,
             resources=resources,
-            module_configmap=_module_cm_name(cid),
             url_thread=thread_id or cid,
         )
         try:
@@ -182,7 +149,7 @@ class SandboxK8s:
             body={"spec": {"podTemplate": {"spec": {"containers": [patched, *containers[1:]]}}}},
         )
 
-    # --- destroy (Sandbox + SA + module CM), 404-tolerant, non-404 propagates ---
+    # --- destroy (Sandbox + SA), 404-tolerant, non-404 propagates ---
     def destroy(self, cid: str) -> None:
         core, custom = _apis()
         try:
@@ -193,10 +160,6 @@ class SandboxK8s:
             _ignore(e.status, e, 404)
         try:
             core.delete_namespaced_service_account(name=_sa_name(cid), namespace=self.ns)
-        except client.ApiException as e:
-            _ignore(e.status, e, 404)
-        try:
-            core.delete_namespaced_config_map(name=_module_cm_name(cid), namespace=self.ns)
         except client.ApiException as e:
             _ignore(e.status, e, 404)
 
@@ -243,50 +206,3 @@ class SandboxK8s:
                                   pod_ip=last_running.status.pod_ip, running=True)
                 raise RuntimeError(f"no ready pod for sandbox {self.ns}/{name}")
             clock.sleep(poll_s)
-
-    # --- write the agent's self-authored module (upsert the module CM) ---
-    def write_module(self, cid: str, module: str) -> None:
-        core, _ = _apis()
-        cm = _module_cm_name(cid)
-        try:
-            core.patch_namespaced_config_map(name=cm, namespace=self.ns, body={"data": {"module.nix": module}})
-        except client.ApiException as e:
-            if e.status != 404:
-                raise
-            core.create_namespaced_config_map(
-                namespace=self.ns,
-                body={"metadata": {"name": cm, "namespace": self.ns}, "data": {"module.nix": module}},
-            )
-
-    # --- self-heal: ensure the podTemplate mounts the module CM ---
-    def ensure_module_mount(self, cid: str) -> bool:
-        _, custom = _apis()
-        name = _sandbox_name(cid)
-        try:
-            sb = custom.get_namespaced_custom_object(
-                group=GROUP, version=VERSION, namespace=self.ns, plural=PLURAL_SANDBOXES, name=name
-            )
-        except client.ApiException as e:
-            if e.status == 404:
-                return False
-            raise
-        pod_spec = ((sb.get("spec") or {}).get("podTemplate") or {}).get("spec")
-        if not pod_spec:
-            return False
-        volumes = pod_spec.get("volumes") or []
-        containers = pod_spec.get("containers") or []
-        if not containers:
-            return False
-        mounts = containers[0].get("volumeMounts") or []
-        has_volume = any(v.get("name") == MODULE_VOLUME_NAME for v in volumes)
-        has_mount = any(m.get("name") == MODULE_VOLUME_NAME for m in mounts)
-        if has_volume and has_mount:
-            return False
-        new_volumes = volumes if has_volume else [*volumes, {"name": MODULE_VOLUME_NAME, "configMap": {"name": _module_cm_name(cid)}}]
-        new_mounts = mounts if has_mount else [*mounts, {"name": MODULE_VOLUME_NAME, "mountPath": MODULE_MOUNT_PATH, "readOnly": True}]
-        patched = {**containers[0], "volumeMounts": new_mounts}
-        custom.patch_namespaced_custom_object(
-            group=GROUP, version=VERSION, namespace=self.ns, plural=PLURAL_SANDBOXES, name=name,
-            body={"spec": {"podTemplate": {"spec": {"volumes": new_volumes, "containers": [patched, *containers[1:]]}}}},
-        )
-        return True

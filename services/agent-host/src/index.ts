@@ -35,7 +35,6 @@ import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
-import { createModuleManager } from "./session/moduleManager.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
@@ -463,42 +462,9 @@ export async function main(
     }
   };
 
-  // Agent self-modify: the moduleManager applies the agent's self-authored module
-  // live (upload -> scooter-apply-module -> persist-on-success) and the MCP server
-  // exposes it to goose as the `modify_environment` tool. ON by default; it still
-  // self-gates to a real sandbox with the in-pod build support (overlay-store
-  // image + a real sandbox), so fake/local runs skip it. Set AGENT_SELF_MODIFY=0
-  // to force it off.
-  const selfModifyEnabled =
-    process.env.AGENT_SELF_MODIFY !== "0" && !config.fakeSandbox && !!provisioner.writeModule;
-  const moduleManager = selfModifyEnabled
-    ? createModuleManager({
-        // Resolve each conversation's sandbox to an exec client (same path the
-        // bridge uses) so the apply runs in the right pod.
-        client: (id) => deferredSandboxApi(sessions.get(id as SessionId)!.sandbox),
-        // Durable source of truth: persist the module to the state PVC. revive()
-        // re-syncs the CM from this. The CM write is the in-pod delivery copy.
-        saveModule: (id, m) => store.saveModule!(id as SessionId, m),
-        configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
-        // The switch is async — when the background build+switch finishes, tell the
-        // agent the outcome (a PRIORITY "thinking" note so it lands promptly without
-        // killing an in-flight tool). On success it can now use what it added; on
-        // failure it gets the error to fix the module.
-        onApplied: (id, res) => {
-          const text = res.ok
-            ? "[System: your environment change finished building + switched live — the new config/tools are now active.]"
-            : "[System: your environment change FAILED and was rolled back (not applied). Run `scooter-env-status` for the " +
-              "full build/switch log, then fix the module. Error:\n" + (res.error ?? "unknown") + "]";
-          void sessions
-            .prompt(id, text, undefined, PRIORITY_INTERRUPT, "thinking")
-            .catch((e) => console.error(`[agent-host] failed to notify ${id} of env-switch outcome:`, e));
-        },
-      })
-    : undefined;
-
   // Background jobs (run_background): the agent starts a long command detached in
-  // its sandbox and keeps working. Gated the same way as self-modify (a real
-  // sandbox with a durable registry). The registry is the state PVC (store).
+  // its sandbox and keeps working. Gated to a real sandbox with a durable registry.
+  // The registry is the state PVC (store).
   const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!store.saveJob;
   const jobManager = jobsEnabled
     ? createJobManager({
@@ -555,11 +521,9 @@ export async function main(
           : undefined,
       }
     : undefined;
-  // Serve the MCP endpoint if EITHER capability is available: self-modify
-  // (modify_environment) OR the agent-tools (broker wired). They're independent —
-  // the agent-tools (slack/gitlab/github/web) must reach goose even when
-  // self-modify is off, and vice-versa. buildServer registers whichever deps are
-  // present.
+  // Serve the MCP endpoint if ANY capability is available: the agent-tools (broker
+  // wired), the background-job tools, or the model self-selection tools. buildServer
+  // registers whichever deps are present.
   // Model self-selection tools (list_models / switch_model) — offered when the
   // deployment has >1 model to choose from. Sourced from the catalog + the manager's
   // immediate-switch primitive.
@@ -573,9 +537,8 @@ export async function main(
       : undefined;
 
   const mcpEndpoint =
-    moduleManager !== undefined || agentToolsWiring !== undefined || jobManager !== undefined || modelToolsWiring !== undefined
+    agentToolsWiring !== undefined || jobManager !== undefined || modelToolsWiring !== undefined
       ? createMcpEndpoint({
-          manager: moduleManager,
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
@@ -889,8 +852,8 @@ export async function main(
     const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
     if (skillCount) console.log(`[agent-host] ${conversationId}: ${skillCount} skill(s) -> .goosehints`);
     const metricModel = resolved ?? cfg.model ?? "unknown";
-    // Offer the agent the modify_environment MCP tool (when self-modify is on),
-    // scoped to THIS conversation via the URL's ?conv=<id>.
+    // Offer the agent the in-process MCP tools (background jobs / model selection /
+    // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
     const mcpServers = mcpEndpoint
       ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
       : undefined;
