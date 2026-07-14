@@ -19,3 +19,6 @@ services/*/flake.nix
 services/*/flake.lock
 services/*/uv.lock
 services/*/.venv/
+
+# Local planning / design scratch (untracked)
+/todo/
