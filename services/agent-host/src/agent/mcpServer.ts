@@ -296,7 +296,7 @@ function buildServer(
           "set_sandbox_resources to see what you have.",
         inputSchema: {},
       },
-      () => handleShowSandboxResources(resources, conversationId) as { content: Array<{ type: "text"; text: string }>; isError?: boolean },
+      async () => handleShowSandboxResources(resources, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
     server.registerTool(
       "set_sandbox_resources",

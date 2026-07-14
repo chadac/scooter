@@ -14,6 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { SandboxResources } from "./resources.js";
 import { resolveResources } from "./resources.js";
+import { suggestedTotal } from "../modules/suggestedTotal.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
@@ -253,10 +254,12 @@ export interface SessionManager {
    *  Throws if an environment switch is in flight, or the resource patch fails
    *  (fail-safe: the pod is not left half-patched with replicas up). */
   setResourcesNow(id: SessionId, resources: SandboxResources): Promise<boolean>;
-  /** The EFFECTIVE resources a conversation currently runs with (its override, else
-   *  the deployment default, else the platform default) — for show_sandbox_resources.
-   *  Throws on an unknown conversation. */
-  effectiveResources(id: SessionId): SandboxResources;
+  /** The EFFECTIVE resources a conversation currently runs with — for
+   *  show_sandbox_resources. An explicit override wins outright; otherwise the
+   *  deployment/platform baseline PLUS the sum of the conversation's enabled
+   *  registry modules (suggestedTotal). Async (reads the module set). Throws on an
+   *  unknown conversation. */
+  effectiveResources(id: SessionId): Promise<SandboxResources>;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
 
@@ -337,6 +340,12 @@ export interface SessionManagerDeps {
    *  flight — set_sandbox_resources REFUSES a restart mid-switch (one disruptive op
    *  at a time). Optional; omitted (tests) means "never switching". */
   isSwitching?: (id: SessionId) => boolean;
+  /** The resource asks of a conversation's ENABLED registry modules (each entry a
+   *  module's declared { requests?, limits? }, or undefined for none). Summed onto
+   *  the baseline (suggestedTotal: cpu/mem additive, gpu max) — UNLESS the
+   *  conversation has an explicit override, which wins outright. Optional; omitted
+   *  (no registry / tests) means "no modules". */
+  enabledModuleResources?: (id: SessionId) => Promise<Array<SandboxResources | undefined>>;
 }
 
 interface Entry {
@@ -478,12 +487,20 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       resources: e.resources,
     }) ?? Promise.resolve();
 
-  // The effective resources for a conversation: its own override, else the
-  // deployment default, else the platform default (never undefined). Only omitted
-  // from resume() when it equals the deployment default would be identical anyway —
-  // but resolveResources always yields a concrete value the provisioner can patch.
-  const resolvedResources = (e: Entry): SandboxResources =>
-    resolveResources(e.resources, deps.deploymentDefaultResources);
+  // The EFFECTIVE resources for a conversation (never undefined — a concrete value
+  // the provisioner can patch). Composition:
+  //   - an EXPLICIT override (set_sandbox_resources) WINS OUTRIGHT — the user said
+  //     exactly what they want; a module must never silently grow it.
+  //   - otherwise: the baseline (deployment default, else platform default) PLUS the
+  //     sum of the conversation's enabled registry modules (suggestedTotal: cpu/mem
+  //     additive, gpu max). No modules / no registry → just the baseline.
+  // Async because the enabled-module resources come from the registry store.
+  const resolvedResources = async (e: Entry): Promise<SandboxResources> => {
+    if (e.resources) return e.resources; // explicit override wins
+    const baseline = resolveResources(undefined, deps.deploymentDefaultResources);
+    const mods = (await deps.enabledModuleResources?.(e.id)) ?? [];
+    return mods.length ? suggestedTotal(baseline, mods) : baseline;
+  };
 
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
@@ -587,7 +604,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // resume patches the Sandbox resources before flipping replicas up, so a
       // resized conversation comes back at its chosen size across suspend/resume.
       entry.sandbox = entry.sandbox.namespace
-        ? await provisioner.resume(entry.sandbox, resolvedResources(entry))
+        ? await provisioner.resume(entry.sandbox, await resolvedResources(entry))
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
@@ -698,7 +715,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // No-op when the requested override resolves to the same effective size we're
       // already running (avoids a pointless restart). Compare the RESOLVED values.
       const next = resolveResources(resources, deps.deploymentDefaultResources);
-      const current = resolvedResources(entry);
+      const current = await resolvedResources(entry);
       if (JSON.stringify(next) === JSON.stringify(current)) return false;
       touch(entry);
       // Persist the override FIRST (so it survives even if the restart is slow /
@@ -719,7 +736,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return true;
     },
 
-    effectiveResources(id) {
+    async effectiveResources(id) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       return resolvedResources(entry);

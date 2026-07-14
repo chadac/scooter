@@ -21,7 +21,7 @@ function wiring(over: Partial<SandboxResourceToolsWiring> = {}): {
 } {
   const set: Array<[string, SandboxResources]> = [];
   const deps: SandboxResourceToolsWiring = {
-    currentResources: () => ({ requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "4Gi" } }),
+    currentResources: async () => ({ requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "4Gi" } }),
     setResources: vi.fn(async (id: string, r: SandboxResources) => {
       set.push([id, r]);
       return true; // a restart happened
@@ -32,8 +32,8 @@ function wiring(over: Partial<SandboxResourceToolsWiring> = {}): {
 }
 
 describe("show_sandbox_resources", () => {
-  it("renders the current cpu / memory (requests + limits)", () => {
-    const text = handleShowSandboxResources(wiring().deps, "c1").content[0].text;
+  it("renders the current cpu / memory (requests + limits)", async () => {
+    const text = (await handleShowSandboxResources(wiring().deps, "c1")).content[0].text;
     expect(text).toContain("500m");
     expect(text).toContain("1Gi");
     expect(text).toContain("4Gi");

@@ -35,6 +35,11 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createModuleManager } from "./session/moduleManager.js";
 import { validateResources, type SandboxResources } from "./session/resources.js";
+import {
+  createPgModuleRegistryStore,
+  createInMemoryModuleRegistryStore,
+  type ModuleRegistryStore,
+} from "./modules/registryStore.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
@@ -371,6 +376,9 @@ export async function main(
   // Forward-holder for moduleManager (built after sessions): lets the session
   // manager's isSwitching guard reach it without a circular construction order.
   const moduleManagerRef: { current: ReturnType<typeof createModuleManager> | undefined } = { current: undefined };
+  // Forward-holder for the module registry store (built with the identity store,
+  // after sessions): lets the manager's enabledModuleResources read it.
+  const moduleRegistryStoreRef: { current: ModuleRegistryStore | undefined } = { current: undefined };
 
   const sessions = createSessionManager({
     provisioner,
@@ -400,6 +408,17 @@ export async function main(
     // disruptive op at a time). moduleManager is built AFTER sessions, so read it
     // through the holder — undefined until then means "not switching".
     isSwitching: (id) => moduleManagerRef.current?.isApplying(id) ?? false,
+    // The resource asks of a conversation's ENABLED registry modules — summed onto
+    // the baseline (unless an explicit override wins). The store is built after
+    // sessions, so read it through the holder (undefined -> no modules).
+    enabledModuleResources: async (id) => {
+      const store = moduleRegistryStoreRef.current;
+      if (!store) return [];
+      const attached = await store.listConversationModules(id);
+      const enabled = attached.filter((a) => a.enabled);
+      const mods = await Promise.all(enabled.map((a) => store.getModule(a.moduleId)));
+      return mods.map((m) => m?.resources);
+    },
   });
 
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
@@ -564,6 +583,14 @@ export async function main(
   // Verification runs BEFORE the store so an UNVERIFIED email is never learned.
   // All layers optional — with none configured this is the plain header behavior.
   const identityStore = webhooksDsn ? createPgIdentityStore({ dsn: webhooksDsn }) : undefined;
+  // Module registry store (stage 1) — Postgres on the shared DB when available, else
+  // in-memory (local/no-DB). Feeds the session manager's enabledModuleResources so a
+  // conversation's enabled modules size its sandbox (suggestedTotal). Published to the
+  // holder below (the manager is built before this point).
+  const moduleRegistryStore = webhooksDsn
+    ? createPgModuleRegistryStore({ dsn: webhooksDsn })
+    : createInMemoryModuleRegistryStore();
+  moduleRegistryStoreRef.current = moduleRegistryStore;
   const staticIdentityMap = parseIdentityMap(process.env.AUTH_SUB_EMAIL_MAP);
   let identityResolver: AsyncIdentityResolver = resolverFromEnv();
   if (process.env.AUTH_ALB_VERIFY === "1") {

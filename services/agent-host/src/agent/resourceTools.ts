@@ -20,7 +20,7 @@ import { validateResources, InvalidResourceError, type SandboxResources } from "
 export interface SandboxResourceToolsWiring {
   /** This conversation's EFFECTIVE resources (resolved override → deploy default →
    *  platform default), for show_sandbox_resources. */
-  currentResources(conversationId: string): SandboxResources;
+  currentResources(conversationId: string): Promise<SandboxResources>;
   /** Persist the override on ConversationMeta, then restart the pod (suspend ->
    *  resume(override)) so it comes back at the new size. Resolves to whether a
    *  restart happened (false = the requested resources equal the current effective
@@ -69,11 +69,11 @@ function argsToResources(args: SetSandboxResourcesArgs): SandboxResources {
 }
 
 /** show_sandbox_resources: render the conversation's current cpu/memory/gpu. */
-export function handleShowSandboxResources(
+export async function handleShowSandboxResources(
   deps: SandboxResourceToolsWiring,
   conversationId: string,
-): ToolResult {
-  const r = deps.currentResources(conversationId);
+): Promise<ToolResult> {
+  const r = await deps.currentResources(conversationId);
   return {
     content: [
       {
