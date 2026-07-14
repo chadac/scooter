@@ -505,6 +505,32 @@ in
         ];
       };
 
+      # TokenReview is cluster-scoped → ClusterRole + ClusterRoleBinding. The
+      # agent-host verifies the webhooks SA token on /agui (to honor a conversation
+      # `owner`), mirroring the broker's SA-token auth.
+      clusterRoles.agent-host-tokenreview = {
+        metadata.name = "agent-host-tokenreview";
+        rules = [{
+          apiGroups = [ "authentication.k8s.io" ];
+          resources = [ "tokenreviews" ];
+          verbs = [ "create" ];
+        }];
+      };
+
+      clusterRoleBindings.agent-host-tokenreview = {
+        metadata.name = "agent-host-tokenreview";
+        roleRef = {
+          apiGroup = "rbac.authorization.k8s.io";
+          kind = "ClusterRole";
+          name = "agent-host-tokenreview";
+        };
+        subjects = [{
+          kind = "ServiceAccount";
+          name = "agent-host";
+          namespace = cfg.namespace;
+        }];
+      };
+
       roleBindings.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "agent-host"; };
@@ -552,6 +578,10 @@ in
                   { name = "PORT"; value = "8080"; }
                   { name = "NAMESPACE"; value = cfg.namespace; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # The trusted webhooks SA the agent-host lets set a conversation
+                  # `owner` on /agui (verified via TokenReview). Only this SA is
+                  # honored; unset = owner never honored.
+                  { name = "WEBHOOKS_SERVICE_ACCOUNT"; value = "system:serviceaccount:${cfg.namespace}:agent-webhooks"; }
                   # Durable: the AG-UI event log (history) on the PVC.
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
                   # Ephemeral scratch (emptyDir): goose's per-conversation cwd +

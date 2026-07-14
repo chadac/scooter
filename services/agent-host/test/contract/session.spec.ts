@@ -200,6 +200,29 @@ describe("SessionManager", () => {
     expect(optsSeen.at(-1)).toBeUndefined();
   });
 
+  it("promptByThread() stamps the owner on a NEW thread, but not on an existing one", async () => {
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt: vi.fn(async () => "run-x"),
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory });
+
+    // A brand-new webhook thread with a resolved owner -> the conversation is owned.
+    await sessions.promptByThread("wh-thread", "hi from slack", undefined, undefined, "user-alice");
+    const created = [...sessions.list()].find((c) => c.threadId === "wh-thread");
+    expect(created?.owner).toBe("user-alice");
+
+    // A follow-up to the SAME (now-existing) thread with a different owner does NOT
+    // change ownership — owner is stamped only at start.
+    await sessions.promptByThread("wh-thread", "follow up", undefined, undefined, "user-bob");
+    expect(sessions.get(created!.id)?.owner).toBe("user-alice");
+  });
+
   describe("revive() restores the self-modified environment from the PVC", () => {
     // A provisioner + store that records call order, so we can assert the CM sync
     // happens BEFORE the pod boots (resume) — the pod must mount the fresh CM.

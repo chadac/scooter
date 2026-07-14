@@ -44,6 +44,10 @@ class WebhooksSettings(BaseSettings):
 
     # The agent-host (AG-UI). Webhooks spawn conversations via POST {url}/agui.
     agent_host_url: str = "http://agent-host.agent-sandbox.svc.cluster.local:8080"
+    # Projected ServiceAccount token (audience agent-host) we present on /agui so the
+    # agent-host can verify us (TokenReview) as the trusted caller and honor a
+    # conversation `owner`. Not mounted -> no token -> owner ignored (unowned).
+    agent_host_token_path: str = "/var/run/secrets/agent-host/token"
 
     # Integration toggles
     gitlab_enabled: bool = True

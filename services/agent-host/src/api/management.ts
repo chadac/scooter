@@ -26,6 +26,7 @@ import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../s
 import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
+import type { IdentityStore } from "../auth/identityStore.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
@@ -90,6 +91,10 @@ export interface ManagementDeps {
   /** In-pod web-service registry (list/start), powering the UI Services panel.
    *  Optional — absent in fake/local mode (no pods), where the routes report none. */
   webServices?: WebServiceRegistry;
+  /** The identity store (user_identity), for the email→Scooter-user reverse lookup
+   *  that maps an invoking external (github/gitlab/slack) user to their internal
+   *  user. Optional — absent = the lookup route reports no match. */
+  identityStore?: IdentityStore;
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -173,6 +178,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/whoami", (ctx) => ({
     json: { id: ctx.user.id, email: ctx.user.email ?? null, anonymous: ctx.user.anonymous },
   }));
+
+  // Reverse identity lookup: the Scooter user id for an email. The webhooks service
+  // uses this to map an invoking external (github/gitlab/slack) user — resolved to
+  // an email via the provider API — to their internal user, so a webhook-spawned
+  // conversation gets a real owner. Returns { id } on a match, 404 otherwise (no
+  // directory dump — only a single id, and only for an exact email). No store /
+  // no email -> 404.
+  r.get("/users/by-email", async (ctx) => {
+    const email = (ctx.query.get("email") ?? "").trim();
+    if (!email) return { status: 400, json: { error: "email required" } };
+    const match = deps.identityStore ? await deps.identityStore.getByEmail(email).catch(() => undefined) : undefined;
+    if (!match) return { status: 404, json: { error: "no user with that email" } };
+    return { json: { id: match.id } };
+  });
 
   // The model catalog — a UI populates its selector from this.
   r.get("/models", () => ({

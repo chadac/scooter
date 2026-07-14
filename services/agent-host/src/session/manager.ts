@@ -223,8 +223,10 @@ export interface SessionManager {
   prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: InterruptPolicy): Promise<void>;
   /** Find-or-start the conversation for an AG-UI thread, then prompt it. A
    *  `model` on the FIRST prompt picks the conversation's model; on a later
-   *  prompt it switches it (rebuilds the goose session). `priority` as in prompt(). */
-  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number): Promise<void>;
+   *  prompt it switches it (rebuilds the goose session). `priority` as in prompt().
+   *  `owner` stamps the conversation's owner when it's newly STARTED here (a
+   *  webhook-resolved Scooter user) — ignored for an already-existing conversation. */
+  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string): Promise<void>;
   /** Switch a RUNNING conversation's model IMMEDIATELY and continue its work on
    *  the new model. Unlike a model passed to prompt() (which applies on the next
    *  turn), this is for the switch_model MCP tool the agent calls MID-TURN: it
@@ -576,7 +578,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await entry.bridge?.prompt({ threadId: entry.threadId, text }, opts);
     },
 
-    async promptByThread(threadId, text, model, priority) {
+    async promptByThread(threadId, text, model, priority, owner) {
       // Find the conversation for this thread. Three cases:
       //  1. in the in-memory map -> use it (revive if no live bridge).
       //  2. NOT in the map but PERSISTED (store has it) -> hydrate it on demand and
@@ -591,7 +593,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entry = await hydrateByThread(threadId);
       }
       if (!entry) {
-        const conv = await this.start(threadId, model);
+        // A genuinely new webhook thread: stamp the resolved owner (if any) so the
+        // conversation belongs to the invoking external user's Scooter account.
+        const conv = await this.start(threadId, model, owner);
         entry = entries.get(conv.id)!;
       } else {
         await applyModelSwitch(entry, model);

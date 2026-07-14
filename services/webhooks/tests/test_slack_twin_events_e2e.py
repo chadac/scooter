@@ -66,7 +66,7 @@ def _env(existing: str | None = None):
         dispatched.append(("send", conv, msg, priority))
         return True
 
-    async def spy_create(message, *, title=None, on_created=None):
+    async def spy_create(message, *, title=None, on_created=None, owner=None):
         dispatched.append(("create", message, title))
         # Exercise the real on_created anchor-registration hook (pre-run), like
         # create_conversation does — so the test covers that path too.
@@ -102,6 +102,7 @@ def _env(existing: str | None = None):
         patch.object(slack_h, "db") as db,
         patch.object(slack_h, "send_message", side_effect=spy_send),
         patch.object(slack_h, "create_conversation", side_effect=spy_create),
+        patch.object(slack_h, "resolve_owner", AsyncMock(return_value=None)),
         patch.object(slack_h, "add_slack_reaction", AsyncMock()),
         patch.object(slack_h, "push_link", AsyncMock()),
         patch.object(slack_h, "post_slack_message", AsyncMock()),

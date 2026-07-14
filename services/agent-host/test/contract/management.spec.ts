@@ -215,6 +215,43 @@ describe("management API", () => {
     expect(me.json).toEqual({ id: "anonymous", email: null, anonymous: true });
   });
 
+  // --- GET /users/by-email (external-user identity mapping) --------------------
+
+  const fakeIdentity = (byEmail: Record<string, string>) =>
+    ({
+      get: async () => undefined,
+      put: async () => {},
+      getByEmail: async (email: string) => {
+        const id = byEmail[email.trim().toLowerCase()];
+        return id ? { id } : undefined;
+      },
+      close: async () => {},
+    }) as never;
+
+  it("GET /users/by-email returns the Scooter user id for a matching email", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      identityStore: fakeIdentity({ "alice@example.com": "user-alice" }),
+    });
+    const res = await call(api, "GET", "/users/by-email?email=Alice@Example.com");
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ id: "user-alice" });
+  });
+
+  it("GET /users/by-email 404s an unmatched email", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      identityStore: fakeIdentity({ "alice@example.com": "user-alice" }),
+    });
+    expect((await call(api, "GET", "/users/by-email?email=bob@example.com")).status).toBe(404);
+  });
+
+  it("GET /users/by-email 400s a missing email, 404s when no store is wired", async () => {
+    const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    expect((await call(noStore, "GET", "/users/by-email")).status).toBe(400);
+    expect((await call(noStore, "GET", "/users/by-email?email=x@y.io")).status).toBe(404);
+  });
+
   it("GET /models returns the catalog (default + available + hints)", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},

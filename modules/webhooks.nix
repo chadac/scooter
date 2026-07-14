@@ -250,11 +250,25 @@ in
                 envFrom = lib.optionals (wcfg.secretName != "") [
                   { secretRef.name = wcfg.secretName; }
                 ];
-                volumeMounts = [{ name = "data"; mountPath = "/data"; }];
+                volumeMounts = [
+                  { name = "data"; mountPath = "/data"; }
+                  # Projected SA token (audience agent-host) we present to /agui so the
+                  # agent-host can verify us (TokenReview) as the trusted caller and
+                  # honor a webhook-resolved conversation `owner`.
+                  { name = "agent-host-token"; mountPath = "/var/run/secrets/agent-host"; readOnly = true; }
+                ];
                 readinessProbe.httpGet = { path = "/health"; port = "http"; };
                 livenessProbe.httpGet = { path = "/health"; port = "http"; };
               };
-              volumes = [{ name = "data"; emptyDir = { }; }];
+              volumes = [
+                { name = "data"; emptyDir = { }; }
+                {
+                  name = "agent-host-token";
+                  projected.sources = [{
+                    serviceAccountToken = { audience = "agent-host"; path = "token"; expirationSeconds = 3600; };
+                  }];
+                }
+              ];
             };
           };
         };

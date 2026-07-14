@@ -18,6 +18,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
+from ..identity_resolve import resolve_owner
 from ..responses.github import post_github_comment
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,7 @@ async def _handle_comment(payload: dict):
             res_type=res_type, res_id=res_id,
             message=full_message, repo=full_repo, conv_title=conv_title,
             owner=owner, repo_name=repo, issue_number=issue_number,
+            invoking_user=user,
         )
     )
 
@@ -234,6 +236,7 @@ async def _handle_issue_event(payload: dict):
             message=message, repo=full_repo,
             conv_title=f"Issue #{issue_number}: {issue_title}",
             owner=owner, repo_name=repo, issue_number=issue_number,
+            invoking_user=payload.get("sender", {}).get("login"),
         )
     )
 
@@ -270,6 +273,7 @@ async def _handle_pr_event(payload: dict):
             message=message, repo=full_repo,
             conv_title=f"PR #{pr_number}: {pr_title}",
             owner=owner, repo_name=repo, issue_number=pr_number,
+            invoking_user=payload.get("sender", {}).get("login"),
         )
     )
 
@@ -277,7 +281,7 @@ async def _handle_pr_event(payload: dict):
 async def _background_create_conversation(
     res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, owner: str, repo_name: str,
-    issue_number: int,
+    issue_number: int, invoking_user: str | None = None,
 ) -> None:
     # Register the mapping + link AND post the "on it — follow along" comment
     # BEFORE the agent runs. create_conversation blocks until the whole turn
@@ -298,9 +302,14 @@ async def _background_create_conversation(
             body=f"Scooter is on it — follow along: [View conversation]({conversation_url(conv_id)})",
         )
 
+    # Map the invoking GitHub user -> their Scooter user (by public email) so the
+    # conversation gets a real owner. Best-effort -> None -> unowned.
+    conv_owner = await resolve_owner("github", invoking_user) if invoking_user else None
+
     try:
         result = await create_conversation(
             message, repository=repo, git_provider="github", title=conv_title, on_created=_register,
+            owner=conv_owner,
         )
         if not result:
             await _clear_pending(res_type, res_id)

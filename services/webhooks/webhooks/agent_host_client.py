@@ -33,6 +33,7 @@ async def create_conversation(
     git_provider: str = "github",
     title: str | None = None,
     on_created: Callable[[str], Awaitable[None]] | None = None,
+    owner: str | None = None,
 ) -> dict | None:
     """Spawn an agent conversation for `initial_message`.
 
@@ -59,6 +60,10 @@ async def create_conversation(
         "runId": str(uuid.uuid4()),
         "messages": [{"role": "user", "content": task}],
     }
+    if owner:
+        # The resolved Scooter owner rides the body; the agent-host honors it only for
+        # this TRUSTED caller (our SA token, verified via TokenReview — see _sa_token).
+        payload["owner"] = owner
 
     if on_created is not None:
         try:
@@ -112,19 +117,38 @@ class RunInterrupted(Exception):
     failed)."""
 
 
+def _sa_token() -> str | None:
+    """Read the projected ServiceAccount token the agent-host TokenReview verifies
+    (proving we're the trusted webhooks caller, so it honors `payload.owner`). None
+    if not mounted — the owner is then ignored agent-host-side (unowned)."""
+    path = settings.agent_host_token_path
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 async def _run_and_collect(payload: dict) -> str:
     """POST a RunAgentInput to /agui and accumulate the final assistant text from
     the AG-UI SSE stream (TEXT_MESSAGE_CONTENT deltas), returning on RUN_FINISHED.
+
+    Sends our SA token as `Authorization: Bearer` so the agent-host can verify us as
+    the trusted webhooks caller (TokenReview) and honor `payload.owner`.
 
     Raises RunInterrupted if the connection drops before RUN_FINISHED (a restart);
     raises RuntimeError on a RUN_ERROR (a genuine agent failure).
     """
     text_parts: list[str] = []
     saw_finished = False
+    headers = {"Accept": "text/event-stream"}
+    token = _sa_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
-                "POST", _agui_url(), json=payload, headers={"Accept": "text/event-stream"}
+                "POST", _agui_url(), json=payload, headers=headers
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

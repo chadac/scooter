@@ -31,6 +31,13 @@ export interface RunAgentInput {
    *  preempt a stuck turn after the bridge's priority timeout. The UI (a human
    *  typing) never sets it. Undefined/0 = normal (waits its turn). */
   priority?: number;
+  /** The Scooter user id to OWN a webhook-spawned conversation (the external-user
+   *  identity mapping resolved this). SECURITY: honored ONLY when the caller is the
+   *  TRUSTED webhooks service, verified by its ServiceAccount token via k8s
+   *  TokenReview (see auth/webhooksCaller.ts) — a browser / any other caller can't
+   *  claim a conversation. Undefined = no owner set here (the UI path stamps the
+   *  ingress identity on POST /conversations instead). */
+  owner?: string;
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -42,6 +49,8 @@ export interface AguiConnection {
 
 export interface AguiServer {
   listen(port: number): Promise<void>;
+  /** The bound port after listen() (for tests binding to :0). undefined if not listening. */
+  port(): number | undefined;
   close(): Promise<void>;
   onPrompt(handler: (sessionId: SessionId, input: RunAgentInput) => Promise<void>): void;
   /** Answer a pending permission request (toolCallId -> optionId). */
@@ -64,6 +73,10 @@ export interface AguiServer {
    *  HTTP fallback before the 404, and wired to the server's `upgrade` event for
    *  WebSocket services (marimo/xterm/vscode). */
   useProxy(proxy: WebServiceProxy): void;
+  /** Set the verifier that decides whether a /agui request is the TRUSTED webhooks
+   *  caller (its SA token via TokenReview) — gating the privileged `owner` field.
+   *  Absent = owner is never honored. */
+  useOwnerVerifier(verify: (req: import("node:http").IncomingMessage) => Promise<boolean>): void;
   /** Attach an SSE response to a session's persistent event stream (for the
    *  management API's GET .../events). Returns once replay (onAttach) is done. */
   subscribeSSE(sessionId: SessionId, res: ServerResponse): Promise<void>;
@@ -97,6 +110,7 @@ export function createAguiServer(): AguiServer {
   let server: Server | undefined;
   let mountedRouter: Router | undefined;
   let mountedProxy: WebServiceProxy | undefined;
+  let ownerVerifier: ((req: IncomingMessage) => Promise<boolean>) | undefined;
 
   const write = (res: ServerResponse, event: AguiEvent) => {
     res.write(encoder.encodeSSE(toBaseEvent(event)));
@@ -179,6 +193,9 @@ export function createAguiServer(): AguiServer {
         messages?: Array<{ role: string; content?: string }>;
         /** Priority tier for a force-interrupting message (webhooks @mention). */
         priority?: number;
+        /** The Scooter user to OWN a webhook-spawned conversation. Honored ONLY for
+         *  a TokenReview-verified webhooks caller (ownerVerifier); ignored otherwise. */
+        owner?: string;
         /** Per-interrupt responses (assistant-ui resumes a paused run with these
          *  instead of a new user message). */
         resume?: Array<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>;
@@ -213,6 +230,15 @@ export function createAguiServer(): AguiServer {
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
       const model = (Array.isArray(hdr) ? hdr[0] : hdr) || undefined;
+      // The conversation OWNER for a webhook-spawned run is PRIVILEGED (it claims a
+      // conversation for a Scooter user). Honor it ONLY when the caller is the
+      // TRUSTED webhooks service — verified by its ServiceAccount token via k8s
+      // TokenReview (ownerVerifier), NOT a header the ingress is trusted to strip.
+      // The UI / a browser / any other caller can't set it. Absent verifier → never.
+      let owner: string | undefined;
+      if (input.owner && ownerVerifier && (await ownerVerifier(req).catch(() => false))) {
+        owner = input.owner;
+      }
       // Drive the run. If promptHandler THROWS before the run ever emits a terminal
       // event (the big one: revive/provision fails — e.g. 409 AlreadyExists from a
       // wrong hydrate map, goose spawn/ACP-connect error), the SSE 200 header is
@@ -221,7 +247,7 @@ export function createAguiServer(): AguiServer {
       // with NO error (the hydrate-silent-drop bug). Emit a proper RUN_ERROR event on
       // THIS stream + close it, so the UI has something to render as a failed send.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -307,6 +333,10 @@ export function createAguiServer(): AguiServer {
         server.listen(port, () => resolve());
       });
     },
+    port() {
+      const addr = server?.address();
+      return addr && typeof addr === "object" ? addr.port : undefined;
+    },
     close() {
       return new Promise((resolve) => {
         for (const set of connections.values()) for (const res of set) res.end();
@@ -329,6 +359,9 @@ export function createAguiServer(): AguiServer {
     },
     use(router) {
       mountedRouter = router;
+    },
+    useOwnerVerifier(verify) {
+      ownerVerifier = verify;
     },
     useProxy(proxy) {
       mountedProxy = proxy;
