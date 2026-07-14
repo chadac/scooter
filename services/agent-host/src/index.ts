@@ -20,6 +20,8 @@ import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, type AwsRequestSummary } from "./api/management.js";
 import { createSessionManager } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
+import { createBrokerProvisioner } from "./session/brokerProvisioner.js";
+import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
@@ -273,8 +275,16 @@ function bedrockEnv(): Record<string, string> {
 export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
+  // Provisioner selection: fake (local UI) -> noop; the broker control plane when
+  // SANDBOX_VIA_BROKER=1 + BROKER_URL set (the agent-host calls the broker's lifecycle
+  // API instead of touching k8s — see todo/CONTROL_PLANE_REDESIGN.md); else the legacy
+  // in-agent-host k8s provisioner (kept until PR1 St6 as a safe rollback).
+  const brokerLifecycleUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+  const useBrokerProvisioner = process.env.SANDBOX_VIA_BROKER === "1" && brokerLifecycleUrl !== "";
   const provisioner = config.fakeSandbox
     ? createNoopProvisioner()
+    : useBrokerProvisioner
+    ? createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl })
     : createK8sProvisioner({
         namespace: config.namespace,
         sandboxImage: config.sandboxImage,
@@ -377,19 +387,7 @@ export async function main(
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
    *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
    *  OTHER read error is surfaced (don't send an unauthenticated request). */
-  const brokerAuthHeaders = async (): Promise<Record<string, string>> => {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
-    try {
-      const { readFileSync } = await import("node:fs");
-      headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
-    } catch (e) {
-      if ((e as { code?: string })?.code !== "ENOENT") {
-        throw new Error(`failed to read broker token at ${tokenPath}: ${(e as Error)?.message ?? e}`, { cause: e });
-      }
-    }
-    return headers;
-  };
+  const brokerAuthHeaders = sharedBrokerAuthHeaders;
 
   /** On revive, ask the broker for this conversation's PENDING AWS requests and
    *  re-raise an Approve/Deny interrupt for each — reconstructing the exact interrupt

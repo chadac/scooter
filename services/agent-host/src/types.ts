@@ -47,6 +47,11 @@ export interface SandboxRef {
   /** SandboxClaim / Sandbox name. */
   name: string;
   namespace: string;
+  /** The ready pod's IP, when known (returned by the broker provisioner's
+   *  ensure/resume). CHANGES across suspend/resume — never cache it beyond the
+   *  current running lifetime; re-fetch on revive. Lets the exec client + the
+   *  web-service proxy reach the pod without the agent-host listing pods. */
+  podIP?: string;
 }
 
 // ---------------------------------------------------------------------------
