@@ -39,6 +39,50 @@ export const PLATFORM_DEFAULT_RESOURCES: SandboxResources = {
   limits: { memory: "4Gi" },
 };
 
+// --- k8s quantity arithmetic (for the module registry's suggested-total) ------
+// cpu is carried as MILLICPU (integer), memory as BYTES (integer); summed there,
+// then re-rendered to the canonical string. Keeps additive math exact (no float
+// drift on "500m" + "1500m") and unit-stable.
+
+const MEM_UNIT: Record<string, number> = {
+  "": 1,
+  K: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15, E: 1e18,
+  Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4, Pi: 1024 ** 5, Ei: 1024 ** 6,
+};
+
+/** Parse a cpu quantity ("500m", "2") to integer millicpu. Throws InvalidResourceError. */
+export function cpuToMillis(cpu: string): number {
+  const m = /^(\d+)(m?)$/.exec(cpu);
+  if (!m) throw new InvalidResourceError("cpu", cpu, `invalid cpu quantity "${cpu}"`);
+  return m[2] === "m" ? Number(m[1]) : Number(m[1]) * 1000;
+}
+
+/** Render integer millicpu back to a canonical cpu string ("1500m" -> "1500m",
+ *  "2000m" -> "2"): whole cores drop the milli suffix. */
+export function millisToCpu(millis: number): string {
+  return millis % 1000 === 0 ? String(millis / 1000) : `${millis}m`;
+}
+
+/** Parse a memory quantity ("1Gi", "512Mi", "2G", "1024") to integer bytes. */
+export function memToBytes(mem: string): number {
+  const m = /^(\d+)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$/.exec(mem);
+  if (!m) throw new InvalidResourceError("memory", mem, `invalid memory quantity "${mem}"`);
+  return Number(m[1]) * MEM_UNIT[m[2] ?? ""];
+}
+
+/** Render integer bytes to a canonical binary memory string, choosing the largest
+ *  binary unit that divides evenly ("1610612736" -> "1536Mi"), else falling back to
+ *  the next-smaller unit that does; bytes as a last resort. */
+export function bytesToMem(bytes: number): string {
+  const units: Array<[string, number]> = [
+    ["Ei", 1024 ** 6], ["Pi", 1024 ** 5], ["Ti", 1024 ** 4], ["Gi", 1024 ** 3], ["Mi", 1024 ** 2], ["Ki", 1024],
+  ];
+  for (const [suffix, size] of units) {
+    if (bytes % size === 0) return `${bytes / size}${suffix}`;
+  }
+  return String(bytes);
+}
+
 /** Thrown by validateResources on a malformed quantity/count. Carries which
  *  field failed so the tool/API can tell the agent exactly what to fix. */
 export class InvalidResourceError extends Error {
