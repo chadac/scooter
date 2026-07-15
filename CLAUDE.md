@@ -1,7 +1,8 @@
 # CLAUDE.md — kubenix-agent-manager
 
-Guidance for working in this repo. Read `docs/DESIGN.md` and `docs/TESTING.md`
-before making changes.
+Guidance for working in this repo. (The `docs/` design docs are kept locally under
+the gitignored `todo/docs/`, not in the repo — some `see docs/…` comment pointers in
+the code refer to that local copy.)
 
 ## What this is
 
