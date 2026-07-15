@@ -42,6 +42,9 @@ in
   # /etc/scooter/modules (a symlink to the workspace PVC) + imports every *.nix.
   # Fast pure-eval check; the in-pod edit+switch is Tier-2.
   dev-env-local-modules = runTest ./local-modules.nix;
+  # The scooter-rebuild entrypoint CLI: module new/list/show/edit/rm on /etc/scooter/modules
+  # + dispatch to switch/status. A real VM boot (CLI + file ops); the full rebuild is Tier-2.
+  dev-env-scooter-rebuild = runTest ./scooter-rebuild.nix;
   # The read-only-lower + writable-upper local-overlay Nix store (clean immutable
   # base + a writable upper for runtime builds). Composes on top of whatever
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's
