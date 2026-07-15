@@ -38,6 +38,10 @@ in
   # default.tar.gz and imports the modules it contains; fail-safe to no imports when
   # unconfigured. A fast pure-eval check (not a VM); the in-pod switch is Tier-2.
   dev-env-broker-modules = runTest ./broker-modules.nix;
+  # The agent's OWN locally-authored modules: local-modules.nix enumerates
+  # /etc/scooter/modules (a symlink to the workspace PVC) + imports every *.nix.
+  # Fast pure-eval check; the in-pod edit+switch is Tier-2.
+  dev-env-local-modules = runTest ./local-modules.nix;
   # The read-only-lower + writable-upper local-overlay Nix store (clean immutable
   # base + a writable upper for runtime builds). Composes on top of whatever
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's

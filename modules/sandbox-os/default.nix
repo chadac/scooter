@@ -24,8 +24,18 @@
     ./carry-over.nix
     ./runtime-converge.nix
     ./broker-modules.nix
+    ./local-modules.nix
     ./overlay-store.nix
     ./dbus-container.nix
+  ];
+
+  # The agent-editable modules dir lives on the workspace PVC (durable + writable:
+  # HOME=/workspace) and is exposed at the stable /etc/scooter/modules path via a
+  # symlink. The agent edits *.nix there + runs scooter-apply-module; local-modules.nix
+  # imports them. tmpfiles creates the PVC dir + the symlink on boot (idempotent).
+  systemd.tmpfiles.rules = [
+    "d /workspace/.scooter/modules 0755 root root -"
+    "L+ /etc/scooter/modules - - - - /workspace/.scooter/modules"
   ];
 
   # nix-stubs' lib (mkLazyPackage), consumed by carry-over.nix to lazy-shim awscli2.
