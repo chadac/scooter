@@ -441,7 +441,62 @@ in
                   { name = "FGA_API_URL"; value = bcfg.aws.fga.apiUrl; }
                   { name = "FGA_STORE_ID"; value = bcfg.aws.fga.storeId; }
                   { name = "FGA_AUTHORIZATION_MODEL_ID"; value = bcfg.aws.fga.authorizationModelId; }
-                ]);
+                ])
+                # Control-plane move (cfg.sandboxViaBroker): the broker OWNS the
+                # per-conversation Sandbox lifecycle + size, so it gets the
+                # provisioning config that previously lived on the agent-host
+                # (image, overlay, .scooter config-files CM, token audiences, extra
+                # env, public URL). Mirrors the agent-host env → the broker's
+                # sandbox_* settings (pydantic uppercases the field). Gated so the
+                # default (agent-host owns lifecycle) adds NO broker env.
+                # See services/broker/broker/sandbox/config.py + todo/CONTROL_PLANE_REDESIGN.md.
+                ++ lib.optionals cfg.sandboxViaBroker ([
+                  { name = "SANDBOX_LIFECYCLE_ENABLED"; value = "true"; }
+                  # The control caller(s) allowed to drive ensure/suspend/resume/end
+                  # — the agent-host SA (a sandbox SA is only ever allowed its OWN size).
+                  { name = "SANDBOX_CONTROL_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
+                  { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
+                  # Extra projected-token audiences a deployment's tools need
+                  # (was SCOOTER_TOKEN_AUDIENCES on the agent-host).
+                  { name = "SANDBOX_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
+                ++ lib.optional (cfg.deployTools.env != { })
+                  # Extra sandbox env. The broker's SANDBOX_EXTRA_ENV_JSON is a JSON
+                  # LIST of {name,value} (manifest.py appends it verbatim), whereas the
+                  # agent-host's SCOOTER_ENV is a JSON attrset — so map the attrset to
+                  # the list shape here (values carried losslessly, newlines intact).
+                  { name = "SANDBOX_EXTRA_ENV_JSON";
+                    value = builtins.toJSON (lib.mapAttrsToList (k: v: { name = k; value = v; }) cfg.deployTools.env); }
+                ++ lib.optional (cfg.deployTools.configFiles != { })
+                  # The deploy-config-files CM (filename -> contents), mounted flat
+                  # into each sandbox (was SCOOTER_CONFIG_FILES_CONFIGMAP on the agent-host).
+                  { name = "SANDBOX_CONFIG_FILES_CONFIGMAP"; value = "deploy-config-files"; }
+                ++ lib.optional (cfg.ingress.host != "")
+                  # Public chat UI base URL → each sandbox's CONVERSATION_URL
+                  # (was PUBLIC_URL on the agent-host).
+                  { name = "SANDBOX_PUBLIC_URL"; value = "https://${cfg.ingress.host}"; }
+                ++ lib.optional bcfg.aws.enable
+                  # The AWS accounts CM the sandbox mounts (was AWS_ACCOUNTS_CONFIGMAP
+                  # on the agent-host). Only when the AWS broker is enabled.
+                  { name = "SANDBOX_AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
+                ++ lib.optionals (!bcfg.aws.enable) (
+                  # The size store shares the AWS DB components (same shared Postgres,
+                  # `broker` DB — size_store_config reads aws_db_*). When the AWS
+                  # broker is ON its env block already sets AWS_DB_* — don't
+                  # double-declare; only set them here when it's OFF. Host/name/user
+                  # always; password only from a configured Secret (else the store
+                  # falls back to its SQLite dev default, fine for local/dev).
+                  [
+                    { name = "AWS_DB_HOST"; value = bcfg.aws.db.host; }
+                    { name = "AWS_DB_NAME"; value = bcfg.aws.db.name; }
+                    { name = "AWS_DB_USER"; value = bcfg.aws.db.user; }
+                  ] ++ lib.optional (bcfg.aws.db.passwordSecret != null) {
+                    name = "AWS_DB_PASSWORD";
+                    valueFrom.secretKeyRef = {
+                      inherit (bcfg.aws.db.passwordSecret) name key;
+                    };
+                  }
+                ));
                 volumeMounts = lib.optionals bcfg.aws.enable [
                   { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
                 ];
@@ -464,6 +519,35 @@ in
         };
       };
     }
+    (lib.mkIf cfg.sandboxViaBroker {
+      # Control-plane move: the broker OWNS per-conversation Sandbox provisioning
+      # (Sandbox + SA + PVC + CM CRUD), the RBAC the agent-host sheds. Namespaced
+      # Role bound to the agent-broker SA. Gated on cfg.sandboxViaBroker so the
+      # default (agent-host owns lifecycle) renders NO new Role/binding for the
+      # broker. (The broker keeps its cluster tokenreviews + the AWS accounts-CM
+      # `get` from its other roles — this is additive/supersedes that get.)
+      roles.agent-broker-sandbox = {
+        metadata = { name = "agent-broker-sandbox"; namespace = cfg.namespace; };
+        rules = [
+          {
+            apiGroups = [ "agents.x-k8s.io" ];
+            resources = [ "sandboxes" ];
+            verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+          }
+          {
+            apiGroups = [ "" ];
+            resources = [ "serviceaccounts" "persistentvolumeclaims" "pods" "configmaps" ];
+            verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+          }
+        ];
+      };
+
+      roleBindings.agent-broker-sandbox = {
+        metadata = { name = "agent-broker-sandbox"; namespace = cfg.namespace; };
+        roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "agent-broker-sandbox"; };
+        subjects = [{ kind = "ServiceAccount"; name = "agent-broker"; namespace = cfg.namespace; }];
+      };
+    })
     (lib.mkIf bcfg.aws.enable {
       # The account registry, mounted at /etc/agent-broker/accounts.json. Single
       # source of truth shared with the sandbox's ~/.aws/config profiles. Each

@@ -1,14 +1,11 @@
 /**
- * The agent-facing MCP server — gives goose one tool, `modify_environment`, that
- * routes DIRECTLY to the agent-host (the brain), NOT through the sandbox. So the
- * agent changes its own NixOS environment without depending on the very compute
- * environment it's changing.
+ * The agent-facing MCP server — exposes the agent-host's in-process tools to goose
+ * (background jobs, model self-selection, and the typed agent-tools).
  *
  * Transport: a stateless Streamable-HTTP MCP endpoint served in-process by the
  * agent-host. Each conversation's `newSession` is given an MCP server URL that
  * encodes its conversationId (?conv=<id>), so a tool call resolves to the right
- * sandbox. The tool handler calls moduleManager.apply (upload -> build/switch ->
- * persist-on-success), returning success or the build error to the agent.
+ * sandbox.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -17,65 +14,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
-import type { ModuleManager } from "../session/moduleManager.js";
 import type { JobManager } from "../session/jobManager.js";
 import type { ConversationLink } from "../session/manager.js";
 import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
+import {
+  handleShowSandboxResources,
+  handleSetSandboxResources,
+  type SandboxResourceToolsWiring,
+} from "./resourceTools.js";
 
 /** An MCP tool result (the shape the SDK callback returns). */
 export interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
-}
-
-/**
- * The pure handler for modify_environment — testable without the HTTP/MCP
- * plumbing. Applies the agent's module to `conversationId`'s sandbox and maps the
- * result to an MCP tool response: success text, or the build/switch error as an
- * error result so the agent can fix its module and retry.
- */
-export async function handleModifyEnvironment(
-  manager: ModuleManager,
-  conversationId: string,
-  args: { module_nix: string },
-): Promise<ToolResult> {
-  const module = args.module_nix ?? "";
-  if (!module.trim()) {
-    return { isError: true, content: [{ type: "text", text: "module_nix is empty — provide a NixOS module." }] };
-  }
-  const res = await manager.apply(conversationId, module);
-  if (res.ok) {
-    // The build+switch runs in the BACKGROUND now — the agent gets its turn back and
-    // keeps working. Tell it how to check on the switch (and where the error goes if
-    // it fails) so it doesn't assume the environment is ready yet.
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            "Environment change LAUNCHED — it's building + switching in the background, so you can keep working. " +
-            "It usually takes ~1-3 min. Run `scooter-env-status` in the shell to see progress; on failure it prints " +
-            "the full build/switch log so you can fix the module. Don't rely on a newly-added tool until the switch " +
-            "reports `done` (ready).",
-        },
-      ],
-    };
-  }
-  // A LAUNCH failure (couldn't upload / a switch already in flight) — distinct from a
-  // build/switch failure, which now surfaces via scooter-env-status.
-  return {
-    isError: true,
-    content: [
-      {
-        type: "text",
-        text:
-          "The environment change could not be LAUNCHED (it was not applied). This is not a build error — " +
-          "check `scooter-env-status` (a switch may already be in progress) and try again. Error:\n" +
-          (res.error ?? "unknown error"),
-      },
-    ],
-  };
 }
 
 /** Pure handlers for the background-job tools (run_background / check_background /
@@ -148,9 +100,8 @@ export async function handleKillBackground(
   return { content: [{ type: "text", text }], isError: res.outcome === "unknown" };
 }
 
-/** The extra deps buildServer needs to ALSO register the agent-tools (slack/
- *  gitlab/github/web). Optional — when absent, only modify_environment registers
- *  (a modify_environment-only endpoint never crashes for lack of a broker). */
+/** The extra deps buildServer needs to register the agent-tools (slack/gitlab/
+ *  github/web). Optional — when absent, the agent-tools simply aren't registered. */
 export interface AgentToolsWiring {
   /** The broker client the agent-tools call under the agent-host's identity. */
   broker: BrokerClient;
@@ -164,33 +115,17 @@ export interface AgentToolsWiring {
 }
 
 /** Build an McpServer instance bound to one conversation. Registers whichever
- *  capabilities are present: modify_environment when `manager` is given (self-
- *  modify enabled), and the five typed agent-tools when `agentTools` is given
- *  (broker wired). The two are independent — the endpoint serves either or both. */
+ *  capabilities are present: the background-job tools when `jobs` is given, the
+ *  typed agent-tools when `agentTools` is given (broker wired), and the model
+ *  self-selection tools when `models` offers more than one model. */
 function buildServer(
-  manager: ModuleManager | undefined,
   conversationId: string,
   agentTools?: AgentToolsWiring,
   jobs?: JobManager,
   models?: ModelToolsWiring,
+  resources?: SandboxResourceToolsWiring,
 ): McpServer {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
-  if (manager) {
-    server.registerTool(
-      "modify_environment",
-      {
-        title: "Modify the dev environment",
-        description:
-          "Apply a NixOS module to THIS sandbox, live (no restart). Use it to add tools, packages, " +
-          "systemd services, or config — anything a NixOS module can declare. Pass the full module as " +
-          "`module_nix` (e.g. `{ pkgs, ... }: { environment.systemPackages = [ pkgs.ripgrep ]; }`). " +
-          "The module is built (the build is the validation gate) and switched into the running system; " +
-          "a build error or a failed switch is returned to you and the old environment is kept.",
-        inputSchema: { module_nix: z.string().describe("The full NixOS module.nix text to apply.") },
-      },
-      async (args) => handleModifyEnvironment(manager, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
-    );
-  }
   if (jobs) {
     server.registerTool(
       "run_background",
@@ -277,6 +212,43 @@ function buildServer(
       async (args) => handleSwitchModel(models, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
   }
+  // Sandbox right-sizing: show the current cpu/memory/gpu and record a new size on
+  // the broker (applied on the NEXT sandbox restart — the broker owns sizing now).
+  // Registered only when the resources wiring is present (the broker path is usable).
+  if (resources) {
+    server.registerTool(
+      "show_sandbox_resources",
+      {
+        title: "Show your sandbox resources",
+        description:
+          "Show your sandbox's current cpu / memory / gpu (requests and limits). Use this before " +
+          "set_sandbox_resources to see what you have.",
+        inputSchema: {},
+      },
+      async () => handleShowSandboxResources(resources, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+    server.registerTool(
+      "set_sandbox_resources",
+      {
+        title: "Resize your sandbox",
+        description:
+          "Change the cpu / memory / gpu (requests and/or limits) YOUR sandbox runs with. The new size is " +
+          "RECORDED and takes effect on the NEXT sandbox restart — it does NOT restart the running pod, so " +
+          "nothing in flight is interrupted. Scale up for a heavy build/large model; scale down when idle. " +
+          "Omit a field to keep it. Quantities are k8s-style (cpu \"500m\"/\"2\", memory \"1Gi\"/\"512Mi\", " +
+          "gpu a whole number).",
+        inputSchema: {
+          requestCpu: z.string().optional().describe('cpu request, e.g. "500m" or "2".'),
+          requestMemory: z.string().optional().describe('memory request, e.g. "1Gi".'),
+          requestGpu: z.number().int().nonnegative().optional().describe("whole GPUs to request (nvidia.com/gpu)."),
+          limitCpu: z.string().optional().describe('cpu limit, e.g. "2".'),
+          limitMemory: z.string().optional().describe('memory limit, e.g. "8Gi".'),
+          limitGpu: z.number().int().nonnegative().optional().describe("whole GPUs to limit (nvidia.com/gpu)."),
+        },
+      },
+      async (args) => handleSetSandboxResources(resources, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
   return server;
 }
 
@@ -295,14 +267,10 @@ export interface McpEndpoint {
  * existing node:http server.
  */
 export function createMcpEndpoint(deps: {
-  /** Self-modify (modify_environment). Omit when self-modify is off — the
-   *  endpoint then serves only the agent-tools. */
-  manager?: ModuleManager;
   baseUrl: string;
   path?: string;
-  /** When provided, the same per-conversation server ALSO exposes the five typed
-   *  agent-tools (slack/gitlab/github/web). Omit to expose only
-   *  modify_environment (e.g. when no broker is configured). */
+  /** When provided, the per-conversation server exposes the five typed agent-tools
+   *  (slack/gitlab/github/web). Omit to leave them off (e.g. no broker configured). */
   agentTools?: AgentToolsWiring;
   /** When provided, exposes the background-job tools (run_background /
    *  check_background / list_background). Omit to leave them off. */
@@ -310,6 +278,10 @@ export function createMcpEndpoint(deps: {
   /** When provided (and >1 model is offered), exposes list_models / switch_model
    *  so the agent can pick + switch its own model. */
   models?: ModelToolsWiring;
+  /** When provided, exposes show_sandbox_resources / set_sandbox_resources so the
+   *  agent can right-size its own sandbox (the broker owns + applies the size). Omit
+   *  to leave them off (e.g. a fake/local sandbox can't resize). */
+  resources?: SandboxResourceToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
@@ -326,7 +298,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(deps.manager, conv, deps.agentTools, deps.jobs, deps.models);
+      const server = buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },

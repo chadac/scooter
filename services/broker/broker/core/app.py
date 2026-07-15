@@ -24,18 +24,43 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     providers = list(discover_providers())
 
+    # Sandbox lifecycle (the broker as control plane). Built when enabled; its size
+    # store is init'd in the lifespan and its router mounted top-level (like /link).
+    sandbox_store = None
+    sandbox_router = None
+    if settings.sandbox_lifecycle_enabled:
+        from ..sandbox.config import deploy_config, size_store_config
+        from ..sandbox.k8s import SandboxK8s
+        from ..sandbox.routes import create_sandbox_router
+        from ..sandbox.store import SandboxSizeStore
+
+        sandbox_store = SandboxSizeStore(size_store_config(settings))
+        sandbox_router = create_sandbox_router(SandboxK8s(deploy_config(settings)), sandbox_store)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Run providers' async startup hooks (e.g. open a DB, start a sweep).
         for p in providers:
             if p.on_startup is not None:
                 await p.on_startup()
+        if sandbox_store is not None:
+            await sandbox_store.init()
         yield
         for p in providers:
             if p.on_shutdown is not None:
                 await p.on_shutdown()
 
     app = FastAPI(title="kubenix-agent-manager broker", lifespan=lifespan)
+
+    if sandbox_router is not None:
+        app.include_router(sandbox_router)
+
+    # Deployment-default modules — GET /modules/default.tar.gz, UNAUTHENTICATED (the
+    # pod fetches at boot; module Nix isn't a secret). Always mounted; serves an empty
+    # tarball when no default-modules dir is configured.
+    from .default_modules import create_default_modules_router
+
+    app.include_router(create_default_modules_router())
 
     @app.get("/health")
     async def health() -> dict[str, str]:

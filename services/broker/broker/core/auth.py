@@ -62,11 +62,16 @@ async def authenticate(request: Request) -> Identity:
     username = status.user.username if status.user else ""
 
     # Approver SAs (e.g. the agent-host relaying a user's approve/deny) aren't
-    # sandboxes — they have no conversation_id but may approve.
+    # sandboxes — they have no conversation_id but may approve. The sandbox-control
+    # SAs (the agent-host driving the lifecycle API) are admitted the same way: a
+    # non-sandbox SA that authenticated, so a route can gate on the control list.
+    # Both are unioned here so a control SA that isn't in the AWS approver list
+    # still authenticates (it would otherwise 403 on the _SA_PATTERN check below).
     approvers = {s.strip() for s in settings.aws_approver_service_accounts.split(",") if s.strip()}
-    if username in approvers:
+    control = {s.strip() for s in settings.sandbox_control_service_accounts.split(",") if s.strip()}
+    if username in approvers or username in control:
         return Identity(conversation_id="", namespace=settings.sandbox_namespace,
-                        service_account=username, is_approver=True)
+                        service_account=username, is_approver=(username in approvers))
 
     m = _SA_PATTERN.match(username or "")
     if not m:

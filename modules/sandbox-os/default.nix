@@ -23,6 +23,7 @@
     ./web-services.nix
     ./carry-over.nix
     ./runtime-converge.nix
+    ./broker-modules.nix
     ./overlay-store.nix
     ./dbus-container.nix
   ];

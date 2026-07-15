@@ -18,8 +18,11 @@ import { tmpdir } from "node:os";
 
 import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, type AwsRequestSummary } from "./api/management.js";
-import { createSessionManager } from "./session/manager.js";
+import { createSessionManager, shortId } from "./session/manager.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
+import { createBrokerProvisioner, type BrokerProvisioner } from "./session/brokerProvisioner.js";
+import type { SandboxResources } from "./session/resources.js";
+import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
@@ -33,7 +36,6 @@ import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
 import { writeHints } from "./agent/skills.js";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
-import { createModuleManager } from "./session/moduleManager.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
@@ -273,8 +275,23 @@ function bedrockEnv(): Record<string, string> {
 export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
+  // Provisioner selection: fake (local UI) -> noop; the broker control plane when
+  // SANDBOX_VIA_BROKER=1 + BROKER_URL set (the agent-host calls the broker's lifecycle
+  // API instead of touching k8s — see todo/CONTROL_PLANE_REDESIGN.md); else the legacy
+  // in-agent-host k8s provisioner (kept until PR1 St6 as a safe rollback).
+  const brokerLifecycleUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+  const useBrokerProvisioner = process.env.SANDBOX_VIA_BROKER === "1" && brokerLifecycleUrl !== "";
+  // Keep a typed handle to the broker provisioner (it ALSO exposes the size-spec
+  // ops getSize/setSize used by the sandbox-resize tools). null unless the broker
+  // lifecycle path is on — a fake/local or legacy-k8s sandbox has no broker size spec.
+  const brokerProvisioner: BrokerProvisioner | null =
+    !config.fakeSandbox && useBrokerProvisioner
+      ? createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl })
+      : null;
   const provisioner = config.fakeSandbox
     ? createNoopProvisioner()
+    : brokerProvisioner
+    ? brokerProvisioner
     : createK8sProvisioner({
         namespace: config.namespace,
         sandboxImage: config.sandboxImage,
@@ -377,19 +394,7 @@ export async function main(
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
    *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
    *  OTHER read error is surfaced (don't send an unauthenticated request). */
-  const brokerAuthHeaders = async (): Promise<Record<string, string>> => {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const tokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
-    try {
-      const { readFileSync } = await import("node:fs");
-      headers["Authorization"] = `Bearer ${readFileSync(tokenPath, "utf8").trim()}`;
-    } catch (e) {
-      if ((e as { code?: string })?.code !== "ENOENT") {
-        throw new Error(`failed to read broker token at ${tokenPath}: ${(e as Error)?.message ?? e}`, { cause: e });
-      }
-    }
-    return headers;
-  };
+  const brokerAuthHeaders = sharedBrokerAuthHeaders;
 
   /** On revive, ask the broker for this conversation's PENDING AWS requests and
    *  re-raise an Approve/Deny interrupt for each — reconstructing the exact interrupt
@@ -465,42 +470,9 @@ export async function main(
     }
   };
 
-  // Agent self-modify: the moduleManager applies the agent's self-authored module
-  // live (upload -> scooter-apply-module -> persist-on-success) and the MCP server
-  // exposes it to goose as the `modify_environment` tool. ON by default; it still
-  // self-gates to a real sandbox with the in-pod build support (overlay-store
-  // image + a real sandbox), so fake/local runs skip it. Set AGENT_SELF_MODIFY=0
-  // to force it off.
-  const selfModifyEnabled =
-    process.env.AGENT_SELF_MODIFY !== "0" && !config.fakeSandbox && !!provisioner.writeModule;
-  const moduleManager = selfModifyEnabled
-    ? createModuleManager({
-        // Resolve each conversation's sandbox to an exec client (same path the
-        // bridge uses) so the apply runs in the right pod.
-        client: (id) => deferredSandboxApi(sessions.get(id as SessionId)!.sandbox),
-        // Durable source of truth: persist the module to the state PVC. revive()
-        // re-syncs the CM from this. The CM write is the in-pod delivery copy.
-        saveModule: (id, m) => store.saveModule!(id as SessionId, m),
-        configMap: { writeModule: (id, m) => provisioner.writeModule!(id, m) },
-        // The switch is async — when the background build+switch finishes, tell the
-        // agent the outcome (a PRIORITY "thinking" note so it lands promptly without
-        // killing an in-flight tool). On success it can now use what it added; on
-        // failure it gets the error to fix the module.
-        onApplied: (id, res) => {
-          const text = res.ok
-            ? "[System: your environment change finished building + switched live — the new config/tools are now active.]"
-            : "[System: your environment change FAILED and was rolled back (not applied). Run `scooter-env-status` for the " +
-              "full build/switch log, then fix the module. Error:\n" + (res.error ?? "unknown") + "]";
-          void sessions
-            .prompt(id, text, undefined, PRIORITY_INTERRUPT, "thinking")
-            .catch((e) => console.error(`[agent-host] failed to notify ${id} of env-switch outcome:`, e));
-        },
-      })
-    : undefined;
-
   // Background jobs (run_background): the agent starts a long command detached in
-  // its sandbox and keeps working. Gated the same way as self-modify (a real
-  // sandbox with a durable registry). The registry is the state PVC (store).
+  // its sandbox and keeps working. Gated to a real sandbox with a durable registry.
+  // The registry is the state PVC (store).
   const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!store.saveJob;
   const jobManager = jobsEnabled
     ? createJobManager({
@@ -557,11 +529,9 @@ export async function main(
           : undefined,
       }
     : undefined;
-  // Serve the MCP endpoint if EITHER capability is available: self-modify
-  // (modify_environment) OR the agent-tools (broker wired). They're independent —
-  // the agent-tools (slack/gitlab/github/web) must reach goose even when
-  // self-modify is off, and vice-versa. buildServer registers whichever deps are
-  // present.
+  // Serve the MCP endpoint if ANY capability is available: the agent-tools (broker
+  // wired), the background-job tools, or the model self-selection tools. buildServer
+  // registers whichever deps are present.
   // Model self-selection tools (list_models / switch_model) — offered when the
   // deployment has >1 model to choose from. Sourced from the catalog + the manager's
   // immediate-switch primitive.
@@ -574,16 +544,36 @@ export async function main(
         }
       : undefined;
 
+  // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources) —
+  // wired ONLY on the broker path (the broker owns + applies the size). The MCP
+  // `conv` param is the FULL conversationId (= threadId); the broker keys the size
+  // spec by the SHORT id (the same id ensure/resume/create use), so map through
+  // shortId() before every broker size call — otherwise the tool would write a spec
+  // the broker never reads at (re)provision time.
+  const resourceToolsWiring = brokerProvisioner
+    ? {
+        currentResources: async (id: string): Promise<SandboxResources> =>
+          (await brokerProvisioner.getSize(shortId(id))) ?? {},
+        setResources: async (id: string, r: SandboxResources): Promise<boolean> => {
+          await brokerProvisioner.setSize(shortId(id), r);
+          return true; // recorded — the broker applies it on the next sandbox restart
+        },
+      }
+    : undefined;
+
   const mcpEndpoint =
-    moduleManager !== undefined || agentToolsWiring !== undefined || jobManager !== undefined || modelToolsWiring !== undefined
+    agentToolsWiring !== undefined ||
+    jobManager !== undefined ||
+    modelToolsWiring !== undefined ||
+    resourceToolsWiring !== undefined
       ? createMcpEndpoint({
-          manager: moduleManager,
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
           agentTools: agentToolsWiring,
           jobs: jobManager,
           models: modelToolsWiring,
+          resources: resourceToolsWiring,
         })
       : undefined;
 
@@ -891,8 +881,8 @@ export async function main(
     const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
     if (skillCount) console.log(`[agent-host] ${conversationId}: ${skillCount} skill(s) -> .goosehints`);
     const metricModel = resolved ?? cfg.model ?? "unknown";
-    // Offer the agent the modify_environment MCP tool (when self-modify is on),
-    // scoped to THIS conversation via the URL's ?conv=<id>.
+    // Offer the agent the in-process MCP tools (background jobs / model selection /
+    // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
     const mcpServers = mcpEndpoint
       ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
       : undefined;
