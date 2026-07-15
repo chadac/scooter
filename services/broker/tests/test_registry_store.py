@@ -1,5 +1,6 @@
-"""Unit test for the module registry store (SQLite in-memory): create/publish
-(version bump, ownership-immutable), get/get_files, and the visibility-gated list."""
+"""Unit test for the module registry store (SQLite in-memory): publish (version
+bump, name-ownership-immutable, minted numeric id), resolve-by-name-or-id, and the
+visibility-gated list."""
 
 from __future__ import annotations
 
@@ -16,60 +17,64 @@ async def store():
     return s
 
 
-def _upsert(store, mid, owner, name="mod", vis="private", files=None, desc=""):
-    return store.upsert(module_id=mid, owner=owner, name=name, description=desc,
-                        visibility=vis, files=files or {"module.nix": "{...}: {}"})
+def _pub(store, name, owner, vis="private", files=None, desc=""):
+    return store.publish(owner=owner, name=name, description=desc,
+                         visibility=vis, files=files or {"module.nix": "{...}: {}"})
 
 
 @pytest.mark.asyncio
-async def test_create_then_get(store):
-    m = await _upsert(store, "m1", "alice", files={"module.nix": "AAA"})
-    assert m.version == 1 and m.owner == "alice"
-    got = await store.get("m1")
-    assert got.files == {"module.nix": "AAA"}
-    assert await store.get_files("m1") == {"module.nix": "AAA"}
+async def test_publish_mints_id_then_resolves_by_name_or_id(store):
+    m = await _pub(store, "marimo", "conv-alice", files={"module.nix": "AAA"})
+    assert m.name == "marimo" and m.owner == "conv-alice" and m.version == 1
+    assert isinstance(m.id, int)
+    # resolve by NAME
+    by_name = await store.get("marimo")
+    assert by_name.id == m.id
+    # resolve by numeric ID
+    by_id = await store.get(str(m.id))
+    assert by_id.name == "marimo"
+    # files by either
+    assert await store.get_files("marimo") == {"module.nix": "AAA"}
+    assert await store.get_files(str(m.id)) == {"module.nix": "AAA"}
 
 
 @pytest.mark.asyncio
 async def test_missing_is_none(store):
     assert await store.get("nope") is None
+    assert await store.get("999") is None
     assert await store.get_files("nope") is None
 
 
 @pytest.mark.asyncio
-async def test_republish_bumps_version(store):
-    await _upsert(store, "m1", "alice", files={"module.nix": "v1"})
-    m2 = await _upsert(store, "m1", "alice", files={"module.nix": "v2"})
-    assert m2.version == 2
-    assert (await store.get("m1")).files == {"module.nix": "v2"}
+async def test_republish_bumps_version_keeps_id(store):
+    m1 = await _pub(store, "marimo", "conv-alice", files={"module.nix": "v1"})
+    m2 = await _pub(store, "marimo", "conv-alice", files={"module.nix": "v2"})
+    assert m2.version == 2 and m2.id == m1.id  # same module, new version
+    assert (await store.get("marimo")).files == {"module.nix": "v2"}
 
 
 @pytest.mark.asyncio
-async def test_republish_by_other_owner_rejected(store):
-    await _upsert(store, "m1", "alice")
+async def test_name_is_globally_unique_first_publisher_owns(store):
+    await _pub(store, "marimo", "conv-alice")
     with pytest.raises(PermissionError):
-        await _upsert(store, "m1", "bob")
+        await _pub(store, "marimo", "conv-bob")  # bob can't take alice's name
 
 
 @pytest.mark.asyncio
 async def test_list_visibility(store):
-    await _upsert(store, "a-priv", "alice", vis="private")
-    await _upsert(store, "a-pub", "alice", vis="public")
-    await _upsert(store, "b-priv", "bob", vis="private")
-    await _upsert(store, "b-pub", "bob", vis="public")
+    await _pub(store, "a-priv", "conv-alice", vis="private")
+    await _pub(store, "a-pub", "conv-alice", vis="public")
+    await _pub(store, "b-priv", "conv-bob", vis="private")
+    await _pub(store, "b-pub", "conv-bob", vis="public")
 
-    ids = {m.id for m in await store.list_visible("alice")}
-    assert "a-priv" in ids   # own private
-    assert "a-pub" in ids     # own public
-    assert "b-pub" in ids     # others' public
-    assert "b-priv" not in ids  # others' private — hidden
+    names = {m.name for m in await store.list_visible("conv-alice")}
+    assert names == {"a-priv", "a-pub", "b-pub"}  # NOT b-priv
 
 
 @pytest.mark.asyncio
 async def test_list_query_filters(store):
-    await _upsert(store, "m1", "alice", name="marimo-notebook", desc="data viz")
-    await _upsert(store, "m2", "alice", name="jupyter")
-    hits = [m.name for m in await store.list_visible("alice", query="MARIMO")]
+    await _pub(store, "marimo-notebook", "conv-alice", desc="data viz")
+    await _pub(store, "jupyter", "conv-alice")
+    hits = [m.name for m in await store.list_visible("conv-alice", query="MARIMO")]
     assert hits == ["marimo-notebook"]
-    # matches description too
-    assert {m.id for m in await store.list_visible("alice", query="viz")} == {"m1"}
+    assert {m.name for m in await store.list_visible("conv-alice", query="viz")} == {"marimo-notebook"}

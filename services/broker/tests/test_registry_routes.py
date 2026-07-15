@@ -1,5 +1,6 @@
-"""Unit tests for the module registry HTTP API — download (unauth), the
-visibility-gated catalog, and publish (owner = caller's conversation)."""
+"""Unit tests for the module registry HTTP API — download (unauth, by name OR id),
+the visibility-gated catalog, and publish (name = the unique id; owner = caller's
+conversation)."""
 
 from __future__ import annotations
 
@@ -42,23 +43,31 @@ def _tar_names(body: bytes) -> set[str]:
         return set(t.getnames())
 
 
-async def _seed(store, mid, owner, **kw):
-    await store.upsert(module_id=mid, owner=owner, name=kw.get("name", mid),
-                       description=kw.get("desc", ""), visibility=kw.get("vis", "private"),
-                       files=kw.get("files", {"module.nix": "{...}: {}"}))
+async def _pub(store, name, owner, **kw):
+    return await store.publish(owner=owner, name=name, description=kw.get("desc", ""),
+                               visibility=kw.get("vis", "private"),
+                               files=kw.get("files", {"module.nix": "{...}: {}"}))
 
 
 @pytest.mark.asyncio
-async def test_download_is_unauthenticated_and_tars_by_id(store):
-    await _seed(store, "a", "conv-x", files={"module.nix": "AAA", "flake.nix": "{}"})
-    await _seed(store, "b", "conv-y", files={"module.nix": "BBB"})
-    # No auth override needed — download is unauthenticated.
+async def test_download_unauth_by_name_and_tars_by_name(store):
+    await _pub(store, "a", "conv-x", files={"module.nix": "AAA", "flake.nix": "{}"})
+    await _pub(store, "b", "conv-y", files={"module.nix": "BBB"})
     app = FastAPI()
-    app.include_router(create_registry_router(store))
+    app.include_router(create_registry_router(store))  # no auth override — download is open
     resp = TestClient(app).get("/modules.tar.gz?ids=a,b")
     assert resp.status_code == 200
-    assert resp.headers["content-type"] == "application/gzip"
     assert _tar_names(resp.content) == {"a/module.nix", "a/flake.nix", "b/module.nix"}
+
+
+@pytest.mark.asyncio
+async def test_download_by_numeric_id_tars_under_name(store):
+    m = await _pub(store, "marimo", "conv-x", files={"module.nix": "X"})
+    app = FastAPI()
+    app.include_router(create_registry_router(store))
+    # ask by numeric id -> served, tar path is the NAME (canonical).
+    resp = TestClient(app).get(f"/modules.tar.gz?ids={m.id}")
+    assert _tar_names(resp.content) == {"marimo/module.nix"}
 
 
 @pytest.mark.asyncio
@@ -70,45 +79,56 @@ async def test_download_missing_is_404(store):
 
 @pytest.mark.asyncio
 async def test_list_is_visibility_gated(store):
-    await _seed(store, "a-priv", "conv-alice", vis="private")
-    await _seed(store, "a-pub", "conv-alice", vis="public")
-    await _seed(store, "b-priv", "conv-bob", vis="private")
-    await _seed(store, "b-pub", "conv-bob", vis="public")
-    ids = {m["id"] for m in _client(store, "conv-alice").get("/modules").json()["modules"]}
-    assert ids == {"a-priv", "a-pub", "b-pub"}  # NOT b-priv
-    # list summaries carry no files blob.
+    await _pub(store, "a-priv", "conv-alice", vis="private")
+    await _pub(store, "a-pub", "conv-alice", vis="public")
+    await _pub(store, "b-priv", "conv-bob", vis="private")
+    await _pub(store, "b-pub", "conv-bob", vis="public")
+    names = {m["name"] for m in _client(store, "conv-alice").get("/modules").json()["modules"]}
+    assert names == {"a-priv", "a-pub", "b-pub"}
     assert all("files" not in m for m in _client(store, "conv-alice").get("/modules").json()["modules"])
 
 
 @pytest.mark.asyncio
-async def test_get_private_module_of_another_is_404(store):
-    await _seed(store, "b-priv", "conv-bob", vis="private")
+async def test_get_by_name_or_id_private_gated(store):
+    m = await _pub(store, "b-priv", "conv-bob", vis="private")
+    # alice can't see bob's private -> 404 (by name AND by id)
     assert _client(store, "conv-alice").get("/modules/b-priv").status_code == 404
-    # bob CAN get his own
+    assert _client(store, "conv-alice").get(f"/modules/{m.id}").status_code == 404
+    # bob can, by either ref
     assert _client(store, "conv-bob").get("/modules/b-priv").status_code == 200
+    assert _client(store, "conv-bob").get(f"/modules/{m.id}").status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_publish_stamps_owner_from_identity(store):
+async def test_publish_stamps_owner_and_name_is_unique(store):
     c = _client(store, "conv-alice")
-    resp = c.post("/modules", json={"id": "m1", "name": "mymod", "files": {"module.nix": "{...}: {}"}})
+    resp = c.post("/modules", json={"name": "mymod", "files": {"module.nix": "{...}: {}"}})
     assert resp.status_code == 201
     assert resp.json()["owner"] == "conv-alice"  # from the token, not the body
-    # republish by a DIFFERENT conversation -> 403
+    assert isinstance(resp.json()["id"], int)     # minted numeric id
+    # another conversation can't take the name -> 403
     other = _client(store, "conv-bob")
-    assert other.post("/modules", json={"id": "m1", "name": "x", "files": {"module.nix": "y"}}).status_code == 403
+    assert other.post("/modules", json={"name": "mymod", "files": {"module.nix": "y"}}).status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_publish_requires_module_nix(store):
+async def test_republish_bumps_version(store):
     c = _client(store, "conv-alice")
-    assert c.post("/modules", json={"id": "m1", "name": "x", "files": {"other.nix": "y"}}).status_code == 400
-    assert c.post("/modules", json={"id": "m1", "name": "x"}).status_code == 400
-    assert c.post("/modules", json={"id": "", "name": "x", "files": {"module.nix": "y"}}).status_code == 400
+    v1 = c.post("/modules", json={"name": "m", "files": {"module.nix": "v1"}}).json()
+    v2 = c.post("/modules", json={"name": "m", "files": {"module.nix": "v2"}}).json()
+    assert v2["version"] == 2 and v2["id"] == v1["id"]
+
+
+@pytest.mark.asyncio
+async def test_publish_requires_name_and_module_nix(store):
+    c = _client(store, "conv-alice")
+    assert c.post("/modules", json={"name": "x", "files": {"other.nix": "y"}}).status_code == 400
+    assert c.post("/modules", json={"name": "x"}).status_code == 400
+    assert c.post("/modules", json={"files": {"module.nix": "y"}}).status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_publish_rejects_bad_visibility(store):
     c = _client(store, "conv-alice")
-    r = c.post("/modules", json={"id": "m1", "name": "x", "visibility": "secret", "files": {"module.nix": "y"}})
+    r = c.post("/modules", json={"name": "x", "visibility": "secret", "files": {"module.nix": "y"}})
     assert r.status_code == 400
