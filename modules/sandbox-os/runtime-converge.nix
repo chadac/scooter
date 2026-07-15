@@ -265,6 +265,117 @@ let
       esac
     '';
   };
+
+  # scooter-rebuild — THE agent's environment entrypoint (nixos-rebuild-like). Owns
+  # /etc/scooter (HARDCODED — no configurability). A thin dispatcher over the existing
+  # switch machinery (scooter-apply-module / scooter-env-status) + local module editing
+  # under /etc/scooter/modules (the symlinked, PVC-backed, agent-writable dir that
+  # local-modules.nix composes). The registry (module add/publish/share from the broker)
+  # is a later PR; this is the local-authoring + switch surface.
+  #
+  #   scooter-rebuild switch [--detach]     build + switch to the current config
+  #   scooter-rebuild status [--log]        show the (async) switch status
+  #   scooter-rebuild module list           list your authored modules
+  #   scooter-rebuild module new <name>     create modules/<name>.nix from a template
+  #   scooter-rebuild module edit <name>    $EDITOR modules/<name>.nix (create if absent)
+  #   scooter-rebuild module show <name>    print modules/<name>.nix
+  #   scooter-rebuild module rm <name>      delete modules/<name>.nix
+  scooterRebuild = pkgs.writeShellApplication {
+    name = "scooter-rebuild";
+    runtimeInputs = [ applyModule envStatus pkgs.coreutils ];
+    text = ''
+      set -euo pipefail
+
+      # HARDCODED — scooter-rebuild owns /etc/scooter. modules/ is the agent-editable
+      # dir (symlink -> workspace PVC) that local-modules.nix imports.
+      MODULES_DIR=/etc/scooter/modules
+
+      usage() {
+        cat >&2 <<'EOF'
+      scooter-rebuild — build + switch your sandbox environment.
+
+        scooter-rebuild switch [--detach]   apply the current config (build + switch)
+        scooter-rebuild status [--log]      show the switch status (+ log on failure)
+        scooter-rebuild module list                 list your modules
+        scooter-rebuild module new  <name>          create modules/<name>.nix (template)
+        scooter-rebuild module edit <name>          edit modules/<name>.nix ($EDITOR)
+        scooter-rebuild module show <name>          print modules/<name>.nix
+        scooter-rebuild module rm   <name>          delete modules/<name>.nix
+
+      Your modules live in /etc/scooter/modules/*.nix (durable on the workspace PVC).
+      Edit them, then `scooter-rebuild switch`. A bad module fails the build (no switch).
+      EOF
+      }
+
+      # Reject a name that isn't a plain module basename (no path traversal / slashes).
+      module_path() {
+        local name="$1"
+        case "$name" in
+          ""|*/*|.|..) echo "scooter-rebuild: invalid module name '$name'" >&2; exit 2 ;;
+        esac
+        printf '%s/%s.nix' "$MODULES_DIR" "$name"
+      }
+
+      cmd="''${1:-}"; shift || true
+      case "$cmd" in
+        switch)
+          # Pass through --detach; scooter-apply-module with NO --module composes the
+          # base config (which imports local + deployment/broker modules) -> the switch.
+          exec scooter-apply-module "$@"
+          ;;
+        status)
+          exec scooter-env-status "$@"
+          ;;
+        module)
+          sub="''${1:-}"; shift || true
+          case "$sub" in
+            list|ls)
+              mkdir -p "$MODULES_DIR"
+              # -L: MODULES_DIR is a symlink (-> the workspace PVC dir); find won't
+              # descend a symlinked start point without it.
+              found=$(find -L "$MODULES_DIR" -maxdepth 1 -name '*.nix' -printf '%f\n' 2>/dev/null | sed 's/\.nix$//' | sort || true)
+              if [ -z "$found" ]; then echo "no modules yet — create one with: scooter-rebuild module new <name>"; else echo "$found"; fi
+              ;;
+            new)
+              name="''${1:-}"; path=$(module_path "$name")
+              mkdir -p "$MODULES_DIR"
+              if [ -e "$path" ]; then echo "scooter-rebuild: $name already exists (edit it: scooter-rebuild module edit $name)" >&2; exit 1; fi
+              cat > "$path" <<'TEMPLATE'
+      # A sandbox environment module. This is a NixOS module — declare packages,
+      # services, env, etc. Run `scooter-rebuild switch` to apply.
+      { pkgs, lib, ... }:
+      {
+        # environment.systemPackages = [ pkgs.jq ];
+      }
+      TEMPLATE
+              echo "created $path — edit it, then: scooter-rebuild switch"
+              ;;
+            edit)
+              name="''${1:-}"; path=$(module_path "$name")
+              mkdir -p "$MODULES_DIR"
+              [ -e "$path" ] || scooter-rebuild module new "$name" >/dev/null
+              exec "''${EDITOR:-vi}" "$path"
+              ;;
+            show|cat)
+              name="''${1:-}"; path=$(module_path "$name")
+              [ -e "$path" ] || { echo "scooter-rebuild: no module '$name'" >&2; exit 1; }
+              cat "$path"
+              ;;
+            rm|delete)
+              name="''${1:-}"; path=$(module_path "$name")
+              [ -e "$path" ] || { echo "scooter-rebuild: no module '$name'" >&2; exit 1; }
+              rm -f "$path"
+              echo "removed $name — run: scooter-rebuild switch"
+              ;;
+            ""|-h|--help) usage; exit 2 ;;
+            *) echo "scooter-rebuild module: unknown subcommand '$sub'" >&2; usage; exit 2 ;;
+          esac
+          ;;
+        ""|-h|--help) usage; exit 2 ;;
+        *) echo "scooter-rebuild: unknown command '$cmd'" >&2; usage; exit 2 ;;
+      esac
+    '';
+  };
 in
 {
   options.programs.scooterModule = {
@@ -308,7 +419,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ applyModule envStatus ];
+    environment.systemPackages = [ applyModule envStatus scooterRebuild ];
 
     # CRITICAL: the in-pod `nix build` imports the modules tree (shipped here) and
     # the nixpkgs source. cfg.nixpkgs is a bare string (no Nix context), so it is
