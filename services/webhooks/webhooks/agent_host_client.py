@@ -27,6 +27,29 @@ def _agui_url() -> str:
     return f"{settings.agent_host_url.rstrip('/')}/agui"
 
 
+def _content(
+    text: str, images: list[dict] | None, files: list[dict] | None = None
+) -> str | list[dict]:
+    """Build a message's `content`: a plain string (text-only, the common case) OR
+    a multimodal parts array (text + image + file parts) the agent-host /agui
+    normalizer splits. Each image is {data: base64, mimeType}; each file is
+    {name, data: base64, mimeType} (a binary attachment the agent-host writes into
+    the sandbox). The inlined-text block for text attachments is woven into `text`
+    by the CALLER, not here. Mirrors the UI's send shape."""
+    if not images and not files:
+        return text
+    parts: list[dict] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+    for img in images or []:
+        parts.append({"type": "image", "data": img["data"], "mimeType": img["mimeType"]})
+    for f in files or []:
+        parts.append(
+            {"type": "file", "name": f["name"], "data": f["data"], "mimeType": f["mimeType"]}
+        )
+    return parts
+
+
 async def create_conversation(
     initial_message: str,
     repository: str | None = None,
@@ -34,6 +57,8 @@ async def create_conversation(
     title: str | None = None,
     on_created: Callable[[str], Awaitable[None]] | None = None,
     owner: str | None = None,
+    images: list[dict] | None = None,
+    files: list[dict] | None = None,
 ) -> dict | None:
     """Spawn an agent conversation for `initial_message`.
 
@@ -58,7 +83,7 @@ async def create_conversation(
     payload = {
         "threadId": conversation_id,
         "runId": str(uuid.uuid4()),
-        "messages": [{"role": "user", "content": task}],
+        "messages": [{"role": "user", "content": _content(task, images, files)}],
     }
     if owner:
         # The resolved Scooter owner rides the body; the agent-host honors it only for
@@ -86,18 +111,26 @@ async def create_conversation(
     return {"conversation_id": conversation_id, "result": result_text}
 
 
-async def send_message(conversation_id: str, message: str, *, priority: bool = False) -> bool:
+async def send_message(
+    conversation_id: str,
+    message: str,
+    *,
+    priority: bool = False,
+    images: list[dict] | None = None,
+    files: list[dict] | None = None,
+) -> bool:
     """Send a follow-up message into an existing conversation (same thread).
 
     `priority=True` (an @mention to an ACTIVE conversation) tags the forward so the
     agent-host can force-interrupt a stuck turn after its priority timeout. The
     agent-host owns the timer; webhooks only flags intent. PRIORITY_INTERRUPT=10
-    mirrors the agent-host's bridge constant.
+    mirrors the agent-host's bridge constant. `images` (base64 + mime) attach as
+    multimodal content parts.
     """
     payload = {
         "threadId": conversation_id,
         "runId": str(uuid.uuid4()),
-        "messages": [{"role": "user", "content": message}],
+        "messages": [{"role": "user", "content": _content(message, images, files)}],
     }
     if priority:
         payload["priority"] = 10  # PRIORITY_INTERRUPT (agent-host bridge.ts)

@@ -196,3 +196,116 @@ async def test_status_5xx_returns_none_and_warns(monkeypatch, caplog):
         assert await ahc.get_conversation_status("c1") is None
     # A transient failure is surfaced at WARNING (NOT silently like a 404).
     assert any("FAILED (transient" in r.message for r in caplog.records)
+
+
+# --- multimodal content (stage 5): images -> text+image parts array -----------
+
+
+async def test_create_conversation_with_images_sends_content_parts(monkeypatch):
+    captured: dict = {}
+    body = _sse(
+        '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
+        '{"type":"RUN_FINISHED","threadId":"t","runId":"r"}',
+    )
+    _patch_stream(monkeypatch, body, captured)
+
+    await ahc.create_conversation(
+        "what is this?",
+        images=[{"data": "QUJD", "mimeType": "image/png"}],
+    )
+
+    content = captured["json"]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert {"type": "text", "text": "what is this?"} in content
+    assert {"type": "image", "data": "QUJD", "mimeType": "image/png"} in content
+
+
+async def test_create_conversation_without_images_sends_a_plain_string(monkeypatch):
+    captured: dict = {}
+    body = _sse(
+        '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
+        '{"type":"RUN_FINISHED","threadId":"t","runId":"r"}',
+    )
+    _patch_stream(monkeypatch, body, captured)
+
+    await ahc.create_conversation("just text")
+
+    # Back-compat: no images -> content stays a plain string.
+    assert captured["json"]["messages"][0]["content"] == "just text"
+
+
+async def test_send_message_with_images_sends_content_parts(monkeypatch):
+    captured: dict = {}
+    body = _sse(
+        '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
+        '{"type":"RUN_FINISHED","threadId":"t","runId":"r"}',
+    )
+    _patch_stream(monkeypatch, body, captured)
+
+    await ahc.send_message("c1", "look", images=[{"data": "ZZ", "mimeType": "image/jpeg"}])
+
+    content = captured["json"]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert {"type": "image", "data": "ZZ", "mimeType": "image/jpeg"} in content
+
+
+# --- multimedia (files): binary attachments -> file content parts -------------
+
+
+async def test_create_conversation_with_files_sends_file_parts(monkeypatch):
+    captured: dict = {}
+    body = _sse(
+        '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
+        '{"type":"RUN_FINISHED","threadId":"t","runId":"r"}',
+    )
+    _patch_stream(monkeypatch, body, captured)
+
+    await ahc.create_conversation(
+        "here is a report",
+        files=[{"name": "report.pdf", "data": "UERG", "mimeType": "application/pdf"}],
+    )
+
+    content = captured["json"]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert {"type": "text", "text": "here is a report"} in content
+    assert {
+        "type": "file",
+        "name": "report.pdf",
+        "data": "UERG",
+        "mimeType": "application/pdf",
+    } in content
+
+
+async def test_send_message_with_files_and_images_sends_both(monkeypatch):
+    captured: dict = {}
+    body = _sse(
+        '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
+        '{"type":"RUN_FINISHED","threadId":"t","runId":"r"}',
+    )
+    _patch_stream(monkeypatch, body, captured)
+
+    await ahc.send_message(
+        "c1",
+        "mixed",
+        images=[{"data": "ZZ", "mimeType": "image/jpeg"}],
+        files=[{"name": "a.zip", "data": "YWJj", "mimeType": "application/zip"}],
+    )
+
+    content = captured["json"]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert {"type": "image", "data": "ZZ", "mimeType": "image/jpeg"} in content
+    assert {"type": "file", "name": "a.zip", "data": "YWJj", "mimeType": "application/zip"} in content
+
+
+async def test_create_conversation_without_files_or_images_stays_plain(monkeypatch):
+    captured: dict = {}
+    body = _sse(
+        '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
+        '{"type":"RUN_FINISHED","threadId":"t","runId":"r"}',
+    )
+    _patch_stream(monkeypatch, body, captured)
+
+    await ahc.send_message("c1", "just text")
+
+    # Back-compat: no attachments -> content stays a plain string (byte-for-byte).
+    assert captured["json"]["messages"][0]["content"] == "just text"

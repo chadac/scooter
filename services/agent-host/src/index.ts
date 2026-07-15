@@ -25,6 +25,7 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
+import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
@@ -331,6 +332,12 @@ export async function main(
   // on a fake/dev sandbox there's no real goose, so it's best-effort.
   ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
   const store = createFileConversationStore(config.statePath);
+  // Image/media assets (uploaded images) live alongside the event log on the
+  // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
+  const assets = createPvcAssetStore({
+    root: config.statePath,
+    maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+  });
   const server = createAguiServer();
   // The privileged /agui `owner` field (a webhook-resolved Scooter user) is honored
   // ONLY for the TRUSTED webhooks caller — its SA token verified via k8s TokenReview.
@@ -593,8 +600,31 @@ export async function main(
       requested && (requested === config.model || config.availableModels.includes(requested))
         ? requested
         : undefined;
+    // Store any attached images in the AssetStore -> pass small refs to the bridge
+    // (which resolves them to base64 ACP image blocks). Oversize/unsupported images
+    // are dropped best-effort (a bad image must not fail the whole turn); the
+    // AssetStore enforces the cap + MIME allow-list.
+    const promptImages: Array<{ assetId: string; mimeType: string }> = [];
+    for (const img of input.images ?? []) {
+      try {
+        const stored = await assets.put(sessionId, { data: Buffer.from(img.data, "base64"), mimeType: img.mimeType });
+        promptImages.push({ assetId: stored.assetId, mimeType: stored.mimeType });
+      } catch (e) {
+        console.warn(`[agent-host] dropped an attached image for ${sessionId}:`, (e as Error).message);
+      }
+    }
+    // Binary file attachments (Slack pdf/zip/…) ride straight through to the bridge,
+    // which materializes each into the sandbox at /workspace/.slack/<name> via the
+    // exec client (best-effort — a failed write must not kill the turn). The agent
+    // SEES the saved paths because the message text (woven webhooks-side) references
+    // them.
+    const promptFiles = (input.files ?? []).map((f) => ({
+      name: f.name,
+      data: f.data,
+      mimeType: f.mimeType,
+    }));
     try {
-      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner);
+      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles);
     } catch (err) {
       // The run couldn't even START (provision/revive failed — e.g. 409 on a wrong
       // hydrate map, goose/ACP error). PERSIST a RUN_ERROR to the durable log so a
@@ -682,6 +712,7 @@ export async function main(
       server,
       webServices,
       identityStore,
+      assets,
       models: {
         default: config.model,
         available: config.availableModels,
@@ -910,6 +941,8 @@ export async function main(
         for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
         return events;
       },
+      // Resolve an attached image's bytes so the run builds the ACP image block.
+      readAsset: (assetId) => assets.read(conversationId as SessionId, assetId),
     });
 
     // Mirror bridge events to UI subscribers.

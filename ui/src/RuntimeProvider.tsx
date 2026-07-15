@@ -55,9 +55,11 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter } from "@assistant-ui/react";
 import type { AbstractAgent, RunAgentInput } from "@ag-ui/client";
 import { useAgUiRuntime, fromAgUiMessages } from "@assistant-ui/react-ag-ui";
+
+import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { sessionStore, useSessions } from "./sessions.js";
 import {
@@ -177,15 +179,30 @@ function ConversationRuntime({
         const lastUser = [...(input?.messages ?? [])]
           .reverse()
           .find((m) => m.role === "user");
-        const text = typeof lastUser?.content === "string" ? lastUser.content : "";
-        if (text) {
+        // content is a string (text-only) OR an array of parts (text + image
+        // attachments). Extract text + images either way.
+        const content = lastUser?.content as unknown;
+        const text = typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content.filter((p) => (p as { type?: string })?.type === "text").map((p) => (p as { text?: string }).text ?? "").join("")
+            : "";
+        // Downscale each attached image under the client cap before sending (the
+        // agent-host also hard-rejects over its cap).
+        const rawImages = imagesFromContent(content);
+        const images: OutboundImage[] = [];
+        for (const raw of rawImages) {
+          const scaled = await downscaleImage(`data:${raw.mimeType};base64,${raw.data}`).catch(() => raw);
+          if (scaled) images.push(scaled);
+        }
+        if (text || images.length) {
           // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
           // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
           // the running turn (bridge "thinking" policy) instead of queuing the message
           // behind a turn that may never end. Read the LIVE run state (not React
           // state) so there's no stale-closure race. PRIORITY_INTERRUPT = 10.
           const priority = agent.runIsActive() ? 10 : undefined;
-          await agent.send(text, { priority });
+          await agent.send(text, { priority, images: images.length ? images : undefined });
         }
       }
       return { result: undefined, newMessages: [], newState: agent.state };
@@ -209,7 +226,14 @@ function ConversationRuntime({
     [conversationId],
   );
 
-  const runtime = useAgUiRuntime({ agent, adapters: { threadList: threadListAdapter } });
+  // The image attachment adapter lets the composer accept image uploads: it turns
+  // an attached image File into an image content part on the user message (which
+  // the send override above extracts, downscales, and forwards to /agui).
+  const attachmentAdapter = useMemo(() => new SimpleImageAttachmentAdapter(), []);
+  const runtime = useAgUiRuntime({
+    agent,
+    adapters: { threadList: threadListAdapter, attachments: attachmentAdapter },
+  });
 
   // The RENDER PUMP. agent.renderPump() folds the integrity stream into
   // agent.messages with full fidelity across all runs, using EXACTLY ONE
@@ -264,7 +288,18 @@ function ConversationRuntime({
       const folded = agent.messages as unknown as unknown[];
       if (folded.length < lastLen.current) return;
       lastLen.current = folded.length;
-      runtime.thread.reset(fromAgUiMessages(folded));
+      // Enrich user messages with their attached images (MESSAGE_IMAGES rides the
+      // log but the base applier ignores it): append an image part per ref so the
+      // image renders live + after a refresh. The url is a same-origin assets route.
+      const enriched = folded.map((m) => {
+        const msg = m as { id?: string; role?: string; content?: unknown };
+        const imgs = msg.id ? agent.getMessageImages(msg.id) : undefined;
+        if (!imgs?.length) return m;
+        const parts = Array.isArray(msg.content) ? [...(msg.content as unknown[])] : msg.content ? [{ type: "text", text: msg.content }] : [];
+        for (const img of imgs) parts.push({ type: "image", image: img.url });
+        return { ...msg, content: parts };
+      });
+      runtime.thread.reset(fromAgUiMessages(enriched));
       // Interrupts ride the log too; surface them (or clear them) on every change.
       setInterrupts(agent.getPendingInterrupts());
       // Run-in-flight state (Stop button + thinking indicator) rides the log too.

@@ -19,10 +19,47 @@ import type {
   SessionConfig,
   ExecBackend,
 } from "./types.js";
-import type { AcpClient, SessionUpdate } from "./acp/client.js";
+import type { AcpClient, SessionUpdate, ContentBlock } from "./acp/client.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
+
+/** Where binary Slack attachments are materialized inside the sandbox. Kept in sync
+ *  with the webhooks handler (services/webhooks) which notes these paths in the
+ *  message text so the agent knows where to find each file. */
+export const SLACK_FILES_DIR = "/workspace/.slack";
+
+/** Sanitize an attachment filename to a safe basename (no path traversal / dir
+ *  separators) so a hostile `name` can't escape SLACK_FILES_DIR. */
+function safeSlackName(name: string): string {
+  const base = name.split(/[\\/]/).pop() || "file";
+  // Drop leading dots that could hide it / strip anything odd to a conservative set.
+  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
+  return cleaned || "file";
+}
+
+/** Write one binary file attachment (base64) into the sandbox at
+ *  SLACK_FILES_DIR/<name>, base64-decoding it pod-side so the bytes land intact.
+ *  Uses the exec `run` seam (mkdir + a base64 pipe). Throws on a non-zero exit so
+ *  the caller can log + skip (best-effort). */
+async function writeSlackFile(exec: ExecBackend, file: { name: string; data: string }): Promise<void> {
+  const name = safeSlackName(file.name);
+  const path = `${SLACK_FILES_DIR}/${name}`;
+  // Build a single shell line: create the dir, then decode base64 from a heredoc
+  // into the target path. args:[] marks this as a pass-through shell string.
+  const script =
+    `mkdir -p ${shellQuote(SLACK_FILES_DIR)} && ` +
+    `printf %s ${shellQuote(file.data)} | base64 -d > ${shellQuote(path)}`;
+  const res = await exec.run({ command: script, args: [] });
+  if (res.exitCode !== 0) {
+    throw new Error(`write ${path}: ${res.stderr || `exit ${res.exitCode}`}`);
+  }
+}
+
+/** POSIX single-quote a string for a `sh -c` line (mirrors k8sExec's shellQuote). */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
 
 /** An AG-UI interrupt: a point where the run pauses for a user response (a
  *  permission/option choice). Matches @ag-ui/core's Interrupt. `metadata.options`
@@ -94,12 +131,47 @@ type AguiEventBase =
   // survive a refresh + show across tabs (the old queued-message-vanishes bug: the
   // queue lived only in client memory). Latest-wins: the UI renders the items from
   // the most recent QUEUE_UPDATED; an empty `items` means the queue drained.
-  | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number }> };
+  | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number }> }
+  // Image REFERENCES attached to a user message (multimodal). Carries only the
+  // assetId + mimeType + fetch url — NEVER the base64 bytes — so the event log stays
+  // compact + checksum-stable; the UI renders each via its url on replay. Bespoke
+  // like QUEUE_UPDATED: the @ag-ui client folds by type and ignores it, so it never
+  // corrupts the message stream; the UI reads it explicitly (keyed to the user
+  // messageId it follows). Persist + broadcast, so it survives a refresh.
+  | {
+      type: "MESSAGE_IMAGES";
+      messageId: string;
+      images: Array<{ assetId: string; mimeType: string; url: string }>;
+    };
+
+/** An image attached to a user prompt — a reference the bridge resolves to base64
+ *  (from the AssetStore) when it builds the ACP image content block. */
+export interface PromptImage {
+  assetId: string;
+  mimeType: string;
+}
+
+/** A binary file attached to a user prompt (Slack pdf/zip/…). Unlike images, files
+ *  are NOT sent as ACP content blocks — the bridge MATERIALIZES the bytes into the
+ *  sandbox at /workspace/.slack/<name> via the exec client, and the agent reads them
+ *  from disk (the message text, woven webhooks-side, references the saved paths). */
+export interface PromptFile {
+  name: string;
+  /** base64-encoded bytes. */
+  data: string;
+  mimeType: string;
+}
 
 /** A user prompt entering the run (maps to ACP session/prompt). */
 export interface PromptInput {
   threadId: ThreadId;
   text: string;
+  /** Images the user attached (UI upload / Slack). Empty/undefined = text-only
+   *  (the unchanged hot path). Resolved to ACP image blocks when the run prompts. */
+  images?: PromptImage[];
+  /** Binary file attachments (Slack). Empty/undefined = none (the unchanged path).
+   *  Written to /workspace/.slack/<name> in the sandbox when the run prompts. */
+  files?: PromptFile[];
 }
 
 /** How a priority item PREEMPTS the running turn (graduated interrupt levels).
@@ -226,6 +298,13 @@ export interface BridgeDeps {
    * Absent in tests / when there's nothing to inject → no prepend.
    */
   loadHistory?: () => Promise<AguiEvent[]>;
+
+  /**
+   * Resolve an attached image's bytes (from the AssetStore) so the run can build
+   * the ACP image content block goose sees. Absent → image parts are ignored (the
+   * text-only path is unchanged). Returns null for an unknown/unreadable asset.
+   */
+  readAsset?: (assetId: string) => Promise<{ data: Buffer; mimeType: string } | null>;
 
   /**
    * Force-interrupt timeout (ms). When a queued PRIORITY prompt (an @scooter
@@ -695,6 +774,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
       persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: b.text });
       persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
+      // Attach the message's images as REFERENCES (assetId + url, not bytes) so a
+      // refresh re-renders them under this user message. The url is the fixed
+      // assets-route shape (same as AssetStore.urlFor); the UI fetches it.
+      if (b.images && b.images.length) {
+        persist({
+          type: "MESSAGE_IMAGES",
+          messageId: userMsgId,
+          images: b.images.map((img) => ({
+            assetId: img.assetId,
+            mimeType: img.mimeType,
+            url: `/conversations/${encodeURIComponent(b.threadId)}/assets/${encodeURIComponent(img.assetId)}`,
+          })),
+        });
+      }
     }
 
     try {
@@ -705,9 +798,36 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // (a burst of queued messages sent as one turn), so the agent reads them all
       // at once instead of one-at-a-time.
       const combined = combineTexts(batch.map((b) => b.text));
-      const promptBlocks = historyPreamble
-        ? [{ type: "text" as const, text: historyPreamble }, { type: "text" as const, text: combined }]
-        : [{ type: "text" as const, text: combined }];
+      const textBlocks: ContentBlock[] = historyPreamble
+        ? [{ type: "text", text: historyPreamble }, { type: "text", text: combined }]
+        : [{ type: "text", text: combined }];
+      // Resolve attached images to ACP image blocks (base64), appended after the
+      // text so the model sees them with the message. Missing/unreadable assets are
+      // skipped (best-effort — a dropped image must not fail the turn). No images
+      // (or no readAsset dep) → the text-only prompt is unchanged.
+      const imageBlocks: ContentBlock[] = [];
+      const images = batch.flatMap((b) => b.images ?? []);
+      if (images.length && deps.readAsset) {
+        for (const img of images) {
+          const bytes = await deps.readAsset(img.assetId).catch(() => null);
+          if (bytes) imageBlocks.push({ type: "image", data: bytes.data.toString("base64"), mimeType: bytes.mimeType });
+        }
+      }
+      // Materialize any binary file attachments (Slack pdf/zip/…) into the sandbox
+      // at /workspace/.slack/<name> so the agent can read them from disk (the woven
+      // message text references those paths). Best-effort: a failed write is logged
+      // and skipped — it must not kill the turn. No files → the path is unchanged.
+      const files = batch.flatMap((b) => b.files ?? []);
+      if (files.length) {
+        for (const f of files) {
+          try {
+            await writeSlackFile(deps.exec, f);
+          } catch (err) {
+            debug("[bridge] failed to write slack file %s (continuing): %s", f.name, err);
+          }
+        }
+      }
+      const promptBlocks = [...textBlocks, ...imageBlocks];
       const { stopReason } = await acpClient!.prompt({
         sessionId: acpSessionId!,
         prompt: promptBlocks,

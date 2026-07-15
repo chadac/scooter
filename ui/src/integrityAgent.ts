@@ -156,6 +156,23 @@ export class IntegrityAgent extends AbstractAgent {
     return this.queued;
   }
 
+  /** messageId -> its attached image refs (from MESSAGE_IMAGES). The base applier
+   *  ignores that bespoke event, so we track it here and let the render pump enrich
+   *  the folded user messages, so an image renders live + after a refresh. */
+  private messageImages = new Map<string, Array<{ assetId: string; mimeType: string; url: string }>>();
+  getMessageImages(messageId: string): Array<{ assetId: string; mimeType: string; url: string }> | undefined {
+    return this.messageImages.get(messageId);
+  }
+
+  /** Record a MESSAGE_IMAGES event's refs keyed by its messageId. Returns true if
+   *  it added anything (nudge subscribers to re-render with the image). */
+  private trackImages(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; messageId?: string; images?: Array<{ assetId: string; mimeType: string; url: string }> };
+    if (ev.type !== "MESSAGE_IMAGES" || !ev.messageId || !ev.images?.length) return false;
+    this.messageImages.set(ev.messageId, ev.images);
+    return true;
+  }
+
   /** Update `queued` from a QUEUE_UPDATED snapshot. Returns true if it changed
    *  (shallow: length or any id/text differs) so the caller can nudge subscribers. */
   private trackQueue(e: BaseEvent): boolean {
@@ -474,6 +491,9 @@ export class IntegrityAgent extends AbstractAgent {
             // Track the QUEUE_UPDATED snapshot so queued-behind-a-run messages render
             // durably (they used to be client-only and vanished on refresh).
             changed = this.trackQueue(e) || changed;
+            // Track image refs (MESSAGE_IMAGES) so a user message's images render
+            // live + survive a refresh (the base applier ignores this bespoke event).
+            changed = this.trackImages(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
@@ -580,11 +600,23 @@ export class IntegrityAgent extends AbstractAgent {
    * reply comes back via `run()`'s integrity subscription. Resolves once the POST
    * is accepted (not when the run finishes).
    */
-  async send(text: string, opts?: { priority?: number }): Promise<void> {
+  async send(
+    text: string,
+    opts?: { priority?: number; images?: Array<{ data: string; mimeType: string }> },
+  ): Promise<void> {
+    // With images, send a multimodal content-parts array (text + image parts) the
+    // agent-host normalizer splits; without, a plain string (the unchanged path).
+    const content =
+      opts?.images && opts.images.length
+        ? [
+            ...(text ? [{ type: "text", text }] : []),
+            ...opts.images.map((img) => ({ type: "image", data: img.data, mimeType: img.mimeType })),
+          ]
+        : text;
     await this.postAgui({
       threadId: this.cfg.conversationId,
       runId: `send-${this.cfg.conversationId}-${text.length}`,
-      messages: [{ id: `u-${text.length}`, role: "user", content: text }],
+      messages: [{ id: `u-${text.length}`, role: "user", content }],
       // When the user sends WHILE a run is active (a loop they want to interrupt),
       // the caller passes priority so the agent-host FORCE-INTERRUPTS the running
       // turn (bridge "thinking" policy — cancels at the next tool boundary). Without

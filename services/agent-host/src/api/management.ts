@@ -27,6 +27,7 @@ import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { IdentityStore } from "../auth/identityStore.js";
+import type { AssetStore } from "../session/assetStore.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
@@ -95,6 +96,9 @@ export interface ManagementDeps {
    *  that maps an invoking external (github/gitlab/slack) user to their internal
    *  user. Optional — absent = the lookup route reports no match. */
   identityStore?: IdentityStore;
+  /** Image/media asset store (uploaded images). Powers GET
+   *  /conversations/:id/assets/:assetId (replay). Optional — absent = images off. */
+  assets?: AssetStore;
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -350,6 +354,31 @@ export function createManagementApi(deps: ManagementDeps): Router {
       checksum = chainAll(events);
     }
     return { json: { events, checksum } };
+  });
+
+  // Stream an uploaded image back (replay + the thread's own view). Conversation-
+  // scoped: the assetId is only readable under its own conversation id (the store
+  // isolates per conversation + guards path traversal), so an id can't leak an
+  // asset from another conversation. Returns the raw bytes with the right
+  // content-type; the handler writes the response itself (binary, not JSON).
+  r.get("/conversations/:id/assets/:assetId", async (ctx) => {
+    const res = ctx.res;
+    if (!deps.assets) {
+      res.writeHead(404, { "Content-Type": "application/json" }).end('{"error":"assets not enabled"}');
+      return;
+    }
+    const asset = await deps.assets.read(ctx.params.id, ctx.params.assetId);
+    if (!asset) {
+      res.writeHead(404, { "Content-Type": "application/json" }).end('{"error":"unknown asset"}');
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": asset.mimeType,
+      "Content-Length": String(asset.data.length),
+      // Immutable: the assetId is content-addressed, so the bytes never change.
+      "Cache-Control": "private, max-age=31536000, immutable",
+    });
+    res.end(asset.data);
   });
 
   r.get("/conversations/:id/tail", async (ctx) => {

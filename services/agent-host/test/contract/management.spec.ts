@@ -123,6 +123,31 @@ async function call(
   return { status, json: chunks ? JSON.parse(chunks) : null };
 }
 
+/** Drive a route capturing the RAW response (status + headers + Buffer body) —
+ *  for the binary assets route. */
+async function callRaw(
+  api: ReturnType<typeof createManagementApi>,
+  method: string,
+  path: string,
+): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
+  const req = new PassThrough() as unknown as IncomingMessage;
+  (req as { method?: string }).method = method;
+  (req as { url?: string }).url = path;
+  (req as { headers?: Record<string, string> }).headers = {};
+  let status = 200;
+  let headers: Record<string, string> = {};
+  const parts: Buffer[] = [];
+  const res = {
+    writeHead: (s: number, h?: Record<string, string>) => { status = s; if (h) headers = h; return res; },
+    end: (c?: Buffer | string) => { if (c) parts.push(Buffer.from(c as Buffer)); },
+    req,
+  } as unknown as ServerResponse;
+  const matched = api.handle(req, res);
+  (req as PassThrough).end();
+  await matched;
+  return { status, headers, body: Buffer.concat(parts) };
+}
+
 describe("management API", () => {
   it("GET /conversations lists conversations (JSON-safe view)", async () => {
     const api = createManagementApi({
@@ -338,6 +363,43 @@ describe("management API", () => {
     // no readEventsTail, so this exercises the read-all + tailByRuns fallback).
     expect(body.events[0]).toMatchObject({ type: "RUN_STARTED", runId: "r3" });
     expect(body.events.filter((e: any) => e.type === "RUN_STARTED")).toHaveLength(1);
+  });
+
+  // --- image assets route (multimodal replay) ---------------------------------
+
+  function fakeAssets() {
+    return {
+      read: vi.fn(async (id: string, assetId: string) =>
+        id === "c1" && assetId === "img1.png" ? { data: Buffer.from([1, 2, 3, 4]), mimeType: "image/png" } : null,
+      ),
+      put: vi.fn(),
+      clear: vi.fn(),
+      urlFor: (id: string, assetId: string) => `/conversations/${id}/assets/${assetId}`,
+    } as never;
+  }
+
+  it("GET /conversations/:id/assets/:assetId streams the bytes with the right content-type", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, assets: fakeAssets(),
+    });
+    const { status, headers, body } = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
+    expect(status).toBe(200);
+    expect(headers["Content-Type"]).toBe("image/png");
+    expect(body.equals(Buffer.from([1, 2, 3, 4]))).toBe(true);
+  });
+
+  it("GET assets 404s an unknown asset", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, assets: fakeAssets(),
+    });
+    const { status } = await callRaw(api, "GET", "/conversations/c1/assets/nope.png");
+    expect(status).toBe(404);
+  });
+
+  it("GET assets 404s when assets are not enabled", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
+    expect(status).toBe(404);
   });
 
   it("POST /conversations stamps the caller (x-auth-user) as the owner", async () => {
