@@ -25,6 +25,7 @@
     ./runtime-converge.nix
     ./broker-modules.nix
     ./local-modules.nix
+    ./registry-modules.nix
     ./overlay-store.nix
     ./dbus-container.nix
   ];

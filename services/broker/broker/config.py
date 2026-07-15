@@ -125,6 +125,12 @@ class BrokerSettings(BaseSettings):
     # COMPONENTS are shared with AWS (same instance) — see config.py builder.
     sandbox_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-sandbox.db"
 
+    # --- Module registry (broker/registry/) — the shareable-module catalog -----
+    # The broker-side catalog: publish/list/download modules. Shares the broker DB
+    # (module_registry table). Off by default (SQLite dev DSN); on = a real catalog.
+    registry_enabled: bool = False
+    registry_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-registry.db"
+
     port: int = 8080
 
 

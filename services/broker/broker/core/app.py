@@ -37,6 +37,25 @@ def create_app() -> FastAPI:
         sandbox_store = SandboxSizeStore(size_store_config(settings))
         sandbox_router = create_sandbox_router(SandboxK8s(deploy_config(settings)), sandbox_store)
 
+    # Module registry (broker/registry/) — the shareable-module catalog. Built when
+    # enabled; its store is init'd in the lifespan + its router mounted top-level.
+    registry_store = None
+    registry_router = None
+    if settings.registry_enabled:
+        from ..aws.store import StoreConfig
+        from ..registry.routes import create_registry_router
+        from ..registry.store import ModuleRegistryStore
+
+        # Share the AWS DB components (same shared Postgres `broker` DB); the SQLite
+        # registry_db_dsn is the dev default when no db_password is set.
+        registry_store = ModuleRegistryStore(StoreConfig(
+            dsn=settings.registry_db_dsn,
+            db_host=settings.aws_db_host, db_port=settings.aws_db_port,
+            db_user=settings.aws_db_user, db_password=settings.aws_db_password,
+            db_name=settings.aws_db_name,
+        ))
+        registry_router = create_registry_router(registry_store)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Run providers' async startup hooks (e.g. open a DB, start a sweep).
@@ -45,6 +64,8 @@ def create_app() -> FastAPI:
                 await p.on_startup()
         if sandbox_store is not None:
             await sandbox_store.init()
+        if registry_store is not None:
+            await registry_store.init()
         yield
         for p in providers:
             if p.on_shutdown is not None:
@@ -54,6 +75,9 @@ def create_app() -> FastAPI:
 
     if sandbox_router is not None:
         app.include_router(sandbox_router)
+
+    if registry_router is not None:
+        app.include_router(registry_router)
 
     # Deployment-default modules — GET /modules/default.tar.gz, UNAUTHENTICATED (the
     # pod fetches at boot; module Nix isn't a secret). Always mounted; serves an empty

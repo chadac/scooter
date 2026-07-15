@@ -45,6 +45,9 @@ in
   # The scooter-rebuild entrypoint CLI: module new/list/show/edit/rm on /etc/scooter/modules
   # + dispatch to switch/status. A real VM boot (CLI + file ops); the full rebuild is Tier-2.
   dev-env-scooter-rebuild = runTest ./scooter-rebuild.nix;
+  # The shared-registry module fetch: registry-modules.nix reads the attached-ids file,
+  # fetches those modules from the broker (?ids=), + imports them. Fast eval-check.
+  dev-env-registry-modules = runTest ./registry-modules.nix;
   # The read-only-lower + writable-upper local-overlay Nix store (clean immutable
   # base + a writable upper for runtime builds). Composes on top of whatever
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's
