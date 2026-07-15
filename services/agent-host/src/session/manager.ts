@@ -13,7 +13,7 @@
 
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
-import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage } from "../bridge.js";
+import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
 
 /** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
@@ -207,14 +207,15 @@ export interface SessionManager {
    *  one, the live goose session is rebuilt with the new model. `priority`
    *  (PRIORITY_INTERRUPT) lets an @mention force-interrupt a running turn after the
    *  bridge's priority timeout; normal prompts (default) wait their turn. */
-  prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: InterruptPolicy, images?: PromptImage[]): Promise<void>;
+  prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: InterruptPolicy, images?: PromptImage[], files?: PromptFile[]): Promise<void>;
   /** Find-or-start the conversation for an AG-UI thread, then prompt it. A
    *  `model` on the FIRST prompt picks the conversation's model; on a later
    *  prompt it switches it (rebuilds the goose session). `priority` as in prompt().
    *  `owner` stamps the conversation's owner when it's newly STARTED here (a
    *  webhook-resolved Scooter user) — ignored for an already-existing conversation.
-   *  `images` are attached uploads (resolved to ACP image blocks by the bridge). */
-  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[]): Promise<void>;
+   *  `images` are attached uploads (resolved to ACP image blocks by the bridge).
+   *  `files` are binary attachments (Slack) the bridge writes to /workspace/.slack. */
+  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[], files?: PromptFile[]): Promise<void>;
   /** Switch a RUNNING conversation's model IMMEDIATELY and continue its work on
    *  the new model. Unlike a model passed to prompt() (which applies on the next
    *  turn), this is for the switch_model MCP tool the agent calls MID-TURN: it
@@ -537,7 +538,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return toConversation(entry);
     },
 
-    async prompt(id, text, model, priority, interrupt, images) {
+    async prompt(id, text, model, priority, interrupt, images, files) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
@@ -548,10 +549,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // process, so the prompt would silently no-op (bridge?.prompt on undefined).
       if (!entry.bridge) await this.revive(id);
       const opts = priority || interrupt ? { priority, interrupt } : undefined;
-      await entry.bridge?.prompt({ threadId: entry.threadId, text, images }, opts);
+      await entry.bridge?.prompt({ threadId: entry.threadId, text, images, files }, opts);
     },
 
-    async promptByThread(threadId, text, model, priority, owner, images) {
+    async promptByThread(threadId, text, model, priority, owner, images, files) {
       // Find the conversation for this thread. Three cases:
       //  1. in the in-memory map -> use it (revive if no live bridge).
       //  2. NOT in the map but PERSISTED (store has it) -> hydrate it on demand and
@@ -588,7 +589,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // killing the tool call.) The bridge defers a "thinking" cancel while
       // inFlightTools > 0 and fires it at the next tool boundary.
       await entry.bridge?.prompt(
-        { threadId, text, images },
+        { threadId, text, images, files },
         priority ? { priority, interrupt: "thinking" } : undefined,
       );
     },

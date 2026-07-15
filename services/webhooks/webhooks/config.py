@@ -71,6 +71,11 @@ class WebhooksSettings(BaseSettings):
     # skipped up front. ~5MB default.
     image_max_bytes: int = 5 * 1024 * 1024
 
+    # Max bytes for ANY inbound Slack attachment (text-representable or binary file)
+    # forwarded to the agent. Generalizes image_max_bytes to non-image files. ~10MB
+    # default (binaries land in the sandbox at /workspace/.slack via the agent-host).
+    file_max_bytes: int = 10 * 1024 * 1024
+
     # GitHub App authentication
     github_app_id: str = ""
     github_app_private_key: str = ""  # PEM content or path to .pem file

@@ -613,8 +613,18 @@ export async function main(
         console.warn(`[agent-host] dropped an attached image for ${sessionId}:`, (e as Error).message);
       }
     }
+    // Binary file attachments (Slack pdf/zip/…) ride straight through to the bridge,
+    // which materializes each into the sandbox at /workspace/.slack/<name> via the
+    // exec client (best-effort — a failed write must not kill the turn). The agent
+    // SEES the saved paths because the message text (woven webhooks-side) references
+    // them.
+    const promptFiles = (input.files ?? []).map((f) => ({
+      name: f.name,
+      data: f.data,
+      mimeType: f.mimeType,
+    }));
     try {
-      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages);
+      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles);
     } catch (err) {
       // The run couldn't even START (provision/revive failed — e.g. 409 on a wrong
       // hydrate map, goose/ACP error). PERSIST a RUN_ERROR to the durable log so a

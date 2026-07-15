@@ -27,23 +27,35 @@ export interface InboundImage {
   mimeType: string;
 }
 
-/** One part of a multimodal message content array. Text or image; other AG-UI part
- *  shapes are tolerated (ignored). */
+/** A NON-image attachment (Slack binary: pdf/zip/docx/…). The bytes ride base64;
+ *  the agent-host materializes it into the sandbox at /workspace/.slack/<name>. */
+export interface InboundFile {
+  name: string;
+  data: string; // base64
+  mimeType: string;
+}
+
+/** One part of a multimodal message content array. Text, image, or file; other
+ *  AG-UI part shapes are tolerated (ignored). */
 export type ContentPart =
   | { type: "text"; text?: string }
   | { type: "image"; data?: string; mimeType?: string; image?: string; [k: string]: unknown }
+  | { type: "file"; name?: string; data?: string; mimeType?: string; [k: string]: unknown }
   | { type: string; [k: string]: unknown };
 
-/** Normalize a message's `content` (string | ContentPart[]) into prompt text + the
- *  inbound images. A plain string is the text (no images) — the unchanged path. */
+/** Normalize a message's `content` (string | ContentPart[]) into prompt text +
+ *  inbound images + inbound files. A plain string is the text (no attachments) —
+ *  the unchanged path. */
 export function normalizeContent(content: string | ContentPart[] | undefined): {
   text: string;
   images: InboundImage[];
+  files: InboundFile[];
 } {
-  if (content == null) return { text: "", images: [] };
-  if (typeof content === "string") return { text: content, images: [] };
+  if (content == null) return { text: "", images: [], files: [] };
+  if (typeof content === "string") return { text: content, images: [], files: [] };
   const texts: string[] = [];
   const images: InboundImage[] = [];
+  const files: InboundFile[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     if (part.type === "text" && typeof (part as { text?: unknown }).text === "string") {
@@ -57,9 +69,15 @@ export function normalizeContent(content: string | ContentPart[] | undefined): {
           ? parseDataUrl(p.image)
           : null;
       if (parsed) images.push(parsed);
+    } else if (part.type === "file") {
+      // A binary attachment (Slack pdf/zip/…): {name, data(base64), mimeType}.
+      const p = part as { name?: string; data?: string; mimeType?: string };
+      if (p.name && p.data) {
+        files.push({ name: p.name, data: p.data, mimeType: p.mimeType || "application/octet-stream" });
+      }
     }
   }
-  return { text: texts.join("\n\n"), images };
+  return { text: texts.join("\n\n"), images, files };
 }
 
 /** Parse a `data:<mime>;base64,<data>` URL into {data, mimeType}, or null. */
@@ -90,6 +108,10 @@ export interface RunAgentInput {
   /** Images attached to the latest user message (base64), from a multimodal
    *  content array. Empty/undefined = a text-only message (the unchanged path). */
   images?: InboundImage[];
+  /** Binary file attachments (Slack pdf/zip/…) on the latest user message (base64).
+   *  The agent-host materializes each into the sandbox at /workspace/.slack/<name>.
+   *  Empty/undefined = no file attachments (the unchanged path). */
+  files?: InboundFile[];
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -281,7 +303,7 @@ export function createAguiServer(): AguiServer {
       // string (text-only) or an array of parts (multimodal); normalize to text +
       // inbound images.
       const lastUser = [...(input.messages ?? [])].reverse().find((m) => m.role === "user");
-      const { text, images } = normalizeContent(lastUser?.content);
+      const { text, images, files } = normalizeContent(lastUser?.content);
       // The UI rides the per-conversation model on a header (the assistant-ui
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
@@ -303,7 +325,7 @@ export function createAguiServer(): AguiServer {
       // with NO error (the hydrate-silent-drop bug). Emit a proper RUN_ERROR event on
       // THIS stream + close it, so the UI has something to render as a failed send.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner, images });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner, images, files });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
