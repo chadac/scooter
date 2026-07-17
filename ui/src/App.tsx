@@ -6,9 +6,8 @@
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
-import { InterruptPanel } from "./InterruptPanel.js";
+import { RightPanel } from "./RightPanel.js";
 import { RunStatusBar } from "./RunStatusBar.js";
-import { QueuedMessages } from "./QueuedMessages.js";
 import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
@@ -50,18 +49,15 @@ export function App() {
                   behind a "N tool calls" collapse. */}
               <GuardedThread />
             </div>
-            {/* Messages queued behind the active run (durable — sourced from the
-                bridge run-queue via the integrity stream, so they survive a
-                refresh). Renders nothing when the queue is empty. */}
-            <QueuedMessages />
             {/* Thinking indicator + Stop button while a run is in flight (any
                 source — local, Slack, another tab). Renders nothing when idle. */}
             <RunStatusBar />
           </main>
-          {/* Agent option/permission requests (AG-UI interrupts, e.g. an AWS
-              approval) slide in as a prominent right-side panel — a gate the user
-              can't miss. Renders nothing when nothing is pending. */}
-          <InterruptPanel />
+          {/* Right-side tabbed panel: Approvals (AG-UI interrupts — a gate the user
+              can't miss; auto-focused on a new one) + Queue (messages waiting behind
+              the active run, moved off the main column so a backlog no longer eats
+              the screen). Collapses entirely when both are empty. */}
+          <RightPanel />
         </div>
       </div>
     </RuntimeProvider>
