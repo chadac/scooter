@@ -104,6 +104,69 @@ jobs:
       - name: nix build .#sandbox-os-image .#sandbox-os-overlay-image
         run: nix build .#sandbox-os-image .#sandbox-os-overlay-image --print-build-logs
 
+  # Image-size benchmark: measure every shipped image on the PR and diff it against
+  # origin/main, then post a sticky PR comment with the table. A SIGNAL (report-only,
+  # never fails the PR) so a closure that balloons is visible before it ships. The
+  # baseline is REBUILT from origin/main in this same job — accurate + self-contained;
+  # Cachix substitutes the unchanged images, so only what the PR actually changed
+  # rebuilds. PR-only (needs a PR to compare against + comment on).
+  image-sizes:
+    name: image size benchmark
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write   # to post/update the sticky size-report comment
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Need main's history for the worktree baseline build (origin/main).
+          fetch-depth: 0
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # 1. Measure the PR's images (JSON to pr-sizes.json; build logs to stderr).
+      - name: measure PR image sizes
+        run: ./scripts/image-sizes.sh > pr-sizes.json
+
+      # 2. Measure origin/main's images from a worktree — same measures, same script.
+      #    Run the PR's copy of the script against main's FLAKE (copy it in, since main
+      #    may predate the script — as it does on this very PR), so the baseline uses
+      #    identical measurement logic. Cachix substitutes the unchanged images.
+      - name: measure origin/main (baseline) image sizes
+        run: |
+          set -euo pipefail
+          git worktree add --detach ../main-baseline origin/main
+          cp scripts/image-sizes.sh ../main-baseline/image-sizes.sh
+          ( cd ../main-baseline && ./image-sizes.sh ) > base-sizes.json
+          git worktree remove --force ../main-baseline
+
+      # 3. Render the comparison table and post/update the sticky PR comment.
+      - name: post size report comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          ./scripts/image-sizes-diff.sh base-sizes.json pr-sizes.json 5 > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"   # also surface it in the run summary
+          # Sticky comment via the REST API (numeric comment ids, unlike the GraphQL
+          # node ids `gh pr view` returns): find our prior comment by the marker and
+          # PATCH it, else POST a new one.
+          marker='<!-- image-size-benchmark -->'
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+                 --jq ".[] | select(.body | contains(\"$marker\")) | .id" | tail -n1)
+          if [ -n "$id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" -X PATCH -F body=@report.md >/dev/null
+            echo "updated sticky comment ${id}"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@report.md >/dev/null
+            echo "created sticky comment"
+          fi
+
   # Enumerate the dev-env-* nixosTests into a matrix so each VM test runs in its
   # OWN parallel job. This generate job is cheap (eval only). By default the
   # HEAVY tests (a ~1h from-source NixOS toplevel build — see HEAVY_TESTS) are
