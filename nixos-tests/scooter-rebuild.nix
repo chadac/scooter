@@ -2,9 +2,10 @@
 #
 # Boots the sandbox-os config and exercises scooter-rebuild's module-authoring workflow
 # (new / list / show / rm on /etc/scooter/modules) + the dispatch to the switch/status
-# machinery. Does NOT run a full toplevel rebuild (that offline path is covered by
-# dev-env-scooter-module + Tier-2); this proves the CLI surface + the /etc/scooter/modules
-# file operations against the real symlinked dir.
+# machinery + the REGISTRY subcommands (search / add / detach / attached / publish)
+# against a FAKE agent-broker shim (canned JSON — no real broker). Does NOT run a full
+# toplevel rebuild (that offline path is covered by dev-env-scooter-module + Tier-2);
+# this proves the CLI surface + the /etc/scooter file operations against the real dirs.
 
 { pkgs, lib, sandboxModule }:
 
@@ -67,6 +68,92 @@ pkgs.testers.runNixOSTest {
     machine.succeed("scooter-rebuild module rm mytool")
     machine.fail("test -e /etc/scooter/modules/mytool.nix")
     assert "no modules yet" in machine.succeed("scooter-rebuild module list")
+
+    # --- registry subcommands (against a FAKE broker HTTP server) ----------------
+    # scooter-rebuild bakes the REAL agent-broker into its PATH (runtimeInputs), so we
+    # can't shadow it — instead stand up a tiny fake broker on localhost + a token file,
+    # exercising the real agent-broker -> HTTP -> JSON path. The fake echoes the publish
+    # body to /tmp so we can assert it.
+    machine.succeed(
+        "cat > /root/fakebroker.py <<'PY'\n"
+        "import json\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "from urllib.parse import urlparse, parse_qs\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "    def _send(self, code, obj):\n"
+        "        b = json.dumps(obj).encode()\n"
+        "        self.send_response(code); self.send_header('Content-Type','application/json')\n"
+        "        self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)\n"
+        "    def do_GET(self):\n"
+        "        u = urlparse(self.path)\n"
+        "        if u.path == '/modules':\n"
+        "            self._send(200, {'modules':[{'id':7,'name':'alpha','visibility':'public','description':'a demo'}]})\n"
+        "        elif u.path in ('/modules/alpha','/modules/7'):\n"
+        "            self._send(200, {'id':7,'name':'alpha','visibility':'public','version':1})\n"
+        "        else:\n"
+        "            self._send(404, {'detail':'module not found'})\n"
+        "    def do_POST(self):\n"
+        "        n = int(self.headers.get('Content-Length',0)); body = self.rfile.read(n)\n"
+        "        open('/tmp/publish-body.json','wb').write(body)\n"
+        "        self._send(201, {'id':42,'name':json.loads(body).get('name'),'visibility':json.loads(body).get('visibility','private'),'version':1})\n"
+        "    def log_message(self, *a): pass\n"
+        "HTTPServer(('127.0.0.1',8080), H).serve_forever()\n"
+        "PY"
+    )
+    machine.succeed("mkdir -p /var/run/secrets/broker && echo faketoken > /var/run/secrets/broker/token")
+    machine.succeed(
+        "${pkgs.python3}/bin/python3 /root/fakebroker.py >/tmp/fb.log 2>&1 & echo started"
+    )
+    machine.wait_until_succeeds("${pkgs.curl}/bin/curl -sf http://127.0.0.1:8080/modules/alpha")
+
+    # BROKER_URL points the real agent-broker at the fake; the token file is present.
+    reg = "BROKER_URL=http://127.0.0.1:8080 "
+
+    # search: prints the catalog rows.
+    found = machine.succeed(reg + "scooter-rebuild module search demo")
+    assert "alpha" in found and "#7" in found, f"search output: {found!r}"
+
+    # attached: empty initially.
+    assert "no registry modules attached" in machine.succeed("scooter-rebuild module attached")
+
+    # add by NAME: records the canonical name in registry-modules.json (the mv happens
+    # BEFORE the terminal switch, so use execute() and assert the file regardless of the
+    # apply exit — no real toplevel is built here).
+    machine.execute(reg + "scooter-rebuild module add alpha")
+    machine.succeed("test -f /etc/scooter/registry-modules.json")
+    assert machine.succeed("jq -r '.[]' /etc/scooter/registry-modules.json").strip() == "alpha"
+
+    # add by ID resolves to the SAME canonical name -> idempotent (still just ['alpha']).
+    machine.execute(reg + "scooter-rebuild module add 7")
+    assert machine.succeed("jq -c . /etc/scooter/registry-modules.json").strip() == '[\"alpha\"]'
+
+    # attached now lists it.
+    assert machine.succeed("scooter-rebuild module attached").strip() == "alpha"
+
+    # add an unknown ref FAILS and does NOT record anything.
+    machine.fail(reg + "scooter-rebuild module add nope")
+    assert machine.succeed("jq -c . /etc/scooter/registry-modules.json").strip() == '[\"alpha\"]'
+
+    # detach removes it (again the mutation precedes the switch).
+    machine.execute(reg + "scooter-rebuild module detach alpha")
+    assert machine.succeed("jq -c . /etc/scooter/registry-modules.json").strip() == "[]"
+    assert "no registry modules attached" in machine.succeed("scooter-rebuild module attached")
+
+    # publish: POSTs the local module as files['module.nix']; needs a local module.
+    machine.succeed("scooter-rebuild module new mytool")
+    pub = machine.succeed(reg + "scooter-rebuild publish mytool")
+    assert "#42" in pub, f"publish output: {pub!r}"
+    # The request body carried name + files.module.nix (the local module contents).
+    assert machine.succeed("jq -r '.name' /tmp/publish-body.json").strip() == "mytool"
+    assert "NixOS module" in machine.succeed("jq -r '.\"files\".\"module.nix\"' /tmp/publish-body.json")
+    assert machine.succeed("jq -r '.visibility' /tmp/publish-body.json").strip() == "private"
+    # --public flips visibility.
+    machine.succeed(reg + "scooter-rebuild publish mytool --public --description 'hi'")
+    assert machine.succeed("jq -r '.visibility' /tmp/publish-body.json").strip() == "public"
+    assert machine.succeed("jq -r '.description' /tmp/publish-body.json").strip() == "hi"
+    # publishing a NON-existent local module fails.
+    machine.fail(reg + "scooter-rebuild publish ghost")
+    machine.succeed("scooter-rebuild module rm mytool")
 
     # dispatch: status wraps scooter-env-status (idle before any switch -> ready, exit 0).
     st = machine.succeed("scooter-rebuild status")

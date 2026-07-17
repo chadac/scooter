@@ -20,6 +20,11 @@
 let
   cfg = config.programs.scooterModule;
 
+  # agent-broker (the authenticated broker curl wrapper) — used by scooter-rebuild's
+  # registry subcommands (module add/detach + publish) to talk to the broker's module
+  # registry with the pod's SA token. Same package that carry-over.nix puts on PATH.
+  brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
+
   # The base-config entrypoint + vendored modules tree the in-pod build feeds to it.
   # Factored into a shared helper so the nixosTest pre-builds the re-converged
   # toplevel from the IDENTICAL derivations (else: cache miss -> offline from-source
@@ -270,8 +275,8 @@ let
   # /etc/scooter (HARDCODED — no configurability). A thin dispatcher over the existing
   # switch machinery (scooter-apply-module / scooter-env-status) + local module editing
   # under /etc/scooter/modules (the symlinked, PVC-backed, agent-writable dir that
-  # local-modules.nix composes). The registry (module add/publish/share from the broker)
-  # is a later PR; this is the local-authoring + switch surface.
+  # local-modules.nix composes) + the SHARED registry (attach/detach/publish via the
+  # broker, which registry-modules.nix fetches into the same switch).
   #
   #   scooter-rebuild switch [--detach]     build + switch to the current config
   #   scooter-rebuild status [--log]        show the (async) switch status
@@ -280,15 +285,22 @@ let
   #   scooter-rebuild module edit <name>    $EDITOR modules/<name>.nix (create if absent)
   #   scooter-rebuild module show <name>    print modules/<name>.nix
   #   scooter-rebuild module rm <name>      delete modules/<name>.nix
+  #   scooter-rebuild module search [q]     search the broker registry catalog
+  #   scooter-rebuild module add <ref>      attach a registry module (name or id) + switch
+  #   scooter-rebuild module detach <ref>   detach an attached registry module + switch
+  #   scooter-rebuild module attached       list attached registry modules
+  #   scooter-rebuild publish <name> [..]   publish local modules/<name>.nix to the registry
   scooterRebuild = pkgs.writeShellApplication {
     name = "scooter-rebuild";
-    runtimeInputs = [ applyModule envStatus pkgs.coreutils ];
+    runtimeInputs = [ applyModule envStatus pkgs.coreutils brokerTools.agent-broker pkgs.jq ];
     text = ''
       set -euo pipefail
 
       # HARDCODED — scooter-rebuild owns /etc/scooter. modules/ is the agent-editable
-      # dir (symlink -> workspace PVC) that local-modules.nix imports.
+      # dir (symlink -> workspace PVC) that local-modules.nix imports. The registry-ids
+      # file is the attach-list registry-modules.nix fetches from the broker.
       MODULES_DIR=/etc/scooter/modules
+      REGISTRY_IDS_FILE=/etc/scooter/registry-modules.json
 
       usage() {
         cat >&2 <<'EOF'
@@ -296,11 +308,21 @@ let
 
         scooter-rebuild switch [--detach]   apply the current config (build + switch)
         scooter-rebuild status [--log]      show the switch status (+ log on failure)
-        scooter-rebuild module list                 list your modules
+
+      Local modules (yours, authored under /etc/scooter/modules/*.nix):
+        scooter-rebuild module list                 list your local modules
         scooter-rebuild module new  <name>          create modules/<name>.nix (template)
         scooter-rebuild module edit <name>          edit modules/<name>.nix ($EDITOR)
         scooter-rebuild module show <name>          print modules/<name>.nix
         scooter-rebuild module rm   <name>          delete modules/<name>.nix
+
+      Shared registry (attach modules others published, publish your own):
+        scooter-rebuild module search [query]       search the registry catalog
+        scooter-rebuild module add    <name-or-id>  attach a registry module (+ switch)
+        scooter-rebuild module detach <name-or-id>  detach an attached registry module
+        scooter-rebuild module attached             list your attached registry modules
+        scooter-rebuild publish <name> [--public] [--description D]
+                                                    publish local modules/<name>.nix to the registry
 
       Your modules live in /etc/scooter/modules/*.nix (durable on the workspace PVC).
       Edit them, then `scooter-rebuild switch`. A bad module fails the build (no switch).
@@ -367,9 +389,97 @@ let
               rm -f "$path"
               echo "removed $name — run: scooter-rebuild switch"
               ;;
+            search|find)
+              # Query the broker catalog (own private + all public). No query -> all.
+              q="''${1:-}"
+              agent-broker "modules?q=$q" | jq -r '
+                (.modules // []) as $m
+                | if ($m | length) == 0 then "no modules found"
+                  else ($m[] | "\(.name)  (#\(.id), \(.visibility))\(if (.description // "") != "" then "  — \(.description)" else "" end)")
+                  end'
+              ;;
+            add|attach)
+              # Attach a registry module by name OR numeric id. Resolve via the broker
+              # so we store the CANONICAL name (the download endpoint tars under <name>/,
+              # so registry-modules.json must hold names, not ids), and to fail fast on a
+              # missing/invisible module before recording it.
+              ref="''${1:-}"
+              [ -n "$ref" ] || { echo "scooter-rebuild module add: <name-or-id> required" >&2; exit 2; }
+              name=$(agent-broker "modules/$ref" | jq -er '.name') \
+                || { echo "scooter-rebuild: registry module '$ref' not found (or not visible to you)" >&2; exit 1; }
+              [ -f "$REGISTRY_IDS_FILE" ] || echo '[]' > "$REGISTRY_IDS_FILE"
+              # Idempotent add: no-op if already attached; keep the list unique + sorted.
+              if jq -e --arg n "$name" 'index($n)' "$REGISTRY_IDS_FILE" >/dev/null; then
+                echo "$name is already attached"
+              else
+                tmp=$(mktemp)
+                jq --arg n "$name" '. + [$n] | unique' "$REGISTRY_IDS_FILE" > "$tmp" && mv "$tmp" "$REGISTRY_IDS_FILE"
+                echo "attached $name — applying..."
+                exec scooter-apply-module "''${@:2}"
+              fi
+              ;;
+            detach)
+              # Remove an attached registry module. Accepts the stored name; also tries
+              # resolving an id -> name so `detach <id>` works symmetrically with `add`.
+              ref="''${1:-}"
+              [ -n "$ref" ] || { echo "scooter-rebuild module detach: <name-or-id> required" >&2; exit 2; }
+              [ -f "$REGISTRY_IDS_FILE" ] || { echo "no attached registry modules"; exit 0; }
+              name="$ref"
+              if ! jq -e --arg n "$name" 'index($n)' "$REGISTRY_IDS_FILE" >/dev/null 2>&1; then
+                # Not a stored name — maybe an id; ask the broker for the canonical name.
+                name=$(agent-broker "modules/$ref" 2>/dev/null | jq -er '.name' 2>/dev/null || echo "$ref")
+              fi
+              if jq -e --arg n "$name" 'index($n)' "$REGISTRY_IDS_FILE" >/dev/null; then
+                tmp=$(mktemp)
+                jq --arg n "$name" 'map(select(. != $n))' "$REGISTRY_IDS_FILE" > "$tmp" && mv "$tmp" "$REGISTRY_IDS_FILE"
+                echo "detached $name — applying..."
+                exec scooter-apply-module "''${@:2}"
+              else
+                echo "$ref is not attached"
+              fi
+              ;;
+            attached)
+              if [ -f "$REGISTRY_IDS_FILE" ] && [ "$(jq 'length' "$REGISTRY_IDS_FILE")" -gt 0 ]; then
+                jq -r '.[]' "$REGISTRY_IDS_FILE"
+              else
+                echo "no registry modules attached — attach one with: scooter-rebuild module add <name-or-id>"
+              fi
+              ;;
             ""|-h|--help) usage; exit 2 ;;
             *) echo "scooter-rebuild module: unknown subcommand '$sub'" >&2; usage; exit 2 ;;
           esac
+          ;;
+        publish)
+          # Publish a LOCAL module (/etc/scooter/modules/<name>.nix) to the broker
+          # registry. name = the local module name = the globally-unique registry name
+          # (first publisher owns it; re-publishing your own bumps the version). Files
+          # are sent as { "module.nix": <contents> } — the registry requires module.nix.
+          name="''${1:-}"; shift || true
+          [ -n "$name" ] || { echo "scooter-rebuild publish: <name> required" >&2; exit 2; }
+          path=$(module_path "$name")
+          [ -e "$path" ] || { echo "scooter-rebuild: no local module '$name' to publish (see: scooter-rebuild module list)" >&2; exit 1; }
+          visibility=private; description=""
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --public)      visibility=public; shift ;;
+              --private)     visibility=private; shift ;;
+              --description)  description="''${2:-}"; shift 2 ;;
+              *) echo "scooter-rebuild publish: unknown arg '$1'" >&2; exit 2 ;;
+            esac
+          done
+          body=$(jq -n --arg n "$name" --arg v "$visibility" --arg d "$description" \
+                    --rawfile c "$path" \
+                    '{name:$n, visibility:$v, files:{"module.nix":$c}} + (if $d == "" then {} else {description:$d} end)')
+          resp=$(agent-broker -X POST modules -H "Content-Type: application/json" -d "$body") \
+            || { echo "scooter-rebuild: publish failed" >&2; exit 1; }
+          # A non-2xx comes back as a JSON {detail:...} without an id — surface it.
+          if id=$(printf '%s' "$resp" | jq -er '.id' 2>/dev/null); then
+            ver=$(printf '%s' "$resp" | jq -r '.version')
+            echo "published $name (#$id, $visibility, v$ver) — others attach it with: scooter-rebuild module add $name"
+          else
+            echo "scooter-rebuild: publish rejected: $(printf '%s' "$resp" | jq -r '.detail // .' 2>/dev/null || printf '%s' "$resp")" >&2
+            exit 1
+          fi
           ;;
         ""|-h|--help) usage; exit 2 ;;
         *) echo "scooter-rebuild: unknown command '$cmd'" >&2; usage; exit 2 ;;
