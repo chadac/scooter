@@ -132,13 +132,16 @@ jobs:
       - name: measure PR image sizes
         run: ./scripts/image-sizes.sh > pr-sizes.json
 
-      # 2. Measure origin/main's images from a worktree — same script, same measures.
-      #    Cachix means unchanged images are substituted, not rebuilt from source.
+      # 2. Measure origin/main's images from a worktree — same measures, same script.
+      #    Run the PR's copy of the script against main's FLAKE (copy it in, since main
+      #    may predate the script — as it does on this very PR), so the baseline uses
+      #    identical measurement logic. Cachix substitutes the unchanged images.
       - name: measure origin/main (baseline) image sizes
         run: |
           set -euo pipefail
           git worktree add --detach ../main-baseline origin/main
-          ( cd ../main-baseline && ./scripts/image-sizes.sh ) > base-sizes.json
+          cp scripts/image-sizes.sh ../main-baseline/image-sizes.sh
+          ( cd ../main-baseline && ./image-sizes.sh ) > base-sizes.json
           git worktree remove --force ../main-baseline
 
       # 3. Render the comparison table and post/update the sticky PR comment.
