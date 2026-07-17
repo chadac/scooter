@@ -32,6 +32,18 @@ build-app:
 
 build: build-image build-app
 
+# Measure every shipped image's size as JSON (tarball file size for the sandbox-os
+# images; nix2container closure size for the rest). The CI image-size benchmark uses
+# this; run it locally to see current sizes or produce a baseline to diff against.
+image-sizes *images:
+    ./scripts/image-sizes.sh {{images}}
+
+# Diff two image-sizes.json files and render the markdown report (the CI PR comment).
+#   just image-sizes > pr.json ; git stash ; just image-sizes > base.json ; git stash pop
+#   just image-sizes-diff base.json pr.json
+image-sizes-diff base pr flag="5":
+    ./scripts/image-sizes-diff.sh {{base}} {{pr}} {{flag}}
+
 # --- Test tiers ------------------------------------------------------------
 
 # Tier 1 — fast contract tests (no cluster, no network). Run this constantly.
