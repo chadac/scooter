@@ -1,14 +1,16 @@
 /**
- * Queued-messages strip — the messages the user sent WHILE a run was in flight,
- * waiting their turn behind it. Shown between the thread and the composer.
+ * Queued-messages list — the messages the user sent WHILE a run was in flight,
+ * waiting their turn behind it. Rendered inside the right-side panel's Queue tab
+ * (it used to be an inline strip below the thread, which stacked full message text
+ * and ate the screen on a backlog — see RightPanel).
  *
- * Why a dedicated strip sourced from context: the queue lives in the agent-host's
- * bridge run-queue (server-side), which emits QUEUE_UPDATED snapshots on the
- * integrity stream. The UI used to track "queued" in client memory only, so it
- * VANISHED on refresh (and never showed across tabs). Reading the queue off the
- * single-source stream (via RuntimeProvider context) makes it durable + live: a
- * refresh re-derives it from the log, and it clears itself when the queue drains
- * (the messages become normal user turns as they run).
+ * Why sourced from context: the queue lives in the agent-host's bridge run-queue
+ * (server-side), which emits QUEUE_UPDATED snapshots on the integrity stream. The UI
+ * used to track "queued" in client memory only, so it VANISHED on refresh (and never
+ * showed across tabs). Reading the queue off the single-source stream (via
+ * RuntimeProvider context) makes it durable + live: a refresh re-derives it from the
+ * log, and it clears itself when the queue drains (the messages become normal user
+ * turns as they run).
  */
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
@@ -19,7 +21,7 @@ export function QueuedMessages() {
   return (
     <div
       data-testid="queued-messages"
-      className="flex flex-col gap-1 border-t bg-muted/20 px-4 py-2 text-sm"
+      className="flex flex-col gap-1 text-sm"
     >
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Queued ({queuedMessages.length})

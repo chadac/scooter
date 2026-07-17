@@ -149,7 +149,14 @@ function InterruptCard({
   );
 }
 
-export function InterruptPanel() {
+/**
+ * The list of pending interrupt cards + the resume wiring — the CONTENT of the
+ * Approvals tab (the surrounding panel chrome lives in RightPanel). Kept as its own
+ * component (and testid `interrupt-panel`) so the e2e specs still find the approvals
+ * region by that selector, and so RightPanel can host it beside the queue in a tab.
+ * Renders nothing when no interrupt is pending.
+ */
+export function InterruptList() {
   const { interrupts: pending, submitResume, conversationId, baseUrl } = useConversationInterrupts();
   const [submitting, setSubmitting] = useState<string | null>(null);
 
@@ -166,36 +173,21 @@ export function InterruptPanel() {
     }
   };
 
-  // A right-side slider: a pending approval is a gate, so it gets its own
-  // prominent panel that slides in from the right rather than a strip that's easy
-  // to miss below the thread. Hidden entirely when nothing is pending.
   return (
-    <aside
-      className="flex h-full w-80 shrink-0 flex-col border-l bg-background shadow-lg"
-      data-testid="interrupt-panel"
-      aria-label="Pending approval requests"
-    >
-      <div className="border-b px-4 py-3">
-        <h2 className="text-sm font-semibold">
-          Approval needed
-          {pending.length > 1 ? ` (${pending.length})` : ""}
-        </h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          The agent is waiting on your decision to continue.
-        </p>
-      </div>
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        {pending.map((intr) => (
-          <InterruptCard
-            key={intr.id}
-            intr={intr}
-            busy={submitting === intr.id}
-            answer={answer}
-            conversationId={conversationId}
-            baseUrl={baseUrl}
-          />
-        ))}
-      </div>
-    </aside>
+    <div data-testid="interrupt-panel" aria-label="Pending approval requests">
+      <p className="mb-3 text-xs text-muted-foreground">
+        The agent is waiting on your decision to continue.
+      </p>
+      {pending.map((intr) => (
+        <InterruptCard
+          key={intr.id}
+          intr={intr}
+          busy={submitting === intr.id}
+          answer={answer}
+          conversationId={conversationId}
+          baseUrl={baseUrl}
+        />
+      ))}
+    </div>
   );
 }
