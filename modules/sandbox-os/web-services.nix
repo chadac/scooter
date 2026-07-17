@@ -117,6 +117,7 @@ in
 {
   imports = [
     ./web-services/marimo.nix
+    ./web-services/vscode.nix
   ];
 
   options.webServices = lib.mkOption {
