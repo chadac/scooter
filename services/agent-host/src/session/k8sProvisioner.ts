@@ -469,10 +469,9 @@ export function sandboxManifest(
                 ...(awsAccountsConfigMap
                   ? [{ name: "AWS_ACCOUNTS_FILE", value: "/etc/agent-sandbox/aws/accounts.json" }]
                   : []),
-                // Generically useful to any deployment tool (e.g. one keyed by
-                // conversation). The conversation id, not a deployment concept.
-                { name: "CONVERSATION_ID", value: id },
                 // Deployment-supplied env (e.g. a service URL). Platform-neutral.
+                // CONVERSATION_ID is injected by the caller via extraEnv (with the
+                // full threadId for deep-link correctness).
                 ...extraEnv,
               ],
             },
