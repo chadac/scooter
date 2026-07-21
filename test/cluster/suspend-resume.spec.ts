@@ -18,19 +18,19 @@ const NS = "agent-sandbox-test";
 const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest";
 const SELECTOR = (id: string) => `agents.x-k8s.io/sandbox-name=conv-${id}`;
 type SandboxStatus = {
-  status?: { conditions?: Array<{ type: string; status: string; message?: string }> };
+  status?: { conditions?: Array<{ type: string; status: string; reason?: string; message?: string }> };
 };
 const cond = (s: SandboxStatus, type: string) =>
   s.status?.conditions?.find((c) => c.type === type);
-const readyP = (s: SandboxStatus) => {
+// v1beta1: Ready=True (reason DependenciesReady) once the pod is up.
+const readyP = (s: SandboxStatus) => cond(s, "Ready")?.status === "True";
+// v1beta1: operatingMode=Suspended drops the pod → Ready flips to False (reason
+// DependenciesNotReady / pod gone). Detect the not-ready state (or an explicit
+// pod-gone message) rather than a v1alpha1 "replicas is 0" string.
+const suspendedP = (s: SandboxStatus) => {
   const c = cond(s, "Ready");
-  // Running-ready: Ready=True without the "replicas is 0" suspend message.
-  return c?.status === "True" && !/replicas is 0/i.test(c.message ?? "");
+  return c?.status === "False" || /pod does not exist|not.?ready/i.test(c?.message ?? c?.reason ?? "");
 };
-// v1alpha1 has no Suspended condition; suspension shows as the pod gone
-// (Ready message notes "replicas is 0"). Detect that instead.
-const suspendedP = (s: SandboxStatus) =>
-  /replicas is 0|pod does not exist/i.test(cond(s, "Ready")?.message ?? "");
 
 maybe("suspend / resume workspace persistence", () => {
   let cluster: Cluster;

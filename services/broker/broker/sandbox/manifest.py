@@ -12,7 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 GROUP = "agents.x-k8s.io"
-VERSION = "v1alpha1"
+# agent-sandbox v0.5.x serves v1beta1 (v1alpha1 deprecated in v0.5.0). Suspend/resume
+# is spec.operatingMode ("Running"/"Suspended"), not the old spec.replicas 0/1.
+VERSION = "v1beta1"
 PLURAL_SANDBOXES = "sandboxes"
 SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name"
 CONFIG_FILES_MOUNT_PATH = "/etc/agent-sandbox/config"
@@ -138,7 +140,7 @@ def sandbox_manifest(
         "kind": "Sandbox",
         "metadata": {"name": name, "namespace": ns, "labels": {SANDBOX_NAME_LABEL: name}},
         "spec": {
-            "replicas": 1,
+            "operatingMode": "Running",
             "podTemplate": {
                 "metadata": {"labels": {SANDBOX_NAME_LABEL: name}},
                 "spec": {

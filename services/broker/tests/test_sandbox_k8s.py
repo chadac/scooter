@@ -92,28 +92,28 @@ def test_create_makes_sa_and_sandbox(_mock_apis):
 def test_create_tolerates_existing_sa_and_sandbox(_mock_apis):
     _mock_apis.sa_conflict = True
     _mock_apis.sb_conflict = True
-    # 409 on SA + Sandbox must NOT raise; the adopted Sandbox is resumed (replicas 1).
+    # 409 on SA + Sandbox must NOT raise; the adopted Sandbox is resumed (operatingMode).
     _sb().create("c1", None, resources=None)
-    assert any(o[0] == "patch" and o[2] == {"replicas": 1} for o in _mock_apis)
+    assert any(o[0] == "patch" and o[2] == {"operatingMode": "Running"} for o in _mock_apis)
 
 
-def test_suspend_flips_replicas_0_and_ignores_404(_mock_apis):
+def test_suspend_sets_operating_mode_suspended_and_ignores_404(_mock_apis):
     _sb().suspend("c1")
-    assert ("patch", "conv-c1", {"replicas": 0}) in _mock_apis
+    assert ("patch", "conv-c1", {"operatingMode": "Suspended"}) in _mock_apis
     _mock_apis.delete_status = 404  # not used by suspend, but resume/destroy tolerate
 
-def test_resume_without_size_flips_replicas_only(_mock_apis):
+def test_resume_without_size_sets_running_only(_mock_apis):
     _sb().resume("c1", resources=None)
     patches = [o for o in _mock_apis if o[0] == "patch"]
-    assert patches == [("patch", "conv-c1", {"replicas": 1})]
+    assert patches == [("patch", "conv-c1", {"operatingMode": "Running"})]
 
 
-def test_resume_with_size_patches_resources_then_flips(_mock_apis):
+def test_resume_with_size_patches_resources_then_sets_running(_mock_apis):
     _sb().resume("c1", resources={"limits": {"memory": "8Gi"}})
     patches = [o for o in _mock_apis if o[0] == "patch"]
-    # First patch carries container resources (podTemplate), second flips replicas.
+    # First patch carries container resources (podTemplate), second flips operatingMode.
     assert "podTemplate" in patches[0][2]
-    assert patches[1][2] == {"replicas": 1}
+    assert patches[1][2] == {"operatingMode": "Running"}
 
 
 def test_destroy_deletes_sandbox_and_sa_ignoring_404(_mock_apis):

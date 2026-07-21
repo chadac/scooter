@@ -44,8 +44,9 @@ def _mount_names(m: dict) -> set:
 def test_minimal_manifest_has_workspace_and_broker_token():
     m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sandbox-c1", deploy=_deploy())
     assert m["kind"] == "Sandbox"
+    assert m["apiVersion"] == "agents.x-k8s.io/v1beta1"
     assert m["metadata"]["name"] == "conv-c1"
-    assert m["spec"]["replicas"] == 1
+    assert m["spec"]["operatingMode"] == "Running"
     assert m["spec"]["podTemplate"]["spec"]["serviceAccountName"] == "sandbox-c1"
     assert m["spec"]["podTemplate"]["spec"]["automountServiceAccountToken"] is False
     assert "workspace" in _mount_names(m)

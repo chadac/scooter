@@ -1,7 +1,7 @@
 """Sandbox k8s CRUD — a faithful Python port of the imperative half of the
 agent-host's k8sProvisioner.ts. The broker now owns provisioning: it creates the
 per-conversation ServiceAccount + module ConfigMap + Sandbox CR, suspends/resumes
-via replicas, destroys, lists (reconcile), ready-polls the pod, and writes/mounts
+via spec.operatingMode, destroys, lists (reconcile), ready-polls the pod, and writes/mounts
 the module CM.
 
 k8s clients are built lazily via `_apis()` (monkeypatched in tests, like
@@ -106,23 +106,24 @@ class SandboxK8s:
 
         if already:
             try:
-                self._set_replicas(name, 1)
+                self._set_operating_mode(name, "Running")
             except client.ApiException as e:
                 logger.warning("adopted existing Sandbox %s but resume failed: %s", name, e)
 
         return PodRef(name=name, namespace=self.ns)
 
-    # --- replicas flip (merge-patch) ---
-    def _set_replicas(self, name: str, replicas: int) -> None:
+    # --- operatingMode flip (merge-patch) ---
+    # v1beta1: spec.operatingMode "Running"/"Suspended" (v1alpha1's spec.replicas 0/1).
+    def _set_operating_mode(self, name: str, mode: str) -> None:
         _, custom = _apis()
         custom.patch_namespaced_custom_object(
             group=GROUP, version=VERSION, namespace=self.ns, plural=PLURAL_SANDBOXES,
-            name=name, body={"spec": {"replicas": replicas}},
+            name=name, body={"spec": {"operatingMode": mode}},
         )
 
     def suspend(self, cid: str) -> None:
         try:
-            self._set_replicas(_sandbox_name(cid), 0)
+            self._set_operating_mode(_sandbox_name(cid), "Suspended")
         except client.ApiException as e:
             _ignore(e.status, e, 404)  # already gone == already suspended
 
@@ -130,9 +131,9 @@ class SandboxK8s:
         name = _sandbox_name(cid)
         if resources:
             # Patch container resources FIRST (fail-safe: if this throws, we do NOT
-            # flip replicas up into a half-patched state).
+            # flip operatingMode to Running into a half-patched state).
             self._patch_resources(name, resources)
-        self._set_replicas(name, 1)
+        self._set_operating_mode(name, "Running")
         return PodRef(name=name, namespace=self.ns)
 
     def _patch_resources(self, name: str, resources: dict) -> None:
@@ -174,8 +175,9 @@ class SandboxK8s:
             name = (item.get("metadata") or {}).get("name")
             if not name or not name.startswith("conv-"):
                 continue
-            replicas = (item.get("spec") or {}).get("replicas", 0)
-            out.append(PodRef(name=name, namespace=self.ns, running=replicas > 0))
+            # v1beta1: desired-running via spec.operatingMode (omitempty -> Running).
+            mode = (item.get("spec") or {}).get("operatingMode", "Running")
+            out.append(PodRef(name=name, namespace=self.ns, running=mode != "Suspended"))
         return out
 
     # --- ready-pod resolution (port of resolveReadyPod) ---

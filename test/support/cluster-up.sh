@@ -13,8 +13,9 @@ set -euo pipefail
 PROVIDER="${1:-k3s}"
 CLUSTER_NAME="agent-sandbox"
 NAMESPACE="${SANDBOX_NAMESPACE:-agent-sandbox}"
-# Pin the agent-sandbox release used for the controller + CRDs.
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.4.6}"
+# Pin the agent-sandbox release used for the controller + CRDs. v0.5.x serves the
+# v1beta1 API (v1alpha1 deprecated in v0.5.0); the provisioners target v1beta1.
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.2}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 log() { echo "[cluster-up] $*"; }

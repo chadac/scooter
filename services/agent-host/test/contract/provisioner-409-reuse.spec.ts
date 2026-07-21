@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import { createK8sProvisioner } from "../../src/session/k8sProvisioner.js";
 
 /** A fake k8s API where the Sandbox create can be told to 409, recording whether
- *  the provisioner then RESUMED (patched replicas=1) the existing Sandbox. */
+ *  the provisioner then RESUMED (set operatingMode=Running) the existing Sandbox. */
 function fakeKc(opts: { sandboxCreate409?: boolean } = {}) {
   const calls: string[] = [];
   const api = {
@@ -27,7 +27,7 @@ function fakeKc(opts: { sandboxCreate409?: boolean } = {}) {
       return {};
     },
     patchNamespacedCustomObject: async () => {
-      calls.push("patch:replicas"); // setReplicas(1) = resume
+      calls.push("patch:mode"); // setOperatingMode("Running") = resume
       return {};
     },
   };
@@ -44,15 +44,15 @@ describe("k8sProvisioner.create — 409 AlreadyExists = reuse", () => {
     const ref = await provisioner(kc).create("conv1", "conv1");
     expect(ref.name).toBe("conv-conv1");
     expect(calls).toContain("create:sandbox");
-    expect(calls).toContain("patch:replicas"); // resumed the adopted (maybe-suspended) Sandbox
+    expect(calls).toContain("patch:mode"); // resumed the adopted (maybe-suspended) Sandbox
   });
 
-  it("a fresh create (no 409) does NOT resume — replicas=1 already", async () => {
+  it("a fresh create (no 409) does NOT resume — operatingMode=Running already", async () => {
     const { kc, calls } = fakeKc({ sandboxCreate409: false });
     const ref = await provisioner(kc).create("conv1", "conv1");
     expect(ref.name).toBe("conv-conv1");
     expect(calls).toContain("create:sandbox");
-    expect(calls).not.toContain("patch:replicas"); // fresh -> no adopt-resume
+    expect(calls).not.toContain("patch:mode"); // fresh -> no adopt-resume
   });
 
   it("a NON-409 create error still throws (don't mask a real failure as reuse)", async () => {
