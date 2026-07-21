@@ -12,13 +12,22 @@ import { test, expect } from "./fixtures.js";
 
 const sidebar = {
   title: '[data-testid="session-title"]',
+  // Mine/All now lives inside the collapsible "Advanced" filters panel.
+  filtersToggle: '[data-testid="filters-toggle"]',
   toggleMine: '[data-testid="scope-mine"]',
   toggleAll: '[data-testid="scope-all"]',
 };
 
+/** Open the "Advanced" filters panel (which holds the Mine/All scope toggle). */
+async function openFilters(page: import("@playwright/test").Page) {
+  const toggle = page.locator(sidebar.filtersToggle);
+  if ((await toggle.getAttribute("data-open")) !== "true") await toggle.click();
+}
+
 test.describe("conversation ownership + Mine/All filter", () => {
   test("the sidebar has a Mine/All toggle defaulting to Mine", async ({ chat, page }) => {
     await chat.open();
+    await openFilters(page);
     await expect(page.locator(sidebar.toggleMine)).toBeVisible();
     await expect(page.locator(sidebar.toggleAll)).toBeVisible();
     await expect(page.locator(sidebar.toggleMine)).toHaveAttribute("data-active", "true");
@@ -48,6 +57,7 @@ test.describe("conversation ownership + Mine/All filter", () => {
     expect(r.ok()).toBeTruthy();
 
     await chat.open();
+    await openFilters(page);
 
     const bobRow = page.locator(sidebar.title).filter({ hasText: /Bob's private work/i });
 
