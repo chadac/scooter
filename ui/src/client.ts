@@ -38,6 +38,10 @@ export interface ConversationView {
   /** Distinct providers this conversation links to ("github"|"slack"|…), for a
    *  per-row icon in the sidebar. [] when it has no linked resources. */
   sources?: string[];
+  /** Compact summary of the conversation's linked resources (source/type/title/url),
+   *  so the sidebar can show the linked PR/MR/thread NAME instead of the title, search
+   *  by it, and filter by provider — without a per-row /links fetch. [] when none. */
+  links?: ConversationLink[];
 }
 
 /** The model catalog (GET /models): the default + the offered models. */

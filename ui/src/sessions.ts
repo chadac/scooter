@@ -21,9 +21,21 @@ export interface Session {
   /** Distinct linked-resource providers ("github"|"slack"|…) for the sidebar
    *  icons. Server-sourced (GET /conversations); [] / undefined when none. */
   sources?: string[];
+  /** Compact linked-resource summary (source/type/title/url). Server-sourced; drives
+   *  the "show link name instead of title" toggle, keyword search over link names, and
+   *  the provider filter. [] / undefined when none. */
+  links?: SessionLink[];
   /** Creating user (server-sourced). undefined = unowned/public. Drives the
    *  Mine/All view filter. */
   owner?: string;
+}
+
+/** One linked external resource, as summarized in the conversation list. */
+export interface SessionLink {
+  source: string; // "github" | "gitlab" | "slack" | "jira" | …
+  resourceType: string; // "pull_request" | "merge_request" | "issue" | "thread" | …
+  url?: string;
+  title?: string;
 }
 
 const DEFAULT_TITLE = "New chat";
@@ -31,6 +43,16 @@ const STORAGE_KEY = "kubenix-agent.sessions.v1";
 
 /** Sidebar view filter: the caller's own conversations or all of them. */
 export type Scope = "mine" | "all";
+
+/** The known link providers — offered as icon filter chips AND as the "Show:"
+ *  label-mode options. */
+export const LINK_PROVIDERS = ["github", "gitlab", "slack", "jira"] as const;
+export type LinkProvider = (typeof LINK_PROVIDERS)[number];
+
+/** What a sidebar row displays: the conversation title, or the linked resource's
+ *  name for a specific provider (falling back to the title when the row has no link
+ *  of that provider). The "Show:" dropdown selects this. */
+export type LabelMode = "title" | LinkProvider;
 
 type State = {
   sessions: Session[];
@@ -43,6 +65,13 @@ type State = {
   currentUserAnonymous: boolean;
   /** Sidebar Mine/All toggle (default Mine). */
   scope: Scope;
+  /** Keyword search over the title + linked-resource names (empty = no search). */
+  query: string;
+  /** Selected provider filter chips; empty = no provider filter (show all). A
+   *  session matches if it links to ANY selected provider. */
+  providerFilter: LinkProvider[];
+  /** What rows display — the title, or a provider's linked-resource name. Persisted. */
+  labelMode: LabelMode;
   /** A deep-link target (from ?thread=<id>) to select AS SOON AS it's known — the
    *  conversation may not be in the list yet (it arrives via the poll/stream for a
    *  webhook-created thread the user has never opened). Cleared once selected. */
@@ -61,6 +90,9 @@ const freshState = (): State => {
     currentUserEmail: null,
     currentUserAnonymous: true,
     scope: "mine",
+    query: "",
+    providerFilter: [],
+    labelMode: "title",
   };
 };
 
@@ -85,6 +117,12 @@ const loadState = (): State => {
     return {
       sessions, currentId, currentUser: "", currentUserEmail: null,
       currentUserAnonymous: true, scope: parsed.scope === "all" ? "all" : "mine",
+      // Search + provider filter are transient (a stale filter hiding every chat
+      // after a refresh would baffle); the label mode persists like scope.
+      query: "", providerFilter: [],
+      labelMode: (LINK_PROVIDERS as readonly string[]).includes(parsed.labelMode)
+        ? (parsed.labelMode as LabelMode)
+        : "title",
     };
   } catch (e) {
     // Finding #26: corrupt persisted state -> start fresh (recoverable), but log
@@ -161,7 +199,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; owner?: string }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -186,6 +224,7 @@ export const sessionStore = {
         // Link sources are server-owned (the webhooks push links); always take
         // the server's value.
         sources: c.sources ?? existing?.sources,
+        links: c.links ?? existing?.links,
         // Owner is server-owned (stamped at creation); take the server's value.
         owner: c.owner ?? existing?.owner,
       });
@@ -232,7 +271,16 @@ export const sessionStore = {
     // periodic merge poll calls this every few seconds; without this guard every
     // poll would setState -> re-render -> churn the runtime even when idle.
     const sig = (ss: Session[], cur: string) =>
-      cur + "|" + ss.map((s) => `${s.id}:${s.title}:${(s.sources ?? []).join(",")}`).join("|");
+      cur +
+      "|" +
+      ss
+        .map(
+          (s) =>
+            `${s.id}:${s.title}:${(s.sources ?? []).join(",")}:${(s.links ?? [])
+              .map((l) => l.title ?? l.url ?? "")
+              .join(",")}`,
+        )
+        .join("|");
     // Include pendingSelect in the change check: if only the pending target was
     // cleared (selection already applied), the currentId sig already differs.
     if (
@@ -302,7 +350,63 @@ export const sessionStore = {
     if (state.scope === scope) return;
     setState({ ...state, scope });
   },
+
+  /** Set the sidebar keyword-search query (matches title + link names). */
+  setQuery(query: string) {
+    if (state.query === query) return;
+    setState({ ...state, query });
+  },
+
+  /** Toggle a provider filter chip on/off (multi-select). */
+  toggleProvider(provider: LinkProvider) {
+    const on = state.providerFilter.includes(provider);
+    const providerFilter = on
+      ? state.providerFilter.filter((p) => p !== provider)
+      : [...state.providerFilter, provider];
+    setState({ ...state, providerFilter });
+  },
+
+  /** Clear all provider filter chips. */
+  clearProviders() {
+    if (state.providerFilter.length === 0) return;
+    setState({ ...state, providerFilter: [] });
+  },
+
+  /** Set the "Show:" label mode (title or a specific provider's link name). */
+  setLabelMode(labelMode: LabelMode) {
+    if (state.labelMode === labelMode) return;
+    setState({ ...state, labelMode });
+  },
 };
+
+/** The first linked resource of a session (any provider). undefined when unlinked. */
+export function primaryLink(s: Session): SessionLink | undefined {
+  return s.links && s.links.length > 0 ? s.links[0] : undefined;
+}
+
+/** The session's first link for a given provider, or undefined if it has none. */
+export function linkForProvider(s: Session, provider: LinkProvider): SessionLink | undefined {
+  return (s.links ?? []).find((l) => l.source === provider);
+}
+
+/** A human name for a link: its title, else "<source> <type>" (e.g. "github
+ *  pull_request"), else the source. */
+export function linkName(l: SessionLink): string {
+  if (l.title) return l.title;
+  const type = l.resourceType ? ` ${l.resourceType.replace(/_/g, " ")}` : "";
+  return `${l.source}${type}`.trim();
+}
+
+/** The label shown for a session row, honoring the "Show:" mode: "title" always
+ *  shows the conversation title; a provider mode shows THAT provider's linked-resource
+ *  name for rows that have such a link, falling back to the title otherwise. */
+export function sessionLabel(s: Session, mode: LabelMode): string {
+  if (mode !== "title") {
+    const l = linkForProvider(s, mode);
+    if (l) return linkName(l);
+  }
+  return s.title;
+}
 
 /** Filter a conversation list by the current Mine/All scope. "Mine" shows the
  *  caller's own + unowned/public conversations; "All" shows everything. With no
@@ -310,6 +414,38 @@ export const sessionStore = {
 export function visibleSessions(state: State): Session[] {
   if (state.scope === "all" || !state.currentUser) return state.sessions;
   return state.sessions.filter((s) => s.owner == null || s.owner === state.currentUser);
+}
+
+/** Does a session pass the selected provider filter? No chips selected -> yes. A
+ *  session passes if it links to ANY selected provider. Providers are derived from
+ *  the links (falling back to the server's `sources` set) so it works even before
+ *  `sources` is populated. */
+function matchesProviders(s: Session, providers: LinkProvider[]): boolean {
+  if (providers.length === 0) return true;
+  const srcs = new Set([...(s.sources ?? []), ...(s.links ?? []).map((l) => l.source)]);
+  return providers.some((p) => srcs.has(p));
+}
+
+/** Does a session match the keyword query? Matches the title AND any linked
+ *  resource's name/url (so searching a PR number or repo finds the chat). Empty
+ *  query -> yes. Case-insensitive. */
+function matchesQuery(s: Session, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  if (s.title.toLowerCase().includes(needle)) return true;
+  return (s.links ?? []).some(
+    (l) =>
+      linkName(l).toLowerCase().includes(needle) ||
+      (l.url ?? "").toLowerCase().includes(needle),
+  );
+}
+
+/** The sidebar list after ALL filters: Mine/All scope, provider chips, and the
+ *  keyword search. This is what the sidebar renders. */
+export function filteredSessions(state: State): Session[] {
+  return visibleSessions(state).filter(
+    (s) => matchesProviders(s, state.providerFilter) && matchesQuery(s, state.query),
+  );
 }
 
 export function useSessions(): State {

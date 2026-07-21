@@ -216,13 +216,22 @@ export function createManagementApi(deps: ManagementDeps): Router {
       scope === "all" || user.anonymous || c.owner == null || c.owner === user.id;
   };
 
-  // Enrich a conversation with the DISTINCT providers it links to, so the sidebar
-  // can show a per-row provider icon without an extra /links fetch. Links are
-  // file-backed (cheap). Shared by the list route and the push stream.
+  // Enrich a conversation with its linked resources, so the sidebar can (a) show a
+  // per-row provider icon, (b) display the linked PR/MR/thread NAME instead of the
+  // title, and (c) filter by provider — all without a per-row /links fetch. Links are
+  // file-backed (cheap; already loaded here). `sources` is the distinct provider set;
+  // `links` is a COMPACT summary (source/type/title/url — no structured ref) for the
+  // list. Shared by the list route and the push stream.
   const withSources = async (c: Conversation, now: number) => {
     const links = (await store.listLinks?.(c.id)) ?? [];
     const sources = [...new Set(links.map((l) => l.source))].sort();
-    return { ...view(c, now), sources };
+    const linkSummary = links.map((l) => ({
+      source: l.source,
+      resourceType: l.resourceType,
+      url: l.url,
+      title: l.title,
+    }));
+    return { ...view(c, now), sources, links: linkSummary };
   };
 
   r.get("/conversations", async (ctx) => {

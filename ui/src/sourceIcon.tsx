@@ -12,6 +12,9 @@ import type { ComponentType } from "react";
 import { SiGithub, SiGitlab, SiJira } from "react-icons/si";
 // Simple Icons dropped the Slack mark (trademark); FontAwesome still ships it.
 import { FaSlack, FaTerminal } from "react-icons/fa";
+// The Scooter mark — used for the "show the conversation TITLE" option (Scooter's
+// own name for a chat, vs. a provider's linked-resource name).
+import { MdElectricScooter } from "react-icons/md";
 
 interface SourceMeta {
   label: string;
@@ -34,6 +37,21 @@ const SOURCES: Record<string, SourceMeta> = {
 
 export function sourceLabel(source: string): string {
   return SOURCES[source]?.label ?? source;
+}
+
+/** The Scooter mark — the "show the conversation title" option in the Show control
+ *  (Scooter names the chat, vs. a provider's linked-resource name). */
+export function TitleBadge({ size = 15 }: { size?: number }) {
+  return (
+    <span
+      data-testid="title-icon"
+      title="Conversation title"
+      aria-label="Conversation title"
+      className="inline-flex items-center"
+    >
+      <MdElectricScooter size={size} color="currentColor" />
+    </span>
+  );
 }
 
 /** A small brand icon for a linked-resource provider. */
