@@ -32,13 +32,15 @@ notebook, giving the user a live terminal, or a browser code editor.
 1. **Built-ins** — declared in the platform. `marimo` ships today. The user
    enables/opens it from the **Services panel** in the conversation UI, OR you can
    enable + start it (below). Prefer built-ins when one fits.
-2. **Your own** — any service you declare via `modify_environment` (see the
-   scooter-env skill) using the `webServices.<name>` option. The platform then
-   proxies it and lists it in the Services panel.
+2. **Your own** — any service you declare in a module under `/etc/scooter/modules/`
+   (see the scooter-env skill) using the `webServices.<name>` option, then
+   `scooter-rebuild switch`. The platform then proxies it and lists it in the
+   Services panel.
 
 ## Declaring a web service (webServices.<name>)
 
-Add it with `modify_environment` (a NixOS module). The service MUST serve under
+Add it in a NixOS module under `/etc/scooter/modules/<name>.nix` and apply it with
+`scooter-rebuild switch` (see the scooter-env skill). The service MUST serve under
 its base path `/c/$CONVERSATION_ID/<name>` — `CONVERSATION_ID` is in the pod env.
 Package heavy servers as a **lazy tool** so the switch stays fast (built on first
 start, see scooter-env).
@@ -81,7 +83,7 @@ Services use **explicit start** (they don't auto-run). After enabling one:
 - Tell the user it's in the **Services panel** — they click **Start**, then
   **Open**. This is the simplest path.
 - Or start it yourself: `systemctl start webservice-<name>` (once
-  `scooter-env-status` reports the switch is `done`), then share the URL:
+  `scooter-rebuild status` reports the switch is `ready`), then share the URL:
   `https://<host>/c/$CONVERSATION_ID/<name>/`. Use `$CONVERSATION_URL` for the
   host if you need the full origin.
 
