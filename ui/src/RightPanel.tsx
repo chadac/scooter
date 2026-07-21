@@ -32,13 +32,15 @@ function TabButton({
   onClick,
   label,
   count,
-  emphasize,
+  alert,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   count: number;
-  emphasize?: boolean;
+  /** Render the count badge as a RED alert (an approval is a gate the user must act
+   *  on). Otherwise it's a neutral grey count. */
+  alert?: boolean;
 }) {
   return (
     <button
@@ -58,10 +60,11 @@ function TabButton({
       {count > 0 && (
         <span
           data-testid={`right-panel-badge-${label.toLowerCase()}`}
+          data-alert={alert ? "true" : undefined}
           className={
             "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-xs " +
-            (emphasize
-              ? "bg-foreground text-background"
+            (alert
+              ? "bg-red-600 font-semibold text-white"
               : "bg-muted text-muted-foreground")
           }
         >
@@ -103,7 +106,7 @@ export function RightPanel() {
           onClick={() => setActive("approvals")}
           label="Approvals"
           count={nInterrupts}
-          emphasize // a pending approval is a gate — make its badge stand out
+          alert // a pending approval is a gate — red badge so the user knows to click here
         />
         <TabButton
           active={active === "queue"}
