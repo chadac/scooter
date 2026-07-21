@@ -163,6 +163,34 @@ describe("management API", () => {
     expect((json as any[])[0]).not.toHaveProperty("bridge");
   });
 
+  it("GET /conversations enriches each row with sources + a compact links summary", async () => {
+    const store = fakeStore([]);
+    // Attach a GitHub PR link to c1 (what the sidebar shows the name of / filters by).
+    await store.addLink!("c1", {
+      source: "github",
+      resourceType: "pull_request",
+      url: "https://github.com/org/app/pull/203",
+      title: "org/app #203",
+    });
+    const api = createManagementApi({
+      sessions: fakeSessions(),
+      store,
+      server: stubServer,
+      answerPermission: async () => {},
+    });
+    const { json } = await call(api, "GET", "/conversations");
+    const row = (json as any[]).find((c) => c.id === "c1");
+    expect(row.sources).toEqual(["github"]);
+    expect(row.links).toEqual([
+      {
+        source: "github",
+        resourceType: "pull_request",
+        url: "https://github.com/org/app/pull/203",
+        title: "org/app #203",
+      },
+    ]);
+  });
+
   // --- Part 2: conversation-list push stream (RED until implemented) ----------
   // Captures res.write() SSE frames + the onConversationChange callback the route
   // registers, so we can assert: initial snapshot of the visible list, then an
