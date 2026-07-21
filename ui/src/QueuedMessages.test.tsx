@@ -32,17 +32,30 @@ describe("QueuedMessages", () => {
     expect(render([])).toBe("");
   });
 
-  it("renders each queued message + a count", () => {
+  it("renders each queued message", () => {
     const html = render([
       { id: "q1", text: "first queued", priority: 0 },
-      { id: "q2", text: "second queued", priority: 10 },
+      { id: "q2", text: "second queued", priority: 0 },
     ]);
     expect(html).toContain('data-testid="queued-messages"');
-    expect(html).toContain("Queued (2)");
     expect(html).toContain("first queued");
     expect(html).toContain("second queued");
     // Two message rows.
     expect(html.match(/data-testid="queued-message"/g)).toHaveLength(2);
+  });
+
+  it("marks a priority message distinctly and floats it to the top", () => {
+    const html = render([
+      { id: "q1", text: "normal one", priority: 0 },
+      { id: "q2", text: "urgent one", priority: 10 },
+    ]);
+    // The priority message carries the pill + priority flag.
+    expect(html).toContain('data-testid="queued-priority-pill"');
+    expect(html).toContain('data-priority="true"');
+    // Only ONE row is a priority row (the normal one isn't flagged).
+    expect(html.match(/data-priority="true"/g)).toHaveLength(1);
+    // And it's sorted first: "urgent one" appears before "normal one".
+    expect(html.indexOf("urgent one")).toBeLessThan(html.indexOf("normal one"));
   });
 
   it("wraps long messages instead of truncating (no page-stretching)", () => {
