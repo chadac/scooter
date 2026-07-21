@@ -58,8 +58,10 @@
 
           # agent-host (TypeScript): runs `goose acp` per conversation OUTSIDE the
           # sandbox; ACP<->AG-UI bridge; exec serviced via the agent-sandbox API.
-          # See services/agent-host/.
-          agentHost = pkgs.callPackage ./services/agent-host { };
+          # See services/agent-host/. Pass the PATCHED `agent` (goose) so the wrapper's
+          # PATH goose is the SAME derivation the image's gooseLayer bakes — otherwise
+          # the closure ships goose twice (~455MB dup) and could run the unpatched one.
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent; };
 
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {
