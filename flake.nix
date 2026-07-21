@@ -39,12 +39,29 @@
 
           # The ACP agent the agent-host runs (first target: Goose).
           # Runs OUTSIDE the sandbox. Provider-agnostic later; selected by attr.
-          agent = pkgs.goose-cli;
+          #
+          # DOWNSTREAM PATCH: sanitize Bedrock tool names to `[a-zA-Z0-9_-]+`. Goose
+          # leaks an MCP tool's display name ("<Extension>: <Title Case>") into the
+          # Bedrock converse request's toolUse.name on session resume, which Bedrock
+          # rejects (ValidationException) — permanently wedging the conversation. The
+          # patch sanitizes at the 3 outbound sites (tool def + both toolUse blocks)
+          # with a lossless map so the returned name restores for MCP dispatch. Applied
+          # via cargoPatches so it slots into the vendored-deps build without touching
+          # cargoHash. Remove when an upstream-fixed goose is pinned (the OpenAI side is
+          # already fixed in block/goose#10344; the Bedrock side was missed). See
+          # pkgs/goose/bedrock-tool-name-sanitize.patch + todo/GOOSE_BEDROCK_PATCH.md.
+          agent = pkgs.goose-cli.overrideAttrs (old: {
+            cargoPatches = (old.cargoPatches or [ ]) ++ [
+              ./pkgs/goose/bedrock-tool-name-sanitize.patch
+            ];
+          });
 
           # agent-host (TypeScript): runs `goose acp` per conversation OUTSIDE the
           # sandbox; ACP<->AG-UI bridge; exec serviced via the agent-sandbox API.
-          # See services/agent-host/.
-          agentHost = pkgs.callPackage ./services/agent-host { };
+          # See services/agent-host/. Pass the PATCHED `agent` (goose) so the wrapper's
+          # PATH goose is the SAME derivation the image's gooseLayer bakes — otherwise
+          # the closure ships goose twice (~455MB dup) and could run the unpatched one.
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent; };
 
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {

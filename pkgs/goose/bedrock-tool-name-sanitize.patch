@@ -1,0 +1,165 @@
+Sanitize Bedrock tool names to satisfy [a-zA-Z0-9_-]+.
+
+Goose surfaces an MCP tool's display name ("<Extension>: <Title Case>", e.g.
+"Scooter-env: Slack Respond") into a message's tool_call.name; on session RESUME
+that display-formatted name is reloaded and serialized into the Bedrock `converse`
+request's toolUse.name, which Bedrock rejects:
+
+  ValidationException: Value at 'messages.N.member.content.M.member.toolUse.name'
+  failed to satisfy constraint: Member must satisfy regular expression pattern:
+  [a-zA-Z0-9_-]+
+
+That permanently wedges a conversation that (a) used MCP tools and (b) was resumed —
+every subsequent turn replays the invalid name.
+
+Fix: sanitize the tool name to [a-zA-Z0-9_-]+ at the THREE outbound sites that must
+agree (the tool *definition* in toolConfig + both toolUse blocks), and keep a lossless
+sanitized->original map so the name Bedrock echoes back in its RESPONSE is restored to
+the real name before goose dispatches it to MCP (else the tool wouldn't be found).
+toolResult blocks pair by tool_use_id (not name), so they need no change.
+
+Upstream note: the analogous OpenAI Responses formatter already sanitizes function-call
+names (block/goose#10344); the Bedrock formatter was missed. Carry this as a downstream
+overrideAttrs/cargoPatches patch until an upstream-fixed goose is pinned.
+
+--- a/crates/goose/src/providers/formats/bedrock.rs
++++ b/crates/goose/src/providers/formats/bedrock.rs
+@@ -14,6 +14,65 @@
+ };
+ use serde_json::Value;
+ 
++use std::sync::Mutex;
++use std::sync::OnceLock;
++
++/// Bedrock requires tool names to match `^[a-zA-Z0-9_-]+$` (<=64 chars). Goose can
++/// surface an MCP tool's DISPLAY name ("<Extension>: <Title Case>") into a message's
++/// tool_call.name — notably on session resume, when persisted messages are reloaded
++/// — and that name (spaces, ":") fails Bedrock validation. We sanitize the name on
++/// the way OUT and keep a lossless sanitized->original map so the name Bedrock echoes
++/// back in its response is restored before we dispatch the tool to MCP.
++fn bedrock_tool_name_map() -> &'static Mutex<HashMap<String, String>> {
++    static MAP: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
++    MAP.get_or_init(|| Mutex::new(HashMap::new()))
++}
++
++/// Replace every char outside `[a-zA-Z0-9_-]` with `_`, collapse runs of `_`, and
++/// trim leading/trailing `_`. Deterministic + idempotent (an already-valid name is
++/// returned unchanged), so re-sanitizing a resumed request is stable.
++fn sanitize_bedrock_tool_name(name: &str) -> String {
++    let mut out = String::with_capacity(name.len());
++    let mut last_us = false;
++    for c in name.chars() {
++        if c.is_ascii_alphanumeric() || c == '-' {
++            out.push(c);
++            last_us = false;
++        } else if !last_us {
++            out.push('_');
++            last_us = true;
++        }
++    }
++    let trimmed = out.trim_matches('_');
++    let mut s = if trimmed.is_empty() { "tool".to_string() } else { trimmed.to_string() };
++    if s.len() > 64 {
++        s.truncate(64);
++    }
++    s
++}
++
++/// Sanitize a tool name for the Bedrock wire and remember the mapping so the
++/// response decode can restore the original.
++fn to_bedrock_tool_name(name: &str) -> String {
++    let safe = sanitize_bedrock_tool_name(name);
++    if safe != name {
++        if let Ok(mut m) = bedrock_tool_name_map().lock() {
++            m.insert(safe.clone(), name.to_string());
++        }
++    }
++    safe
++}
++
++/// Restore the original tool name from a name Bedrock returned (the sanitized form),
++/// falling back to the given name when there's no mapping (already-valid names).
++fn from_bedrock_tool_name(name: &str) -> String {
++    bedrock_tool_name_map()
++        .lock()
++        .ok()
++        .and_then(|m| m.get(name).cloned())
++        .unwrap_or_else(|| name.to_string())
++}
++
+ use super::super::base::Usage;
+ use crate::conversation::message::{Message, MessageContent};
+ 
+@@ -71,7 +130,7 @@
+             let tool_use = if let Ok(call) = tool_req.tool_call.as_ref() {
+                 bedrock::ToolUseBlock::builder()
+                     .tool_use_id(tool_use_id)
+-                    .name(call.name.to_string())
++                    .name(to_bedrock_tool_name(&call.name))
+                     .input(to_bedrock_json(&Value::from(call.arguments.clone())))
+                     .build()
+             } else {
+@@ -86,7 +145,7 @@
+             let tool_use = if let Ok(call) = tool_req.tool_call.as_ref() {
+                 bedrock::ToolUseBlock::builder()
+                     .tool_use_id(tool_use_id)
+-                    .name(call.name.to_string())
++                    .name(to_bedrock_tool_name(&call.name))
+                     .input(to_bedrock_json(&Value::from(call.arguments.clone())))
+                     .build()
+             } else {
+@@ -217,7 +276,7 @@
+ 
+     Ok(bedrock::Tool::ToolSpec(
+         bedrock::ToolSpecification::builder()
+-            .name(tool.name.to_string())
++            .name(to_bedrock_tool_name(&tool.name))
+             .description(
+                 tool.description
+                     .as_ref()
+@@ -312,7 +371,7 @@
+         bedrock::ContentBlock::Text(text) => MessageContent::text(text),
+         bedrock::ContentBlock::ToolUse(tool_use) => MessageContent::tool_request(
+             tool_use.tool_use_id.to_string(),
+-            Ok(CallToolRequestParams::new(tool_use.name.clone())
++            Ok(CallToolRequestParams::new(from_bedrock_tool_name(&tool_use.name))
+                 .with_arguments(object(from_bedrock_json(&tool_use.input.clone())?))),
+         ),
+         bedrock::ContentBlock::ToolResult(tool_res) => MessageContent::tool_response(
+@@ -396,6 +455,36 @@
+ 
+ #[cfg(test)]
+ mod tests {
++
++    #[test]
++    fn test_bedrock_tool_name_sanitize_roundtrip() {
++        // The mangled MCP display names from the bug report -> Bedrock-safe, and the
++        // sanitized name restores back to the original for MCP dispatch.
++        for original in [
++            "Scooter-env: Slack Respond",
++            "Scooter-env: Slack React",
++            "Todo: Todo Write",
++            "Scooter-aws Accounts",
++        ] {
++            let safe = to_bedrock_tool_name(original);
++            assert!(
++                safe.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
++                "sanitized name {safe:?} still has invalid chars"
++            );
++            assert!(!safe.is_empty() && safe.len() <= 64);
++            assert_eq!(from_bedrock_tool_name(&safe), original, "restore must be lossless");
++        }
++    }
++
++    #[test]
++    fn test_bedrock_tool_name_valid_is_unchanged() {
++        // An already-valid wire name (the real MCP id) passes through untouched and
++        // needs no restore mapping.
++        let valid = "scooter-env__slack_respond";
++        let safe = to_bedrock_tool_name(valid);
++        assert_eq!(safe, valid);
++        assert_eq!(from_bedrock_tool_name(&safe), valid);
++    }
+     use super::*;
+     use anyhow::Result;
+     use goose_test_support::TEST_IMAGE_B64;
