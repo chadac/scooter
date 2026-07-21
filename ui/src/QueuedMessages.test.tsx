@@ -65,4 +65,11 @@ describe("QueuedMessages", () => {
     expect(html).toContain("break-words");
     expect(html).not.toContain("truncate");
   });
+
+  it("clamps a message to a few lines (Show more/less appears once it overflows)", () => {
+    // The text is line-clamped by default (the overflow measurement + the toggle are
+    // DOM-only, so SSR just shows the clamp class here).
+    const html = render([{ id: "q1", text: "line\n".repeat(20), priority: 0 }]);
+    expect(html).toContain("line-clamp-4");
+  });
 });

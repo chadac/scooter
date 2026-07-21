@@ -75,5 +75,10 @@ describe("RightPanel", () => {
     // Both badges present with their counts.
     expect(html).toContain('data-testid="right-panel-badge-approvals"');
     expect(html).toContain('data-testid="right-panel-badge-queue"');
+    // The approvals badge is the RED alert variant (a gate the user must act on); the
+    // queue badge is a neutral grey count.
+    expect(html).toMatch(/right-panel-badge-approvals"[^>]*data-alert="true"/);
+    expect(html).toContain("bg-red-600");
+    expect(html).not.toMatch(/right-panel-badge-queue"[^>]*data-alert/);
   });
 });
