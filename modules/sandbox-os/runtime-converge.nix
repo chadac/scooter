@@ -135,8 +135,15 @@ let
       # its phases + a synchronous run (tests / direct call) does too.
       write_status building
 
-      if [ ! -e "$module" ]; then
-        echo "scooter-apply-module: no module at $module — nothing to apply" >&2
+      # Nothing to apply when the module is absent OR present-but-empty. The
+      # per-conversation module ConfigMap is seeded with a 0-byte module.nix (the
+      # provisioner writes `"module.nix": ""`), and an EMPTY file EXISTS — so an
+      # `-e`-only check would fall through and try to `import` an empty Nix file, which
+      # is not a valid module → the boot converge FAILS on every start ("module.nix is
+      # empty"). Treat empty/whitespace as "nothing to apply" (base config only), matching
+      # the provisioner's own 0-byte no-op contract.
+      if [ ! -e "$module" ] || [ ! -s "$module" ] || [ -z "$(tr -d '[:space:]' < "$module")" ]; then
+        echo "scooter-apply-module: no (or empty) module at $module — nothing to apply" >&2
         write_status idle
         exit 0
       fi

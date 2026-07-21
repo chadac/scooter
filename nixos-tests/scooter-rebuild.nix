@@ -159,6 +159,21 @@ pkgs.testers.runNixOSTest {
     st = machine.succeed("scooter-rebuild status")
     assert "ready" in st, f"status not ready: {st!r}"
 
+    # EMPTY module is a no-op, not a failed build. The per-conversation module
+    # ConfigMap is seeded with a 0-byte module.nix; scooter-apply-module must treat an
+    # empty/whitespace file as "nothing to apply" and exit idle (0) WITHOUT trying to
+    # build it (an empty file is not a valid Nix module -> the boot converge would fail
+    # on every start). This machine has nixpkgs=/dev/null, so a real build would fail —
+    # proving the guard skips the build entirely.
+    machine.succeed(": > /tmp/empty-module.nix")             # 0-byte
+    out = machine.succeed("scooter-apply-module --module /tmp/empty-module.nix 2>&1")
+    assert "nothing to apply" in out, f"empty module not skipped: {out!r}"
+    machine.succeed("printf '   \\n\\t\\n' > /tmp/ws-module.nix")  # whitespace-only
+    out = machine.succeed("scooter-apply-module --module /tmp/ws-module.nix 2>&1")
+    assert "nothing to apply" in out, f"whitespace module not skipped: {out!r}"
+    # And status reflects idle/ready (not failed) after the no-op.
+    assert "ready" in machine.succeed("scooter-rebuild status")
+
     # unknown command / subcommand -> usage + non-zero.
     machine.fail("scooter-rebuild bogus")
     machine.fail("scooter-rebuild module bogus")
