@@ -13,10 +13,11 @@ const sb = {
   item: '[data-testid="session-item"]',
   title: '[data-testid="session-title"]',
   search: '[data-testid="session-search"]',
-  labelTitle: '[data-testid="label-title"]',
-  labelLink: '[data-testid="label-link"]',
+  filtersToggle: '[data-testid="filters-toggle"]',
   providerGithub: '[data-testid="provider-github"]',
-  providerNone: '[data-testid="provider-none"]',
+  labelTitle: '[data-testid="label-title"]',
+  labelGithub: '[data-testid="label-github"]',
+  labelSlack: '[data-testid="label-slack"]',
   empty: '[data-testid="session-empty"]',
   scopeAll: '[data-testid="scope-all"]',
 };
@@ -54,6 +55,8 @@ test.describe("sidebar search + filter + label mode", () => {
     await chat.send("just some scratch notes");
     await chat.waitForReply(/dummy agent/i);
 
+    // Open the advanced-filters panel (Scope / Linked / Show live inside it).
+    await page.locator(sb.filtersToggle).click();
     // Show all conversations (both rows regardless of owner).
     await page.locator(sb.scopeAll).click();
     await expect(page.locator(sb.item)).toHaveCount(2, { timeout: 30_000 });
@@ -71,30 +74,27 @@ test.describe("sidebar search + filter + label mode", () => {
     await expect(page.locator(sb.empty)).toBeVisible();
     await page.locator(sb.search).fill("");
 
-    // (2) Provider filter: GitHub shows only the linked conversation.
+    // (2) Provider filter (icon chips): GitHub shows only the linked conversation.
     await page.locator(sb.providerGithub).click();
     await expect(page.locator(sb.item)).toHaveCount(1);
     await expect(page.locator(sb.title).first()).toHaveText(/flaky broker/i);
     await page.locator(sb.providerGithub).click(); // toggle off
-
-    // "None" shows only the UNLINKED conversation.
-    await page.locator(sb.providerNone).click();
-    await expect(page.locator(sb.item)).toHaveCount(1);
-    await expect(page.locator(sb.title).first()).toHaveText(/scratch/i);
-    await page.locator(sb.providerNone).click(); // toggle off
     await expect(page.locator(sb.item)).toHaveCount(2);
 
-    // (3) Links mode: the linked row shows the PR name instead of its title.
-    await page.locator(sb.labelLink).click();
+    // (3) "Show" segmented control -> GitHub: the linked row shows the PR name; the
+    // unlinked row falls back to its title.
+    await page.locator(sb.labelGithub).click();
     await expect(
       page.locator(sb.title).filter({ hasText: /example-org\/example-app #203/i }),
     ).toHaveCount(1, { timeout: 30_000 });
-    // The unlinked row still falls back to its title.
     await expect(page.locator(sb.title).filter({ hasText: /scratch/i })).toHaveCount(1);
-    // Back to Titles mode: the link name is gone, the title returns.
-    await page.locator(sb.labelTitle).click();
+    // Under a provider the linked row doesn't have (Slack), it falls back to its title.
+    await page.locator(sb.labelSlack).click();
     await expect(
       page.locator(sb.title).filter({ hasText: /example-org\/example-app #203/i }),
     ).toHaveCount(0);
+    // Back to the Scooter/title mode.
+    await page.locator(sb.labelTitle).click();
+    await expect(page.locator(sb.title).filter({ hasText: /flaky broker/i })).toHaveCount(1);
   });
 });

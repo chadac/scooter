@@ -1,11 +1,11 @@
 /**
- * Tier 1 (ui) — sidebar search + provider filter + Titles/Links label mode.
+ * Tier 1 (ui) — sidebar search + provider filter + "Show:" label mode.
  *
  * Covers the store logic behind the three chat-list features: keyword search
  * (matches title AND linked-resource names), the provider filter chips (multi-
- * select, "none" = unlinked), and the label mode (show the linked PR/MR/thread
- * name instead of the title). filteredSessions() composes scope + provider +
- * query; sessionLabel() picks title vs link name.
+ * select by provider), and the "Show:" label mode (title, or a specific provider's
+ * linked-resource name with title fallback). filteredSessions() composes scope +
+ * provider + query; sessionLabel() picks title vs the provider's link name.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
@@ -105,12 +105,6 @@ describe("provider filter chips", () => {
     expect(ids(filteredSessions(sessionStore.get()))).toEqual(["gh", "slack"]);
   });
 
-  it("the 'none' chip matches UNLINKED chats", () => {
-    seed();
-    sessionStore.toggleProvider("none");
-    expect(ids(filteredSessions(sessionStore.get()))).toEqual(["plain"]);
-  });
-
   it("toggling a chip off restores it; clearProviders resets", () => {
     seed();
     sessionStore.toggleProvider("github");
@@ -133,23 +127,26 @@ describe("search + provider filter compose", () => {
   });
 });
 
-describe("Titles / Links label mode", () => {
+describe("Show: label mode (title | provider)", () => {
   it("title mode shows the conversation title", () => {
     seed();
     const gh = sessionStore.get().sessions.find((s) => s.id === "gh")!;
     expect(sessionLabel(gh, "title")).toBe("Fix flaky broker test");
   });
 
-  it("link mode shows the linked resource NAME when linked", () => {
+  it("a provider mode shows THAT provider's linked-resource name", () => {
     seed();
     const gh = sessionStore.get().sessions.find((s) => s.id === "gh")!;
-    expect(sessionLabel(gh, "link")).toBe("org/app #203");
+    expect(sessionLabel(gh, "github")).toBe("org/app #203");
   });
 
-  it("link mode falls back to the title for an UNLINKED chat", () => {
+  it("a provider mode falls back to the title when the row has no such link", () => {
     seed();
+    const gh = sessionStore.get().sessions.find((s) => s.id === "gh")!;
+    // gh is a GitHub chat -> under the Slack mode it falls back to its title.
+    expect(sessionLabel(gh, "slack")).toBe("Fix flaky broker test");
     const plain = sessionStore.get().sessions.find((s) => s.id === "plain")!;
-    expect(sessionLabel(plain, "link")).toBe("Scratch notes");
+    expect(sessionLabel(plain, "github")).toBe("Scratch notes");
   });
 
   it("linkName falls back to '<source> <type>' when a link has no title", () => {

@@ -44,13 +44,15 @@ const STORAGE_KEY = "kubenix-agent.sessions.v1";
 /** Sidebar view filter: the caller's own conversations or all of them. */
 export type Scope = "mine" | "all";
 
-/** Sidebar label mode: show each row's conversation title, or the linked
- *  resource's name (PR/MR/thread) when it has one. */
-export type LabelMode = "title" | "link";
-
-/** The known link providers we offer as filter chips (+ "none" = unlinked). */
+/** The known link providers — offered as icon filter chips AND as the "Show:"
+ *  label-mode options. */
 export const LINK_PROVIDERS = ["github", "gitlab", "slack", "jira"] as const;
-export type LinkProvider = (typeof LINK_PROVIDERS)[number] | "none";
+export type LinkProvider = (typeof LINK_PROVIDERS)[number];
+
+/** What a sidebar row displays: the conversation title, or the linked resource's
+ *  name for a specific provider (falling back to the title when the row has no link
+ *  of that provider). The "Show:" dropdown selects this. */
+export type LabelMode = "title" | LinkProvider;
 
 type State = {
   sessions: Session[];
@@ -66,9 +68,9 @@ type State = {
   /** Keyword search over the title + linked-resource names (empty = no search). */
   query: string;
   /** Selected provider filter chips; empty = no provider filter (show all). A
-   *  session matches if it links to ANY selected provider ("none" = unlinked). */
+   *  session matches if it links to ANY selected provider. */
   providerFilter: LinkProvider[];
-  /** Whether rows show the title or the linked resource name. Persisted. */
+  /** What rows display — the title, or a provider's linked-resource name. Persisted. */
   labelMode: LabelMode;
   /** A deep-link target (from ?thread=<id>) to select AS SOON AS it's known — the
    *  conversation may not be in the list yet (it arrives via the poll/stream for a
@@ -118,7 +120,9 @@ const loadState = (): State => {
       // Search + provider filter are transient (a stale filter hiding every chat
       // after a refresh would baffle); the label mode persists like scope.
       query: "", providerFilter: [],
-      labelMode: parsed.labelMode === "link" ? "link" : "title",
+      labelMode: (LINK_PROVIDERS as readonly string[]).includes(parsed.labelMode)
+        ? (parsed.labelMode as LabelMode)
+        : "title",
     };
   } catch (e) {
     // Finding #26: corrupt persisted state -> start fresh (recoverable), but log
@@ -368,17 +372,21 @@ export const sessionStore = {
     setState({ ...state, providerFilter: [] });
   },
 
-  /** Flip the sidebar Titles/Links label mode. */
+  /** Set the "Show:" label mode (title or a specific provider's link name). */
   setLabelMode(labelMode: LabelMode) {
     if (state.labelMode === labelMode) return;
     setState({ ...state, labelMode });
   },
 };
 
-/** The linked resource a session's row should represent (the first one). undefined
- *  when the conversation has no links. Used for the "show link name" label + search. */
+/** The first linked resource of a session (any provider). undefined when unlinked. */
 export function primaryLink(s: Session): SessionLink | undefined {
   return s.links && s.links.length > 0 ? s.links[0] : undefined;
+}
+
+/** The session's first link for a given provider, or undefined if it has none. */
+export function linkForProvider(s: Session, provider: LinkProvider): SessionLink | undefined {
+  return (s.links ?? []).find((l) => l.source === provider);
 }
 
 /** A human name for a link: its title, else "<source> <type>" (e.g. "github
@@ -389,12 +397,12 @@ export function linkName(l: SessionLink): string {
   return `${l.source}${type}`.trim();
 }
 
-/** The label shown for a session row, honoring the Titles/Links mode: in "link"
- *  mode a linked conversation shows the linked resource's name (unlinked rows still
- *  fall back to the title); "title" mode always shows the title. */
+/** The label shown for a session row, honoring the "Show:" mode: "title" always
+ *  shows the conversation title; a provider mode shows THAT provider's linked-resource
+ *  name for rows that have such a link, falling back to the title otherwise. */
 export function sessionLabel(s: Session, mode: LabelMode): string {
-  if (mode === "link") {
-    const l = primaryLink(s);
+  if (mode !== "title") {
+    const l = linkForProvider(s, mode);
     if (l) return linkName(l);
   }
   return s.title;
@@ -409,13 +417,13 @@ export function visibleSessions(state: State): Session[] {
 }
 
 /** Does a session pass the selected provider filter? No chips selected -> yes. A
- *  session passes if it links to ANY selected provider; the "none" chip matches an
- *  UNLINKED conversation. Providers are derived from the links (falling back to the
- *  server's `sources` set) so it works even before `sources` is populated. */
+ *  session passes if it links to ANY selected provider. Providers are derived from
+ *  the links (falling back to the server's `sources` set) so it works even before
+ *  `sources` is populated. */
 function matchesProviders(s: Session, providers: LinkProvider[]): boolean {
   if (providers.length === 0) return true;
   const srcs = new Set([...(s.sources ?? []), ...(s.links ?? []).map((l) => l.source)]);
-  return providers.some((p) => (p === "none" ? srcs.size === 0 : srcs.has(p)));
+  return providers.some((p) => srcs.has(p));
 }
 
 /** Does a session match the keyword query? Matches the title AND any linked
