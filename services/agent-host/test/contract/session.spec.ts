@@ -349,7 +349,7 @@ describe("SessionManager", () => {
   });
 
   it("hydrate keeps a SUSPENDED Sandbox's real ref so revive RESUMES it (not create -> 409)", async () => {
-    // Bug: reconcile() reported a suspended Sandbox (replicas unset/0) as
+    // Bug: reconcile() reported a suspended Sandbox (operatingMode=Suspended) as
     // running:false, and hydrateEntry threw away its namespace (namespace: "").
     // revive() then read the empty namespace as "never existed" and called
     // create() -> 409 AlreadyExists against the still-present suspended CRD.

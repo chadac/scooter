@@ -5,8 +5,9 @@
  * Per conversation:
  *   - ServiceAccount sandbox-{id}     (unique broker identity)
  *   - Sandbox conv-{id}               (SA + workspace PVC + broker token volume)
- * Suspend/resume flip spec.replicas (0/1) on the v1alpha1 Sandbox (controller
- * drops/recreates the Pod, keeps PVCs). Destroy deletes the Sandbox + SA.
+ * Suspend/resume flip spec.operatingMode ("Suspended"/"Running") on the v1beta1
+ * Sandbox (controller drops/recreates the Pod, keeps PVCs). Destroy deletes the
+ * Sandbox + SA.
  *
  * The conversation-state PVC (Goose state + event log) is mounted by the
  * agent-host itself and is managed separately (see ConversationStore).
@@ -34,9 +35,10 @@ export function ignoreDeleteNotFound(e: { code?: number }): void {
 }
 
 const GROUP = "agents.x-k8s.io";
-// agent-sandbox v0.4.x serves v1alpha1, where suspend/resume is `spec.replicas`
-// (0 = suspended, 1 = running) — there is no operatingMode field yet.
-const VERSION = "v1alpha1";
+// agent-sandbox v0.5.x serves v1beta1 (v1alpha1 deprecated in v0.5.0). Suspend/resume
+// is `spec.operatingMode` ("Running"/"Suspended") — the controller drops/recreates the
+// Pod and keeps the PVCs. (v1alpha1 used `spec.replicas` 0/1; that field is gone.)
+const VERSION = "v1beta1";
 const PLURAL = "sandboxes";
 const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
 
@@ -158,9 +160,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // callers already tolerate — far better than a cluster-scope auth failure.)
   const refNs = (ref: SandboxRef) => ref.namespace || ns;
 
-  // v1alpha1: replicas 0 = suspended (pod dropped, PVCs kept), 1 = running.
+  // v1beta1: operatingMode "Suspended" = pod dropped (PVCs kept), "Running" = pod up.
   // A plain-object body negotiates application/merge-patch+json.
-  const setReplicas = async (ref: SandboxRef, replicas: 0 | 1) => {
+  const setOperatingMode = async (ref: SandboxRef, operatingMode: "Running" | "Suspended") => {
     await custom.patchNamespacedCustomObject(
       {
         group: GROUP,
@@ -168,7 +170,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         namespace: refNs(ref),
         plural: PLURAL,
         name: ref.name,
-        body: { spec: { replicas } },
+        body: { spec: { operatingMode } },
       },
       setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
     );
@@ -260,11 +262,12 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           alreadyExisted = true;
         });
 
-      // If it already existed it may be SUSPENDED (replicas=0) — ensure it's running
-      // so the run can actually execute. setReplicas(1) is idempotent (a running
-      // Sandbox stays running); a create-from-fresh already has replicas=1.
+      // If it already existed it may be SUSPENDED (operatingMode=Suspended) — ensure
+      // it's Running so the run can actually execute. setOperatingMode("Running") is
+      // idempotent (a running Sandbox stays running); a create-from-fresh is already
+      // Running.
       if (alreadyExisted) {
-        await setReplicas({ name, namespace: ns }, 1).catch((e) => {
+        await setOperatingMode({ name, namespace: ns }, "Running").catch((e) => {
           console.warn(`[k8sProvisioner] adopted existing Sandbox ${name} but resume failed (may already be running):`, e);
         });
       }
@@ -278,29 +281,30 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // Swallow the 404 so the idle sweep marks the conversation suspended and
       // stops re-attempting every tick (a stale hydrated entry would otherwise
       // churn the same failing patch forever). Any other error still propagates.
-      await setReplicas(ref, 0).catch(ignoreDeleteNotFound);
+      await setOperatingMode(ref, "Suspended").catch(ignoreDeleteNotFound);
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
-      await setReplicas(ref, 1);
+      await setOperatingMode(ref, "Running");
       return ref;
     },
 
     async reconcile(): Promise<Array<{ ref: SandboxRef; running: boolean }>> {
-      // List every per-conversation Sandbox in the namespace and report whether
-      // its pod is running (replicas > 0). hydrate() uses this to avoid leaking
-      // pods across an agent-host restart.
+      // List every per-conversation Sandbox in the namespace and report whether it's
+      // desired-Running (operatingMode). hydrate() uses this to avoid leaking pods
+      // across an agent-host restart. operatingMode is omitempty and defaults to
+      // Running server-side (a create-from-fresh sets it), so an absent value = Running.
       const list = (await custom.listNamespacedCustomObject({
         group: GROUP,
         version: VERSION,
         namespace: ns,
         plural: PLURAL,
-      })) as { items?: Array<{ metadata?: { name?: string }; spec?: { replicas?: number } }> };
+      })) as { items?: Array<{ metadata?: { name?: string }; spec?: { operatingMode?: string } }> };
       const out: Array<{ ref: SandboxRef; running: boolean }> = [];
       for (const item of list.items ?? []) {
         const name = item.metadata?.name;
         if (!name || !name.startsWith("conv-")) continue;
-        out.push({ ref: { name, namespace: ns }, running: (item.spec?.replicas ?? 0) > 0 });
+        out.push({ ref: { name, namespace: ns }, running: (item.spec?.operatingMode ?? "Running") !== "Suspended" });
       }
       return out;
     },
@@ -386,7 +390,7 @@ export function sandboxManifest(
     kind: "Sandbox",
     metadata: { name, namespace, labels: { [SANDBOX_NAME_LABEL]: name } },
     spec: {
-      replicas: 1,
+      operatingMode: "Running",
       podTemplate: {
         metadata: { labels: { [SANDBOX_NAME_LABEL]: name } },
         spec: {
