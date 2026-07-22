@@ -110,9 +110,48 @@ export interface AcpClientDeps {
 
 /** Spawns `goose acp` and returns a connected ACP client. */
 export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
+  // stdout is the ACP ndjson channel (piped). stderr is where goose writes its
+  // own diagnostics AND (for the claude-code provider) where a spawned `claude`
+  // CLI's failure surfaces — "Claude CLI terminating unexpectedly" originates
+  // here. Pipe it so we can log it rather than lose it to the void; under DEBUG
+  // stream every line, and ALWAYS keep a small ring buffer to attach to a
+  // non-zero exit so the crash is diagnosable even without the flag.
   const child = spawn(deps.command, deps.args, {
-    stdio: ["pipe", "pipe", "inherit"],
+    stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, ...deps.env },
+  });
+
+  // Ring buffer of the last stderr lines — attached to the exit log so a crash
+  // ("claude terminated") shows its cause even with DEBUG off.
+  const stderrTail: string[] = [];
+  const STDERR_TAIL_MAX = 50;
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    for (const line of chunk.split("\n")) {
+      if (!line) continue;
+      stderrTail.push(line);
+      if (stderrTail.length > STDERR_TAIL_MAX) stderrTail.shift();
+      // Under DEBUG, stream goose/claude stderr live, prefixed for grep-ability.
+      debug(`[goose:stderr] ${line}`);
+    }
+  });
+
+  // Log the child's lifecycle. A spawn `error` (ENOENT — goose/claude not on
+  // PATH) or a non-zero/ signalled exit is almost always the real cause behind a
+  // UI "agent terminated unexpectedly", so surface it ALWAYS (debugError), with
+  // the captured stderr tail so the reason travels with it.
+  child.on("error", (err) => {
+    debugError(`[acp] goose spawn error (command="${deps.command}"):`, err);
+  });
+  child.on("exit", (code, signal) => {
+    if (code === 0) {
+      debug(`[acp] goose exited cleanly (code 0)`);
+      return;
+    }
+    debugError(
+      `[acp] goose exited unexpectedly (code=${code}, signal=${signal}). ` +
+        `Last stderr:\n${stderrTail.join("\n") || "(no stderr captured)"}`,
+    );
   });
 
   // Adapt the child's Node stdio to the Web streams ndJsonStream expects.
