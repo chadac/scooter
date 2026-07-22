@@ -92,7 +92,10 @@ install_controller() {
   fi
   log "installing agent-sandbox $AGENT_SANDBOX_VERSION (controller + extensions)"
   local base="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}"
-  kubectl apply -f "${base}/manifest.yaml"
+  # v0.5.x renamed the core release asset manifest.yaml -> sandbox.yaml (extensions.yaml
+  # is unchanged). The version bump to v0.5.2 landed without updating these URLs, so
+  # install_controller 404'd — breaking `just test-cluster` at controller install.
+  kubectl apply -f "${base}/sandbox.yaml"
   kubectl apply -f "${base}/extensions.yaml"
   kubectl wait --for=condition=Available deploy --all -n agent-sandbox-system --timeout=180s || true
 }
