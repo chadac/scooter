@@ -68,6 +68,13 @@
             inherit pkgs lib n2c agentHost agent; # agent (goose) for its own layer
           };
 
+          # Variant that also bakes the `claude` CLI, for the goose claude-code
+          # provider (subscription auth). Built on demand: nix build .#agent-host-image-claude
+          agentHostImageClaudeBuilder = import ./pkgs/agent-host-image {
+            inherit pkgs lib n2c agentHost agent;
+            withClaudeCode = true;
+          };
+
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules. See services/broker/ + docs/BROKER.md.
           broker = pkgs.callPackage ./services/broker { };
@@ -182,6 +189,8 @@
 
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = agentHostImageBuilder.image;
+            # nix build .#agent-host-image-claude  ->  + the claude CLI (claude-code provider)
+            agent-host-image-claude = agentHostImageClaudeBuilder.image;
 
             # nix build .#ui-image  ->  UI (nginx + static build) OCI image
             ui-image = uiImage.image;

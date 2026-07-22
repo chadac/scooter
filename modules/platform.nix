@@ -248,6 +248,19 @@ in
         default = "us-east-1";
         description = "AWS_REGION for the agent process (Bedrock region).";
       };
+      claudeCode = {
+        tokenSecret = mkOption {
+          type = types.str;
+          default = "agent-claude-code-token";
+          description = ''
+            When `agent.provider = "claude-code"`, the name of the Secret holding the
+            long-lived subscription OAuth token (`claude setup-token`) under key `token`.
+            Wired to CLAUDE_CODE_OAUTH_TOKEN on the agent-host. Requires the claude CLI in
+            the image (build .#agent-host-image-claude). Create the Secret out-of-band:
+            kubectl create secret generic <name> --from-literal=token=$(claude setup-token).
+          '';
+        };
+      };
       name = mkOption {
         type = types.str;
         default = "Scooter";
@@ -647,13 +660,30 @@ in
                   # Static sub->email seed for the learned identity store ("k=v,k=v").
                   { name = "AUTH_SUB_EMAIL_MAP";
                     value = lib.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.auth.subEmailMap); }
-                ++ lib.optionals (!cfg.fakeAgent) [
-                  # Real `goose acp` on Bedrock (or another provider). The agent
-                  # process inherits the pod's IRSA identity via the AWS SDK
-                  # web-identity chain — no static keys.
+                ++ lib.optional (!cfg.fakeAgent)
+                  # Real `goose acp`. The provider selects the model backend.
                   { name = "GOOSE_PROVIDER"; value = cfg.agent.provider; }
+                ++ lib.optionals (!cfg.fakeAgent && cfg.agent.provider != "claude-code") [
+                  # Bedrock (or another AWS-backed provider): the agent process inherits
+                  # the pod's IRSA identity via the AWS SDK web-identity chain — no keys.
                   { name = "AWS_REGION"; value = cfg.agent.region; }
                   { name = "AWS_DEFAULT_REGION"; value = cfg.agent.region; }
+                ] ++ lib.optionals (!cfg.fakeAgent && cfg.agent.provider == "claude-code") [
+                  # claude-code provider: goose shells out to the `claude` CLI (baked into
+                  # the image via withClaudeCode). It authenticates with a long-lived
+                  # subscription OAuth token (`claude setup-token`) supplied via a Secret.
+                  { name = "CLAUDE_CODE_COMMAND"; value = "claude"; }
+                  {
+                    name = "CLAUDE_CODE_OAUTH_TOKEN";
+                    valueFrom.secretKeyRef = { name = cfg.agent.claudeCode.tokenSecret; key = "token"; };
+                  }
+                  # goose's claude-code provider invokes `claude … --dangerously-skip-permissions`,
+                  # and the claude CLI REFUSES that flag when running as root ("cannot be used
+                  # with root/sudo privileges") — which the agent-host container does — so claude
+                  # exits instantly and goose reports "Claude CLI process terminated unexpectedly".
+                  # IS_SANDBOX=1 tells claude it's in a sandboxed context, permitting the flag as
+                  # root. (Proper long-term fix: run the agent-host as a non-root user.)
+                  { name = "IS_SANDBOX"; value = "1"; }
                 ] ++ lib.optional (!cfg.fakeAgent && defaultModelId != null)
                   # The default model. Derived from availableModels.<id>.default
                   # (or the deprecated agent.model).
