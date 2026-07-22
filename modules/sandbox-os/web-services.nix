@@ -136,8 +136,12 @@ in
         base = {
           description = "web service: ${s.displayName}";
           restartIfChanged = false;
-          # Reads CONVERSATION_ID (proxy base path) + PATH (lazy-tool stubs) from
-          # the pod environment.
+          # PATH must include the system profile so the service can exec LAZY-TOOL stubs
+          # (marimo / code-server live at /run/current-system/sw/bin, built on first use).
+          # A systemd unit does NOT inherit a login PATH — it gets systemd's minimal
+          # default — so without this `exec marimo` fails with "not found" (status 127).
+          # Prepend the system profile + wrappers ahead of that default.
+          path = [ "/run/current-system/sw" "/run/wrappers" ];
           serviceConfig = {
             ExecStart = s.command;
             Restart = "on-failure";

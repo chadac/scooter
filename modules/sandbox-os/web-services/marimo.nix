@@ -37,7 +37,11 @@ in
     # DynamicUser couldn't write the shared workspace.
     user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
-    command = lib.mkDefault (pkgs.writeShellScript "marimo-web-service" ''
+    # `command` is types.str; writeShellScript returns a DERIVATION, so interpolate it
+    # to its store-path STRING. (A bare derivation type-checks in the image build's
+    # coercion path but FAILS the re-converge eval — where webServices.command is read
+    # as a plain string.)
+    command = lib.mkDefault "${pkgs.writeShellScript "marimo-web-service" ''
       set -euo pipefail
       base="/c/''${CONVERSATION_ID:-unknown}/marimo"
       proxy_args=()
@@ -48,6 +52,6 @@ in
         --host 0.0.0.0 --port ${toString cfg.port} \
         --base-url "$base" "''${proxy_args[@]}" \
         --headless --no-token
-    '');
+    ''}";
   };
 }

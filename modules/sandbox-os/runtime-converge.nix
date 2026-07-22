@@ -71,7 +71,15 @@ let
       # bad module can never leave the sandbox stuck in a broken config. Idempotent.
       set -euo pipefail
 
-      module=${lib.escapeShellArg cfg.dir}/module.nix
+      # An EXTRA module to splice into the re-converge. Optional: with none, we build
+      # the BASE config alone — which already imports local-modules (/etc/scooter/modules)
+      # + broker/registry modules — so `scooter-rebuild switch` picks up the agent's
+      # authored modules WITHOUT needing a --module. The legacy per-conversation module
+      # ConfigMap (cfg.dir/module.nix) is used ONLY as a fallback when it exists and is
+      # non-empty (the old deployment path); a missing/empty CM no longer blocks the
+      # base re-converge.
+      module=""
+      cm_module=${lib.escapeShellArg cfg.dir}/module.nix
       detach=0
       while [ $# -gt 0 ]; do
         case "$1" in
@@ -80,6 +88,11 @@ let
           *) echo "scooter-apply-module: unknown arg: $1" >&2; exit 2 ;;
         esac
       done
+      # No explicit --module: fall back to the deployment CM module IF it has content;
+      # otherwise leave $module empty and re-converge the base config alone.
+      if [ -z "$module" ] && [ -s "$cm_module" ] && [ -n "$(tr -d '[:space:]' < "$cm_module" 2>/dev/null)" ]; then
+        module="$cm_module"
+      fi
 
       # --- status/log protocol (read by scooter-env-status) --------------------
       # ${statusDir}/status : one word — building | switching | done | failed | idle
@@ -135,39 +148,47 @@ let
       # its phases + a synchronous run (tests / direct call) does too.
       write_status building
 
-      # Nothing to apply when the module is absent OR present-but-empty. The
-      # per-conversation module ConfigMap is seeded with a 0-byte module.nix (the
-      # provisioner writes `"module.nix": ""`), and an EMPTY file EXISTS — so an
-      # `-e`-only check would fall through and try to `import` an empty Nix file, which
-      # is not a valid module → the boot converge FAILS on every start ("module.nix is
-      # empty"). Treat empty/whitespace as "nothing to apply" (base config only), matching
-      # the provisioner's own 0-byte no-op contract.
-      if [ ! -e "$module" ] || [ ! -s "$module" ] || [ -z "$(tr -d '[:space:]' < "$module")" ]; then
-        echo "scooter-apply-module: no (or empty) module at $module — nothing to apply" >&2
-        write_status idle
-        exit 0
+      # If an EXPLICIT extra module was resolved ($module non-empty) but it's missing or
+      # empty/whitespace, that's a no-op ONLY for that extra module — we still re-converge
+      # the base config (which imports local-modules). A 0-byte file is not a valid Nix
+      # module, so `import`ing it would fail the build; drop it and continue base-only.
+      # (The per-conversation module ConfigMap is seeded with a 0-byte module.nix, so this
+      # empty case is normal, not an error.)
+      if [ -n "$module" ] && { [ ! -e "$module" ] || [ ! -s "$module" ] || [ -z "$(tr -d '[:space:]' < "$module")" ]; }; then
+        echo "scooter-apply-module: extra module $module is missing/empty — re-converging base config only" >&2
+        module=""
       fi
 
       # On ANY unexpected exit before we reach the explicit done/failed writes, mark
       # failed so a poller never sees a stuck "building" after the process died.
       trap 'rc=$?; if [ "$rc" -ne 0 ]; then write_status failed "scooter-apply-module exited $rc"; fi' EXIT
 
-      echo "scooter-apply-module: building toplevel (base + $module)..."
-      # Build base config + the module. --impure so we can read the path; the
-      # nixpkgs + modules source are fixed store paths baked in. We re-inject
-      # programs.scooterModule.nixpkgs so the re-evaluated base config (which
-      # imports this same module) type-checks — it has no default. A build failure
-      # exits non-zero HERE (set -e), before any profile/switch change: the gate.
+      if [ -n "$module" ]; then
+        echo "scooter-apply-module: building toplevel (base + $module)..."
+        module_expr="$module"
+      else
+        echo "scooter-apply-module: building toplevel (base config + local/registry modules)..."
+        module_expr=""
+      fi
+      # Build the base config (+ the optional extra module). --impure so we can read the
+      # module path + the local-modules dir; the nixpkgs + modules source are fixed store
+      # paths baked in. We re-inject programs.scooterModule.nixpkgs so the re-evaluated
+      # base config type-checks — it has no default. A build failure exits non-zero HERE
+      # (set -e), before any profile/switch change: the gate. With no extra module this
+      # still re-converges local-modules (/etc/scooter/modules) — the agent's authored
+      # modules — since the base config imports them.
       toplevel=$(nix build --no-link --print-out-paths --impure --expr "
         (import ${baseConfig} {
           nixpkgs = ${cfg.nixpkgs};
           modulesPath = ${modulesSrc};
           extraModules = [
-            ({ lib, ... }: { programs.scooterModule.nixpkgs = lib.mkForce ${cfg.nixpkgs}; })
+            # base-config.nix itself now force-sets programs.scooterModule.{enable,nixpkgs}
+            # for the re-converge (it has the nixpkgs ref), so we do NOT set them here —
+            # a second mkForce would conflict.
             # Layer the currently-running system's extra config (so the switch
             # preserves what's already active — see extraReconvergeModules).
             ${lib.concatStringsSep "\n            " cfg.extraReconvergeModules}
-            $module
+            $module_expr
           ];
         }).toplevel
       ")

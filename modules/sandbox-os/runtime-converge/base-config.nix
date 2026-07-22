@@ -23,14 +23,20 @@
 }:
 
 let
-  # `nixpkgs` is a BARE store path (so we can `import` it). The lazy-tool stubs +
-  # the flake registry, however, embed a flake-REF string verbatim — and the image
-  # bakes those with a `path:`-prefixed ref. We MUST produce the identical ref here
-  # or the stubs hash differently and the re-converge needlessly rebuilds
-  # system-path (and re-substitutes the toolchain in-pod, ~10min). So derive the
-  # `path:` form from the bare path and force it on lazyTools/devEnvNix below.
-  nixpkgsRef = "path:" + (toString nixpkgs);
-  evaled = import (nixpkgs + "/nixos/lib/eval-config.nix") {
+  # `nixpkgs` may arrive as a BARE store path (first converge, from the image) OR as a
+  # `path:`-prefixed STRING (a later converge, re-injected via cfg.nixpkgs — the option
+  # value the previous converge set on programs.scooterModule.nixpkgs). Normalize BOTH:
+  #   nixpkgsPath — a real path for `import (… + "/nixos/…")` (strip any `path:` prefix)
+  #   nixpkgsRef  — the `path:` string the lazy-tool stubs + flake registry embed. We MUST
+  #                 reproduce the identical ref or the stubs hash differently and the
+  #                 re-converge needlessly rebuilds system-path (~10min toolchain re-fetch).
+  nixpkgsStr = toString nixpkgs;
+  hasPathPrefix = builtins.substring 0 5 nixpkgsStr == "path:";
+  # The bare filesystem path (strip a leading "path:"), as a real path for `import`.
+  nixpkgsPath = /. + (if hasPathPrefix then builtins.substring 5 (-1) nixpkgsStr else nixpkgsStr);
+  # The `path:` string form (idempotent — don't double-prefix).
+  nixpkgsRef = if hasPathPrefix then nixpkgsStr else "path:" + nixpkgsStr;
+  evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
     inherit system;
     modules = [
       modulesPath
@@ -38,6 +44,17 @@ let
       ({ lib, ... }: {
         programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsRef;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
+        # Keep the scooter-rebuild machinery ENABLED across a re-converge, and give it
+        # the nixpkgs ref it needs. The image build enables it in pkgs/sandbox-os/
+        # default.nix (outside modulesPath) AND sets programs.scooterModule.nixpkgs there
+        # — so a re-converge importing only modulesPath would (a) default `enable` to
+        # false, dropping scooter-rebuild/apply-module/env-status from PATH, and (b) leave
+        # `.nixpkgs` undefined (the option has no default), failing the eval. Set BOTH
+        # here — the reconverge entrypoint the pod actually builds — so the re-converged
+        # system keeps a working scooter-rebuild. `.nixpkgs` is a STRING (the `path:` ref
+        # form, matching what the image bakes so the lazy-tool stubs don't rehash).
+        programs.scooterModule.enable = lib.mkForce true;
+        programs.scooterModule.nixpkgs = lib.mkForce nixpkgsRef;
       })
     ] ++ extraModules;
     # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so
