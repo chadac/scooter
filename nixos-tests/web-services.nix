@@ -38,6 +38,12 @@ pkgs.testers.runNixOSTest {
 
   nodes.machine = { ... }: {
     imports = [ sandboxModule ];
+    # The built-in `terminal` (ttyd + tmux) — enabled to prove it RENDERS a proxyable
+    # unit + manifest entry. NOT started here (ttyd is a lazy tool that would `nix build`
+    # inside the VM); we only assert the declaration, like a marimo/vscode would.
+    webServices.terminal.enable = true;
+    webServices.terminal.environment.CONVERSATION_ID = "conv-test";
+
     webServices.demo = {
       enable = true;
       port = 9911;
@@ -85,5 +91,23 @@ pkgs.testers.runNixOSTest {
     # 4. Serves under the base path; 404 outside it (sub-path serving).
     machine.succeed("curl -fsS http://localhost:9911/c/conv-test/demo/ | grep -q demo-ok")
     machine.succeed("test $(curl -s -o /dev/null -w '%{http_code}' http://localhost:9911/other) = 404")
+
+    # 5. The built-in `terminal` renders correctly (declaration only — not started, so no
+    #    lazy ttyd build in the VM). It's in the manifest and its unit runs ttyd + tmux
+    #    under the /terminal base path.
+    term = { s["name"]: s for s in data["services"] }["terminal"]
+    assert term["unit"] == "webservice-terminal", term
+    assert term["basePath"].endswith("/terminal"), term
+    # ExecStart points at the terminal wrapper script; its CONTENTS run ttyd + tmux under
+    # the /terminal base path, writable. Resolve the store path (appears twice in the
+    # ExecStart value — path= + argv[0]) with `head -1`, then read the body.
+    exec_start = machine.succeed(
+        "systemctl show webservice-terminal.service -p ExecStart --value "
+        "| grep -oE '/nix/store/[a-z0-9]+-terminal-web-service' | head -1"
+    ).strip()
+    wrapper = machine.succeed(f"cat '{exec_start}'")
+    assert "ttyd" in wrapper and "tmux" in wrapper, wrapper
+    assert "--base-path" in wrapper and "--writable" in wrapper, wrapper
+    machine.fail("systemctl is-active --quiet webservice-terminal.service")  # explicit-start
   '';
 }
