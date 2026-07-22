@@ -78,6 +78,10 @@ export interface K8sProvisionerOptions {
    *  Set when sandboxImage is the agent-sandbox-os image. Default false keeps the
    *  legacy generic image behavior. */
   systemdImage?: boolean;
+  /** imagePullPolicy for the per-conversation sandbox pod (SANDBOX_PULL_POLICY).
+   *  Default "Always" (registry-backed). Use "IfNotPresent"/"Never" on a
+   *  side-loaded local cluster where "Always" fails ImagePullBackOff. */
+  sandboxPullPolicy?: "Always" | "IfNotPresent" | "Never";
   /** A deployment's `.scooter` ConfigMap (its own injected Nix tools) to mount at
    *  /etc/agent-sandbox/scooter, where lazyTools `localFlake` builds them. The
    *  CONTENT is deployment-specific (this platform doesn't know what's in it). */
@@ -249,6 +253,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             overlayStore: opts.overlayStore ?? false,
             overlayStorage: opts.overlayStorage,
             moduleConfigMap: moduleCmName(id),
+            pullPolicy: opts.sandboxPullPolicy,
             resources: sandboxResources,
           }),
         })
@@ -359,6 +364,12 @@ export function sandboxManifest(
     overlayStore?: boolean;
     overlayStorage?: string;
     moduleConfigMap?: string;
+    /** imagePullPolicy for the sandbox container. Defaults to "Always" (a
+     *  registry-backed cluster picks up a re-pushed :latest). Set "IfNotPresent"
+     *  / "Never" for a side-loaded local cluster (kind/k3s) where the image only
+     *  exists in the node's containerd and there's no registry to pull from —
+     *  "Always" there fails with ImagePullBackOff. Wired from SANDBOX_PULL_POLICY. */
+    pullPolicy?: "Always" | "IfNotPresent" | "Never";
     resources?: {
       requests?: { cpu?: string; memory?: string };
       limits?: { cpu?: string; memory?: string };
@@ -400,9 +411,11 @@ export function sandboxManifest(
             {
               name: "sandbox",
               image,
-              // Always pull so a re-pushed :latest sandbox image is picked up
-              // (IfNotPresent would keep a node's stale cached image).
-              imagePullPolicy: "Always",
+              // Default "Always" so a re-pushed :latest is picked up on a
+              // registry-backed cluster; overridable via SANDBOX_PULL_POLICY for
+              // side-loaded local clusters (kind/k3s) where "Always" would fail
+              // ImagePullBackOff (no registry — the image is only in containerd).
+              imagePullPolicy: deploy.pullPolicy ?? "Always",
               // Requests spread sandboxes across nodes; the memory limit stops a
               // runaway build from OOM-ing the node. Omitted keys (e.g. no cpu limit)
               // simply aren't emitted.

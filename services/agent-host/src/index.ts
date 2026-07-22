@@ -296,6 +296,11 @@ export async function main(
     : createK8sProvisioner({
         namespace: config.namespace,
         sandboxImage: config.sandboxImage,
+        // imagePullPolicy for the per-conversation sandbox pod. Default "Always"
+        // (registry-backed); set SANDBOX_PULL_POLICY=IfNotPresent on a side-loaded
+        // local cluster (kind/k3s) where "Always" fails with ImagePullBackOff.
+        sandboxPullPolicy:
+          (process.env.SANDBOX_PULL_POLICY as "Always" | "IfNotPresent" | "Never") || undefined,
         // When the AWS permissions broker is on, mount its account-registry
         // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
         awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,

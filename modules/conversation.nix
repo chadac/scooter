@@ -60,6 +60,10 @@ let
           containers = [{
             name = "sandbox";
             image = sandboxImage;
+            # Mirror the platform pullPolicy (the agent-host provisioner reads
+            # SANDBOX_PULL_POLICY): "Always" for a registry, "IfNotPresent"/"Never"
+            # for a side-loaded local cluster where "Always" fails ImagePullBackOff.
+            imagePullPolicy = cfg.pullPolicy;
             resources = sandboxResources;
             ports = [{ containerPort = 8888; }];
             # The sandbox is the NixOS systemd-PID-1 image: systemd needs a

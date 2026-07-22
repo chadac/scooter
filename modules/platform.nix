@@ -598,6 +598,11 @@ in
                   { name = "PORT"; value = "8080"; }
                   { name = "NAMESPACE"; value = cfg.namespace; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # imagePullPolicy for the per-conversation sandbox pods — mirror the
+                  # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always
+                  # for a registry). Without this the provisioner defaults to "Always",
+                  # which fails ImagePullBackOff on a local cluster with no registry.
+                  { name = "SANDBOX_PULL_POLICY"; value = cfg.pullPolicy; }
                   # The trusted webhooks SA the agent-host lets set a conversation
                   # `owner` on /agui (verified via TokenReview). Only this SA is
                   # honored; unset = owner never honored.
