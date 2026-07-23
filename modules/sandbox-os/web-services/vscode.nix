@@ -35,7 +35,9 @@ in
     # DynamicUser couldn't write the shared workspace.
     user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
-    command = lib.mkDefault (pkgs.writeShellScript "vscode-web-service" ''
+    # `command` is types.str; writeShellScript returns a DERIVATION, so interpolate it
+    # to its store-path STRING (a bare derivation fails the re-converge eval — see marimo.nix).
+    command = lib.mkDefault "${pkgs.writeShellScript "vscode-web-service" ''
       set -euo pipefail
       base="/c/''${CONVERSATION_ID:-unknown}/vscode"
       # --auth none: access is gated by the platform proxy (the pod isn't public).
@@ -49,6 +51,6 @@ in
         --disable-telemetry \
         --disable-update-check \
         /workspace
-    '');
+    ''}";
   };
 }
