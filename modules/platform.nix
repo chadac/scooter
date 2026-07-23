@@ -420,8 +420,18 @@ in
     ingress = {
       enable = mkOption {
         type = types.bool;
-        default = false;
-        description = "Expose the agent-host (AG-UI/API + UI) via a standard Ingress.";
+        default = true;
+        description = ''
+          Expose the agent-host (AG-UI/API + UI) via a standard Ingress. On by
+          default so a deploy is reachable by hostname out of the box.
+
+          SECURITY: the module auth-gates NOTHING itself — the agent-host trusts an
+          identity header the ingress sets (see `annotations`). A default-on ingress
+          with no auth annotations is fine for a trusted/local network but is an
+          UNAUTHENTICATED, identity-spoofable UI if reachable by untrusted clients.
+          Put your auth (and the header-setting) config in `annotations`, or set
+          `ingress.enable = false` where you don't want it exposed.
+        '';
       };
       host = mkOption {
         type = types.str;
@@ -897,15 +907,22 @@ in
         };
         spec = {
           ingressClassName = lib.mkIf (cfg.ingress.className != "") cfg.ingress.className;
-          rules = [{
-            host = cfg.ingress.host;
-            http.paths = [{
-              path = "/";
-              pathType = "Prefix";
-              backend.service = { name = ingressBackend; port.number = 8080; };
-            }];
-          }];
-          tls = lib.optionals cfg.ingress.tls [
+          rules = [(
+            # Omit `host` entirely when unset — a host-less rule is a valid
+            # catch-all (any Host), whereas `host: ""` is rejected by some
+            # controllers. Set `ingress.host` for name-based routing.
+            lib.optionalAttrs (cfg.ingress.host != "") { host = cfg.ingress.host; }
+            // {
+              http.paths = [{
+                path = "/";
+                pathType = "Prefix";
+                backend.service = { name = ingressBackend; port.number = 8080; };
+              }];
+            }
+          )];
+          # Only emit a tls entry when there's a host to name — a hostless
+          # default-on ingress (local/dev) carries no TLS block.
+          tls = lib.optionals (cfg.ingress.tls && cfg.ingress.host != "") [
             ({ hosts = [ cfg.ingress.host ]; }
               // lib.optionalAttrs (cfg.ingress.tlsSecretName != "") {
                 secretName = cfg.ingress.tlsSecretName;
