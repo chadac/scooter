@@ -44,17 +44,16 @@ let
       ({ lib, ... }: {
         programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsRef;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
-        # Keep the scooter-rebuild machinery ENABLED across a re-converge, and give it
-        # the nixpkgs ref it needs. The image build enables it in pkgs/sandbox-os/
-        # default.nix (outside modulesPath) AND sets programs.scooterModule.nixpkgs there
-        # — so a re-converge importing only modulesPath would (a) default `enable` to
-        # false, dropping scooter-rebuild/apply-module/env-status from PATH, and (b) leave
-        # `.nixpkgs` undefined (the option has no default), failing the eval. Set BOTH
-        # here — the reconverge entrypoint the pod actually builds — so the re-converged
-        # system keeps a working scooter-rebuild. `.nixpkgs` is a STRING (the `path:` ref
-        # form, matching what the image bakes so the lazy-tool stubs don't rehash).
-        programs.scooterModule.enable = lib.mkForce true;
-        programs.scooterModule.nixpkgs = lib.mkForce nixpkgsRef;
+        # NOTE: we deliberately do NOT force programs.scooterModule.enable = true here.
+        # Enabling it inside the re-converge pulls in runtime-converge.nix, whose
+        # `system.extraDependencies = [ modulesTree ]` re-derives a FRESH `sandbox-os-src`
+        # (reconverge-inputs.nix) that can't be built offline in the pod — the in-pod
+        # build then fails with "path '…-sandbox-os-src' is not valid". So the
+        # re-converged system inherits the option default (enable = false); scooter-rebuild
+        # / apply-module / env-status are dropped from PATH after a self-modify switch
+        # (same as the pre-existing behavior). Keeping those tools ACROSS a re-converge
+        # needs reconverge-inputs to reference the already-baked modulesTree as a valid
+        # store path — tracked as a follow-up (todo: scooter-rebuild-across-reconverge).
       })
     ] ++ extraModules;
     # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so

@@ -159,6 +159,24 @@ let
         module=""
       fi
 
+      # Genuine no-op: no extra module AND nothing for the base to pick up (no
+      # local /etc/scooter/modules/*.nix and no attached registry modules). Building
+      # base-only here would just rebuild the running config for nothing — and worse,
+      # a sandbox with a placeholder nixpkgs (tests, or a not-yet-provisioned pod)
+      # can't build at all. Exit idle WITHOUT building. Base-only re-converge still
+      # runs whenever there IS something authored to pick up.
+      if [ -z "$module" ]; then
+        local_mods=""
+        [ -d /etc/scooter/modules ] && local_mods=$(find -L /etc/scooter/modules -maxdepth 1 -name '*.nix' -type f 2>/dev/null | head -1)
+        reg_mods=""
+        [ -s /etc/scooter/registry-modules.json ] && reg_mods=$(tr -d '[]" \n\t' < /etc/scooter/registry-modules.json 2>/dev/null)
+        if [ -z "$local_mods" ] && [ -z "$reg_mods" ]; then
+          echo "scooter-apply-module: no module and nothing to converge — nothing to apply" >&2
+          write_status idle
+          exit 0
+        fi
+      fi
+
       # On ANY unexpected exit before we reach the explicit done/failed writes, mark
       # failed so a poller never sees a stuck "building" after the process died.
       trap 'rc=$?; if [ "$rc" -ne 0 ]; then write_status failed "scooter-apply-module exited $rc"; fi' EXIT
