@@ -1,4 +1,9 @@
-{ pkgs, lib, n2c, agentHost, agent, ... }:
+{ pkgs, lib, n2c, agentHost, agent
+  # Bake the `claude` CLI (claude-code) onto PATH so goose's claude-code provider
+  # can shell out to it (subscription auth via a mounted ~/.claude credential). Off
+  # by default to keep the image lean (Bedrock/anthropic providers don't need it).
+, withClaudeCode ? false
+, ... }:
 
 # OCI image for the agent-host. Includes the node app (goose wrapped onto PATH
 # via the package) + cacert. It talks to the K8s API in-cluster (provisioner +
@@ -24,6 +29,10 @@ let
   # reused — an app-only change no longer touches them.
   gooseLayer = n2c.buildLayer { deps = [ agent ]; };       # goose-cli (~855MB)
   nodeLayer = n2c.buildLayer { deps = [ pkgs.nodejs ]; };  # nodejs (~254MB)
+
+  # Optional claude-code CLI (its own layer, only when withClaudeCode).
+  claudeCode = pkgs.claude-code;
+  claudeLayer = n2c.buildLayer { deps = [ claudeCode ]; };
 in
 {
   image = n2c.buildImage {
@@ -32,13 +41,14 @@ in
 
     # Pre-built stable layers first; maxLayers auto-splits the remaining closure
     # (cacert, coreutils, the small app) so the app lands in its own thin layer.
-    layers = [ gooseLayer nodeLayer ];
+    layers = [ gooseLayer nodeLayer ] ++ lib.optional withClaudeCode claudeLayer;
     maxLayers = 50;
 
     copyToRoot = [
       (pkgs.buildEnv {
         name = "agent-host-root";
-        paths = [ agentHost pkgs.cacert pkgs.coreutils pkgs.bashInteractive ];
+        paths = [ agentHost pkgs.cacert pkgs.coreutils pkgs.bashInteractive ]
+          ++ lib.optional withClaudeCode claudeCode;
         pathsToLink = [ "/bin" "/etc/ssl" ];
       })
       tmpdirs
