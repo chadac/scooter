@@ -30,6 +30,23 @@
   };
 
   outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs }:
+    let
+      # The built-in agent skills: every ./skills/*.md read into the
+      # `filename -> content` attrset the platform module's `agent.skills` option
+      # expects (rendered to the agent-skills ConfigMap, mounted at SKILLS_DIR,
+      # assembled into each conversation's .goosehints). The module default is `{}`
+      # (a kubenix module can't read a flake-relative dir), so a deploy that wants
+      # the shipped skills threads THESE in — the default `platform` render below
+      # does, and it's exposed as `lib.scooterSkills` for external deployers. System-
+      # independent (pure file reads), so defined once here on nixpkgs.lib.
+      scooterSkills =
+        let dir = ./skills; l = nixpkgs.lib;
+        in l.mapAttrs' (name: _: {
+          inherit name; # keep the .md filename as the ConfigMap key
+          value = builtins.readFile (dir + "/${name}");
+        }) (l.filterAttrs (n: t: t == "regular" && l.hasSuffix ".md" n)
+          (builtins.readDir dir));
+    in
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
@@ -137,6 +154,7 @@
               agentSandbox = {
                 agentHostImage = "agent-host:latest";
                 sandboxImage = "agent-sandbox-os:latest";
+                agent.skills = scooterSkills; # ship the ./skills/*.md set
                 fakeAgent = true; # dummy agent for cluster e2e (no model needed)
                 broker = {
                   enable = true;
@@ -210,6 +228,12 @@
         };
 
       flake = {
+        # The built-in agent skills as a `filename -> content` attrset, for a host
+        # flake to thread into `agentSandbox.agent.skills` (so a custom deploy ships
+        # the same skills the default render does). e.g.
+        #   agentSandbox.agent.skills = scooter.lib.scooterSkills;
+        lib.scooterSkills = scooterSkills;
+
         # kubenix modules: SandboxTemplate / SandboxWarmPool / Sandbox generators
         # (+ gateway/broker/webhooks Deployments, post-PoC). See modules/.
         kubenixModules.agentSandbox = ./modules;
