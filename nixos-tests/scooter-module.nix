@@ -49,7 +49,9 @@ let
     modulesPath = reconvergeInputs.modulesSrc;
     system = pkgs.system;
     extraModules = [
-      ({ lib, ... }: { programs.scooterModule.nixpkgs = lib.mkForce (toString nixpkgsSrc); })
+      # base-config.nix now force-sets programs.scooterModule.{enable,nixpkgs} itself
+      # (so scooter-rebuild stays on PATH across the re-converge), so we no longer set
+      # nixpkgs here — a second mkForce would conflict.
       ./fixtures/keep-backdoor.nix
       "${scooterFixture}/module.nix"
     ];
@@ -120,6 +122,17 @@ pkgs.testers.runNixOSTest {
     assert "Hello, world!" in out, f"injected lazy tool didn't run: {out!r}"
     # ...and the injected systemd service is active (full module power applied).
     machine.wait_for_unit("scooter-demo-service.service")
+
+    # REGRESSION (scooter-rebuild-across-reconverge): the sandbox's OWN rebuild tools
+    # must SURVIVE the switch — before the fix, base-config didn't keep
+    # programs.scooterModule enabled, so scooter-rebuild / scooter-apply-module /
+    # scooter-env-status dropped off PATH after the first re-converge and the agent
+    # could no longer rebuild its environment.
+    machine.succeed("command -v scooter-rebuild")
+    machine.succeed("command -v scooter-apply-module")
+    machine.succeed("command -v scooter-env-status")
+    # They resolve into the NEW current-system profile (not a stale generation).
+    machine.succeed("test \"$(command -v scooter-rebuild)\" = /run/current-system/sw/bin/scooter-rebuild")
 
     # PID 1 (systemd) survived the switch — same process, same start time.
     machine.succeed("test \"$(ps -o comm= -p 1)\" = systemd")

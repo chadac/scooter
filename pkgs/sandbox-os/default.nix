@@ -43,6 +43,16 @@ let
   # `builtins.path` derivation and use ITS path verbatim for both the script
   # (scooterModule.nixpkgs) and the closure (extraDependencies).
   nixpkgsSource = builtins.path { path = pkgs.path; name = "source"; };
+  # The bare store-path STRING of that source, CONTEXT-FREE. The refs below are
+  # embedded verbatim into the baked lazy-tool shims + the scooter-apply-module
+  # script. base-config.nix (the runtime re-converge) discards context on the same
+  # value, so these MUST match: if the image kept the store CONTEXT here, its baked
+  # lazy tools would carry `nixpkgsSource` as a build INPUT while a re-converge's
+  # (context-free) would not → different derivations → the first re-converge rebuilds
+  # every lazy tool + system-path from source (the ~10min toolchain refetch this
+  # comment block warns about). The source object is still shipped offline via
+  # `system.extraDependencies` below (where it keeps its context), so the path exists.
+  nixpkgsSourceStr = builtins.unsafeDiscardStringContext (toString nixpkgsSource);
 
   nixos = pkgs.nixos ({ lib, ... }: {
     imports = [ ../../modules/sandbox-os ] ++ extraModules;
@@ -63,8 +73,8 @@ let
     # (a bare vs path: format mismatch) makes the
     # first re-converge rebuild system-path + re-fetch the toolchain (~10min)
     # instead of being a near-noop diff against the baked store.
-    programs.lazyTools.defaultNixpkgs = lib.mkForce "path:${nixpkgsSource}";
-    devEnvNix.nixpkgs = lib.mkForce "path:${nixpkgsSource}";
+    programs.lazyTools.defaultNixpkgs = lib.mkForce "path:${nixpkgsSourceStr}";
+    devEnvNix.nixpkgs = lib.mkForce "path:${nixpkgsSourceStr}";
 
     # Runtime re-converge: the pod applies a mounted .scooter/module.nix (a NixOS
     # module that declares its own tools/services, e.g. example-review) via
@@ -72,7 +82,7 @@ let
     # BARE store path (no `path:` prefix — that's a flake ref, not importable).
     programs.scooterModule = {
       enable = lib.mkDefault true;
-      nixpkgs = lib.mkForce "${nixpkgsSource}";
+      nixpkgs = lib.mkForce nixpkgsSourceStr;
     };
     # Ship the SAME source object the script references (see nixpkgsSource above).
     # The in-pod re-converge `nix build` imports it — offline, no fetch.
