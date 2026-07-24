@@ -105,6 +105,16 @@
             inherit pkgs lib n2c webhooks;
           };
 
+          # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
+          # spawning a fresh conversation per run via the agent-host /agui. See
+          # services/scheduler/ + todo/SCHEDULED_TASKS.md.
+          scheduler = pkgs.callPackage ./services/scheduler { };
+
+          # Scheduler OCI image.
+          schedulerImage = import ./pkgs/scheduler-image {
+            inherit pkgs lib n2c scheduler;
+          };
+
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
             inherit pkgs lib n2c broker;
@@ -185,7 +195,7 @@
             # pkgs/sandbox-image was retired).
             default = sandboxOsImage.image;
 
-            inherit agentHost ui broker webhooks;
+            inherit agentHost ui broker webhooks scheduler;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
 
             # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox
@@ -204,6 +214,9 @@
 
             # nix build .#webhooks-image  ->  webhooks OCI image
             webhooks-image = webhooksImage.image;
+
+            # nix build .#scheduler-image  ->  scheduler OCI image
+            scheduler-image = schedulerImage.image;
 
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = agentHostImageBuilder.image;

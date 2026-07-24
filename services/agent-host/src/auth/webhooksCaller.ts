@@ -22,9 +22,10 @@ import type { IncomingMessage } from "node:http";
 export type WebhooksCallerVerifier = (req: IncomingMessage) => Promise<boolean>;
 
 export interface WebhooksVerifierConfig {
-  /** The expected SA username, e.g. `system:serviceaccount:agent-sandbox:agent-webhooks`.
-   *  Empty/undefined → verification is DISABLED (always false — owner never honored;
-   *  the safe default when the trust chain isn't configured). */
+  /** The trusted SA username(s) that may set `owner`, COMMA-SEPARATED — e.g.
+   *  `system:serviceaccount:agent-sandbox:agent-webhooks,system:serviceaccount:agent-sandbox:agent-scheduler`.
+   *  Both webhooks and the scheduler spawn owner-set conversations. A single value
+   *  stays valid. Empty/undefined → verification DISABLED (owner never honored). */
   expectedServiceAccount?: string;
   /** The token audience the webhooks SA token is projected for (must match). */
   audience?: string;
@@ -70,15 +71,23 @@ function defaultReviewToken(): (token: string, audience?: string) => Promise<{ a
  * TokenReview and checks the SA username matches.
  */
 export function createWebhooksCallerVerifier(config: WebhooksVerifierConfig): WebhooksCallerVerifier {
-  const expected = config.expectedServiceAccount?.trim();
-  if (!expected) return async () => false;
+  // A COMMA-SEPARATED set of trusted SA usernames (webhooks AND scheduler both
+  // spawn conversations that set `owner`). Empty/undefined → verification disabled
+  // (owner never honored). A single value stays valid (back-compat).
+  const expected = new Set(
+    (config.expectedServiceAccount ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  if (expected.size === 0) return async () => false;
   const review = config.reviewToken ?? defaultReviewToken();
   return async (req) => {
     const token = bearer(req);
     if (!token) return false;
     try {
       const { authenticated, username } = await review(token, config.audience);
-      return authenticated && username === expected;
+      return authenticated && username !== undefined && expected.has(username);
     } catch {
       // TokenReview unreachable / RBAC missing → treat as untrusted (owner ignored).
       return false;

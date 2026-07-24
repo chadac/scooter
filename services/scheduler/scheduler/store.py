@@ -1,0 +1,131 @@
+"""Async SQLAlchemy store for scheduled tasks + runs (SQLite dev / Postgres prod)."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from .cron import next_run, validate
+from .models import Base, RunRow, TaskRow, new_id
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Store:
+    def __init__(self, dsn: str):
+        self._engine = create_async_engine(dsn, future=True)
+        self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+
+    async def init(self) -> None:
+        """Create tables if absent (dev/SQLite). In prod a migration owns the schema;
+        create_all is idempotent and harmless."""
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def dispose(self) -> None:
+        await self._engine.dispose()
+
+    # --- tasks --------------------------------------------------------------
+
+    async def create_task(
+        self, *, title: str, prompt: str, cron: str, timezone_: str, owner: str, enabled: bool
+    ) -> TaskRow:
+        """Persist a task. Validates cron+tz (raises InvalidSchedule → API 422) and
+        computes the first next_run_at."""
+        validate(cron, timezone_)
+        now = _utcnow()
+        row = TaskRow(
+            id=new_id(), title=title, prompt=prompt, cron=cron, timezone=timezone_,
+            owner=owner, enabled=enabled,
+            next_run_at=next_run(cron, timezone_, now) if enabled else None,
+        )
+        async with self._session() as s:
+            s.add(row)
+            await s.commit()
+            await s.refresh(row)
+        return row
+
+    async def list_tasks(self) -> list[TaskRow]:
+        async with self._session() as s:
+            return list((await s.scalars(select(TaskRow).order_by(TaskRow.created_at.desc()))).all())
+
+    async def get_task(self, task_id: str) -> TaskRow | None:
+        async with self._session() as s:
+            return await s.get(TaskRow, task_id)
+
+    async def patch_task(self, task_id: str, **fields) -> TaskRow | None:
+        """Update the given fields. If cron/timezone/enabled change, recompute
+        next_run_at (validate first)."""
+        async with self._session() as s:
+            row = await s.get(TaskRow, task_id)
+            if row is None:
+                return None
+            for k, v in fields.items():
+                if v is not None:
+                    setattr(row, k, v)
+            if row.enabled:
+                validate(row.cron, row.timezone)
+                row.next_run_at = next_run(row.cron, row.timezone, _utcnow())
+            else:
+                row.next_run_at = None
+            row.updated_at = _utcnow()
+            await s.commit()
+            await s.refresh(row)
+            return row
+
+    async def delete_task(self, task_id: str) -> bool:
+        async with self._session() as s:
+            row = await s.get(TaskRow, task_id)
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    # --- scheduler loop -----------------------------------------------------
+
+    async def due_tasks(self, now: datetime) -> list[TaskRow]:
+        """Enabled tasks whose next_run_at is due (<= now). On Postgres this uses
+        FOR UPDATE SKIP LOCKED so multiple replicas don't double-fire (SQLite ignores
+        the lock clause — fine for single-replica dev)."""
+        stmt = (
+            select(TaskRow)
+            .where(TaskRow.enabled.is_(True), TaskRow.next_run_at.is_not(None), TaskRow.next_run_at <= now)
+            .with_for_update(skip_locked=True)
+        )
+        async with self._session() as s:
+            return list((await s.scalars(stmt)).all())
+
+    async def reschedule(self, task_id: str, *, last_run_at: datetime, next_run_at: datetime) -> None:
+        async with self._session() as s:
+            await s.execute(
+                update(TaskRow).where(TaskRow.id == task_id).values(last_run_at=last_run_at, next_run_at=next_run_at)
+            )
+            await s.commit()
+
+    # --- runs ---------------------------------------------------------------
+
+    async def start_run(self, task_id: str) -> str:
+        run_id = new_id()
+        async with self._session() as s:
+            s.add(RunRow(id=run_id, task_id=task_id, status="spawning"))
+            await s.commit()
+        return run_id
+
+    async def finish_run(self, run_id: str, *, conversation_id: str | None, status: str, error: str | None) -> None:
+        async with self._session() as s:
+            await s.execute(
+                update(RunRow).where(RunRow.id == run_id).values(
+                    conversation_id=conversation_id, status=status, error=error
+                )
+            )
+            await s.commit()
+
+    async def list_runs(self, task_id: str, limit: int = 50) -> list[RunRow]:
+        async with self._session() as s:
+            stmt = select(RunRow).where(RunRow.task_id == task_id).order_by(RunRow.fired_at.desc()).limit(limit)
+            return list((await s.scalars(stmt)).all())
