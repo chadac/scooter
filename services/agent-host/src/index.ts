@@ -39,6 +39,8 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
+import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
+import type { SchedulerToolsWiring } from "./agent/schedulerTools.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
 import { parseScooterEnv } from "./config/scooterEnv.js";
@@ -573,11 +575,26 @@ export async function main(
       }
     : undefined;
 
+  // Scheduled-task tools (list/search/view/create/edit/delete) — wired when a
+  // scheduler service URL is configured. Every call is scoped to the conversation's
+  // OWNER (sessions.get(id).owner), which the HTTP client forwards as x-auth-user so
+  // the scheduler attributes/scopes tasks to that user. No owner → the tools refuse.
+  const schedulerToolsWiring: SchedulerToolsWiring | undefined = process.env.SCHEDULER_URL
+    ? {
+        client: createHttpSchedulerClient({
+          baseUrl: process.env.SCHEDULER_URL,
+          relayKey: process.env.SCHEDULER_RELAY_KEY || undefined,
+        }),
+        owner: async (id: string) => sessions.get(id as SessionId)?.owner ?? null,
+      }
+    : undefined;
+
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
     modelToolsWiring !== undefined ||
-    resourceToolsWiring !== undefined
+    resourceToolsWiring !== undefined ||
+    schedulerToolsWiring !== undefined
       ? createMcpEndpoint({
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
@@ -586,6 +603,7 @@ export async function main(
           jobs: jobManager,
           models: modelToolsWiring,
           resources: resourceToolsWiring,
+          scheduler: schedulerToolsWiring,
         })
       : undefined;
 

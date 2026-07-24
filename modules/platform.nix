@@ -680,6 +680,13 @@ in
                   # Static sub->email seed for the learned identity store ("k=v,k=v").
                   { name = "AUTH_SUB_EMAIL_MAP";
                     value = lib.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.auth.subEmailMap); }
+                ++ lib.optionals cfg.scheduler.enable ([
+                  # Scheduled-task MCP tools (list/search/view/create/edit/delete): the
+                  # agent-host proxies to the scheduler service, scoped to the
+                  # conversation owner. Only wired when the scheduler is deployed.
+                  { name = "SCHEDULER_URL"; value = "http://agent-scheduler.${cfg.namespace}.svc.cluster.local:8080"; }
+                ] ++ lib.optional (cfg.scheduler.relayKey != "")
+                    { name = "SCHEDULER_RELAY_KEY"; value = cfg.scheduler.relayKey; })
                 ++ lib.optional (!cfg.fakeAgent)
                   # Real `goose acp`. The provider selects the model backend.
                   { name = "GOOSE_PROVIDER"; value = cfg.agent.provider; }

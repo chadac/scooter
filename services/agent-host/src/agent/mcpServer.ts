@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { JobManager } from "../session/jobManager.js";
 import type { ConversationLink } from "../session/manager.js";
 import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
+import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
 import {
   handleShowSandboxResources,
@@ -124,6 +125,7 @@ function buildServer(
   jobs?: JobManager,
   models?: ModelToolsWiring,
   resources?: SandboxResourceToolsWiring,
+  scheduler?: SchedulerToolsWiring,
 ): McpServer {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (jobs) {
@@ -249,6 +251,10 @@ function buildServer(
       async (args) => handleSetSandboxResources(resources, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
   }
+  if (scheduler) {
+    // The agent manages its OWN scheduled tasks (scoped to this conversation's owner).
+    registerSchedulerTools(server, scheduler, conversationId);
+  }
   return server;
 }
 
@@ -282,6 +288,10 @@ export function createMcpEndpoint(deps: {
    *  agent can right-size its own sandbox (the broker owns + applies the size). Omit
    *  to leave them off (e.g. a fake/local sandbox can't resize). */
   resources?: SandboxResourceToolsWiring;
+  /** When provided, exposes the scheduled-task tools (list/search/view/create/edit/
+   *  delete) — the agent manages its OWN scheduled tasks via the scheduler service.
+   *  Omit to leave them off (e.g. no scheduler deployed). */
+  scheduler?: SchedulerToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
@@ -298,7 +308,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources);
+      const server = buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },
