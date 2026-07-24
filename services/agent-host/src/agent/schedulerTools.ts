@@ -41,23 +41,29 @@ export interface TaskRun {
   fired_at: string;
 }
 
+/** The scope a scheduler call runs under: a specific owner, or `null` for the
+ *  unowned/anonymous bucket (the client sends an empty x-auth-user, and the
+ *  scheduler scopes to unowned tasks). Both are valid — a null owner is not an
+ *  error, just a different scope. */
+export type Owner = string | null;
+
 /** HTTP client to the scheduler service. Injectable for tests. Every call is made
- *  on behalf of `owner` (the conversation owner) — the client sets the x-auth-user
- *  header so the scheduler scopes/attributes the task to that user. */
+ *  on behalf of `owner` (the conversation owner, or null for unowned) — the client
+ *  sets the x-auth-user header so the scheduler scopes/attributes the task. */
 export interface SchedulerClient {
-  create(owner: string, body: { title: string; prompt: string; cron: string; timezone?: string; enabled?: boolean }): Promise<ScheduledTask>;
-  list(owner: string): Promise<ScheduledTask[]>;
-  get(owner: string, id: string): Promise<ScheduledTask | null>;
-  patch(owner: string, id: string, body: Partial<Pick<ScheduledTask, "title" | "prompt" | "cron" | "timezone" | "enabled">>): Promise<ScheduledTask | null>;
-  del(owner: string, id: string): Promise<boolean>;
-  runs(owner: string, id: string): Promise<TaskRun[]>;
+  create(owner: Owner, body: { title: string; prompt: string; cron: string; timezone?: string; enabled?: boolean }): Promise<ScheduledTask>;
+  list(owner: Owner): Promise<ScheduledTask[]>;
+  get(owner: Owner, id: string): Promise<ScheduledTask | null>;
+  patch(owner: Owner, id: string, body: Partial<Pick<ScheduledTask, "title" | "prompt" | "cron" | "timezone" | "enabled">>): Promise<ScheduledTask | null>;
+  del(owner: Owner, id: string): Promise<boolean>;
+  runs(owner: Owner, id: string): Promise<TaskRun[]>;
 }
 
 export interface SchedulerToolsWiring {
   client: SchedulerClient;
-  /** Resolve THIS conversation's owner — tasks are scoped to it. Null → the agent
-   *  can't manage tasks (no owner to scope to); the tools return a clear message. */
-  owner(conversationId: string): Promise<string | null>;
+  /** Resolve THIS conversation's owner — tasks are scoped to it. Null is fine: the
+   *  tools then manage the unowned/anonymous bucket (no refusal). */
+  owner(conversationId: string): Promise<Owner>;
 }
 
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -74,7 +80,6 @@ function fmt(t: ScheduledTask): string {
 
 export async function handleList(w: SchedulerToolsWiring, conversationId: string): Promise<ToolResult> {
   const owner = await w.owner(conversationId);
-  if (!owner) return err("This conversation has no owner, so scheduled tasks can't be managed here.");
   const tasks = await w.client.list(owner);
   if (tasks.length === 0) return ok("You have no scheduled tasks.");
   return ok(`Your scheduled tasks (${tasks.length}):\n` + tasks.map(fmt).join("\n"));
@@ -82,7 +87,6 @@ export async function handleList(w: SchedulerToolsWiring, conversationId: string
 
 export async function handleSearch(w: SchedulerToolsWiring, conversationId: string, args: { query: string }): Promise<ToolResult> {
   const owner = await w.owner(conversationId);
-  if (!owner) return err("This conversation has no owner, so scheduled tasks can't be managed here.");
   const q = (args.query ?? "").toLowerCase().trim();
   if (!q) return err("search: provide a non-empty query.");
   const hits = (await w.client.list(owner)).filter(
@@ -94,7 +98,6 @@ export async function handleSearch(w: SchedulerToolsWiring, conversationId: stri
 
 export async function handleView(w: SchedulerToolsWiring, conversationId: string, args: { id: string }): Promise<ToolResult> {
   const owner = await w.owner(conversationId);
-  if (!owner) return err("This conversation has no owner, so scheduled tasks can't be managed here.");
   const t = await w.client.get(owner, args.id);
   if (!t) return err(`No scheduled task ${args.id} (or it isn't yours).`);
   const runs = await w.client.runs(owner, args.id);
@@ -108,7 +111,6 @@ export async function handleCreate(
   args: { title: string; prompt: string; cron: string; timezone?: string; enabled?: boolean },
 ): Promise<ToolResult> {
   const owner = await w.owner(conversationId);
-  if (!owner) return err("This conversation has no owner, so scheduled tasks can't be created here.");
   try {
     const t = await w.client.create(owner, args);
     return ok(`Created scheduled task ${t.id} "${t.title}" (cron="${t.cron}", tz=${t.timezone}). Next run: ${t.next_run_at ?? "—"}.`);
@@ -123,7 +125,6 @@ export async function handleEdit(
   args: { id: string; title?: string; prompt?: string; cron?: string; timezone?: string; enabled?: boolean },
 ): Promise<ToolResult> {
   const owner = await w.owner(conversationId);
-  if (!owner) return err("This conversation has no owner, so scheduled tasks can't be edited here.");
   const { id, ...fields } = args;
   try {
     const t = await w.client.patch(owner, id, fields);
@@ -136,7 +137,6 @@ export async function handleEdit(
 
 export async function handleDelete(w: SchedulerToolsWiring, conversationId: string, args: { id: string }): Promise<ToolResult> {
   const owner = await w.owner(conversationId);
-  if (!owner) return err("This conversation has no owner, so scheduled tasks can't be deleted here.");
   const gone = await w.client.del(owner, args.id);
   return gone ? ok(`Deleted scheduled task ${args.id}.`) : err(`No scheduled task ${args.id} (or it isn't yours).`);
 }

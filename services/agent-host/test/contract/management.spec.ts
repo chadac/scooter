@@ -789,16 +789,18 @@ describe("management API", () => {
       owner: "alice", enabled: true, next_run_at: null, last_run_at: null, ...over,
     });
 
-    /** A fake SchedulerClient recording the owner it was called for. */
+    /** A fake SchedulerClient recording the owner it was called for. A null owner and
+     *  "" are the same unowned bucket (the caller sends null for anonymous). */
     function fakeScheduler(seed: Array<ReturnType<typeof task>> = []) {
-      const calls: Array<{ method: string; owner: string }> = [];
+      const calls: Array<{ method: string; owner: string | null }> = [];
+      const owns = (t: { owner: string }, owner: string | null) => t.owner === (owner ?? "");
       const client = {
-        async list(owner: string) { calls.push({ method: "list", owner }); return seed.filter((t) => t.owner === owner); },
-        async get(owner: string, id: string) { calls.push({ method: "get", owner }); return seed.find((t) => t.id === id && t.owner === owner) ?? null; },
-        async create(owner: string, body: Record<string, unknown>) { calls.push({ method: "create", owner }); return task({ ...body, owner, id: "new" }); },
-        async patch(owner: string, id: string, body: Record<string, unknown>) { calls.push({ method: "patch", owner }); const t = seed.find((x) => x.id === id && x.owner === owner); return t ? task({ ...t, ...body }) : null; },
-        async del(owner: string, id: string) { calls.push({ method: "del", owner }); return seed.some((t) => t.id === id && t.owner === owner); },
-        async runs(owner: string) { calls.push({ method: "runs", owner }); return []; },
+        async list(owner: string | null) { calls.push({ method: "list", owner }); return seed.filter((t) => owns(t, owner)); },
+        async get(owner: string | null, id: string) { calls.push({ method: "get", owner }); return seed.find((t) => t.id === id && owns(t, owner)) ?? null; },
+        async create(owner: string | null, body: Record<string, unknown>) { calls.push({ method: "create", owner }); return task({ ...body, owner: owner ?? "", id: "new" }); },
+        async patch(owner: string | null, id: string, body: Record<string, unknown>) { calls.push({ method: "patch", owner }); const t = seed.find((x) => x.id === id && owns(x, owner)); return t ? task({ ...t, ...body }) : null; },
+        async del(owner: string | null, id: string) { calls.push({ method: "del", owner }); return seed.some((t) => owns(t, owner) && t.id === id); },
+        async runs(owner: string | null) { calls.push({ method: "runs", owner }); return []; },
       };
       return { client, calls };
     }
@@ -811,10 +813,13 @@ describe("management API", () => {
       expect(res.status).toBe(501);
     });
 
-    it("401s an anonymous caller (no owner to scope to)", async () => {
-      const { client } = fakeScheduler();
+    it("anonymous caller uses the unowned bucket (null owner is fine, not a refusal)", async () => {
+      const { client, calls } = fakeScheduler([task({ owner: "" }), task({ id: "t2", owner: "alice" })]);
       const res = await call(mk(client), "GET", "/scheduled-tasks");
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(200);
+      expect(calls[0]).toEqual({ method: "list", owner: null }); // scopeOwner -> null for anon
+      const ids = (res.json as { tasks: Array<{ id: string }> }).tasks.map((t) => t.id);
+      expect(ids).toEqual(["t1"]); // only the unowned task
     });
 
     it("GET lists only the caller's tasks (scoped by x-auth-user)", async () => {

@@ -5,7 +5,7 @@
  * manage its own owner's tasks). Optional relay key as Bearer.
  */
 
-import type { SchedulerClient, ScheduledTask, TaskRun } from "./schedulerTools.js";
+import type { SchedulerClient, ScheduledTask, TaskRun, Owner } from "./schedulerTools.js";
 
 export interface HttpSchedulerClientDeps {
   baseUrl: string;
@@ -17,13 +17,15 @@ export function createHttpSchedulerClient(deps: HttpSchedulerClientDeps): Schedu
   const doFetch = deps.fetchImpl ?? fetch;
   const base = deps.baseUrl.replace(/\/$/, "");
 
-  const headers = (owner: string): Record<string, string> => {
-    const h: Record<string, string> = { "content-type": "application/json", "x-auth-user": owner };
+  // A null owner is the unowned/anonymous scope — send an empty x-auth-user so the
+  // scheduler scopes to unowned tasks (not a refusal).
+  const headers = (owner: Owner): Record<string, string> => {
+    const h: Record<string, string> = { "content-type": "application/json", "x-auth-user": owner ?? "" };
     if (deps.relayKey) h.authorization = `Bearer ${deps.relayKey}`;
     return h;
   };
 
-  const req = async (owner: string, method: string, path: string, body?: unknown): Promise<Response> =>
+  const req = async (owner: Owner, method: string, path: string, body?: unknown): Promise<Response> =>
     doFetch(`${base}${path}`, { method, headers: headers(owner), body: body === undefined ? undefined : JSON.stringify(body) });
 
   return {
