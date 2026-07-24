@@ -73,8 +73,14 @@ function imageBlock(b: Extract<SdkContentBlock, { type: "image" }>): ContentBloc
 /**
  * Map ONE SDK message to zero-or-more normalized SessionUpdates the bridge
  * consumes. "result" yields [] here (the client handles the terminal reason).
+ *
+ * `partialsEnabled` — when the query runs with includePartialMessages (our default),
+ * TEXT and THINKING already arrive incrementally as `stream_event` deltas, so the
+ * final `assistant` message MUST NOT re-emit them or every reply is duplicated (the
+ * "message sent twice" bug). tool_use / tool_result / image do NOT come as deltas,
+ * so the assistant message is still their only source.
  */
-export function sdkMessageToUpdates(msg: SdkMessage): SessionUpdate[] {
+export function sdkMessageToUpdates(msg: SdkMessage, partialsEnabled = true): SessionUpdate[] {
   switch (msg.type) {
     case "assistant": {
       const out: SessionUpdate[] = [];
@@ -82,10 +88,12 @@ export function sdkMessageToUpdates(msg: SdkMessage): SessionUpdate[] {
       for (const block of content) {
         switch (block.type) {
           case "text":
-            if (block.text) out.push({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: block.text } });
+            // Skip when partials are on — the stream_event text_deltas already
+            // emitted this text; re-emitting the full block double-sends the reply.
+            if (block.text && !partialsEnabled) out.push({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: block.text } });
             break;
           case "thinking":
-            if (block.thinking) out.push({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: block.thinking } });
+            if (block.thinking && !partialsEnabled) out.push({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: block.thinking } });
             break;
           case "tool_use":
             // A tool call — its id correlates the later tool_result. rawInput

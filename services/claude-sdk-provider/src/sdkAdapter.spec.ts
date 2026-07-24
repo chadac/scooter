@@ -12,17 +12,47 @@ import { describe, it, expect } from "vitest";
 import { sdkMessageToUpdates, SANDBOX_MCP_PREFIX, type SdkMessage } from "./sdkAdapter.js";
 
 describe("sdkMessageToUpdates", () => {
-  it("maps an assistant text block to agent_message_chunk", () => {
+  // With partials OFF, the assistant message is the ONLY source of text/thinking.
+  it("maps an assistant text block to agent_message_chunk (partials off)", () => {
     const msg: SdkMessage = { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } };
-    expect(sdkMessageToUpdates(msg)).toEqual([
+    expect(sdkMessageToUpdates(msg, false)).toEqual([
       { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hello" } },
     ]);
   });
 
-  it("maps a thinking block to agent_thought_chunk", () => {
+  it("maps a thinking block to agent_thought_chunk (partials off)", () => {
     const msg: SdkMessage = { type: "assistant", message: { content: [{ type: "thinking", thinking: "hmm" }] } };
-    expect(sdkMessageToUpdates(msg)).toEqual([
+    expect(sdkMessageToUpdates(msg, false)).toEqual([
       { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } },
+    ]);
+  });
+
+  // REGRESSION (double-send): with partials ON (our default), text + thinking arrive
+  // as stream_event deltas, so the final assistant message must NOT re-emit them —
+  // else every reply is sent twice. tool_use etc. are still emitted from it.
+  it("does NOT re-emit assistant text/thinking when partials are on (no double-send)", () => {
+    const msg: SdkMessage = {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello" }, { type: "thinking", thinking: "hmm" }] },
+    };
+    expect(sdkMessageToUpdates(msg /* partialsEnabled defaults true */)).toEqual([]);
+  });
+
+  it("emits text/thinking ONCE via stream_event deltas (the live path)", () => {
+    const textDelta: SdkMessage = { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hel" } } } as SdkMessage;
+    expect(sdkMessageToUpdates(textDelta)).toEqual([
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hel" } },
+    ]);
+  });
+
+  it("still emits tool_use from the assistant message even with partials on", () => {
+    const msg: SdkMessage = {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "running" }, { type: "tool_use", id: "tu_x", name: `${SANDBOX_MCP_PREFIX}bash`, input: { command: "ls" } }] },
+    };
+    // text skipped (deltas cover it), tool_use kept (not a delta).
+    expect(sdkMessageToUpdates(msg)).toEqual([
+      { sessionUpdate: "tool_call", toolCallId: "tu_x", title: "bash", rawInput: { command: "ls" } },
     ]);
   });
 
@@ -74,8 +104,10 @@ describe("sdkMessageToUpdates", () => {
         ],
       },
     };
-    const out = sdkMessageToUpdates(msg);
-    expect(out.map((u) => u.sessionUpdate)).toEqual(["agent_message_chunk", "tool_call"]);
+    // partials ON (default): text is skipped (deltas cover it), tool_call kept.
+    expect(sdkMessageToUpdates(msg).map((u) => u.sessionUpdate)).toEqual(["tool_call"]);
+    // partials OFF: both, in order.
+    expect(sdkMessageToUpdates(msg, false).map((u) => u.sessionUpdate)).toEqual(["agent_message_chunk", "tool_call"]);
   });
 
   it("maps a streaming text_delta to agent_message_chunk", () => {

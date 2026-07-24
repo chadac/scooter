@@ -29,6 +29,11 @@ import { sdkMessageToUpdates, type SdkMessage } from "./sdkAdapter.js";
 import { createSandboxMcpServer } from "./sandboxMcp.js";
 import { debug, debugError } from "./debug.js";
 
+// Stream text/thinking as deltas (responsive AG-UI). MUST be threaded into
+// sdkMessageToUpdates so the final `assistant` message doesn't ALSO re-emit the
+// text — else every reply is sent twice (see sdkAdapter's partialsEnabled).
+const INCLUDE_PARTIALS = true;
+
 export interface SdkAcpClientDeps {
   /** Subscription OAuth token (`claude setup-token`). Passed to the SDK as
    *  env.CLAUDE_CODE_OAUTH_TOKEN so its `claude` subprocess authenticates. */
@@ -101,7 +106,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // permission flow (onPermissionRequest) is the UI gate. permissionMode
     // "acceptEdits"/"default" — allow our aliased tools without a CLI prompt.
     allowedTools: Object.values(toolAliases),
-    includePartialMessages: true, // stream text deltas for responsive AG-UI
+    includePartialMessages: INCLUDE_PARTIALS, // stream text deltas for responsive AG-UI
     // Surface the spawned claude CLI's stderr — otherwise a CLI failure (bad flag,
     // auth, version mismatch) is an opaque "exited with code 1". Always logged.
     stderr: (data: string) => debugError("[sdk:claude-stderr]", data),
@@ -150,7 +155,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
             stopReason = resultStopReason(msg as { subtype?: string; is_error?: boolean });
             continue;
           }
-          for (const u of sdkMessageToUpdates(msg as SdkMessage)) {
+          for (const u of sdkMessageToUpdates(msg as SdkMessage, INCLUDE_PARTIALS)) {
             for (const cb of updateCbs) cb(sessionId, u);
           }
         }
