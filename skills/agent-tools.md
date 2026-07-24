@@ -29,6 +29,7 @@ triggers:
 - read a web page
 - acknowledge the request
 - reply to the requester
+- tool not available
 ---
 
 # Your built-in tools — PREFER THESE over shell/curl
@@ -44,23 +45,34 @@ tools.
 If a tool ever returns an error, READ it and fix the cause — do NOT blindly retry
 (that duplicates comments/messages). The tool tells you what actually went wrong.
 
+**Names:** call each tool by the name it shows in **your own tool list** — that is
+the authoritative name. The descriptions below identify tools by PURPOSE, not by an
+exact string to type: match the purpose to the tool in your list and call THAT. If a
+call comes back empty or a tool seems missing, re-check your tool list and use the
+matching tool — a tool returning nothing does NOT mean "the tools are gone," and it
+is NEVER a reason to fall back to raw `curl`/shell for something a tool does. Most of
+all **Slack**: a raw post lands in the wrong (root) channel because it doesn't carry
+the thread context the Slack tool sets for you.
+
 ## Responding where the request came from
 
 When you were triggered by a Slack thread / GitHub PR / GitLab MR / Jira issue,
-the target is **already known** — you only supply the message body:
+the target is **already known** — you only supply the message body. The tools for
+this (by purpose — find them in your tool list):
 
-- **`slack_respond(text)`** — post to the current Slack thread. (Optional
-  `thread_ts` to override; you almost never need it.)
-- **`slack_react(emoji)`** — add an emoji reaction to the triggering Slack
-  message (`emoji` is the name WITHOUT colons, e.g. `"eyes"`, `"white_check_mark"`,
+- **Respond in the Slack thread** — post a message to the current Slack thread.
+  The channel + thread are already known; you only provide the text. Use this to
+  acknowledge and to reply. (Do not hand-build a Slack `chat.postMessage` — this
+  tool targets the correct thread; a raw call can leak to the whole channel.)
+- **React to the Slack message** — add an emoji reaction to the triggering Slack
+  message (emoji name WITHOUT colons, e.g. `"eyes"`, `"white_check_mark"`,
   `"tada"`). A quick 👀 to acknowledge or a ✅ when done — cheaper than a reply.
   Don't spam it.
-- **`github_comment(body)`** — comment on the PR/issue this conversation came from.
-  (Optional `in_reply_to` — a review-comment id — to reply inside a PR review
-  thread.)
-- **`gitlab_comment(body)`** — comment on the MR this conversation came from.
-  (Optional `discussion_id` to reply inside a review discussion.)
-- **`jira_comment(body)`** — comment on the Jira issue this conversation came from.
+- **Comment on the GitHub PR/issue** — comment on the PR/issue this conversation
+  came from. (Optional reply-to a review-comment id to reply inside a review thread.)
+- **Comment on the GitLab MR** — comment on the MR this conversation came from.
+  (Optional discussion id to reply inside a review discussion.)
+- **Comment on the Jira issue** — comment on the Jira issue this conversation came from.
 
 Typical flow: **acknowledge first** (a short "on it" via the matching tool), do the
 work, then post your result with the same tool. One acknowledgment, one result —
@@ -68,11 +80,10 @@ don't repeat.
 
 ## Looking things up
 
-- **`web_search(query)`** — search the web (DuckDuckGo instant answers:
-  definitions, abstracts, related links). Good for a quick fact or to find a
-  canonical URL to fetch.
-- **`web_fetch(url)`** — fetch a public web page and get its readable text. Use it
-  on a URL from a search result, a PR/issue link, or docs. (It refuses
+- **Search the web** — DuckDuckGo instant answers (definitions, abstracts, related
+  links). Good for a quick fact or to find a canonical URL to fetch.
+- **Fetch a URL** — fetch a public web page and get its readable text. Use it on a
+  URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)
 
 ## Beyond a comment: the broker proxy (Jira, GitHub, GitLab APIs)
@@ -112,8 +123,15 @@ FULL API path, e.g. `$BROKER_URL/gitlab/api/v4/projects/123/merge_requests`, jus
 as you would against GitLab directly). Each provider proxy is transparent: the
 path after `/<provider>/` is exactly the upstream API path.
 To *comment* on the resource this conversation came from, still prefer the
-`jira_comment` / `github_comment` / `gitlab_comment` tools — they infer the
-target for you. Use the raw broker proxy for everything else.
+Jira / GitHub / GitLab comment tools — they infer the target for you. Use the raw
+broker proxy for everything else.
+
+**Slack is the exception — never post to Slack via the raw broker proxy.** Always
+use the **Respond in the Slack thread** tool. A hand-built `chat.postMessage`
+omits the `thread_ts`, so your message lands in the **root channel** (visible to
+everyone) instead of the thread — a real incident, not a cosmetic bug. The tool
+carries the thread context for you. If it seems unavailable, re-check your tool
+list and use the Slack reply tool there — do not curl Slack.
 
 ## When to still use the shell
 

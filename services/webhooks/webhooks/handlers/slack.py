@@ -167,15 +167,16 @@ def _format_forwarded_message(
     return f"{preamble}\n\n---\n\n{comment_body}{reply_hint}"
 
 
-def _response_instructions(channel: str, thread_ts: str) -> str:
+def _response_instructions() -> str:
     return (
         f"\n\n---\n"
         f"**Response workflow:** First, post an acknowledgment in the Slack thread so the requester knows you've seen it. "
         f"Then work on the task. When finished, post a follow-up message with your results.\n\n"
-        f"To respond in the Slack thread, use the `slack_respond` tool with your message text — "
-        f"the thread ({channel}) is already known, so you only supply the `text`.\n\n"
-        f"(The raw broker endpoint `$BROKER_URL/slack/chat.postMessage` still exists and returns the same errors, "
-        f"but prefer the tool.)"
+        f"To respond, use your Slack reply tool (the one described as 'Respond in the Slack thread') — it already knows "
+        f"this thread, so you only supply the message text. If you're unsure which tool that is, re-check your tool list "
+        f"and use the one for Slack.\n\n"
+        f"Do NOT post to Slack with raw curl / the broker `chat.postMessage` endpoint: a hand-built call omits the "
+        f"thread and lands in the ROOT CHANNEL (visible to everyone) instead of this thread. Always use the tool."
     )
 
 
@@ -365,7 +366,7 @@ async def _handle_mention(event: dict):
     if thread_ts and thread_ts != ts:
         history = await _format_thread_history(channel, thread_ts, up_to_ts=ts)
 
-    reply_hint = _response_instructions(channel, thread_ts)
+    reply_hint = _response_instructions()
     prefix = f"{history}\n---\n\n" if history else ""
     full_message = f"{prefix}Slack message in channel {channel}:\n\n{comment_text}{reply_hint}"
 
