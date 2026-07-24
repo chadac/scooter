@@ -42,6 +42,9 @@ export interface SdkAcpClientDeps {
   systemPrompt: string;
   /** Extra env for the claude subprocess (e.g. IS_SANDBOX if ever needed). */
   extraEnv?: Record<string, string>;
+  /** Absolute path to a glibc `claude` CLI to use instead of the SDK's bundled
+   *  (musl) one. Defaults to CLAUDE_CODE_COMMAND env, else "claude" on PATH. */
+  claudeCodePath?: string;
 }
 
 /** The minimal shape of the SDK's query() we depend on — declared locally so this
@@ -87,6 +90,10 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   const baseOptions: Record<string, unknown> = {
     model: deps.model,
     systemPrompt: deps.systemPrompt,
+    // The SDK bundles its OWN `claude` binary (musl-linked) which fails to launch on
+    // the glibc NixOS image. Point it at the glibc `claude` baked onto the image
+    // (nixpkgs claude-code, on PATH as `claude`), overridable via CLAUDE_CODE_COMMAND.
+    pathToClaudeCodeExecutable: deps.claudeCodePath ?? process.env.CLAUDE_CODE_COMMAND ?? "claude",
     mcpServers: { sandbox: server },
     toolAliases,
     disallowedTools,
@@ -95,7 +102,13 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // "acceptEdits"/"default" — allow our aliased tools without a CLI prompt.
     allowedTools: Object.values(toolAliases),
     includePartialMessages: true, // stream text deltas for responsive AG-UI
-    env: { CLAUDE_CODE_OAUTH_TOKEN: deps.oauthToken, ...(deps.extraEnv ?? {}) },
+    // Surface the spawned claude CLI's stderr — otherwise a CLI failure (bad flag,
+    // auth, version mismatch) is an opaque "exited with code 1". Always logged.
+    stderr: (data: string) => debugError("[sdk:claude-stderr]", data),
+    // MERGE with process.env — the SDK REPLACES the subprocess env with this object
+    // (does not merge), so passing only the token strips PATH/HOME/etc and the
+    // spawned claude crashes configuring its HTTP client (the axios baseURL error).
+    env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: deps.oauthToken, ...(deps.extraEnv ?? {}) },
     // canUseTool bridges the SDK permission gate to our handler (best-effort;
     // our tools are aliased+allowed, so this mainly fires for anything unexpected).
     canUseTool: async (toolName: string, input: unknown) => {
