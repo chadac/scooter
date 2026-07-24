@@ -28,6 +28,7 @@ import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
+import type { SchedulerClient } from "../agent/schedulerTools.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
@@ -99,6 +100,11 @@ export interface ManagementDeps {
   /** Image/media asset store (uploaded images). Powers GET
    *  /conversations/:id/assets/:assetId (replay). Optional — absent = images off. */
   assets?: AssetStore;
+  /** Scheduler client (to the scheduler service), for the UI settings page's
+   *  scheduled-tasks CRUD. The routes proxy to it scoped to the CALLER (x-auth-user
+   *  = ctx.user.id), so a user only ever manages their own tasks. Optional — absent
+   *  (no SCHEDULER_URL) = the routes report the scheduler isn't configured. */
+  scheduler?: SchedulerClient;
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -631,6 +637,72 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
     raiseAwsApprovalInterrupt(bridge, conv.id, body as AwsRequestSummary, deps.resolveAwsRequest);
     return { status: 202, json: { ok: true } };
+  });
+
+  // --- Scheduled tasks (UI settings page) ----------------------------------------
+  // Proxy CRUD to the scheduler service, SCOPED to the caller: every call passes
+  // x-auth-user = ctx.user.id, so a user only sees/edits their own tasks (the same
+  // owner-scoping the agent MCP tools enforce). Anonymous callers have no owner to
+  // scope to → 401. Absent scheduler (no SCHEDULER_URL) → 501.
+  const scheduler = deps.scheduler;
+  const schedulerOwner = (
+    ctx: { user: { anonymous: boolean; id: string } },
+  ): string | { status: number; json: unknown } => {
+    if (!scheduler) return { status: 501, json: { error: "scheduler not configured" } };
+    if (ctx.user.anonymous) return { status: 401, json: { error: "sign in to manage scheduled tasks" } };
+    return ctx.user.id;
+  };
+
+  r.get("/scheduled-tasks", async (ctx) => {
+    const owner = schedulerOwner(ctx);
+    if (typeof owner !== "string") return owner;
+    return { json: { tasks: await scheduler!.list(owner) } };
+  });
+
+  r.post("/scheduled-tasks", async (ctx) => {
+    const owner = schedulerOwner(ctx);
+    if (typeof owner !== "string") return owner;
+    const body = await ctx.body<{ title?: string; prompt?: string; cron?: string; timezone?: string; enabled?: boolean }>();
+    if (!body.title || !body.prompt || !body.cron) {
+      return { status: 400, json: { error: "title, prompt, and cron are required" } };
+    }
+    try {
+      const task = await scheduler!.create(owner, {
+        title: body.title, prompt: body.prompt, cron: body.cron, timezone: body.timezone, enabled: body.enabled,
+      });
+      return { status: 201, json: task };
+    } catch (e) {
+      return { status: 400, json: { error: (e as Error)?.message ?? "create failed" } };
+    }
+  });
+
+  r.get("/scheduled-tasks/:id", async (ctx) => {
+    const owner = schedulerOwner(ctx);
+    if (typeof owner !== "string") return owner;
+    const task = await scheduler!.get(owner, ctx.params.id);
+    if (!task) return { status: 404, json: { error: "not found" } };
+    const runs = await scheduler!.runs(owner, ctx.params.id).catch(() => []);
+    return { json: { task, runs } };
+  });
+
+  r.patch("/scheduled-tasks/:id", async (ctx) => {
+    const owner = schedulerOwner(ctx);
+    if (typeof owner !== "string") return owner;
+    const body = await ctx.body<Partial<{ title: string; prompt: string; cron: string; timezone: string; enabled: boolean }>>();
+    try {
+      const task = await scheduler!.patch(owner, ctx.params.id, body);
+      if (!task) return { status: 404, json: { error: "not found" } };
+      return { json: task };
+    } catch (e) {
+      return { status: 400, json: { error: (e as Error)?.message ?? "update failed" } };
+    }
+  });
+
+  r.del("/scheduled-tasks/:id", async (ctx) => {
+    const owner = schedulerOwner(ctx);
+    if (typeof owner !== "string") return owner;
+    const gone = await scheduler!.del(owner, ctx.params.id);
+    return gone ? { status: 204, json: null } : { status: 404, json: { error: "not found" } };
   });
 
   return r;

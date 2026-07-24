@@ -12,6 +12,8 @@ import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
+import { SettingsPage } from "./SettingsPage.js";
+import { viewStore, useView } from "./view.js";
 import { Thread } from "@/components/assistant-ui/thread";
 
 /** The Thread wrapped in an error boundary keyed to the render tick, so a
@@ -27,6 +29,7 @@ function GuardedThread() {
 }
 
 export function App() {
+  const view = useView();
   return (
     <RuntimeProvider>
       <div className="flex h-dvh flex-col">
@@ -35,30 +38,52 @@ export function App() {
             <strong>Scooter</strong>
             <span className="text-muted-foreground"> — your agent, running in a Nix sandbox</span>
           </div>
-          {/* Signed-in user (from the ingress identity); hidden when anonymous. */}
-          <UserBadge />
+          <div className="flex items-center gap-3">
+            {/* Settings (scheduled tasks, …). Toggles the main pane. */}
+            <button
+              data-testid="settings-toggle"
+              aria-label="Settings"
+              title="Settings"
+              aria-pressed={view === "settings"}
+              onClick={() => viewStore.set(view === "settings" ? "chat" : "settings")}
+              className={
+                "rounded-md border px-2 py-1 hover:bg-accent " +
+                (view === "settings" ? "bg-accent" : "")
+              }
+            >
+              ⚙
+            </button>
+            {/* Signed-in user (from the ingress identity); hidden when anonymous. */}
+            <UserBadge />
+          </div>
         </header>
-        <div className="flex min-h-0 flex-1">
-          <Sidebar />
-          <main className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1">
-              {/* Provider "post" tool calls (slack/github/gitlab/jira) render as
-                  message cards with the provider icon; other tools use the stock
-                  generic box. ToolGroupOpen keeps grouped tool calls EXPANDED so
-                  the cards + shell commands are visible top-level, not hidden
-                  behind a "N tool calls" collapse. */}
-              <GuardedThread />
-            </div>
-            {/* Thinking indicator + Stop button while a run is in flight (any
-                source — local, Slack, another tab). Renders nothing when idle. */}
-            <RunStatusBar />
-          </main>
-          {/* Right-side tabbed panel: Approvals (AG-UI interrupts — a gate the user
-              can't miss; auto-focused on a new one) + Queue (messages waiting behind
-              the active run, moved off the main column so a backlog no longer eats
-              the screen). Collapses entirely when both are empty. */}
-          <RightPanel />
-        </div>
+        {view === "settings" ? (
+          <div className="min-h-0 flex-1">
+            <SettingsPage />
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1">
+            <Sidebar />
+            <main className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1">
+                {/* Provider "post" tool calls (slack/github/gitlab/jira) render as
+                    message cards with the provider icon; other tools use the stock
+                    generic box. ToolGroupOpen keeps grouped tool calls EXPANDED so
+                    the cards + shell commands are visible top-level, not hidden
+                    behind a "N tool calls" collapse. */}
+                <GuardedThread />
+              </div>
+              {/* Thinking indicator + Stop button while a run is in flight (any
+                  source — local, Slack, another tab). Renders nothing when idle. */}
+              <RunStatusBar />
+            </main>
+            {/* Right-side tabbed panel: Approvals (AG-UI interrupts — a gate the user
+                can't miss; auto-focused on a new one) + Queue (messages waiting behind
+                the active run, moved off the main column so a backlog no longer eats
+                the screen). Collapses entirely when both are empty. */}
+            <RightPanel />
+          </div>
+        )}
       </div>
     </RuntimeProvider>
   );
