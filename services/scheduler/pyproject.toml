@@ -1,0 +1,29 @@
+[project]
+name = "agent-scheduler"
+version = "0.0.0"
+description = "Scheduled Scooter tasks — cron-spawn conversations via the agent-host /agui"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "pydantic",
+    "pydantic-settings",
+    "sqlalchemy[asyncio]",
+    "aiosqlite",
+    "asyncpg",
+    "croniter",
+]
+
+[project.scripts]
+agent-scheduler = "scheduler.app:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["scheduler"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "respx"]

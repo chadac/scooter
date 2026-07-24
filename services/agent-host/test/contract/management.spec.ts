@@ -778,4 +778,87 @@ describe("management API", () => {
       expect(status).toBe(404);
     });
   });
+
+  // --- Scheduled-tasks proxy (UI settings page) --------------------------------
+  // The /scheduled-tasks routes forward to the scheduler client scoped to the CALLER
+  // (x-auth-user), so a user only manages their own tasks. Absent client -> 501;
+  // anonymous -> 401.
+  describe("scheduled-tasks proxy", () => {
+    const task = (over: Record<string, unknown> = {}) => ({
+      id: "t1", title: "Daily", prompt: "check", cron: "0 9 * * *", timezone: "UTC",
+      owner: "alice", enabled: true, next_run_at: null, last_run_at: null, ...over,
+    });
+
+    /** A fake SchedulerClient recording the owner it was called for. A null owner and
+     *  "" are the same unowned bucket (the caller sends null for anonymous). */
+    function fakeScheduler(seed: Array<ReturnType<typeof task>> = []) {
+      const calls: Array<{ method: string; owner: string | null }> = [];
+      const owns = (t: { owner: string }, owner: string | null) => t.owner === (owner ?? "");
+      const client = {
+        async list(owner: string | null) { calls.push({ method: "list", owner }); return seed.filter((t) => owns(t, owner)); },
+        async get(owner: string | null, id: string) { calls.push({ method: "get", owner }); return seed.find((t) => t.id === id && owns(t, owner)) ?? null; },
+        async create(owner: string | null, body: Record<string, unknown>) { calls.push({ method: "create", owner }); return task({ ...body, owner: owner ?? "", id: "new" }); },
+        async patch(owner: string | null, id: string, body: Record<string, unknown>) { calls.push({ method: "patch", owner }); const t = seed.find((x) => x.id === id && owns(x, owner)); return t ? task({ ...t, ...body }) : null; },
+        async del(owner: string | null, id: string) { calls.push({ method: "del", owner }); return seed.some((t) => owns(t, owner) && t.id === id); },
+        async runs(owner: string | null) { calls.push({ method: "runs", owner }); return []; },
+      };
+      return { client, calls };
+    }
+
+    const mk = (scheduler?: ReturnType<typeof fakeScheduler>["client"]) =>
+      createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, scheduler });
+
+    it("501s when the scheduler isn't configured", async () => {
+      const res = await call(mk(undefined), "GET", "/scheduled-tasks", undefined, { "x-auth-user": "alice" });
+      expect(res.status).toBe(501);
+    });
+
+    it("anonymous caller uses the unowned bucket (null owner is fine, not a refusal)", async () => {
+      const { client, calls } = fakeScheduler([task({ owner: "" }), task({ id: "t2", owner: "alice" })]);
+      const res = await call(mk(client), "GET", "/scheduled-tasks");
+      expect(res.status).toBe(200);
+      expect(calls[0]).toEqual({ method: "list", owner: null }); // scopeOwner -> null for anon
+      const ids = (res.json as { tasks: Array<{ id: string }> }).tasks.map((t) => t.id);
+      expect(ids).toEqual(["t1"]); // only the unowned task
+    });
+
+    it("GET lists only the caller's tasks (scoped by x-auth-user)", async () => {
+      const { client, calls } = fakeScheduler([task(), task({ id: "t2", owner: "bob" })]);
+      const res = await call(mk(client), "GET", "/scheduled-tasks", undefined, { "x-auth-user": "alice" });
+      expect(res.status).toBe(200);
+      const tasks = (res.json as { tasks: Array<{ id: string }> }).tasks;
+      expect(tasks.map((t) => t.id)).toEqual(["t1"]); // bob's t2 excluded
+      expect(calls[0]).toEqual({ method: "list", owner: "alice" });
+    });
+
+    it("POST creates a task for the caller (owner = x-auth-user)", async () => {
+      const { client, calls } = fakeScheduler();
+      const res = await call(mk(client), "POST", "/scheduled-tasks",
+        { title: "Morning", prompt: "do X", cron: "0 8 * * *" }, { "x-auth-user": "alice" });
+      expect(res.status).toBe(201);
+      expect(calls.at(-1)).toEqual({ method: "create", owner: "alice" });
+    });
+
+    it("POST 400s a missing required field", async () => {
+      const { client } = fakeScheduler();
+      const res = await call(mk(client), "POST", "/scheduled-tasks", { title: "x" }, { "x-auth-user": "alice" });
+      expect(res.status).toBe(400);
+    });
+
+    it("PATCH edits a scoped task; 404 for someone else's", async () => {
+      const { client } = fakeScheduler([task()]);
+      const ok = await call(mk(client), "PATCH", "/scheduled-tasks/t1", { enabled: false }, { "x-auth-user": "alice" });
+      expect(ok.status).toBe(200);
+      const nope = await call(mk(fakeScheduler([task({ id: "t9", owner: "bob" })]).client),
+        "PATCH", "/scheduled-tasks/t9", { enabled: false }, { "x-auth-user": "alice" });
+      expect(nope.status).toBe(404); // bob's task isn't visible to alice
+    });
+
+    it("DELETE removes a scoped task (204); 404 for another owner's", async () => {
+      const gone = await call(mk(fakeScheduler([task()]).client), "DELETE", "/scheduled-tasks/t1", undefined, { "x-auth-user": "alice" });
+      expect(gone.status).toBe(204);
+      const nope = await call(mk(fakeScheduler([task({ id: "t9", owner: "bob" })]).client), "DELETE", "/scheduled-tasks/t9", undefined, { "x-auth-user": "alice" });
+      expect(nope.status).toBe(404);
+    });
+  });
 });

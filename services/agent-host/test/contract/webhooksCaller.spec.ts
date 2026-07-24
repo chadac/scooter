@@ -29,6 +29,25 @@ describe("createWebhooksCallerVerifier", () => {
     expect(await verify(req({ authorization: "Bearer other" }))).toBe(false);
   });
 
+  it("trusts ANY of a comma-separated SA list (webhooks + scheduler)", async () => {
+    const SCHED = "system:serviceaccount:agent-sandbox:agent-scheduler";
+    const verifyWebhooks = createWebhooksCallerVerifier({
+      expectedServiceAccount: `${SA},${SCHED}`,
+      reviewToken: vi.fn(async () => ({ authenticated: true, username: SA })),
+    });
+    const verifyScheduler = createWebhooksCallerVerifier({
+      expectedServiceAccount: `${SA},${SCHED}`,
+      reviewToken: vi.fn(async () => ({ authenticated: true, username: SCHED })),
+    });
+    const verifyStranger = createWebhooksCallerVerifier({
+      expectedServiceAccount: `${SA},${SCHED}`,
+      reviewToken: vi.fn(async () => ({ authenticated: true, username: "system:serviceaccount:agent-sandbox:nope" })),
+    });
+    expect(await verifyWebhooks(req({ authorization: "Bearer a" }))).toBe(true);
+    expect(await verifyScheduler(req({ authorization: "Bearer b" }))).toBe(true);
+    expect(await verifyStranger(req({ authorization: "Bearer c" }))).toBe(false);
+  });
+
   it("REJECTS an unauthenticated token", async () => {
     const reviewToken = vi.fn(async () => ({ authenticated: false }));
     const verify = createWebhooksCallerVerifier({ expectedServiceAccount: SA, reviewToken });

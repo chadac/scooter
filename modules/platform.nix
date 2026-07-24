@@ -43,7 +43,7 @@ let
   hasModels = modelIds != [ ];
 in
 {
-  imports = [ kubenix.modules.k8s ./broker.nix ./webhooks.nix ];
+  imports = [ kubenix.modules.k8s ./broker.nix ./webhooks.nix ./scheduler.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -626,10 +626,15 @@ in
                   # for a registry). Without this the provisioner defaults to "Always",
                   # which fails ImagePullBackOff on a local cluster with no registry.
                   { name = "SANDBOX_PULL_POLICY"; value = cfg.pullPolicy; }
-                  # The trusted webhooks SA the agent-host lets set a conversation
-                  # `owner` on /agui (verified via TokenReview). Only this SA is
-                  # honored; unset = owner never honored.
-                  { name = "WEBHOOKS_SERVICE_ACCOUNT"; value = "system:serviceaccount:${cfg.namespace}:agent-webhooks"; }
+                  # The trusted SA(s) the agent-host lets set a conversation `owner`
+                  # on /agui (verified via TokenReview) — COMMA-SEPARATED. The webhooks
+                  # service always; the scheduler too when enabled (both spawn
+                  # owner-set conversations). Unset = owner never honored.
+                  { name = "WEBHOOKS_SERVICE_ACCOUNT";
+                    value = lib.concatStringsSep "," (
+                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
+                      ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
+                    ); }
                   # Durable: the AG-UI event log (history) on the PVC.
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
                   # Ephemeral scratch (emptyDir): goose's per-conversation cwd +
@@ -675,6 +680,13 @@ in
                   # Static sub->email seed for the learned identity store ("k=v,k=v").
                   { name = "AUTH_SUB_EMAIL_MAP";
                     value = lib.concatStringsSep "," (lib.mapAttrsToList (k: v: "${k}=${v}") cfg.auth.subEmailMap); }
+                ++ lib.optionals cfg.scheduler.enable ([
+                  # Scheduled-task MCP tools (list/search/view/create/edit/delete): the
+                  # agent-host proxies to the scheduler service, scoped to the
+                  # conversation owner. Only wired when the scheduler is deployed.
+                  { name = "SCHEDULER_URL"; value = "http://agent-scheduler.${cfg.namespace}.svc.cluster.local:8080"; }
+                ] ++ lib.optional (cfg.scheduler.relayKey != "")
+                    { name = "SCHEDULER_RELAY_KEY"; value = cfg.scheduler.relayKey; })
                 ++ lib.optional (!cfg.fakeAgent)
                   # Real `goose acp`. The provider selects the model backend.
                   { name = "GOOSE_PROVIDER"; value = cfg.agent.provider; }

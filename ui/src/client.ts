@@ -174,6 +174,117 @@ export async function loadWhoami(config: AgentHostConfig): Promise<Whoami> {
   }
 }
 
+/** A scheduled task, as the agent-host's /scheduled-tasks proxy returns it. */
+export interface ScheduledTaskView {
+  id: string;
+  title: string;
+  prompt: string;
+  cron: string;
+  timezone: string;
+  owner: string;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+}
+
+/** One run record for a scheduled task. */
+export interface ScheduledTaskRun {
+  id: string;
+  task_id: string;
+  conversation_id: string | null;
+  status: string;
+  error: string | null;
+  fired_at: string;
+}
+
+/** Fields the settings form sends when creating/editing a scheduled task. */
+export interface ScheduledTaskInput {
+  title: string;
+  prompt: string;
+  cron: string;
+  timezone?: string;
+  enabled?: boolean;
+}
+
+/** Result of a scheduled-tasks fetch — `configured` distinguishes "the scheduler
+ *  isn't deployed" (501) from "you have no tasks" (200, []), so the settings page
+ *  can show the right empty state. */
+export interface ScheduledTasksResult {
+  configured: boolean;
+  tasks: ScheduledTaskView[];
+}
+
+const authHeaders = (config: AgentHostConfig): Record<string, string> =>
+  config.token ? { Authorization: `Bearer ${config.token}` } : {};
+
+/** List the caller's scheduled tasks. 501 → { configured:false } (scheduler off). */
+export async function loadScheduledTasks(config: AgentHostConfig): Promise<ScheduledTasksResult> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/scheduled-tasks`, {
+      headers: authHeaders(config),
+    });
+    if (res.status === 501) return { configured: false, tasks: [] };
+    if (!res.ok) {
+      console.warn(`[client] loadScheduledTasks: HTTP ${res.status}`);
+      return { configured: true, tasks: [] };
+    }
+    return { configured: true, tasks: ((await res.json()) as { tasks?: ScheduledTaskView[] }).tasks ?? [] };
+  } catch (e) {
+    console.warn("[client] loadScheduledTasks failed:", e);
+    return { configured: true, tasks: [] };
+  }
+}
+
+/** Fetch one scheduled task with its recent run history. Null if not found. */
+export async function loadScheduledTask(
+  config: AgentHostConfig,
+  id: string,
+): Promise<{ task: ScheduledTaskView; runs: ScheduledTaskRun[] } | null> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/scheduled-tasks/${encodeURIComponent(id)}`, {
+    headers: authHeaders(config),
+  });
+  if (!res.ok) return null;
+  return (await res.json()) as { task: ScheduledTaskView; runs: ScheduledTaskRun[] };
+}
+
+/** Create a scheduled task. Throws with the server's error message on failure. */
+export async function createScheduledTask(
+  config: AgentHostConfig,
+  input: ScheduledTaskInput,
+): Promise<ScheduledTaskView> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/scheduled-tasks`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders(config) },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`);
+  return (await res.json()) as ScheduledTaskView;
+}
+
+/** Patch a scheduled task (any subset of fields). Throws on failure. */
+export async function updateScheduledTask(
+  config: AgentHostConfig,
+  id: string,
+  patch: Partial<ScheduledTaskInput>,
+): Promise<ScheduledTaskView> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/scheduled-tasks/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...authHeaders(config) },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`);
+  return (await res.json()) as ScheduledTaskView;
+}
+
+/** Delete a scheduled task. Resolves true on success (204), false if not found. */
+export async function deleteScheduledTask(config: AgentHostConfig, id: string): Promise<boolean> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/scheduled-tasks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(config),
+  });
+  return res.ok;
+}
+
 /** Which conversations to list: the caller's own ("mine", default) or all. */
 export type ConversationScope = "mine" | "all";
 

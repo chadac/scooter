@@ -47,6 +47,7 @@ export interface Router {
   on(method: string, path: string, handler: Handler): Router;
   get(path: string, handler: Handler): Router;
   post(path: string, handler: Handler): Router;
+  patch(path: string, handler: Handler): Router;
   del(path: string, handler: Handler): Router;
   /** Returns true if a route matched + was dispatched. */
   handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
@@ -88,6 +89,9 @@ export function createRouter(resolveUser: ResolveUser = defaultResolveUser()): R
     },
     post(path, handler) {
       return router.on("POST", path, handler);
+    },
+    patch(path, handler) {
+      return router.on("PATCH", path, handler);
     },
     del(path, handler) {
       return router.on("DELETE", path, handler);
