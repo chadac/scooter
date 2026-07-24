@@ -696,20 +696,25 @@ in
                   { name = "AWS_REGION"; value = cfg.agent.region; }
                   { name = "AWS_DEFAULT_REGION"; value = cfg.agent.region; }
                 ] ++ lib.optionals (!cfg.fakeAgent && cfg.agent.provider == "claude-code") [
-                  # claude-code provider: goose shells out to the `claude` CLI (baked into
-                  # the image via withClaudeCode). It authenticates with a long-lived
-                  # subscription OAuth token (`claude setup-token`) supplied via a Secret.
-                  { name = "CLAUDE_CODE_COMMAND"; value = "claude"; }
+                  # claude-code provider: the agent-host drives the agent via the Claude
+                  # Agent SDK (services/claude-sdk-provider, baked in) instead of goose —
+                  # so the agent's shell/file tools run IN THE SANDBOX (an in-process MCP
+                  # server → ExecBackend), fixing the "tools ran in the agent-host pod,
+                  # scooter-rebuild unreachable" bug. GOOSE_PROVIDER=claude-code (set above)
+                  # selects that branch. Auth is the long-lived subscription OAuth token
+                  # (`claude setup-token`) from a Secret; the SDK reads CLAUDE_CODE_OAUTH_TOKEN.
                   {
                     name = "CLAUDE_CODE_OAUTH_TOKEN";
                     valueFrom.secretKeyRef = { name = cfg.agent.claudeCode.tokenSecret; key = "token"; };
                   }
-                  # goose's claude-code provider invokes `claude … --dangerously-skip-permissions`,
-                  # and the claude CLI REFUSES that flag when running as root ("cannot be used
-                  # with root/sudo privileges") — which the agent-host container does — so claude
-                  # exits instantly and goose reports "Claude CLI process terminated unexpectedly".
-                  # IS_SANDBOX=1 tells claude it's in a sandboxed context, permitting the flag as
-                  # root. (Proper long-term fix: run the agent-host as a non-root user.)
+                  # The SDK bundles a musl `claude` that fails on the glibc image;
+                  # point it at the glibc `claude` baked onto the image (nixpkgs
+                  # claude-code, on PATH) via pathToClaudeCodeExecutable.
+                  { name = "CLAUDE_CODE_COMMAND"; value = "claude"; }
+                  # The SDK spawns the bundled `claude` CLI, which uses
+                  # `--dangerously-skip-permissions`; that flag is refused under root (the
+                  # agent-host runs as root) unless IS_SANDBOX marks a sandboxed context.
+                  # (Proper long-term fix: run the agent-host as a non-root user.)
                   { name = "IS_SANDBOX"; value = "1"; }
                 ] ++ lib.optional (!cfg.fakeAgent && defaultModelId != null)
                   # The default model. Derived from availableModels.<id>.default

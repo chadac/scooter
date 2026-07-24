@@ -34,7 +34,8 @@ import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { resolvePodTarget } from "./exec/k8sExec.js";
 import { createWebServiceProxy } from "./proxy/webServiceProxy.js";
 import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
-import { writeHints } from "./agent/skills.js";
+import { writeHints, loadSkills, assembleHints } from "./agent/skills.js";
+import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
@@ -952,7 +953,19 @@ export async function main(
       exec,
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
       acpClient: () =>
-        createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
+        // claude-code: drive the agent via the Claude Agent SDK (isolated package)
+        // so its tools run IN THE SANDBOX (via ExecBackend) instead of the
+        // agent-host pod — the fix for the unreachable-scooter-rebuild bug — while
+        // keeping subscription auth (CLAUDE_CODE_OAUTH_TOKEN). Other providers keep
+        // the goose acp path unchanged.
+        process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox
+          ? createSdkAcpClient({
+              oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "",
+              model: resolved ?? cfg.model ?? "claude-sonnet-4-5",
+              exec,
+              systemPrompt: assembleHints(loadSkills(config.skillsDir), { name: config.agentName }),
+            })
+          : createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
         metrics.runFinished({
           conversationId,

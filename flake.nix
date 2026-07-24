@@ -78,7 +78,11 @@
           # See services/agent-host/. Pass the PATCHED `agent` (goose) so the wrapper's
           # PATH goose is the SAME derivation the image's gooseLayer bakes — otherwise
           # the closure ships goose twice (~455MB dup) and could run the unpatched one.
-          agentHost = pkgs.callPackage ./services/agent-host { inherit agent; };
+          # The isolated Claude Agent SDK provider (zod v4, kept out of agent-host's
+          # tree). agent-host symlinks it into node_modules and imports its AcpClient.
+          claudeSdkProvider = pkgs.callPackage ./services/claude-sdk-provider { };
+
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider; };
 
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {

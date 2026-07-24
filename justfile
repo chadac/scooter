@@ -102,6 +102,10 @@ cluster-down:
 
 typecheck:
     npm install
+    # agent-host imports @scooter/claude-sdk-provider; build it first so its dist/
+    # (types + js) exists for agent-host's NodeNext resolution. (Nix builds the two
+    # separately; this is the plain-npm/CI path.)
+    npm -w services/claude-sdk-provider run build
     npm -w services/agent-host run typecheck
     npm -w ui run typecheck
 

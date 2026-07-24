@@ -26,6 +26,16 @@ export default defineConfig({
         },
       },
       {
+        // The isolated Claude Agent SDK provider (zod v4, kept out of agent-host's
+        // tree). Its pure units — the SDK→AG-UI adapter + sandbox MCP tool handlers
+        // — are contract-tested here alongside co-located *.spec.ts.
+        test: {
+          name: "claude-sdk-provider",
+          include: ["services/claude-sdk-provider/src/**/*.spec.ts"],
+          environment: "node",
+        },
+      },
+      {
         // Match ui/vite.config.ts's "@" -> ui/ alias so tests can import the
         // assistant-ui components (e.g. @/components/assistant-ui/...) the app uses.
         resolve: {
