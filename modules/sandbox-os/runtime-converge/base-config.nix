@@ -55,6 +55,15 @@ let
   nixpkgsPath = /. + nixpkgsBare;
   # The `path:` string form (idempotent — don't double-prefix).
   nixpkgsRef = if hasPathPrefix then nixpkgsStr else "path:" + nixpkgsStr;
+  # The baked sandbox-os source-tree ROOT: modulesPath is `<tree>/modules/sandbox-os`
+  # (reconverge-inputs.modulesSrc), so strip that trailing subdir to get the tree the
+  # image baked. Context-free so `programs.scooterModule.modulesTree` (a str option) holds
+  # a plain store path; `builtins.storePath` (in runtime-converge.nix) re-adds it as a
+  # valid dependency. `lib` isn't a fn arg here, so strip the fixed suffix with builtins.
+  modulesPathStr = builtins.unsafeDiscardStringContext (toString modulesPath);
+  modulesSubdir = "/modules/sandbox-os";
+  modulesTreeRoot =
+    builtins.substring 0 (builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir) modulesPathStr;
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
     inherit system;
     modules = [
@@ -83,6 +92,14 @@ let
         # bare path literal into the next converge's nix expr.
         programs.scooterModule.enable = lib.mkForce true;
         programs.scooterModule.nixpkgs = lib.mkForce nixpkgsBare;
+        # Reference the ALREADY-BAKED sandbox-os source tree (present in the pod's
+        # offline store) instead of letting runtime-converge.nix re-derive it — a
+        # self-modify re-eval of reconverge-inputs.nix produces a DIFFERENT
+        # sandbox-os-src hash (its `lib.cleanSource ../.` runs against this baked store
+        # subtree, not the repo), which isn't in the store → the toplevel build fails
+        # "path '…-sandbox-os-src' is not valid". modulesPath is `<bakedTree>/modules/
+        # sandbox-os`, so the tree root is that with the trailing subdir stripped.
+        programs.scooterModule.modulesTree = lib.mkForce modulesTreeRoot;
       })
     ] ++ extraModules;
     # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so

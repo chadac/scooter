@@ -572,6 +572,19 @@ in
       example = [ "/nix/store/…-keep-backdoor.nix" ];
       description = "Extra module exprs always layered into the runtime re-converge (keeps currently-running config).";
     };
+
+    modulesTree = lib.mkOption {
+      # The vendored sandbox-os source tree (system.extraDependencies) that MUST be in
+      # the pod's offline store for the in-pod re-converge build. Null (image default) =
+      # use the derived `modulesTree` from reconverge-inputs.nix, which the image builder
+      # bakes. base-config.nix (the re-converge) sets this to the ALREADY-BAKED tree store
+      # path (derived from modulesPath) so the re-converged toplevel references the valid,
+      # present path instead of re-deriving a fresh sandbox-os-src that isn't in the store
+      # ("path '…-sandbox-os-src' is not valid"). Only relevant when enable = true.
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Store path of the baked sandbox-os source tree; null = re-derive it (image build).";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -582,7 +595,15 @@ in
     # NOT pulled into the image closure by itself — the IMAGE BUILDER must add the
     # nixpkgs source to system.extraDependencies (where it still has context).
     # Without both, the in-pod build fails with "path does not exist".
-    system.extraDependencies = [ modulesTree ];
+    #
+    # At IMAGE build (cfg.modulesTree = null): use the derived `modulesTree` and bake it.
+    # At RE-CONVERGE (base-config sets cfg.modulesTree = the baked store path): reference
+    # THAT already-valid path — the re-derived one hashes differently (its `lib.cleanSource
+    # ../.` evaluates against the baked store subtree, not the repo, so a self-modify eval
+    # produces a NEW sandbox-os-src that was never built → "path '…-sandbox-os-src' is not
+    # valid"). Using the baked path keeps the re-converged toplevel offline-buildable.
+    system.extraDependencies =
+      if cfg.modulesTree != null then [ (builtins.storePath cfg.modulesTree) ] else [ modulesTree ];
 
     # Apply the mounted module at boot (best-effort; a missing module is a no-op).
     # The agent-host can also exec scooter-apply-module on spawn/claim.
