@@ -160,6 +160,21 @@ maybe("scooter .scooter injection: seed → boot converge → tool on PATH (k3d,
     // A terminal status proves the async daemon actually launched + finished. We
     // accept "done"; a "failed" here would be a real converge regression, and
     // "building"/"switching" (never terminal) is the setsid wedge.
+    // On any non-done status, surface the pod's env-switch error + log tail so the
+    // exact failure (e.g. "switch introduced failed units: X") is visible in CI —
+    // otherwise a 'failed'/'' status is undiagnosable after the cluster is torn down.
+    if (status !== "done") {
+      const err = await cluster
+        .exec(SELECTOR, ["sh", "-c", "cat /run/scooter/env-switch/error 2>/dev/null || true"], NS)
+        .then((r) => r.stdout.trim())
+        .catch(() => "");
+      const log = await cluster
+        .exec(SELECTOR, ["sh", "-c", "tail -50 /run/scooter/env-switch/log 2>/dev/null || true"], NS)
+        .then((r) => r.stdout)
+        .catch(() => "");
+      // eslint-disable-next-line no-console
+      console.error(`\n=== scooter-apply-module did not reach 'done' (status='${status}') ===\nerror: ${err}\n--- log tail ---\n${log}\n=== end ===\n`);
+    }
     expect(status, `env-switch status was '${status}' (empty/building/switching = the converge never completed)`).toBe("done");
   }, 320_000);
 
