@@ -36,23 +36,31 @@ in
 pkgs.testers.runNixOSTest {
   name = "dev-env-web-services";
 
-  nodes.machine = { ... }: {
+  nodes.machine = { lib, ... }: {
     imports = [ sandboxModule ];
+
+    # Reproduce production's env delivery: the provisioner injects CONVERSATION_ID as
+    # CONTAINER env, which lands on PID 1's environ but NOT in systemd's manager env.
+    # The kernel passes unrecognized `key=VALUE` cmdline args to INIT's environment —
+    # exactly how a container's runtime seeds init's environ — so kernelParams puts
+    # CONVERSATION_ID on /proc/1/environ while leaving the systemd manager env (and thus
+    # every unit's `environment`) without it. The web-services module must recover it
+    # from /proc/1/environ (the fix). We deliberately do NOT set it via the service
+    # `environment` — that would mask the bug.
+    boot.kernelParams = [ "CONVERSATION_ID=conv-test" ];
+
     # The built-in `terminal` (ttyd + tmux) — enabled to prove it RENDERS a proxyable
     # unit + manifest entry. NOT started here (ttyd is a lazy tool that would `nix build`
     # inside the VM); we only assert the declaration, like a marimo/vscode would.
     webServices.terminal.enable = true;
-    webServices.terminal.environment.CONVERSATION_ID = "conv-test";
 
     webServices.demo = {
       enable = true;
       port = 9911;
       displayName = "Demo";
       command = "${demoServer}";
-      # In production the provisioner injects CONVERSATION_ID as a pod-wide env var
-      # (visible to systemd units); a nixosTest `environment.variables` is only a
-      # login-shell var, so pass it through the unit env to mirror production.
-      environment.CONVERSATION_ID = "conv-test";
+      # No environment.CONVERSATION_ID here on purpose — the module must source it from
+      # PID 1's environ, so a 200 under /c/conv-test/demo/ proves the fix end-to-end.
       # extraConfig escape hatch: arbitrary generic systemd config merged into the
       # unit (proves the deferredModule merge).
       extraConfig = {
@@ -92,11 +100,20 @@ pkgs.testers.runNixOSTest {
     assert "LimitNOFILE=4242" in unit, unit
     machine.fail("curl -fsS http://localhost:9911/c/conv-test/demo/ >/dev/null")
 
+    # 2b. CONVERSATION_ID is on PID 1's environ (via kernelParams, the container-env
+    # analog) but NOT in the systemd manager env — so the service unit does NOT declare
+    # it. A working base path can therefore only come from the module's ExecStartPre
+    # recovering it from /proc/1/environ.
+    machine.succeed("tr '\\0' '\\n' < /proc/1/environ | grep -q '^CONVERSATION_ID=conv-test'")
+    assert "CONVERSATION_ID" not in machine.succeed("systemctl cat webservice-demo.service"), "must not be in the unit env"
+
     # 3. Start it (the agent-host does this via exec on the UI Start button).
     machine.succeed("systemctl start webservice-demo.service")
     machine.wait_for_open_port(9911)
 
-    # 4. Serves under the base path; 404 outside it (sub-path serving).
+    # 4. Serves under the base path — proving the ExecStartPre recovered CONVERSATION_ID
+    # from /proc/1/environ (else base = /c//demo → this 200 would be a 404). 404 outside
+    # it (sub-path serving). See bug: web-service CONVERSATION_ID empty in the unit.
     machine.succeed("curl -fsS http://localhost:9911/c/conv-test/demo/ | grep -q demo-ok")
     machine.succeed("test $(curl -s -o /dev/null -w '%{http_code}' http://localhost:9911/other) = 404")
 

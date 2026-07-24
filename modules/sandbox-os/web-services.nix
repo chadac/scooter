@@ -144,6 +144,26 @@ in
     # extraConfig is recursively merged OVER the base (so it can override).
     systemd.services = lib.mapAttrs' (name: s:
       let
+        # CONVERSATION_ID (+ CONVERSATION_URL) reach the pod as CONTAINER env, which
+        # is on PID 1's environ but NOT in systemd's manager env — so a unit's
+        # `environment`/ExecStart never sees it, and the base path collapses to
+        # `/c//${name}` (double slash → 404). Same problem carry-over.nix solves for
+        # BROKER_URL. Fix once for every web service: an ExecStartPre reads them from
+        # /proc/1/environ into the unit's RuntimeDirectory env file, and EnvironmentFile
+        # sources it before ExecStart. `-` = optional (empty is harmless; the service's
+        # own `:-unknown` fallback still applies if truly unset).
+        convEnvScript = pkgs.writeShellScript "webservice-${name}-conv-env" ''
+          set -eu
+          out="''${RUNTIME_DIRECTORY%%:*}/conv.env"
+          : > "$out"
+          for k in CONVERSATION_ID CONVERSATION_URL; do
+            v=$(tr '\0' '\n' < /proc/1/environ | sed -n "s/^$k=//p" | head -1 || true)
+            # `if` (not `[ ] && …`): an absent var (empty $v) is normal, not a failure —
+            # with `set -e`, a bare `[ -n "$v" ] && …` would abort the script (exit 1)
+            # whenever the var is unset, killing the service start.
+            if [ -n "$v" ]; then printf '%s=%s\n' "$k" "$v" >> "$out"; fi
+          done
+        '';
         base = {
           description = "web service: ${s.displayName}";
           restartIfChanged = false;
@@ -154,6 +174,14 @@ in
           # Prepend the system profile + wrappers ahead of that default.
           path = [ "/run/current-system/sw" "/run/wrappers" ];
           serviceConfig = {
+            # Materialize CONVERSATION_ID/URL from PID 1's environ, then source it.
+            # The `+` prefix runs ExecStartPre as ROOT (full privileges), because
+            # /proc/1/environ is root-only (0400) — a DynamicUser couldn't read it.
+            # RuntimeDirectory is created before ExecStartPre and (with DynamicUser)
+            # is writable by the service user, so the root pre-step can write into it.
+            RuntimeDirectory = unitName name;
+            ExecStartPre = "+${convEnvScript}";
+            EnvironmentFile = "-/run/${unitName name}/conv.env";
             ExecStart = s.command;
             Restart = "on-failure";
           }
