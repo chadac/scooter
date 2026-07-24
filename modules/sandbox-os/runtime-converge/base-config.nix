@@ -30,10 +30,29 @@ let
   #   nixpkgsRef  — the `path:` string the lazy-tool stubs + flake registry embed. We MUST
   #                 reproduce the identical ref or the stubs hash differently and the
   #                 re-converge needlessly rebuilds system-path (~10min toolchain re-fetch).
-  nixpkgsStr = toString nixpkgs;
+  # CONTEXT-FREE from the start. `nixpkgs` may arrive WITH Nix store context (the
+  # nixosTest's `toString nixpkgsSrc`, and the image builder's `system.extraDependencies`
+  # copy — a realised derivation) OR as a bare path LITERAL with none (the pod's baked
+  # `nixpkgs = /nix/store/…;` expr). base-config embeds this value in three places that
+  # end up in the built toplevel: the lazy-tool shims + flake registry (`nixpkgsRef`),
+  # and the re-injected `programs.scooterModule.nixpkgs` (which applyModule interpolates
+  # verbatim into the NEXT converge's script). If the value carries context in one eval
+  # but not the other, those derivations gain the `nixpkgs-src` drv as a spurious BUILD
+  # INPUT in one case only — so the SAME base config hashes DIFFERENTLY, making the
+  # test's pre-seeded `reconverged` a different toplevel than the pod builds at runtime
+  # → cache miss → a from-source toolchain build that hangs OFFLINE in the pod/VM.
+  # Discard the context up front so every derived value is byte-identical either way
+  # (nixpkgs-src is guaranteed present out-of-band — system.extraDependencies / the baked
+  # image closure — and the `import` below re-establishes the store dependency for eval).
+  nixpkgsStr = builtins.unsafeDiscardStringContext (toString nixpkgs);
   hasPathPrefix = builtins.substring 0 5 nixpkgsStr == "path:";
-  # The bare filesystem path (strip a leading "path:"), as a real path for `import`.
-  nixpkgsPath = /. + (if hasPathPrefix then builtins.substring 5 (-1) nixpkgsStr else nixpkgsStr);
+  # The bare store-path STRING (no prefix). This is what programs.scooterModule.nixpkgs
+  # must hold: applyModule interpolates it UNQUOTED as `nixpkgs = <bare path>;` into the
+  # next re-converge's nix expr (a bare path literal), so a `path:`-prefixed value there
+  # would break the second-generation build.
+  nixpkgsBare = builtins.substring (if hasPathPrefix then 5 else 0) (-1) nixpkgsStr;
+  # The bare filesystem path, as a real path for `import (… + "/nixos/…")`.
+  nixpkgsPath = /. + nixpkgsBare;
   # The `path:` string form (idempotent — don't double-prefix).
   nixpkgsRef = if hasPathPrefix then nixpkgsStr else "path:" + nixpkgsStr;
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
@@ -44,16 +63,26 @@ let
       ({ lib, ... }: {
         programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsRef;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
-        # NOTE: we deliberately do NOT force programs.scooterModule.enable = true here.
-        # Enabling it inside the re-converge pulls in runtime-converge.nix, whose
-        # `system.extraDependencies = [ modulesTree ]` re-derives a FRESH `sandbox-os-src`
-        # (reconverge-inputs.nix) that can't be built offline in the pod — the in-pod
-        # build then fails with "path '…-sandbox-os-src' is not valid". So the
-        # re-converged system inherits the option default (enable = false); scooter-rebuild
-        # / apply-module / env-status are dropped from PATH after a self-modify switch
-        # (same as the pre-existing behavior). Keeping those tools ACROSS a re-converge
-        # needs reconverge-inputs to reference the already-baked modulesTree as a valid
-        # store path — tracked as a follow-up (todo: scooter-rebuild-across-reconverge).
+        # Keep programs.scooterModule ENABLED across the re-converge so scooter-rebuild
+        # / scooter-apply-module / scooter-env-status stay on PATH after a self-modify
+        # switch (previously they were dropped — the sandbox lost its own rebuild tool).
+        #
+        # This is safe to build OFFLINE because there is only ONE pkgs / one modulesTree:
+        # `runtime-converge.nix` derives `modulesTree` (system.extraDependencies) from
+        # `reconverge-inputs.nix` using the pkgs THIS eval-config instantiates from the
+        # pinned `nixpkgs` — the SAME pinned source the image was built from. So the
+        # `sandbox-os-src` derivation the re-converge references is byte-identical to the
+        # one baked into the image closure (a cache hit / already-valid path), not a
+        # fresh from-source build. The image builder + the nixosTest pre-build this
+        # exact toplevel via the same base-config.nix, so its closure (incl. modulesTree)
+        # is present offline.
+        #
+        # Re-inject the nixpkgs store path the option needs (it has no default) so the
+        # re-evaluated module type-checks; the applyModule in-pod expr no longer sets it.
+        # Use the BARE path (not nixpkgsRef) — applyModule interpolates it unquoted as a
+        # bare path literal into the next converge's nix expr.
+        programs.scooterModule.enable = lib.mkForce true;
+        programs.scooterModule.nixpkgs = lib.mkForce nixpkgsBare;
       })
     ] ++ extraModules;
     # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so
