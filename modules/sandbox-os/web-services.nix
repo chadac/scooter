@@ -128,6 +128,16 @@ in
   };
 
   config = lib.mkIf (enabled != { }) {
+    # Open each enabled web service's port in the NixOS firewall. The image ships
+    # with the default firewall ON (networking.firewall.enable = true), whose
+    # nixos-fw chain DROPs all inbound TCP except loopback/established — so the
+    # agent-host's reverse proxy (podIP:port, pod-to-pod) hung/timed out even though
+    # the service answered on localhost inside the pod. Web services are declared
+    # specifically to be reachable by the proxy, so open exactly their ports (and
+    # nothing else — the firewall still guards every other port). See the bug report
+    # web-service-proxy-blocked-by-firewall.
+    networking.firewall.allowedTCPPorts = lib.mapAttrsToList (_: s: s.port) enabled;
+
     # One systemd unit per enabled service. NOT wantedBy multi-user.target —
     # explicit start. restartIfChanged=false so a live switch-to-configuration
     # (scooter-apply-module) doesn't bounce a running service. The per-service

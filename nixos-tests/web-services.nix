@@ -74,6 +74,14 @@ pkgs.testers.runNixOSTest {
     assert svc["unit"] == "webservice-demo", svc
     assert svc["basePath"].endswith("/demo"), svc
 
+    # 1b. The service's port is OPEN in the firewall — the actual bug: the default
+    # NixOS firewall (on) DROPs inbound TCP from other pods, so the agent-host's
+    # pod-to-pod proxy (podIP:port, NOT loopback) hung. Assert the port is accepted
+    # by the nixos-fw chain (localhost curls below never exercise this — loopback is
+    # always allowed). See web-service-proxy-blocked-by-firewall.
+    machine.succeed("systemctl is-active --quiet firewall")  # firewall IS on (defense-in-depth)
+    machine.succeed("iptables -S nixos-fw | grep -E -- '--dport 9911 .*-j nixos-fw-accept'")
+
     # 2. Explicit-start: the unit exists but is NOT running until asked.
     machine.succeed("systemctl cat webservice-demo.service >/dev/null")
     machine.fail("systemctl is-active --quiet webservice-demo.service")
