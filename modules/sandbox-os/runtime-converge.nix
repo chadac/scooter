@@ -32,6 +32,18 @@ let
   inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib; })
     baseConfig modulesTree modulesSrc;
 
+  # The modules-source path the in-pod build feeds to base-config, AND the tree baked
+  # into system.extraDependencies. At IMAGE build (cfg.modulesTree = null) both come from
+  # the derived `modulesTree`/`modulesSrc`. At RE-CONVERGE, base-config sets cfg.modulesTree
+  # to the ALREADY-BAKED tree store path (from its own modulesPath), so we reference THAT
+  # everywhere instead of re-deriving: a self-modify re-eval of reconverge-inputs.nix (its
+  # `lib.cleanSource ../.` now runs against the baked store subtree, not the repo) produces
+  # a DIFFERENT sandbox-os-src hash that was never built → "path '…-sandbox-os-src' is not
+  # valid". Both the `nix build` modulesPath arg AND extraDependencies must use the baked
+  # tree, or the re-converged scooter-apply-module bakes the bad path into its own script.
+  effTree = if cfg.modulesTree != null then builtins.storePath cfg.modulesTree else modulesTree;
+  effModulesSrc = if cfg.modulesTree != null then "${builtins.storePath cfg.modulesTree}/modules/sandbox-os" else modulesSrc;
+
   # The canonical system profile — registering each switch here gives us the
   # numbered-generation ladder NixOS uses for rollback. The symlinks
   # (system, system-N-link) are plain files on the writable rootfs, NOT in the
@@ -198,7 +210,7 @@ let
       toplevel=$(nix build --no-link --print-out-paths --impure --expr "
         (import ${baseConfig} {
           nixpkgs = ${cfg.nixpkgs};
-          modulesPath = ${modulesSrc};
+          modulesPath = ${effModulesSrc};
           extraModules = [
             # base-config.nix itself now force-sets programs.scooterModule.{enable,nixpkgs}
             # for the re-converge (it has the nixpkgs ref), so we do NOT set them here —
@@ -602,8 +614,7 @@ in
     # ../.` evaluates against the baked store subtree, not the repo, so a self-modify eval
     # produces a NEW sandbox-os-src that was never built → "path '…-sandbox-os-src' is not
     # valid"). Using the baked path keeps the re-converged toplevel offline-buildable.
-    system.extraDependencies =
-      if cfg.modulesTree != null then [ (builtins.storePath cfg.modulesTree) ] else [ modulesTree ];
+    system.extraDependencies = [ effTree ];
 
     # Apply the mounted module at boot (best-effort; a missing module is a no-op).
     # The agent-host can also exec scooter-apply-module on spawn/claim.
