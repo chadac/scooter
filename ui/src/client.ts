@@ -149,6 +149,26 @@ export async function startWebService(
   }
 }
 
+/** Stop a web service (systemctl stop via the agent-host). Resolves true once the
+ *  stop is issued. */
+export async function stopWebService(
+  config: AgentHostConfig,
+  conversationId: string,
+  name: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/web-services/${encodeURIComponent(name)}/stop`,
+      { method: "POST", headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) console.warn(`[client] stopWebService ${conversationId}/${name}: HTTP ${res.status}`);
+    return res.ok;
+  } catch (e) {
+    console.warn(`[client] stopWebService ${conversationId}/${name} failed:`, e);
+    return false;
+  }
+}
+
 /**
  * Load ALL conversations from the agent-host so the sidebar survives a page
  * refresh and every conversation is listed/searchable (not just the ones this

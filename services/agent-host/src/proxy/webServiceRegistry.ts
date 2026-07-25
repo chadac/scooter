@@ -108,6 +108,16 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
       // re-reads the manifest.
       cache.delete(conversationId);
     },
+    async stop(conversationId, name) {
+      const u = await unit(conversationId, name);
+      const ref = deps.sandboxFor(conversationId);
+      if (!u || !ref) throw new Error(`no web service "${name}" for ${conversationId}`);
+      const exec = await deps.connect(ref);
+      const r = await exec.execute({ command: "systemctl", args: ["stop", u] });
+      if (r.exitCode !== 0) {
+        throw new Error(`systemctl stop ${u} failed (${r.exitCode}): ${r.stderr.trim()}`);
+      }
+    },
     invalidate(conversationId) {
       cache.delete(conversationId);
     },

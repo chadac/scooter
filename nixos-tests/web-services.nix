@@ -100,6 +100,16 @@ pkgs.testers.runNixOSTest {
     machine.succeed("curl -fsS http://localhost:9911/c/conv-test/demo/ | grep -q demo-ok")
     machine.succeed("test $(curl -s -o /dev/null -w '%{http_code}' http://localhost:9911/other) = 404")
 
+    # 4b. scooter-service CLI drives the units without a rebuild (human/agent shell).
+    machine.succeed("command -v scooter-service")
+    machine.succeed("scooter-service list | grep -q demo")            # lists the service
+    machine.succeed("scooter-service status demo | grep -q active")   # running now
+    machine.succeed("scooter-service stop demo")                      # stop it
+    machine.succeed("! systemctl is-active --quiet webservice-demo.service")  # stopped
+    machine.succeed("scooter-service start demo")                     # start again
+    machine.wait_until_succeeds("systemctl is-active --quiet webservice-demo.service", timeout=30)
+    machine.fail("scooter-service start nope")                        # unknown → non-zero
+
     # 5. The built-in `terminal` renders correctly (declaration only — not started, so no
     #    lazy ttyd build in the VM). It's in the manifest and its unit runs ttyd + tmux
     #    under the /terminal base path.

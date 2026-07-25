@@ -591,6 +591,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 202, json: { ok: true } };
   });
 
+  r.post("/conversations/:id/web-services/:name/stop", async (ctx) => {
+    const id = await resolveConvId(ctx.params.id);
+    if (!id) return { status: 404, json: { error: "unknown conversation" } };
+    if (!deps.webServices) return { status: 501, json: { error: "web services unavailable" } };
+    const svc = await deps.webServices.get(id, ctx.params.name);
+    if (!svc) return { status: 404, json: { error: "unknown web service" } };
+    try {
+      await deps.webServices.stop(id, ctx.params.name);
+    } catch (e) {
+      return { status: 502, json: { error: `stop failed: ${(e as Error).message}` } };
+    }
+    return { status: 202, json: { ok: true } };
+  });
+
   // The broker calls this when an agent requests AWS access: raise an in-
   // conversation approval interrupt (Approve / Deny). The user's pick routes back
   // to the broker (approve/deny) via deps.resolveAwsRequest.

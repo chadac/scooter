@@ -32,6 +32,80 @@ let
   };
   manifestFile = pkgs.writeText "web-services.json" manifestJSON;
 
+  # scooter-service — start/stop/restart/status a declared web service WITHOUT a
+  # scooter-rebuild (the services are already declared; this just drives their
+  # systemd units). Reads the discovery manifest for name→unit + basePath, so a
+  # human or the agent can `scooter-service start marimo`. The units are
+  # explicit-start (not wantedBy multi-user.target), so this IS how they come up.
+  scooterService = pkgs.writeShellApplication {
+    name = "scooter-service";
+    runtimeInputs = [ pkgs.systemd pkgs.jq pkgs.coreutils ];
+    text = ''
+      set -euo pipefail
+      MANIFEST=/run/scooter/web-services.json
+
+      usage() {
+        cat >&2 <<'EOF'
+      scooter-service — start/stop declared web services (no rebuild needed).
+
+        scooter-service list                 list services + running state
+        scooter-service status <name>        show one service's state + URL
+        scooter-service start   <name>       start it (systemctl start)
+        scooter-service stop    <name>       stop it
+        scooter-service restart <name>       restart it
+
+      Services are DECLARED in your environment (webServices.<name>); this only
+      drives their systemd units, so no `scooter-rebuild` is needed to start one.
+      EOF
+      }
+
+      have_manifest() { [ -s "$MANIFEST" ] || { echo "scooter-service: no web services declared (manifest $MANIFEST missing)" >&2; exit 1; }; }
+      unit_of() { jq -r --arg n "$1" '.services[] | select(.name==$n) | .unit' "$MANIFEST"; }
+      base_of() { jq -r --arg n "$1" '.services[] | select(.name==$n) | .basePath' "$MANIFEST"; }
+      resolve() {
+        have_manifest
+        u=$(unit_of "$1")
+        [ -n "$u" ] && [ "$u" != "null" ] || { echo "scooter-service: unknown service '$1' (see: scooter-service list)" >&2; exit 2; }
+        echo "$u"
+      }
+      state() { systemctl is-active "$1" 2>/dev/null || true; }
+
+      cmd="''${1:-}"; name="''${2:-}"
+      case "$cmd" in
+        list|"")
+          have_manifest
+          # Build the whole table first, then emit ONCE — so a downstream `| grep -q`
+          # that closes the pipe early doesn't SIGPIPE a mid-loop printf (which, under
+          # `set -e -o pipefail`, would fail the command). read from a here-string, not
+          # a pipe, so the loop runs in THIS shell (no subshell).
+          out=$(printf '%-16s %-9s %s\n' NAME STATE URL)
+          while IFS=$'\t' read -r n u b; do
+            [ -n "$n" ] || continue
+            out="$out"$'\n'"$(printf '%-16s %-9s %s' "$n" "$(state "$u")" "$b")"
+          done <<< "$(jq -r '.services[] | "\(.name)\t\(.unit)\t\(.basePath)"' "$MANIFEST")"
+          # A downstream `| grep -q` may close the pipe before we finish writing →
+          # SIGPIPE (exit 141), which set -e would treat as failure. Tolerate it: the
+          # output is complete-or-consumed either way.
+          printf '%s\n' "$out" || true
+          ;;
+        status)
+          [ -n "$name" ] || { usage; exit 2; }
+          u=$(resolve "$name")
+          echo "$name: $(state "$u")  unit=$u  url=$(base_of "$name")" || true  # tolerate `| grep -q` closing early
+          ;;
+        start|stop|restart)
+          [ -n "$name" ] || { usage; exit 2; }
+          u=$(resolve "$name")
+          systemctl "$cmd" "$u"
+          echo "$name: $(state "$u")  ($cmd applied)"
+          [ "$cmd" != "stop" ] && echo "url: $(base_of "$name")" || true
+          ;;
+        -h|--help|help) usage ;;
+        *) echo "scooter-service: unknown command '$cmd'" >&2; usage; exit 2 ;;
+      esac
+    '';
+  };
+
   serviceOpts = { name, ... }: {
     options = {
       enable = lib.mkEnableOption "the ${name} web service";
@@ -128,6 +202,10 @@ in
   };
 
   config = lib.mkIf (enabled != { }) {
+    # `scooter-service start|stop|... <name>` on PATH — start/stop declared services
+    # without a rebuild (a human via the sandbox shell, or the agent via its shell tool).
+    environment.systemPackages = [ scooterService ];
+
     # Open each enabled web service's port in the NixOS firewall. The image ships
     # with the default firewall ON (networking.firewall.enable = true), whose
     # nixos-fw chain DROPs all inbound TCP except loopback/established — so the
