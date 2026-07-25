@@ -50,6 +50,9 @@ export interface SdkAcpClientDeps {
   /** Absolute path to a glibc `claude` CLI to use instead of the SDK's bundled
    *  (musl) one. Defaults to CLAUDE_CODE_COMMAND env, else "claude" on PATH. */
   claudeCodePath?: string;
+  /** Override the SDK's query() — for tests (inject a fake stream). Defaults to the
+   *  real `@anthropic-ai/claude-agent-sdk` query, imported lazily. */
+  queryImpl?: SdkQueryFn;
 }
 
 /** The minimal shape of the SDK's query() we depend on — declared locally so this
@@ -83,7 +86,9 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   const { server, toolAliases, disallowedTools } = await createSandboxMcpServer(deps.exec);
 
   // Lazy import so the module graph (and unit tests) load without the SDK.
-  const { query } = (await import("@anthropic-ai/claude-agent-sdk")) as { query: SdkQueryFn };
+  const query =
+    deps.queryImpl ??
+    ((await import("@anthropic-ai/claude-agent-sdk")) as { query: SdkQueryFn }).query;
 
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
   const terminalCreatedCbs = new Set<(id: string, command: string, args: string[]) => void>();
@@ -91,6 +96,13 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
 
   let sessionId = "";
   let active: SdkQuery | undefined; // the in-flight query() for cancel()
+  // The SDK's OWN session UUID (from message.session_id), captured each turn and
+  // passed as `resume` on the next prompt so the conversation CONTINUES with full
+  // history — without it every query() is a fresh, context-free session (the agent
+  // "loses total context", most visibly after a cancel). Resume also survives an
+  // interrupt: the interrupted session's transcript is intact, so the next turn
+  // picks up where it left off instead of dead-starting.
+  let sdkSessionId: string | undefined;
 
   const baseOptions: Record<string, unknown> = {
     model: deps.model,
@@ -140,17 +152,28 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     async newSession(_p: NewSessionParams) {
       // The SDK mints its own session id on first query; we return a stable handle.
       sessionId = `sdk_${Date.now()}`;
+      // A genuinely new conversation starts fresh — clear any resume id so the first
+      // prompt is a new SDK session (not a resume of the previous conversation).
+      sdkSessionId = undefined;
       return { sessionId };
     },
 
     async prompt(params: PromptParams): Promise<{ stopReason: string }> {
       const text = promptToText(params.prompt);
-      debug("[sdk] prompt: query start, model=%s", deps.model);
-      const q = query({ prompt: text, options: baseOptions });
+      // Resume the SDK session so the turn CONTINUES the conversation (history
+      // intact). First turn: sdkSessionId is undefined → a fresh session.
+      const options = sdkSessionId ? { ...baseOptions, resume: sdkSessionId } : baseOptions;
+      debug("[sdk] prompt: query start, model=%s, resume=%s", deps.model, sdkSessionId ?? "(new)");
+      const q = query({ prompt: text, options });
       active = q;
       let stopReason = "end_turn";
       try {
         for await (const msg of q) {
+          // Capture the SDK's session id from any message that carries it, so the
+          // NEXT prompt resumes this same session. (The id is stable across a turn;
+          // capturing every time is harmless and covers new/forked sessions.)
+          const sid = (msg as { session_id?: string }).session_id;
+          if (sid) sdkSessionId = sid;
           if (msg.type === "result") {
             stopReason = resultStopReason(msg as { subtype?: string; is_error?: boolean });
             continue;
@@ -165,7 +188,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       } finally {
         active = undefined;
       }
-      debug("[sdk] prompt: stopReason=%s", stopReason);
+      debug("[sdk] prompt: stopReason=%s, session=%s", stopReason, sdkSessionId ?? "?");
       return { stopReason };
     },
 
