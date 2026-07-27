@@ -94,3 +94,36 @@ describe("SDK client session resume", () => {
     expect(fq.calls[fq.calls.length - 1].options.resume).toBeUndefined();
   });
 });
+
+describe("SDK client platform MCP tools (scooter-env)", () => {
+  it("wires the scooter-env HTTP MCP server + allows its tools when mcpEndpointUrl is given", async () => {
+    const fq = fakeQuery();
+    const client = await createSdkAcpClient({
+      oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi",
+      mcpEndpointUrl: "http://127.0.0.1:8080/mcp?conv=c1",
+      queryImpl: fq.queryImpl,
+    });
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "schedule something" }] } as never);
+
+    const mcp = fq.calls[0].options.mcpServers as Record<string, { type?: string; url?: string }>;
+    // The sandbox server stays; scooter-env is added as an HTTP server pointed at the
+    // per-conversation MCP endpoint (this is what carries the scheduler/slack/github tools).
+    expect(mcp.sandbox).toBeDefined();
+    expect(mcp["scooter-env"]).toEqual({ type: "http", url: "http://127.0.0.1:8080/mcp?conv=c1" });
+    // Its tools are auto-allowed (no permission prompt) via the server prefix.
+    expect(fq.calls[0].options.allowedTools as string[]).toContain("mcp__scooter-env");
+  });
+
+  it("omits scooter-env when no mcpEndpointUrl is given (sandbox tools only)", async () => {
+    const fq = fakeQuery();
+    const client = await mkClient(fq.queryImpl); // no mcpEndpointUrl
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+
+    const mcp = fq.calls[0].options.mcpServers as Record<string, unknown>;
+    expect(mcp.sandbox).toBeDefined();
+    expect(mcp["scooter-env"]).toBeUndefined();
+    expect(fq.calls[0].options.allowedTools as string[]).not.toContain("mcp__scooter-env");
+  });
+});

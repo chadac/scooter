@@ -43,6 +43,13 @@ export interface SdkAcpClientDeps {
   /** Services the sandbox-routed MCP tools — the SAME ExecBackend the goose ACP
    *  handlers use, so tool calls exec in this conversation's sandbox pod. */
   exec: ExecBackend;
+  /** The scooter-env HTTP MCP endpoint URL for THIS conversation (already carries
+   *  ?conv=<id>). Exposes the platform tools — scheduler, slack/github/gitlab/jira,
+   *  background jobs, model switch, sandbox resize — to the agent. Omit to run with
+   *  only the sandbox tools (e.g. no MCP endpoint deployed). Without this, the
+   *  claude-code agent can DESCRIBE those capabilities (from its skills) but has no
+   *  tools to actually use them. */
+  mcpEndpointUrl?: string;
   /** Agent identity + skills, as the SDK systemPrompt (was goose .goosehints). */
   systemPrompt: string;
   /** Extra env for the claude subprocess (e.g. IS_SANDBOX if ever needed). */
@@ -111,13 +118,28 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // the glibc NixOS image. Point it at the glibc `claude` baked onto the image
     // (nixpkgs claude-code, on PATH as `claude`), overridable via CLAUDE_CODE_COMMAND.
     pathToClaudeCodeExecutable: deps.claudeCodePath ?? process.env.CLAUDE_CODE_COMMAND ?? "claude",
-    mcpServers: { sandbox: server },
+    // `sandbox` routes Bash/Read/Edit/Write into the pod; `scooter-env` (when wired)
+    // is the platform HTTP MCP server carrying scheduler / slack / github / gitlab /
+    // jira / background-jobs / model-switch / sandbox-resize tools. WITHOUT scooter-env
+    // the claude-code agent only has the sandbox tools — it can describe scheduling
+    // etc. from its skills but can't actually invoke them.
+    mcpServers: {
+      sandbox: server,
+      ...(deps.mcpEndpointUrl ? { "scooter-env": { type: "http", url: deps.mcpEndpointUrl } } : {}),
+    },
     toolAliases,
     disallowedTools,
     // Keep the sandbox tools auto-approved at the SDK layer; the bridge's own
     // permission flow (onPermissionRequest) is the UI gate. permissionMode
     // "acceptEdits"/"default" — allow our aliased tools without a CLI prompt.
-    allowedTools: Object.values(toolAliases),
+    // The scooter-env MCP tools are made AVAILABLE by the mcpServers entry above;
+    // `allowedTools` only suppresses the permission PROMPT (per the SDK docs), so we
+    // add the server prefix to keep them from prompting. Their real gate is the
+    // bridge's canUseTool below.
+    allowedTools: [
+      ...Object.values(toolAliases),
+      ...(deps.mcpEndpointUrl ? ["mcp__scooter-env"] : []),
+    ],
     includePartialMessages: INCLUDE_PARTIALS, // stream text deltas for responsive AG-UI
     // Surface the spawned claude CLI's stderr — otherwise a CLI failure (bad flag,
     // auth, version mismatch) is an opaque "exited with code 1". Always logged.
