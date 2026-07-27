@@ -56,7 +56,7 @@ let
 
   # -- initContainer: kubectl only (create/reuse the per-consumer secrets) ----------
   secretsScript = ''
-    set -euo pipefail
+    set -eu
     mkdir -p /shared
   '' + lib.concatMapStrings (name: ''
     SECRET="agent-pg-${name}"
@@ -72,7 +72,7 @@ let
 
   # -- main container: psql only (create roles + databases from the .pw files) -------
   sqlScript = ''
-    set -euo pipefail
+    set -eu
     export PGHOST="${host}" PGPORT="${toString port}" PGUSER="${adminUser}" PGDATABASE=postgres
     # PGPASSWORD is injected from the admin secret via env.
     echo "waiting for postgres at $PGHOST:$PGPORT ..."
@@ -108,11 +108,11 @@ in
     };
     kubectlImage = mkOption {
       type = types.str;
-      # The official, canonical kubectl image (bitnami/kubectl's public tags were
-      # retired in 2025 and no longer pull). The SQL step uses `image` (postgres,
-      # which ships psql/pg_isready).
-      default = "registry.k8s.io/kubectl:v1.30.0";
-      description = "Image for the provisioning Job's secret-creating initContainer (needs kubectl).";
+      # Needs kubectl AND a shell + coreutils (sh/tr/base64/head) — so NOT the
+      # distroless registry.k8s.io/kubectl (kubectl binary only) and NOT bitnami/
+      # kubectl (public tags retired in 2025). alpine/k8s bundles all of it.
+      default = "alpine/k8s:1.30.0";
+      description = "Image for the provisioning Job's secret-creating initContainer (needs kubectl + a shell + coreutils).";
     };
     storage = mkOption {
       type = types.str;
@@ -260,8 +260,8 @@ in
               containers.gen = {
                 name = "gen";
                 image = pcfg.kubectlImage;
-                command = [ "/bin/bash" "-c" ''
-                  set -euo pipefail
+                command = [ "/bin/sh" "-c" ''
+                  set -eu
                   if kubectl -n "${ns}" get secret agent-pg-admin >/dev/null 2>&1; then
                     echo "agent-pg-admin exists — reusing"; exit 0
                   fi
