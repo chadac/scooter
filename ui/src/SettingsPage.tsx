@@ -1,11 +1,14 @@
 /**
- * Settings page — currently just the Scheduled Tasks view.
+ * Settings page — Scheduled Tasks + Users.
  *
  * A scheduled task cron-spawns a fresh Scooter conversation with a prompt (the
  * scheduler service). This page lists the signed-in user's tasks and lets them
  * create / enable-disable / edit / delete them, proxied through the agent-host's
  * /scheduled-tasks routes (scoped to the caller). When the scheduler isn't
  * deployed, it shows a "not configured" note instead.
+ *
+ * The Users section lists the learned Scooter users (from the identity store);
+ * it likewise shows a "not configured" note when no identity store is wired.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -16,8 +19,10 @@ import {
   createScheduledTask,
   updateScheduledTask,
   deleteScheduledTask,
+  loadUsers,
   type ScheduledTaskView,
   type ScheduledTaskInput,
+  type UserView,
 } from "./client.js";
 import { viewStore } from "./view.js";
 
@@ -232,6 +237,69 @@ function TaskRow({
   );
 }
 
+/** The Users section — the learned Scooter users (signed-in / webhook-mapped).
+ *  Hidden with a "not configured" note when no identity store is wired (501). */
+function UsersSection() {
+  const [users, setUsers] = useState<UserView[]>([]);
+  const [configured, setConfigured] = useState(true);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await loadUsers(agentHostConfig);
+      setConfigured(res.configured);
+      setUsers(res.users);
+      setLoading(false);
+    })();
+  }, []);
+
+  return (
+    <section data-testid="users-section" className="flex flex-col gap-3">
+      <div>
+        <h2 className="font-medium">Users</h2>
+        <p className="text-sm text-muted-foreground">
+          People who’ve signed in to Scooter (learned as they arrive — not a full roster).
+        </p>
+      </div>
+
+      {!configured ? (
+        <p data-testid="users-unavailable" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+          No identity store is configured, so users aren’t tracked here.
+        </p>
+      ) : loading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : users.length === 0 ? (
+        <p data-testid="users-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+          No users seen yet.
+        </p>
+      ) : (
+        <ul data-testid="user-list" className="flex flex-col gap-2">
+          {users.map((u) => (
+            <li
+              key={u.id}
+              data-testid="user-item"
+              className="flex items-start justify-between gap-3 rounded-md border p-3"
+            >
+              <div className="min-w-0">
+                <div className="truncate font-medium">{u.name || u.email || u.id}</div>
+                <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+                  {u.email && <span className="truncate">{u.email}</span>}
+                  <span className="font-mono">{u.id}</span>
+                </div>
+              </div>
+              {u.updatedAt && (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  last seen {new Date(u.updatedAt).toLocaleDateString()}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const [tasks, setTasks] = useState<ScheduledTaskView[]>([]);
   const [configured, setConfigured] = useState(true);
@@ -316,6 +384,8 @@ export function SettingsPage() {
           </>
         )}
       </section>
+
+      <UsersSection />
     </div>
   );
 }

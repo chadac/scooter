@@ -203,6 +203,19 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json: { id: match.id } };
   });
 
+  // The learned Scooter users, for the settings Users page. This is the set of users
+  // who've actually signed in (or been mapped via a webhook) — a learned list, not a
+  // full roster. Unlike /users/by-email (a single targeted lookup), this IS a
+  // directory listing, but it's an authenticated internal tool (same trust model as
+  // the conversation list, which is already public to authenticated callers). Gated
+  // like the scheduler routes: 501 when no identity store is wired, so the UI can hide
+  // the page. `configured` lets the client distinguish "off" from "on but empty".
+  r.get("/users", async () => {
+    if (!deps.identityStore) return { status: 501, json: { error: "identity store not configured" } };
+    const users = await deps.identityStore.list().catch(() => []);
+    return { json: { configured: true, users } };
+  });
+
   // The model catalog — a UI populates its selector from this.
   r.get("/models", () => ({
     json: { default: models.default ?? null, available: models.available, hints: models.hints ?? {} },

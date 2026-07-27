@@ -25,6 +25,15 @@ export interface IdentityRecord {
   name?: string;
 }
 
+/** A learned user, as listed for the settings Users page. */
+export interface UserRecord {
+  id: string;
+  email?: string;
+  name?: string;
+  /** ISO timestamp we last saw this user (updated_at). */
+  updatedAt?: string;
+}
+
 /** The persistence seam (Postgres impl below; tests inject a fake). */
 export interface IdentityStore {
   /** The learned record for an id, or undefined if unknown / on any error. */
@@ -37,6 +46,10 @@ export interface IdentityStore {
    *  the conversation owner). A row = a real Scooter user (every ingress login
    *  upserts one). If several rows share an email, returns the most recently seen. */
   getByEmail(email: string): Promise<{ id: string } | undefined>;
+  /** List the learned users (most-recently-seen first), for the settings Users page.
+   *  This is the set of users who've actually signed in or been mapped — a learned
+   *  list, not a full roster. Returns [] on any error. `limit` caps the result. */
+  list(limit?: number): Promise<UserRecord[]>;
   close(): Promise<void>;
 }
 
@@ -175,6 +188,26 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
         // eslint-disable-next-line no-console
         console.error(`[identityStore] getByEmail failed (no match):`, (err as Error).message);
         return undefined;
+      }
+    },
+    async list(limit = 500) {
+      try {
+        await ensureTable();
+        const res = await pool.query(
+          `SELECT id, email, name, updated_at FROM user_identity
+             ORDER BY updated_at DESC LIMIT $1`,
+          [limit],
+        );
+        return res.rows.map((row) => ({
+          id: row.id as string,
+          email: row.email ?? undefined,
+          name: row.name ?? undefined,
+          updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
+        }));
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error(`[identityStore] list failed:`, (e as Error).message);
+        return [];
       }
     },
     async close() {

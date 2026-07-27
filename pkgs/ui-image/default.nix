@@ -78,6 +78,9 @@ let
         # POST/PATCH/DELETE hits the static handler and 405s. (This is the /whoami
         # bug class: an agent-host API path missing a proxy location.)
         location /scheduled-tasks { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        # The settings Users page lists learned users (/users); also covers the
+        # webhooks reverse lookup (/users/by-email). Same proxy-or-405 rule as above.
+        location /users         { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
 
         # Web-service reverse proxy: /c/<id>/<service>/... -> the agent-host, which
         # resolves the conversation's pod and forwards to the in-pod service. Needs
