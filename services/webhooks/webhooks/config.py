@@ -23,6 +23,7 @@ class DatabaseSettings(BaseSettings):
     db_user: str = "webhooks"
     db_password: str = ""  # set (e.g. via secretKeyRef) -> Postgres DSN assembled
     db_name: str = "webhooks"
+    db_sslmode: str = ""  # e.g. "require" for RDS; empty = no ssl param
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 
@@ -32,10 +33,13 @@ class DatabaseSettings(BaseSettings):
         # build the asyncpg DSN from the components. (A DSN that already names a
         # driver wins — explicit override.)
         if self.db_password and not self.dsn.startswith("postgresql"):
-            self.dsn = (
+            dsn = (
                 f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
                 f"@{self.db_host}:{self.db_port}/{self.db_name}"
             )
+            if self.db_sslmode:
+                dsn += f"?ssl={self.db_sslmode}"
+            self.dsn = dsn
         return self
 
 

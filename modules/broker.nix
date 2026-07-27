@@ -221,21 +221,10 @@ in
         default = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
         description = "Agent-host URL — the broker notifies it to raise the approval interrupt.";
       };
-      db = {
-        passwordSecret = mkOption {
-          type = types.nullOr (types.submodule {
-            options = {
-              name = mkOption { type = types.str; description = "Secret name."; };
-              key = mkOption { type = types.str; default = "password"; description = "Key holding the DB password."; };
-            };
-          });
-          default = null;
-          description = "Secret + key for the Postgres password (shared agent-shared-db). null = SQLite (dev).";
-        };
-        host = mkOption { type = types.str; default = "agent-shared-db.${cfg.namespace}.svc.cluster.local"; description = "Postgres host (shared instance)."; };
-        name = mkOption { type = types.str; default = "broker"; description = "Database name (separate DB on the shared instance)."; };
-        user = mkOption { type = types.str; default = "webhooks"; description = "Database user."; };
-      };
+      # The broker's DB (permission/size store) now lives in the shared platform
+      # Postgres (agentSandbox.postgres) — its OWN `broker` db + auto-provisioned role
+      # (agent-pg-broker). No per-broker DB knobs; point at RDS via postgres.external.
+
       # OpenFGA authorization: the broker ENFORCES which user may approve which
       # account (relation `approver` on `aws_account:<alias>`). Off by default →
       # the broker's NoopAuthorizer → today's behavior. Per-account approver lists
@@ -425,16 +414,16 @@ in
                   { name = "AWS_AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
                   # The agent-host SA may approve/deny (it relays the user's pick).
                   { name = "AWS_APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
-                  { name = "AWS_DB_HOST"; value = bcfg.aws.db.host; }
-                  { name = "AWS_DB_NAME"; value = bcfg.aws.db.name; }
-                  { name = "AWS_DB_USER"; value = bcfg.aws.db.user; }
-                ] ++ lib.optionals (bcfg.aws.db.passwordSecret != null) [
-                  {
-                    name = "AWS_DB_PASSWORD";
-                    valueFrom.secretKeyRef = {
-                      inherit (bcfg.aws.db.passwordSecret) name key;
-                    };
-                  }
+                  # The AWS broker's permission/size store lives in the shared
+                  # platform Postgres (agentSandbox.postgres) — its OWN `broker` db +
+                  # auto-provisioned role (agent-pg-broker), NOT the webhooks user.
+                  { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "AWS_DB_NAME"; value = "broker"; }
+                  { name = "AWS_DB_USER"; value = "broker"; }
+                  { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
+                ] ++ lib.optionals (cfg.postgres.sslmode != null) [
+                  { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ] ++ lib.optionals bcfg.aws.fga.enable [
                   # OpenFGA authorization (the per-account approver gate).
                   { name = "FGA_ENABLED"; value = "true"; }
@@ -480,22 +469,17 @@ in
                   # on the agent-host). Only when the AWS broker is enabled.
                   { name = "SANDBOX_AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
                 ++ lib.optionals (!bcfg.aws.enable) (
-                  # The size store shares the AWS DB components (same shared Postgres,
-                  # `broker` DB — size_store_config reads aws_db_*). When the AWS
-                  # broker is ON its env block already sets AWS_DB_* — don't
-                  # double-declare; only set them here when it's OFF. Host/name/user
-                  # always; password only from a configured Secret (else the store
-                  # falls back to its SQLite dev default, fine for local/dev).
+                  # The size store uses the shared Postgres `broker` db (size_store_config
+                  # reads aws_db_*). When the AWS broker is ON its env block already sets
+                  # AWS_DB_* — don't double-declare; only set them here when it's OFF.
+                  # Its own auto-provisioned role secret (agent-pg-broker).
                   [
-                    { name = "AWS_DB_HOST"; value = bcfg.aws.db.host; }
-                    { name = "AWS_DB_NAME"; value = bcfg.aws.db.name; }
-                    { name = "AWS_DB_USER"; value = bcfg.aws.db.user; }
-                  ] ++ lib.optional (bcfg.aws.db.passwordSecret != null) {
-                    name = "AWS_DB_PASSWORD";
-                    valueFrom.secretKeyRef = {
-                      inherit (bcfg.aws.db.passwordSecret) name key;
-                    };
-                  }
+                    { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
+                    { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
+                    { name = "AWS_DB_NAME"; value = "broker"; }
+                    { name = "AWS_DB_USER"; value = "broker"; }
+                    { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
+                  ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ));
                 volumeMounts = lib.optionals bcfg.aws.enable [
                   { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
@@ -578,14 +562,14 @@ in
               env = [
                 { name = "OPENFGA_DATASTORE_ENGINE"; value = "postgres"; }
                 {
-                  # postgres://user:pass@host:5432/openfga
+                  # postgres://openfga@host:5432/openfga — shared platform Postgres,
+                  # OpenFGA's OWN db + auto-provisioned role (agent-pg-openfga).
                   name = "OPENFGA_DATASTORE_URI";
-                  value = "postgres://${bcfg.aws.db.user}@${bcfg.aws.db.host}:5432/openfga?sslmode=disable";
+                  value = "postgres://openfga@${cfg.postgres.host}:${toString cfg.postgres.port}/openfga?sslmode=${if cfg.postgres.sslmode != null then cfg.postgres.sslmode else "disable"}";
                 }
-              ] ++ lib.optionals (bcfg.aws.db.passwordSecret != null) [
                 {
                   name = "OPENFGA_DATASTORE_PASSWORD";
-                  valueFrom.secretKeyRef = { inherit (bcfg.aws.db.passwordSecret) name key; };
+                  valueFrom.secretKeyRef = { name = "agent-pg-openfga"; key = "password"; };
                 }
               ];
               ports = [
@@ -608,6 +592,15 @@ in
         };
       };
     })
+    ];
+
+    # Register with the shared Postgres so the provisioning Job creates each db + a
+    # dedicated owner role (agent-pg-broker / agent-pg-openfga). The `broker` db is
+    # used by the sandbox-size store (always, when the broker runs) AND the AWS
+    # permission store; openfga only when FGA is enabled.
+    agentSandbox.postgres.consumers = lib.mkMerge [
+      { broker = { db = "broker"; user = "broker"; }; }
+      (lib.mkIf bcfg.aws.fga.enable { openfga = { db = "openfga"; user = "openfga"; }; })
     ];
   };
 }

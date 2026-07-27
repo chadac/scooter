@@ -93,52 +93,10 @@ in
       description = "Name of a Secret (same namespace) envFrom-mounted for provider creds.";
     };
 
-    # --- Durable mapping store (Postgres) ----------------------------------
-    # The PR/Slack <-> conversation mapping (ConversationMap) MUST survive a pod
-    # restart, or follow-up comments spawn a new conversation instead of resuming
-    # and status-back-posting stops. Default SQLite-on-emptyDir is ephemeral;
-    # enable this to run a Postgres pod (PVC-backed) and point DSN at it.
-    postgres = {
-      enable = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Run a Postgres pod (PVC-backed) for the durable mapping store.";
-      };
-      image = mkOption {
-        type = types.str;
-        default = "postgres:16-alpine";
-        description = "Postgres image.";
-      };
-      database = mkOption {
-        type = types.str;
-        default = "webhooks";
-        description = "Database name.";
-      };
-      user = mkOption {
-        type = types.str;
-        default = "webhooks";
-        description = "Database user.";
-      };
-      passwordSecret = mkOption {
-        type = types.submodule {
-          options = {
-            name = mkOption { type = types.str; description = "Secret name."; };
-            key = mkOption { type = types.str; default = "password"; description = "Key holding the password."; };
-          };
-        };
-        description = "Secret + key supplying the Postgres password (shared by the DB and the app DSN).";
-      };
-      storage = mkOption {
-        type = types.str;
-        default = "1Gi";
-        description = "PVC size for the Postgres data volume.";
-      };
-      storageClass = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "PVC storageClassName (null = cluster default).";
-      };
-    };
+    # Durable mapping store: the PR/Slack <-> conversation map MUST survive a pod
+    # restart (else follow-up comments spawn a new conversation instead of resuming).
+    # It now lives in the shared platform Postgres (agentSandbox.postgres, always on)
+    # — webhooks' own `webhooks` db + auto-provisioned role. No per-module knobs here.
 
     # The webhooks receiver's own generic Ingress — SEPARATE from the chat ingress
     # and UNAUTHENTICATED (GitHub/Slack/… can't send an identity header; the
@@ -226,25 +184,16 @@ in
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
                   { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
-                ] ++ (if wcfg.postgres.enable then [
-                  # Durable Postgres store. The DSN is assembled app-side from
-                  # these components so the password comes from a secretKeyRef
-                  # (never a full connection string in the manifest).
-                  { name = "DB_HOST"; value = "agent-shared-db.${cfg.namespace}.svc.cluster.local"; }
-                  { name = "DB_PORT"; value = "5432"; }
-                  { name = "DB_NAME"; value = wcfg.postgres.database; }
-                  { name = "DB_USER"; value = wcfg.postgres.user; }
-                  {
-                    name = "DB_PASSWORD";
-                    valueFrom.secretKeyRef = {
-                      inherit (wcfg.postgres.passwordSecret) name key;
-                    };
-                  }
-                ] else [
-                  # Ephemeral SQLite on the emptyDir (dev / single-pod, lost on
-                  # restart). Enable postgres for durability.
-                  { name = "DSN"; value = "sqlite+aiosqlite:////data/webhooks.db"; }
-                ]);
+                ] ++ [
+                  # Durable store: the shared platform Postgres (agentSandbox.postgres,
+                  # always on). Webhooks' OWN `webhooks` db + auto-provisioned role
+                  # (agent-pg-webhooks). DSN assembled app-side from these parts.
+                  { name = "DB_HOST"; value = cfg.postgres.host; }
+                  { name = "DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "DB_NAME"; value = "webhooks"; }
+                  { name = "DB_USER"; value = "webhooks"; }
+                  { name = "DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-webhooks"; key = "password"; }; }
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 # Provider signing secrets / tokens come from a Secret whose keys
                 # match the GITHUB_WEBHOOK_SECRET / SLACK_* env var names.
                 envFrom = lib.optionals (wcfg.secretName != "") [
@@ -282,99 +231,6 @@ in
         };
       };
     }
-    (lib.mkIf wcfg.postgres.enable {
-      # Shared durable Postgres for the platform — a single-replica instance
-      # backed by a PVC. It hosts MULTIPLE logical databases (the webhooks
-      # PR/Slack <-> conversation mappings here, plus the AWS broker's `broker`
-      # DB), so the name is deliberately neutral (`agent-shared-db`, not
-      # webhooks-specific). The webhooks app provisions this pod; the broker
-      # connects to the same Service. The app reads DB_PASSWORD from the same
-      # secret used here.
-      persistentVolumeClaims.agent-shared-db = {
-        metadata = { name = "agent-shared-db"; namespace = cfg.namespace; };
-        spec = {
-          accessModes = [ "ReadWriteOnce" ];
-          resources.requests.storage = wcfg.postgres.storage;
-        } // lib.optionalAttrs (wcfg.postgres.storageClass != null) {
-          storageClassName = wcfg.postgres.storageClass;
-        };
-      };
-
-      deployments.agent-shared-db = {
-        metadata = { name = "agent-shared-db"; namespace = cfg.namespace; };
-        spec = {
-          replicas = 1;
-          # Recreate (not RollingUpdate): a single RWO PVC can't be mounted by
-          # two pods, so the old pod must fully release it before the new one.
-          strategy.type = "Recreate";
-          selector.matchLabels.app = "agent-shared-db";
-          template = {
-            metadata.labels.app = "agent-shared-db";
-            spec = {
-              containers.postgres = {
-                name = "postgres";
-                image = wcfg.postgres.image;
-                # The shared Postgres (webhooks + conversation metadata) — a memory
-                # request/limit protects the node; Postgres is IO/mem-bound, so give
-                # it a real reservation and no cpu limit. 512Mi request (not 256Mi):
-                # under load / a rolling restart the smaller reservation left it
-                # CPU/IO-starved and pg_isready couldn't answer in time (see the probe
-                # timeouts below).
-                resources = lib.mkDefault {
-                  requests = { cpu = "100m"; memory = "512Mi"; };
-                  limits = { memory = "1Gi"; };
-                };
-                ports = [{ containerPort = 5432; name = "pg"; }];
-                env = [
-                  { name = "POSTGRES_DB"; value = wcfg.postgres.database; }
-                  { name = "POSTGRES_USER"; value = wcfg.postgres.user; }
-                  {
-                    name = "POSTGRES_PASSWORD";
-                    valueFrom.secretKeyRef = {
-                      inherit (wcfg.postgres.passwordSecret) name key;
-                    };
-                  }
-                  # Keep PGDATA in a subdir so the volume's lost+found doesn't
-                  # collide with initdb.
-                  { name = "PGDATA"; value = "/var/lib/postgresql/data/pgdata"; }
-                ];
-                volumeMounts = [{ name = "data"; mountPath = "/var/lib/postgresql/data"; }];
-                # pg_isready probes with a GENEROUS timeout + an initial delay. The
-                # k8s DEFAULT timeoutSeconds is 1s, which pg_isready couldn't meet
-                # during startup / a rolling restart under load → the liveness probe
-                # killed Postgres in a loop, taking the broker (and every conversation)
-                # down with it. 5s timeout + a startup delay give it room.
-                readinessProbe = {
-                  exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
-                  timeoutSeconds = 5;
-                  initialDelaySeconds = 10;
-                  periodSeconds = 10;
-                };
-                livenessProbe = {
-                  exec.command = [ "pg_isready" "-U" wcfg.postgres.user "-d" wcfg.postgres.database ];
-                  timeoutSeconds = 5;
-                  initialDelaySeconds = 15;
-                  periodSeconds = 10;
-                  failureThreshold = 6;
-                };
-              };
-              volumes = [{
-                name = "data";
-                persistentVolumeClaim.claimName = "agent-shared-db";
-              }];
-            };
-          };
-        };
-      };
-
-      services.agent-shared-db = {
-        metadata = { name = "agent-shared-db"; namespace = cfg.namespace; };
-        spec = {
-          selector.app = "agent-shared-db";
-          ports = [{ port = 5432; targetPort = "pg"; name = "pg"; }];
-        };
-      };
-    })
     (lib.mkIf wcfg.ingress.enable {
       # The webhooks Ingress — a generic networking.k8s.io/v1 Ingress, UNAUTH
       # (providers sign their requests; the handlers verify). Controller +
@@ -406,5 +262,9 @@ in
       };
     })
     ];
+
+    # Register with the shared Postgres: the provisioning Job creates the `webhooks`
+    # database + a `webhooks` role that owns it (secret agent-pg-webhooks).
+    agentSandbox.postgres.consumers.webhooks = { db = "webhooks"; user = "webhooks"; };
   };
 }
