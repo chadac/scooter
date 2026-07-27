@@ -28,6 +28,10 @@ export interface Session {
   /** Creating user (server-sourced). undefined = unowned/public. Drives the
    *  Mine/All view filter. */
   owner?: string;
+  /** The conversation's sandbox lifecycle state (server-sourced, live via the
+   *  /conversations/events stream): "running" (pod up), "suspended" (idle → pod
+   *  dropped, PVCs kept), "ended". Drives the Sandbox status tab + Start button. */
+  status?: "running" | "suspended" | "ended";
 }
 
 /** One linked external resource, as summarized in the conversation list. */
@@ -199,7 +203,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"] }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -227,6 +231,9 @@ export const sessionStore = {
         links: c.links ?? existing?.links,
         // Owner is server-owned (stamped at creation); take the server's value.
         owner: c.owner ?? existing?.owner,
+        // Sandbox lifecycle state is server-owned + live (idle-suspend / resume);
+        // always take the server's value so the status tab reflects reality.
+        status: c.status ?? existing?.status,
       });
     }
 

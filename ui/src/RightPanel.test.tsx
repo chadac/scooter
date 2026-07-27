@@ -1,10 +1,13 @@
 /**
- * UI unit test — the right-side tabbed panel (Approvals + Queue). SSR render (the
- * house style, no jsdom), so this covers the STRUCTURE: collapse-when-both-empty, the
- * tab bar + count badges, and that Approvals is the default-active tab (its content
- * shows on first render). The interactive bits — clicking to the Queue tab and the
- * auto-focus-Approvals-on-new-interrupt effect — need a real DOM and are covered by
- * the Playwright e2e (test/e2e/interrupt.spec.ts + queue coverage).
+ * UI unit test — the right-side tabbed panel (Sandbox + Approvals + Queue + Services).
+ * SSR render (the house style, no jsdom), so this covers the STRUCTURE: the persistent
+ * Sandbox status tab (leftmost, always present + default-active on first paint), the tab
+ * bar + count badges. The interactive bits — clicking to another tab and the
+ * auto-focus-Approvals-on-new-interrupt effect (a useEffect, doesn't run in SSR) — need
+ * a real DOM and are covered by the Playwright e2e.
+ *
+ * Note: the sessions store always has a current conversation (freshState seeds one), so
+ * the panel is always shown — the Sandbox status tab is persistent by design.
  */
 
 import { describe, it, expect } from "vitest";
@@ -40,45 +43,32 @@ const interrupt = (id: string, message: string): PendingInterrupt => ({
 });
 
 describe("RightPanel", () => {
-  it("renders nothing when both approvals and queue are empty", () => {
-    expect(render({})).toBe("");
+  it("always shows the panel with a persistent, default-active Sandbox tab", () => {
+    const html = render({});
+    expect(html).toContain('data-testid="right-panel"');
+    expect(html).toContain('data-testid="right-panel-tab-sandbox"');
+    // Sandbox is the leftmost, default-active tab -> its content renders on first paint.
+    expect(html).toContain('data-testid="sandbox-panel"');
+    // The sandbox tab button is the selected one (aria-selected precedes data-testid).
+    expect(html).toMatch(/aria-selected="true"[^>]*right-panel-tab-sandbox/);
   });
 
-  it("shows the panel + both tabs when only the queue is non-empty", () => {
+  it("shows the Queue badge count; approvals badge absent when there are none", () => {
     const html = render({ queuedMessages: [{ id: "q1", text: "hello queued", priority: 0 }] });
-    expect(html).toContain('data-testid="right-panel"');
     expect(html).toContain('data-testid="right-panel-tab-approvals"');
     expect(html).toContain('data-testid="right-panel-tab-queue"');
-    // Queue badge shows the count; approvals badge is absent (count 0).
     expect(html).toContain('data-testid="right-panel-badge-queue"');
     expect(html).not.toContain('data-testid="right-panel-badge-approvals"');
   });
 
-  it("defaults to the Approvals tab and renders its content (interrupt-panel) when pending", () => {
+  it("first paint is the Sandbox tab even with pending approvals (auto-focus is a client effect)", () => {
     const html = render({ interrupts: [interrupt("i1", "approve the deploy?")] });
-    expect(html).toContain('data-testid="right-panel"');
-    // Approvals is the default-active tab, so its content region renders on first paint.
-    expect(html).toContain('data-testid="interrupt-panel"');
-    expect(html).toContain("approve the deploy?");
+    // SSR first paint: Sandbox content shows; the interrupt lives in the inactive
+    // Approvals tab (the auto-focus effect runs only in the real DOM).
+    expect(html).toContain('data-testid="sandbox-panel"');
+    expect(html).not.toContain("approve the deploy?");
+    // The approvals badge is the RED alert variant (a gate the user must act on).
     expect(html).toContain('data-testid="right-panel-badge-approvals"');
-  });
-
-  it("with pending approvals AND a queue, still defaults to Approvals content (the gate)", () => {
-    const html = render({
-      interrupts: [interrupt("i1", "gate")],
-      queuedMessages: [{ id: "q1", text: "QUEUED_MSG_SENTINEL", priority: 0 }],
-    });
-    // Default tab is Approvals -> its content shows; the queued text is NOT rendered
-    // yet (it lives in the inactive Queue tab).
-    expect(html).toContain('data-testid="interrupt-panel"');
-    expect(html).not.toContain("QUEUED_MSG_SENTINEL");
-    // Both badges present with their counts.
-    expect(html).toContain('data-testid="right-panel-badge-approvals"');
-    expect(html).toContain('data-testid="right-panel-badge-queue"');
-    // The approvals badge is the RED alert variant (a gate the user must act on); the
-    // queue badge is a neutral grey count.
     expect(html).toMatch(/right-panel-badge-approvals"[^>]*data-alert="true"/);
-    expect(html).toContain("bg-red-600");
-    expect(html).not.toMatch(/right-panel-badge-queue"[^>]*data-alert/);
   });
 });

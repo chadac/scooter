@@ -43,6 +43,7 @@ export function parseManifest(json: string): WebServiceDescriptor[] {
         port: o.port,
         basePath: typeof o.basePath === "string" ? o.basePath : `/c/*/${o.name}`,
         unit: typeof o.unit === "string" ? o.unit : `webservice-${o.name}`,
+        stripBasePath: o.stripBasePath === true,
       }];
     });
   } catch {
@@ -116,6 +117,22 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
       const r = await exec.execute({ command: "systemctl", args: ["stop", u] });
       if (r.exitCode !== 0) {
         throw new Error(`systemctl stop ${u} failed (${r.exitCode}): ${r.stderr.trim()}`);
+      }
+    },
+    async ready(conversationId) {
+      const ref = deps.sandboxFor(conversationId);
+      if (!ref) return false; // no sandbox → not ready
+      try {
+        // Readiness = the pod is reachable via exec. Use the SAME proven path the
+        // service list uses (connect + read the manifest file), rather than a bare
+        // `execute` — download() succeeds only once the pod is Running+Ready and
+        // throws while it's ContainerCreating/absent. (An empty manifest still means
+        // "reachable" → ready; the point is the exec channel is live.)
+        const exec = await deps.connect(ref);
+        await exec.download(MANIFEST_PATH);
+        return true;
+      } catch {
+        return false; // pod creating / asleep / unreachable
       }
     },
     invalidate(conversationId) {

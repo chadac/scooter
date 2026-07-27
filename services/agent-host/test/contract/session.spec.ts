@@ -119,6 +119,28 @@ describe("SessionManager", () => {
     expect(revived.status).toBe("running");
   });
 
+  it("revive() registers activity so the idle sweep does NOT immediately re-suspend it", async () => {
+    // The bug: a suspended conversation's lastActivityAt is stale (from before the
+    // suspend), so a UI "Start sandbox" (prompt-less revive) would be reclaimed by the
+    // very next idle sweep. revive() must touch() the entry so the freshly-started pod
+    // gets the full idle window.
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+    const conv = await sessions.start("thread-1");
+    await sessions.suspend(conv.id);
+
+    // Revive "now"; a sweep with a 60s idle window run right after must NOT suspend it.
+    const revived = await sessions.revive(conv.id);
+    const reviveAt = revived.lastActivityAt;
+    const swept = await sessions.sweepIdle(60_000, reviveAt + 1_000); // 1s later
+    expect(swept).not.toContain(conv.id);
+    expect(sessions.get(conv.id)?.status).toBe("running");
+
+    // But it IS eligible once genuinely idle past the window.
+    const sweptLater = await sessions.sweepIdle(60_000, reviveAt + 61_000);
+    expect(sweptLater).toContain(conv.id);
+  });
+
   it("revive() calls onRevived (with a live bridge) so index.ts can re-raise dropped interrupts", async () => {
     // A pod rollout loses in-memory approval interrupts; index.ts wires onRevived to
     // re-query the broker for PENDING requests and re-raise them. Assert the hook

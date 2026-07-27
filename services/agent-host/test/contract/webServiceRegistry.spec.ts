@@ -95,6 +95,34 @@ describe("WebServiceRegistry", () => {
     await expect(reg.stop("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 
+  it("ready() is true when the pod is reachable (manifest download succeeds)", async () => {
+    const reg = make(fakeExec({ download: vi.fn(async () => MANIFEST) }));
+    expect(await reg.ready("conv-1")).toBe(true);
+  });
+
+  it("ready() is true even for an EMPTY manifest (reachable is what matters)", async () => {
+    const reg = make(fakeExec({ download: vi.fn(async () => "{}") }));
+    expect(await reg.ready("conv-1")).toBe(true);
+  });
+
+  it("ready() is false when the pod isn't reachable (creating / asleep)", async () => {
+    const reg = createWebServiceRegistry({
+      sandboxFor: () => REF,
+      connect: async () => { throw new Error("pod ContainerCreating"); },
+    });
+    expect(await reg.ready("conv-1")).toBe(false);
+  });
+
+  it("ready() is false when the manifest download throws (pod not up)", async () => {
+    const reg = make(fakeExec({ download: vi.fn(async () => { throw new Error("exec failed"); }) }));
+    expect(await reg.ready("conv-1")).toBe(false);
+  });
+
+  it("ready() is false when there is no sandbox for the conversation", async () => {
+    const reg = createWebServiceRegistry({ sandboxFor: () => undefined, connect: async () => fakeExec() });
+    expect(await reg.ready("conv-1")).toBe(false);
+  });
+
   it("a pod that can't be reached yields no services (not a throw)", async () => {
     const reg = createWebServiceRegistry({
       sandboxFor: () => REF,
