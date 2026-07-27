@@ -167,6 +167,86 @@ function parseGitlabResourceId(resourceId: string): { projectId?: string; iid?: 
   return {};
 }
 
+// --- Attachment resolvers -------------------------------------------------------
+//
+// The SINGLE source of truth for "is provider X attached to this conversation, and
+// what does it point at?". Each runs the same two-tier lookup the handlers rely on
+// (link `ref` first, then the webhooks conversation_map fallback) and returns the
+// resolved target, or undefined when nothing is attached.
+//
+// Both the tool HANDLERS and the tool REGISTRATION gate go through these, so a tool
+// is registered iff its handler could actually resolve a target — the agent never
+// sees a slack/github/gitlab/jira reply tool for a resource this conversation isn't
+// attached to (which is when it used to get confused and raw-curl Slack).
+
+/** The Slack thread this conversation is attached to, or undefined. */
+export async function resolveSlackTarget(
+  ctx: ToolContext,
+): Promise<{ channel: string; threadTs?: string } | undefined> {
+  const ref = inferRef(await ctx.links(), "slack");
+  if (ref?.channel) return { channel: ref.channel, threadTs: ref.threadTs };
+  const m = await ctx.resourceLookup?.("slack");
+  if (m) {
+    const parsed = parseSlackResourceId(m.resourceId);
+    const channel = m.slackChannel ?? parsed.channel;
+    if (channel) return { channel, threadTs: m.slackTs ?? parsed.threadTs };
+  }
+  return undefined;
+}
+
+/** The GitHub PR/issue this conversation is attached to, or undefined. */
+export async function resolveGithubTarget(
+  ctx: ToolContext,
+): Promise<{ owner: string; repo: string; number: number } | undefined> {
+  const ref = inferRef(await ctx.links(), "github");
+  let owner = ref?.owner;
+  let repo = ref?.repo;
+  let number: number | undefined = ref?.number;
+  if (!owner || !repo || number == null) {
+    const m = await ctx.resourceLookup?.("github");
+    if (m) {
+      const p = parseGithubResourceId(m.resourceId);
+      owner = owner ?? p.owner;
+      repo = repo ?? p.repo;
+      number = number ?? p.number;
+    }
+  }
+  if (!owner || !repo || number == null) return undefined;
+  return { owner, repo, number };
+}
+
+/** The GitLab MR/issue this conversation is attached to, or undefined. */
+export async function resolveGitlabTarget(
+  ctx: ToolContext,
+): Promise<{ projectId: string; iid: string; isMr: boolean } | undefined> {
+  const ref = inferRef(await ctx.links(), "gitlab");
+  let projectId = ref?.projectId;
+  let iid: string | undefined = ref?.mrIid;
+  let isMr = true;
+  if (!projectId || !iid) {
+    const m = await ctx.resourceLookup?.("gitlab");
+    if (m) {
+      const p = parseGitlabResourceId(m.resourceId);
+      projectId = projectId ?? p.projectId;
+      iid = iid ?? p.iid;
+      isMr = p.isMr ?? true;
+    }
+  }
+  if (!projectId || !iid) return undefined;
+  return { projectId, iid, isMr };
+}
+
+/** The Jira issue this conversation is attached to, or undefined. */
+export async function resolveJiraTarget(ctx: ToolContext): Promise<{ issueKey: string } | undefined> {
+  const ref = inferRef(await ctx.links(), "jira");
+  let issueKey = ref?.issueKey;
+  if (!issueKey) {
+    const m = await ctx.resourceLookup?.("jira");
+    if (m?.resourceId) issueKey = m.resourceId;
+  }
+  return issueKey ? { issueKey } : undefined;
+}
+
 /** Post to the current Slack thread (channel + thread_ts inferred). */
 export async function handleSlackRespond(
   deps: AgentToolsDeps,
@@ -178,30 +258,37 @@ export async function handleSlackRespond(
   // Postgres before failing — the channel/thread_ts are recorded there for every
   // Slack conversation (as slack_channel/slack_ts columns and in resource_id
   // "<channel>:<thread_ts>"). This is additive: ref wins when present.
-  const ref = inferRef(await ctx.links(), "slack");
-  let channel = ref?.channel;
-  let threadTs = args.thread_ts ?? ref?.threadTs;
-  if (!channel) {
-    const m = await ctx.resourceLookup?.("slack");
-    if (m) {
-      const parsed = parseSlackResourceId(m.resourceId);
-      channel = m.slackChannel ?? parsed.channel;
-      threadTs = args.thread_ts ?? m.slackTs ?? parsed.threadTs;
-    }
-  }
-  if (!channel) {
+  const target = await resolveSlackTarget(ctx);
+  if (!target) {
     return err(
       "Could not determine the Slack channel for this conversation — it has no slack " +
         "link with a channel, and no Slack mapping was found in the webhooks store. " +
         "If you know the channel, pass it to the broker directly.",
     );
   }
+  const channel = target.channel;
+  const threadTs = args.thread_ts ?? target.threadTs;
   const res = await deps.broker.call(ctx.conversationId, "POST", "/slack/chat.postMessage", {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text: args.text,
   });
   return toToolResult(res, { successText: "Posted to the Slack thread.", slackOkCheck: true });
+}
+
+/** Report the Slack channel + thread_ts this conversation is attached to. Lets the
+ *  agent read its own Slack context (e.g. to build a permalink via the broker)
+ *  instead of guessing — registered only when a Slack thread is actually attached. */
+export async function handleGetSlackContext(_deps: AgentToolsDeps, ctx: ToolContext): Promise<ToolResult> {
+  const target = await resolveSlackTarget(ctx);
+  if (!target) {
+    // Should be unreachable — the tool is only registered when Slack is attached —
+    // but stay honest rather than fabricate a context.
+    return err("This conversation isn't attached to a Slack thread.");
+  }
+  const lines = [`channel: ${target.channel}`];
+  if (target.threadTs) lines.push(`thread_ts: ${target.threadTs}`);
+  return ok(lines.join("\n"));
 }
 
 /** React to a Slack message with an emoji (channel inferred; defaults to the
@@ -212,17 +299,9 @@ export async function handleSlackReact(
   ctx: ToolContext,
   args: { emoji: string; timestamp?: string },
 ): Promise<ToolResult> {
-  const ref = inferRef(await ctx.links(), "slack");
-  let channel = ref?.channel;
-  let ts = args.timestamp ?? ref?.threadTs;
-  if (!channel) {
-    const m = await ctx.resourceLookup?.("slack");
-    if (m) {
-      const parsed = parseSlackResourceId(m.resourceId);
-      channel = m.slackChannel ?? parsed.channel;
-      ts = args.timestamp ?? m.slackTs ?? parsed.threadTs;
-    }
-  }
+  const target = await resolveSlackTarget(ctx);
+  const channel = target?.channel;
+  const ts = args.timestamp ?? target?.threadTs;
   if (!channel || !ts) {
     return err(
       "Could not determine the Slack channel + message to react to — this " +
@@ -257,26 +336,15 @@ export async function handleGitlabComment(
   // Prefer the link `ref`; fall back to the webhooks conversation_map (resource_id
   // "<repo>!<iid>" MR / "<repo>#<iid>" issue — repo is the project path, which the
   // GitLab API accepts URL-encoded as the project id). ref wins when present.
-  const ref = inferRef(await ctx.links(), "gitlab");
-  let projectId = ref?.projectId;
-  let iid: string | undefined = ref?.mrIid;
-  let isMr = true;
-  if (!projectId || !iid) {
-    const m = await ctx.resourceLookup?.("gitlab");
-    if (m) {
-      const p = parseGitlabResourceId(m.resourceId);
-      projectId = projectId ?? p.projectId;
-      iid = iid ?? p.iid;
-      isMr = p.isMr ?? true;
-    }
-  }
-  if (!projectId || !iid) {
+  const target = await resolveGitlabTarget(ctx);
+  if (!target) {
     return err(
       "Could not determine the GitLab MR/issue for this conversation — it has no " +
         "gitlab link with a project + iid, and no GitLab mapping was found in the " +
         "webhooks store. Pass the project + iid explicitly, or use the broker directly.",
     );
   }
+  const { projectId, iid, isMr } = target;
   const kind = isMr ? "merge_requests" : "issues";
   // The broker gitlab proxy is transparent to gitlab.com (bare-host upstream), so
   // use the FULL api/v4 path — /gitlab/api/v4/projects/... — else it 404s (the
@@ -297,26 +365,15 @@ export async function handleGithubComment(
 ): Promise<ToolResult> {
   // Prefer the link `ref`; fall back to the webhooks conversation_map (resource_id
   // "<owner>/<repo>#<number>"). ref wins when present.
-  const ref = inferRef(await ctx.links(), "github");
-  let owner = ref?.owner;
-  let repo = ref?.repo;
-  let number: number | undefined = ref?.number;
-  if (!owner || !repo || number == null) {
-    const m = await ctx.resourceLookup?.("github");
-    if (m) {
-      const p = parseGithubResourceId(m.resourceId);
-      owner = owner ?? p.owner;
-      repo = repo ?? p.repo;
-      number = number ?? p.number;
-    }
-  }
-  if (!owner || !repo || number == null) {
+  const target = await resolveGithubTarget(ctx);
+  if (!target) {
     return err(
       "Could not determine the GitHub PR/issue for this conversation — it has no " +
         "github link with owner/repo/number, and no GitHub mapping was found in the " +
         "webhooks store. Pass owner/repo/number explicitly, or use the broker directly.",
     );
   }
+  const { owner, repo, number } = target;
   // A review-comment reply uses a different endpoint; a plain comment posts to the
   // issue/PR comments. Default = a new issue comment.
   const path = args.in_reply_to
@@ -334,19 +391,15 @@ export async function handleJiraComment(
 ): Promise<ToolResult> {
   // Prefer the link `ref`; fall back to the webhooks conversation_map (resource_id
   // IS the issue key for jira). ref wins when present.
-  const ref = inferRef(await ctx.links(), "jira");
-  let issueKey = ref?.issueKey;
-  if (!issueKey) {
-    const m = await ctx.resourceLookup?.("jira");
-    if (m?.resourceId) issueKey = m.resourceId;
-  }
-  if (!issueKey) {
+  const target = await resolveJiraTarget(ctx);
+  if (!target) {
     return err(
       "Could not determine the Jira issue for this conversation — it has no jira " +
         "link with an issue key, and no Jira mapping was found in the webhooks store. " +
         "Pass the issue key explicitly, or use the broker directly.",
     );
   }
+  const { issueKey } = target;
   // Jira Cloud REST v2 accepts a plain-text `body` (v3 requires ADF); the broker
   // proxies to /ex/jira/{cloud_id}, so the path is /jira/rest/api/2/....
   const path = `/jira/rest/api/2/issue/${encodeURIComponent(issueKey)}/comment`;
@@ -480,78 +533,113 @@ function isBlockedIp(ip: string): boolean {
 
 // --- Registration --------------------------------------------------------------
 
-/** Register the five agent-tools on an McpServer bound to one conversation. */
+/** Register the agent-tools on an McpServer bound to one conversation. The provider
+ *  reply tools (slack/github/gitlab/jira + get_slack_context) are registered ONLY
+ *  when that provider is attached to the conversation; web_search/web_fetch are
+ *  always registered. Async because attachment resolution reads links + the DB. */
 // NOTE: the `title` strings below are load-bearing for the UI. goose surfaces the
 // ACP tool `title` as the tool name in the AG-UI stream, and ui/src/toolCallView.ts
 // matches these EXACT strings to render slack/github/gitlab/jira tool calls as
 // provider message cards. If you rename a title, update that matcher (a guard test
 // in agentTools.spec.ts asserts these titles so a rename fails CI, not silently).
-export function registerAgentTools(
+export async function registerAgentTools(
   server: McpServer,
   deps: AgentToolsDeps,
   ctx: ToolContext,
-): void {
-  server.registerTool(
-    "slack_respond",
-    {
-      title: "Respond in the Slack thread",
-      description:
-        "Post a message to THIS conversation's Slack thread (the channel + thread are already known — " +
-        "you only provide the text). Use this to acknowledge and to reply; it reports the real result " +
-        "(a Slack error is returned to you — do NOT retry blindly). Prefer this over a raw curl.",
-      inputSchema: { text: z.string().describe("The message to post."), thread_ts: z.string().optional().describe("Override the thread (rarely needed).") },
-    },
-    async (args) => (await handleSlackRespond(deps, ctx, args)) as never,
-  );
-  server.registerTool(
-    "slack_react",
-    {
-      title: "React to the Slack message",
-      description:
-        "Add an emoji reaction to THIS conversation's Slack message (the channel + message are already " +
-        "known; by default it reacts to the message that triggered you). Give the emoji `name` WITHOUT " +
-        "colons (e.g. \"eyes\", \"white_check_mark\", \"tada\"). Reports the real Slack result. Nice for a " +
-        "quick 👀 acknowledgment or a ✅ when done — but don't spam reactions.",
-      inputSchema: {
-        emoji: z.string().describe('The emoji name, without colons (e.g. "eyes").'),
-        timestamp: z.string().optional().describe("Override which message to react to (rarely needed)."),
+): Promise<void> {
+  // Gate the provider reply tools on ATTACHMENT: register slack/github/gitlab/jira
+  // tools only when THAT provider is actually linked to this conversation. Without
+  // this, the agent sees (and sometimes fires) a reply tool for a resource that
+  // isn't attached — the confusion that led it to raw-curl Slack into the root
+  // channel. Resolve all four once (each is a link lookup + optional DB fallback).
+  const [slack, github, gitlab, jira] = await Promise.all([
+    resolveSlackTarget(ctx).catch(() => undefined),
+    resolveGithubTarget(ctx).catch(() => undefined),
+    resolveGitlabTarget(ctx).catch(() => undefined),
+    resolveJiraTarget(ctx).catch(() => undefined),
+  ]);
+
+  if (slack) {
+    server.registerTool(
+      "slack_respond",
+      {
+        title: "Respond in the Slack thread",
+        description:
+          "Post a message to THIS conversation's Slack thread (the channel + thread are already known — " +
+          "you only provide the text). Use this to acknowledge and to reply; it reports the real result " +
+          "(a Slack error is returned to you — do NOT retry blindly). Prefer this over a raw curl.",
+        inputSchema: { text: z.string().describe("The message to post."), thread_ts: z.string().optional().describe("Override the thread (rarely needed).") },
       },
-    },
-    async (args) => (await handleSlackReact(deps, ctx, args)) as never,
-  );
-  server.registerTool(
-    "gitlab_comment",
-    {
-      title: "Comment on the GitLab MR",
-      description:
-        "Post a comment on THIS conversation's GitLab merge request (project + MR inferred). Pass " +
-        "`discussion_id` to reply within a review discussion. Returns the real GitLab result.",
-      inputSchema: { body: z.string().describe("The comment (Markdown)."), discussion_id: z.string().optional() },
-    },
-    async (args) => (await handleGitlabComment(deps, ctx, args)) as never,
-  );
-  server.registerTool(
-    "github_comment",
-    {
-      title: "Comment on the GitHub PR/issue",
-      description:
-        "Post a comment on THIS conversation's GitHub PR/issue (owner/repo/number inferred). Pass " +
-        "`in_reply_to` (a review-comment id) to reply within a PR review thread. Returns the real result.",
-      inputSchema: { body: z.string().describe("The comment (Markdown)."), in_reply_to: z.number().optional() },
-    },
-    async (args) => (await handleGithubComment(deps, ctx, args)) as never,
-  );
-  server.registerTool(
-    "jira_comment",
-    {
-      title: "Comment on the Jira issue",
-      description:
-        "Post a comment on THIS conversation's Jira issue (the issue key is inferred). Returns the " +
-        "real Jira result. Prefer this over a raw broker call.",
-      inputSchema: { body: z.string().describe("The comment text.") },
-    },
-    async (args) => (await handleJiraComment(deps, ctx, args)) as never,
-  );
+      async (args) => (await handleSlackRespond(deps, ctx, args)) as never,
+    );
+    server.registerTool(
+      "slack_react",
+      {
+        title: "React to the Slack message",
+        description:
+          "Add an emoji reaction to THIS conversation's Slack message (the channel + message are already " +
+          "known; by default it reacts to the message that triggered you). Give the emoji `name` WITHOUT " +
+          "colons (e.g. \"eyes\", \"white_check_mark\", \"tada\"). Reports the real Slack result. Nice for a " +
+          "quick 👀 acknowledgment or a ✅ when done — but don't spam reactions.",
+        inputSchema: {
+          emoji: z.string().describe('The emoji name, without colons (e.g. "eyes").'),
+          timestamp: z.string().optional().describe("Override which message to react to (rarely needed)."),
+        },
+      },
+      async (args) => (await handleSlackReact(deps, ctx, args)) as never,
+    );
+    server.registerTool(
+      "get_slack_context",
+      {
+        title: "Get the Slack thread context",
+        description:
+          "Report the Slack channel id + thread_ts that THIS conversation is attached to. Use it when you " +
+          "need the raw ids (e.g. to build a permalink via the broker, or to pass thread_ts explicitly) — " +
+          "the slack_respond/slack_react tools already infer these, so you rarely need this to just reply.",
+        inputSchema: {},
+      },
+      async () => (await handleGetSlackContext(deps, ctx)) as never,
+    );
+  }
+  if (gitlab) {
+    server.registerTool(
+      "gitlab_comment",
+      {
+        title: "Comment on the GitLab MR",
+        description:
+          "Post a comment on THIS conversation's GitLab merge request (project + MR inferred). Pass " +
+          "`discussion_id` to reply within a review discussion. Returns the real GitLab result.",
+        inputSchema: { body: z.string().describe("The comment (Markdown)."), discussion_id: z.string().optional() },
+      },
+      async (args) => (await handleGitlabComment(deps, ctx, args)) as never,
+    );
+  }
+  if (github) {
+    server.registerTool(
+      "github_comment",
+      {
+        title: "Comment on the GitHub PR/issue",
+        description:
+          "Post a comment on THIS conversation's GitHub PR/issue (owner/repo/number inferred). Pass " +
+          "`in_reply_to` (a review-comment id) to reply within a PR review thread. Returns the real result.",
+        inputSchema: { body: z.string().describe("The comment (Markdown)."), in_reply_to: z.number().optional() },
+      },
+      async (args) => (await handleGithubComment(deps, ctx, args)) as never,
+    );
+  }
+  if (jira) {
+    server.registerTool(
+      "jira_comment",
+      {
+        title: "Comment on the Jira issue",
+        description:
+          "Post a comment on THIS conversation's Jira issue (the issue key is inferred). Returns the " +
+          "real Jira result. Prefer this over a raw broker call.",
+        inputSchema: { body: z.string().describe("The comment text.") },
+      },
+      async (args) => (await handleJiraComment(deps, ctx, args)) as never,
+    );
+  }
   server.registerTool(
     "web_search",
     {
