@@ -278,6 +278,8 @@ describe("management API", () => {
         const id = byEmail[email.trim().toLowerCase()];
         return id ? { id } : undefined;
       },
+      list: async () =>
+        Object.entries(byEmail).map(([email, id]) => ({ id, email, name: undefined, updatedAt: undefined })),
       close: async () => {},
     }) as never;
 
@@ -303,6 +305,26 @@ describe("management API", () => {
     const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     expect((await call(noStore, "GET", "/users/by-email")).status).toBe(400);
     expect((await call(noStore, "GET", "/users/by-email?email=x@y.io")).status).toBe(404);
+  });
+
+  // --- GET /users (settings Users page) ----------------------------------------
+
+  it("GET /users lists the learned users when an identity store is wired", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      identityStore: fakeIdentity({ "alice@example.com": "user-alice", "bob@example.com": "user-bob" }),
+    });
+    const { status, json } = await call(api, "GET", "/users");
+    expect(status).toBe(200);
+    expect((json as { configured: boolean }).configured).toBe(true);
+    expect((json as { users: Array<{ id: string }> }).users.map((u) => u.id).sort()).toEqual(["user-alice", "user-bob"]);
+  });
+
+  it("GET /users 501s (configured:false via the client) when no identity store is wired", async () => {
+    const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const res = await call(noStore, "GET", "/users");
+    expect(res.status).toBe(501);
+    expect((res.json as { error: string }).error).toMatch(/identity store not configured/);
   });
 
   it("GET /models returns the catalog (default + available + hints)", async () => {

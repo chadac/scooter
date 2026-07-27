@@ -317,6 +317,40 @@ export async function loadScheduledTasks(config: AgentHostConfig): Promise<Sched
   }
 }
 
+/** A learned Scooter user, as the agent-host's /users route returns it. */
+export interface UserView {
+  id: string;
+  email?: string;
+  name?: string;
+  updatedAt?: string;
+}
+
+/** Result of a /users fetch — `configured` distinguishes "no identity store" (501)
+ *  from "configured but nobody seen yet" (200, []), so the page shows the right
+ *  empty state (mirrors ScheduledTasksResult). */
+export interface UsersResult {
+  configured: boolean;
+  users: UserView[];
+}
+
+/** List the learned Scooter users. 501 → { configured:false } (no identity store). */
+export async function loadUsers(config: AgentHostConfig): Promise<UsersResult> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/users`, {
+      headers: authHeaders(config),
+    });
+    if (res.status === 501) return { configured: false, users: [] };
+    if (!res.ok) {
+      console.warn(`[client] loadUsers: HTTP ${res.status}`);
+      return { configured: true, users: [] };
+    }
+    return { configured: true, users: ((await res.json()) as { users?: UserView[] }).users ?? [] };
+  } catch (e) {
+    console.warn("[client] loadUsers failed:", e);
+    return { configured: true, users: [] };
+  }
+}
+
 /** Fetch one scheduled task with its recent run history. Null if not found. */
 export async function loadScheduledTask(
   config: AgentHostConfig,
