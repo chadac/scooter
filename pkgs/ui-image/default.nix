@@ -4,8 +4,10 @@
 # and reverse-proxying the agent-host API on the same origin.
 #
 # The browser loads the SPA from /, and its AG-UI client calls relative paths
-# (/agui SSE, /sessions, /conversations, /models) — nginx forwards those to the
-# agent-host Service. AGENT_HOST_URL is templated in at container start.
+# (/agui SSE, /sessions, /conversations, /models, /whoami, /scheduled-tasks) —
+# nginx forwards those to the agent-host Service. AGENT_HOST_URL is templated in
+# at container start. Every agent-host API prefix the UI calls needs a `location`
+# here; a missing one falls through to the SPA handler (GET→index.html, write→405).
 
 let
   # nginx needs these dirs writable at runtime + a passwd with the worker user
@@ -71,6 +73,11 @@ let
         # ingress-injected identity headers (x-auth-* or x-amzn-oidc-*) pass through
         # by default (only Host is overridden).
         location /whoami        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        # Scheduled-tasks CRUD (the Settings page). MUST be proxied — otherwise it
+        # falls through to `location /`, where GET returns index.html (200) and any
+        # POST/PATCH/DELETE hits the static handler and 405s. (This is the /whoami
+        # bug class: an agent-host API path missing a proxy location.)
+        location /scheduled-tasks { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
 
         # Web-service reverse proxy: /c/<id>/<service>/... -> the agent-host, which
         # resolves the conversation's pod and forwards to the in-pod service. Needs
