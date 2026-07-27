@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     db_user: str = "scheduler"
     db_password: str = ""  # secretKeyRef -> Postgres DSN assembled
     db_name: str = "scheduler"
+    db_sslmode: str = ""  # e.g. "require" for RDS; empty = no ssl param
 
     # --- spawn target -------------------------------------------------------
     # The agent-host /agui endpoint a due task POSTs its prompt to (same spawn the
@@ -43,10 +44,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _assemble_dsn(self) -> "Settings":
         if self.db_password and not self.dsn.startswith("postgresql"):
-            self.dsn = (
+            dsn = (
                 f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
                 f"@{self.db_host}:{self.db_port}/{self.db_name}"
             )
+            # asyncpg takes ssl via a query param; map an sslmode like "require" to it.
+            if self.db_sslmode:
+                dsn += f"?ssl={self.db_sslmode}"
+            self.dsn = dsn
         return self
 
 

@@ -5,9 +5,9 @@
 # (audience agent-host) so the agent-host honors the task `owner` — the scheduler's
 # SA is added to the agent-host WEBHOOKS_SERVICE_ACCOUNT trust list (platform.nix).
 #
-# Store: SQLite on an emptyDir by default (single-replica local; tasks lost on
-# restart). Point DSN/DB_PASSWORD at the shared Postgres (agent-shared-db, deployed
-# by the webhooks postgres block) for durability + multi-replica.
+# Store: the shared platform Postgres (agentSandbox.postgres, always on) — the
+# scheduler's own `scheduler` db + auto-provisioned role. Durable across restarts.
+# SQLite remains only as the app's local-dev / unit-test default (no DB_* env).
 
 { config, lib, ... }:
 
@@ -41,22 +41,9 @@ in
         For a real deploy, set via a Secret + envFrom, not inline.
       '';
     };
-    # Shared-Postgres wiring (mirror webhooks): set passwordSecret to point DSN at
-    # agent-shared-db (deployed by agentSandbox.webhooks.postgres). Unset -> SQLite.
-    postgres = {
-      passwordSecret = mkOption {
-        type = types.nullOr (types.submodule {
-          options = {
-            name = mkOption { type = types.str; };
-            key = mkOption { type = types.str; default = "password"; };
-          };
-        });
-        default = null;
-        description = "Secret holding the shared-DB password. Set -> Postgres DSN assembled; unset -> SQLite.";
-      };
-      user = mkOption { type = types.str; default = "scheduler"; };
-      database = mkOption { type = types.str; default = "scheduler"; };
-    };
+    # Durability: the scheduler ALWAYS uses the shared Postgres now (agentSandbox.
+    # postgres) — its own `scheduler` db + role, auto-provisioned. No per-module
+    # Postgres knobs; point the platform at RDS via agentSandbox.postgres.external.
   };
 
   config = lib.mkIf scfg.enable {
@@ -91,18 +78,17 @@ in
                   { name = "TICK_SECONDS"; value = toString scfg.tickSeconds; }
                   { name = "SA_TOKEN_PATH"; value = "/var/run/secrets/agent-host/token"; }
                 ] ++ lib.optional (scfg.relayKey != "") { name = "RELAY_KEY"; value = scfg.relayKey; }
-                ++ (if scfg.postgres.passwordSecret != null then [
-                  { name = "DB_HOST"; value = "agent-shared-db.${cfg.namespace}.svc.cluster.local"; }
-                  { name = "DB_USER"; value = scfg.postgres.user; }
-                  { name = "DB_NAME"; value = scfg.postgres.database; }
-                  {
-                    name = "DB_PASSWORD";
-                    valueFrom.secretKeyRef = { inherit (scfg.postgres.passwordSecret) name key; };
-                  }
-                ] else [
-                  # Ephemeral SQLite on the emptyDir (dev/single-pod; lost on restart).
-                  { name = "DSN"; value = "sqlite+aiosqlite:////data/scheduler.db"; }
-                ]);
+                # Durable Postgres — the shared platform DB (always on). DSN is
+                # assembled app-side from these parts; the password is the scheduler's
+                # OWN auto-generated role secret (agent-pg-scheduler), created by the
+                # postgres module's provisioning Job.
+                ++ [
+                  { name = "DB_HOST"; value = cfg.postgres.host; }
+                  { name = "DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "DB_USER"; value = "scheduler"; }
+                  { name = "DB_NAME"; value = "scheduler"; }
+                  { name = "DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-scheduler"; key = "password"; }; }
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 volumeMounts = [
                   { name = "data"; mountPath = "/data"; }
                   # Projected SA token (audience agent-host) → /agui owner trust.
@@ -133,5 +119,9 @@ in
         };
       };
     };
+
+    # Register with the shared Postgres so the provisioning Job creates the
+    # `scheduler` database + a `scheduler` role that owns it (agent-pg-scheduler).
+    agentSandbox.postgres.consumers.scheduler = { db = "scheduler"; user = "scheduler"; };
   };
 }
