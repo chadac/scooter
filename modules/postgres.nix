@@ -108,8 +108,11 @@ in
     };
     kubectlImage = mkOption {
       type = types.str;
-      default = "bitnami/kubectl:1.30";
-      description = "Image for the provisioning Job's secret-creating initContainer (needs kubectl). The SQL step uses `image` (postgres, which ships psql/pg_isready).";
+      # The official, canonical kubectl image (bitnami/kubectl's public tags were
+      # retired in 2025 and no longer pull). The SQL step uses `image` (postgres,
+      # which ships psql/pg_isready).
+      default = "registry.k8s.io/kubectl:v1.30.0";
+      description = "Image for the provisioning Job's secret-creating initContainer (needs kubectl).";
     };
     storage = mkOption {
       type = types.str;
