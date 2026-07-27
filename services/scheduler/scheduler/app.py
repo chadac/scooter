@@ -17,6 +17,14 @@ from .models import Run, Task, TaskCreate, TaskPatch
 from .spawn import spawn_conversation
 from .store import Store
 
+# Configure the root logger so our logger.info/debug actually reach stdout — without
+# this the root defaults to WARNING and everything below it is silently dropped (only
+# uvicorn's own logger prints). Level from LOG_LEVEL (settings.log_level), default INFO.
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
 logger = logging.getLogger("scheduler")
 
 

@@ -41,6 +41,12 @@ in
         For a real deploy, set via a Secret + envFrom, not inline.
       '';
     };
+    logLevel = mkOption {
+      type = types.str;
+      default = "INFO";
+      example = "DEBUG";
+      description = "Root log level (LOG_LEVEL) — INFO logs task fires/spawns; DEBUG is verbose.";
+    };
     # Durability: the scheduler ALWAYS uses the shared Postgres now (agentSandbox.
     # postgres) — its own `scheduler` db + role, auto-provisioned. No per-module
     # Postgres knobs; point the platform at RDS via agentSandbox.postgres.external.
@@ -77,6 +83,7 @@ in
                   { name = "AGENT_HOST_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "TICK_SECONDS"; value = toString scfg.tickSeconds; }
                   { name = "SA_TOKEN_PATH"; value = "/var/run/secrets/agent-host/token"; }
+                  { name = "LOG_LEVEL"; value = scfg.logLevel; }
                 ] ++ lib.optional (scfg.relayKey != "") { name = "RELAY_KEY"; value = scfg.relayKey; }
                 # Durable Postgres — the shared platform DB (always on). DSN is
                 # assembled app-side from these parts; the password is the scheduler's

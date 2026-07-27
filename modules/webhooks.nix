@@ -66,6 +66,12 @@ in
       default = "scooter";
       description = "Issue/PR label name that triggers a conversation (GitHub/GitLab).";
     };
+    logLevel = mkOption {
+      type = types.str;
+      default = "INFO";
+      example = "DEBUG";
+      description = "Root log level (LOG_LEVEL) — DEBUG for verbose tracing.";
+    };
 
     # The public UI base URL, so a webhook-created conversation's "View
     # conversation" link (posted back to Slack/GitHub/GitLab/Jira) is a real,
@@ -183,6 +189,7 @@ in
                   { name = "SLACK_ENABLED"; value = lib.boolToString wcfg.slackEnabled; }
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
+                  { name = "LOG_LEVEL"; value = wcfg.logLevel; }
                   { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
                 ] ++ [
                   # Durable store: the shared platform Postgres (agentSandbox.postgres,

@@ -53,6 +53,9 @@ class WebhooksSettings(BaseSettings):
     # conversation `owner`. Not mounted -> no token -> owner ignored (unowned).
     agent_host_token_path: str = "/var/run/secrets/agent-host/token"
 
+    # Root log level (LOG_LEVEL env). INFO by default; DEBUG for verbose tracing.
+    log_level: str = "INFO"
+
     # Integration toggles
     gitlab_enabled: bool = True
     github_enabled: bool = False

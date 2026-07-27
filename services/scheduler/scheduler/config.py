@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # --- scheduler loop -----------------------------------------------------
     tick_seconds: int = 30  # how often the loop checks for due tasks
 
+    # --- logging ------------------------------------------------------------
+    # Root log level (LOG_LEVEL env). INFO shows task fires + spawns; DEBUG is
+    # verbose. Without this the root logger defaults to WARNING and info/debug
+    # messages never reach stdout.
+    log_level: str = "INFO"
+
     model_config = {"env_prefix": "", "case_sensitive": False}
 
     @model_validator(mode="after")
