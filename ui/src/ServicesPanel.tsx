@@ -11,47 +11,57 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { loadWebServices, startWebService, type WebService } from "./client.js";
+import { loadWebServices, startWebService, stopWebService, type WebService } from "./client.js";
 import { useSessions } from "./sessions.js";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
-export function ServicesPanel() {
+/** Poll the current conversation's web services (used by the RightPanel Services
+ *  tab). Exposed so the tab can show a live count + start/stop each service. */
+export function useWebServices() {
   const { currentId } = useSessions();
   const [services, setServices] = useState<WebService[]>([]);
-  const [open, setOpen] = useState(false);
-  const [starting, setStarting] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(async () => {
     if (!currentId) return;
     setServices(await loadWebServices({ baseUrl: BASE_URL }, currentId));
   }, [currentId]);
 
-  // Load on conversation change, then poll while the panel is open (a service the
-  // agent just enabled/started should appear/flip to running without a reload).
+  // Load on conversation change, then poll (a service the agent just enabled/started
+  // should appear/flip to running without a reload). Kept modest (4s).
   useEffect(() => {
     void refresh();
-  }, [refresh]);
-  useEffect(() => {
-    if (!open) return;
     const t = setInterval(() => void refresh(), 4000);
     return () => clearInterval(t);
-  }, [open, refresh]);
+  }, [refresh]);
 
-  const start = async (name: string) => {
-    setStarting((s) => ({ ...s, [name]: true }));
-    await startWebService({ baseUrl: BASE_URL }, currentId, name);
+  const act = async (name: string, fn: typeof startWebService) => {
+    setBusy((b) => ({ ...b, [name]: true }));
+    await fn({ baseUrl: BASE_URL }, currentId, name);
     await refresh();
-    setStarting((s) => ({ ...s, [name]: false }));
+    setBusy((b) => ({ ...b, [name]: false }));
   };
 
+  return {
+    services,
+    busy,
+    start: (name: string) => void act(name, startWebService),
+    stop: (name: string) => void act(name, stopWebService),
+  };
+}
+
+export function ServicesPanel() {
+  const { services, busy, start, stop } = useWebServices();
+  const [open, setOpen] = useState(false);
   return (
     <ServicesPanelView
       services={services}
       open={open}
-      starting={starting}
+      starting={busy}
       onToggle={() => setOpen((o) => !o)}
-      onStart={(name) => void start(name)}
+      onStart={start}
+      onStop={stop}
     />
   );
 }
@@ -62,10 +72,13 @@ export interface ServicesPanelViewProps {
   starting: Record<string, boolean>;
   onToggle: () => void;
   onStart: (name: string) => void;
+  onStop?: (name: string) => void;
 }
 
-/** Pure view (no data fetching) — easy to unit-test. */
-export function ServicesPanelView({ services, open, starting, onToggle, onStart }: ServicesPanelViewProps) {
+/** Pure view (no data fetching) — easy to unit-test. Renders as a collapsible when
+ *  `onToggle` matters (legacy sidebar use); the RightPanel tab passes open=true and
+ *  uses ServiceRows directly via `bare`. */
+export function ServicesPanelView({ services, open, starting, onToggle, onStart, onStop }: ServicesPanelViewProps) {
   // Nothing declared -> don't show the affordance at all.
   if (services.length === 0) return null;
 
@@ -80,49 +93,76 @@ export function ServicesPanelView({ services, open, starting, onToggle, onStart 
       >
         Services ({services.length})
       </button>
-      {open && (
-        <ul className="mt-1 flex flex-col gap-1">
-          {services.map((s) => (
-            <li
-              key={s.name}
-              data-testid="service-item"
-              data-service={s.name}
-              className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1"
-            >
-              <span className="flex items-center gap-1">
-                <span
-                  className={`inline-block h-2 w-2 rounded-full ${s.running ? "bg-green-500" : "bg-muted-foreground/40"}`}
-                  aria-hidden
-                />
-                {s.displayName}
-              </span>
-              <span className="flex items-center gap-2">
-                {s.running ? (
-                  <a
-                    data-testid="service-open"
-                    href={s.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-foreground underline"
-                  >
-                    Open
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    data-testid="service-start"
-                    disabled={starting[s.name]}
-                    onClick={() => onStart(s.name)}
-                    className="rounded-md border border-border bg-background px-2 py-0.5 text-foreground disabled:opacity-50"
-                  >
-                    {starting[s.name] ? "Starting…" : "Start"}
-                  </button>
-                )}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      {open && <ServiceRows services={services} starting={starting} onStart={onStart} onStop={onStop} />}
     </div>
+  );
+}
+
+/** The list rows — start/stop toggle + Open. Shared by the collapsible and the tab. */
+export function ServiceRows({
+  services,
+  starting,
+  onStart,
+  onStop,
+}: {
+  services: WebService[];
+  starting: Record<string, boolean>;
+  onStart: (name: string) => void;
+  onStop?: (name: string) => void;
+}) {
+  return (
+    <ul className="mt-1 flex flex-col gap-1" data-testid="service-list">
+      {services.map((s) => (
+        <li
+          key={s.name}
+          data-testid="service-item"
+          data-service={s.name}
+          data-running={s.running}
+          className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1"
+        >
+          <span className="flex min-w-0 items-center gap-1">
+            <span
+              className={`inline-block h-2 w-2 shrink-0 rounded-full ${s.running ? "bg-green-500" : "bg-muted-foreground/40"}`}
+              aria-hidden
+            />
+            <span className="truncate">{s.displayName}</span>
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            {s.running && (
+              <a
+                data-testid="service-open"
+                href={s.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-foreground underline"
+              >
+                Open
+              </a>
+            )}
+            {s.running ? (
+              <button
+                type="button"
+                data-testid="service-stop"
+                disabled={starting[s.name]}
+                onClick={() => onStop?.(s.name)}
+                className="rounded-md border border-border bg-background px-2 py-0.5 text-muted-foreground hover:text-destructive disabled:opacity-50"
+              >
+                {starting[s.name] ? "…" : "Stop"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                data-testid="service-start"
+                disabled={starting[s.name]}
+                onClick={() => onStart(s.name)}
+                className="rounded-md border border-border bg-background px-2 py-0.5 text-foreground disabled:opacity-50"
+              >
+                {starting[s.name] ? "Starting…" : "Start"}
+              </button>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

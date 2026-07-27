@@ -449,7 +449,10 @@ export function filteredSessions(state: State): Session[] {
 }
 
 export function useSessions(): State {
-  return useSyncExternalStore(sessionStore.subscribe, sessionStore.get);
+  // getServerSnapshot = get: the store is a plain in-memory snapshot, safe to read
+  // during SSR (used by RightPanel's renderToStaticMarkup unit tests) — without it
+  // useSyncExternalStore warns + reverts to client rendering, breaking SSR renders.
+  return useSyncExternalStore(sessionStore.subscribe, sessionStore.get, sessionStore.get);
 }
 
 /** The signed-in caller (from /whoami), for the header user badge. `id` is the

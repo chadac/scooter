@@ -62,6 +62,8 @@ export interface WebServiceRegistry {
   /** Start the unit: `systemctl start webservice-<name>` via exec. Resolves once
    *  issued (not once healthy — readiness-gating is a follow-up). */
   start(conversationId: string, name: string): Promise<void>;
+  /** Stop the unit: `systemctl stop webservice-<name>` via exec. */
+  stop(conversationId: string, name: string): Promise<void>;
   /** Drop cached descriptors for a conversation (call on suspend/resume/start). */
   invalidate(conversationId: string): void;
 }

@@ -23,9 +23,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { InterruptList } from "./InterruptPanel.js";
 import { QueuedMessages } from "./QueuedMessages.js";
+import { ServiceRows, useWebServices } from "./ServicesPanel.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
-type Tab = "approvals" | "queue";
+type Tab = "approvals" | "queue" | "services";
 
 function TabButton({
   active,
@@ -77,8 +78,10 @@ function TabButton({
 
 export function RightPanel() {
   const { interrupts, queuedMessages } = useConversationInterrupts();
+  const { services, busy, start, stop } = useWebServices();
   const nInterrupts = interrupts.length;
   const nQueued = queuedMessages.length;
+  const nServices = services.length;
 
   const [active, setActive] = useState<Tab>("approvals");
 
@@ -91,14 +94,15 @@ export function RightPanel() {
     prevInterrupts.current = nInterrupts;
   }, [nInterrupts]);
 
-  // Collapse entirely when there's nothing in either tab — costs no space when idle.
-  if (nInterrupts === 0 && nQueued === 0) return null;
+  // Collapse entirely when EVERY tab is empty — costs no space when idle. Services
+  // keeps the panel open (declared services are worth a visible start/stop control).
+  if (nInterrupts === 0 && nQueued === 0 && nServices === 0) return null;
 
   return (
     <aside
       className="flex h-full w-80 shrink-0 flex-col border-l bg-background shadow-lg"
       data-testid="right-panel"
-      aria-label="Approvals and queued messages"
+      aria-label="Approvals, queued messages, and services"
     >
       <div className="flex border-b" role="tablist">
         <TabButton
@@ -114,6 +118,14 @@ export function RightPanel() {
           label="Queue"
           count={nQueued}
         />
+        {nServices > 0 && (
+          <TabButton
+            active={active === "services"}
+            onClick={() => setActive("services")}
+            label="Services"
+            count={nServices}
+          />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -125,11 +137,19 @@ export function RightPanel() {
               No pending approvals.
             </p>
           )
-        ) : nQueued > 0 ? (
-          <QueuedMessages />
+        ) : active === "queue" ? (
+          nQueued > 0 ? (
+            <QueuedMessages />
+          ) : (
+            <p className="text-sm text-muted-foreground" data-testid="queue-empty">
+              No queued messages.
+            </p>
+          )
+        ) : nServices > 0 ? (
+          <ServiceRows services={services} starting={busy} onStart={start} onStop={stop} />
         ) : (
-          <p className="text-sm text-muted-foreground" data-testid="queue-empty">
-            No queued messages.
+          <p className="text-sm text-muted-foreground" data-testid="services-empty">
+            No web services in this conversation.
           </p>
         )}
       </div>

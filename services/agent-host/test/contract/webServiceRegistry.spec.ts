@@ -83,6 +83,18 @@ describe("WebServiceRegistry", () => {
     await expect(reg.start("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 
+  it("stop runs `systemctl stop <unit>`", async () => {
+    const execute = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const reg = make(fakeExec({ execute, download: vi.fn(async () => MANIFEST) }));
+    await reg.stop("conv-1", "marimo");
+    expect(execute).toHaveBeenCalledWith({ command: "systemctl", args: ["stop", "webservice-marimo"] });
+  });
+
+  it("stop throws when the unit fails", async () => {
+    const reg = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "", stderr: "nope", exitCode: 1 })) }));
+    await expect(reg.stop("conv-1", "marimo")).rejects.toThrow(/failed/);
+  });
+
   it("a pod that can't be reached yields no services (not a throw)", async () => {
     const reg = createWebServiceRegistry({
       sandboxFor: () => REF,

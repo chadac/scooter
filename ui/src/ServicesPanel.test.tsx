@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ServicesPanelView } from "./ServicesPanel.js";
+import { ServicesPanelView, ServiceRows } from "./ServicesPanel.js";
 
 const noop = () => {};
 
@@ -58,5 +58,26 @@ describe("ServicesPanelView", () => {
     );
     expect(html).toContain("Starting…");
     expect(html).toContain("disabled");
+  });
+});
+
+describe("ServiceRows (RightPanel Services tab)", () => {
+  it("a running service shows Open AND Stop; a stopped one shows Start", () => {
+    const html = renderToStaticMarkup(
+      createElement(ServiceRows, {
+        services: [
+          { name: "marimo", displayName: "marimo", url: "/c/x/marimo/", running: true },
+          { name: "vscode", displayName: "VS Code", url: "/c/x/vscode/", running: false },
+        ],
+        starting: {},
+        onStart: noop,
+        onStop: noop,
+      }),
+    );
+    expect(html).toContain("service-open"); // marimo running → Open
+    expect(html).toContain("service-stop"); // marimo running → Stop
+    expect(html).toContain("service-start"); // vscode stopped → Start
+    expect(html).toContain('data-running="true"');
+    expect(html).toContain('data-running="false"');
   });
 });
