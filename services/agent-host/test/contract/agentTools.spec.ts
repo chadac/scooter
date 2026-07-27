@@ -15,6 +15,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   handleSlackRespond,
   handleSlackReact,
+  handleGetSlackContext,
   handleJiraComment,
   handleGithubComment,
   handleGitlabComment,
@@ -295,27 +296,102 @@ describe("agent-tools: web_fetch SSRF guard", () => {
   });
 });
 
+// A ctx with every provider attached (via link refs), so all provider tools register.
+const githubLink = (): ConversationLink => ({
+  source: "github", resourceType: "pr", title: "PR", ref: { owner: "o", repo: "r", number: 7 },
+});
+const gitlabLink = (): ConversationLink => ({
+  source: "gitlab", resourceType: "mr", title: "MR", ref: { projectId: "g/p", mrIid: "3" },
+});
+const jiraLinkFull = (): ConversationLink => ({
+  source: "jira", resourceType: "issue", title: "ENG-1", ref: { issueKey: "ENG-1" },
+});
+const allAttached = (): ToolContext =>
+  ctxWith([slackLink(), githubLink(), gitlabLink(), jiraLinkFull()]);
+
+/** Register the agent-tools against a fake server and return the set of tool names
+ *  (and their titles) that actually got registered. */
+async function registeredTools(ctx: ToolContext): Promise<Map<string, string>> {
+  const titles = new Map<string, string>();
+  const server = {
+    registerTool: (name: string, meta: { title?: string }) => {
+      titles.set(name, meta.title ?? "");
+    },
+  } as unknown as Parameters<typeof registerAgentTools>[0];
+  await registerAgentTools(server, { broker: fakeBroker({ status: 200, raw: "", data: undefined }) }, ctx);
+  return titles;
+}
+
 describe("agent-tools: registered titles (the UI's provider-card renderer keys off these)", () => {
   // The UI's ToolCallView (ui/src/toolCallView.ts) matches these EXACT title
   // strings to render slack/github/gitlab/jira as message cards. goose surfaces
   // the ACP `title` as the tool name in the UI, so a rename here silently reverts
   // the card to the generic tool box. If you change a title, update the UI matcher.
-  it("keeps the titles the UI depends on", () => {
-    const titles = new Map<string, string>();
-    const server = {
-      registerTool: (name: string, meta: { title?: string }) => {
-        titles.set(name, meta.title ?? "");
-      },
-    } as unknown as Parameters<typeof registerAgentTools>[0];
-    registerAgentTools(
-      server,
-      { broker: fakeBroker({ status: 200, raw: "", data: undefined }) },
-      ctxWith([]),
-    );
+  it("keeps the titles the UI depends on (all providers attached)", async () => {
+    const titles = await registeredTools(allAttached());
     expect(titles.get("slack_respond")).toBe("Respond in the Slack thread");
     expect(titles.get("slack_react")).toBe("React to the Slack message");
+    expect(titles.get("get_slack_context")).toBe("Get the Slack thread context");
     expect(titles.get("github_comment")).toBe("Comment on the GitHub PR/issue");
     expect(titles.get("gitlab_comment")).toBe("Comment on the GitLab MR");
     expect(titles.get("jira_comment")).toBe("Comment on the Jira issue");
+  });
+});
+
+describe("agent-tools: provider tools gate on attachment", () => {
+  it("registers NO provider reply tools when nothing is attached — only web_*", async () => {
+    const titles = await registeredTools(ctxWith([]));
+    for (const t of ["slack_respond", "slack_react", "get_slack_context", "github_comment", "gitlab_comment", "jira_comment"]) {
+      expect(titles.has(t), `${t} must NOT register with no attachment`).toBe(false);
+    }
+    // web_search / web_fetch don't depend on a linked resource — always present.
+    expect(titles.has("web_search")).toBe(true);
+    expect(titles.has("web_fetch")).toBe(true);
+  });
+
+  it("registers only the slack tools when only Slack is attached", async () => {
+    const titles = await registeredTools(ctxWith([slackLink()]));
+    expect(titles.has("slack_respond")).toBe(true);
+    expect(titles.has("slack_react")).toBe(true);
+    expect(titles.has("get_slack_context")).toBe(true);
+    expect(titles.has("github_comment")).toBe(false);
+    expect(titles.has("gitlab_comment")).toBe(false);
+    expect(titles.has("jira_comment")).toBe(false);
+  });
+
+  it("registers only github_comment when only GitHub is attached", async () => {
+    const titles = await registeredTools(ctxWith([githubLink()]));
+    expect(titles.has("github_comment")).toBe(true);
+    expect(titles.has("slack_respond")).toBe(false);
+    expect(titles.has("gitlab_comment")).toBe(false);
+    expect(titles.has("jira_comment")).toBe(false);
+  });
+
+  it("gates on the DB fallback too (ref-less link + resourceLookup mapping)", async () => {
+    // No link ref, but the webhooks conversation_map has a Slack mapping → attached.
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async (source) =>
+        source === "slack"
+          ? { source: "slack", resourceType: "thread", resourceId: "C1:1700.9" }
+          : undefined,
+    };
+    const titles = await registeredTools(ctx);
+    expect(titles.has("slack_respond")).toBe(true);
+    expect(titles.has("github_comment")).toBe(false);
+  });
+});
+
+describe("agent-tools: get_slack_context", () => {
+  it("returns the attached channel + thread_ts", async () => {
+    const out = await handleGetSlackContext(
+      { broker: fakeBroker({ status: 200, raw: "", data: undefined }) },
+      ctxWith([slackLink({ channel: "C42", threadTs: "1712.3" })]),
+    );
+    const text = out.content.map((c) => c.text).join("\n");
+    expect(out.isError).toBeFalsy();
+    expect(text).toContain("C42");
+    expect(text).toContain("1712.3");
   });
 });

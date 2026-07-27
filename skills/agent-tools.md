@@ -68,11 +68,22 @@ this (by purpose — find them in your tool list):
   message (emoji name WITHOUT colons, e.g. `"eyes"`, `"white_check_mark"`,
   `"tada"`). A quick 👀 to acknowledge or a ✅ when done — cheaper than a reply.
   Don't spam it.
+- **Get the Slack thread context** — returns the Slack channel + `thread_ts` this
+  conversation is attached to. You rarely need it (the respond/react tools already
+  know), but use it when you need the raw ids — e.g. to build a permalink.
 - **Comment on the GitHub PR/issue** — comment on the PR/issue this conversation
   came from. (Optional reply-to a review-comment id to reply inside a review thread.)
 - **Comment on the GitLab MR** — comment on the MR this conversation came from.
   (Optional discussion id to reply inside a review discussion.)
 - **Comment on the Jira issue** — comment on the Jira issue this conversation came from.
+
+**These provider tools appear ONLY when that resource is attached** to this
+conversation. If there's no Slack reply tool in your tool list, this conversation
+is **not** attached to a Slack thread — do NOT try to reach Slack by another route
+(a raw `curl` to the broker leaks to the whole channel). Same for github / gitlab /
+jira: no comment tool for a provider ⇒ nothing of that kind is attached to comment
+on. Match the tool to your live tool list, not to this doc — the doc lists what's
+*possible*, your tool list shows what's *attached right now*.
 
 Typical flow: **acknowledge first** (a short "on it" via the matching tool), do the
 work, then post your result with the same tool. One acknowledgment, one result —

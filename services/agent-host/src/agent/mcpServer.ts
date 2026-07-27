@@ -119,14 +119,14 @@ export interface AgentToolsWiring {
  *  capabilities are present: the background-job tools when `jobs` is given, the
  *  typed agent-tools when `agentTools` is given (broker wired), and the model
  *  self-selection tools when `models` offers more than one model. */
-function buildServer(
+async function buildServer(
   conversationId: string,
   agentTools?: AgentToolsWiring,
   jobs?: JobManager,
   models?: ModelToolsWiring,
   resources?: SandboxResourceToolsWiring,
   scheduler?: SchedulerToolsWiring,
-): McpServer {
+): Promise<McpServer> {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (jobs) {
     server.registerTool(
@@ -173,7 +173,7 @@ function buildServer(
     );
   }
   if (agentTools) {
-    registerAgentTools(
+    await registerAgentTools(
       server,
       { broker: agentTools.broker, fetchImpl: agentTools.fetchImpl },
       {
@@ -308,7 +308,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler);
+      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },
