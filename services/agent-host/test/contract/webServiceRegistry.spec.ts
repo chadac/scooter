@@ -95,8 +95,13 @@ describe("WebServiceRegistry", () => {
     await expect(reg.stop("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 
-  it("ready() is true when the pod exec succeeds (pod is up)", async () => {
-    const reg = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })) }));
+  it("ready() is true when the pod is reachable (manifest download succeeds)", async () => {
+    const reg = make(fakeExec({ download: vi.fn(async () => MANIFEST) }));
+    expect(await reg.ready("conv-1")).toBe(true);
+  });
+
+  it("ready() is true even for an EMPTY manifest (reachable is what matters)", async () => {
+    const reg = make(fakeExec({ download: vi.fn(async () => "{}") }));
     expect(await reg.ready("conv-1")).toBe(true);
   });
 
@@ -105,6 +110,11 @@ describe("WebServiceRegistry", () => {
       sandboxFor: () => REF,
       connect: async () => { throw new Error("pod ContainerCreating"); },
     });
+    expect(await reg.ready("conv-1")).toBe(false);
+  });
+
+  it("ready() is false when the manifest download throws (pod not up)", async () => {
+    const reg = make(fakeExec({ download: vi.fn(async () => { throw new Error("exec failed"); }) }));
     expect(await reg.ready("conv-1")).toBe(false);
   });
 

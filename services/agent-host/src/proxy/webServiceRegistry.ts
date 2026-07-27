@@ -122,11 +122,14 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
       const ref = deps.sandboxFor(conversationId);
       if (!ref) return false; // no sandbox → not ready
       try {
-        // A trivial exec — succeeds ONLY once the pod is Ready (exec against a
-        // ContainerCreating/absent pod errors). Cheap probe of true readiness.
+        // Readiness = the pod is reachable via exec. Use the SAME proven path the
+        // service list uses (connect + read the manifest file), rather than a bare
+        // `execute` — download() succeeds only once the pod is Running+Ready and
+        // throws while it's ContainerCreating/absent. (An empty manifest still means
+        // "reachable" → ready; the point is the exec channel is live.)
         const exec = await deps.connect(ref);
-        const r = await exec.execute({ command: "true" });
-        return r.exitCode === 0;
+        await exec.download(MANIFEST_PATH);
+        return true;
       } catch {
         return false; // pod creating / asleep / unreachable
       }
