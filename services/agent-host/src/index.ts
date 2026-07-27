@@ -964,6 +964,11 @@ export async function main(
               model: resolved ?? cfg.model ?? "claude-sonnet-4-5",
               exec,
               systemPrompt: assembleHints(loadSkills(config.skillsDir), { name: config.agentName }),
+              // Give the SDK agent the SAME platform MCP tools the goose path gets
+              // (scheduler / slack / github / background jobs / model switch / resize),
+              // scoped to this conversation via ?conv=<id>. Without this the agent has
+              // only the sandbox tools and can't actually use those capabilities.
+              mcpEndpointUrl: mcpEndpoint?.urlFor(conversationId),
             })
           : createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
