@@ -76,13 +76,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="agent-scheduler", version="0.1.0", lifespan=lifespan)
 
 
-# The task owner IS the authenticated request identity — a user can't create tasks
-# owned by someone else. The ingress sets x-auth-user (same identity the agent-host
-# trusts). Required: no identity → 401.
+# The task owner IS the request identity — a user can't create tasks owned by
+# someone else. The ingress sets x-auth-user (the identity the agent-host trusts);
+# the agent-host forwards it, sending an EMPTY x-auth-user for the anonymous /
+# unowned scope (a deployment with no ingress auth, like a personal cluster). That
+# is a VALID scope, not an error: an absent/empty header maps to the unowned bucket
+# ("" owner), matching the agent-host's Owner contract (null owner -> ""). We never
+# 401 here — the trust boundary is the ingress + the relay key, not this header.
 def _owner(x_auth_user: str | None = Header(default=None)) -> str:
-    if not x_auth_user:
-        raise HTTPException(status_code=401, detail="missing x-auth-user identity")
-    return x_auth_user
+    return x_auth_user or ""
 
 
 @app.get("/healthz")

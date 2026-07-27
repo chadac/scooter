@@ -40,9 +40,13 @@ async def test_create_sets_owner_from_identity_not_body(client):
 
 
 @pytest.mark.asyncio
-async def test_create_requires_identity(client):
+async def test_create_anonymous_uses_unowned_bucket(client):
+    # No x-auth-user (a deployment with no ingress auth) is the anonymous/unowned
+    # scope, NOT an error — the agent-host forwards an empty header for null owner.
+    # The task is created with an empty-string owner.
     r = await client.post("/tasks", json={"title": "x", "prompt": "p", "cron": "0 9 * * *"})
-    assert r.status_code == 401
+    assert r.status_code == 200, r.text
+    assert r.json()["owner"] == ""
 
 
 @pytest.mark.asyncio
