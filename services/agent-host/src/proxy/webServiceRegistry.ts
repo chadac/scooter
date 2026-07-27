@@ -43,6 +43,7 @@ export function parseManifest(json: string): WebServiceDescriptor[] {
         port: o.port,
         basePath: typeof o.basePath === "string" ? o.basePath : `/c/*/${o.name}`,
         unit: typeof o.unit === "string" ? o.unit : `webservice-${o.name}`,
+        stripBasePath: o.stripBasePath === true,
       }];
     });
   } catch {

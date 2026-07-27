@@ -47,6 +47,10 @@ export interface WebServiceDescriptor {
   basePath: string;
   /** systemd unit name (webservice-<name>), for start/stop via exec. */
   unit: string;
+  /** Strip the `/c/<id>/<name>` prefix before forwarding, so the service serves at
+   *  ROOT. For a service that can't be told its base path (code-server). Default
+   *  false — most services handle the prefix themselves (marimo --base-url). */
+  stripBasePath?: boolean;
 }
 
 /**
@@ -118,7 +122,7 @@ export interface WebServiceProxy {
 /** Resolve a proxy request to its concrete pod target + service, or an error the
  *  caller renders as an HTTP/handshake status. */
 type Resolution =
-  | { ok: true; podIP: string; port: number; rest: string; threadId: string; service: string }
+  | { ok: true; podIP: string; port: number; rest: string; stripBasePath: boolean; threadId: string; service: string }
   | { ok: false; status: 404 | 502 | 503; service: string; threadId: string };
 
 export function renderNotStartedPage(service: string, threadId: string): string {
@@ -164,7 +168,7 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       // Pod suspended / not ready / no IP.
       return { ok: false, status: 503, service, threadId };
     }
-    return { ok: true, podIP: target.podIP, port: desc.port, rest, threadId, service };
+    return { ok: true, podIP: target.podIP, port: desc.port, rest, stripBasePath: desc.stripBasePath ?? false, threadId, service };
   }
 
   async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -187,9 +191,11 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       return;
     }
 
-    // Preserve the FULL external path so the sub-path-aware service (marimo
-    // --base-url, code-server --server-base-path) sees the prefix it expects.
-    const upstreamPath = url.pathname + (url.search ?? "");
+    // Forward path: by default preserve the FULL external path so a sub-path-aware
+    // service (marimo --base-url) sees the prefix it expects. When stripBasePath is
+    // set (code-server, which can't be told a base path), forward only the REMAINDER
+    // after /c/<id>/<service> so the service serves at root.
+    const upstreamPath = (r.stripBasePath ? r.rest : url.pathname) + (url.search ?? "");
     const headers = { ...req.headers, host: `${r.podIP}:${r.port}` };
     const upstream = httpRequest(
       { host: r.podIP, port: r.port, method: req.method, path: upstreamPath, headers },
@@ -218,7 +224,8 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
 
     // Splice: open a raw TCP connection to the pod, replay the upgrade handshake
     // (with the Host rewritten), forward the buffered head, then pipe both ways.
-    const upstreamPath = url.pathname + (url.search ?? "");
+    // Same base-path handling as HTTP: strip the prefix for code-server (WS at root).
+    const upstreamPath = (r.stripBasePath ? r.rest : url.pathname) + (url.search ?? "");
     const upstream: Socket = connect(r.port, r.podIP, () => {
       const lines = [
         `${req.method ?? "GET"} ${upstreamPath} HTTP/1.1`,

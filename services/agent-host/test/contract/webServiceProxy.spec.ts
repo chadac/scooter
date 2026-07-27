@@ -126,10 +126,24 @@ describe("web-service proxy", () => {
     const proxy = makeProxy(fakeRegistry(svc.port));
     const { status, body, echoPath } = await proxyGet(proxy, "/c/conv-1/marimo/app?x=1");
     expect(status).toBe(200);
-    // The in-pod service saw the rest-path (prefix stripped or preserved per design
-    // — assert it at least reached the app with the tail).
-    expect(echoPath).toContain("/app");
+    // Default (no stripBasePath): the FULL prefixed path reaches the pod (marimo
+    // serves under --base-url /c/conv-1/marimo).
+    expect(echoPath).toBe("/c/conv-1/marimo/app?x=1");
     expect(body).toContain("GET");
+  });
+
+  it("stripBasePath forwards only the remainder (service serves at root — code-server)", async () => {
+    const desc = { ...MARIMO, port: svc.port, stripBasePath: true };
+    const registry = {
+      ...fakeRegistry(svc.port),
+      list: async () => [desc],
+      get: async (_id: string, name: string) => (name === "marimo" ? desc : null),
+    } as WebServiceRegistry;
+    const proxy = makeProxy(registry);
+    const { status, echoPath } = await proxyGet(proxy, "/c/conv-1/marimo/app?x=1");
+    expect(status).toBe(200);
+    // The /c/conv-1/marimo prefix is stripped → the pod sees just /app.
+    expect(echoPath).toBe("/app?x=1");
   });
 
   it("unknown service -> 404", async () => {

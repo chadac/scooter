@@ -37,20 +37,24 @@ in
     workingDirectory = lib.mkDefault "/workspace";
     # `command` is types.str; writeShellScript returns a DERIVATION, so interpolate it
     # to its store-path STRING (a bare derivation fails the re-converge eval — see marimo.nix).
+    # code-server has NO --server-base-path (it's a `code serve-web` flag, not a
+    # code-server one), so it can't be told the /c/<id>/vscode prefix. Instead the
+    # reverse proxy STRIPS that prefix (stripBasePath below) and code-server serves at
+    # ROOT — no base-path flag needed.
     command = lib.mkDefault "${pkgs.writeShellScript "vscode-web-service" ''
       set -euo pipefail
-      base="/c/''${CONVERSATION_ID:-unknown}/vscode"
       # --auth none: access is gated by the platform proxy (the pod isn't public).
       # --disable-telemetry / --disable-update-check: no phone-home from the sandbox.
       # code-server keeps its own state under $HOME/.local — HOME=/workspace (set by
       # the provisioner) so it persists on the workspace PVC across suspend/resume.
       exec code-server \
         --bind-addr "0.0.0.0:${toString cfg.port}" \
-        --server-base-path "$base" \
         --auth none \
         --disable-telemetry \
         --disable-update-check \
         /workspace
     ''}";
+    # The proxy strips /c/<id>/vscode before forwarding (code-server serves at root).
+    stripBasePath = lib.mkDefault true;
   };
 }

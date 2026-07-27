@@ -20,7 +20,7 @@ let
   unitName = name: "webservice-${name}";
 
   # The discovery manifest (contract with the agent-host WebServiceRegistry):
-  #   { "services": [ { name, displayName, port, basePath, unit }, ... ] }
+  #   { "services": [ { name, displayName, port, basePath, unit, stripBasePath }, ... ] }
   manifestJSON = builtins.toJSON {
     services = lib.mapAttrsToList (name: s: {
       inherit name;
@@ -28,6 +28,7 @@ let
       port = s.port;
       basePath = s.basePath;
       unit = unitName name;
+      stripBasePath = s.stripBasePath;
     }) enabled;
   };
   manifestFile = pkgs.writeText "web-services.json" manifestJSON;
@@ -145,6 +146,19 @@ let
           at start time, so no proxy-side templating is needed. The service must be
           configured to emit links/assets under this prefix (e.g. marimo
           `--base-url ${"$"}{basePath}`).
+        '';
+      };
+
+      stripBasePath = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Whether the reverse proxy STRIPS the `/c/<id>/<name>` prefix before
+          forwarding to the pod, so the service serves at ROOT. Set true for a
+          service that CAN'T be told its base path (e.g. code-server has no
+          --server-base-path). Leave false for services that handle the prefix
+          themselves (marimo --base-url, ttyd --base-path) — stripping would then
+          double-strip and break their asset URLs.
         '';
       };
 
