@@ -64,6 +64,12 @@ export interface WebServiceRegistry {
   start(conversationId: string, name: string): Promise<void>;
   /** Stop the unit: `systemctl stop webservice-<name>` via exec. */
   stop(conversationId: string, name: string): Promise<void>;
+  /** Is the sandbox pod actually READY (exec succeeds)? The conversation status can
+   *  be "running" (Sandbox operatingMode Running) while the pod is still
+   *  ContainerCreating — exec only succeeds once the pod is Ready, so a trivial exec
+   *  probe distinguishes "requested" from "actually up". False when the pod is
+   *  creating / asleep / unreachable. */
+  ready(conversationId: string): Promise<boolean>;
   /** Drop cached descriptors for a conversation (call on suspend/resume/start). */
   invalidate(conversationId: string): void;
 }

@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   resumeConversation,
-  loadConversationStatus,
+  loadSandboxReady,
   loadWebServices,
   startWebService,
   stopWebService,
@@ -34,16 +34,20 @@ export type SandboxState = "running" | "suspended" | "ended" | "starting" | "unk
 export function useSandboxStatus() {
   const { currentId } = useSessions();
   const [serverStatus, setServerStatus] = useState<string | undefined>(undefined);
+  const [ready, setReady] = useState(false);
   const [starting, setStarting] = useState(false);
   const [services, setServices] = useState<WebService[]>([]);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
-  // Fetch the pod status DIRECTLY for the current conversation (not via the store),
-  // so it's accurate even when suspended / deep-linked. Poll while mounted.
+  // Fetch status + ACTUAL pod readiness DIRECTLY for the current conversation (not via
+  // the store), so it's accurate even when suspended / deep-linked. `ready` is false
+  // while the pod is still ContainerCreating (status is "running" then) — so the UI
+  // shows "Starting…" until it's genuinely up. Poll while mounted.
   const refreshStatus = useCallback(async () => {
     if (!currentId) return;
-    const st = await loadConversationStatus({ baseUrl: BASE_URL }, currentId);
-    if (st) setServerStatus(st);
+    const { status, ready: r } = await loadSandboxReady({ baseUrl: BASE_URL }, currentId);
+    if (status && status !== "unknown") setServerStatus(status);
+    setReady(r);
   }, [currentId]);
 
   const refreshServices = useCallback(async () => {
@@ -53,6 +57,7 @@ export function useSandboxStatus() {
 
   useEffect(() => {
     setServerStatus(undefined); // reset on conversation switch
+    setReady(false);
     void refreshStatus();
     void refreshServices();
     const t = setInterval(() => {
@@ -62,9 +67,11 @@ export function useSandboxStatus() {
     return () => clearInterval(t);
   }, [refreshStatus, refreshServices]);
 
+  // The resume is "done" only when the pod is actually READY (not merely status
+  // "running", which is true while it's still ContainerCreating).
   useEffect(() => {
-    if (serverStatus === "running") setStarting(false);
-  }, [serverStatus]);
+    if (serverStatus === "running" && ready) setStarting(false);
+  }, [serverStatus, ready]);
 
   const startSandbox = useCallback(async () => {
     if (!currentId) return;
@@ -85,9 +92,17 @@ export function useSandboxStatus() {
     setBusy((b) => ({ ...b, [name]: false }));
   };
 
-  const state: SandboxState = starting && serverStatus !== "running"
-    ? "starting"
-    : (serverStatus as SandboxState) ?? "unknown";
+  // "running" ONLY when the pod is actually ready. status="running" but not ready =
+  // the pod is coming up (ContainerCreating) → show "starting". A resume in flight
+  // also shows "starting" until ready.
+  const state: SandboxState =
+    serverStatus === "running"
+      ? ready
+        ? "running"
+        : "starting"
+      : starting
+        ? "starting"
+        : (serverStatus as SandboxState) ?? "unknown";
 
   return {
     state,

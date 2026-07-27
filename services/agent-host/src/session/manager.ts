@@ -520,6 +520,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
+      // Register the resume as ACTIVITY. Without this, lastActivityAt stays at its
+      // pre-suspend value, so the idle sweep (sweepIdle) sees the conversation as
+      // already-idle and re-suspends the pod we JUST started — a UI "Start sandbox"
+      // (or any prompt-less revive) would die within one sweep interval. touch()
+      // gives the freshly-started pod the full idle window before it can be reclaimed.
+      touch(entry);
       wireEventLog(entry);
       await saveMeta(entry); // await (like start/create) so a persist failure propagates, not an unhandled rejection
       await entry.bridge?.start();

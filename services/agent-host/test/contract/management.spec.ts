@@ -580,6 +580,8 @@ describe("management API", () => {
         name === "marimo" ? { name, displayName: "marimo", port: 2718, basePath: "/c/c1/marimo", unit: "webservice-marimo" } : null,
       isRunning: async (_id: string, name: string) => running.has(name),
       start: async (_id: string, name: string) => { running.add(name); },
+      stop: async (_id: string, name: string) => { running.delete(name); },
+      ready: async () => true,
       invalidate: () => {},
       ...over,
     } as never;
@@ -601,6 +603,24 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { json } = await call(api, "GET", "/conversations/c1/web-services");
     expect((json as any).services).toEqual([]);
+  });
+
+  it("GET /conversations/:id/ready probes actual pod readiness for a running conversation", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, webServices: fakeWebServices({ ready: async () => true }),
+    });
+    const { json } = await call(api, "GET", "/conversations/c1/ready");
+    expect(json).toEqual({ ready: true, status: "running" });
+  });
+
+  it("GET /ready reports ready:false when the pod exec probe fails (ContainerCreating)", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, webServices: fakeWebServices({ ready: async () => false }),
+    });
+    const { json } = await call(api, "GET", "/conversations/c1/ready");
+    expect(json).toEqual({ ready: false, status: "running" });
   });
 
   it("POST .../web-services/:name/start starts it (202) and it reads back running", async () => {

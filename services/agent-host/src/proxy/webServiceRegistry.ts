@@ -118,6 +118,19 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
         throw new Error(`systemctl stop ${u} failed (${r.exitCode}): ${r.stderr.trim()}`);
       }
     },
+    async ready(conversationId) {
+      const ref = deps.sandboxFor(conversationId);
+      if (!ref) return false; // no sandbox → not ready
+      try {
+        // A trivial exec — succeeds ONLY once the pod is Ready (exec against a
+        // ContainerCreating/absent pod errors). Cheap probe of true readiness.
+        const exec = await deps.connect(ref);
+        const r = await exec.execute({ command: "true" });
+        return r.exitCode === 0;
+      } catch {
+        return false; // pod creating / asleep / unreachable
+      }
+    },
     invalidate(conversationId) {
       cache.delete(conversationId);
     },

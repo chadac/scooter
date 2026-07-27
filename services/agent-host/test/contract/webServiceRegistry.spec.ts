@@ -95,6 +95,24 @@ describe("WebServiceRegistry", () => {
     await expect(reg.stop("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 
+  it("ready() is true when the pod exec succeeds (pod is up)", async () => {
+    const reg = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })) }));
+    expect(await reg.ready("conv-1")).toBe(true);
+  });
+
+  it("ready() is false when the pod isn't reachable (creating / asleep)", async () => {
+    const reg = createWebServiceRegistry({
+      sandboxFor: () => REF,
+      connect: async () => { throw new Error("pod ContainerCreating"); },
+    });
+    expect(await reg.ready("conv-1")).toBe(false);
+  });
+
+  it("ready() is false when there is no sandbox for the conversation", async () => {
+    const reg = createWebServiceRegistry({ sandboxFor: () => undefined, connect: async () => fakeExec() });
+    expect(await reg.ready("conv-1")).toBe(false);
+  });
+
   it("a pod that can't be reached yields no services (not a throw)", async () => {
     const reg = createWebServiceRegistry({
       sandboxFor: () => REF,

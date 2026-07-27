@@ -211,6 +211,26 @@ export async function loadConversationStatus(
   }
 }
 
+/** Fetch the conversation's status AND actual pod readiness (GET /:id/ready). The
+ *  status can be "running" while the pod is still ContainerCreating; `ready` is true
+ *  only once the pod is actually up (exec succeeds) — so the UI can show "Starting…"
+ *  in between instead of a premature "Running". */
+export async function loadSandboxReady(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<{ status: string; ready: boolean }> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/ready`,
+      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) return { status: "unknown", ready: false };
+    return (await res.json()) as { status: string; ready: boolean };
+  } catch {
+    return { status: "unknown", ready: false };
+  }
+}
+
 /**
  * Load ALL conversations from the agent-host so the sidebar survives a page
  * refresh and every conversation is listed/searchable (not just the ones this

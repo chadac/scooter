@@ -561,6 +561,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // Web services (marimo/xterm/vscode) declared in the conversation's sandbox and
   // reverse-proxied at /c/<id>/<name>/. The UI Services panel lists them (with
   // liveness) and Starts one. No extra auth — same view-filter model as the rest.
+  // Actual pod readiness — the conversation `status` can be "running" (Sandbox
+  // operatingMode Running) while the pod is still ContainerCreating. exec succeeds
+  // only once the pod is Ready, so this distinguishes "requested" from "actually up".
+  // The UI Sandbox tab shows "Starting…" while status=running but ready=false.
+  r.get("/conversations/:id/ready", async (ctx) => {
+    const id = await resolveConvId(ctx.params.id);
+    const conv = id ? sessions.get(id) : undefined;
+    // Only a running-status conversation can be ready; suspended/ended are never ready.
+    if (!id || !conv || conv.status !== "running" || !deps.webServices) {
+      return { json: { ready: false, status: conv?.status ?? "unknown" } };
+    }
+    const ready = await deps.webServices.ready(id).catch(() => false);
+    return { json: { ready, status: conv.status } };
+  });
+
   r.get("/conversations/:id/web-services", async (ctx) => {
     const id = await resolveConvId(ctx.params.id);
     if (!id || !deps.webServices) return { json: { services: [] } };
