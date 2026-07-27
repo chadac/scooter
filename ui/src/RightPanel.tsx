@@ -24,9 +24,10 @@ import { useEffect, useRef, useState } from "react";
 import { InterruptList } from "./InterruptPanel.js";
 import { QueuedMessages } from "./QueuedMessages.js";
 import { ServiceRows, useWebServices } from "./ServicesPanel.js";
+import { SandboxStatusView, useSandboxStatus } from "./SandboxPanel.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
-type Tab = "approvals" | "queue" | "services";
+type Tab = "sandbox" | "approvals" | "queue" | "services";
 
 function TabButton({
   active,
@@ -79,11 +80,13 @@ function TabButton({
 export function RightPanel() {
   const { interrupts, queuedMessages } = useConversationInterrupts();
   const { services, busy, start, stop } = useWebServices();
+  const { state: sandboxState, start: startSandbox, hasConversation } = useSandboxStatus();
   const nInterrupts = interrupts.length;
   const nQueued = queuedMessages.length;
   const nServices = services.length;
 
-  const [active, setActive] = useState<Tab>("approvals");
+  // Sandbox is the leftmost, ALWAYS-present tab — so it's the default.
+  const [active, setActive] = useState<Tab>("sandbox");
 
   // Auto-focus Approvals whenever the pending-interrupt count RISES (a new gate the
   // user must answer). Tracked by count so re-renders that don't change it don't
@@ -94,17 +97,23 @@ export function RightPanel() {
     prevInterrupts.current = nInterrupts;
   }, [nInterrupts]);
 
-  // Collapse entirely when EVERY tab is empty — costs no space when idle. Services
-  // keeps the panel open (declared services are worth a visible start/stop control).
-  if (nInterrupts === 0 && nQueued === 0 && nServices === 0) return null;
+  // The panel is ALWAYS shown now (the Sandbox status tab is persistent) — as long as
+  // there IS a conversation. Only a truly empty app (no conversation) hides it.
+  if (!hasConversation) return null;
 
   return (
     <aside
       className="flex h-full w-80 shrink-0 flex-col border-l bg-background shadow-lg"
       data-testid="right-panel"
-      aria-label="Approvals, queued messages, and services"
+      aria-label="Sandbox status, approvals, queued messages, and services"
     >
       <div className="flex border-b" role="tablist">
+        <TabButton
+          active={active === "sandbox"}
+          onClick={() => setActive("sandbox")}
+          label="Sandbox"
+          count={0}
+        />
         <TabButton
           active={active === "approvals"}
           onClick={() => setActive("approvals")}
@@ -129,7 +138,9 @@ export function RightPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {active === "approvals" ? (
+        {active === "sandbox" ? (
+          <SandboxStatusView state={sandboxState} onStart={() => void startSandbox()} />
+        ) : active === "approvals" ? (
           nInterrupts > 0 ? (
             <InterruptList />
           ) : (

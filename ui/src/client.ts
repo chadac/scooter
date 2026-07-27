@@ -30,7 +30,8 @@ export interface ConversationView {
   id: string;
   threadId: string;
   title: string;
-  status: string;
+  /** Sandbox lifecycle state. */
+  status: "running" | "suspended" | "ended";
   createdAt: number;
   lastActivityAt: number;
   /** The conversation's model (undefined = host default). */
@@ -166,6 +167,47 @@ export async function stopWebService(
   } catch (e) {
     console.warn(`[client] stopWebService ${conversationId}/${name} failed:`, e);
     return false;
+  }
+}
+
+/** Resume (start) a suspended sandbox pod — POST /conversations/:id/resume, which
+ *  revives the pod (mounts the PVCs). Returns the conversation's new status, or null
+ *  on failure. Lets the user bring the pod up to reach services without prompting. */
+export async function resumeConversation(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<{ status: string } | null> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/resume`,
+      { method: "POST", headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) {
+      console.warn(`[client] resumeConversation ${conversationId}: HTTP ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as { status: string };
+  } catch (e) {
+    console.warn(`[client] resumeConversation ${conversationId} failed:`, e);
+    return null;
+  }
+}
+
+/** Fetch the current status of one conversation (GET /conversations/:id) — a light
+ *  poll used to track a resume through to "running". */
+export async function loadConversationStatus(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}`,
+      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) return null;
+    return ((await res.json()) as { status?: string }).status ?? null;
+  } catch {
+    return null;
   }
 }
 
