@@ -12,6 +12,7 @@ import { test, expect } from "./fixtures.js";
 
 const panel = {
   rightPanel: '[data-testid="right-panel"]',
+  sandboxTab: '[data-testid="right-panel-tab-sandbox"]',
   approvalsTab: '[data-testid="right-panel-tab-approvals"]',
   root: '[data-testid="interrupt-panel"]',
   option: '[data-testid="interrupt-option"]',
@@ -34,10 +35,12 @@ test.describe("agent option dropdown (interrupt)", () => {
     await page.locator(panel.option).filter({ hasText: /green/i }).click();
     await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 30_000 });
 
-    // The approvals content — and (queue empty) the whole right panel — go away
-    // once the request is answered.
+    // The interrupt content goes away once the request is answered. The right panel
+    // itself PERSISTS now (the Sandbox status tab is always present for a live
+    // conversation) — it no longer collapses, and it auto-returns to the Sandbox tab.
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
-    await expect(page.locator(panel.rightPanel)).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.locator(panel.rightPanel)).toBeVisible();
+    await expect(page.locator(panel.sandboxTab)).toBeVisible();
   });
 
   test("dismissing the request cancels it", async ({ chat, page }) => {
@@ -47,9 +50,11 @@ test.describe("agent option dropdown (interrupt)", () => {
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
     await page.locator(panel.cancel).click();
 
-    // The agent reports the cancellation and the panel clears.
+    // The agent reports the cancellation and the interrupt content clears. The right
+    // panel persists (the Sandbox status tab is always present for a live conversation).
     await expect(page.getByText(/you picked: \(cancelled\)/i).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
-    await expect(page.locator(panel.rightPanel)).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.locator(panel.rightPanel)).toBeVisible();
+    await expect(page.locator(panel.sandboxTab)).toBeVisible();
   });
 });
