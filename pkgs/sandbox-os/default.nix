@@ -87,6 +87,15 @@ let
     # Ship the SAME source object the script references (see nixpkgsSource above).
     # The in-pod re-converge `nix build` imports it — offline, no fetch.
     system.extraDependencies = [ nixpkgsSource ];
+
+    # Built-in web services ON by DEFAULT (marimo notebook, ttyd terminal, web
+    # VS Code) — so they're DECLARED + listed in the manifest and startable from the
+    # UI Sandbox tab / `scooter-service` out of the box. Explicit-start is unchanged:
+    # they are NOT wantedBy multi-user.target, so they don't auto-run — the user/agent
+    # starts them on demand. mkDefault so a deployment can still turn one off.
+    webServices.marimo.enable = lib.mkDefault true;
+    webServices.terminal.enable = lib.mkDefault true;
+    webServices.vscode.enable = lib.mkDefault true;
   });
 
   toplevel = nixos.config.system.build.toplevel;
