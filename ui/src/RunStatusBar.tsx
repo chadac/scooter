@@ -44,9 +44,12 @@ export function RunStatusBar() {
       className="flex items-center justify-between gap-3 border-t bg-muted/40 px-4 py-2 text-sm"
     >
       <span data-testid="thinking-indicator" className="flex items-center gap-2 text-muted-foreground">
-        {/* Pulsing dot — a lightweight "working" cue without a spinner dependency. */}
-        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" aria-hidden />
-        {stopping ? "Stopping…" : failed ? "Stop didn't land — the run is still going" : "Scooter is working…"}
+        {/* The SINGLE thinking indicator: a pulsing dot (no "Scooter is working…"
+            text, and the per-message ● was removed — this is the one source of
+            truth, driven by the log-derived isRunning). Text appears only for the
+            meaningful stop states so the user knows a Stop is landing / didn't. */}
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" aria-label="Scooter is working" />
+        {stopping ? "Stopping…" : failed ? "Stop didn't land — the run is still going" : null}
       </span>
       <button
         type="button"

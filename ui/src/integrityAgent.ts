@@ -428,16 +428,32 @@ export class IntegrityAgent extends AbstractAgent {
     let closed = false;
     let connSub: Subscription | undefined;
     let controller: AbortController | undefined;
+    // True once seedTail() has painted the recent tail. Used to SKIP the first
+    // connection's blank-to-[] so the seeded tail stays on screen while the full log
+    // replays (renders are suppressed until `synced` anyway), instead of flashing
+    // empty then repainting — which made the fast first paint invisible.
+    let seeded = false;
 
     const loop = async () => {
       let notFoundDelay = 500;
+      let firstConn = true;
       while (!closed) {
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
         // replay rebuilds identical state rather than doubling onto the previous
         // connection's fold (the page-refresh double-apply bug). A `Subject`
         // carries this connection's events into ONE apply/processApplyEvents
         // subscription; it completes only when the connection actually ends.
-        this.setMessages([]);
+        // EXCEPTION: on the FIRST connection right after seedTail() painted, keep the
+        // seeded tail visible — the fold rebuilds `messages` from empty internally and
+        // renders are suppressed until `synced`, so blanking here would only flash the
+        // fast first paint away. Later reconnects always reset (no seed to preserve).
+        if (firstConn && seeded) {
+          // The applier still folds from empty; we just don't wipe the VISIBLE tail.
+          this.messages = [];
+        } else {
+          this.setMessages([]);
+        }
+        firstConn = false;
         // A fresh connection re-replays the whole log; recompute pending interrupts
         // from scratch too. Run-scoped ones derive from the trailing RUN_FINISHED;
         // external (broker) ones are rebuilt as their ext- RUN_FINISHED and any
