@@ -676,6 +676,56 @@ describe("management API", () => {
     expect(status).toBe(502);
   });
 
+  // --- Modules (search / list attached / install) ------------------------------
+
+  const fakeModules = (over: Partial<Record<string, unknown>> = {}) =>
+    ({
+      search: async (_id: string, _q: string) => [
+        { id: 1, name: "gpu-tools", description: "CUDA", visibility: "public", owner: "c-2" },
+      ],
+      attached: async () => ["gpu-tools"],
+      install: async (_id: string, ref: string) => `attached ${ref} — applying...`,
+      ...over,
+    }) as never;
+
+  it("GET /conversations/:id/module-registry returns modules + attached flag", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, moduleRegistry: fakeModules(),
+    });
+    const { status, json } = await call(api, "GET", "/conversations/c1/module-registry?q=gpu");
+    expect(status).toBe(200);
+    expect((json as any).configured).toBe(true);
+    expect((json as any).modules[0]).toMatchObject({ name: "gpu-tools", attached: true });
+  });
+
+  it("module-registry 501s (configured:false) when unwired (fake/local mode)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status, json } = await call(api, "GET", "/conversations/c1/module-registry");
+    expect(status).toBe(501);
+    expect((json as any).configured).toBe(false);
+  });
+
+  it("POST .../modules/:ref/install attaches (202) with the CLI message", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {}, moduleRegistry: fakeModules(),
+    });
+    const { status, json } = await call(api, "POST", "/conversations/c1/modules/gpu-tools/install");
+    expect(status).toBe(202);
+    expect((json as any).message).toContain("attached gpu-tools");
+  });
+
+  it("POST install maps an install failure to 502", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {},
+      moduleRegistry: fakeModules({ install: async () => { throw new Error("not found"); } }),
+    });
+    const { status } = await call(api, "POST", "/conversations/c1/modules/nope/install");
+    expect(status).toBe(502);
+  });
+
   it("DELETE /conversations/:id ends it", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });

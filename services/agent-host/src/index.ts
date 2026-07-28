@@ -34,6 +34,7 @@ import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { resolvePodTarget } from "./exec/k8sExec.js";
 import { createWebServiceProxy } from "./proxy/webServiceProxy.js";
 import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
+import { createModuleRegistry } from "./proxy/moduleRegistry.js";
 import { writeHints, loadSkills, assembleHints } from "./agent/skills.js";
 import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
@@ -733,6 +734,15 @@ export async function main(
         connect: (ref) => connectSandbox(ref),
       });
 
+  // Module registry: search the broker catalog + install (attach) modules into a
+  // conversation's sandbox, via the in-pod agent-broker / scooter-rebuild CLIs.
+  const moduleRegistry = config.fakeSandbox
+    ? undefined
+    : createModuleRegistry({
+        sandboxFor: (id) => sessions.get(id)?.sandbox,
+        connect: (ref) => connectSandbox(ref),
+      });
+
   // Management REST API (conversation CRUD + lifecycle + history), mounted on
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
@@ -741,6 +751,7 @@ export async function main(
       store,
       server,
       webServices,
+      moduleRegistry,
       identityStore,
       assets,
       scheduler: schedulerClient,
