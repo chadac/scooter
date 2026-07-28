@@ -236,6 +236,12 @@ export interface SessionManager {
    *  hydrate a persisted-but-not-in-memory conversation. Returns undefined only
    *  when no conversation has that short id. */
   getByShortId(shortHash: string): Promise<Conversation | undefined>;
+  /** Mark a conversation active NOW (bump lastActivityAt + persist), so the idle
+   *  sweep won't suspend it. For NON-agent activity that should still count as "in
+   *  use" — e.g. a user connected to the conversation's in-pod web services
+   *  (vscode/marimo/terminal) through the reverse proxy. No-op if the conversation
+   *  isn't in memory (nothing to keep alive). */
+  touchById(id: SessionId): void;
   /** All conversations, newest first. */
   list(): Conversation[];
   /** Set a conversation's title (e.g. agent-assigned). */
@@ -648,6 +654,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     get(id) {
       const entry = entries.get(id);
       return entry ? toConversation(entry) : undefined;
+    },
+
+    touchById(id) {
+      const entry = entries.get(id);
+      if (entry) touch(entry); // no-op if not in memory — nothing to keep alive
     },
 
     async getByShortId(shortHash) {

@@ -99,14 +99,18 @@ describe("web-service proxy", () => {
     expect(parseProxyPath("/conversations/conv-1")).toBeNull();
   });
 
-  function makeProxy(registry: WebServiceRegistry, target?: Partial<PodTarget>): WebServiceProxy {
+  function makeProxy(
+    registry: WebServiceRegistry,
+    target?: Partial<PodTarget>,
+    touchById: (id: string) => void = () => {},
+  ): WebServiceProxy {
     const resolvePodTarget = async () => ({
       name: "conv-1-pod",
       podIP: "127.0.0.1",
       ...target,
     });
     return createWebServiceProxy({
-      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }) } as never,
+      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }), touchById } as never,
       resolvePodTarget: resolvePodTarget as never,
       registry,
       publicHost: "scooter.example.com",
@@ -130,6 +134,27 @@ describe("web-service proxy", () => {
     // serves under --base-url /c/conv-1/marimo).
     expect(echoPath).toBe("/c/conv-1/marimo/app?x=1");
     expect(body).toContain("GET");
+  });
+
+  it("marks the conversation active (touchById) on a proxied request — keeps the pod alive", async () => {
+    const touched: string[] = [];
+    const proxy = makeProxy(fakeRegistry(svc.port), undefined, (id) => touched.push(id));
+    await proxyGet(proxy, "/c/conv-1/marimo/app");
+    // A user using the web service is real activity → the idle sweep must not suspend it.
+    expect(touched).toContain("conv-1");
+  });
+
+  it("does NOT touch when the pod is unreachable (503 — nothing to keep alive)", async () => {
+    const touched: string[] = [];
+    const proxy = createWebServiceProxy({
+      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }), touchById: (id: string) => touched.push(id) } as never,
+      resolvePodTarget: (async () => { throw new Error("no ready pod"); }) as never,
+      registry: fakeRegistry(svc.port),
+      publicHost: "scooter.example.com",
+    });
+    const { status } = await proxyGet(proxy, "/c/conv-1/marimo/x");
+    expect(status).toBe(503);
+    expect(touched).toEqual([]); // resolve failed → no touch
   });
 
   it("stripBasePath forwards only the remainder (service serves at root — code-server)", async () => {
@@ -157,7 +182,7 @@ describe("web-service proxy", () => {
 
   it("suspended / unreachable pod -> 503", async () => {
     const proxy = createWebServiceProxy({
-      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }) } as never,
+      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }), touchById: () => {} } as never,
       resolvePodTarget: (async () => {
         throw new Error("no ready pod");
       }) as never,
