@@ -656,6 +656,36 @@ describe("SessionManager", () => {
     }
   });
 
+  it("touchById() keeps a conversation from being idle-swept (web-service traffic)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const provisioner = fakeProvisioner();
+      const store = inMemoryStore();
+      store.recordActivity = vi.fn(async () => {});
+      const sessions = createSessionManager({ provisioner, store });
+      const conv = await sessions.start("web-thread"); // stamped at t=0
+
+      // A user is actively using the pod's web services at t=9min — the proxy touches.
+      vi.setSystemTime(9 * 60_000);
+      sessions.touchById(conv.id);
+      expect(store.recordActivity).toHaveBeenCalledWith(conv.id, 9 * 60_000);
+
+      // At t=10min with a 5min threshold: WITHOUT the touch it'd be swept (10min old),
+      // but the touch reset lastActivityAt to t=9min → only 1min idle → NOT swept.
+      const suspended = await sessions.sweepIdle(5 * 60_000, 10 * 60_000);
+      expect(suspended).toEqual([]);
+      expect(sessions.get(conv.id)?.status).toBe("running");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("touchById() is a no-op for an unknown conversation", () => {
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
+    expect(() => sessions.touchById("nope" as never)).not.toThrow();
+  });
+
   it("sweepIdle() ignores already-suspended conversations", async () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });

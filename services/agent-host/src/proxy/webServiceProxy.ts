@@ -122,7 +122,7 @@ export interface WebServiceProxy {
 /** Resolve a proxy request to its concrete pod target + service, or an error the
  *  caller renders as an HTTP/handshake status. */
 type Resolution =
-  | { ok: true; podIP: string; port: number; rest: string; stripBasePath: boolean; threadId: string; service: string }
+  | { ok: true; conversationId: string; podIP: string; port: number; rest: string; stripBasePath: boolean; threadId: string; service: string }
   | { ok: false; status: 404 | 502 | 503; service: string; threadId: string };
 
 export function renderNotStartedPage(service: string, threadId: string): string {
@@ -143,6 +143,21 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
   const { sessions, resolvePodTarget, registry } = deps;
 
   const matches = (pathname: string): boolean => parseProxyPath(pathname) !== null;
+
+  // Keep the conversation alive while a user is USING its web services: a live
+  // vscode/marimo/terminal session is real activity, so the idle-suspend sweep must
+  // not pull the pod out from under them. We mark the conversation active on proxy
+  // traffic — throttled per conversation so a chatty WebSocket (terminal keystrokes,
+  // marimo kernel) doesn't hammer the store; one touch per window is enough since the
+  // idle threshold is minutes. (See SessionManager.touchById + sweepIdle.)
+  const TOUCH_THROTTLE_MS = 15_000;
+  const lastTouch = new Map<string, number>();
+  const touch = (conversationId: string) => {
+    const now = Date.now();
+    if (now - (lastTouch.get(conversationId) ?? 0) < TOUCH_THROTTLE_MS) return;
+    lastTouch.set(conversationId, now);
+    sessions.touchById(conversationId as never);
+  };
 
   async function resolve(pathname: string): Promise<Resolution | null> {
     const parsed = parseProxyPath(pathname);
@@ -168,7 +183,7 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       // Pod suspended / not ready / no IP.
       return { ok: false, status: 503, service, threadId };
     }
-    return { ok: true, podIP: target.podIP, port: desc.port, rest, stripBasePath: desc.stripBasePath ?? false, threadId, service };
+    return { ok: true, conversationId: conv.id, podIP: target.podIP, port: desc.port, rest, stripBasePath: desc.stripBasePath ?? false, threadId, service };
   }
 
   async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -190,6 +205,9 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       }
       return;
     }
+
+    // Live web-service traffic counts as activity — keep the pod from idle-suspending.
+    touch(r.conversationId);
 
     // Forward path: by default preserve the FULL external path so a sub-path-aware
     // service (marimo --base-url) sees the prefix it expects. When stripBasePath is
@@ -222,6 +240,13 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       return;
     }
 
+    // A live WebSocket (terminal PTY, marimo kernel, vscode RPC) is active use — mark
+    // it on connect, then again on data (throttled) so ONGOING use keeps the pod alive
+    // even across a run's worth of idle-sweep windows. (An open-but-silent socket only
+    // holds it for one window; real interaction re-touches.)
+    touch(r.conversationId);
+    const conversationId = r.conversationId;
+
     // Splice: open a raw TCP connection to the pod, replay the upgrade handshake
     // (with the Host rewritten), forward the buffered head, then pipe both ways.
     // Same base-path handling as HTTP: strip the prefix for code-server (WS at root).
@@ -237,6 +262,10 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       }
       upstream.write(lines.join("\r\n") + "\r\n\r\n");
       if (head?.length) upstream.write(head);
+      // Frames in EITHER direction (client keystrokes, server output) = active use.
+      const onData = () => touch(conversationId);
+      socket.on("data", onData);
+      upstream.on("data", onData);
       upstream.pipe(socket);
       socket.pipe(upstream);
     });
