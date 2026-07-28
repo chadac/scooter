@@ -57,7 +57,13 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
 
   async function load(conversationId: string): Promise<WebServiceDescriptor[]> {
     const cached = cache.get(conversationId);
-    if (cached) return cached;
+    // Only a NON-EMPTY cached list is authoritative. An empty [] almost always means
+    // "couldn't read the manifest yet" — the pod was still ContainerCreating when a
+    // prior call ran (download() threw → []), or it was asleep. Caching that empty
+    // result made the Sandbox tab show "no services" forever, even once the pod was
+    // ready (the bug). So we DON'T cache empties: an empty result is retried on the
+    // next call, and only a successful non-empty read is memoized.
+    if (cached && cached.length > 0) return cached;
     const ref = deps.sandboxFor(conversationId);
     if (!ref) return [];
     let descriptors: WebServiceDescriptor[] = [];
@@ -65,9 +71,9 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
       const exec = await deps.connect(ref);
       descriptors = parseManifest(await exec.download(MANIFEST_PATH));
     } catch {
-      descriptors = []; // pod asleep / manifest missing — nothing declared
+      descriptors = []; // pod asleep / creating / manifest missing — retry next time
     }
-    cache.set(conversationId, descriptors);
+    if (descriptors.length > 0) cache.set(conversationId, descriptors);
     return descriptors;
   }
 

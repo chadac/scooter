@@ -59,6 +59,25 @@ describe("WebServiceRegistry", () => {
     expect(exec.download).toHaveBeenCalledTimes(1);
   });
 
+  it("does NOT cache an empty result — retries until the pod's manifest is readable", async () => {
+    // The pod is ContainerCreating on the first read (download throws → []), then
+    // Ready on the next. An empty [] must NOT be memoized, or the Sandbox tab shows
+    // "no services" forever even once the pod is up (the real bug).
+    let ready = false;
+    const download = vi.fn(async () => {
+      if (!ready) throw new Error("pod not ready");
+      return MANIFEST;
+    });
+    const reg = make(fakeExec({ download }));
+    expect(await reg.list("conv-1")).toEqual([]); // creating → empty, not cached
+    ready = true;
+    expect(await reg.list("conv-1")).toHaveLength(1); // retried → services appear
+    expect(download).toHaveBeenCalledTimes(2);
+    // Now non-empty IS cached: a third read doesn't re-download.
+    expect(await reg.list("conv-1")).toHaveLength(1);
+    expect(download).toHaveBeenCalledTimes(2);
+  });
+
   it("isRunning maps `systemctl is-active`", async () => {
     const active = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "active", stderr: "", exitCode: 0 })) }));
     expect(await active.isRunning("conv-1", "marimo")).toBe(true);
