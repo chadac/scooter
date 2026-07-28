@@ -20,10 +20,13 @@ import {
   updateScheduledTask,
   deleteScheduledTask,
   loadUsers,
+  searchModules,
   type ScheduledTaskView,
   type ScheduledTaskInput,
   type UserView,
+  type RegistryModule,
 } from "./client.js";
+import { useSessions } from "./sessions.js";
 import { viewStore } from "./view.js";
 
 const BLANK: ScheduledTaskInput = { title: "", prompt: "", cron: "", timezone: "UTC", enabled: true };
@@ -300,6 +303,61 @@ function UsersSection() {
   );
 }
 
+/** Available modules — the public registry catalog (read-only list here; install is
+ *  on the Sandbox tab, since it runs in-pod). Uses the current conversation to reach
+ *  the registry (it execs the in-pod broker CLI). */
+function ModulesSettingsSection() {
+  const { currentId } = useSessions();
+  const [modules, setModules] = useState<RegistryModule[]>([]);
+  const [available, setAvailable] = useState(true);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      if (!currentId) { setAvailable(false); setLoading(false); return; }
+      const res = await searchModules(agentHostConfig, currentId, "");
+      setAvailable(res.configured);
+      // Settings shows the shared catalog — public modules only.
+      setModules(res.modules.filter((m) => m.visibility === "public"));
+      setLoading(false);
+    })();
+  }, [currentId]);
+
+  return (
+    <section data-testid="modules-settings-section" className="flex flex-col gap-3">
+      <div>
+        <h2 className="font-medium">Available modules</h2>
+        <p className="text-sm text-muted-foreground">
+          Public Nix modules from the registry. Install them into a conversation from its Sandbox tab.
+        </p>
+      </div>
+
+      {!available ? (
+        <p data-testid="modules-settings-unavailable" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+          {currentId
+            ? "The module registry isn’t available for this conversation (start its sandbox to browse)."
+            : "Open a conversation to browse available modules."}
+        </p>
+      ) : loading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : modules.length === 0 ? (
+        <p data-testid="modules-settings-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+          No public modules published yet.
+        </p>
+      ) : (
+        <ul data-testid="modules-settings-list" className="flex flex-col gap-2">
+          {modules.map((m) => (
+            <li key={m.id} data-testid="modules-settings-item" className="rounded-md border p-3">
+              <div className="font-medium">{m.name}</div>
+              {m.description && <p className="mt-0.5 text-sm text-muted-foreground">{m.description}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const [tasks, setTasks] = useState<ScheduledTaskView[]>([]);
   const [configured, setConfigured] = useState(true);
@@ -386,6 +444,8 @@ export function SettingsPage() {
       </section>
 
       <UsersSection />
+
+      <ModulesSettingsSection />
     </div>
   );
 }

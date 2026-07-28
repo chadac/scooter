@@ -20,8 +20,12 @@ import {
   loadWebServices,
   startWebService,
   stopWebService,
+  searchModules,
+  installModule,
   type WebService,
+  type RegistryModule,
 } from "./client.js";
+import { agentHostConfig } from "./config.js";
 import { useSessions } from "./sessions.js";
 import { ServiceRows } from "./ServicesPanel.js";
 
@@ -108,6 +112,7 @@ export function useSandboxStatus() {
     state,
     services,
     busy,
+    conversationId: currentId ?? undefined,
     startSandbox,
     startService: (name: string) => void act(name, startWebService),
     stopService: (name: string) => void act(name, stopWebService),
@@ -131,10 +136,109 @@ const DOT: Record<SandboxState, string> = {
   unknown: "bg-muted-foreground/40 animate-pulse",
 };
 
+/** Search + install Nix MODULES from the broker registry into this sandbox. Runs
+ *  in-pod (scooter-rebuild), so it's shown only while the pod is running. */
+export function ModulesSection({ conversationId }: { conversationId: string }) {
+  const [query, setQuery] = useState("");
+  const [modules, setModules] = useState<RegistryModule[]>([]);
+  const [configured, setConfigured] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const runSearch = useCallback(async (q: string) => {
+    setLoading(true);
+    const res = await searchModules(agentHostConfig, conversationId, q);
+    setConfigured(res.configured);
+    setModules(res.modules);
+    setLoading(false);
+  }, [conversationId]);
+
+  useEffect(() => { void runSearch(""); }, [runSearch]);
+
+  const install = async (ref: string) => {
+    setInstalling(ref);
+    setNote(null);
+    try {
+      const msg = await installModule(agentHostConfig, conversationId, ref);
+      setNote(msg);
+      await runSearch(query); // refresh the attached flags
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  return (
+    <div data-testid="modules-section">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">Modules</div>
+      <form
+        onSubmit={(e) => { e.preventDefault(); void runSearch(query); }}
+        className="mb-2 flex gap-1"
+      >
+        <input
+          data-testid="module-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search modules…"
+          className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
+        />
+        <button type="submit" className="rounded-md border px-2 py-1 text-xs hover:bg-accent">
+          Search
+        </button>
+      </form>
+
+      {!configured ? (
+        <p data-testid="modules-unavailable" className="text-xs text-muted-foreground">
+          The module registry isn’t available.
+        </p>
+      ) : loading ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : modules.length === 0 ? (
+        <p data-testid="modules-empty" className="text-xs text-muted-foreground">No modules found.</p>
+      ) : (
+        <ul data-testid="module-list" className="flex flex-col gap-1">
+          {modules.map((m) => (
+            <li key={m.id} data-testid="module-item" className="flex items-start gap-2 rounded-md border p-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-xs font-medium">{m.name}</span>
+                  {m.visibility === "private" && (
+                    <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">private</span>
+                  )}
+                </div>
+                {m.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{m.description}</p>}
+              </div>
+              {m.attached ? (
+                <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                  installed
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="module-install"
+                  disabled={installing === m.name}
+                  onClick={() => void install(m.name)}
+                  className="shrink-0 rounded-md border px-2 py-1 text-xs hover:bg-accent disabled:opacity-60"
+                >
+                  {installing === m.name ? "Installing…" : "Install"}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {note && <p data-testid="module-note" className="mt-1 text-[11px] text-muted-foreground">{note}</p>}
+    </div>
+  );
+}
+
 export interface SandboxPanelViewProps {
   state: SandboxState;
   services: WebService[];
   busy: Record<string, boolean>;
+  conversationId?: string;
   onStartSandbox: () => void;
   onStartService: (name: string) => void;
   onStopService: (name: string) => void;
@@ -145,6 +249,7 @@ export function SandboxPanelView({
   state,
   services,
   busy,
+  conversationId,
   onStartSandbox,
   onStartService,
   onStopService,
@@ -170,18 +275,21 @@ export function SandboxPanelView({
         )}
       </div>
 
-      {/* Body: services when running; a hint otherwise. */}
+      {/* Body: services + modules when running; a hint otherwise. */}
       {state === "running" ? (
-        services.length > 0 ? (
-          <div>
-            <div className="mb-1 text-xs font-medium text-muted-foreground">Web services</div>
-            <ServiceRows services={services} starting={busy} onStart={onStartService} onStop={onStopService} />
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground" data-testid="sandbox-no-services">
-            No web services declared in this sandbox.
-          </p>
-        )
+        <>
+          {services.length > 0 ? (
+            <div>
+              <div className="mb-1 text-xs font-medium text-muted-foreground">Web services</div>
+              <ServiceRows services={services} starting={busy} onStart={onStartService} onStop={onStopService} />
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="sandbox-no-services">
+              No web services declared in this sandbox.
+            </p>
+          )}
+          {conversationId && <ModulesSection conversationId={conversationId} />}
+        </>
       ) : (
         <p className="text-xs text-muted-foreground">
           {state === "suspended"
@@ -204,6 +312,7 @@ export function SandboxPanel() {
       state={s.state}
       services={s.services}
       busy={s.busy}
+      conversationId={s.conversationId}
       onStartSandbox={() => void s.startSandbox()}
       onStartService={s.startService}
       onStopService={s.stopService}

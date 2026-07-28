@@ -134,6 +134,7 @@ export function RightPanel() {
             state={sandbox.state}
             services={sandbox.services}
             busy={sandbox.busy}
+            conversationId={sandbox.conversationId}
             onStartSandbox={() => void sandbox.startSandbox()}
             onStartService={sandbox.startService}
             onStopService={sandbox.stopService}
