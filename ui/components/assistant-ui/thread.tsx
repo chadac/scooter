@@ -112,7 +112,9 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
       style={{
-        ["--thread-max-width" as string]: "44rem",
+        // Widen the readable column — 44rem left a lot of empty space on wide
+        // monitors. 64rem fills more of the available width while staying readable.
+        ["--thread-max-width" as string]: "64rem",
         ["--composer-bg" as string]:
           "color-mix(in oklab, var(--color-muted) 30%, var(--color-background))",
         ["--composer-radius" as string]: "1.5rem",
@@ -129,12 +131,19 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
         // re-engages when they click the scroll-to-bottom arrow (ThreadScrollToBottom
         // below, which fires scrollToBottom + restores isAtBottom).
         turnAnchor="bottom"
+        autoScroll
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
         <div
           className={cn(
-            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",
+            // min-h-full (not flex-1): fill the viewport so the sticky footer's
+            // mt-auto pins the composer to the bottom, WITHOUT flex-growing the
+            // content — a flex-1 grow made the viewport scrollHeight drift so
+            // assistant-ui's isAtBottom check missed by >1px and pinned it false,
+            // which stopped streaming from following. min-h-full keeps
+            // scrollHeight == real content height so sticky-to-bottom works.
+            "mx-auto flex min-h-full w-full max-w-(--thread-max-width) flex-col px-4 pt-4",
             isEmpty && "justify-center",
           )}
         >
