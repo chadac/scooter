@@ -1,8 +1,8 @@
 /**
  * Tier 3 E2E — the Stop button + thinking indicator (conversation interrupts).
  *
- * While a run is in flight the UI shows a thinking indicator ("Scooter is
- * working…") and a Stop button (RunStatusBar, gated on the log-derived
+ * While a run is in flight the UI shows a thinking indicator (a single pulsing
+ * dot) and a Stop button (RunStatusBar, gated on the log-derived
  * isRunning). Clicking Stop POSTs /conversations/:id/cancel, which ends the
  * running turn — the bridge kills the active tool call (a running shell), tells
  * goose to stop, and emits RUN_FINISHED{cancelled}. Afterwards a NEW prompt works.
@@ -31,9 +31,12 @@ test.describe("Stop button + thinking indicator", () => {
     // tool call, so the run stays in flight (RUN_STARTED, no RUN_FINISHED yet).
     await chat.send("!sleep 20");
 
-    // The thinking indicator + Stop button appear while the run is in flight.
+    // The thinking indicator + Stop button appear while the run is in flight. The
+    // indicator is now a single pulsing dot (no "working…" text, no per-message ●) —
+    // assert its presence via the dot's aria-label.
     await expect(page.locator(bar.root)).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator(bar.thinking)).toContainText(/working/i);
+    await expect(page.locator(bar.thinking)).toBeVisible();
+    await expect(page.locator(`${bar.thinking} [aria-label="Scooter is working"]`)).toBeVisible();
     await expect(page.locator(bar.stop)).toBeVisible();
 
     // Click Stop -> the run is cancelled (the shell is killed, goose told to stop).

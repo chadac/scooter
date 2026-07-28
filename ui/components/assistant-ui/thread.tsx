@@ -36,6 +36,7 @@ import {
   ThreadPrimitive,
   type ToolCallMessagePartComponent,
   useAuiState,
+  useThreadViewportStore,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -192,11 +193,30 @@ const ThreadMessage: FC = () => {
 };
 
 const ThreadScrollToBottom: FC = () => {
+  // The stock ScrollToBottom scrolls to the CURRENT scrollHeight, which in a long
+  // conversation lands short of the true bottom: the last message / markdown / tool
+  // cards are still laying out when the click fires, so scrollHeight grows AFTER the
+  // scroll. Fix: after the built-in scroll (which also restores isAtBottom so
+  // auto-follow re-engages), hard-scroll the real viewport element to its bottom
+  // across the next few frames to catch that late layout — landing at the VERY end.
+  const store = useThreadViewportStore();
+  const onClick = () => {
+    store.getState().scrollToBottom({ behavior: "smooth" });
+    const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+    if (!el) return;
+    let n = 0;
+    const settle = () => {
+      el.scrollTop = el.scrollHeight; // jump to the true bottom as content settles
+      if (++n < 6) requestAnimationFrame(settle); // re-assert over ~6 frames
+    };
+    requestAnimationFrame(settle);
+  };
   return (
     <ThreadPrimitive.ScrollToBottom asChild>
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
+        onClick={onClick}
         className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
       >
         <ArrowDownIcon />
@@ -429,15 +449,11 @@ const AssistantMessage: FC = () => {
               case "data":
                 return part.dataRendererUI;
               case "indicator":
-                return (
-                  <span
-                    data-slot="aui_assistant-message-indicator"
-                    className="animate-pulse font-sans"
-                    aria-label="Assistant is working"
-                  >
-                    {"●"}
-                  </span>
-                );
+                // Suppressed: the thinking status is shown ONCE, by the RunStatusBar's
+                // pulsing dot (driven by the log-derived isRunning). This per-message
+                // ● came from a DIFFERENT state source (the ag-ui base applier's run
+                // tracking) and could disagree with the bar — so we don't render it.
+                return null;
               default:
                 return null;
             }

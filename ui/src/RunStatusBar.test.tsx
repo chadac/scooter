@@ -42,11 +42,14 @@ describe("RunStatusBar Stop feedback", () => {
   // the attribute form specifically rather than the substring.
   const buttonDisabled = (html: string) => /<button[^>]*\sdisabled(=""|\s|>)/.test(html);
 
-  it("idle: shows an ENABLED Stop button", () => {
+  it("idle: shows an ENABLED Stop button + the pulsing dot (single indicator, no text)", () => {
     const html = render({ cancelState: "idle" });
     expect(html).toContain(">Stop<");
     expect(buttonDisabled(html)).toBe(false);
-    expect(html).toContain("Scooter is working…");
+    // The dot is the ONE thinking indicator now — present, but no "working…" text.
+    expect(html).toContain('data-testid="thinking-indicator"');
+    expect(html).toContain('aria-label="Scooter is working"');
+    expect(html).not.toContain("Scooter is working…");
   });
 
   it("stopping: DISABLES the button + shows 'Stopping…' (the click is acknowledged)", () => {
@@ -77,7 +80,8 @@ describe("RunStatusBar Stop feedback", () => {
 
   it("a LIVE run takes precedence over a stale error (the working bar wins)", () => {
     const html = render({ isRunning: true, runError: "old boom" });
-    expect(html).toContain("Scooter is working…");
+    expect(html).toContain('data-testid="run-status-bar"');
+    expect(html).toContain('aria-label="Scooter is working"');
     expect(html).not.toContain("run-error-bar");
   });
 });
