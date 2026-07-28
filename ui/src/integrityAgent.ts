@@ -107,17 +107,45 @@ export class IntegrityAgent extends AbstractAgent {
     return this.running;
   }
 
-  /** Update `running` from a single log event, ignoring out-of-band `ext-` runs.
-   *  Returns true if the value changed (so the caller can nudge subscribers). */
+  // The tool call currently in flight during the active run (its name, e.g. "bash"),
+  // and the ts of the last RUN_STARTED — so the UI can show WHAT it's doing and for
+  // how long (a bare pulsing dot doesn't reveal that it's stuck on a long tool call).
+  private activeToolName: string | null = null;
+  private runStartedAt: number | null = null;
+  /** The in-flight tool call's name (e.g. "bash"), or null when the run is between
+   *  tool calls / not running. */
+  activeTool(): string | null {
+    return this.running ? this.activeToolName : null;
+  }
+  /** Epoch ms of the current run's RUN_STARTED, or null when not running — lets the
+   *  UI show elapsed time so a long silent tool call is visibly "still working". */
+  runStartedAtMs(): number | null {
+    return this.running ? this.runStartedAt : null;
+  }
+
+  /** Update `running` (+ the active tool name / run-start ts) from a single log
+   *  event, ignoring out-of-band `ext-` runs. Returns true if anything the UI shows
+   *  changed (so the caller can nudge subscribers). */
   private trackRunning(e: BaseEvent): boolean {
-    const ev = e as unknown as { type?: string; runId?: string };
+    const ev = e as unknown as { type?: string; runId?: string; ts?: number; toolCallName?: string };
     const isExt = typeof ev.runId === "string" && ev.runId.startsWith("ext-");
-    let next = this.running;
-    if (ev.type === "RUN_STARTED" && !isExt) next = true;
-    else if ((ev.type === "RUN_FINISHED" || ev.type === "RUN_ERROR") && !isExt) next = false;
-    if (next === this.running) return false;
-    this.running = next;
-    return true;
+    if (isExt) return false;
+    const before = { running: this.running, tool: this.activeToolName };
+    if (ev.type === "RUN_STARTED") {
+      this.running = true;
+      this.runStartedAt = typeof ev.ts === "number" ? ev.ts : Date.now();
+      this.activeToolName = null;
+    } else if (ev.type === "RUN_FINISHED" || ev.type === "RUN_ERROR") {
+      this.running = false;
+      this.activeToolName = null;
+      this.runStartedAt = null;
+    } else if (ev.type === "TOOL_CALL_START") {
+      // A tool is now executing — surface its name until it ends.
+      this.activeToolName = typeof ev.toolCallName === "string" ? ev.toolCallName : "tool";
+    } else if (ev.type === "TOOL_CALL_END") {
+      this.activeToolName = null;
+    }
+    return this.running !== before.running || this.activeToolName !== before.tool;
   }
 
   /** The last RUN_ERROR's message (null if the current/last run didn't error).

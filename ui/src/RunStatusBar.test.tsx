@@ -22,6 +22,8 @@ function render(over: Partial<InterruptContextValue>): string {
     conversationId: "c1",
     baseUrl: "",
     isRunning: true,
+    activeTool: null,
+    runStartedAt: null,
     cancel: async () => {},
     cancelState: "idle",
     runError: null,
@@ -42,14 +44,20 @@ describe("RunStatusBar Stop feedback", () => {
   // the attribute form specifically rather than the substring.
   const buttonDisabled = (html: string) => /<button[^>]*\sdisabled(=""|\s|>)/.test(html);
 
-  it("idle: shows an ENABLED Stop button + the pulsing dot (single indicator, no text)", () => {
+  it("idle-running: dot + a 'Working…' label + an ENABLED Stop button", () => {
     const html = render({ cancelState: "idle" });
     expect(html).toContain(">Stop<");
     expect(buttonDisabled(html)).toBe(false);
-    // The dot is the ONE thinking indicator now — present, but no "working…" text.
     expect(html).toContain('data-testid="thinking-indicator"');
     expect(html).toContain('aria-label="Scooter is working"');
-    expect(html).not.toContain("Scooter is working…");
+    // The label says it's working (no active tool name → generic "Working…").
+    expect(html).toContain("Working…");
+  });
+
+  it("shows the ACTIVE TOOL + elapsed time so a long silent call is visibly working", () => {
+    const html = render({ activeTool: "bash", runStartedAt: Date.now() - 125_000 });
+    // "Running bash… 2m 5s" — names the tool and how long it's been going.
+    expect(html).toMatch(/Running bash…\s*2m/);
   });
 
   it("stopping: DISABLES the button + shows 'Stopping…' (the click is acknowledged)", () => {

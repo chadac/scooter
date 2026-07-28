@@ -83,6 +83,12 @@ export interface InterruptContextValue {
   /** True while a goose run is in flight — drives the Stop button + thinking
    *  indicator. Sourced from the IntegrityAgent's log-derived isRunning(). */
   isRunning: boolean;
+  /** The in-flight tool call's name (e.g. "bash"), or null when between tool calls /
+   *  idle — so the indicator can show WHAT the agent is doing, not just a dot. */
+  activeTool: string | null;
+  /** Epoch ms the current run started, or null — so the indicator can show elapsed
+   *  time (a long silent tool call is then visibly "still working", not stuck). */
+  runStartedAt: number | null;
   /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
   cancel: () => Promise<void>;
   /** Optimistic Stop-button feedback (the run's terminal event round-trips through
@@ -111,6 +117,8 @@ export const InterruptContext = createContext<InterruptContextValue>({
   conversationId: "",
   baseUrl: "",
   isRunning: false,
+  activeTool: null,
+  runStartedAt: null,
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
@@ -254,6 +262,8 @@ function ConversationRuntime({
   // on the same single-source path as messages.
   const [interrupts, setInterrupts] = useState<readonly PendingInterrupt[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
   const [queuedMessages, setQueuedMessages] = useState<
@@ -269,11 +279,27 @@ function ConversationRuntime({
     let disposed = false;
     const push = () => {
       if (disposed) return;
-      // While REPLAYING a conversation's history (on open / switch / reconnect),
-      // don't reset the thread on every folded event — that visibly builds the
-      // history top-down and looks ugly for a long conversation. Skip until the
-      // stream's `synced` marker, which fires one final render with the whole
-      // history at once (landing at the latest message). Live events after that
+      // LOG-DERIVED STATE (run-in-flight, interrupts, error, queue) updates on EVERY
+      // push — even during replay / a suppressed message reset. It's cheap (no thread
+      // reset) and MUST stay in sync, or the thinking dot / Stop button / approvals go
+      // stale. The bug this fixes: opening a conversation whose last run is in-flight
+      // but SILENT (blocked on a long tool call, no streaming) showed no thinking
+      // indicator, because the message-render guards below returned before isRunning
+      // was ever set. runIsActive() is derived from the replayed log, so it's correct
+      // here regardless of the render guards.
+      const active = agent.runIsActive();
+      setIsRunning(active);
+      setActiveTool(agent.activeTool());
+      setRunStartedAt(agent.runStartedAtMs());
+      if (!active) setCancelState("idle"); // run idle → drop optimistic stopping/failed
+      setInterrupts(agent.getPendingInterrupts());
+      setRunError(agent.getRunError());
+      setQueuedMessages(agent.getQueuedMessages());
+
+      // MESSAGE RESET is what the guards protect. While REPLAYING history (on open /
+      // switch / reconnect), don't reset the thread on every folded event — that
+      // visibly builds the history top-down. Skip until the stream's `synced` marker,
+      // which fires one final render with the whole history. Live events after that
       // render per-event as usual.
       if (agent.isReplaying()) return;
       // Guard against a SHRINKING reset within THIS conversation. A reconnect
@@ -300,22 +326,6 @@ function ConversationRuntime({
         return { ...msg, content: parts };
       });
       runtime.thread.reset(fromAgUiMessages(enriched));
-      // Interrupts ride the log too; surface them (or clear them) on every change.
-      setInterrupts(agent.getPendingInterrupts());
-      // Run-in-flight state (Stop button + thinking indicator) rides the log too.
-      const active = agent.runIsActive();
-      setIsRunning(active);
-      // The run's terminal event (RUN_FINISHED{cancelled}) is what actually
-      // confirms a Stop landed. When the run goes idle, clear any optimistic
-      // "stopping"/"failed" so the bar disappears cleanly. (If it's still active
-      // we leave cancelState alone — a pending stop is still pending.)
-      if (!active) setCancelState("idle");
-      // A RUN_ERROR message rides the log too (the base applier renders none), so
-      // surface it as a visible banner. Cleared automatically when the next run
-      // starts (trackRunError resets it on RUN_STARTED).
-      setRunError(agent.getRunError());
-      // Queued-behind-a-run messages ride the log's QUEUE_UPDATED snapshots.
-      setQueuedMessages(agent.getQueuedMessages());
       // Advance the error-boundary reset key so a transient runtime crash during
       // this reset recovers on the next push.
       setRenderTick((n) => n + 1);
@@ -385,13 +395,15 @@ function ConversationRuntime({
       conversationId,
       baseUrl: BASE_URL,
       isRunning,
+      activeTool,
+      runStartedAt,
       cancel: doCancel,
       cancelState,
       runError,
       queuedMessages,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, doCancel, cancelState, runError, queuedMessages, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, doCancel, cancelState, runError, queuedMessages, renderTick],
   );
 
   return (

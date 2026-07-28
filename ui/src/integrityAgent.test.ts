@@ -341,6 +341,34 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("tracks the in-flight TOOL + run-start ts (so the UI can show what it's doing)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1", ts: 1000 } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" } },
+      { kind: "synced" }, // synced while bash is mid-execution (the stuck-on-a-tool case)
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.runIsActive()).toBe(true);
+    expect(agent.activeTool()).toBe("bash");
+    expect(agent.runStartedAtMs()).toBe(1000);
+    agent.dispose();
+  });
+
+  it("clears the active tool on TOOL_CALL_END, and everything on RUN_FINISHED", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1", ts: 1000 } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "t1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.runIsActive()).toBe(true);
+    expect(agent.activeTool()).toBeNull(); // between tool calls — running, but no tool
+    agent.dispose();
+  });
+
   it("runIsActive() IGNORES out-of-band ext- runs (a broker interrupt isn't 'thinking')", async () => {
     const frames = [
       // An external interrupt run — must NOT flip runIsActive on.

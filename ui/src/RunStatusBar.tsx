@@ -10,10 +10,28 @@
  * dead (see RuntimeProvider header). This bar drives off our real signal.
  */
 
+import { useEffect, useState } from "react";
+
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
+/** "3s" / "2m 10s" — compact elapsed time for the working indicator. */
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 export function RunStatusBar() {
-  const { isRunning, cancel, cancelState, runError } = useConversationInterrupts();
+  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError } = useConversationInterrupts();
+
+  // Tick once a second WHILE running so the elapsed time advances — this is what
+  // makes a long, silent tool call visibly "still working" instead of looking stuck.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isRunning]);
 
   // A failed run (RUN_ERROR) clears `isRunning` but the base applier renders no
   // message — so when the run isn't in flight but errored, show a visible error
@@ -37,19 +55,28 @@ export function RunStatusBar() {
 
   const stopping = cancelState === "stopping";
   const failed = cancelState === "failed";
+  const elapsed = runStartedAt != null ? fmtElapsed(Math.max(0, now - runStartedAt)) : null;
+
+  // The default working label now says WHAT it's doing + for HOW LONG — so a long
+  // silent tool call (e.g. a build poll) is clearly "still working", not stuck.
+  // "Running bash… 2m 10s" / "Working… 8s". Stop states still take precedence.
+  const workingLabel = activeTool
+    ? `Running ${activeTool}…${elapsed ? ` ${elapsed}` : ""}`
+    : `Working…${elapsed ? ` ${elapsed}` : ""}`;
 
   return (
     <div
       data-testid="run-status-bar"
       className="flex items-center justify-between gap-3 border-t bg-muted/40 px-4 py-2 text-sm"
     >
-      <span data-testid="thinking-indicator" className="flex items-center gap-2 text-muted-foreground">
-        {/* The SINGLE thinking indicator: a pulsing dot (no "Scooter is working…"
-            text, and the per-message ● was removed — this is the one source of
-            truth, driven by the log-derived isRunning). Text appears only for the
-            meaningful stop states so the user knows a Stop is landing / didn't. */}
-        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" aria-label="Scooter is working" />
-        {stopping ? "Stopping…" : failed ? "Stop didn't land — the run is still going" : null}
+      <span data-testid="thinking-indicator" className="flex min-w-0 items-center gap-2 text-muted-foreground">
+        {/* One thinking indicator: a pulsing dot + a label of WHAT it's doing and for
+            HOW LONG (the log-derived isRunning/activeTool/runStartedAt). Stop states
+            override the label so the user knows a Stop is landing / didn't. */}
+        <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-current" aria-label="Scooter is working" />
+        <span data-testid="thinking-label" className="truncate">
+          {stopping ? "Stopping…" : failed ? "Stop didn't land — the run is still going" : workingLabel}
+        </span>
       </span>
       <button
         type="button"
