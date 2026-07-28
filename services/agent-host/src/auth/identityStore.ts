@@ -16,7 +16,7 @@
  * map wired, this is a passthrough.
  */
 
-import { Pool } from "pg";
+import { createPgPool } from "../db/pgPool.js";
 
 import type { AsyncIdentityResolver, UserContext } from "./identity.js";
 
@@ -110,11 +110,11 @@ export interface PgIdentityStoreConfig {
  * degrades to "no learned email", never breaks a request.
  */
 export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentityStore {
-  const pool = new Pool({ connectionString: config.dsn, max: 2, connectionTimeoutMillis: 5000 });
-  pool.on("error", (err) => {
-    // eslint-disable-next-line no-console
-    console.error("[identityStore] idle pg client error (non-fatal):", err.message);
-  });
+  // Hardened pool (idleTimeoutMillis + keepAlive) so a stale idle connection is
+  // never handed to a query — this store's put() runs on every request, and a
+  // 5s stall on a dead connection previously pushed /healthz past the readiness
+  // probe and took the whole UI down. See db/pgPool.ts.
+  const pool = createPgPool("identityStore", { connectionString: config.dsn, max: 2 });
 
   let ensured: Promise<void> | undefined;
   const ensureTable = (): Promise<void> => {

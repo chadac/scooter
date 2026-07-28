@@ -16,7 +16,7 @@
  * factory returns undefined and the tools fall back to `ref` alone.
  */
 
-import { Pool } from "pg";
+import { createPgPool } from "../db/pgPool.js";
 
 import type { ResourceMapping } from "./agentTools.js";
 
@@ -40,13 +40,9 @@ export interface ResourceLookup {
  * "target unknown".
  */
 export function createResourceLookup(config: ResourceLookupConfig): ResourceLookup {
-  const pool = new Pool({ connectionString: config.dsn, max: 3, connectionTimeoutMillis: 5000 });
-  // Don't let an idle-client error crash the process (pg emits 'error' on the pool
-  // for backend/idle failures); log and continue.
-  pool.on("error", (err) => {
-    // eslint-disable-next-line no-console
-    console.error("[resourceLookup] idle pg client error (non-fatal):", err.message);
-  });
+  // Hardened pool (idleTimeoutMillis + keepAlive) so a stale idle connection never
+  // hangs a query — see db/pgPool.ts.
+  const pool = createPgPool("resourceLookup", { connectionString: config.dsn, max: 3 });
 
   return {
     async lookup(conversationId, source) {
