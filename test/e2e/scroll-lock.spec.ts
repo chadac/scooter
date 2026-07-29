@@ -45,6 +45,46 @@ test.describe("conversation scroll-lock", () => {
     await expect(chat.scrollToBottomButton()).toBeDisabled({ timeout: 10_000 });
   });
 
+  test("a BIG single-frame message does NOT break the auto-follow (the reported bug)", async ({ chat, page }) => {
+    // The reported regression: when a long message appends in ONE layout frame (a big
+    // user paste renders as one bubble instantly; a markdown code block / table reflows
+    // as one unit — unlike word-by-word streamed text), scrollHeight jumps by far more
+    // than assistant-ui's 1px bottom threshold while scrollTop is unchanged. Its handler
+    // misreads that as "user scrolled up" and latches isAtBottom=false, so autoScroll
+    // disengages and the view is stranded MANY viewports up — forcing a manual scroll.
+    // (Measured pre-fix: ~3200px from bottom on a 665px viewport.) useStickToBottom must
+    // keep it pinned across that jump.
+    await chat.open();
+    await fillUntilScrollable(chat);
+    await chat.settleAtBottom();
+
+    const viewportH = await chat.viewport().evaluate((el) => el.clientHeight);
+    // A single message ~4 viewports tall. Newlines force real vertical growth (not one
+    // wrapped line), so it's a genuine big single-frame append.
+    const bigLines = Math.ceil((viewportH / 20) * 4);
+    const huge = Array.from({ length: bigLines }, (_, i) => `line ${i} of a very long pasted block`).join("\n");
+
+    await chat.send(huge);
+    // The user bubble renders in one frame on send — wait until that big append landed
+    // (scrollHeight grew past a viewport).
+    await expect.poll(() => chat.scrollableHeight(), { timeout: 10_000 }).toBeGreaterThan(viewportH);
+
+    // Assert on the PEAK distance across the settle window, not just the final value:
+    // the library eventually crawls back to the bottom on its own (~1s of thrashing),
+    // so a delayed one-shot check is vacuous. The BUG is the transient strand — pre-fix
+    // this peaks in the THOUSANDS of px (measured ~3300–4000 on a 665px viewport) while
+    // it visibly bounces; with the fix it never leaves the bottom (peak ≤ a few px). A
+    // threshold of one viewport height cleanly separates the two: fixed stays well
+    // under it, broken blows way past.
+    let peak = 0;
+    for (let i = 0; i < 20; i++) {
+      peak = Math.max(peak, await chat.distanceFromBottom());
+      await page.waitForTimeout(40);
+    }
+    expect(peak, "the view was stranded away from the bottom after a big append").toBeLessThan(viewportH);
+    await expect(chat.scrollToBottomButton()).toBeDisabled({ timeout: 10_000 });
+  });
+
   test("scrolling up releases the lock; the arrow re-engages it", async ({ chat }) => {
     await chat.open();
     const scrollable = await fillUntilScrollable(chat);

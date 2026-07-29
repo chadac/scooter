@@ -57,7 +57,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useRef,
   useState,
   type ComponentType,
   type FC,
@@ -110,32 +109,132 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
   );
 };
 
-/** On a conversation SWITCH/LOAD, land at the TAIL (bottom), not the top. The
- *  runtime remounts per conversation and its history streams in asynchronously
- *  (tail seed → full replay), so assistant-ui's one-shot initialize-scroll fires
- *  before the content lays out and leaves the view at the top. When the message
- *  count first goes 0 → >0 (history populated), hard-scroll the viewport to its true
- *  bottom across a few frames to catch that late layout. */
-function useScrollToTailOnLoad() {
-  const count = useAuiState((s) => s.thread.messages.length);
-  const done = useRef(false);
+/** Keep the view pinned to the bottom as content grows — and land at the tail on
+ *  a conversation SWITCH/LOAD.
+ *
+ *  Two problems this fixes, both rooted in assistant-ui's autoScroll giving up
+ *  whenever it *thinks* the user scrolled up:
+ *
+ *   1. LAND AT TAIL: the runtime remounts per conversation and history streams in
+ *      async (tail seed → full replay), so the library's one-shot initialize-scroll
+ *      fires before layout and leaves the view at the top.
+ *
+ *   2. BIG-CHUNK BREAK (the reported bug): when a long message or a big tool result
+ *      appends in one frame, scrollHeight jumps by more than the library's 1px
+ *      bottom threshold while scrollTop is unchanged. Its scroll handler reads that
+ *      as "not at bottom" (and, since scrollTop didn't DECREASE, not a user scroll-up
+ *      either) and latches isAtBottom=false — so autoScroll disengages and you're
+ *      stranded mid-scroll, forced to scroll down again.
+ *
+ *  Our own `stick` intent flag is the fix: it flips false ONLY on a genuine upward
+ *  user gesture (scrollTop actually decreased), never on content growth. While stuck,
+ *  a ResizeObserver (on every scroll-content child) + a MutationObserver (for newly
+ *  mounted subtrees) re-pin to the bottom on any size change, chasing the growing
+ *  bottom across a few frames of reflow — and restoring the store's isAtBottom so the
+ *  library re-engages too. NB: this pairs with removing `scroll-smooth` from the
+ *  viewport (see below) — instant pins don't fight a CSS scroll animation. */
+function useStickToBottom() {
+  const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
+  const store = useThreadViewportStore();
+
   useEffect(() => {
-    if (done.current || count === 0) return;
-    done.current = true; // once per mount (per conversation, since we remount on switch)
+    if (!hasMessages) return;
     const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
     if (!el) return;
-    let n = 0;
-    const settle = () => {
-      el.scrollTop = el.scrollHeight;
-      if (++n < 8) requestAnimationFrame(settle); // re-assert while the history renders
+
+    // Our intent flag — are we following the bottom? Starts true; only a real
+    // upward user scroll turns it off; returning to the bottom turns it back on.
+    let stick = true;
+    let lastTop = el.scrollTop;
+    // While set, ignore the scroll event our own re-pin triggers (so it can't
+    // self-cancel `stick`).
+    let pinning = 0;
+
+    const atBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+
+    const syncStore = () => {
+      try {
+        store.getState().scrollToBottom?.({ behavior: "instant" });
+      } catch {
+        /* store shape varies across versions — the raw scrollTop below is the real fix */
+      }
     };
-    requestAnimationFrame(settle);
-  }, [count]);
+    const pin = () => {
+      pinning++;
+      el.scrollTop = el.scrollHeight; // instant, synchronous — no smooth lag to fight
+      syncStore(); // keep the library's isAtBottom true so ITS autoScroll stays on
+      requestAnimationFrame(() => {
+        pinning = Math.max(0, pinning - 1);
+        lastTop = el.scrollTop;
+      });
+    };
+
+    // Re-assert the pin across several frames. A big message/tool card keeps growing
+    // for a few frames AFTER it mounts (markdown reflow, wrapping, image load), so a
+    // single scrollTop set lands short — chase the growing bottom until it settles.
+    let chaseFrame: number | null = null;
+    const chase = () => {
+      if (chaseFrame !== null) cancelAnimationFrame(chaseFrame);
+      let frames = 0;
+      const step = () => {
+        if (!stick) { chaseFrame = null; return; }
+        pin();
+        chaseFrame = ++frames < 12 ? requestAnimationFrame(step) : null;
+      };
+      chaseFrame = requestAnimationFrame(step);
+    };
+
+    const onScroll = () => {
+      if (pinning > 0) return; // our own re-pin
+      if (el.scrollTop < lastTop - 1) stick = false; // genuine scroll UP → stop following
+      else if (atBottom()) stick = true; //             back at bottom → resume
+      lastTop = el.scrollTop;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+
+    // Follow content growth. A big message / tool card appends in one frame; a
+    // ResizeObserver on the viewport's border-box does NOT see that (scrollHeight
+    // isn't the border-box), so observe EVERY direct child of the scroll content —
+    // the message group grows as children are added, and a re-pin fires immediately.
+    // Re-observe on DOM mutations so newly-added subtrees are covered too.
+    const ro = new ResizeObserver(() => {
+      if (stick) chase();
+    });
+    const observeContent = () => {
+      ro.disconnect();
+      // The inner scroll content (holds the message group + footer).
+      const inner = el.firstElementChild as HTMLElement | null;
+      if (inner) {
+        ro.observe(inner);
+        for (const child of Array.from(inner.children)) ro.observe(child as HTMLElement);
+      } else {
+        ro.observe(el);
+      }
+    };
+    observeContent();
+    // New messages add/replace subtrees under the scroll content — re-attach the RO
+    // so growth in a freshly-mounted message still triggers the follow.
+    const mo = new MutationObserver(() => {
+      observeContent();
+      if (stick) chase();
+    });
+    mo.observe(el, { childList: true, subtree: true });
+
+    // Land at the tail on first paint + chase the async history replay's late layout.
+    chase();
+
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+      mo.disconnect();
+      if (chaseFrame !== null) cancelAnimationFrame(chaseFrame);
+    };
+  }, [hasMessages, store]);
 }
 
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
-  useScrollToTailOnLoad();
+  useStickToBottom();
 
   return (
     <ThreadPrimitive.Root
@@ -162,7 +261,13 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
         turnAnchor="bottom"
         autoScroll
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
+        // NO `scroll-smooth` here: useStickToBottom re-pins to the bottom on every
+        // content-size change with an INSTANT scrollTop set. With CSS smooth-scroll on,
+        // that set animates and interleaves with the library's own scroll animation —
+        // the two fight and the view visibly thrashes (jumping up and down) before it
+        // settles. Instant pinning is invisible + lands immediately. The manual
+        // scroll-to-bottom arrow still animates: it passes behavior:"smooth" itself.
+        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll"
       >
         <div
           className={cn(
