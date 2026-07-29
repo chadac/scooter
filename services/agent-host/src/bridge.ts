@@ -142,7 +142,29 @@ type AguiEventBase =
       type: "MESSAGE_IMAGES";
       messageId: string;
       images: Array<{ assetId: string; mimeType: string; url: string }>;
-    };
+    }
+  // Context-window fill after a turn (used / total tokens) → the UI's context-fill
+  // bar. Bespoke like QUEUE_UPDATED: the @ag-ui client folds by type and ignores it,
+  // so it never touches the message stream; the UI reads it explicitly. Persist +
+  // broadcast, so the latest value survives a refresh.
+  | { type: "CONTEXT_USAGE"; usedTokens: number; contextWindow: number };
+
+/** Rewrite a raw agent/API error into a clearer user-facing message for the known
+ *  cases. Today: CONTEXT OVERFLOW (the conversation exceeded the model's context
+ *  window and auto-compaction couldn't recover) → a plain "start a new chat" nudge
+ *  instead of a cryptic provider string. Anything unrecognized passes through. */
+export function clarifyRunError(raw: string): string {
+  const m = raw.toLowerCase();
+  const contextOverflow =
+    m.includes("context_length_exceeded") ||
+    m.includes("prompt is too long") ||
+    m.includes("too many tokens") ||
+    (m.includes("context") && (m.includes("exceed") || m.includes("too long") || m.includes("maximum")));
+  if (contextOverflow) {
+    return "This conversation is too long — its context window is full and couldn't be compacted further. Start a new chat to continue.";
+  }
+  return raw;
+}
 
 /** An image attached to a user prompt — a reference the bridge resolves to base64
  *  (from the AssetStore) when it builds the ACP image content block. */
@@ -690,6 +712,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         });
         break;
       }
+      case "context_usage": {
+        // Context-window fill after the turn — forward it as its own event for the
+        // UI's fill bar. Persisted, so the latest value survives a refresh.
+        emit({ type: "CONTEXT_USAGE", usedTokens: u.usedTokens, contextWindow: u.contextWindow });
+        break;
+      }
     }
   };
 
@@ -870,7 +898,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
         } else {
           outcome = "error";
-          emit({ type: "RUN_ERROR", message: err instanceof Error ? err.message : String(err) });
+          const raw = err instanceof Error ? err.message : String(err);
+          emit({ type: "RUN_ERROR", message: clarifyRunError(raw) });
         }
       }
     } finally {

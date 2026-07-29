@@ -66,7 +66,9 @@ export type SessionUpdate =
   // is why the UI showed an empty tool card. rawOutput carries the structured
   // result (e.g. the shell's stdout) when the provider supplies it.
   | { sessionUpdate: "tool_call_update"; toolCallId: string; status: string; content?: unknown; rawInput?: unknown; rawOutput?: unknown }
-  | { sessionUpdate: "plan"; entries: unknown[] };
+  | { sessionUpdate: "plan"; entries: unknown[] }
+  // Context-window fill after a turn (used / total tokens) — drives the UI fill bar.
+  | { sessionUpdate: "context_usage"; usedTokens: number; contextWindow: number };
 
 export interface PermissionRequest {
   sessionId: string;

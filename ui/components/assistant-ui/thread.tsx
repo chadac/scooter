@@ -21,7 +21,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/src/ModelPicker";
 import { useConversationInterrupts } from "@/src/RuntimeProvider";
-import { InlineRunStatus } from "@/src/RunStatusBar";
+import { InlineRunStatus, ContextFillBar } from "@/src/RunStatusBar";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -200,6 +200,8 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                 for how long) + Stop, right where the conversation is, following the
                 scroll. Replaces the old detached bottom bar. */}
             <InlineRunStatus />
+            {/* Context-window fill bar — how full the conversation's context is. */}
+            <ContextFillBar />
             <ModelPicker />
             <Composer />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>

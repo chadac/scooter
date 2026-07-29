@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
+import { createSessionBridge, clarifyRunError, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
@@ -1012,5 +1012,23 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
     // No watchdog → the gated run stays running, no RUN_ERROR.
     expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
     agent.releaseGate();
+  });
+});
+
+describe("clarifyRunError (context-overflow → clear message)", () => {
+  it("rewrites known context-overflow errors to a start-a-new-chat nudge", () => {
+    for (const raw of [
+      "API error: context_length_exceeded",
+      "prompt is too long: 250000 tokens > 200000 maximum",
+      "Error: the context window was exceeded",
+      "too many tokens in the request",
+    ]) {
+      expect(clarifyRunError(raw)).toMatch(/conversation is too long|context window is full|start a new chat/i);
+    }
+  });
+
+  it("passes an unrelated error through unchanged", () => {
+    const raw = "connection reset by peer";
+    expect(clarifyRunError(raw)).toBe(raw);
   });
 });

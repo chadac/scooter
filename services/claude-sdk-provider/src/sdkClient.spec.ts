@@ -39,6 +39,33 @@ const mkClient = (queryImpl: ReturnType<typeof fakeQuery>["queryImpl"]) =>
     oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl,
   });
 
+describe("SDK client context usage", () => {
+  it("emits a context_usage update from the result's modelUsage", async () => {
+    const queryImpl = () => {
+      async function* gen() {
+        yield { type: "assistant", session_id: "s1", message: { content: [] } } as never;
+        yield {
+          type: "result", subtype: "success", session_id: "s1",
+          modelUsage: {
+            "claude-x": { inputTokens: 150_000, outputTokens: 5_000, cacheReadInputTokens: 4_000, cacheCreationInputTokens: 1_000, contextWindow: 200_000 },
+          },
+        } as never;
+      }
+      return Object.assign(gen(), { interrupt: async () => {} });
+    };
+    const client = await mkClient(queryImpl);
+    const updates: Array<{ sessionUpdate: string; usedTokens?: number; contextWindow?: number }> = [];
+    client.onSessionUpdate((_id, u) => updates.push(u as never));
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+
+    const cu = updates.find((u) => u.sessionUpdate === "context_usage");
+    expect(cu).toBeTruthy();
+    expect(cu!.usedTokens).toBe(160_000); // 150k input + 4k cacheRead + 1k cacheCreate + 5k output
+    expect(cu!.contextWindow).toBe(200_000);
+  });
+});
+
 describe("SDK client session resume", () => {
   it("first prompt has NO resume; the second RESUMES the captured session_id", async () => {
     const fq = fakeQuery();
