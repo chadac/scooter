@@ -89,6 +89,11 @@ export interface InterruptContextValue {
   /** Epoch ms the current run started, or null — so the indicator can show elapsed
    *  time (a long silent tool call is then visibly "still working", not stuck). */
   runStartedAt: number | null;
+  /** Context-window fill fraction 0..1 from the latest turn's usage, or null when
+   *  unknown — drives the context-fill bar. */
+  contextFill: number | null;
+  /** {used,total} context tokens for the fill-bar tooltip, or null. */
+  contextTokens: { used: number; total: number } | null;
   /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
   cancel: () => Promise<void>;
   /** Optimistic Stop-button feedback (the run's terminal event round-trips through
@@ -119,6 +124,8 @@ export const InterruptContext = createContext<InterruptContextValue>({
   isRunning: false,
   activeTool: null,
   runStartedAt: null,
+  contextFill: null,
+  contextTokens: null,
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
@@ -264,6 +271,8 @@ function ConversationRuntime({
   const [isRunning, setIsRunning] = useState(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [contextFill, setContextFill] = useState<number | null>(null);
+  const [contextTokens, setContextTokens] = useState<{ used: number; total: number } | null>(null);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
   const [queuedMessages, setQueuedMessages] = useState<
@@ -291,6 +300,8 @@ function ConversationRuntime({
       setIsRunning(active);
       setActiveTool(agent.activeTool());
       setRunStartedAt(agent.runStartedAtMs());
+      setContextFill(agent.contextFill());
+      setContextTokens(agent.contextTokens());
       if (!active) setCancelState("idle"); // run idle → drop optimistic stopping/failed
       setInterrupts(agent.getPendingInterrupts());
       setRunError(agent.getRunError());
@@ -397,13 +408,15 @@ function ConversationRuntime({
       isRunning,
       activeTool,
       runStartedAt,
+      contextFill,
+      contextTokens,
       cancel: doCancel,
       cancelState,
       runError,
       queuedMessages,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, doCancel, cancelState, runError, queuedMessages, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, queuedMessages, renderTick],
   );
 
   return (

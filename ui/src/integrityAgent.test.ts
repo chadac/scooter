@@ -355,6 +355,20 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("tracks CONTEXT_USAGE → contextFill fraction + token totals", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 160_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.contextFill()).toBeCloseTo(0.8, 5);
+    expect(agent.contextTokens()).toEqual({ used: 160_000, total: 200_000 });
+    agent.dispose();
+  });
+
   it("clears the active tool on TOOL_CALL_END, and everything on RUN_FINISHED", async () => {
     const frames = [
       { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1", ts: 1000 } },

@@ -148,6 +148,29 @@ export class IntegrityAgent extends AbstractAgent {
     return this.running !== before.running || this.activeToolName !== before.tool;
   }
 
+  // Context-window fill from the latest CONTEXT_USAGE event (used/total tokens), so
+  // the UI can show a fill bar. Persisted + replayed, so it survives a refresh.
+  private contextUsedTokens: number | null = null;
+  private contextWindow: number | null = null;
+  /** Context-fill fraction 0..1 (usedTokens / contextWindow), or null if unknown. */
+  contextFill(): number | null {
+    if (this.contextUsedTokens == null || !this.contextWindow) return null;
+    return Math.min(1, this.contextUsedTokens / this.contextWindow);
+  }
+  /** {used, total} tokens for a tooltip, or null. */
+  contextTokens(): { used: number; total: number } | null {
+    if (this.contextUsedTokens == null || !this.contextWindow) return null;
+    return { used: this.contextUsedTokens, total: this.contextWindow };
+  }
+  private trackContext(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; usedTokens?: number; contextWindow?: number };
+    if (ev.type !== "CONTEXT_USAGE") return false;
+    const before = this.contextUsedTokens;
+    if (typeof ev.usedTokens === "number") this.contextUsedTokens = ev.usedTokens;
+    if (typeof ev.contextWindow === "number") this.contextWindow = ev.contextWindow;
+    return this.contextUsedTokens !== before;
+  }
+
   /** The last RUN_ERROR's message (null if the current/last run didn't error).
    *  The base @ag-ui/client applier delegates RUN_ERROR to an `onRunErrorEvent`
    *  callback and appends NO message — so a failed run would otherwise just go
@@ -538,6 +561,8 @@ export class IntegrityAgent extends AbstractAgent {
             // Track image refs (MESSAGE_IMAGES) so a user message's images render
             // live + survive a refresh (the base applier ignores this bespoke event).
             changed = this.trackImages(e) || changed;
+            // Track context-window fill (CONTEXT_USAGE) for the fill bar.
+            changed = this.trackContext(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },

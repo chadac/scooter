@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { InlineRunStatus } from "./RunStatusBar.js";
+import { InlineRunStatus, ContextFillBar } from "./RunStatusBar.js";
 import { InterruptContext, type InterruptContextValue } from "./RuntimeProvider.js";
 
 function render(over: Partial<InterruptContextValue>): string {
@@ -24,6 +24,8 @@ function render(over: Partial<InterruptContextValue>): string {
     isRunning: true,
     activeTool: null,
     runStartedAt: null,
+    contextFill: null,
+    contextTokens: null,
     cancel: async () => {},
     cancelState: "idle",
     runError: null,
@@ -32,6 +34,12 @@ function render(over: Partial<InterruptContextValue>): string {
     ...over,
   } as InterruptContextValue;
   return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, createElement(InlineRunStatus)));
+}
+
+/** Render the ContextFillBar with a given context value. */
+function renderBar(over: Partial<InterruptContextValue>): string {
+  const value = { contextFill: null, contextTokens: null, ...over } as InterruptContextValue;
+  return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, createElement(ContextFillBar)));
 }
 
 describe("RunStatusBar Stop feedback", () => {
@@ -91,5 +99,26 @@ describe("RunStatusBar Stop feedback", () => {
     expect(html).toContain('data-testid="run-status-bar"');
     expect(html).toContain('aria-label="Scooter is working"');
     expect(html).not.toContain("run-error-bar");
+  });
+});
+
+describe("ContextFillBar", () => {
+  it("hidden until there's a reading", () => {
+    expect(renderBar({ contextFill: null })).toBe("");
+  });
+
+  it("shows the fill % and turns red when nearly full", () => {
+    const html = renderBar({ contextFill: 0.92, contextTokens: { used: 184000, total: 200000 } });
+    expect(html).toContain('data-testid="context-fill-bar"');
+    expect(html).toContain('data-fill="92"');
+    expect(html).toContain(">92%<");
+    expect(html).toContain("bg-red-500"); // >=90% → red
+  });
+
+  it("uses a neutral color when well under the threshold", () => {
+    const html = renderBar({ contextFill: 0.4 });
+    expect(html).toContain('data-fill="40"');
+    expect(html).not.toContain("bg-red-500");
+    expect(html).not.toContain("bg-amber-500");
   });
 });

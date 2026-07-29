@@ -274,6 +274,12 @@ function bedrockEnv(): Record<string, string> {
   ]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
+  // Auto-compaction: goose summarizes the conversation when the context reaches this
+  // FRACTION of the window (GOOSE_AUTO_COMPACT_THRESHOLD, 0.0-1.0; 0.0 disables).
+  // goose's own default is 0.8, but we set it EXPLICITLY so it's visible/tunable per
+  // deploy and can't drift with goose versions (goose can also misdetect the window
+  // for some models — block/goose#7839). Deployer override, else 0.8.
+  out.GOOSE_AUTO_COMPACT_THRESHOLD = process.env.GOOSE_AUTO_COMPACT_THRESHOLD ?? "0.8";
   return out;
 }
 

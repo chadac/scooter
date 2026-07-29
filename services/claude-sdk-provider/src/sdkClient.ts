@@ -87,6 +87,28 @@ function resultStopReason(msg: { subtype?: string; is_error?: boolean }): string
   return msg.subtype ?? (msg.is_error ? "error" : "end_turn");
 }
 
+/** Build a `context_usage` update from the SDK result's modelUsage (per-model
+ *  inputTokens/cache/output + contextWindow). Sums used tokens across models and
+ *  takes the largest window. Returns null if the result has no usable usage. */
+function emitContextUsage(msg: unknown): SessionUpdate | null {
+  const mu = (msg as { modelUsage?: Record<string, {
+    inputTokens?: number; outputTokens?: number;
+    cacheReadInputTokens?: number; cacheCreationInputTokens?: number; contextWindow?: number;
+  }> }).modelUsage;
+  if (!mu) return null;
+  let used = 0;
+  let contextWindow = 0;
+  for (const u of Object.values(mu)) {
+    // Context usage = the prompt going INTO the next turn: input + both cache tiers.
+    // (output isn't part of the resident context, but including it slightly
+    // over-estimates toward "getting full", which is the safe direction for a bar.)
+    used += (u.inputTokens ?? 0) + (u.cacheReadInputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0) + (u.outputTokens ?? 0);
+    if ((u.contextWindow ?? 0) > contextWindow) contextWindow = u.contextWindow ?? 0;
+  }
+  if (contextWindow <= 0) return null;
+  return { sessionUpdate: "context_usage", usedTokens: used, contextWindow };
+}
+
 /** Spawn an SDK-backed AcpClient. */
 export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpClient> {
   // Build the sandbox MCP server + the alias/disable lists ONCE per client.
@@ -198,6 +220,11 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           if (sid) sdkSessionId = sid;
           if (msg.type === "result") {
             stopReason = resultStopReason(msg as { subtype?: string; is_error?: boolean });
+            // The result carries per-model usage incl. the context window — emit a
+            // context_usage update so the UI can show a fill bar. modelUsage is keyed
+            // by model id (usually one); sum used tokens, take the max window.
+            const usage = emitContextUsage(msg);
+            if (usage) for (const cb of updateCbs) cb(sessionId, usage);
             continue;
           }
           for (const u of sdkMessageToUpdates(msg as SdkMessage, INCLUDE_PARTIALS)) {

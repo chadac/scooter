@@ -27,6 +27,33 @@ function fmtElapsed(ms: number): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+/** A thin context-window fill bar, shown just above the composer. Grey → amber >75%
+ *  → red >90%, so the user can see how full the conversation's context is (and knows
+ *  it may compact / get too long). Hidden until we have a usage reading. */
+export function ContextFillBar() {
+  const { contextFill, contextTokens } = useConversationInterrupts();
+  if (contextFill == null) return null;
+  const pct = Math.round(contextFill * 100);
+  const color = pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-500" : "bg-muted-foreground/40";
+  const tip = contextTokens
+    ? `Context ${pct}% full — ${contextTokens.used.toLocaleString()} / ${contextTokens.total.toLocaleString()} tokens`
+    : `Context ${pct}% full`;
+  return (
+    <div
+      data-testid="context-fill-bar"
+      data-fill={pct}
+      title={tip}
+      aria-label={tip}
+      className="mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 px-1"
+    >
+      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+        <div className={`h-full ${color} transition-all`} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
+    </div>
+  );
+}
+
 /** The inline indicator + Stop / error, rendered in the conversation (above the
  *  composer). Returns null when idle with no error. */
 export function InlineRunStatus() {

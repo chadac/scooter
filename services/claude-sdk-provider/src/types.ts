@@ -23,7 +23,10 @@ export type SessionUpdate =
   | { sessionUpdate: "agent_thought_chunk"; content: ContentBlock }
   | { sessionUpdate: "tool_call"; toolCallId: string; title: string; rawInput?: unknown }
   | { sessionUpdate: "tool_call_update"; toolCallId: string; status: string; content?: unknown; rawInput?: unknown; rawOutput?: unknown }
-  | { sessionUpdate: "plan"; entries: unknown[] };
+  | { sessionUpdate: "plan"; entries: unknown[] }
+  // Context-window fill after a turn — usedTokens / contextWindow (both absolute), so
+  // the UI can show a fill bar. Rides the SDK `result` message's modelUsage.
+  | { sessionUpdate: "context_usage"; usedTokens: number; contextWindow: number };
 
 export interface InitializeParams {
   protocolVersion: number;
