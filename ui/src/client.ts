@@ -172,6 +172,24 @@ export async function searchModules(
   }
 }
 
+/** Manually compact a conversation (summarize older turns → continue on
+ *  summary + recent). Resolves { compacted } — false when too short to compact.
+ *  Throws with the server's message on failure (leaves the conversation unchanged). */
+export async function compactConversation(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<{ compacted: boolean; summarizedTurns?: number; keptRuns?: number }> {
+  const res = await fetch(
+    `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/compact`,
+    { method: "POST", headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `compaction failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as { compacted: boolean; summarizedTurns?: number; keptRuns?: number };
+}
+
 /** Install (attach) a registry module by name-or-id + re-converge. Throws with the
  *  server's error message on failure (unknown module, pod asleep, switch error). */
 export async function installModule(

@@ -110,6 +110,12 @@ export interface ManagementDeps {
    *  = ctx.user.id), so a user only ever manages their own tasks. Optional — absent
    *  (no SCHEDULER_URL) = the routes report the scheduler isn't configured. */
   scheduler?: SchedulerClient;
+  /** Manually compact a conversation (summarize older turns → continue on
+   *  summary+recent). Wired in index.ts with the summarizer creds/model. Returns a
+   *  result (or null if too short to compact); throws on summarizer failure — the
+   *  route then leaves the conversation unchanged. Optional (absent = compaction off,
+   *  e.g. fake/local mode or no OAuth token). */
+  compact?: (conversationId: string) => Promise<{ summarizedTurns: number; keptRuns: number } | null>;
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -348,6 +354,26 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
     await sessions.revive(ctx.params.id);
     return { json: view(sessions.get(ctx.params.id)!) };
+  });
+
+  // Manually COMPACT: summarize older turns, then continue on [summary + recent].
+  // Summarize + persist the marker FIRST (compact() throws on summarizer failure →
+  // 502, conversation untouched); only on success do we revive so the next turn runs
+  // on the compacted context.
+  r.post("/conversations/:id/compact", async (ctx) => {
+    const conv = sessions.get(ctx.params.id);
+    if (!conv) return { status: 404, json: { error: "not found" } };
+    if (!deps.compact) return { status: 501, json: { error: "compaction unavailable" } };
+    let result: { summarizedTurns: number; keptRuns: number } | null;
+    try {
+      result = await deps.compact(conv.id);
+    } catch (e) {
+      return { status: 502, json: { error: `compaction failed: ${(e as Error).message}` } };
+    }
+    if (!result) return { status: 200, json: { ok: true, compacted: false, reason: "conversation too short to compact" } };
+    // Revive so the fresh session resumes from the compacted history (loadHistory).
+    await sessions.revive(conv.id);
+    return { status: 202, json: { ok: true, compacted: true, ...result } };
   });
 
   r.post("/conversations/:id/messages", async (ctx) => {

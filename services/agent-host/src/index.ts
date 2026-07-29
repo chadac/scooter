@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, type AwsRequestSummary } from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
+import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import { createBrokerProvisioner, type BrokerProvisioner } from "./session/brokerProvisioner.js";
 import type { SandboxResources } from "./session/resources.js";
@@ -761,6 +762,16 @@ export async function main(
       identityStore,
       assets,
       scheduler: schedulerClient,
+      // Manual compaction — summarize older turns via a one-off SDK query with the
+      // SAME token/model the conversation runs on. Off (undefined) without a token.
+      compact: process.env.CLAUDE_CODE_OAUTH_TOKEN
+        ? (id: string) =>
+            compactConversation(store, id, {
+              model: sessions.get(id as SessionId)?.model ?? config.model ?? "claude-sonnet-4-5",
+              oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN!,
+              claudeCodePath: process.env.CLAUDE_CODE_COMMAND,
+            })
+        : undefined,
       models: {
         default: config.model,
         available: config.availableModels,
@@ -1004,7 +1015,10 @@ export async function main(
       loadHistory: async () => {
         const events: AguiEvent[] = [];
         for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
-        return events;
+        // If the conversation was COMPACTED, resume from [summary recap + events after
+        // the latest marker] so the revived session's context is the compacted one
+        // (real token reduction). No marker → full log, unchanged.
+        return historyAfterCompaction(events);
       },
       // Resolve an attached image's bytes so the run builds the ACP image block.
       readAsset: (assetId) => assets.read(conversationId as SessionId, assetId),
