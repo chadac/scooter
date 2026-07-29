@@ -21,6 +21,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/src/ModelPicker";
 import { useConversationInterrupts } from "@/src/RuntimeProvider";
+import { InlineRunStatus } from "@/src/RunStatusBar";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -55,6 +56,8 @@ import {
 import {
   createContext,
   useContext,
+  useEffect,
+  useRef,
   type ComponentType,
   type FC,
   type PropsWithChildren,
@@ -106,8 +109,32 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
   );
 };
 
+/** On a conversation SWITCH/LOAD, land at the TAIL (bottom), not the top. The
+ *  runtime remounts per conversation and its history streams in asynchronously
+ *  (tail seed → full replay), so assistant-ui's one-shot initialize-scroll fires
+ *  before the content lays out and leaves the view at the top. When the message
+ *  count first goes 0 → >0 (history populated), hard-scroll the viewport to its true
+ *  bottom across a few frames to catch that late layout. */
+function useScrollToTailOnLoad() {
+  const count = useAuiState((s) => s.thread.messages.length);
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current || count === 0) return;
+    done.current = true; // once per mount (per conversation, since we remount on switch)
+    const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+    if (!el) return;
+    let n = 0;
+    const settle = () => {
+      el.scrollTop = el.scrollHeight;
+      if (++n < 8) requestAnimationFrame(settle); // re-assert while the history renders
+    };
+    requestAnimationFrame(settle);
+  }, [count]);
+}
+
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
+  useScrollToTailOnLoad();
 
   return (
     <ThreadPrimitive.Root
@@ -169,6 +196,10 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
             )}
           >
             <ThreadScrollToBottom />
+            {/* Inline run status — the thinking indicator (what the agent's doing +
+                for how long) + Stop, right where the conversation is, following the
+                scroll. Replaces the old detached bottom bar. */}
+            <InlineRunStatus />
             <ModelPicker />
             <Composer />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
