@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { createSessionBridge, clarifyRunError, type AguiEvent } from "../../src/bridge.js";
+import { createSessionBridge, clarifyRunError, decorateSystemMessage, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
@@ -629,6 +629,85 @@ describe("revive history reinjection", () => {
         e.type === "TEXT_MESSAGE_CONTENT" && (e as { messageId: string }).messageId === userStart?.messageId,
     );
     expect(userContent?.delta).toBe("the new message"); // raw, no preamble folded in
+  });
+});
+
+describe("system messages (platform-injected, non-human)", () => {
+  function recordingClient() {
+    const prompts: Array<Array<{ type: string; text?: string }>> = [];
+    const client: AcpClient = {
+      async initialize() { return { protocolVersion: 1 }; },
+      async newSession() { return { sessionId: "sess-1" }; },
+      async prompt(params) {
+        prompts.push(params.prompt as Array<{ type: string; text?: string }>);
+        return { stopReason: "end_turn" };
+      },
+      async cancel() {},
+      onSessionUpdate() { return () => {}; },
+      onTerminalCreated() { return () => {}; },
+      onPermissionRequest() {},
+      async close() {},
+    };
+    return { client, prompts };
+  }
+
+  const makeBridge = () => {
+    const { client, prompts } = recordingClient();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: client,
+    });
+    return { bridge, prompts };
+  };
+
+  it("decorateSystemMessage brackets the source + tells the agent not to reply just to ack", () => {
+    const out = decorateSystemMessage("github", "PR #4 was labeled");
+    expect(out).toContain("System message from github");
+    expect(out).toContain("do NOT reply to the user just to acknowledge");
+    expect(out).toContain("PR #4 was labeled");
+  });
+
+  it("persists a SYSTEM_MESSAGE event (NOT a user TEXT_MESSAGE) so the UI folds it out of the thread", async () => {
+    const { bridge } = makeBridge();
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
+
+    await bridge.prompt({ threadId: "t1", text: "a github event", source: "github" });
+
+    const sys = persisted.find((e) => e.type === "SYSTEM_MESSAGE") as
+      | { type: "SYSTEM_MESSAGE"; source: string; text: string }
+      | undefined;
+    expect(sys, "a system-sourced prompt must persist a SYSTEM_MESSAGE").toBeDefined();
+    expect(sys?.source).toBe("github");
+    expect(sys?.text).toBe("a github event");
+    // And it must NOT ALSO show up as a normal user text message (that's the whole point).
+    const userStart = persisted.find(
+      (e) => e.type === "TEXT_MESSAGE_START" && (e as { role?: string }).role === "user",
+    );
+    expect(userStart, "system message must not persist as a user turn").toBeUndefined();
+  });
+
+  it("SENDS the decorated text to the agent (the agent still acts on it)", async () => {
+    const { bridge, prompts } = makeBridge();
+    await bridge.prompt({ threadId: "t1", text: "a github event", source: "github" });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0][0].text).toBe(decorateSystemMessage("github", "a github event"));
+  });
+
+  it("a normal (human) prompt is unaffected — no source, no decoration, persists as a user turn", async () => {
+    const { bridge, prompts } = makeBridge();
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
+
+    await bridge.prompt({ threadId: "t1", text: "hello there" });
+
+    expect(prompts[0][0].text).toBe("hello there"); // raw, undecorated
+    expect(persisted.some((e) => e.type === "SYSTEM_MESSAGE")).toBe(false);
+    expect(
+      persisted.some((e) => e.type === "TEXT_MESSAGE_START" && (e as { role?: string }).role === "user"),
+    ).toBe(true);
   });
 });
 

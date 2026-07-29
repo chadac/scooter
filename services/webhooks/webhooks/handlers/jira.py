@@ -137,7 +137,7 @@ async def _handle_comment(payload: dict):
 
     if existing:
         forward_msg = _format_forwarded_message(comment_text, issue_key, has_mention)
-        ok = await send_message(existing, forward_msg, priority=has_mention)
+        ok = await send_message(existing, forward_msg, priority=has_mention, source="jira")
         if ok:
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)
@@ -214,7 +214,7 @@ async def _background_create_conversation(
         )
 
     try:
-        result = await create_conversation(message, title=conv_title, on_created=_register)
+        result = await create_conversation(message, title=conv_title, on_created=_register, source="jira")
         if not result:
             await _clear_pending(issue_key)
             # The optimistic "on it" comment already posted in _register; correct it.
@@ -234,7 +234,7 @@ async def _background_create_conversation(
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("jira", "issue", issue_key)
         for msg in messages:
-            ok = await send_message(conv_id, msg)
+            ok = await send_message(conv_id, msg, source="jira")
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
     except Exception:

@@ -154,7 +154,26 @@ type AguiEventBase =
   // after the latest marker], so the agent continues on the compacted context.
   // Rendered inline by the UI as a "Compacted earlier messages" divider. Bespoke;
   // persisted like QUEUE_UPDATED (the @ag-ui client ignores it).
-  | { type: "COMPACTION_MARKER"; summary: string; summarizedTurns: number; keptRuns: number };
+  | { type: "COMPACTION_MARKER"; summary: string; summarizedTurns: number; keptRuns: number }
+  // A SYSTEM message: content injected by the PLATFORM (webhook event, scheduler
+  // fire, background-job completion, broker error, restart/model-switch nudge), NOT
+  // typed by a human. Persisted INSTEAD of a role:user message so the UI can hide /
+  // collapse it (they're noise for the human, though the agent still received them).
+  // `source` tags the origin (slack/github/scheduler/background/broker/nudge/…) for
+  // an icon/label. Bespoke like QUEUE_UPDATED — the @ag-ui client ignores it, so it
+  // never enters the user/assistant message stream.
+  | { type: "SYSTEM_MESSAGE"; messageId: string; source: string; text: string };
+
+/** The standard decoration prepended to a SYSTEM message so the agent knows it's a
+ *  platform event (not a human turn) and shouldn't reply to the user about it. One
+ *  format for every source, replacing the ad-hoc "[System: …]" prefixes. */
+export function decorateSystemMessage(source: string, text: string): string {
+  return (
+    `[System message${source ? ` from ${source}` : ""} — this is an automated platform ` +
+    `event, not the user speaking. Act on it if relevant to your task; do NOT reply to ` +
+    `the user just to acknowledge it.]\n\n${text}`
+  );
+}
 
 /** Rewrite a raw agent/API error into a clearer user-facing message for the known
  *  cases. Today: CONTEXT OVERFLOW (the conversation exceeded the model's context
@@ -201,6 +220,14 @@ export interface PromptInput {
   /** Binary file attachments (Slack). Empty/undefined = none (the unchanged path).
    *  Written to /workspace/.slack/<name> in the sandbox when the run prompts. */
   files?: PromptFile[];
+  /** SYSTEM message source — set when this prompt is injected by the PLATFORM, not
+   *  typed by a human (a webhook event, a scheduler fire, a background-job completion,
+   *  a broker error, a restart/model-switch nudge). When set: (1) the agent receives
+   *  a standard "[system message from <source> — no need to reply to the user]"
+   *  decoration ahead of the text, and (2) the turn is persisted as a SYSTEM_MESSAGE
+   *  event (not a role:user message), so the UI can hide/collapse it. Undefined = a
+   *  normal human user message (the unchanged path). */
+  source?: string;
 }
 
 /** How a priority item PREEMPTS the running turn (graduated interrupt levels).
@@ -805,6 +832,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // EACH original message as its own user message — history stays faithful even
     // though goose received them combined as one prompt.
     for (const b of batch) {
+      // A PLATFORM-injected message persists as a SYSTEM_MESSAGE (hideable in the UI),
+      // NOT a role:user turn — the human didn't type it. The agent still receives the
+      // (decorated) text below. A normal human message persists as user text.
+      if (b.source) {
+        persist({ type: "SYSTEM_MESSAGE", messageId: nextId("sys"), source: b.source, text: b.text });
+        continue;
+      }
       const userMsgId = nextId("user");
       persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
       persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: b.text });
@@ -832,7 +866,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // of a revived session (empty → omitted). The user text is the COMBINED batch
       // (a burst of queued messages sent as one turn), so the agent reads them all
       // at once instead of one-at-a-time.
-      const combined = combineTexts(batch.map((b) => b.text));
+      // Decorate SYSTEM-sourced items so the agent knows they're platform events (not
+      // the user), then combine the burst into one prompt. Human items pass through.
+      const combined = combineTexts(batch.map((b) => (b.source ? decorateSystemMessage(b.source, b.text) : b.text)));
       const textBlocks: ContentBlock[] = historyPreamble
         ? [{ type: "text", text: historyPreamble }, { type: "text", text: combined }]
         : [{ type: "text", text: combined }];

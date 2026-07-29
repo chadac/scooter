@@ -483,9 +483,10 @@ export async function main(
         void sessions
           .prompt(
             sessionId as SessionId,
-            "[System: the AWS access you requested was approved, but the broker could NOT " +
+            "The AWS access you requested was approved, but the broker could NOT " +
               "provision it. Do NOT retry the request; instead, help the user fix the broker " +
               "setup, then they can re-approve. Broker error:\n\n" + detail,
+            undefined, undefined, undefined, undefined, undefined, "broker",
           )
           .catch((e) => console.error("[agent-host] failed to feed AWS provisioning error to the agent:", e));
       }
@@ -662,7 +663,7 @@ export async function main(
       mimeType: f.mimeType,
     }));
     try {
-      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles);
+      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles, input.source);
     } catch (err) {
       // The run couldn't even START (provision/revive failed — e.g. 409 on a wrong
       // hydrate map, goose/ACP error). PERSIST a RUN_ERROR to the durable log so a
@@ -911,12 +912,14 @@ export async function main(
           for (const st of done) {
             const tail = st.output.trim();
             const more = st.truncated ? `\n(output truncated — full log: check_background("${st.jobId}"))` : "";
+            // A SYSTEM message (source "background job") — the standard decoration is
+            // added by the bridge, so no manual [System] prefix here.
             const text =
-              `[System] Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.\n` +
+              `Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.\n` +
               (tail ? `Recent output:\n${tail}${more}\n\n` : "") +
               `React to this result if it's relevant to your task; otherwise acknowledge briefly.`;
             await sessions
-              .prompt(c.id as SessionId, text, undefined, PRIORITY_INTERRUPT, "thinking")
+              .prompt(c.id as SessionId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "background job")
               .catch((e) => console.error(`[agent-host] job-completion inject failed for ${c.id}:`, e));
           }
         })();

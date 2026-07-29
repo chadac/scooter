@@ -59,6 +59,7 @@ async def create_conversation(
     owner: str | None = None,
     images: list[dict] | None = None,
     files: list[dict] | None = None,
+    source: str | None = None,
 ) -> dict | None:
     """Spawn an agent conversation for `initial_message`.
 
@@ -85,6 +86,10 @@ async def create_conversation(
         "runId": str(uuid.uuid4()),
         "messages": [{"role": "user", "content": _content(task, images, files)}],
     }
+    if source:
+        # Mark this as a SYSTEM message (a webhook event, not a human turn) — the
+        # agent-host decorates the prompt + the UI hides it. e.g. "github", "slack".
+        payload["source"] = source
     if owner:
         # The resolved Scooter owner rides the body; the agent-host honors it only for
         # this TRUSTED caller (our SA token, verified via TokenReview — see _sa_token).
@@ -118,6 +123,7 @@ async def send_message(
     priority: bool = False,
     images: list[dict] | None = None,
     files: list[dict] | None = None,
+    source: str | None = None,
 ) -> bool:
     """Send a follow-up message into an existing conversation (same thread).
 
@@ -132,6 +138,8 @@ async def send_message(
         "runId": str(uuid.uuid4()),
         "messages": [{"role": "user", "content": _content(message, images, files)}],
     }
+    if source:
+        payload["source"] = source  # a system message (webhook follow-up), not a human turn
     if priority:
         payload["priority"] = 10  # PRIORITY_INTERRUPT (agent-host bridge.ts)
     try:

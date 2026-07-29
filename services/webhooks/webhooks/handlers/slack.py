@@ -467,7 +467,7 @@ async def _background_forward(
 
     `priority=True` (an @mention to an active conversation, from _handle_mention)
     force-interrupts a stuck turn after the agent-host's priority timeout."""
-    ok = await send_message(existing, forward_msg, priority=priority, images=images, files=files)
+    ok = await send_message(existing, forward_msg, priority=priority, images=images, files=files, source="slack")
     if not ok:
         logger.warning("Failed to forward message to conversation %s", existing)
 
@@ -509,7 +509,7 @@ async def _background_create_conversation(
     owner = await resolve_owner("slack", invoking_user) if invoking_user else None
 
     try:
-        result = await create_conversation(message, title=conv_title, on_created=_register, owner=owner, images=images, files=files)
+        result = await create_conversation(message, title=conv_title, on_created=_register, owner=owner, images=images, files=files, source="slack")
         if not result:
             await _clear_pending(res_id)
             # The optimistic "on it" ack already posted in _register; correct it.
@@ -531,7 +531,7 @@ async def _background_create_conversation(
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("slack", "thread", res_id)
         for msg in messages:
-            ok = await send_message(conv_id, msg)
+            ok = await send_message(conv_id, msg, source="slack")
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
     except Exception:

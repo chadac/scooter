@@ -136,3 +136,4 @@ describe("ContextFillBar", () => {
     expect(renderBar({ contextFill: 0.8, isRunning: true })).not.toContain("compact-button");
   });
 });
+

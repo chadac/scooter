@@ -69,6 +69,27 @@ import {
   type ResumeEntry,
 } from "./integrityAgent.js";
 
+/** Sentinel prefixing the text part of a spliced-in SYSTEM message, so thread.tsx
+ *  can tell a system-event chip apart from a real assistant message and parse out
+ *  its source + body. Format: `${MARKER}${source}\n${text}`. Paired with the
+ *  `sys:` message-id prefix (the primary discriminator). Kept obscure so it can't
+ *  collide with real assistant output. */
+export const SYSTEM_MSG_MARKER = " scooter-system ";
+
+/** True + the parsed {source,text} when a thread message is a spliced SYSTEM event
+ *  (id starts with `sys:` and its single text part carries SYSTEM_MSG_MARKER). */
+export function parseSystemMessage(
+  id: string | undefined,
+  text: string | undefined,
+): { source: string; text: string } | null {
+  if (!id?.startsWith("sys:") || !text?.startsWith(SYSTEM_MSG_MARKER)) return null;
+  const rest = text.slice(SYSTEM_MSG_MARKER.length);
+  const nl = rest.indexOf("\n");
+  return nl === -1
+    ? { source: rest, text: "" }
+    : { source: rest.slice(0, nl), text: rest.slice(nl + 1) };
+}
+
 /** The current conversation's pending interrupts + a resume answerer, sourced
  *  from the IntegrityAgent (the single integrity-log source), so InterruptPanel
  *  reads them directly instead of the react-ag-ui runtime's message-status
@@ -336,7 +357,31 @@ function ConversationRuntime({
         for (const img of imgs) parts.push({ type: "image", image: img.url });
         return { ...msg, content: parts };
       });
-      runtime.thread.reset(fromAgUiMessages(enriched));
+      // Interleave SYSTEM messages inline at their chronological slot. The base applier
+      // drops SYSTEM_MESSAGE (bespoke), so we splice a synthetic message carrying a
+      // `sys:`-prefixed id + a source/text-tagged text part right AFTER the real
+      // message it followed in the log (afterMessageId; null = before all). thread.tsx
+      // detects the `sys:` id and renders an auto-collapsed event chip, NOT a bubble.
+      // Role is "assistant" only so fromAgUiMessages keeps it (it drops role-less
+      // messages) — the custom renderer overrides all assistant styling.
+      const sys = agent.getSystemMessages();
+      const withSystem: unknown[] = [];
+      const flush = (afterId: string | null) => {
+        for (const s of sys) {
+          if (s.afterMessageId !== afterId) continue;
+          withSystem.push({
+            id: `sys:${s.id}`,
+            role: "assistant",
+            content: [{ type: "text", text: `${SYSTEM_MSG_MARKER}${s.source}\n${s.text}` }],
+          });
+        }
+      };
+      flush(null); // system messages that preceded any real message
+      for (const m of enriched) {
+        withSystem.push(m);
+        flush((m as { id?: string }).id ?? null);
+      }
+      runtime.thread.reset(fromAgUiMessages(withSystem));
       // Advance the error-boundary reset key so a transient runtime crash during
       // this reset recovers on the next push.
       setRenderTick((n) => n + 1);
