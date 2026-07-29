@@ -7,7 +7,6 @@
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
 import { RightPanel } from "./RightPanel.js";
-import { RunStatusBar } from "./RunStatusBar.js";
 import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
 import { ToolCallView } from "./ToolCallView.js";
@@ -70,12 +69,11 @@ export function App() {
                     message cards with the provider icon; other tools use the stock
                     generic box. ToolGroupOpen keeps grouped tool calls EXPANDED so
                     the cards + shell commands are visible top-level, not hidden
-                    behind a "N tool calls" collapse. */}
+                    behind a "N tool calls" collapse. The run status (thinking
+                    indicator + Stop) now lives INLINE in the thread (above the
+                    composer), not a detached bottom bar — see InlineRunStatus. */}
                 <GuardedThread />
               </div>
-              {/* Thinking indicator + Stop button while a run is in flight (any
-                  source — local, Slack, another tab). Renders nothing when idle. */}
-              <RunStatusBar />
             </main>
             {/* Right-side tabbed panel: Approvals (AG-UI interrupts — a gate the user
                 can't miss; auto-focused on a new one) + Queue (messages waiting behind

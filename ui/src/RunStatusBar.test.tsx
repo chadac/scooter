@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { RunStatusBar } from "./RunStatusBar.js";
+import { InlineRunStatus } from "./RunStatusBar.js";
 import { InterruptContext, type InterruptContextValue } from "./RuntimeProvider.js";
 
 function render(over: Partial<InterruptContextValue>): string {
@@ -31,7 +31,7 @@ function render(over: Partial<InterruptContextValue>): string {
     renderTick: 0,
     ...over,
   } as InterruptContextValue;
-  return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, createElement(RunStatusBar)));
+  return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, createElement(InlineRunStatus)));
 }
 
 describe("RunStatusBar Stop feedback", () => {
