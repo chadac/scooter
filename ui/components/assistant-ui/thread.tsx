@@ -20,7 +20,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/src/ModelPicker";
-import { useConversationInterrupts } from "@/src/RuntimeProvider";
+import { useConversationInterrupts, parseSystemMessage } from "@/src/RuntimeProvider";
 import { InlineRunStatus, ContextFillBar } from "@/src/RunStatusBar";
 import { cn } from "@/lib/utils";
 import {
@@ -58,6 +58,7 @@ import {
   useContext,
   useEffect,
   useRef,
+  useState,
   type ComponentType,
   type FC,
   type PropsWithChildren,
@@ -219,10 +220,76 @@ const ThreadMessage: FC = () => {
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
+  // A spliced-in SYSTEM event (platform-injected: webhook, scheduler, background job,
+  // broker) is carried as an assistant message with a `sys:` id + a marker text part.
+  // Render it inline (chronological) as an auto-collapsed event chip, not a bubble.
+  const sysId = useAuiState((s) => s.message.id);
+  const sysText = useAuiState((s) => {
+    const first = (s.message.content as Array<{ type?: string; text?: string }>)?.[0];
+    return first?.type === "text" ? first.text : undefined;
+  });
+  const sys = parseSystemMessage(sysId, sysText);
 
   if (isEditing) return <EditComposer />;
+  if (sys) return <SystemEventMessage source={sys.source} text={sys.text} />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
+};
+
+/** A per-source glyph so the collapsed event line is scannable. */
+function systemSourceIcon(source: string): string {
+  switch (source) {
+    case "slack": return "💬";
+    case "github": return "🐙";
+    case "gitlab": return "🦊";
+    case "jira": return "📋";
+    case "scheduler": return "⏰";
+    case "background job": return "⚙️";
+    case "broker": return "🔑";
+    default: return "⚙️";
+  }
+}
+
+/** A SYSTEM event rendered INLINE in the conversation at its chronological slot —
+ *  auto-collapsed to a single de-emphasized line ("⚙️ system · <source> · <preview>")
+ *  so it reads as a platform event, not a user turn. Click to expand the full body. */
+const SystemEventMessage: FC<{ source: string; text: string }> = ({ source, text }) => {
+  const [open, setOpen] = useState(false);
+  const preview = text.replace(/\s+/g, " ").trim();
+  const short = preview.length > 80 ? preview.slice(0, 80) + "…" : preview;
+
+  return (
+    <div
+      data-slot="aui_system-message"
+      data-source={source}
+      className="mx-auto w-full max-w-(--thread-max-width) px-2"
+    >
+      <button
+        type="button"
+        data-testid="system-event-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-muted-foreground/70 hover:bg-muted/40 hover:text-muted-foreground"
+      >
+        <span aria-hidden className="shrink-0">{systemSourceIcon(source)}</span>
+        <span className="shrink-0 font-medium capitalize">{source}</span>
+        {!open && short && (
+          <span className="min-w-0 flex-1 truncate text-muted-foreground/60">{short}</span>
+        )}
+        <span aria-hidden className="ml-auto shrink-0 text-[10px] opacity-60">
+          {open ? "▲" : "▼"}
+        </span>
+      </button>
+      {open && (
+        <div
+          data-testid="system-event-body"
+          className="mx-2 mb-1 whitespace-pre-wrap break-words border-l-2 border-border/60 pl-3 text-[12px] text-muted-foreground"
+        >
+          {text}
+        </div>
+      )}
+    </div>
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {

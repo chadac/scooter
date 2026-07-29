@@ -180,7 +180,7 @@ async def _handle_comment(payload: dict):
         forward_msg = _format_forwarded_message(
             comment_text, owner, repo, issue_number, is_pr, has_mention,
         )
-        ok = await send_message(existing, forward_msg, priority=has_mention)
+        ok = await send_message(existing, forward_msg, priority=has_mention, source="github")
         if ok:
             return
         logger.warning("Failed to send to existing conversation %s, creating new one", existing)
@@ -309,7 +309,7 @@ async def _background_create_conversation(
     try:
         result = await create_conversation(
             message, repository=repo, git_provider="github", title=conv_title, on_created=_register,
-            owner=conv_owner,
+            owner=conv_owner, source="github",
         )
         if not result:
             await _clear_pending(res_type, res_id)
@@ -330,7 +330,7 @@ async def _background_create_conversation(
         # Flush pending messages
         messages = await db.get_and_clear_pending_messages("github", res_type, res_id)
         for msg in messages:
-            ok = await send_message(conv_id, msg)
+            ok = await send_message(conv_id, msg, source="github")
             if not ok:
                 logger.warning("Failed to flush pending message to conversation %s", conv_id)
     except Exception:

@@ -33,7 +33,7 @@ async def test_webhook(event: TestEvent) -> dict:
     if not settings.test_webhook_enabled:
         raise HTTPException(status_code=404, detail="test webhook disabled")
 
-    result = await create_conversation(event.task, title=event.title)
+    result = await create_conversation(event.task, title=event.title, source="test")
     if result is None:
         raise HTTPException(status_code=502, detail="spawn failed")
 

@@ -369,6 +369,28 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("collects SYSTEM_MESSAGE events into getSystemMessages, anchored to the preceding message (deduped)", async () => {
+    const frames = [
+      // A system message BEFORE any real message → afterMessageId null.
+      { kind: "event", event: { type: "SYSTEM_MESSAGE", messageId: "sys-0", source: "scheduler", text: "spawned" } },
+      // A real user turn, then a system message that followed it → anchored to u1.
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "hi" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "u1" } },
+      { kind: "event", event: { type: "SYSTEM_MESSAGE", messageId: "sys-1", source: "github", text: "PR #4 labeled" } },
+      // A replayed duplicate (same id) must NOT double the list.
+      { kind: "event", event: { type: "SYSTEM_MESSAGE", messageId: "sys-1", source: "github", text: "PR #4 labeled" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    const sys = agent.getSystemMessages();
+    expect(sys).toHaveLength(2);
+    expect(sys[0]).toEqual({ id: "sys-0", source: "scheduler", text: "spawned", afterMessageId: null });
+    expect(sys[1]).toEqual({ id: "sys-1", source: "github", text: "PR #4 labeled", afterMessageId: "u1" });
+    agent.dispose();
+  });
+
   it("clears the active tool on TOOL_CALL_END, and everything on RUN_FINISHED", async () => {
     const frames = [
       { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1", ts: 1000 } },

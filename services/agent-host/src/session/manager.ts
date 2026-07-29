@@ -207,7 +207,7 @@ export interface SessionManager {
    *  one, the live goose session is rebuilt with the new model. `priority`
    *  (PRIORITY_INTERRUPT) lets an @mention force-interrupt a running turn after the
    *  bridge's priority timeout; normal prompts (default) wait their turn. */
-  prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: InterruptPolicy, images?: PromptImage[], files?: PromptFile[]): Promise<void>;
+  prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: InterruptPolicy, images?: PromptImage[], files?: PromptFile[], source?: string): Promise<void>;
   /** Find-or-start the conversation for an AG-UI thread, then prompt it. A
    *  `model` on the FIRST prompt picks the conversation's model; on a later
    *  prompt it switches it (rebuilds the goose session). `priority` as in prompt().
@@ -215,7 +215,7 @@ export interface SessionManager {
    *  webhook-resolved Scooter user) — ignored for an already-existing conversation.
    *  `images` are attached uploads (resolved to ACP image blocks by the bridge).
    *  `files` are binary attachments (Slack) the bridge writes to /workspace/.slack. */
-  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[], files?: PromptFile[]): Promise<void>;
+  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[], files?: PromptFile[], source?: string): Promise<void>;
   /** Switch a RUNNING conversation's model IMMEDIATELY and continue its work on
    *  the new model. Unlike a model passed to prompt() (which applies on the next
    *  turn), this is for the switch_model MCP tool the agent calls MID-TURN: it
@@ -550,7 +550,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return toConversation(entry);
     },
 
-    async prompt(id, text, model, priority, interrupt, images, files) {
+    async prompt(id, text, model, priority, interrupt, images, files, source) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
@@ -561,10 +561,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // process, so the prompt would silently no-op (bridge?.prompt on undefined).
       if (!entry.bridge) await this.revive(id);
       const opts = priority || interrupt ? { priority, interrupt } : undefined;
-      await entry.bridge?.prompt({ threadId: entry.threadId, text, images, files }, opts);
+      await entry.bridge?.prompt({ threadId: entry.threadId, text, images, files, source }, opts);
     },
 
-    async promptByThread(threadId, text, model, priority, owner, images, files) {
+    async promptByThread(threadId, text, model, priority, owner, images, files, source) {
       // Find the conversation for this thread. Three cases:
       //  1. in the in-memory map -> use it (revive if no live bridge).
       //  2. NOT in the map but PERSISTED (store has it) -> hydrate it on demand and
@@ -601,7 +601,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // killing the tool call.) The bridge defers a "thinking" cancel while
       // inFlightTools > 0 and fires it at the next tool boundary.
       await entry.bridge?.prompt(
-        { threadId, text, images, files },
+        { threadId, text, images, files, source },
         priority ? { priority, interrupt: "thinking" } : undefined,
       );
     },

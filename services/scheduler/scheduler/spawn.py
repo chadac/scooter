@@ -37,6 +37,9 @@ async def spawn_conversation(
     body: dict = {
         "threadId": conversation_id,
         "messages": [{"role": "user", "content": prompt}],
+        # A scheduled fire is a SYSTEM message (not a human turn) — the agent-host
+        # decorates it + the UI can hide it.
+        "source": "scheduler",
     }
     if title:
         body["title"] = title

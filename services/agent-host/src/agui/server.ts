@@ -112,6 +112,12 @@ export interface RunAgentInput {
    *  The agent-host materializes each into the sandbox at /workspace/.slack/<name>.
    *  Empty/undefined = no file attachments (the unchanged path). */
   files?: InboundFile[];
+  /** SYSTEM message source — set when a PLATFORM caller (webhooks, scheduler) injects
+   *  a message that isn't a human turn. Tags it so the agent gets a "system event"
+   *  decoration and the UI can hide it. Undefined = a human message. Trusted like
+   *  `owner`: only meaningful from the webhooks/scheduler SA, but harmless if spoofed
+   *  (it just makes a message render as system, no privilege). */
+  source?: string;
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -275,6 +281,9 @@ export function createAguiServer(): AguiServer {
         /** Per-interrupt responses (assistant-ui resumes a paused run with these
          *  instead of a new user message). */
         resume?: Array<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>;
+        /** SYSTEM message source (webhooks/scheduler) — renders as a hideable system
+         *  message + decorates the agent prompt. Absent = a human message. */
+        source?: string;
       };
       const sessionId = input.threadId;
       res.writeHead(200, {
@@ -325,7 +334,7 @@ export function createAguiServer(): AguiServer {
       // with NO error (the hydrate-silent-drop bug). Emit a proper RUN_ERROR event on
       // THIS stream + close it, so the UI has something to render as a failed send.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner, images, files });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, priority: input.priority, owner, images, files, source: input.source });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

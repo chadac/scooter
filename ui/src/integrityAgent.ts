@@ -171,6 +171,44 @@ export class IntegrityAgent extends AbstractAgent {
     return this.contextUsedTokens !== before;
   }
 
+  // SYSTEM messages (platform-injected: webhook events, scheduler fires, background-
+  // job completions, broker errors). The @ag-ui applier ignores SYSTEM_MESSAGE
+  // (bespoke), so we track them here — but they render INLINE in the thread at their
+  // chronological position (as an auto-collapsed event chip, not a user bubble), so
+  // each records `afterIndex`: the number of real messages folded BEFORE it arrived.
+  // RuntimeProvider splices the chip into the message list at that index.
+  private systemMessages: Array<{ id: string; source: string; text: string; afterMessageId: string | null }> = [];
+  /** The id of the most recent REAL (user/assistant) message START seen in the raw
+   *  event stream — the chronological anchor for a system message. Read from the raw
+   *  stream (not the folded list) because the base applier's fold is async, so
+   *  `this.messages` lags the events in a synchronous burst. */
+  private lastMessageId: string | null = null;
+  /** All system messages in the conversation, each with `afterMessageId` — the id of
+   *  the real message it followed in the log (null = before any message) — so the UI
+   *  can interleave it inline at the right spot. Deduped by messageId so a re-replay
+   *  doesn't double them. */
+  getSystemMessages(): ReadonlyArray<{ id: string; source: string; text: string; afterMessageId: string | null }> {
+    return this.systemMessages;
+  }
+  private trackSystemMessage(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; messageId?: string; source?: string; text?: string };
+    // Every real message START advances the anchor (folded async, so we can't count
+    // this.messages here). Only TEXT_MESSAGE_START creates a TOP-LEVEL folded message
+    // with this id (tool calls nest INTO the preceding assistant message), so it's the
+    // reliable anchor. A SYSTEM_MESSAGE then pins to whatever text message came last.
+    if (ev.type === "TEXT_MESSAGE_START" && ev.messageId) {
+      this.lastMessageId = ev.messageId;
+      return false;
+    }
+    if (ev.type !== "SYSTEM_MESSAGE" || !ev.messageId) return false;
+    if (this.systemMessages.some((m) => m.id === ev.messageId)) return false; // replay dedupe
+    this.systemMessages.push({
+      id: ev.messageId, source: ev.source ?? "system", text: ev.text ?? "",
+      afterMessageId: this.lastMessageId,
+    });
+    return true;
+  }
+
   /** The last RUN_ERROR's message (null if the current/last run didn't error).
    *  The base @ag-ui/client applier delegates RUN_ERROR to an `onRunErrorEvent`
    *  callback and appends NO message — so a failed run would otherwise just go
@@ -518,6 +556,11 @@ export class IntegrityAgent extends AbstractAgent {
         this.lastRunError = null;
         // Likewise re-derive the queue from the log's last QUEUE_UPDATED snapshot.
         this.queued = [];
+        // System messages are re-derived from the replayed log too (reset so a
+        // reconnect rebuilds the list instead of doubling it). The anchor resets with
+        // them so positions re-derive from an empty fold.
+        this.systemMessages = [];
+        this.lastMessageId = null;
         // Entering (re)replay: suppress per-event renders until `synced`.
         this.replaying = true;
         controller = new AbortController();
@@ -563,6 +606,8 @@ export class IntegrityAgent extends AbstractAgent {
             changed = this.trackImages(e) || changed;
             // Track context-window fill (CONTEXT_USAGE) for the fill bar.
             changed = this.trackContext(e) || changed;
+            // Track SYSTEM messages (hidden behind a toggle in the thread).
+            changed = this.trackSystemMessage(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
