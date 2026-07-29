@@ -35,6 +35,29 @@ export function tailByRuns(events: AguiEvent[], runs: number): AguiEvent[] {
   return ordered.slice(starts[starts.length - runs]);
 }
 
+/** Number of runs (RUN_STARTED markers) in the log. */
+export function runCount(events: AguiEvent[]): number {
+  return events.reduce((n, e) => n + (e.type === "RUN_STARTED" ? 1 : 0), 0);
+}
+
+/**
+ * Split a log into [older, recent] at the boundary that keeps the last `keepRuns`
+ * runs verbatim (for compaction: summarize `older`, keep `recent`). `older` is
+ * everything before the RUN_STARTED that begins the kept tail; `recent` is that tail.
+ * If there are ≤ keepRuns runs, `older` is empty (nothing to summarize).
+ */
+export function splitByRuns(events: AguiEvent[], keepRuns: number): { older: AguiEvent[]; recent: AguiEvent[] } {
+  const ordered = orderByTime(events);
+  const starts: number[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i].type === "RUN_STARTED") starts.push(i);
+  }
+  if (keepRuns <= 0) return { older: ordered, recent: [] };
+  if (starts.length <= keepRuns) return { older: [], recent: ordered };
+  const cut = starts[starts.length - keepRuns];
+  return { older: ordered.slice(0, cut), recent: ordered.slice(cut) };
+}
+
 /**
  * STABLE-sort a log by each event's `ts` (epoch ms, stamped at emit). This makes
  * the tail window robust when append order diverges from real time — e.g. a

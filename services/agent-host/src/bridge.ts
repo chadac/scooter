@@ -147,7 +147,14 @@ type AguiEventBase =
   // bar. Bespoke like QUEUE_UPDATED: the @ag-ui client folds by type and ignores it,
   // so it never touches the message stream; the UI reads it explicitly. Persist +
   // broadcast, so the latest value survives a refresh.
-  | { type: "CONTEXT_USAGE"; usedTokens: number; contextWindow: number };
+  | { type: "CONTEXT_USAGE"; usedTokens: number; contextWindow: number }
+  // A COMPACTION boundary: the older turns before this marker were summarized (recap
+  // in `summary`); the recent turns after it are kept verbatim. It IS the compaction
+  // point — loadHistory (index.ts) seeds a revived session from [summary + events
+  // after the latest marker], so the agent continues on the compacted context.
+  // Rendered inline by the UI as a "Compacted earlier messages" divider. Bespoke;
+  // persisted like QUEUE_UPDATED (the @ag-ui client ignores it).
+  | { type: "COMPACTION_MARKER"; summary: string; summarizedTurns: number; keptRuns: number };
 
 /** Rewrite a raw agent/API error into a clearer user-facing message for the known
  *  cases. Today: CONTEXT OVERFLOW (the conversation exceeded the model's context

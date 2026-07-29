@@ -19,6 +19,8 @@
 import { useEffect, useState } from "react";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
+import { compactConversation } from "./client.js";
+import { agentHostConfig } from "./config.js";
 
 /** "3s" / "2m 10s" — compact elapsed time for the working indicator. */
 function fmtElapsed(ms: number): string {
@@ -31,25 +33,60 @@ function fmtElapsed(ms: number): string {
  *  → red >90%, so the user can see how full the conversation's context is (and knows
  *  it may compact / get too long). Hidden until we have a usage reading. */
 export function ContextFillBar() {
-  const { contextFill, contextTokens } = useConversationInterrupts();
+  const { contextFill, contextTokens, conversationId, isRunning } = useConversationInterrupts();
+  const [compacting, setCompacting] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
   if (contextFill == null) return null;
   const pct = Math.round(contextFill * 100);
   const color = pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-500" : "bg-muted-foreground/40";
   const tip = contextTokens
     ? `Context ${pct}% full — ${contextTokens.used.toLocaleString()} / ${contextTokens.total.toLocaleString()} tokens`
     : `Context ${pct}% full`;
+
+  // Offer Compact once the context is getting full (≥50%), when NOT mid-run. It
+  // summarizes older turns so the conversation can keep going on less context.
+  const canCompact = pct >= 50 && !isRunning && !compacting;
+  const compact = async () => {
+    setCompacting(true);
+    setNote(null);
+    try {
+      const r = await compactConversation(agentHostConfig, conversationId);
+      setNote(r.compacted ? "Compacted earlier messages." : "Nothing to compact yet.");
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setCompacting(false);
+    }
+  };
+
   return (
-    <div
-      data-testid="context-fill-bar"
-      data-fill={pct}
-      title={tip}
-      aria-label={tip}
-      className="mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 px-1"
-    >
-      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-        <div className={`h-full ${color} transition-all`} style={{ width: `${Math.min(pct, 100)}%` }} />
+    <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-0.5 px-1">
+      <div
+        data-testid="context-fill-bar"
+        data-fill={pct}
+        title={tip}
+        aria-label={tip}
+        className="flex items-center gap-2"
+      >
+        <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+          <div className={`h-full ${color} transition-all`} style={{ width: `${Math.min(pct, 100)}%` }} />
+        </div>
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
+        {(canCompact || compacting) && (
+          <button
+            type="button"
+            data-testid="compact-button"
+            disabled={compacting}
+            onClick={() => void compact()}
+            title="Summarize older messages to free up context"
+            className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] hover:bg-accent disabled:opacity-60"
+          >
+            {compacting ? "Compacting…" : "Compact"}
+          </button>
+        )}
       </div>
-      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
+      {note && <span data-testid="compact-note" className="text-[10px] text-muted-foreground">{note}</span>}
     </div>
   );
 }

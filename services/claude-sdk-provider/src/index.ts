@@ -6,4 +6,5 @@
  * AcpClient (structurally identical to its own). See ./types.ts for the boundary.
  */
 export { createSdkAcpClient, type SdkAcpClientDeps } from "./sdkClient.js";
+export { summarizeConversation, type SummaryTurn, type SummarizeDeps } from "./summarize.js";
 export type { AcpClient, ExecBackend } from "./types.js";

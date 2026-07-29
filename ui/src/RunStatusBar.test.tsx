@@ -38,7 +38,10 @@ function render(over: Partial<InterruptContextValue>): string {
 
 /** Render the ContextFillBar with a given context value. */
 function renderBar(over: Partial<InterruptContextValue>): string {
-  const value = { contextFill: null, contextTokens: null, ...over } as InterruptContextValue;
+  const value = {
+    contextFill: null, contextTokens: null, conversationId: "c1", isRunning: false, baseUrl: "",
+    ...over,
+  } as InterruptContextValue;
   return renderToStaticMarkup(createElement(InterruptContext.Provider, { value }, createElement(ContextFillBar)));
 }
 
@@ -120,5 +123,16 @@ describe("ContextFillBar", () => {
     expect(html).toContain('data-fill="40"');
     expect(html).not.toContain("bg-red-500");
     expect(html).not.toContain("bg-amber-500");
+  });
+
+  it("offers Compact once context is ≥50% and not mid-run", () => {
+    const html = renderBar({ contextFill: 0.6, isRunning: false, conversationId: "c1" });
+    expect(html).toContain('data-testid="compact-button"');
+    expect(html).toContain(">Compact<");
+  });
+
+  it("hides Compact below 50% and while a run is in flight", () => {
+    expect(renderBar({ contextFill: 0.3, isRunning: false })).not.toContain("compact-button");
+    expect(renderBar({ contextFill: 0.8, isRunning: true })).not.toContain("compact-button");
   });
 });

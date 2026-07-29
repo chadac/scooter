@@ -378,6 +378,42 @@ describe("management API", () => {
     expect((r.json as any).status).toBe("running");
   });
 
+  it("POST /conversations/:id/compact compacts (202) then revives", async () => {
+    const sessions = fakeSessions();
+    const compact = vi.fn(async () => ({ summarizedTurns: 8, keptRuns: 3 }));
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {}, compact });
+    const { status, json } = await call(api, "POST", "/conversations/c1/compact");
+    expect(status).toBe(202);
+    expect((json as any).compacted).toBe(true);
+    expect(compact).toHaveBeenCalledWith("c1");
+    expect(sessions.revive).toHaveBeenCalledWith("c1"); // revive AFTER a successful compact
+  });
+
+  it("POST compact → 200 compacted:false when too short (no revive)", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {}, compact: async () => null });
+    const { status, json } = await call(api, "POST", "/conversations/c1/compact");
+    expect(status).toBe(200);
+    expect((json as any).compacted).toBe(false);
+    expect(sessions.revive).not.toHaveBeenCalled();
+  });
+
+  it("POST compact → 502 on a summarizer failure, conversation untouched (no revive)", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({
+      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      compact: async () => { throw new Error("LLM down"); },
+    });
+    const { status } = await call(api, "POST", "/conversations/c1/compact");
+    expect(status).toBe(502);
+    expect(sessions.revive).not.toHaveBeenCalled();
+  });
+
+  it("POST compact → 501 when compaction is unwired (no token)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    expect((await call(api, "POST", "/conversations/c1/compact")).status).toBe(501);
+  });
+
   it("POST /conversations/:id/messages prompts the thread", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
