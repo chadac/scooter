@@ -43,6 +43,7 @@ def deploy_config(settings: BrokerSettings) -> DeployConfig:
         extra_token_audiences=_csv(settings.sandbox_token_audiences),
         extra_env=extra_env,
         public_url=settings.sandbox_public_url or None,
+        manifest_overlay_configmap=settings.sandbox_manifest_overlay_configmap or None,
     )
 
 

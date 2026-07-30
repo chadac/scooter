@@ -117,6 +117,10 @@ class BrokerSettings(BaseSettings):
     sandbox_token_audiences: str = ""   # CSV of extra projected-token audiences
     sandbox_extra_env_json: str = ""    # JSON list of {name,value}
     sandbox_public_url: str = ""
+    # Name of a ConfigMap holding a consumer Sandbox-manifest overlay (deep-merge patch
+    # applied on top of the generated pod manifest — see sandbox/overlay.py). Empty ->
+    # no overlay. Set by kubenix (deployTools.sandboxManifestOverlay -> the CM).
+    sandbox_manifest_overlay_configmap: str = ""
     # A mounted directory of `.nix` files served as the deployment's DEFAULT modules
     # at GET /modules/default.tar.gz (fetched by the pod at re-converge, unauthed).
     # Empty/unset -> an empty tarball (the pod imports nothing).

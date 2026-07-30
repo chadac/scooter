@@ -18,6 +18,7 @@ python3Packages.buildPythonApplication {
     pydantic
     pydantic-settings
     kubernetes
+    pyyaml # sandbox/overlay.py parses the manifest-overlay ConfigMap payload
     pyjwt
     # AWS permissions broker
     boto3

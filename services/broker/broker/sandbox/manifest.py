@@ -37,6 +37,11 @@ class DeployConfig:
     extra_token_audiences: list[str] = field(default_factory=list)
     extra_env: list[dict] = field(default_factory=list)  # [{name, value}]
     public_url: str | None = None
+    # Name of the ConfigMap holding a consumer manifest overlay (patch applied on top
+    # of the generated Sandbox — see overlay.py). None -> no overlay. The PAYLOAD is
+    # read lazily by the broker at create time (not baked into DeployConfig) so a
+    # ConfigMap edit takes effect on the next conversation without a broker restart.
+    manifest_overlay_configmap: str | None = None
 
 
 def sandbox_manifest(
@@ -47,6 +52,7 @@ def sandbox_manifest(
     deploy: DeployConfig,
     resources: dict | None = None,  # already-rendered k8s resources block
     url_thread: str | None = None,  # full threadId for CONVERSATION_URL deep-link
+    overlay: dict | None = None,  # parsed consumer overlay (see overlay.apply_overlay)
 ) -> dict:
     # NOTE: NO module ConfigMap. The pod pulls its module config (deployment defaults
     # + registry modules) as a tarball from the broker (a root sandbox-os Nix module
@@ -56,7 +62,7 @@ def sandbox_manifest(
     image = deploy.sandbox_image
     audience = deploy.broker_audience
     systemd = deploy.systemd_image
-    overlay = deploy.overlay_store
+    overlay_store = deploy.overlay_store  # the .scooter-rw PVC flag (NOT the manifest overlay)
     config_files = deploy.config_files_configmap
     aws_cm = deploy.aws_accounts_configmap
     extra_auds = deploy.extra_token_audiences or []
@@ -74,7 +80,7 @@ def sandbox_manifest(
         volume_mounts += [{"name": "run", "mountPath": "/run"}, {"name": "tmp", "mountPath": "/tmp"}]
     for aud in extra_auds:
         volume_mounts.append({"name": f"tok-{aud}", "mountPath": f"/var/run/secrets/{aud}", "readOnly": True})
-    if overlay:
+    if overlay_store:
         volume_mounts.append({"name": "scooter-rw", "mountPath": "/nix/.scooter-rw"})
     if config_files:
         volume_mounts.append({"name": "deploy-config", "mountPath": CONFIG_FILES_MOUNT_PATH, "readOnly": True})
@@ -129,13 +135,13 @@ def sandbox_manifest(
             "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": deploy.workspace_storage}}},
         }
     ]
-    if overlay:
+    if overlay_store:
         vcts.append({
             "metadata": {"name": "scooter-rw"},
             "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": deploy.overlay_storage}}},
         })
 
-    return {
+    base = {
         "apiVersion": f"{GROUP}/{VERSION}",
         "kind": "Sandbox",
         "metadata": {"name": name, "namespace": ns, "labels": {SANDBOX_NAME_LABEL: name}},
@@ -153,3 +159,10 @@ def sandbox_manifest(
             "volumeClaimTemplates": vcts,
         },
     }
+    # Apply the consumer overlay LAST (deep-merge + re-assert Scooter's protected
+    # fields). No overlay -> `base` unchanged. See overlay.py for merge semantics.
+    if overlay:
+        from .overlay import apply_overlay
+
+        return apply_overlay(base, overlay)
+    return base
