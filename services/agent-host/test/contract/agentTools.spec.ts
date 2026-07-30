@@ -145,23 +145,24 @@ describe("agent-tools: inferred defaults", () => {
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][3]).toMatchObject({ channel: "C777", thread_ts: "1700.9" });
   });
 
-  it("slack_react reacts to the inferred thread message, stripping colons from the emoji", async () => {
+  it("slack_react reacts to the EXPLICIT message_ts (not the thread anchor), stripping colons from the emoji", async () => {
     const broker = fakeBroker({ status: 200, raw: '{"ok":true}', data: { ok: true } });
-    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: ":eyes:" });
+    // thread anchor is 1700.5 (from slackLink()); react to a DIFFERENT message in the thread.
+    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: ":eyes:", message_ts: "1701.9" });
     expect(out.isError).toBeFalsy();
     const call = (broker.call as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[2]).toContain("/slack/reactions.add");
-    // channel + the thread anchor ts as the target message; name WITHOUT colons.
-    expect(call[3]).toMatchObject({ channel: "C123", timestamp: "1700.5", name: "eyes" });
+    // channel from the link + the EXPLICIT message_ts (not the thread anchor); name WITHOUT colons.
+    expect(call[3]).toMatchObject({ channel: "C123", timestamp: "1701.9", name: "eyes" });
   });
 
   it("slack_react returns SUCCESS when Slack says already_reacted (webhooks 👀 got there first)", async () => {
     const broker = fakeBroker({ status: 200, raw: '{"ok":false,"error":"already_reacted"}', data: { ok: false, error: "already_reacted" } });
-    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: ":eyes:" });
+    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: ":eyes:", message_ts: "1700.5" });
     expect(out.isError).toBeFalsy(); // idempotent — not a (noisy) error
   });
 
-  it("slack_react FALLS BACK to the webhooks conversation_map when the link has no ref", async () => {
+  it("slack_react resolves the channel from the webhooks conversation_map when the link has no ref", async () => {
     const refless: ConversationLink = { source: "slack", resourceType: "thread", title: "#eng thread" };
     const broker = fakeBroker({ status: 200, raw: '{"ok":true}', data: { ok: true } });
     const ctx: ToolContext = {
@@ -169,14 +170,23 @@ describe("agent-tools: inferred defaults", () => {
       links: async () => [refless],
       resourceLookup: async () => ({ source: "slack", resourceType: "thread", resourceId: "C999:1699.42", slackChannel: "C999", slackTs: "1699.42" }),
     };
-    const out = await handleSlackReact({ broker }, ctx, { emoji: "tada" });
+    const out = await handleSlackReact({ broker }, ctx, { emoji: "tada", message_ts: "1699.42" });
     expect(out.isError).toBeFalsy();
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][3]).toMatchObject({ channel: "C999", timestamp: "1699.42", name: "tada" });
   });
 
-  it("slack_react errors clearly (not a guess) when neither ref nor DB has the target", async () => {
+  it("slack_react errors (no guess, no broker call) when message_ts is missing", async () => {
     const broker = fakeBroker({ status: 200, raw: "{}", data: {} });
-    const out = await handleSlackReact({ broker }, ctxWith([]), { emoji: "eyes" });
+    // channel is resolvable, but the agent forgot the required message_ts.
+    const out = await handleSlackReact({ broker }, ctxWith([slackLink()]), { emoji: "eyes", message_ts: "  " });
+    expect(out.isError).toBe(true);
+    expect(out.content?.[0]?.text ?? "").toContain("message_ts");
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("slack_react errors clearly (not a guess) when the channel can't be resolved", async () => {
+    const broker = fakeBroker({ status: 200, raw: "{}", data: {} });
+    const out = await handleSlackReact({ broker }, ctxWith([]), { emoji: "eyes", message_ts: "1700.5" });
     expect(out.isError).toBe(true);
     expect((broker.call as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });

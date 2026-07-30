@@ -291,23 +291,32 @@ export async function handleGetSlackContext(_deps: AgentToolsDeps, ctx: ToolCont
   return ok(lines.join("\n"));
 }
 
-/** React to a Slack message with an emoji (channel inferred; defaults to the
- *  triggering message = the thread anchor ts). Same channel/thread resolution as
- *  slack_respond. `emoji` is the reaction name WITHOUT colons (e.g. "eyes"). */
+/** React to a Slack message with an emoji. The channel is inferred from the
+ *  conversation's Slack link; the TARGET message is named explicitly by
+ *  `message_ts` (required) — the `ts` the agent saw in the Slack notification
+ *  ("message_ts: …"). This reacts to THAT message, not the thread anchor, so a
+ *  👀/✅ lands on the specific message being acknowledged. `emoji` is the reaction
+ *  name WITHOUT colons (e.g. "eyes"). */
 export async function handleSlackReact(
   deps: AgentToolsDeps,
   ctx: ToolContext,
-  args: { emoji: string; timestamp?: string },
+  args: { emoji: string; message_ts: string },
 ): Promise<ToolResult> {
   const target = await resolveSlackTarget(ctx);
   const channel = target?.channel;
-  const ts = args.timestamp ?? target?.threadTs;
-  if (!channel || !ts) {
+  const ts = args.message_ts?.trim();
+  if (!channel) {
     return err(
-      "Could not determine the Slack channel + message to react to — this " +
-        "conversation has no slack link with a channel/timestamp, and no Slack " +
-        "mapping was found in the webhooks store. Pass the message `timestamp` " +
-        "explicitly if you know it.",
+      "Could not determine the Slack channel to react in — this conversation has " +
+        "no slack link with a channel, and no Slack mapping was found in the " +
+        "webhooks store.",
+    );
+  }
+  if (!ts) {
+    return err(
+      "slack_react needs the `message_ts` of the message to react to — the " +
+        "timestamp shown in the Slack notification as \"message_ts: …\". Pass that " +
+        "value (e.g. \"1700.5\").",
     );
   }
   // Slack's reactions.add wants the emoji name WITHOUT the surrounding colons.
@@ -577,13 +586,17 @@ export async function registerAgentTools(
       {
         title: "React to the Slack message",
         description:
-          "Add an emoji reaction to THIS conversation's Slack message (the channel + message are already " +
-          "known; by default it reacts to the message that triggered you). Give the emoji `name` WITHOUT " +
-          "colons (e.g. \"eyes\", \"white_check_mark\", \"tada\"). Reports the real Slack result. Nice for a " +
-          "quick 👀 acknowledgment or a ✅ when done — but don't spam reactions.",
+          "Add an emoji reaction to a specific Slack message in THIS conversation's thread (the channel is " +
+          "already known). You MUST pass `message_ts` — the timestamp of the message you're reacting to, shown " +
+          "in the Slack notification as \"message_ts: …\". This reacts to THAT message (e.g. the one you were " +
+          "asked to acknowledge), not the whole thread. Give the emoji `name` WITHOUT colons (e.g. \"eyes\", " +
+          "\"white_check_mark\", \"tada\"). Reports the real Slack result. Nice for a quick 👀 acknowledgment or " +
+          "a ✅ when done — but don't spam reactions.",
         inputSchema: {
           emoji: z.string().describe('The emoji name, without colons (e.g. "eyes").'),
-          timestamp: z.string().optional().describe("Override which message to react to (rarely needed)."),
+          message_ts: z
+            .string()
+            .describe('The `ts` of the message to react to, from the Slack notification ("message_ts: …").'),
         },
       },
       async (args) => (await handleSlackReact(deps, ctx, args)) as never,
