@@ -25,6 +25,12 @@ async def _capture_forward(handler_coro) -> str:
         started.set()
         return True
 
+    # The (channel:ts) dispatch guard is MODULE-level state that persists across
+    # tests; another test forwarding the same (channel, ts) first would make the
+    # handler skip ours as an already-dispatched twin (→ send_message never runs →
+    # this hangs). Clear it so this test is order-independent.
+    slack_h._DISPATCHED_MESSAGES.clear()
+
     with (
         patch.object(slack_h, "db") as db,
         patch.object(slack_h, "send_message", side_effect=capturing_send),
@@ -43,16 +49,16 @@ async def _capture_forward(handler_coro) -> str:
 async def test_mention_forward_includes_message_ts():
     msg = await _capture_forward(
         slack_h._handle_mention(
-            {"text": "<@BOT> ping", "user": "U1", "channel": "C1", "ts": "9.9", "thread_ts": "1.0"}
+            {"text": "<@BOT> ping", "user": "U1", "channel": "Cmts1", "ts": "9001.9", "thread_ts": "9000.1"}
         )
     )
-    assert "message_ts: 9.9" in msg
+    assert "message_ts: 9001.9" in msg
 
 
 async def test_thread_message_forward_includes_message_ts():
     msg = await _capture_forward(
         slack_h._handle_thread_message(
-            {"text": "just a follow-up", "user": "U1", "channel": "C1", "ts": "7.7", "thread_ts": "1.0"}
+            {"text": "just a follow-up", "user": "U1", "channel": "Cmts2", "ts": "9002.7", "thread_ts": "9000.1"}
         )
     )
-    assert "message_ts: 7.7" in msg
+    assert "message_ts: 9002.7" in msg
