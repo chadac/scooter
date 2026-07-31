@@ -21,12 +21,18 @@ from .scope import DefaultMethodScopeClassifier
 from .policy import Decision, DeclarativePolicy, Policy
 from .authz_provider import AuthzResult, InboundRequest
 from .audit import AuditEvent, AuditSink, JsonLogSink, emit_best_effort
+from .approval import ApprovalStore, InMemoryApprovalStore, PendingApproval
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(policy: Policy | None = None, audit: AuditSink | None = None) -> FastAPI:
+def create_app(
+    policy: Policy | None = None,
+    audit: AuditSink | None = None,
+    approvals: ApprovalStore | None = None,
+    on_approval_request=None,  # optional (PendingApproval) -> None|await: notify the host
+) -> FastAPI:
     providers = list(discover_providers())
 
     # The authz + audit layer. Injectable for tests/deployers; the defaults are
@@ -34,10 +40,18 @@ def create_app(policy: Policy | None = None, audit: AuditSink | None = None) -> 
     # is a no-op for existing behavior until a deployer supplies a real policy.
     policy = policy if policy is not None else DeclarativePolicy.from_config(_load_policy_config())
     audit = audit if audit is not None else JsonLogSink()
+    approvals = approvals if approvals is not None else InMemoryApprovalStore()
 
     # provider name -> its authorizer + scope classifier, keyed by mount prefix so
     # the middleware can look them up from the request path alone.
     by_name = {p.name: p for p in providers}
+
+    async def _notify_approval(rec: PendingApproval) -> None:
+        if on_approval_request is None:
+            return
+        res = on_approval_request(rec)
+        if hasattr(res, "__await__"):
+            await res
 
     # Sandbox lifecycle (the broker as control plane). Built when enabled; its size
     # store is init'd in the lifespan and its router mounted top-level (like /link).
@@ -138,6 +152,34 @@ def create_app(policy: Policy | None = None, audit: AuditSink | None = None) -> 
             raise HTTPException(status_code=502, detail=f"agent-host list-links failed: {e}") from e
         return {"links": links}
 
+    # --- Generic approval answer routes --------------------------------------
+    # A human's approve/deny of a pending approval (the agent-host relays the
+    # user's pick). Approver-gated: only a non-sandbox approver SA may answer (the
+    # same identity class that answers AWS approvals). Not a provider call, so NOT
+    # behind the enforcement middleware.
+    @app.post("/approval/{approval_id}/approve")
+    async def approve_request(approval_id: str, identity: Identity = Depends(authenticate)):
+        if not identity.is_approver:
+            raise HTTPException(status_code=403, detail="not an approver")
+        try:
+            rec = await approvals.approve(approval_id, approver=identity.service_account)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown approval") from None
+        except Exception as e:  # a provider on_approved side-effect failed (e.g. STS)
+            raise HTTPException(status_code=502, detail=f"approve side-effect failed: {e}") from e
+        return {"status": rec.status, "approval_id": rec.id}
+
+    @app.post("/approval/{approval_id}/deny")
+    async def deny_request(approval_id: str, body: dict | None = None, identity: Identity = Depends(authenticate)):
+        if not identity.is_approver:
+            raise HTTPException(status_code=403, detail="not an approver")
+        reason = (body or {}).get("reason") if isinstance(body, dict) else None
+        try:
+            rec = await approvals.deny(approval_id, approver=identity.service_account, reason=reason)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown approval") from None
+        return {"status": rec.status, "approval_id": rec.id}
+
     # --- The core-enforced authz + audit pipeline ----------------------------
     # An HTTP middleware wraps EVERY /<provider>/... request so a provider —
     # including a 3rd-party one — physically cannot skip authz or audit:
@@ -179,13 +221,14 @@ def create_app(policy: Policy | None = None, audit: AuditSink | None = None) -> 
                 identity, InboundRequest(method=request.method, path=request.url.path, body=body), policy_slice
             )
             decision, scope_str, detail = result.decision, result.scope, result.detail
+            summary = result.summary
         else:
             classifier = getattr(provider, "scope_classifier", None) or DefaultMethodScopeClassifier(
                 provider=provider.name
             )
             scope = classifier.scope_for(request.method, request.url.path, body)
             decision = await policy.decide(identity, scope)
-            scope_str, detail = str(scope), None
+            scope_str, detail, summary = str(scope), None, str(scope)
 
         async def _audit(decision_label: str, upstream_status: int | None) -> bool:
             """Emit the audit event. Fail-closed for a `required` sink (return
@@ -215,14 +258,44 @@ def create_app(policy: Policy | None = None, audit: AuditSink | None = None) -> 
                 return JSONResponse({"detail": "audit unavailable"}, status_code=503)
             return JSONResponse({"detail": f"denied by policy: {scope_str}"}, status_code=403)
 
-        # REQUIRE_APPROVAL: the approval flow (agent-host interrupt + provider
-        # on_approved) is wired in a follow-up; for now record it and — absent an
-        # approval channel — fall through to allow so nothing regresses.
-        # TODO(approval): raise the interrupt via the agent-host, block on the
-        # verdict, run provider.on_approved on approve.
+        if decision is Decision.REQUIRE_APPROVAL:
+            # ASYNC approval (matches AWS's shape — no blocked connection). A RETRY
+            # after approval finds an approved record for this (conversation, scope)
+            # and falls through to the handler; a denied record 403s; otherwise
+            # create a pending record, notify the host (raise the interrupt), 202.
+            existing = approvals.find_approved(
+                conversation_id=identity.conversation_id, scope=scope_str
+            )
+            if existing is None:
+                # Any denied record for this exact scope means the human said no.
+                denied = _find_denied(approvals, identity.conversation_id, scope_str)
+                if denied is not None:
+                    await _audit("denied", None)
+                    return JSONResponse(
+                        {"detail": f"denied by approver: {denied.deny_reason or scope_str}"},
+                        status_code=403,
+                    )
+                rec = approvals.create(
+                    conversation_id=identity.conversation_id,
+                    provider=provider.name,
+                    scope=scope_str,
+                    summary=summary or scope_str,
+                    detail=detail or {},
+                )
+                # Wire the mounting provider's approve-time side-effect for this record.
+                on_approved = getattr(provider, "on_approved", None)
+                if on_approved is not None and hasattr(approvals, "set_on_approved"):
+                    approvals.set_on_approved(on_approved)
+                await _notify_approval(rec)
+                await _audit("pending", None)
+                return JSONResponse(
+                    {"approval_id": rec.id, "status": "pending", "summary": rec.summary},
+                    status_code=202,
+                )
+            # Approved on a retry — fall through to run the handler (audited allow).
 
-        # ALLOW (or REQUIRE_APPROVAL pending the channel): audit the decision BEFORE
-        # running the handler (fail-closed for a required sink), then run it.
+        # ALLOW (or an approved REQUIRE_APPROVAL retry): audit BEFORE running the
+        # handler (fail-closed for a required sink), then run it.
         if not await _audit("allow", None):
             return JSONResponse({"detail": "audit unavailable"}, status_code=503)
         return await call_next(request)
@@ -240,6 +313,19 @@ def create_app(policy: Policy | None = None, audit: AuditSink | None = None) -> 
         )
 
     return app
+
+
+def _find_denied(approvals, conversation_id: str, scope: str):
+    """A denied approval for this exact (conversation, scope), if any — so a retry
+    after a deny 403s instead of re-prompting. Best-effort: only the in-memory
+    store exposes iteration; a custom store without it just re-prompts (safe)."""
+    by_id = getattr(approvals, "_by_id", None)
+    if not by_id:
+        return None
+    for rec in by_id.values():
+        if rec.status == "denied" and rec.conversation_id == conversation_id and rec.scope == scope:
+            return rec
+    return None
 
 
 def _load_policy_config() -> dict:
