@@ -169,17 +169,45 @@ function useStickToBottom() {
       });
     };
 
-    // Re-assert the pin across several frames. A big message/tool card keeps growing
-    // for a few frames AFTER it mounts (markdown reflow, wrapping, image load), so a
-    // single scrollTop set lands short — chase the growing bottom until it settles.
+    // Re-assert the pin until the bottom SETTLES. A big message/tool card keeps
+    // growing for a few frames AFTER it mounts (markdown reflow, wrapping, image
+    // load), so a single scrollTop set lands short — chase the growing bottom.
+    //
+    // A FIXED frame budget (we used 12) is racy: a big single-frame append under
+    // load can keep reflowing past the budget, or slow rAF scheduling lets the
+    // reflow outrun the chase, and the view is left stranded MANY viewports up until
+    // some later event re-pins (the reported e2e flake — peak ~2200px on a 665px
+    // viewport). So chase until we're genuinely at the bottom for a couple of
+    // consecutive frames, not for a blind count. A high safety cap (~2s at 60fps)
+    // bounds a pathological never-settling layout without reintroducing the strand.
+    // Settle signal is scrollHeight STABILITY, not atBottom(): we pin() every frame,
+    // so we're always at the bottom right after a pin — that tells us nothing about
+    // whether the content is still reflowing. Instead keep chasing while scrollHeight
+    // keeps changing (the append is still growing), and stop once it has held steady
+    // for a few consecutive frames. A high safety cap (~2s @ 60fps) bounds a
+    // pathological never-settling layout without reintroducing the strand.
     let chaseFrame: number | null = null;
+    const CHASE_MAX_FRAMES = 120; // ~2s @ 60fps — a hard stop, not the common path
+    const CHASE_STABLE_FRAMES = 3; // scrollHeight unchanged this many frames → settled
     const chase = () => {
       if (chaseFrame !== null) cancelAnimationFrame(chaseFrame);
       let frames = 0;
+      let stableFrames = 0;
+      let lastHeight = -1;
       const step = () => {
         if (!stick) { chaseFrame = null; return; }
+        const h = el.scrollHeight;
+        stableFrames = h === lastHeight ? stableFrames + 1 : 0;
+        lastHeight = h;
         pin();
-        chaseFrame = ++frames < 12 ? requestAnimationFrame(step) : null;
+        // Stop only once the content has STOPPED growing (height stable) — so a big
+        // single-frame append that reflows over many frames is chased the whole way,
+        // never left stranded. The frame cap is just a runaway backstop.
+        if (stableFrames >= CHASE_STABLE_FRAMES || ++frames >= CHASE_MAX_FRAMES) {
+          chaseFrame = null;
+          return;
+        }
+        chaseFrame = requestAnimationFrame(step);
       };
       chaseFrame = requestAnimationFrame(step);
     };
@@ -198,7 +226,15 @@ function useStickToBottom() {
     // the message group grows as children are added, and a re-pin fires immediately.
     // Re-observe on DOM mutations so newly-added subtrees are covered too.
     const ro = new ResizeObserver(() => {
-      if (stick) chase();
+      if (!stick) return;
+      // Re-pin SYNCHRONOUSLY here, not only via the rAF chase. The ResizeObserver
+      // callback runs with layout (before paint), so this follows the growth even
+      // when rAF is starved — the residual flake was a severely stalled frame (a
+      // normally-instant test taking 7s) where the rAF chase never got scheduled in
+      // time and the view stranded ~3 viewports up. The chase() still runs for the
+      // multi-frame reflow tail; this guarantees the first, biggest jump is caught.
+      pin();
+      chase();
     });
     const observeContent = () => {
       ro.disconnect();
@@ -216,7 +252,9 @@ function useStickToBottom() {
     // so growth in a freshly-mounted message still triggers the follow.
     const mo = new MutationObserver(() => {
       observeContent();
-      if (stick) chase();
+      if (!stick) return;
+      pin(); // synchronous follow (see the ResizeObserver note) + the chase tail
+      chase();
     });
     mo.observe(el, { childList: true, subtree: true });
 
