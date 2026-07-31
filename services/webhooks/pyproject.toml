@@ -1,6 +1,7 @@
 [project]
 name = "kubenix-agent-manager-webhooks"
 version = "0.0.0"
+license = "MIT"
 description = "Spawn agent conversations from GitHub/GitLab/Jira/Slack threads"
 requires-python = ">=3.11"
 dependencies = [

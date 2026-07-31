@@ -146,3 +146,12 @@ tree, and applies the rendered kubenix manifests to a cluster. See its own READM
 Distilled from the `openhands-nix` sibling project (skills, broker, webhooks, image
 patterns), re-targeted from OpenHands' bundled runtime onto agent-sandbox + ACP +
 AG-UI.
+
+## License
+
+Scooter is [MIT-licensed](./LICENSE). Its dependencies are permissive
+(MIT / BSD / Apache-2.0 / MPL-2.0) with **one exception**: the Anthropic Claude
+Agent SDK and the `claude-code` CLI are proprietary and used under Anthropic's
+terms — they are not covered by the MIT license. See [NOTICE.md](./NOTICE.md) for
+the full third-party inventory and how to run a fully open-source (Goose-only)
+deployment.
