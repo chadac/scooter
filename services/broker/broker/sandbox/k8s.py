@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_LABEL = "agents.x-k8s.io/sandbox-name"
 
+# The ConfigMap key under which the consumer manifest-overlay payload lives.
+OVERLAY_KEY = "overlay.yaml"
+
 _core: client.CoreV1Api | None = None
 _custom: client.CustomObjectsApi | None = None
 
@@ -69,6 +72,35 @@ class SandboxK8s:
         self.deploy = deploy
         self.ns = deploy.namespace
 
+    def _load_overlay(self) -> dict:
+        """Read + parse the consumer manifest-overlay ConfigMap (name from
+        deploy.manifest_overlay_configmap) on EVERY create — no caching, so a ConfigMap
+        edit takes effect on the next conversation without a broker restart (the +1 GET
+        per create is cheap next to the Sandbox create). Returns the parsed patch dict,
+        or `{}` when no overlay is configured / the ConfigMap or its key is absent.
+        Parsing follows overlay.parse_overlay; a malformed payload raises OverlayError
+        (fail loudly — a bad overlay must not silently no-op).
+
+        The payload lives under the ConfigMap key OVERLAY_KEY ("overlay.yaml").
+        """
+        from .overlay import parse_overlay
+
+        cm_name = self.deploy.manifest_overlay_configmap
+        if not cm_name:
+            return {}
+        core, _ = _apis()
+        try:
+            cm = core.read_namespaced_config_map(name=cm_name, namespace=self.ns)
+        except client.ApiException as e:
+            if e.status == 404:
+                # Configured but the CM isn't there yet — treat as no overlay rather
+                # than blocking conversation creation.
+                logger.warning("manifest-overlay ConfigMap %s not found — no overlay applied", cm_name)
+                return {}
+            raise
+        data = cm.data or {}
+        return parse_overlay(data.get(OVERLAY_KEY, ""))
+
     # --- create (SA + Sandbox), 409-tolerant, adopt-and-resume ---
     # No module ConfigMap: the pod pulls its module config as a tarball from the
     # broker (a root sandbox-os Nix module), so create() only makes the SA + Sandbox.
@@ -94,6 +126,7 @@ class SandboxK8s:
             deploy=self.deploy,
             resources=resources,
             url_thread=thread_id or cid,
+            overlay=self._load_overlay() or None,
         )
         try:
             custom.create_namespaced_custom_object(

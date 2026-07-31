@@ -460,6 +460,10 @@ in
                   # The deploy-config-files CM (filename -> contents), mounted flat
                   # into each sandbox (was SCOOTER_CONFIG_FILES_CONFIGMAP on the agent-host).
                   { name = "SANDBOX_CONFIG_FILES_CONFIGMAP"; value = "deploy-config-files"; }
+                ++ lib.optional (cfg.deployTools.sandboxManifestOverlay != { })
+                  # The consumer manifest-overlay CM (recursive patch deep-merged onto
+                  # the generated Sandbox — see sandbox/overlay.py). Read at create time.
+                  { name = "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"; value = "sandbox-manifest-overlay"; }
                 ++ lib.optional (cfg.ingress.host != "")
                   # Public chat UI base URL → each sandbox's CONVERSATION_URL
                   # (was PUBLIC_URL on the agent-host).

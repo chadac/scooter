@@ -148,6 +148,37 @@ in
           read-only.
         '';
       };
+      sandboxManifestOverlay = mkOption {
+        type = types.attrsOf types.anything;
+        default = { };
+        example = {
+          spec.podTemplate.spec = {
+            nodeSelector."scooter.io/pool" = "sandbox";
+            tolerations = [{ key = "sandbox"; operator = "Exists"; effect = "NoSchedule"; }];
+            containers = [{
+              name = "sandbox"; # strategic-merge by name onto Scooter's container
+              env = [{ name = "MY_TOOL_URL"; value = "http://tool.ns.svc:8080"; }];
+            }];
+          };
+        };
+        description = ''
+          A recursive PATCH deep-merged on top of the broker-generated per-conversation
+          Sandbox manifest — so a deployment can change the pod manifest (nodeSelector,
+          tolerations, extra env/volumes, annotations, resources, …) WITHOUT patching
+          Scooter's code. Rendered to the ConfigMap `sandbox-manifest-overlay` (one key
+          `overlay.yaml`) and read by the broker at conversation-create time.
+
+          Merge semantics (see services/broker/broker/sandbox/overlay.py): dicts merge
+          deep; scalars replace; LISTS strategic-merge by `name` (an env/volume/mount
+          with a matching `name` is patched, others appended) — so you patch one
+          container's env by restating just `{ name = "sandbox"; env = [ … ]; }`.
+
+          The overlay may touch ANY path, but Scooter RE-ASSERTS a protected set after
+          merge (serviceAccountName, the broker-token volume/mount, volumeClaimTemplates,
+          and the CONVERSATION_ID / BROKER_* identity env), so a bad overlay can't detach
+          a conversation from its identity, auth, or storage.
+        '';
+      };
     };
     uiImage = mkOption {
       type = types.str;
@@ -847,6 +878,16 @@ in
         deploy-config-files = {
           metadata = { name = "deploy-config-files"; namespace = cfg.namespace; };
           data = cfg.deployTools.configFiles;
+        };
+      } // lib.optionalAttrs (cfg.deployTools.sandboxManifestOverlay != { }) {
+        # Consumer manifest overlay (a recursive PATCH deep-merged onto the generated
+        # per-conversation Sandbox — see services/broker/broker/sandbox/overlay.py). The
+        # broker reads this by name (SANDBOX_MANIFEST_OVERLAY_CONFIGMAP) at create time,
+        # so a ConfigMap edit takes effect on the next conversation without a redeploy.
+        sandbox-manifest-overlay = {
+          metadata = { name = "sandbox-manifest-overlay"; namespace = cfg.namespace; };
+          # One key holding the whole patch as YAML (JSON is valid YAML).
+          data."overlay.yaml" = builtins.toJSON cfg.deployTools.sandboxManifestOverlay;
         };
       } // lib.optionalAttrs (cfg.observability.otel.enable && cfg.observability.otel.pricing != { }) {
         # Per-model price table (USD per 1M tokens) -> cost derivation. Serialized
