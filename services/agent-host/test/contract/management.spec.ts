@@ -498,19 +498,29 @@ describe("management API", () => {
     expect((res.json as any).owner).toBe("alice");
   });
 
-  it("GET /conversations?scope=mine returns only the caller's conversations", async () => {
+  it("GET /conversations?scope=mine returns STRICTLY the caller's own (not others, not unowned)", async () => {
     const sessions = fakeSessions();
-    // alice + bob each own one; c1 (the seed) has no owner -> public.
+    // alice + bob each own one; c1 (the seed) has no owner -> unowned.
     await sessions.start("a1", undefined, "alice");
     await sessions.start("b1", undefined, "bob");
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
 
     const mine = await call(api, "GET", "/conversations?scope=mine", undefined, { "x-auth-user": "alice" });
     const ids = (mine.json as any[]).map((c) => c.id).sort();
-    // alice's own + the null-owner public one; NOT bob's.
-    expect(ids).toContain("a1");
-    expect(ids).toContain("c1"); // null-owner is public
-    expect(ids).not.toContain("b1");
+    // ONLY alice's own. For a known user, Mine no longer leaks unowned (c1) or
+    // others' (b1) — an unowned conversation is All-only (see the scope=all test).
+    expect(ids).toEqual(["a1"]);
+  });
+
+  it("GET /conversations?scope=mine for an ANONYMOUS caller still shows everything (dev-friendly)", async () => {
+    const sessions = fakeSessions();
+    await sessions.start("a1", undefined, "alice");
+    await sessions.start("b1", undefined, "bob");
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    // No x-auth-user -> anonymous -> can't distinguish -> sees all.
+    const mine = await call(api, "GET", "/conversations?scope=mine");
+    const ids = (mine.json as any[]).map((c) => c.id).sort();
+    expect(ids).toEqual(["a1", "b1", "c1"]);
   });
 
   it("GET /conversations?scope=all returns everything regardless of owner", async () => {

@@ -12,10 +12,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Proxy the agent-host API to avoid CORS in dev. Mirror the prod nginx
-    // proxy (pkgs/ui-image) so the same relative paths work in both.
+    // Proxy the agent-host API to avoid CORS in dev. MUST mirror the prod nginx
+    // proxy (pkgs/ui-image) EXACTLY — every agent-host API prefix the UI calls.
+    // A path missing here falls through to the SPA (index.html 200), so e.g.
+    // /whoami returned HTML and the UI was always anonymous in dev (identity, the
+    // Mine/All owner filter, and the scheduled-tasks/users pages silently broke
+    // only in dev). Keep this list in sync with pkgs/ui-image/default.nix.
     proxy: Object.fromEntries(
-      ["/agui", "/sessions", "/conversations", "/models"].map((p) => [
+      ["/agui", "/sessions", "/conversations", "/models", "/whoami", "/scheduled-tasks", "/users"].map((p) => [
         p,
         { target: process.env.AGENT_HOST_URL ?? "http://localhost:8080", changeOrigin: true },
       ]),

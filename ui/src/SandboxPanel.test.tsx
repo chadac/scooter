@@ -55,4 +55,21 @@ describe("SandboxPanelView", () => {
     expect(html).toContain('data-state="ended"');
     expect(html).not.toContain('data-testid="sandbox-start"');
   });
+
+  it("shows the owner when the conversation is owned", () => {
+    const html = renderToStaticMarkup(
+      createElement(SandboxPanelView, { ...base, state: "running", owner: "alice@x.io" }),
+    );
+    expect(html).toContain('data-testid="sandbox-owner"');
+    expect(html).toContain("alice@x.io");
+  });
+
+  it("hides the owner field when unowned (no meaningless blank)", () => {
+    for (const owner of [undefined, null, ""]) {
+      const html = renderToStaticMarkup(
+        createElement(SandboxPanelView, { ...base, state: "running", owner }),
+      );
+      expect(html).not.toContain('data-testid="sandbox-owner"');
+    }
+  });
 });

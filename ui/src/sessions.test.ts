@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { sessionStore } from "./sessions.js";
+import { sessionStore, visibleSessions } from "./sessions.js";
 
 beforeEach(() => {
   globalThis.localStorage?.clear?.();
@@ -81,5 +81,51 @@ describe("a brand-new conversation survives the background merge", () => {
     // A later merge (server still doesn't know the untouched placeholder) drops it.
     sessionStore.mergeFromServer([{ id: "real", title: "Real" }]);
     expect(sessionStore.get().sessions.some((s) => s.id === pristine)).toBe(false);
+  });
+});
+
+describe("visibleSessions (Mine/All owner filter)", () => {
+  const seed = () =>
+    sessionStore.mergeFromServer([
+      { id: "a1", title: "Alice", owner: "alice" },
+      { id: "b1", title: "Bob", owner: "bob" },
+      { id: "u1", title: "Unowned", owner: undefined },
+    ]);
+  const titles = () =>
+    visibleSessions(sessionStore.get())
+      .map((s) => s.title)
+      .filter((t): t is string => !!t)
+      .sort();
+
+  it("ANONYMOUS caller sees everything under Mine (id is the truthy string 'anonymous' — guard on the flag)", () => {
+    seed();
+    sessionStore.setCurrentUser({ id: "anonymous", anonymous: true });
+    sessionStore.setScope("mine");
+    // Regression guard: 'anonymous' is truthy, so a `!currentUser` check would
+    // wrongly engage the strict filter and hide every unowned conversation. All
+    // three seeded convs (incl. the unowned one) must remain visible.
+    const t = titles();
+    expect(t).toContain("Alice");
+    expect(t).toContain("Bob");
+    expect(t).toContain("Unowned");
+  });
+
+  it("a KNOWN user under Mine sees STRICTLY their own (not others, not unowned)", () => {
+    seed();
+    sessionStore.setCurrentUser({ id: "alice", email: "alice@x.io", anonymous: false });
+    sessionStore.setScope("mine");
+    // Only alice's own — bob's + every unowned conv (incl. the default "New chat")
+    // are hidden.
+    expect(titles()).toEqual(["Alice"]);
+  });
+
+  it("a KNOWN user under All sees everything", () => {
+    seed();
+    sessionStore.setCurrentUser({ id: "alice", anonymous: false });
+    sessionStore.setScope("all");
+    const t = titles();
+    expect(t).toContain("Alice");
+    expect(t).toContain("Bob");
+    expect(t).toContain("Unowned");
   });
 });

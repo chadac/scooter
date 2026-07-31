@@ -415,12 +415,18 @@ export function sessionLabel(s: Session, mode: LabelMode): string {
   return s.title;
 }
 
-/** Filter a conversation list by the current Mine/All scope. "Mine" shows the
- *  caller's own + unowned/public conversations; "All" shows everything. With no
- *  known user yet (anonymous / pre-whoami), Mine shows everything (dev-friendly). */
+/** Filter a conversation list by the current Mine/All scope. "Mine" shows
+ *  STRICTLY the caller's own conversations; "All" shows everything. For an
+ *  ANONYMOUS caller (auth off / no ingress identity — the id is the literal
+ *  "anonymous", which is TRUTHY, so guard on the flag not the string) or before
+ *  /whoami resolves, Mine shows everything (dev-friendly + no empty-list flash).
+ *  An unowned conversation (owner == null: legacy / an unresolved webhook) is
+ *  All-only for a KNOWN user — mirrors the server's visibleFilter so Mine truly
+ *  distinguishes. */
 export function visibleSessions(state: State): Session[] {
-  if (state.scope === "all" || !state.currentUser) return state.sessions;
-  return state.sessions.filter((s) => s.owner == null || s.owner === state.currentUser);
+  const known = !!state.currentUser && !state.currentUserAnonymous;
+  if (state.scope === "all" || !known) return state.sessions;
+  return state.sessions.filter((s) => s.owner === state.currentUser);
 }
 
 /** Does a session pass the selected provider filter? No chips selected -> yes. A

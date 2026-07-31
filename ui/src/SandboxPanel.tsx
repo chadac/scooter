@@ -239,6 +239,9 @@ export interface SandboxPanelViewProps {
   services: WebService[];
   busy: Record<string, boolean>;
   conversationId?: string;
+  /** The conversation's owner (the user who created it), or undefined/null when
+   *  unowned (a legacy conversation or a webhook that couldn't resolve a user). */
+  owner?: string | null;
   onStartSandbox: () => void;
   onStartService: (name: string) => void;
   onStopService: (name: string) => void;
@@ -250,6 +253,7 @@ export function SandboxPanelView({
   services,
   busy,
   conversationId,
+  owner,
   onStartSandbox,
   onStartService,
   onStopService,
@@ -274,6 +278,15 @@ export function SandboxPanelView({
           </button>
         )}
       </div>
+
+      {/* Owner — who created this conversation. Hidden when unowned (nothing to
+          show) so the field never reads a meaningless blank/"anonymous". */}
+      {owner ? (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="sandbox-owner">
+          <span className="font-medium">Owner</span>
+          <span data-testid="sandbox-owner-value">{owner}</span>
+        </div>
+      ) : null}
 
       {/* Body: services + modules when running; a hint otherwise. */}
       {state === "running" ? (
@@ -307,12 +320,15 @@ export function SandboxPanelView({
 
 export function SandboxPanel() {
   const s = useSandboxStatus();
+  const { sessions, currentId } = useSessions();
+  const owner = sessions.find((x) => x.id === currentId)?.owner ?? null;
   return (
     <SandboxPanelView
       state={s.state}
       services={s.services}
       busy={s.busy}
       conversationId={s.conversationId}
+      owner={owner}
       onStartSandbox={() => void s.startSandbox()}
       onStartService={s.startService}
       onStopService={s.stopService}
