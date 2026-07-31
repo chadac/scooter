@@ -135,6 +135,12 @@ class BrokerSettings(BaseSettings):
     registry_enabled: bool = False
     registry_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-registry.db"
 
+    # Path to the authz policy config (a mounted YAML/JSON file: default posture +
+    # scope->decision rules, and per-provider constraint slices passed to a
+    # provider's custom authorizer). Empty/absent -> default-allow (+audit), i.e.
+    # today's blanket access unchanged. See core/policy.py + core/app.py.
+    authz_policy_file: str = ""
+
     port: int = 8080
 
 
