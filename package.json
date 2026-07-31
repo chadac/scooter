@@ -1,6 +1,7 @@
 {
   "name": "kubenix-agent-manager",
   "version": "0.0.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "Nix-powered agent platform over the Kubernetes agent-sandbox controller.",

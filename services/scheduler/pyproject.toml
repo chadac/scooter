@@ -1,6 +1,7 @@
 [project]
 name = "agent-scheduler"
 version = "0.0.0"
+license = "MIT"
 description = "Scheduled Scooter tasks — cron-spawn conversations via the agent-host /agui"
 requires-python = ">=3.11"
 dependencies = [
