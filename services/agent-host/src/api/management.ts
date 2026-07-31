@@ -242,8 +242,14 @@ export function createManagementApi(deps: ManagementDeps): Router {
   const visibleFilter = (ctx: { user: { anonymous: boolean; id: string }; query: URLSearchParams }) => {
     const scope = ctx.query.get("scope") ?? "mine";
     const user = ctx.user;
+    // "all" and anonymous callers see everything (the latter is dev-friendly: no
+    // ingress identity means we can't distinguish, so don't hide). For a KNOWN
+    // user under "mine", show STRICTLY their own — an unowned conversation
+    // (owner == null: legacy or a webhook that couldn't resolve a user) or another
+    // user's is All-only, so Mine actually distinguishes instead of degrading to
+    // All when many rows are unowned.
     return (c: { owner?: string }) =>
-      scope === "all" || user.anonymous || c.owner == null || c.owner === user.id;
+      scope === "all" || user.anonymous || c.owner === user.id;
   };
 
   // Enrich a conversation with its linked resources, so the sidebar can (a) show a
