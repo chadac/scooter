@@ -162,7 +162,8 @@ def _format_forwarded_message(
     reply_hint = (
         f"\n\n---\n"
         f"To reply, use the `slack_respond` tool (this thread is already known — you just "
-        f"provide the text)."
+        f"provide the text). To react with an emoji, use `slack_react` and pass the "
+        f"`message_ts` shown above (it reacts to that specific message)."
     )
     return f"{preamble}\n\n---\n\n{comment_body}{reply_hint}"
 
@@ -322,7 +323,7 @@ async def _handle_mention(event: dict):
         message_text = re.sub(rf"<@{re.escape(bot_id)}>", settings.mention_pattern, message_text)
     message_text = message_text.strip()
 
-    comment_text = f"<@{user}> said:\n\n{message_text}"
+    comment_text = f"<@{user}> said:\n\n{message_text}\n\n(message_ts: {ts} — pass this to slack_react to react to THIS message)"
 
     # Download any attached multimedia. Images ride as multimodal content parts;
     # text-representable files are inlined into the message; binary files become
@@ -425,7 +426,7 @@ async def _handle_thread_message(event: dict):
     if not existing:
         return
 
-    comment_text = f"<@{user}> said:\n\n{text}"
+    comment_text = f"<@{user}> said:\n\n{text}\n\n(message_ts: {ts} — pass this to slack_react to react to THIS message)"
 
     # Download attached multimedia (images -> parts; text -> inlined; binary -> parts
     # written to /workspace/.slack). Weave text/binary into the message body.

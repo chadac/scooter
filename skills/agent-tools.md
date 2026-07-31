@@ -64,10 +64,12 @@ this (by purpose — find them in your tool list):
   The channel + thread are already known; you only provide the text. Use this to
   acknowledge and to reply. (Do not hand-build a Slack `chat.postMessage` — this
   tool targets the correct thread; a raw call can leak to the whole channel.)
-- **React to the Slack message** — add an emoji reaction to the triggering Slack
-  message (emoji name WITHOUT colons, e.g. `"eyes"`, `"white_check_mark"`,
-  `"tada"`). A quick 👀 to acknowledge or a ✅ when done — cheaper than a reply.
-  Don't spam it.
+- **React to the Slack message** — add an emoji reaction to a SPECIFIC Slack
+  message. Pass `message_ts` (required) — the timestamp shown in the Slack
+  notification as `message_ts: …` — so the reaction lands on that exact message
+  (not the thread root). Emoji name WITHOUT colons, e.g. `"eyes"`,
+  `"white_check_mark"`, `"tada"`. A quick 👀 to acknowledge or a ✅ when done —
+  cheaper than a reply. Don't spam it.
 - **Get the Slack thread context** — returns the Slack channel + `thread_ts` this
   conversation is attached to. You rarely need it (the respond/react tools already
   know), but use it when you need the raw ids — e.g. to build a permalink.
