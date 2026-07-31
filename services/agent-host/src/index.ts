@@ -530,6 +530,21 @@ export async function main(
   // All layers optional — with none configured this is the plain header behavior.
   const identityStore = webhooksDsn ? createPgIdentityStore({ dsn: webhooksDsn }) : undefined;
   const staticIdentityMap = parseIdentityMap(process.env.AUTH_SUB_EMAIL_MAP);
+
+  /** Resolve an owner id → email for per-user cost metrics: the static map first
+   *  (cheap, offline), then the identity store (learned at ingress login). Returns
+   *  null when unknown — the metric then labels user_email "". Best-effort: a store
+   *  error must never break metric emission. Used by the run-complete metrics hook. */
+  const resolveOwnerEmail = async (id: string | undefined): Promise<string | null> => {
+    if (!id) return null;
+    const mapped = staticIdentityMap?.[id];
+    if (mapped) return mapped;
+    try {
+      return (await identityStore?.get(id))?.email ?? null;
+    } catch {
+      return null;
+    }
+  };
   let identityResolver: AsyncIdentityResolver = resolverFromEnv();
   if (process.env.AUTH_ALB_VERIFY === "1") {
     identityResolver = withAlbVerification(identityResolver, {
@@ -1003,12 +1018,21 @@ export async function main(
             })
           : createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
-        metrics.runFinished({
-          conversationId,
-          model: metricModel,
-          acpSessionId: acpSessionId ?? conversationId,
-          durationMs,
-          outcome,
+        // Attribute cost to the conversation OWNER (id + email). Resolve async
+        // (email may need the identity store) but don't block the run — the metric
+        // read is itself async/best-effort. Unowned → runFinished buckets it as
+        // user_id "anonymous".
+        const ownerId = sessions.get(conversationId as SessionId)?.owner;
+        void resolveOwnerEmail(ownerId).then((ownerEmail) => {
+          metrics.runFinished({
+            conversationId,
+            model: metricModel,
+            acpSessionId: acpSessionId ?? conversationId,
+            durationMs,
+            outcome,
+            ownerId,
+            ownerEmail,
+          });
         });
       },
       // Revive history reinjection: a revived conversation spawns a fresh goose

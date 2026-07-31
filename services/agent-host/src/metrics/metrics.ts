@@ -44,6 +44,12 @@ export interface MetricsSink {
     acpSessionId: string;
     durationMs: number;
     outcome: "ok" | "error";
+    /** The conversation OWNER's user id + email, for per-user cost attribution.
+     *  Undefined = unowned (anonymous creator / unresolved webhook) → bucketed as
+     *  user_id "anonymous" with an empty email so no cost goes uncounted. These
+     *  become labels on agent_cost_usd_total + agent_tokens_total. */
+    ownerId?: string;
+    ownerEmail?: string | null;
   }): void;
 
   /** Observed sandbox population (emitted from the idle sweep / provisioner). */
@@ -144,7 +150,11 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
   // DELTA (goose's accumulated_* columns are cumulative for the session).
   const lastUsage = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
 
-  const emitUsageDelta = async (acpSessionId: string, model: string): Promise<void> => {
+  const emitUsageDelta = async (
+    acpSessionId: string,
+    model: string,
+    user: { user_id: string; user_email: string },
+  ): Promise<void> => {
     const reader = config.usageReader;
     if (!reader) return;
     try {
@@ -165,7 +175,7 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
       };
       lastUsage.set(acpSessionId, cur);
 
-      const base = { model };
+      const base = { model, ...user };
       if (delta.input) tokens.add(delta.input, { ...base, kind: "input" });
       if (delta.output) tokens.add(delta.output, { ...base, kind: "output" });
       if (delta.cacheRead) tokens.add(delta.cacheRead, { ...base, kind: "cache_read" });
@@ -196,8 +206,15 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
     runFinished(attrs) {
       runs.add(1, { model: attrs.model, outcome: attrs.outcome });
       runDuration.record(attrs.durationMs, { model: attrs.model, outcome: attrs.outcome });
+      // Per-user cost attribution: label token/cost with the owner id + email.
+      // Unowned (anonymous creator / unresolved webhook) buckets as "anonymous"
+      // with an empty email, so no cost goes uncounted.
+      const user = {
+        user_id: attrs.ownerId || "anonymous",
+        user_email: attrs.ownerEmail || "",
+      };
       // Token/cost read is async + best-effort; don't block the run.
-      void emitUsageDelta(attrs.acpSessionId, attrs.model);
+      void emitUsageDelta(attrs.acpSessionId, attrs.model, user);
     },
 
     setSandboxCounts(counts) {
