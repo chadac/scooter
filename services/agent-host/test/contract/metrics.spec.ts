@@ -114,6 +114,46 @@ describe("metrics sink", () => {
     await sink.shutdown();
   });
 
+  it("labels cost + token metrics with the owner's user id + email", async () => {
+    const reader0 = fakeUsageReader({ s1: { inputTokens: 1_000_000, outputTokens: 200_000 } });
+    const { sink, reader, exporter } = setup({ prices: PRICES, usageReader: reader0 });
+
+    sink.runFinished({
+      conversationId: "c1",
+      model: "claude-opus",
+      acpSessionId: "s1",
+      durationMs: 100,
+      outcome: "ok",
+      ownerId: "alice",
+      ownerEmail: "alice@x.io",
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const points = await collect(reader, exporter);
+    const cost = points.find((p) => p.name === "agent_cost_usd_total");
+    expect(cost?.attrs.user_id).toBe("alice");
+    expect(cost?.attrs.user_email).toBe("alice@x.io");
+    const input = points.find((p) => p.name === "agent_tokens_total" && p.attrs.kind === "input");
+    expect(input?.attrs.user_id).toBe("alice");
+    expect(input?.attrs.user_email).toBe("alice@x.io");
+    await sink.shutdown();
+  });
+
+  it("buckets an unowned run's cost under user_id=anonymous (empty email)", async () => {
+    const reader0 = fakeUsageReader({ s1: { inputTokens: 1_000_000, outputTokens: 200_000 } });
+    const { sink, reader, exporter } = setup({ prices: PRICES, usageReader: reader0 });
+
+    // No ownerId/ownerEmail supplied (anonymous creator / unresolved webhook).
+    sink.runFinished({ conversationId: "c1", model: "claude-opus", acpSessionId: "s1", durationMs: 100, outcome: "ok" });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const points = await collect(reader, exporter);
+    const cost = points.find((p) => p.name === "agent_cost_usd_total");
+    expect(cost?.attrs.user_id).toBe("anonymous");
+    expect(cost?.attrs.user_email).toBe("");
+    await sink.shutdown();
+  });
+
   it("emits only the per-run DELTA for cumulative session usage", async () => {
     // Mutable cumulative usage: grows between runs.
     const usage: Record<string, TokenUsage> = { s1: { inputTokens: 100, outputTokens: 0 } };
