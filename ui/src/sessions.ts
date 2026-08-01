@@ -28,6 +28,10 @@ export interface Session {
   /** Creating user (server-sourced). undefined = unowned/public. Drives the
    *  Mine/All view filter. */
   owner?: string;
+  /** The spawning conversation, when this is a SUBAGENT (server-sourced).
+   *  undefined = a top-level conversation. Drives sidebar nesting + subagent
+   *  grouping. */
+  parentId?: string;
   /** The conversation's sandbox lifecycle state (server-sourced, live via the
    *  /conversations/events stream): "running" (pod up), "suspended" (idle → pod
    *  dropped, PVCs kept), "ended". Drives the Sandbox status tab + Start button. */
@@ -203,7 +207,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"] }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -234,6 +238,8 @@ export const sessionStore = {
         // Sandbox lifecycle state is server-owned + live (idle-suspend / resume);
         // always take the server's value so the status tab reflects reality.
         status: c.status ?? existing?.status,
+        // The spawning conversation, when this is a subagent (server-owned).
+        parentId: c.parentId ?? existing?.parentId,
       });
     }
 
@@ -459,6 +465,37 @@ export function filteredSessions(state: State): Session[] {
   return visibleSessions(state).filter(
     (s) => matchesProviders(s, state.providerFilter) && matchesQuery(s, state.query),
   );
+}
+
+/** A sidebar row + its nesting depth (0 = top-level, 1 = a subagent under it). */
+export interface SidebarRow {
+  session: Session;
+  depth: number;
+}
+
+/** Order a flat session list as a hierarchy for the sidebar: each parent is
+ *  immediately followed by its subagents (depth 1). A child whose parent is NOT in
+ *  the list (e.g. filtered out) renders as a top-level row so it's never lost.
+ *  Preserves the input order among siblings. Multi-level trees flatten to depth-1
+ *  under the nearest present ancestor (one indent level — the UI stays simple). */
+export function nestSubagents(sessions: Session[]): SidebarRow[] {
+  const present = new Set(sessions.map((s) => s.id));
+  const childrenOf = new Map<string, Session[]>();
+  const tops: Session[] = [];
+  for (const s of sessions) {
+    // A subagent whose parent IS in the list nests under it; otherwise it's a top.
+    if (s.parentId && present.has(s.parentId)) {
+      (childrenOf.get(s.parentId) ?? childrenOf.set(s.parentId, []).get(s.parentId)!).push(s);
+    } else {
+      tops.push(s);
+    }
+  }
+  const rows: SidebarRow[] = [];
+  for (const top of tops) {
+    rows.push({ session: top, depth: 0 });
+    for (const child of childrenOf.get(top.id) ?? []) rows.push({ session: child, depth: 1 });
+  }
+  return rows;
 }
 
 export function useSessions(): State {

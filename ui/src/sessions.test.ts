@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { sessionStore, visibleSessions } from "./sessions.js";
+import { sessionStore, visibleSessions, nestSubagents, type Session } from "./sessions.js";
 
 beforeEach(() => {
   globalThis.localStorage?.clear?.();
@@ -127,5 +127,29 @@ describe("visibleSessions (Mine/All owner filter)", () => {
     expect(t).toContain("Alice");
     expect(t).toContain("Bob");
     expect(t).toContain("Unowned");
+  });
+});
+
+describe("nestSubagents (sidebar hierarchy)", () => {
+  const s = (id: string, parentId?: string): Session => ({ id, title: id, createdAt: 1, parentId });
+
+  it("orders each parent immediately followed by its children, with depth", () => {
+    // Flat input (arbitrary order); children of p1 + p2 interleaved.
+    const flat = [s("p1"), s("p2"), s("c1a", "p1"), s("c2a", "p2"), s("c1b", "p1")];
+    const rows = nestSubagents(flat);
+    expect(rows.map((r) => r.session.id)).toEqual(["p1", "c1a", "c1b", "p2", "c2a"]);
+    expect(rows.map((r) => r.depth)).toEqual([0, 1, 1, 0, 1]);
+  });
+
+  it("a child whose parent is NOT in the list renders as a top-level row", () => {
+    // The parent was filtered out (e.g. Mine hid it) — the orphaned child still shows.
+    const rows = nestSubagents([s("orphan", "missing-parent")]);
+    expect(rows.map((r) => r.session.id)).toEqual(["orphan"]);
+    expect(rows[0].depth).toBe(0);
+  });
+
+  it("top-level-only list is unchanged (all depth 0)", () => {
+    const rows = nestSubagents([s("a"), s("b")]);
+    expect(rows.map((r) => r.depth)).toEqual([0, 0]);
   });
 });
