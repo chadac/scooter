@@ -24,9 +24,11 @@ import { useEffect, useRef, useState } from "react";
 import { InterruptList } from "./InterruptPanel.js";
 import { QueuedMessages } from "./QueuedMessages.js";
 import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
+import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
+import { useSessions } from "./sessions.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
-type Tab = "sandbox" | "approvals" | "queue";
+type Tab = "sandbox" | "approvals" | "queue" | "subagents";
 
 function TabButton({
   active,
@@ -79,8 +81,11 @@ function TabButton({
 export function RightPanel() {
   const { interrupts, queuedMessages } = useConversationInterrupts();
   const sandbox = useSandboxStatus();
+  const { sessions, currentId } = useSessions();
   const nInterrupts = interrupts.length;
   const nQueued = queuedMessages.length;
+  const subagents = subagentsOf(sessions, currentId);
+  const nSubagents = subagents.length;
 
   // Sandbox is the leftmost, ALWAYS-present tab — so it's the default. It now hosts
   // BOTH the pod status AND the web services (start/stop), so there's no separate
@@ -126,6 +131,14 @@ export function RightPanel() {
           label="Queue"
           count={nQueued}
         />
+        {nSubagents > 0 && (
+          <TabButton
+            active={active === "subagents"}
+            onClick={() => setActive("subagents")}
+            label="Subagents"
+            count={nSubagents}
+          />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -147,6 +160,8 @@ export function RightPanel() {
               No pending approvals.
             </p>
           )
+        ) : active === "subagents" ? (
+          <SubagentsPanel />
         ) : nQueued > 0 ? (
           <QueuedMessages />
         ) : (
