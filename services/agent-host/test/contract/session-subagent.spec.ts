@@ -98,9 +98,11 @@ describe("SessionManager subagents", () => {
 
     await sessions.end(root.id);
 
-    // The whole subtree is ended, recursively.
-    for (const id of ["c1", "gc1", "c2"]) expect(sessions.get(id)?.status).toBe("ended");
-    // The shared sandbox is torn down exactly once (the root owns it).
+    // The whole subtree is ended + removed (end is delete-don't-tombstone), so
+    // none of the descendants remain get()-able.
+    for (const id of ["root", "c1", "gc1", "c2"]) expect(sessions.get(id)).toBeUndefined();
+    // The shared sandbox is torn down exactly once (the root owns it; children
+    // share it and must NOT re-destroy).
     expect(provisioner.destroy).toHaveBeenCalledOnce();
   });
 

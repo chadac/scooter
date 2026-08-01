@@ -15,6 +15,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 import type { JobManager } from "../session/jobManager.js";
+import {
+  handleSpawnSubagent,
+  handleListSubagents,
+  handleCheckSubagent,
+  handleCancelSubagent,
+  type SubagentManager,
+} from "./subagentTools.js";
 import type { ConversationLink } from "../session/manager.js";
 import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
@@ -126,6 +133,7 @@ async function buildServer(
   models?: ModelToolsWiring,
   resources?: SandboxResourceToolsWiring,
   scheduler?: SchedulerToolsWiring,
+  subagents?: SubagentManager,
 ): Promise<McpServer> {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (jobs) {
@@ -170,6 +178,58 @@ async function buildServer(
         inputSchema: { job_id: z.string().describe("The job id returned by run_background.") },
       },
       async (args) => handleKillBackground(jobs, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
+  if (subagents) {
+    type TR = Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>;
+    server.registerTool(
+      "spawn_subagent",
+      {
+        title: "Spawn a subagent",
+        description:
+          "Delegate a task to a SUBAGENT — a second agent that shares THIS conversation's sandbox (same " +
+          "/workspace files + credentials) and works in the BACKGROUND without blocking your turn. Returns a " +
+          "subagent id; poll it with check_subagent (its FINAL message is its result). Use it to fan out " +
+          "independent work (research a question, investigate a subsystem) in parallel. Note: subagents share " +
+          "your /workspace — avoid having two edit the same files at once.",
+        inputSchema: {
+          prompt: z.string().describe("The task for the subagent (be specific; it starts fresh with no context)."),
+          title: z.string().optional().describe("A short label for the subagent (shown in the UI)."),
+          model: z.string().optional().describe("Override the model (defaults to yours)."),
+        },
+      },
+      async (args) => handleSpawnSubagent(subagents, conversationId, args) as TR,
+    );
+    server.registerTool(
+      "list_subagents",
+      {
+        title: "List subagents",
+        description: "List the subagents you've spawned in this conversation, with their status + latest activity.",
+        inputSchema: {},
+      },
+      async () => handleListSubagents(subagents, conversationId) as TR,
+    );
+    server.registerTool(
+      "check_subagent",
+      {
+        title: "Check a subagent",
+        description:
+          "Report a subagent's status (running / idle / ended) and its latest activity or its final result " +
+          "message once it's done. Only works for a subagent YOU spawned in this conversation.",
+        inputSchema: { subagent_id: z.string().describe("The id returned by spawn_subagent.") },
+      },
+      async (args) => handleCheckSubagent(subagents, conversationId, args) as TR,
+    );
+    server.registerTool(
+      "cancel_subagent",
+      {
+        title: "Cancel a subagent",
+        description:
+          "Stop a subagent's current run (a task you delegated that's no longer needed or is stuck). Only " +
+          "works for a subagent you spawned in this conversation.",
+        inputSchema: { subagent_id: z.string().describe("The id returned by spawn_subagent.") },
+      },
+      async (args) => handleCancelSubagent(subagents, conversationId, args) as TR,
     );
   }
   if (agentTools) {
@@ -292,6 +352,10 @@ export function createMcpEndpoint(deps: {
    *  delete) — the agent manages its OWN scheduled tasks via the scheduler service.
    *  Omit to leave them off (e.g. no scheduler deployed). */
   scheduler?: SchedulerToolsWiring;
+  /** When provided, exposes the subagent tools (spawn/list/check/cancel) — the
+   *  agent delegates work to child agents sharing this conversation's sandbox.
+   *  Omit to leave them off. */
+  subagents?: SubagentManager;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   return {
@@ -308,7 +372,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler);
+      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },

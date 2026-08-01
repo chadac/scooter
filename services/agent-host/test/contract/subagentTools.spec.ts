@@ -19,7 +19,6 @@ import {
   handleListSubagents,
   handleCheckSubagent,
   handleCancelSubagent,
-  handleReportResult,
   type SubagentManager,
 } from "../../src/agent/subagentTools.js";
 
@@ -31,7 +30,6 @@ const fakeManager = (over: Partial<SubagentManager> = {}): SubagentManager => ({
   ]),
   check: vi.fn(async (_parentId, id) => ({ id, status: "running", lastActivity: "working on it" })),
   cancel: vi.fn(async () => ({ outcome: "cancelled" })),
-  reportResult: vi.fn(async () => {}),
   ...over,
 });
 
@@ -89,22 +87,5 @@ describe("subagent tools", () => {
     expect(mgr.cancel).toHaveBeenCalledWith(PARENT, "sub-a");
     expect(out.isError).toBeFalsy();
     expect(out.content[0].text).toMatch(/cancel/i);
-  });
-
-  // --- report_result: the SUBAGENT-side result hand-off ----------------------
-  it("report_result records the summary for THIS subagent (the caller is the child)", async () => {
-    const mgr = fakeManager();
-    // The caller conversationId IS the subagent; the manager routes the summary to
-    // its parent on completion.
-    const out = await handleReportResult(mgr, "sub-a", { summary: "found the bug in foo.py" });
-    expect(mgr.reportResult).toHaveBeenCalledWith("sub-a", "found the bug in foo.py");
-    expect(out.isError).toBeFalsy();
-  });
-
-  it("report_result errors on an empty summary", async () => {
-    const mgr = fakeManager();
-    const out = await handleReportResult(mgr, "sub-a", { summary: "  " });
-    expect(out.isError).toBe(true);
-    expect(mgr.reportResult).not.toHaveBeenCalled();
   });
 });

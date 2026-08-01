@@ -42,6 +42,8 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
+import type { SubagentManager, SubagentStatus } from "./agent/subagentTools.js";
+import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { SchedulerToolsWiring } from "./agent/schedulerTools.js";
 import { createBrokerClient } from "./agent/brokerClient.js";
@@ -620,12 +622,53 @@ export async function main(
       }
     : undefined;
 
+  // A subagent's status as its parent sees it: ended (conversation gone/ended),
+  // else running (its bridge has a live run) or idle (spawned/finished a run,
+  // waiting). "error" is left to a later pass (needs the last RUN_FINISHED
+  // outcome); running-vs-idle is the useful signal for polling.
+  const subagentStatusOf = (c: { status?: string; bridge?: { queueState(): { running: boolean } } }): SubagentStatus["status"] => {
+    if (c.status === "ended") return "ended";
+    return c.bridge?.queueState().running ? "running" : "idle";
+  };
+
+  // Subagent tools: delegate work to a child conversation that SHARES this
+  // conversation's sandbox (see todo/docs/SUBAGENTS.md). The manager adapts the
+  // SessionManager — spawn mints a child thread id + spawnChild; list/check scan
+  // children by parentId; cancel drives the child bridge. Always available (no
+  // extra deps) — subagents are a core agent-host capability.
+  const subagentManager: SubagentManager = {
+    async spawn(parentId, args) {
+      const childThreadId = randomUUID();
+      const child = await sessions.spawnChild(parentId as SessionId, childThreadId, args);
+      return { id: child.id, title: child.title };
+    },
+    async list(parentId) {
+      return sessions
+        .list()
+        .filter((c) => c.parentId === parentId)
+        .map((c) => ({ id: c.id, title: c.title, status: subagentStatusOf(c) }));
+    },
+    async check(parentId, subagentId) {
+      const c = sessions.get(subagentId as SessionId);
+      if (!c || c.parentId !== parentId) return undefined; // not YOUR child
+      return { id: c.id, title: c.title, status: subagentStatusOf(c) };
+    },
+    async cancel(parentId, subagentId) {
+      const c = sessions.get(subagentId as SessionId);
+      if (!c || c.parentId !== parentId) return { outcome: "unknown" };
+      if (!c.bridge) return { outcome: "already-idle" };
+      c.bridge.cancel();
+      return { outcome: "cancelled" };
+    },
+  };
+
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
     modelToolsWiring !== undefined ||
     resourceToolsWiring !== undefined ||
-    schedulerToolsWiring !== undefined
+    schedulerToolsWiring !== undefined ||
+    subagentManager !== undefined
       ? createMcpEndpoint({
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
@@ -635,6 +678,7 @@ export async function main(
           models: modelToolsWiring,
           resources: resourceToolsWiring,
           scheduler: schedulerToolsWiring,
+          subagents: subagentManager,
         })
       : undefined;
 

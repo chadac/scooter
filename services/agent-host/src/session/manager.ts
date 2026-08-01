@@ -79,6 +79,11 @@ export interface ConversationMeta {
   /** Creating user (ingress identity). undefined = unowned/public. Persisted for
    *  the "my conversations" view filter (survives restart). */
   owner?: string;
+  /** The SPAWNING conversation, when this is a subagent. undefined = a top-level
+   *  conversation. A subagent shares its parent's sandbox pod; the whole tree
+   *  shares one root pod (see spawnChild). Persisted so the hierarchy survives an
+   *  agent-host restart. */
+  parentId?: SessionId;
 }
 
 /** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
@@ -193,6 +198,10 @@ export interface Conversation {
    *  (e.g. pre-migration or webhook-spawned). Drives the "my conversations" view
    *  filter — NOT an access boundary (conversations are public). */
   readonly owner?: string;
+  /** The spawning conversation, when this is a subagent. undefined = top-level.
+   *  A subagent shares its parent's sandbox; find a conversation's children by
+   *  scanning for `parentId === id`. */
+  readonly parentId?: SessionId;
 }
 
 export interface SessionManager {
@@ -200,6 +209,17 @@ export interface SessionManager {
    *  selects the agent model (validated by the caller); `owner` is the creating
    *  user (the ingress identity) recorded for the view filter. */
   start(threadId: ThreadId, model?: string, owner?: string): Promise<Conversation>;
+  /** Spawn a SUBAGENT: a new conversation that SHARES the parent's sandbox pod
+   *  (no new provisioning) and carries `parentId`. Inherits the parent's owner
+   *  (so cost + the view filter attribute to the same user). The child gets its
+   *  own bridge/goose session (its own scratch cwd) execing into the parent's
+   *  pod. `childThreadId` is the child's id/thread. Throws if the parent is
+   *  unknown. Multi-level: a subagent may itself spawnChild (still the root pod). */
+  spawnChild(
+    parentId: SessionId,
+    childThreadId: ThreadId,
+    args: { prompt: string; title?: string; model?: string },
+  ): Promise<Conversation>;
   /** Re-attach to / revive a suspended conversation (resume + replay log). */
   revive(id: SessionId): Promise<Conversation>;
   /** Forward a user prompt into the conversation's goose session. An optional
@@ -315,6 +335,7 @@ interface Entry {
   lastActivityAt: number;
   model?: string;
   owner?: string;
+  parentId?: SessionId;
 }
 
 /** Drain an async iterable of events into an array (fallback for stores without
@@ -349,6 +370,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     lastActivityAt: e.lastActivityAt,
     model: e.model,
     owner: e.owner,
+    parentId: e.parentId,
   });
 
   // Conversation lifecycle subscribers (the /conversations/events push stream).
@@ -438,6 +460,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       lastActivityAt: e.lastActivityAt,
       model: e.model,
       owner: e.owner,
+      parentId: e.parentId,
     }) ?? Promise.resolve();
 
   const wireEventLog = (e: Entry) => {
@@ -510,6 +533,49 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
       // on its ACP newSession. bridge.prompt() lazily starts on first use, after
       // emitting RUN_STARTED, so the UI always sees the run begin.
+      return toConversation(entry);
+    },
+
+    async spawnChild(parentId, childThreadId, args) {
+      const parent = entries.get(parentId);
+      if (!parent) throw new Error(`unknown parent conversation: ${parentId}`);
+      const id: SessionId = childThreadId;
+      // A subagent SHARES the parent's sandbox pod (the whole tree shares one root
+      // pod — a subagent's own spawnChild reuses the same ref again). It inherits
+      // the parent's owner (cost + view filter) and carries parentId. Its bridge
+      // execs into the PARENT's pod but has its own goose session (own scratch cwd,
+      // keyed by the child id in the bridge factory).
+      const model = args.model ?? parent.model;
+      const entry: Entry = {
+        id,
+        threadId: childThreadId,
+        sandbox: parent.sandbox, // REUSE — no provisioner.create
+        bridge: undefined,
+        status: "running",
+        title: args.title ?? "Subagent",
+        createdAt: nowMs(),
+        lastActivityAt: nowMs(),
+        model,
+        owner: parent.owner,
+        parentId,
+      };
+      entries.set(id, entry);
+      await saveMeta(entry);
+      emitChange(entry); // show it in the sidebar live (nested under the parent)
+
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model });
+      wireEventLog(entry);
+      await saveMeta(entry);
+
+      // Kick off the subagent's work. Bias it toward a useful final message (the
+      // last-message result convention — matches the Claude CLI: the subagent's
+      // final message returns to the parent). Lazy bridge.start on first prompt.
+      const framedPrompt =
+        `${args.prompt}\n\n` +
+        `---\n(You are a subagent. Do the task above, then END your turn with a ` +
+        `concise summary of what you found or did — that final message is returned ` +
+        `to the agent that spawned you.)`;
+      await entry.bridge?.prompt({ threadId: childThreadId, text: framedPrompt });
       return toConversation(entry);
     },
 
@@ -640,15 +706,30 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async end(id) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
-      await entry.bridge?.stop();
-      await provisioner.destroy(entry.sandbox);
-      entry.bridge = undefined;
-      entry.status = "ended";
-      // Delete-don't-tombstone: drop it from the in-memory list AND remove its
-      // persisted state, so it neither shows in GET /conversations nor returns
-      // on the next hydrate(). (Suspend, not end, is the durable handle.)
-      entries.delete(id);
-      await store.removeConversation?.(id);
+      // CASCADE-END the whole subtree first (recursively). Subagents share this
+      // conversation's sandbox pod, so ending a child must NOT destroy the shared
+      // pod — only THIS (the subtree root of the end) destroys it, once.
+      const endSubtree = async (targetId: SessionId, destroyPod: boolean): Promise<void> => {
+        const e = entries.get(targetId);
+        if (!e) return;
+        // Depth-first: end descendants before this node.
+        const children = [...entries.values()].filter((c) => c.parentId === targetId);
+        for (const child of children) await endSubtree(child.id, false);
+        await e.bridge?.stop();
+        if (destroyPod) await provisioner.destroy(e.sandbox);
+        e.bridge = undefined;
+        e.status = "ended";
+        // Delete-don't-tombstone: drop from memory + persisted state so it neither
+        // shows in GET /conversations nor returns on the next hydrate(). (Suspend,
+        // not end, is the durable handle.)
+        entries.delete(targetId);
+        await store.removeConversation?.(targetId);
+      };
+      // Destroy the pod once — for the conversation actually being ended. (If `id`
+      // is itself a subagent, it shares its ancestor's pod; ending it should NOT
+      // tear that pod down. Only destroy when this conversation has no parent, i.e.
+      // it owns its pod.)
+      await endSubtree(id, entry.parentId === undefined);
     },
 
     get(id) {
@@ -792,9 +873,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     async sweepIdle(idleMs, now = nowMs()) {
       const suspended: SessionId[] = [];
+      // A conversation with any non-terminal DESCENDANT must not be swept: its
+      // subagents share the same pod, which suspend() would drop out from under
+      // them. Recursive (grandchildren keep the ancestor chain alive).
+      const hasLiveDescendant = (id: SessionId): boolean => {
+        for (const c of entries.values()) {
+          if (c.parentId !== id) continue;
+          if (c.status !== "ended") return true; // a live child
+          if (hasLiveDescendant(c.id)) return true; // ...or a live grandchild
+        }
+        return false;
+      };
       for (const entry of entries.values()) {
         if (entry.status !== "running") continue;
         if (now - entry.lastActivityAt < idleMs) continue;
+        if (hasLiveDescendant(entry.id)) continue; // keep the shared pod up
         try {
           await this.suspend(entry.id);
           suspended.push(entry.id);
