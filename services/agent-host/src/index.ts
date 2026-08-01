@@ -42,7 +42,12 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
 import { createMcpEndpoint } from "./agent/mcpServer.js";
-import type { SubagentManager, SubagentStatus } from "./agent/subagentTools.js";
+import {
+  lastAssistantText,
+  subagentDoneNotice,
+  type SubagentManager,
+  type SubagentStatus,
+} from "./agent/subagentTools.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { SchedulerToolsWiring } from "./agent/schedulerTools.js";
@@ -263,6 +268,18 @@ function parseIdentityMap(raw: string | undefined): Record<string, string> | und
     if (k && v) out[k] = v;
   }
   return Object.keys(out).length ? out : undefined;
+}
+
+/** Drain a conversation's event stream into an array, tolerating a read error
+ *  (returns what was read; the subagent watcher must never throw). */
+async function collectEventsSafe(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]> {
+  const out: AguiEvent[] = [];
+  try {
+    for await (const e of it) out.push(e);
+  } catch {
+    /* partial read is fine — the last message is near the end anyway */
+  }
+  return out;
 }
 
 function bedrockEnv(): Record<string, string> {
@@ -987,10 +1004,47 @@ export async function main(
     jobWatchTimer.unref?.();
   }
 
+  // Subagent completion watcher — when a subagent finishes (its bridge idles after
+  // running), inject its RESULT (last assistant message) into the PARENT, once.
+  // Mirrors the background-job watcher; the result convention matches the Claude
+  // CLI (final message returns to the parent). SUBAGENT_WATCH=0 disables.
+  let subagentWatchTimer: ReturnType<typeof setInterval> | undefined;
+  if (process.env.SUBAGENT_WATCH !== "0") {
+    const notified = new Set<SessionId>(); // subagents already reported to their parent
+    const ranAtLeastOnce = new Set<SessionId>(); // saw it running -> a later idle = a completion
+    subagentWatchTimer = setInterval(() => {
+      for (const c of sessions.list()) {
+        if (c.parentId === undefined) continue; // top-level, not a subagent
+        if (notified.has(c.id as SessionId)) continue;
+        const running = c.bridge?.queueState().running ?? false;
+        if (running) {
+          ranAtLeastOnce.add(c.id as SessionId);
+          continue;
+        }
+        // Idle now. It's a completion only if we saw it run (avoids announcing a
+        // just-spawned child before its first run even starts).
+        if (!ranAtLeastOnce.has(c.id as SessionId)) continue;
+        const parentId = c.parentId as SessionId;
+        if (!sessions.get(parentId)) { notified.add(c.id as SessionId); continue; } // parent gone
+        notified.add(c.id as SessionId); // notify-once (mark before the async inject)
+        void (async () => {
+          const events = await collectEventsSafe(store.readEvents(c.id as SessionId));
+          const result = lastAssistantText(events);
+          const text = subagentDoneNotice(c.id, c.title, result);
+          await sessions
+            .prompt(parentId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "subagent")
+            .catch((e) => console.error(`[agent-host] subagent-completion inject failed for parent ${parentId}:`, e));
+        })();
+      }
+    }, config.idleSweepIntervalMs);
+    subagentWatchTimer.unref?.();
+  }
+
   return async () => {
     if (sweepTimer) clearInterval(sweepTimer);
     if (jobCleanupTimer) clearInterval(jobCleanupTimer);
     if (jobWatchTimer) clearInterval(jobWatchTimer);
+    if (subagentWatchTimer) clearInterval(subagentWatchTimer);
     await metrics.shutdown();
     await server.close();
   };

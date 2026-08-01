@@ -12,6 +12,7 @@
  */
 
 import type { SessionId } from "../types.js";
+import type { AguiEvent } from "../bridge.js";
 
 /** An MCP tool result (matches mcpServer.ts's ToolResult). */
 export interface ToolResult {
@@ -111,5 +112,43 @@ export async function handleCancelSubagent(
     res.outcome === "already-idle"
       ? `Subagent \`${id}\` had no run in flight — nothing to cancel (check_subagent for its result).`
       : `Cancelled subagent \`${id}\`'s current run.`,
+  );
+}
+
+// --- Completion watcher building blocks (the "result = last message" convention) ---
+
+/** The subagent's RESULT: the text of its LAST assistant message, concatenated
+ *  from that message's content deltas. Undefined when it produced no assistant
+ *  text (e.g. only tool calls). Matches the Claude CLI — a subagent's final
+ *  message is what returns to the parent; no report tool. */
+export function lastAssistantText(events: readonly AguiEvent[]): string | undefined {
+  // Walk to find the last assistant message id, then gather its deltas.
+  let lastId: string | undefined;
+  for (const e of events) {
+    if (e.type === "TEXT_MESSAGE_START" && e.role === "assistant") lastId = e.messageId;
+  }
+  if (!lastId) return undefined;
+  let text = "";
+  for (const e of events) {
+    if (e.type === "TEXT_MESSAGE_CONTENT" && e.messageId === lastId) text += e.delta;
+  }
+  const trimmed = text.trim();
+  return trimmed.length ? trimmed : undefined;
+}
+
+/** Frame a finished subagent's result for injection into the PARENT conversation
+ *  (a SYSTEM message, source "subagent"). `result` undefined = it ended without a
+ *  final text message. */
+export function subagentDoneNotice(subagentId: string, title: string | undefined, result: string | undefined): string {
+  const who = `Subagent \`${subagentId}\`${title ? ` (${title})` : ""}`;
+  if (!result) {
+    return (
+      `${who} finished but reported no final result message. ` +
+      `check_subagent("${subagentId}") to inspect it if needed.`
+    );
+  }
+  return (
+    `${who} finished. Its result:\n\n${result}\n\n` +
+    `Use this if it's relevant to your task; otherwise acknowledge briefly.`
   );
 }

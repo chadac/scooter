@@ -19,8 +19,11 @@ import {
   handleListSubagents,
   handleCheckSubagent,
   handleCancelSubagent,
+  lastAssistantText,
+  subagentDoneNotice,
   type SubagentManager,
 } from "../../src/agent/subagentTools.js";
+import type { AguiEvent } from "../../src/bridge.js";
 
 const fakeManager = (over: Partial<SubagentManager> = {}): SubagentManager => ({
   spawn: vi.fn(async (_parentId, args) => ({ id: `sub-${args.prompt.slice(0, 3)}`, title: args.title })),
@@ -87,5 +90,44 @@ describe("subagent tools", () => {
     expect(mgr.cancel).toHaveBeenCalledWith(PARENT, "sub-a");
     expect(out.isError).toBeFalsy();
     expect(out.content[0].text).toMatch(/cancel/i);
+  });
+});
+
+// The completion-watcher building blocks (the "result = last message" convention).
+describe("subagent completion (last-message result)", () => {
+  const t = (id: string, role: "assistant" | "user", text: string): AguiEvent[] => [
+    { type: "TEXT_MESSAGE_START", messageId: id, role },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: id, delta: text },
+    { type: "TEXT_MESSAGE_END", messageId: id },
+  ];
+
+  it("lastAssistantText concatenates the LAST assistant message's deltas", () => {
+    const events: AguiEvent[] = [
+      ...t("u1", "user", "do the thing"),
+      ...t("a1", "assistant", "working"),
+      ...t("a2", "assistant", "I found "),
+      { type: "TEXT_MESSAGE_START", messageId: "a2b", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a2b", delta: "the bug" }, // separate id, later
+      { type: "TEXT_MESSAGE_END", messageId: "a2b" },
+    ];
+    expect(lastAssistantText(events)).toBe("the bug");
+  });
+
+  it("lastAssistantText ignores user messages + returns undefined when none", () => {
+    expect(lastAssistantText([...t("u1", "user", "hi")])).toBeUndefined();
+    expect(lastAssistantText([])).toBeUndefined();
+  });
+
+  it("subagentDoneNotice frames the child's result for injection into the parent", () => {
+    const text = subagentDoneNotice("sub-a", "research A", "found 3 issues");
+    expect(text).toContain("sub-a");
+    expect(text).toContain("research A");
+    expect(text).toContain("found 3 issues");
+  });
+
+  it("subagentDoneNotice handles a subagent that reported no final text", () => {
+    const text = subagentDoneNotice("sub-a", "research A", undefined);
+    expect(text).toContain("sub-a");
+    expect(text).toMatch(/no (result|final)/i);
   });
 });
