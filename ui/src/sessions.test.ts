@@ -50,6 +50,31 @@ describe("deep-link selection (requestSelect)", () => {
   });
 });
 
+describe("ended subagents are pruned from the sidebar", () => {
+  it("drops a subagent the server no longer lists (it ended), keeping the parent", () => {
+    // Parent + subagent both known.
+    sessionStore.mergeFromServer([
+      { id: "parent-1", title: "Parent" },
+      { id: "sub-1", title: "echo test", parentId: "parent-1" },
+    ]);
+    expect(sessionStore.get().sessions.some((s) => s.id === "sub-1")).toBe(true);
+
+    // Next poll: the subagent finished + was end()ed server-side, so it's absent.
+    sessionStore.mergeFromServer([{ id: "parent-1", title: "Parent" }]);
+    const ids = sessionStore.get().sessions.map((s) => s.id);
+    expect(ids).toContain("parent-1"); // parent stays
+    expect(ids).not.toContain("sub-1"); // ended subagent pruned
+  });
+
+  it("does NOT prune a top-level conversation missing from a single merge", () => {
+    // A local top-level conv with a real title must survive (only subagents prune
+    // on absence — a top-level one may just be filtered out of this scope).
+    sessionStore.mergeFromServer([{ id: "top-1", title: "Real chat" }]);
+    sessionStore.mergeFromServer([{ id: "other", title: "Other" }]);
+    expect(sessionStore.get().sessions.some((s) => s.id === "top-1")).toBe(true);
+  });
+});
+
 describe("a brand-new conversation survives the background merge", () => {
   it("does NOT drop the currently-selected 'New chat' the server hasn't seen yet", () => {
     // A real server conversation already exists (so the merge has 'truth' to

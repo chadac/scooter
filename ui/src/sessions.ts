@@ -243,20 +243,24 @@ export const sessionStore = {
       });
     }
 
-    // Drop local pristine placeholders that the server doesn't know about: when
-    // the server already has real conversations, an empty "New chat" the user
-    // never touched shouldn't linger as a phantom extra row. (We keep local
-    // sessions that have a non-default title or that exist on the server.)
+    // Reconcile the local list against the server's:
     //
-    // EXCEPTION: never drop the CURRENTLY-SELECTED pristine session. The user
-    // just clicked "New chat" and is about to type — the server won't know about
-    // it until the first message POSTs /agui, so a background poll would otherwise
-    // yank the conversation out from under them (and jump the selection to another
-    // row) within one poll interval. The selected new chat is live intent, not a
-    // stale phantom; keep it until it either gains a title or the user leaves it.
-    let sessions = [...byId.values()].filter(
-      (s) => serverIds.has(s.id) || !isPristine(s) || s.id === state.currentId,
-    );
+    //  - Keep anything the server still lists.
+    //  - Drop a SUBAGENT (parentId set) the server no longer lists — subagents are
+    //    always server-created, so its absence means it ENDED (the completion
+    //    watcher end()s a finished subagent). Without this it lingered in the
+    //    sidebar after finishing (the reported bug): an ended subagent has a real
+    //    title, so the pristine check below wouldn't drop it.
+    //  - For a local top-level conversation not on the server: keep it unless it's
+    //    an untouched pristine "New chat" placeholder (a phantom extra row once the
+    //    server has real convs) — EXCEPT never drop the CURRENTLY-SELECTED pristine
+    //    one (the user just clicked "New chat" and is about to type; the server
+    //    won't know it until the first /agui POST, so a poll must not yank it).
+    let sessions = [...byId.values()].filter((s) => {
+      if (serverIds.has(s.id)) return true;
+      if (s.parentId) return false; // an ended subagent — prune it
+      return !isPristine(s) || s.id === state.currentId;
+    });
     // Never end up with zero rows (e.g. server has convs but all local were
     // pristine and got dropped — the server ones remain, which is fine).
     if (sessions.length === 0) sessions = [...byId.values()];
