@@ -73,10 +73,19 @@ export default defineConfig({
           stderr: "pipe",
         },
         {
-          // SSE fault proxy between the UI dev server and agent-host, so the
-          // resilience spec can drop/stall/kill integrity-stream frames or return
-          // 401 (expired auth). Pass-through when no fault is set, so every OTHER
-          // spec is unaffected. See test/e2e/support/faultProxy.ts.
+          // The DEFAULT UI dev server — unchanged, 5173 -> agent-host 8080 directly.
+          // EVERY spec except the SSE-resilience one uses this untouched stack, so
+          // the fault proxy + small idle-watchdog below can't perturb them.
+          command: "npm --prefix ui run dev",
+          env: { AGENT_HOST_URL: "http://localhost:8080" },
+          port: 5173,
+          reuseExistingServer: !process.env.CI,
+        },
+        // --- SSE-resilience-only stack (isolated on its own ports) ----------------
+        {
+          // SSE fault proxy: sits between a SECOND UI dev server and agent-host so
+          // the resilience spec can drop/stall/kill integrity-stream frames or
+          // return 401. Pass-through when no fault is set. See faultProxy.mjs.
           command: "node test/e2e/support/faultProxy.mjs",
           env: { FAULT_PROXY_PORT: "8090", AGENT_HOST_PORT: "8080" },
           port: 8090,
@@ -85,18 +94,16 @@ export default defineConfig({
           stderr: "pipe",
         },
         {
-          // The UI dev server proxies its API calls to AGENT_HOST_URL server-side;
-          // point it at the fault proxy so the browser's live SSE stream flows
-          // through the fault injector (transparent unless a fault is active).
-          command: "npm --prefix ui run dev",
+          // A SECOND UI dev server (port 5273) that proxies THROUGH the fault proxy
+          // and runs a small idle-watchdog so recovery fires in seconds. ONLY the
+          // SSE-resilience spec targets this (via its own baseURL); the default
+          // stack above is left pristine for all other specs.
+          command: "npm --prefix ui run dev -- --port 5273",
           env: {
             AGENT_HOST_URL: "http://localhost:8090",
-            // Small idle-watchdog so the SSE-resilience spec's recovery fires in
-            // seconds, not the 25s production default. Harmless for other specs
-            // (it only reconnects a run that's genuinely stuck-with-no-activity).
             VITE_IDLE_RECONNECT_MS: "2000",
           },
-          port: 5173,
+          port: 5273,
           reuseExistingServer: !process.env.CI,
         },
       ],

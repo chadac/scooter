@@ -27,6 +27,12 @@ async function clearFault(request: import("@playwright/test").APIRequestContext)
 }
 
 test.describe("SSE resilience", () => {
+  // This spec (and ONLY this spec) drives the isolated fault-proxy stack: a second
+  // UI dev server on 5273 that proxies through the fault proxy (8090) and runs a
+  // small idle-watchdog. All other specs use the pristine 5173 -> 8080 stack, so
+  // the fault injection + fast watchdog can't perturb them.
+  test.use({ baseURL: "http://localhost:5273" });
+
   // Always clear the fault after each test so a leak can't wedge the next one on
   // the shared serial backend.
   test.afterEach(async ({ request }) => {
