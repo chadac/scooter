@@ -1121,71 +1121,71 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
   });
 });
 
-describe("bridge progress-stall watchdog (progressStallMs)", () => {
-  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, progressStallMs: number) => {
+describe("bridge liveness watchdog (livenessProbeMs)", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, livenessProbeMs: number) => {
     const exec = createSandboxExecBackend(createFakeSandboxApi());
     return createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
       exec,
       acpClient: acpClientFromTransport(agent.transport, exec),
-      // DOA watchdog off so it can't be the one firing — we isolate the STALL guard.
+      // DOA watchdog off so it can't be the one firing — isolate the liveness probe.
       firstActivityTimeoutMs: 0,
-      progressStallMs,
+      livenessProbeMs,
     });
   };
   const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
-  it("fires RUN_ERROR when a live run makes NO progress for progressStallMs (mid-run wedge)", async () => {
+  it("fires RUN_ERROR when the agent PROCESS dies mid-run (a definitive wedge)", async () => {
     const agent = createFakeAcpAgent();
-    // Emit ONE chunk (proves the run is alive — DOA can't explain this), then GATE
-    // so the run hangs with no further ACP updates: a mid-run wedge (a tool call
-    // that never returns, cancelWhenToolsIdle armed but inFlightTools never 0).
+    // Emit one chunk (the run is alive), GATE so prompt() hangs, then simulate the
+    // agent process crashing/exiting — isAlive() flips false. The probe observes a
+    // dead agent and force-terminates so the queue can drain.
     agent.setScript([
       { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "working on it" } } },
     ]);
     agent.gate();
-    const bridge = mkBridge(agent, 40); // 40ms stall ceiling for a fast test
+    const bridge = mkBridge(agent, 40); // probe every 40ms
     const events = collect(bridge);
     await bridge.start();
     void bridge.prompt({ threadId: "t1", text: "do a big thing" });
 
-    await tick(90); // past the ceiling
-    const runError = events.find((e) => e.type === "RUN_ERROR") as { code?: string; message?: string } | undefined;
+    await tick(20);
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false); // alive → untouched
+    agent.die(); // the goose/claude subprocess exited without a terminal event
+    await tick(90); // next probe observes it
+
+    const runError = events.find((e) => e.type === "RUN_ERROR") as { code?: string } | undefined;
     expect(runError).toBeDefined();
-    expect(runError!.code).toBe("progress_stall_timeout");
-    // EXACTLY ONE terminal — the stall guard cancels, which resolves the gated
-    // prompt(); st.terminated must suppress a second terminal.
+    expect(runError!.code).toBe("agent_process_died");
+    // EXACTLY ONE terminal — the guard's cancel resolves the gated prompt; the
+    // terminated flag must suppress a second terminal.
     const terminals = events.filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
     expect(terminals.length).toBe(1);
     agent.releaseGate();
   });
 
-  it("does NOT fire while the run keeps making progress (each ACP update resets the clock)", async () => {
+  it("does NOT fire for a LONG SILENT but ALIVE run (a long tool call is healthy, not a wedge)", async () => {
     const agent = createFakeAcpAgent();
+    // A single tool call that runs for a long time: one chunk, then GATE — no more
+    // ACP updates flow while the command runs. The old silence-based watchdog would
+    // wrongly kill this. The liveness probe must NOT: the agent is alive.
     agent.setScript([
-      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "start" } } },
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "running a 10-minute build" } } },
     ]);
     agent.gate();
     const bridge = mkBridge(agent, 40);
     const events = collect(bridge);
     await bridge.start();
-    void bridge.prompt({ threadId: "t1", text: "stream steadily" });
+    void bridge.prompt({ threadId: "t1", text: "build the world" });
 
-    // Keep emitting activity every 20ms (< the 40ms ceiling) for ~120ms — a slow
-    // but LIVE run must never be force-killed.
-    for (let i = 0; i < 6; i++) {
-      await tick(20);
-      agent.emit({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `chunk ${i}` } });
-    }
+    // Many probe cycles pass with the run silent but the agent ALIVE.
+    await tick(200);
     expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
     agent.releaseGate();
   });
 
-  it("does NOT fire while the run is PAUSED on a permission request (a real approval must not be killed)", async () => {
+  it("does NOT fire while the run is PAUSED on a permission request (the agent is alive)", async () => {
     const agent = createFakeAcpAgent();
-    // The run requests a permission and BLOCKS on the answer (the AWS-approval
-    // case). No ACP progress flows while it waits — but this is legitimate, not a
-    // wedge, so the stall guard must exclude it.
     agent.setScript([
       { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "I need approval" } } },
       { requestPermission: { toolCallId: "aws1", title: "Approve AWS?", options: [
@@ -1199,15 +1199,13 @@ describe("bridge progress-stall watchdog (progressStallMs)", () => {
     await bridge.start();
     void bridge.prompt({ threadId: "t1", text: "spend money" });
 
-    // Wait well past the ceiling with the run paused awaiting the answer.
-    await tick(120);
-    // The pause surfaced as an INTERRUPT, NOT a stall-error.
+    await tick(200); // many probes while paused
     const interrupt = events.find((e) => e.type === "RUN_FINISHED" && (e as { outcome?: { type?: string } }).outcome?.type === "interrupt");
     expect(interrupt).toBeDefined();
     expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
   });
 
-  it("is disabled when progressStallMs is 0 (opt-out)", async () => {
+  it("is disabled when livenessProbeMs is 0 (opt-out) — even a dead agent isn't auto-terminated", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([
       { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } } },
@@ -1217,6 +1215,7 @@ describe("bridge progress-stall watchdog (progressStallMs)", () => {
     const events = collect(bridge);
     await bridge.start();
     void bridge.prompt({ threadId: "t1", text: "hello?" });
+    agent.die();
     await tick(90);
     expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
     agent.releaseGate();

@@ -394,19 +394,20 @@ export interface BridgeDeps {
   firstActivityTimeoutMs?: number;
 
   /**
-   * Watchdog for a run that WEDGES MID-STREAM: distinct from firstActivityTimeoutMs
-   * (which only covers the FIRST activity). Once a run is alive, every ACP update
-   * bumps a "last progress" clock; if it goes this many ms with NO new update while
-   * still running, we conclude it's stuck (a tool call that never returns, a
-   * deferred cancel that never fires — e.g. cancelWhenToolsIdle armed but
-   * inFlightTools never reaches 0, whose timeout fallback is itself disabled when
-   * priorityInterruptMs=0). On timeout we cancel the run + emit RUN_ERROR so the
-   * conversation's queue drains instead of blocking forever — a single hung run can
-   * NEVER permanently wedge the pump. A run legitimately PAUSED on a permission
-   * request is NOT counted as stalled (it's waiting on the user, e.g. an AWS
-   * approval). Default 180_000 (3 min); 0 disables.
+   * LIVENESS watchdog for a run that wedges mid-stream. This does NOT guess from
+   * silence — silence is normal (a long `sleep 600` / build / test run emits no ACP
+   * updates for minutes, and the ExecBackend's own commandTimeoutMs already bounds a
+   * genuinely hung command). Instead, while a run is active it periodically PROBES a
+   * DEFINITIVE health signal — `acpClient.isAlive()` — and only force-terminates when
+   * the agent PROCESS has died (crashed/exited) without emitting a terminal event:
+   * an unambiguous wedge. Everything else (a tool in flight, a paused permission
+   * request, an alive-but-idle agent) is left alone — the run keeps waiting, the
+   * user's Stop still works, and the UI idle-watchdog heals the client view. This
+   * guarantees a DEAD agent can't leave the pump blocked forever, without ever
+   * killing a healthy long-running task. `livenessProbeMs` is the probe cadence.
+   * Default 30_000; 0 disables.
    */
-  progressStallMs?: number;
+  livenessProbeMs?: number;
 }
 
 // Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
@@ -477,7 +478,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const terminalCommands = new Map<string, string>();
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
-  const progressStallMs = deps.progressStallMs ?? 180_000;
+  const livenessProbeMs = deps.livenessProbeMs ?? 30_000;
   // Resolved on first start(); a ready client or the result of the factory.
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
@@ -580,12 +581,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // late update re-firing anything once the run is alive.
     sawActivity?: boolean;
     activityTimer?: ReturnType<typeof setTimeout>;
-    // The mid-stream progress-stall watchdog (see progressStallMs). `lastProgressAt`
-    // is bumped by every ACP update; `stallTimer` is a rearming timer that fires the
-    // guard only if the run is still running AND made no progress within the window
-    // AND isn't paused on a permission request.
-    lastProgressAt?: number;
-    stallTimer?: ReturnType<typeof setTimeout>;
+    // The mid-stream LIVENESS watchdog (see livenessProbeMs): a rearming timer that
+    // probes acpClient.isAlive() and terminates the run ONLY if the agent process
+    // has died without a terminal event. Silence alone never fires it.
+    livenessTimer?: ReturnType<typeof setTimeout>;
     // Set once a terminal event (RUN_FINISHED/RUN_ERROR) has been emitted for this
     // run — by the watchdog OR the normal path — so the other path can't emit a
     // SECOND terminal (which would corrupt the @ag-ui stream).
@@ -659,9 +658,6 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         st.activityTimer = undefined;
       }
     }
-    // Any ACP update is PROGRESS — bump the stall clock so the mid-stream watchdog
-    // only fires on genuine silence, not on a slow-but-live run.
-    st.lastProgressAt = Date.now();
     switch (u.sessionUpdate) {
       case "agent_message_chunk": {
         // Reasoning and text are distinct streams; close reasoning first.
@@ -843,20 +839,21 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }, firstActivityTimeoutMs);
     }
 
-    // PROGRESS-STALL watchdog: a rearming timer that force-terminates a run wedged
-    // MID-STREAM (alive, then silent) so a single hung run can never permanently
-    // block the pump's queue. Distinct from the DOA watchdog (first-activity only).
-    // Excludes a run legitimately PAUSED on a permission request (waiting on the
-    // user — e.g. an AWS approval — is not a stall).
-    if (progressStallMs > 0) {
-      st.lastProgressAt = Date.now();
-      const armStall = () => {
-        st.stallTimer = setTimeout(() => {
+    // LIVENESS watchdog: a rearming probe that force-terminates a run ONLY when the
+    // agent PROCESS has died (crashed/exited) without emitting a terminal event — an
+    // unambiguous wedge that would otherwise block the pump's queue forever. It does
+    // NOT guess from silence: a long tool call is silent but healthy (the agent is
+    // alive; the ExecBackend commandTimeoutMs already bounds a hung command). So a
+    // tool in flight, a paused permission request, or an alive-but-idle agent all
+    // just re-arm. The DOA watchdog (firstActivityTimeoutMs) covers "never started".
+    if (livenessProbeMs > 0) {
+      const armLiveness = () => {
+        st.livenessTimer = setTimeout(() => {
           if (st.ended || st.terminated) return;
-          // Paused on a permission answer → not stalled; keep watching.
-          if (pendingPermissions.size > 0) return armStall();
-          const idle = Date.now() - (st.lastProgressAt ?? startedAt);
-          if (idle < progressStallMs) return armStall(); // progress since last arm — re-check later
+          // DEFINITIVE health signal: is the agent process still alive? If it is
+          // (or we can't tell — no client yet), keep watching; silence is fine.
+          if (!acpClient || acpClient.isAlive()) return armLiveness();
+          // The agent DIED without a terminal event — the run is genuinely wedged.
           st.ended = true;
           st.terminated = true; // this watchdog owns the terminal event now
           closeOpenText(st);
@@ -865,19 +862,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           emit({
             type: "RUN_ERROR",
             message:
-              "The agent stopped responding mid-task — it was working, then went silent " +
-              "and made no further progress. The run was ended so the conversation isn't " +
-              "stuck; your next message will start a fresh run. If this recurs, check the " +
-              "agent-host logs.",
-            code: "progress_stall_timeout",
+              "The agent process exited unexpectedly mid-task. The run was ended so the " +
+              "conversation isn't stuck; your next message will start a fresh run. If this " +
+              "recurs, check the agent-host logs.",
+            code: "agent_process_died",
           });
-          // Unblock the wedged agent so the next prompt gets a fresh run.
+          // Best-effort cleanup so the next prompt gets a fresh run.
           void self.cancel(runId).catch(() => {});
-        }, progressStallMs);
+        }, livenessProbeMs);
         // Don't let this timer keep the process alive on its own.
-        (st.stallTimer as { unref?: () => void }).unref?.();
+        (st.livenessTimer as { unref?: () => void }).unref?.();
       };
-      armStall();
+      armLiveness();
     }
 
     // REVIVE reinjection: on this bridge's FIRST prompt, snapshot the persisted
@@ -1022,9 +1018,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         clearTimeout(st.activityTimer);
         st.activityTimer = undefined;
       }
-      if (st.stallTimer) {
-        clearTimeout(st.stallTimer);
-        st.stallTimer = undefined;
+      if (st.livenessTimer) {
+        clearTimeout(st.livenessTimer);
+        st.livenessTimer = undefined;
       }
       if (currentRun === st) currentRun = undefined;
       // Metrics hook — fire-and-forget, never let it break the run.

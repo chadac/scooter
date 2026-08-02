@@ -54,6 +54,10 @@ export interface AcpClient {
   prompt(params: PromptParams): Promise<{ stopReason: string }>;
   cancel(sessionId: string): Promise<void>;
   killActiveTerminals(): Promise<void>;
+  /** Liveness of the underlying agent. The bridge's stall watchdog probes it: a
+   *  run silent because its agent is DEAD is terminated; silent because a long
+   *  tool is running is healthy. The in-process SDK is alive until close(). */
+  isAlive(): boolean;
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   onTerminalCreated(cb: (terminalId: string, command: string, args: string[]) => void): () => void;
   onPermissionRequest(handler: (req: PermissionRequest) => Promise<PermissionAnswer>): void;

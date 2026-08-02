@@ -90,6 +90,13 @@ export interface AcpClient {
    *  interrupt) — stops a running command, not just future ones. Best-effort. */
   killActiveTerminals(): Promise<void>;
 
+  /** Liveness of the underlying agent process (goose/claude subprocess). `false`
+   *  once it has exited — a DEFINITIVE health signal the bridge's stall watchdog
+   *  probes: a run silent because its agent process DIED is unambiguously wedged
+   *  (terminate); a run silent because a long tool is running is healthy (the
+   *  process is alive). An in-process fake reports alive until close(). */
+  isAlive(): boolean;
+
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   /** Notified when goose creates a terminal to run a shell command. The command
    *  text lives ONLY here (terminal/create), not in the tool_call's rawInput — the
@@ -313,6 +320,11 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     },
     async killActiveTerminals() {
       await sandbox.killAllTerminals();
+    },
+    isAlive() {
+      // A ChildProcess reports exitCode/signalCode === null while running; either
+      // becomes non-null once it exits. So alive === both null.
+      return child.exitCode === null && child.signalCode === null;
     },
     onSessionUpdate(cb) {
       updateCbs.add(cb);
