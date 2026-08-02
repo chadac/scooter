@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { createSessionBridge, clarifyRunError, decorateSystemMessage, type AguiEvent } from "../../src/bridge.js";
+import { createSessionBridge, clarifyRunError, decorateSystemMessage, PRIORITY_INTERRUPT, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
@@ -792,6 +792,33 @@ describe("bridge run queue + cancel", () => {
     // user turn), so the UI clears its queued list.
     const snaps = queueSnaps();
     expect(snaps.at(-1)!.items).toEqual([]);
+  });
+
+  it("shouldYieldToQueue() is true when a PRIORITY_INTERRUPT item is queued, false for a normal/empty queue", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the first run in flight so later prompts queue behind it
+    const bridge = mkBridge(agent);
+
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "running turn" });
+    await tick();
+    expect(bridge.shouldYieldToQueue()).toBe(false); // nothing queued yet
+
+    // A NORMAL queued prompt does NOT trigger yield (it just waits its turn).
+    void bridge.prompt({ threadId: "t1", text: "normal follow-up" });
+    await tick();
+    expect(bridge.shouldYieldToQueue()).toBe(false);
+
+    // A PRIORITY_INTERRUPT item (e.g. a subagent result) DOES. Check IMMEDIATELY
+    // (before the next microtask lets the pump/preemption promote it out of the
+    // queue) — with no tool in flight the item would otherwise preempt instantly;
+    // shouldYieldToQueue reflects "a priority item is waiting to be delivered".
+    void bridge.prompt({ threadId: "t1", text: "subagent result" }, { priority: PRIORITY_INTERRUPT, interrupt: "thinking" });
+    expect(bridge.shouldYieldToQueue()).toBe(true);
+
+    agent.releaseGate();
+    await tick();
   });
 
   it("BATCHES a burst of queued same-tier messages into ONE run (not one-at-a-time)", async () => {

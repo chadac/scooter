@@ -1084,7 +1084,16 @@ export async function main(
     );
     // Per-conversation model override: GOOSE_MODEL in the agent's launch env.
     const resolved = resolveModel(model, cfg);
-    const agentEnv = resolved ? { ...cfg.agent.env, GOOSE_MODEL: resolved } : cfg.agent.env;
+    // GOOSE_MODE=approve enables the per-tool permission gate the acp client
+    // auto-answers for back-pressure (allow normally; reject when a priority item
+    // is queued). Off (auto) when SUBAGENT_BACKPRESSURE=0. See the shouldYield dep
+    // on createAcpClient below + todo/docs/SUBAGENT_BACKPRESSURE.md.
+    const backpressureOn = process.env.SUBAGENT_BACKPRESSURE !== "0";
+    const agentEnv = {
+      ...cfg.agent.env,
+      ...(resolved ? { GOOSE_MODEL: resolved } : {}),
+      ...(backpressureOn ? { GOOSE_MODE: "approve" } : {}),
+    };
     // goose runs IN the agent-host pod (not the sandbox), so its cwd must be a
     // real, writable dir HERE — not the sandbox's "/workspace" (which doesn't
     // exist in this pod; goose's session/new panics on a missing cwd and the
@@ -1129,8 +1138,26 @@ export async function main(
               // scoped to this conversation via ?conv=<id>. Without this the agent has
               // only the sandbox tools and can't actually use those capabilities.
               mcpEndpointUrl: mcpEndpoint?.urlFor(conversationId),
+              // BACK-PRESSURE: yield the next tool call when a priority item (e.g. a
+              // finished subagent's result) is waiting, so it injects promptly
+              // instead of the parent spinning in a check_subagent poll loop.
+              // Late-bound: `bridge` is assigned below and set by the time the SDK
+              // calls this (on the first tool). Gated by SUBAGENT_BACKPRESSURE.
+              shouldYield:
+                process.env.SUBAGENT_BACKPRESSURE === "0"
+                  ? undefined
+                  : () => bridge.shouldYieldToQueue(),
             })
-          : createAcpClient({ command: cfg.agent.command, args: cfg.agent.args, env: agentEnv, exec }),
+          : createAcpClient({
+              command: cfg.agent.command,
+              args: cfg.agent.args,
+              env: agentEnv,
+              exec,
+              // Back-pressure: auto-answer goose's approve-mode permission gate —
+              // allow normally, reject the next tool when a priority item waits.
+              // Late-bound (bridge assigned below). Gated with GOOSE_MODE above.
+              shouldYield: backpressureOn ? () => bridge.shouldYieldToQueue() : undefined,
+            }),
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
         // Attribute cost to the conversation OWNER (id + email). Resolve async
         // (email may need the identity store) but don't block the run — the metric

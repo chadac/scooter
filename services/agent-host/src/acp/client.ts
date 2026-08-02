@@ -108,6 +108,35 @@ export interface AcpClientDeps {
   env: Record<string, string>;
   /** Services Goose's fs/* and terminal/* client-method calls. */
   exec: ExecBackend;
+  /** BACK-PRESSURE (goose approve-mode). When set, goose runs with
+   *  GOOSE_MODE=approve so it requests permission before EVERY tool. This callback
+   *  AUTO-answers each request WITHOUT raising a UI prompt: normally ALLOW (silent,
+   *  preserving auto-run); but when it returns true a higher-priority item is
+   *  waiting (a finished subagent's result) so we REJECT the next tool — goose ends
+   *  the turn, the parent idles, and the queued item injects. Omit to keep goose in
+   *  auto mode (no per-tool gate; no back-pressure). See
+   *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
+  shouldYield?: () => boolean;
+}
+
+/** Auto-answer a goose approve-mode permission request (no UI). `yield_` true =
+ *  a higher-priority item is waiting → REJECT (pick a reject option) so goose ends
+ *  the turn; false = ALLOW (pick an allow option), preserving auto-run. Falls back
+ *  to the last/first option by position when kinds are unrecognized. Returns
+ *  undefined only when there are no options at all (caller then falls through).
+ *  Exported for unit testing the decision without spawning goose. */
+export function autoAnswerPermission(
+  options: ReadonlyArray<{ optionId: string; kind: string }>,
+  yield_: boolean,
+): schema.RequestPermissionResponse | undefined {
+  if (options.length === 0) return undefined;
+  const pick = (kinds: string[]) => options.find((o) => kinds.includes(o.kind))?.optionId;
+  if (yield_) {
+    const reject = pick(["reject_once", "reject_always"]) ?? options[options.length - 1].optionId;
+    return { outcome: { outcome: "selected", optionId: reject } };
+  }
+  const allow = pick(["allow_once", "allow_always"]) ?? options[0].optionId;
+  return { outcome: { outcome: "selected", optionId: allow } };
 }
 
 /** Spawns `goose acp` and returns a connected ACP client. */
@@ -187,6 +216,18 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     async requestPermission(
       params: schema.RequestPermissionRequest,
     ): Promise<schema.RequestPermissionResponse> {
+      // BACK-PRESSURE (approve-mode auto-answer): when shouldYield is wired, goose
+      // runs GOOSE_MODE=approve and asks before every tool. We answer AUTOMATICALLY
+      // here — WITHOUT raising a UI prompt (that path is for genuine agent-requested
+      // choices via raiseInterrupt, not this blanket gate). Normally allow (silent,
+      // preserving auto-run); when a priority item is waiting, REJECT so goose ends
+      // the turn -> parent idles -> the queued result injects. ACP has no free-text
+      // on a reject, so a `.goosehints` line pre-explains the reject option name.
+      if (deps.shouldYield) {
+        const auto = autoAnswerPermission(params.options, deps.shouldYield());
+        if (auto) return auto;
+        // No recognizable option — fall through to the handler (shouldn't happen).
+      }
       if (!permissionHandler) {
         // Finding #25: a permission request arrived but no handler is registered —
         // that's a HOST WIRING BUG, not a user cancel. Returning "cancelled"

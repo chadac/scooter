@@ -60,6 +60,13 @@ export interface SdkAcpClientDeps {
   /** Override the SDK's query() — for tests (inject a fake stream). Defaults to the
    *  real `@anthropic-ai/claude-agent-sdk` query, imported lazily. */
   queryImpl?: SdkQueryFn;
+  /** BACK-PRESSURE: when this returns true, a higher-priority item is waiting on
+   *  the parent's queue (e.g. a finished subagent's result). The pre-tool gate
+   *  then DENIES the next tool with an explanation + interrupt:true, ending the
+   *  turn so the parent goes idle and the queued item can inject — instead of the
+   *  agent spinning in a tool loop that blocks its own result. Omit to disable.
+   *  See todo/docs/SUBAGENT_BACKPRESSURE.md. */
+  shouldYield?: () => boolean;
 }
 
 /** The minimal shape of the SDK's query() we depend on — declared locally so this
@@ -173,6 +180,22 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // canUseTool bridges the SDK permission gate to our handler (best-effort;
     // our tools are aliased+allowed, so this mainly fires for anything unexpected).
     canUseTool: async (toolName: string, input: unknown) => {
+      // BACK-PRESSURE: if a higher-priority item is waiting (a subagent finished,
+      // a priority message arrived), don't start another tool — DENY with an
+      // explanation and interrupt:true so the turn ENDS. The agent then goes idle
+      // and the queued item injects, instead of it spinning in a tool loop that
+      // blocks the very result it's waiting for. The message reaches the model, so
+      // this reads as an explained hand-off, not a mysterious permission failure.
+      if (deps.shouldYield?.()) {
+        return {
+          behavior: "deny",
+          interrupt: true,
+          message:
+            "Pausing here: higher-priority work is now waiting for you (a subagent " +
+            "finished, or a new message arrived). Finish your turn — do NOT start " +
+            "another tool call; you'll receive the pending item on your next turn.",
+        };
+      }
       if (!permissionHandler) return { behavior: "allow", updatedInput: input };
       const ans = await permissionHandler({
         sessionId,
