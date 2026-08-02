@@ -220,6 +220,13 @@ export interface SessionManager {
     childThreadId: ThreadId,
     args: { prompt: string; title?: string; model?: string },
   ): Promise<Conversation>;
+  /** Subscribe to subagent completions: fired (subagentId, parentId) the moment a
+   *  subagent's run FINISHES (its bridge emits RUN_FINISHED/RUN_ERROR) — event-
+   *  driven, so the parent gets the result immediately instead of on the next poll.
+   *  The host wires this to inject the child's result into the parent + clean it up.
+   *  Returns an unsubscribe. A RUN_FINISHED with outcome "interrupt" (a pause
+   *  awaiting a user answer) is NOT a completion and does not fire. */
+  onSubagentComplete(cb: (subagentId: SessionId, parentId: SessionId) => void): () => void;
   /** Re-attach to / revive a suspended conversation (resume + replay log). */
   revive(id: SessionId): Promise<Conversation>;
   /** Forward a user prompt into the conversation's goose session. An optional
@@ -358,6 +365,18 @@ export function shortId(threadId: string): string {
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const { provisioner, store, bridgeFactory } = deps;
   const entries = new Map<SessionId, Entry>();
+
+  // Subagent-completion subscribers (see onSubagentComplete). Fired event-driven
+  // when a subagent's bridge emits a terminal RUN_FINISHED/RUN_ERROR.
+  const subagentCompleteSubs = new Set<(subagentId: SessionId, parentId: SessionId) => void>();
+  const emitSubagentComplete = (subagentId: SessionId, parentId: SessionId): void => {
+    for (const cb of subagentCompleteSubs) {
+      try { cb(subagentId, parentId); } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[manager] onSubagentComplete listener threw for ${subagentId}:`, err);
+      }
+    }
+  };
 
   const toConversation = (e: Entry): Conversation => ({
     id: e.id,
@@ -565,6 +584,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model });
       wireEventLog(entry);
+      // Event-driven completion: fire onSubagentComplete the instant this
+      // subagent's run terminates, so the host injects the result into the parent
+      // immediately (no poll-interval latency). A RUN_FINISHED with outcome
+      // "interrupt" is a PAUSE awaiting a user answer — not a completion — so skip
+      // it; a real finish (no outcome, or "error") fires once per completion.
+      entry.bridge?.onEvent((event) => {
+        const done =
+          (event.type === "RUN_FINISHED" && event.outcome?.type !== "interrupt") || event.type === "RUN_ERROR";
+        if (done) emitSubagentComplete(id, parentId);
+      });
       await saveMeta(entry);
 
       // Kick off the subagent's work. Bias it toward a useful final message (the
@@ -905,6 +934,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     onConversationChange(cb) {
       changeSubs.add(cb);
       return () => changeSubs.delete(cb);
+    },
+
+    onSubagentComplete(cb) {
+      subagentCompleteSubs.add(cb);
+      return () => subagentCompleteSubs.delete(cb);
     },
   };
 }

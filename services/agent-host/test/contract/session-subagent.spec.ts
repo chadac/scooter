@@ -44,6 +44,28 @@ const inMemoryStore = (): ConversationStore => {
   };
 };
 
+/** A minimal fake bridge whose RUN_FINISHED we can drive, to exercise the
+ *  event-driven subagent-completion path. Only the methods spawnChild + the
+ *  completion hook touch are implemented; the rest are no-ops. */
+function fakeBridgeFactory() {
+  const bridges = new Map<string, { emit: (e: AguiEvent) => void }>();
+  const factory = ({ conversationId }: { conversationId: string }) => {
+    const listeners = new Set<(e: AguiEvent) => void>();
+    bridges.set(conversationId, { emit: (e) => listeners.forEach((l) => l(e)) });
+    return {
+      onEvent: (cb: (e: AguiEvent) => void) => { listeners.add(cb); return () => listeners.delete(cb); },
+      onPersist: () => () => {},
+      prompt: async () => {},
+      cancel: () => {},
+      stop: async () => {},
+      start: async () => {},
+      queueState: () => ({ running: false, currentRunMs: 0, queued: 0, maxQueuedPriority: 0 }),
+      answerPermission: () => {},
+    } as unknown as import("../../src/bridge.js").SessionBridge;
+  };
+  return { factory, finish: (id: string) => bridges.get(id)?.emit({ type: "RUN_FINISHED", threadId: id, runId: "r1" } as AguiEvent) };
+}
+
 describe("SessionManager subagents", () => {
   it("spawnChild reuses the parent's sandbox (no new provision) + sets parentId + inherits owner", async () => {
     const provisioner = fakeProvisioner();
@@ -119,5 +141,23 @@ describe("SessionManager subagents", () => {
     expect(suspended).not.toContain(root.id);
     expect(suspended).not.toContain("c1");
     expect(sessions.get(root.id)?.status).toBe("running");
+  });
+
+  it("onSubagentComplete fires (subagentId + parentId) when a subagent's run FINISHES — event-driven, no poll", async () => {
+    const bf = fakeBridgeFactory();
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      bridgeFactory: bf.factory,
+    });
+    const parent = await sessions.start("p", undefined, "alice");
+    const child = await sessions.spawnChild(parent.id, "c1", { prompt: "a" });
+
+    const fired: Array<{ subagentId: string; parentId: string }> = [];
+    sessions.onSubagentComplete((subagentId, parentId) => fired.push({ subagentId, parentId }));
+
+    // The subagent's bridge emits RUN_FINISHED -> the hook fires immediately.
+    bf.finish(child.id);
+    expect(fired).toEqual([{ subagentId: "c1", parentId: parent.id }]);
   });
 });

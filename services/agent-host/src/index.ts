@@ -1005,43 +1005,52 @@ export async function main(
     jobWatchTimer.unref?.();
   }
 
-  // Subagent completion watcher — when a subagent finishes (its bridge idles after
-  // running), inject its RESULT (last assistant message) into the PARENT, once.
-  // Mirrors the background-job watcher; the result convention matches the Claude
-  // CLI (final message returns to the parent). SUBAGENT_WATCH=0 disables.
+  // Subagent completion: when a subagent finishes, inject its RESULT (last
+  // assistant message) into the PARENT — priority-interrupt so it preempts the
+  // parent's idle turn — then CLEAN UP the subagent (end it). The result
+  // convention matches the Claude CLI (final message returns to the parent).
+  //
+  // Two triggers, notify-ONCE across both:
+  //   - EVENT-DRIVEN (primary): onSubagentComplete fires the instant the child's
+  //     run terminates → the parent gets the result immediately (no poll latency).
+  //   - POLL BACKSTOP: a periodic sweep catches a completion whose event was missed
+  //     (e.g. a subagent finished across an agent-host restart, so no live bridge
+  //     fired the event). SUBAGENT_WATCH=0 disables both.
   let subagentWatchTimer: ReturnType<typeof setInterval> | undefined;
   if (process.env.SUBAGENT_WATCH !== "0") {
     const notified = new Set<SessionId>(); // subagents already reported + cleaned up
+    const reportCompletion = async (subagentId: SessionId, parentId: SessionId): Promise<void> => {
+      if (notified.has(subagentId)) return;
+      notified.add(subagentId); // notify-once (mark before the async work)
+      const events = await collectEventsSafe(store.readEvents(subagentId));
+      if (!lastRunCompleted(events)) {
+        notified.delete(subagentId); // hasn't actually run yet — re-check later
+        return;
+      }
+      const child = sessions.get(subagentId);
+      if (sessions.get(parentId)) {
+        const text = subagentDoneNotice(subagentId, child?.title, lastAssistantText(events));
+        await sessions
+          .prompt(parentId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "subagent")
+          .catch((e) => console.error(`[agent-host] subagent-completion inject failed for parent ${parentId}:`, e));
+      }
+      // Clean up the finished subagent (cascade-safe: a child shares the parent's
+      // pod, so end() won't tear the pod down for it).
+      await sessions
+        .end(subagentId)
+        .catch((e) => console.error(`[agent-host] subagent cleanup (end) failed for ${subagentId}:`, e));
+    };
+
+    // Primary: fire the moment a subagent's run terminates.
+    sessions.onSubagentComplete((subagentId, parentId) => void reportCompletion(subagentId, parentId));
+
+    // Backstop: sweep for an idle, completed subagent whose event was missed.
     subagentWatchTimer = setInterval(() => {
       for (const c of sessions.list()) {
         if (c.parentId === undefined) continue; // top-level, not a subagent
         if (notified.has(c.id as SessionId)) continue;
-        // A subagent is DONE when its bridge is idle AND its last run completed.
-        // Use the EVENT LOG (not an edge-detect of the live `running` flag) so a
-        // run that starts + finishes BETWEEN watcher ticks is still detected — that
-        // was the bug (a fast subagent never fired completion).
         if (c.bridge?.queueState().running) continue; // still working
-        const parentId = c.parentId as SessionId;
-        notified.add(c.id as SessionId); // mark before the async work (notify-once)
-        void (async () => {
-          const events = await collectEventsSafe(store.readEvents(c.id as SessionId));
-          if (!lastRunCompleted(events)) {
-            notified.delete(c.id as SessionId); // hasn't actually run yet — re-check next tick
-            return;
-          }
-          // Report the result into the parent (its last assistant message), then
-          // CLEAN UP the finished subagent (end it — cascade-safe: it shares the
-          // parent's pod, so end() won't tear the pod down for a child).
-          if (sessions.get(parentId)) {
-            const text = subagentDoneNotice(c.id, c.title, lastAssistantText(events));
-            await sessions
-              .prompt(parentId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "subagent")
-              .catch((e) => console.error(`[agent-host] subagent-completion inject failed for parent ${parentId}:`, e));
-          }
-          await sessions.end(c.id as SessionId).catch((e) =>
-            console.error(`[agent-host] subagent cleanup (end) failed for ${c.id}:`, e),
-          );
-        })();
+        void reportCompletion(c.id as SessionId, c.parentId as SessionId);
       }
     }, config.idleSweepIntervalMs);
     subagentWatchTimer.unref?.();
