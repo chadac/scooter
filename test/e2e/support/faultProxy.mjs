@@ -97,6 +97,10 @@ export function startFaultProxy({ port, targetHost, targetPort }) {
           forwarded += 1;
           if (fault.mode === "killAfter" && forwarded >= (fault.n ?? 1)) {
             killed = true;
+            // ONE-SHOT: disarm so the UI's reconnect gets a clean stream and the
+            // turn can actually complete (the point is to prove recovery, not to
+            // wedge every connection forever).
+            fault = { mode: "none" };
             proxyRes.destroy(); // abrupt close → the UI must reconnect + re-fold
             res.end();
           }
