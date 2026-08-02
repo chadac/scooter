@@ -58,6 +58,28 @@ function sseFetch(frames: unknown[], tailEvents: unknown[] = []): typeof fetch {
 
 const EMPTY_INPUT = { threadId: "c1", runId: "r1", messages: [], tools: [], context: [], state: {}, forwardedProps: {} } as unknown as RunAgentInput;
 
+/** A full snapshot of the UI-visible surface an IntegrityAgent drives, so a
+ *  recovery test can assert the WHOLE state healed (chat feed + queue + running +
+ *  interrupts + error), not just one field. `feed` is the folded message text so a
+ *  test can prove the transcript itself is intact after a reconnect. */
+function uiState(agent: ReturnType<typeof createIntegrityAgent>) {
+  const messages = (agent as unknown as { messages: Array<{ role?: string; content?: unknown }> }).messages ?? [];
+  const feed = messages.map((m) => {
+    const c = m.content;
+    const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => (p as { text?: string }).text ?? "").join("") : "";
+    return { role: m.role, text };
+  });
+  return {
+    feed,
+    feedText: feed.map((m) => m.text).join(" | "),
+    running: agent.runIsActive(),
+    activeTool: agent.activeTool(),
+    queue: agent.getQueuedMessages().map((q) => q.text),
+    interrupts: agent.getPendingInterrupts().map((i) => i.id),
+    runError: agent.getRunError(),
+  };
+}
+
 describe("IntegrityAgent", () => {
   it("run() emits the integrity log's events as BaseEvents (text + tool call + reasoning)", async () => {
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(FRAMES) });
@@ -668,6 +690,101 @@ describe("IntegrityAgent", () => {
     // One-shot: exactly ONE healing reconnect for the pending set (conn 1 initial +
     // conn 2 the single re-fold). NOT a reconnect every window.
     expect(conn).toBe(2);
+
+    stop();
+    agent.dispose();
+  });
+
+  it("IDLE WATCHDOG: recovery heals the WHOLE UI surface at once (feed + running + queue + interrupts + error)", async () => {
+    // A realistic 'agent seemed dead' snapshot: the live stream shows a completed
+    // first turn, a SECOND run in flight (RUN_STARTED), a phantom queued follow-up,
+    // a stale error banner, AND a stuck interrupt — because the live frames that
+    // would have cleared each (RUN_FINISHED, QUEUE_UPDATED([]), the next
+    // RUN_STARTED, PERMISSION_RESOLVED) were all dropped. One watchdog reconnect
+    // re-folds the persisted log and every field must heal together.
+    let conn = 0;
+    const stuckBody = () => {
+      const enc = new TextEncoder();
+      const frames = [
+        // First turn: a real user message + assistant reply (must SURVIVE recovery).
+        { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" } },
+        { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "list the files" } },
+        { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "u1" } },
+        { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+        { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" } },
+        { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "here you go" } },
+        { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "a1" } },
+        { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+        // A stale RUN_ERROR the NEXT run should clear (self-heal class).
+        { kind: "event", event: { type: "RUN_ERROR", message: "transient blip" } },
+        // Second run starts + a follow-up queues behind it + a permission interrupt.
+        { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } },
+        { kind: "event", event: { type: "QUEUE_UPDATED", items: [{ id: "q1", text: "and then delete tmp", priority: 0 }] } },
+        { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-1", outcome: { type: "interrupt", interrupts: [{ id: "perm1", reason: "confirmation", message: "ok to delete?" }] } } },
+        { kind: "synced" },
+        // ...then the stream goes SILENT. The frames that would resolve r2 +
+        // clear the queue + settle perm1 never arrive on this connection.
+      ];
+      return new ReadableStream({
+        start(c) {
+          for (const f of frames) c.enqueue(enc.encode(`data: ${JSON.stringify(f)}\n\n`));
+          // deliberately DO NOT close.
+        },
+      });
+    };
+    // Connection 2 — the PERSISTED log, fully resolved: r2 finished, the queue
+    // cleared, the error superseded, the permission settled.
+    const healedBody = [
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "list the files" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "u1" } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "here you go" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "a1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "a2", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "a2", delta: "done, tmp deleted" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "a2" } },
+      { kind: "event", event: { type: "PERMISSION_RESOLVED", toolCallId: "perm1", optionId: "allow" } },
+      { kind: "event", event: { type: "QUEUE_UPDATED", items: [] } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r2" } },
+      { kind: "synced" },
+    ].map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(stuckBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(healedBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl, idleReconnectMs: 80 });
+    const stop = agent.renderPump();
+
+    // BEFORE recovery: the UI is visibly wedged on multiple fronts.
+    await new Promise((r) => setTimeout(r, 60));
+    const before = uiState(agent);
+    expect(before.running).toBe(true);                    // r2 stuck running
+    expect(before.queue).toEqual(["and then delete tmp"]); // phantom queue
+    expect(before.interrupts).toContain("perm1");          // stuck approval
+    expect(before.feedText).toContain("here you go");      // first turn present
+
+    // AFTER the watchdog reconnect: EVERY field heals from the persisted log.
+    await new Promise((r) => setTimeout(r, 400));
+    const after = uiState(agent);
+    expect(conn).toBeGreaterThanOrEqual(2);                // a reconnect happened
+    expect(after.running).toBe(false);                     // r2 finished
+    expect(after.activeTool).toBeNull();
+    expect(after.queue).toEqual([]);                       // queue cleared
+    expect(after.interrupts).not.toContain("perm1");       // approval settled
+    expect(after.runError).toBeNull();                     // error superseded
+    // The transcript is intact AND grew (the second turn's reply is now folded).
+    expect(after.feedText).toContain("here you go");
+    expect(after.feedText).toContain("done, tmp deleted");
 
     stop();
     agent.dispose();
