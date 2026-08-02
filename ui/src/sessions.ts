@@ -467,18 +467,26 @@ export function filteredSessions(state: State): Session[] {
   );
 }
 
-/** A sidebar row + its nesting depth (0 = top-level, 1 = a subagent under it). */
+/** A sidebar row + its nesting depth (0 = top-level, 1 = a subagent under it).
+ *  `childCount` is set on a COLLAPSED parent (its subagents hidden) so the row can
+ *  show a "▸ N subagents" affordance; 0 when expanded or childless. */
 export interface SidebarRow {
   session: Session;
   depth: number;
+  childCount: number;
 }
 
 /** Order a flat session list as a hierarchy for the sidebar: each parent is
  *  immediately followed by its subagents (depth 1). A child whose parent is NOT in
  *  the list (e.g. filtered out) renders as a top-level row so it's never lost.
  *  Preserves the input order among siblings. Multi-level trees flatten to depth-1
- *  under the nearest present ancestor (one indent level — the UI stays simple). */
-export function nestSubagents(sessions: Session[]): SidebarRow[] {
+ *  under the nearest present ancestor (one indent level — the UI stays simple).
+ *
+ *  AUTO-COLLAPSE: when `activeId` is given, a parent's subagents are shown only
+ *  when that parent OR one of its subagents is the active conversation; otherwise
+ *  the children are hidden and the parent carries `childCount` (so the UI can show
+ *  "▸ N"). With no activeId, every parent is expanded. */
+export function nestSubagents(sessions: Session[], activeId?: string): SidebarRow[] {
   const present = new Set(sessions.map((s) => s.id));
   const childrenOf = new Map<string, Session[]>();
   const tops: Session[] = [];
@@ -492,8 +500,14 @@ export function nestSubagents(sessions: Session[]): SidebarRow[] {
   }
   const rows: SidebarRow[] = [];
   for (const top of tops) {
-    rows.push({ session: top, depth: 0 });
-    for (const child of childrenOf.get(top.id) ?? []) rows.push({ session: child, depth: 1 });
+    const children = childrenOf.get(top.id) ?? [];
+    // Expand this parent's subagents iff no activeId (show-all) OR the active
+    // conversation is this parent or one of its children.
+    const onActiveBranch =
+      activeId === undefined || activeId === top.id || children.some((ch) => ch.id === activeId);
+    const expand = onActiveBranch || children.length === 0;
+    rows.push({ session: top, depth: 0, childCount: expand ? 0 : children.length });
+    if (expand) for (const child of children) rows.push({ session: child, depth: 1, childCount: 0 });
   }
   return rows;
 }

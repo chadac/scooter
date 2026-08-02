@@ -41,8 +41,10 @@ export function Sidebar() {
   const state = useSessions();
   const { currentId, scope, query, providerFilter, labelMode } = state;
   // Hierarchy: each parent followed by its subagents (depth 1). filteredSessions
-  // applies Mine/provider/query; nestSubagents groups children under parents.
-  const rows = nestSubagents(filteredSessions(state));
+  // applies Mine/provider/query; nestSubagents groups children under parents and
+  // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
+  // conversation — so an inactive conversation's subagents don't clutter the list.
+  const rows = nestSubagents(filteredSessions(state), currentId);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // How many advanced filters are "active" (non-default) — a badge on the toggle so
@@ -204,7 +206,7 @@ export function Sidebar() {
             No chats match.
           </p>
         )}
-        {rows.map(({ session: s, depth }) => (
+        {rows.map(({ session: s, depth, childCount }) => (
           <div
             key={s.id}
             data-testid="session-item"
@@ -226,6 +228,16 @@ export function Sidebar() {
             >
               {depth > 0 && <span className="me-1 text-muted-foreground" aria-hidden>↳</span>}
               <span data-testid="session-title">{sessionLabel(s, labelMode)}</span>
+              {/* Collapsed parent: a compact "▸ N subagents" hint (they expand when
+                  this conversation is opened — the auto-collapse behavior). */}
+              {childCount > 0 && (
+                <span
+                  data-testid="subagent-count"
+                  className="ms-1.5 text-xs text-muted-foreground"
+                >
+                  ▸ {childCount} subagent{childCount === 1 ? "" : "s"}
+                </span>
+              )}
             </button>
             {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
             {s.sources && s.sources.length > 0 && (

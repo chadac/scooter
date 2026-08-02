@@ -48,6 +48,7 @@ import {
   type SubagentManager,
   type SubagentStatus,
 } from "./agent/subagentTools.js";
+import { lastRunCompleted } from "./session/danglingRun.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { SchedulerToolsWiring } from "./agent/schedulerTools.js";
@@ -1010,30 +1011,36 @@ export async function main(
   // CLI (final message returns to the parent). SUBAGENT_WATCH=0 disables.
   let subagentWatchTimer: ReturnType<typeof setInterval> | undefined;
   if (process.env.SUBAGENT_WATCH !== "0") {
-    const notified = new Set<SessionId>(); // subagents already reported to their parent
-    const ranAtLeastOnce = new Set<SessionId>(); // saw it running -> a later idle = a completion
+    const notified = new Set<SessionId>(); // subagents already reported + cleaned up
     subagentWatchTimer = setInterval(() => {
       for (const c of sessions.list()) {
         if (c.parentId === undefined) continue; // top-level, not a subagent
         if (notified.has(c.id as SessionId)) continue;
-        const running = c.bridge?.queueState().running ?? false;
-        if (running) {
-          ranAtLeastOnce.add(c.id as SessionId);
-          continue;
-        }
-        // Idle now. It's a completion only if we saw it run (avoids announcing a
-        // just-spawned child before its first run even starts).
-        if (!ranAtLeastOnce.has(c.id as SessionId)) continue;
+        // A subagent is DONE when its bridge is idle AND its last run completed.
+        // Use the EVENT LOG (not an edge-detect of the live `running` flag) so a
+        // run that starts + finishes BETWEEN watcher ticks is still detected — that
+        // was the bug (a fast subagent never fired completion).
+        if (c.bridge?.queueState().running) continue; // still working
         const parentId = c.parentId as SessionId;
-        if (!sessions.get(parentId)) { notified.add(c.id as SessionId); continue; } // parent gone
-        notified.add(c.id as SessionId); // notify-once (mark before the async inject)
+        notified.add(c.id as SessionId); // mark before the async work (notify-once)
         void (async () => {
           const events = await collectEventsSafe(store.readEvents(c.id as SessionId));
-          const result = lastAssistantText(events);
-          const text = subagentDoneNotice(c.id, c.title, result);
-          await sessions
-            .prompt(parentId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "subagent")
-            .catch((e) => console.error(`[agent-host] subagent-completion inject failed for parent ${parentId}:`, e));
+          if (!lastRunCompleted(events)) {
+            notified.delete(c.id as SessionId); // hasn't actually run yet — re-check next tick
+            return;
+          }
+          // Report the result into the parent (its last assistant message), then
+          // CLEAN UP the finished subagent (end it — cascade-safe: it shares the
+          // parent's pod, so end() won't tear the pod down for a child).
+          if (sessions.get(parentId)) {
+            const text = subagentDoneNotice(c.id, c.title, lastAssistantText(events));
+            await sessions
+              .prompt(parentId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "subagent")
+              .catch((e) => console.error(`[agent-host] subagent-completion inject failed for parent ${parentId}:`, e));
+          }
+          await sessions.end(c.id as SessionId).catch((e) =>
+            console.error(`[agent-host] subagent cleanup (end) failed for ${c.id}:`, e),
+          );
         })();
       }
     }, config.idleSweepIntervalMs);

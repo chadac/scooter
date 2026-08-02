@@ -133,12 +133,30 @@ describe("visibleSessions (Mine/All owner filter)", () => {
 describe("nestSubagents (sidebar hierarchy)", () => {
   const s = (id: string, parentId?: string): Session => ({ id, title: id, createdAt: 1, parentId });
 
-  it("orders each parent immediately followed by its children, with depth", () => {
+  it("with no activeId, expands every parent's children", () => {
     // Flat input (arbitrary order); children of p1 + p2 interleaved.
     const flat = [s("p1"), s("p2"), s("c1a", "p1"), s("c2a", "p2"), s("c1b", "p1")];
     const rows = nestSubagents(flat);
     expect(rows.map((r) => r.session.id)).toEqual(["p1", "c1a", "c1b", "p2", "c2a"]);
     expect(rows.map((r) => r.depth)).toEqual([0, 1, 1, 0, 1]);
+  });
+
+  it("AUTO-COLLAPSES a parent's children when neither the parent nor a child is active", () => {
+    const flat = [s("p1"), s("c1a", "p1"), s("c1b", "p1"), s("p2"), s("c2a", "p2")];
+    // p2 is active -> p2's children expand; p1 is off the active branch -> collapsed.
+    const rows = nestSubagents(flat, "p2");
+    expect(rows.map((r) => r.session.id)).toEqual(["p1", "p2", "c2a"]);
+    // The COLLAPSED parent (p1) carries its child count so the UI can show "▸ 2".
+    expect(rows.find((r) => r.session.id === "p1")?.childCount).toBe(2);
+    // p2 is active + expanded, so its children are visible (childCount 0).
+    expect(rows.find((r) => r.session.id === "p2")?.childCount).toBe(0);
+  });
+
+  it("expands a parent's children when a CHILD is the active conversation", () => {
+    const flat = [s("p1"), s("c1a", "p1"), s("c1b", "p1"), s("p2"), s("c2a", "p2")];
+    // c1a (a child of p1) is active -> p1's branch expands, p2 collapses.
+    const rows = nestSubagents(flat, "c1a");
+    expect(rows.map((r) => r.session.id)).toEqual(["p1", "c1a", "c1b", "p2"]);
   });
 
   it("a child whose parent is NOT in the list renders as a top-level row", () => {

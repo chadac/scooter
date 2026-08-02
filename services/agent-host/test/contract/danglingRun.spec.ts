@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { hasDanglingRun } from "../../src/session/danglingRun.js";
+import { hasDanglingRun, lastRunCompleted } from "../../src/session/danglingRun.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
 const started = (r: string): AguiEvent => ({ type: "RUN_STARTED", threadId: "c", runId: r });
@@ -35,5 +35,28 @@ describe("hasDanglingRun", () => {
 
   it("true when a mid-conversation run dangles at the very end", () => {
     expect(hasDanglingRun([started("r1"), finished("r1"), started("r2"), text(), text()])).toBe(true);
+  });
+});
+
+describe("lastRunCompleted (subagent completion signal)", () => {
+  it("true when a run started and finished (the fast-run-between-ticks case)", () => {
+    // The bug: a subagent run that starts + finishes within one watcher interval.
+    // The event log still shows the completion, so this must be true.
+    expect(lastRunCompleted([started("r1"), text(), finished("r1")])).toBe(true);
+  });
+
+  it("true when the run errored (still a completed run to report)", () => {
+    expect(lastRunCompleted([started("r1"), errored("r1")])).toBe(true);
+  });
+
+  it("false while a run is still in flight (dangling — not done yet)", () => {
+    expect(lastRunCompleted([started("r1"), text()])).toBe(false);
+    // A finished run followed by a NEW in-flight run: not complete yet.
+    expect(lastRunCompleted([started("r1"), finished("r1"), started("r2"), text()])).toBe(false);
+  });
+
+  it("false when there are no runs yet (just spawned, hasn't started)", () => {
+    expect(lastRunCompleted([])).toBe(false);
+    expect(lastRunCompleted([text()])).toBe(false);
   });
 });

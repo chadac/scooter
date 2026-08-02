@@ -27,3 +27,19 @@ export function hasDanglingRun(events: AguiEvent[]): boolean {
   }
   return false; // no run markers at all
 }
+
+/**
+ * True iff the conversation has run at least once AND its last run COMPLETED
+ * (RUN_FINISHED/RUN_ERROR seen before any RUN_STARTED, scanning from the end).
+ * The completion signal for the subagent watcher — robust to a run that starts
+ * and finishes BETWEEN watcher ticks (unlike edge-detecting the live bridge's
+ * `running` flag, which misses a fast run entirely).
+ */
+export function lastRunCompleted(events: AguiEvent[]): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const t = events[i].type;
+    if (t === "RUN_FINISHED" || t === "RUN_ERROR") return true; // a completed run exists
+    if (t === "RUN_STARTED") return false; // last run is still in flight (dangling)
+  }
+  return false; // no runs yet
+}
