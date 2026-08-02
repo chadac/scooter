@@ -64,6 +64,10 @@ export interface PendingInterrupt {
 /** Result of reading one integrity SSE connection to completion. */
 type ConnectionOutcome = "not-found" | "closed" | "error";
 
+/** A stable empty-queue reference (so getQueuedMessages returns the SAME array
+ *  each idle call — a fresh [] every render would defeat React memoization). */
+const EMPTY_QUEUE: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+
 export class IntegrityAgent extends AbstractAgent {
   private readonly cfg: IntegrityAgentConfig;
   private readonly base: string;
@@ -242,7 +246,12 @@ export class IntegrityAgent extends AbstractAgent {
    *  client-only and vanished on refresh). Latest-snapshot-wins. */
   private queued: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
   getQueuedMessages(): ReadonlyArray<{ id: string; text: string; priority: number }> {
-    return this.queued;
+    // INVARIANT: the queue only holds items WHILE a run is draining them. If the
+    // run is idle, there is nothing queued — regardless of the last QUEUE_UPDATED
+    // we folded. This self-heals a MISSED clearing snapshot (QUEUE_UPDATED([]) that
+    // never reached the live client after a run finished), which otherwise left a
+    // phantom "message stuck in the queue" in the sidebar until a refresh.
+    return this.running ? this.queued : EMPTY_QUEUE;
   }
 
   /** messageId -> its attached image refs (from MESSAGE_IMAGES). The base applier

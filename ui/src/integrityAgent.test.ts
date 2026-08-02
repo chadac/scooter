@@ -511,6 +511,24 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("getQueuedMessages() is EMPTY once the run goes idle, even if the clearing snapshot was missed", async () => {
+    // The reported "message stuck in the queue" bug: a QUEUE_UPDATED with an item
+    // arrives, then the run FINISHES, but the clearing QUEUE_UPDATED([]) never
+    // reached the live client. An idle run cannot hold a queued item (the queue
+    // only has items WHILE a run is draining them), so the UI must show it empty.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "QUEUE_UPDATED", items: [{ id: "q1", text: "stuck follow-up", priority: 0 }] } },
+      // Run finishes — no clearing QUEUE_UPDATED([]) follows (the missed-snapshot case).
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getQueuedMessages()).toEqual([]); // no phantom — the run is idle
+    agent.dispose();
+  });
+
   it("cancel() POSTs the agent-host cancel endpoint for the conversation", async () => {
     const fetchSpy = vi.fn(async () => new Response("", { status: 202 })) as unknown as typeof fetch;
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
