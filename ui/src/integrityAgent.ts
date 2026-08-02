@@ -35,6 +35,13 @@ export interface IntegrityAgentConfig extends AgentHostConfig {
   model?: string;
   /** Injectable fetch (tests). */
   fetchImpl?: typeof fetch;
+  /** IDLE-WATCHDOG threshold (ms). If a run appears RUNNING but the stream has
+   *  gone silent for this long, force a reconnect — the re-fold from the persisted
+   *  log re-derives the correct state (healing a DROPPED live RUN_FINISHED /
+   *  PERMISSION_RESOLVED that left the UI stuck "busy" — the "agent seems dead"
+   *  class). Default 25s; small values in tests. 0 disables. See
+   *  todo/docs/SSE_RESILIENCE.md. */
+  idleReconnectMs?: number;
 }
 
 /** A resume answer to a pending interrupt (permission/option choice). */
@@ -110,6 +117,10 @@ export class IntegrityAgent extends AbstractAgent {
   runIsActive(): boolean {
     return this.running;
   }
+  /** Wall-clock (ms) of the last frame received on the live stream — the
+   *  idle-watchdog forces a reconnect if `running` is true but this hasn't moved
+   *  for idleReconnectMs (a dropped terminal event left the UI stuck "busy"). */
+  private lastActivityAt = Date.now();
 
   // The tool call currently in flight during the active run (its name, e.g. "bash"),
   // and the ts of the last RUN_STARTED — so the UI can show WHAT it's doing and for
@@ -441,8 +452,21 @@ export class IntegrityAgent extends AbstractAgent {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      // Race each read against the abort signal: a STALLED body (a stream that
+      // never emits and never closes — the "agent seems dead" wedge) must still be
+      // abortable so the idle-watchdog can force a reconnect. A polyfilled/mock
+      // ReadableStream may not honor the fetch signal itself, so we honor it here.
+      const aborted = new Promise<{ aborted: true }>((resolve) => {
+        if (controller.signal.aborted) return resolve({ aborted: true });
+        controller.signal.addEventListener("abort", () => resolve({ aborted: true }), { once: true });
+      });
       for (;;) {
-        const { value, done } = await reader.read();
+        const r = await Promise.race([reader.read(), aborted]);
+        if ("aborted" in r) {
+          reader.cancel().catch(() => {});
+          return "error";
+        }
+        const { value, done } = r;
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         let idx: number;
@@ -526,6 +550,9 @@ export class IntegrityAgent extends AbstractAgent {
     let closed = false;
     let connSub: Subscription | undefined;
     let controller: AbortController | undefined;
+    // Set by the idle-watchdog when IT forced the disconnect, so the loop reconnects
+    // IMMEDIATELY (skipping the normal drop-backoff) — we WANT to re-fold the log now.
+    let watchdogForced = false;
     // True once seedTail() has painted the recent tail. Used to SKIP the first
     // connection's blank-to-[] so the seeded tail stays on screen while the full log
     // replays (renders are suppressed until `synced` anyway), instead of flashing
@@ -594,6 +621,8 @@ export class IntegrityAgent extends AbstractAgent {
           headers,
           controller,
           (e) => {
+            // The stream is alive — reset the idle-watchdog clock.
+            this.lastActivityAt = Date.now();
             // Track the pending interrupt as it rides the log: a RUN_STARTED means the
             // (resumed) run is live again — clear any pending; a RUN_FINISHED with an
             // interrupt outcome pauses the run awaiting a user answer. The base
@@ -647,6 +676,11 @@ export class IntegrityAgent extends AbstractAgent {
           // Conversation not created yet — back off with exponential delay.
           await delay(notFoundDelay);
           notFoundDelay = Math.min(notFoundDelay * 2, 5000);
+        } else if (watchdogForced) {
+          // The idle-watchdog forced this reconnect (a wedged/stalled stream) —
+          // reconnect NOW to re-fold the persisted log and heal stuck state.
+          watchdogForced = false;
+          notFoundDelay = 500;
         } else {
           // A real drop/error: brief pause, then reconnect + re-replay.
           notFoundDelay = 500;
@@ -655,8 +689,44 @@ export class IntegrityAgent extends AbstractAgent {
       }
     };
 
+    // IDLE WATCHDOG: if the UI is in a NON-idle state (a run "running", or an
+    // interrupt pending) but the stream has gone silent, force a reconnect by
+    // aborting the current connection. The reconnect re-folds from the PERSISTED
+    // log (which HAS the dropped terminal frame — RUN_FINISHED / PERMISSION_RESOLVED
+    // — that the LIVE stream missed), re-deriving the correct state. This is the
+    // general cure for the "agent seems dead" class. 0 disables.
+    //
+    // A `running` run re-arms every idle window (a hung run should keep retrying).
+    // A pending INTERRUPT only fires ONCE per distinct pending set: a single
+    // re-fold heals a dropped PERMISSION_RESOLVED; if it's still pending after
+    // that, the approval is genuinely open (a real user prompt) and we must NOT
+    // churn a reconnect every T seconds while the user decides.
+    const idleMs = this.cfg.idleReconnectMs ?? 25_000;
+    let watchdog: ReturnType<typeof setInterval> | undefined;
+    if (idleMs > 0) {
+      this.lastActivityAt = Date.now();
+      let healedInterruptKey: string | null = null; // pending-set we've already re-folded for
+      watchdog = setInterval(() => {
+        if (closed) return;
+        if (Date.now() - this.lastActivityAt < idleMs) return;
+        const pending = this.getPendingInterrupts();
+        // Key the pending set so a NEW interrupt re-arms the one-shot heal.
+        const interruptKey = pending.length ? pending.map((i) => i.id).sort().join(",") : null;
+        const runStuck = this.running;
+        const interruptStuck = interruptKey !== null && interruptKey !== healedInterruptKey;
+        if (!runStuck && !interruptStuck) return;
+        if (interruptStuck) healedInterruptKey = interruptKey;
+        // Stuck: nudge the loop to reconnect + re-fold from the log.
+        this.lastActivityAt = Date.now(); // avoid re-firing while the reconnect runs
+        watchdogForced = true; // reconnect promptly (no drop-backoff delay)
+        controller?.abort();
+      }, Math.max(50, Math.floor(idleMs / 2)));
+      (watchdog as { unref?: () => void }).unref?.();
+    }
+
     const stop = () => {
       closed = true;
+      if (watchdog) clearInterval(watchdog);
       controller?.abort();
       connSub?.unsubscribe();
       if (this.stopPump === stop) this.stopPump = undefined;

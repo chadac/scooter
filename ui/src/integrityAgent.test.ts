@@ -529,6 +529,150 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("IDLE WATCHDOG: a run stuck 'running' (dropped RUN_FINISHED) recovers via a forced reconnect", async () => {
+    // The "agent seems dead" repro: connection 1 streams RUN_STARTED then goes
+    // SILENT (the live RUN_FINISHED was dropped) with the stream held open, so
+    // `running` sticks true forever. The idle-watchdog forces a reconnect; the
+    // re-fold from the log (connection 2, which HAS RUN_FINISHED) heals `running`.
+    let conn = 0;
+    // A never-closing body for connection 1 (stream stays open, no terminal event).
+    const stuckBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+          // deliberately DO NOT close — the connection stays open + silent.
+        },
+      });
+    };
+    // Connection 2: the full, correct log (RUN_STARTED + RUN_FINISHED), then close.
+    const healedBody = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ].map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(stuckBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(healedBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 80, // tiny watchdog so the test doesn't wait 25s
+    });
+    const stop = agent.renderPump();
+
+    // Wait for the stuck connection to establish (running=true).
+    await new Promise((r) => setTimeout(r, 60));
+    expect(agent.runIsActive()).toBe(true); // stuck "running"
+
+    // The watchdog fires (~80ms idle) -> aborts conn 1 -> reconnects (conn 2) ->
+    // re-folds the log with RUN_FINISHED -> running clears.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(conn).toBeGreaterThanOrEqual(2); // a reconnect happened
+    expect(agent.runIsActive()).toBe(false); // healed
+
+    stop();
+    agent.dispose();
+  });
+
+  it("IDLE WATCHDOG: a stuck pending interrupt (dropped PERMISSION_RESOLVED) heals via a forced reconnect", async () => {
+    // A broker/external interrupt is settled ONLY by PERMISSION_RESOLVED. If that
+    // live frame is dropped, the approval sticks forever with NO active run to
+    // re-arm a reconnect. The watchdog also triggers on a stale PENDING INTERRUPT
+    // (once per pending set) so the re-fold from the log — which HAS the
+    // PERMISSION_RESOLVED — clears it.
+    let conn = 0;
+    const stuckBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          // An external interrupt raised, then the stream goes silent (the settling
+          // PERMISSION_RESOLVED was dropped). No RUN is running.
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-1", outcome: { type: "interrupt", interrupts: [{ id: "aws1", reason: "confirmation", message: "approve AWS?" }] } } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+          // deliberately DO NOT close.
+        },
+      });
+    };
+    // Connection 2: the full log, now WITH the settling PERMISSION_RESOLVED.
+    const healedBody = [
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-1", outcome: { type: "interrupt", interrupts: [{ id: "aws1", reason: "confirmation", message: "approve AWS?" }] } } },
+      { kind: "event", event: { type: "PERMISSION_RESOLVED", toolCallId: "aws1", optionId: "approve" } },
+      { kind: "synced" },
+    ].map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(stuckBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(healedBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 80,
+    });
+    const stop = agent.renderPump();
+
+    await new Promise((r) => setTimeout(r, 60));
+    expect(agent.getPendingInterrupts().map((p) => p.id)).toContain("aws1"); // stuck approval
+    expect(agent.runIsActive()).toBe(false); // NOT running — only the interrupt is stuck
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(conn).toBeGreaterThanOrEqual(2); // a reconnect happened
+    expect(agent.getPendingInterrupts().map((p) => p.id)).not.toContain("aws1"); // healed
+
+    stop();
+    agent.dispose();
+  });
+
+  it("IDLE WATCHDOG: a LEGITIMATELY pending interrupt does not churn reconnects forever (one-shot per set)", async () => {
+    // A real approval the user hasn't answered stays pending in the log across a
+    // re-fold. The watchdog must re-fold at most ONCE for that pending set — never
+    // reconnect every T seconds while the user decides (that would thrash the log).
+    let conn = 0;
+    const interruptFrame = { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "ext-1", outcome: { type: "interrupt", interrupts: [{ id: "aws1", reason: "confirmation", message: "approve AWS?" }] } } };
+    // Every connection serves the SAME still-pending log then stays open + silent.
+    const pendingBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify(interruptFrame)}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+        },
+      });
+    };
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      return new Response(pendingBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl, idleReconnectMs: 80 });
+    const stop = agent.renderPump();
+
+    // Give it long enough for MANY watchdog windows (5+ at 80ms) to elapse.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(agent.getPendingInterrupts().map((p) => p.id)).toContain("aws1"); // still pending (real approval)
+    // One-shot: exactly ONE healing reconnect for the pending set (conn 1 initial +
+    // conn 2 the single re-fold). NOT a reconnect every window.
+    expect(conn).toBe(2);
+
+    stop();
+    agent.dispose();
+  });
+
   it("cancel() POSTs the agent-host cancel endpoint for the conversation", async () => {
     const fetchSpy = vi.fn(async () => new Response("", { status: 202 })) as unknown as typeof fetch;
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
