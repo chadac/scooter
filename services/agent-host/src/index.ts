@@ -103,6 +103,11 @@ export interface AgentHostConfig {
    *  window, surface a RUN_ERROR so the conversation unfreezes (the goose-Bedrock-
    *  credential hang produced zero events and never returned). 0 = off. Default 60s. */
   firstActivityTimeoutMs: number;
+  /** Mid-stream progress-stall watchdog (ms): once a run is alive, if it makes no
+   *  ACP progress for this long while still running (and not paused on a permission
+   *  request), force-terminate it with a RUN_ERROR so a single hung run can't
+   *  permanently block the conversation's queue. 0 = off. Default 3 min. */
+  progressStallMs: number;
   /** OpenTelemetry metrics (cost + usage + operational), exported over OTLP.
    *  OFF by default. Endpoint/headers come from the standard OTEL_* env. */
   observability: {
@@ -149,6 +154,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     // ms, surface a RUN_ERROR so the conversation unfreezes (the goose-Bedrock-
     // credential hang). Default 60s; FIRST_ACTIVITY_TIMEOUT_MS=0 disables.
     firstActivityTimeoutMs: Number(process.env.FIRST_ACTIVITY_TIMEOUT_MS ?? 60 * 1000),
+    progressStallMs: Number(process.env.PROGRESS_STALL_MS ?? 3 * 60 * 1000),
     fakeSandbox,
     // The model catalog (rich: ids + hints + default) is the source of truth;
     // `model` (the default) + `availableModels` (the ids) are derived so
@@ -1121,6 +1127,7 @@ export async function main(
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
+      progressStallMs: config.progressStallMs,
       acpClient: () =>
         // claude-code: drive the agent via the Claude Agent SDK (isolated package)
         // so its tools run IN THE SANDBOX (via ExecBackend) instead of the

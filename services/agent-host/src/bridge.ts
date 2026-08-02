@@ -392,6 +392,21 @@ export interface BridgeDeps {
    * start). Default 60_000; 0 disables.
    */
   firstActivityTimeoutMs?: number;
+
+  /**
+   * Watchdog for a run that WEDGES MID-STREAM: distinct from firstActivityTimeoutMs
+   * (which only covers the FIRST activity). Once a run is alive, every ACP update
+   * bumps a "last progress" clock; if it goes this many ms with NO new update while
+   * still running, we conclude it's stuck (a tool call that never returns, a
+   * deferred cancel that never fires — e.g. cancelWhenToolsIdle armed but
+   * inFlightTools never reaches 0, whose timeout fallback is itself disabled when
+   * priorityInterruptMs=0). On timeout we cancel the run + emit RUN_ERROR so the
+   * conversation's queue drains instead of blocking forever — a single hung run can
+   * NEVER permanently wedge the pump. A run legitimately PAUSED on a permission
+   * request is NOT counted as stalled (it's waiting on the user, e.g. an AWS
+   * approval). Default 180_000 (3 min); 0 disables.
+   */
+  progressStallMs?: number;
 }
 
 // Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
@@ -462,6 +477,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const terminalCommands = new Map<string, string>();
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
+  const progressStallMs = deps.progressStallMs ?? 180_000;
   // Resolved on first start(); a ready client or the result of the factory.
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
@@ -564,6 +580,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // late update re-firing anything once the run is alive.
     sawActivity?: boolean;
     activityTimer?: ReturnType<typeof setTimeout>;
+    // The mid-stream progress-stall watchdog (see progressStallMs). `lastProgressAt`
+    // is bumped by every ACP update; `stallTimer` is a rearming timer that fires the
+    // guard only if the run is still running AND made no progress within the window
+    // AND isn't paused on a permission request.
+    lastProgressAt?: number;
+    stallTimer?: ReturnType<typeof setTimeout>;
     // Set once a terminal event (RUN_FINISHED/RUN_ERROR) has been emitted for this
     // run — by the watchdog OR the normal path — so the other path can't emit a
     // SECOND terminal (which would corrupt the @ag-ui stream).
@@ -637,6 +659,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         st.activityTimer = undefined;
       }
     }
+    // Any ACP update is PROGRESS — bump the stall clock so the mid-stream watchdog
+    // only fires on genuine silence, not on a slow-but-live run.
+    st.lastProgressAt = Date.now();
     switch (u.sessionUpdate) {
       case "agent_message_chunk": {
         // Reasoning and text are distinct streams; close reasoning first.
@@ -818,6 +843,43 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }, firstActivityTimeoutMs);
     }
 
+    // PROGRESS-STALL watchdog: a rearming timer that force-terminates a run wedged
+    // MID-STREAM (alive, then silent) so a single hung run can never permanently
+    // block the pump's queue. Distinct from the DOA watchdog (first-activity only).
+    // Excludes a run legitimately PAUSED on a permission request (waiting on the
+    // user — e.g. an AWS approval — is not a stall).
+    if (progressStallMs > 0) {
+      st.lastProgressAt = Date.now();
+      const armStall = () => {
+        st.stallTimer = setTimeout(() => {
+          if (st.ended || st.terminated) return;
+          // Paused on a permission answer → not stalled; keep watching.
+          if (pendingPermissions.size > 0) return armStall();
+          const idle = Date.now() - (st.lastProgressAt ?? startedAt);
+          if (idle < progressStallMs) return armStall(); // progress since last arm — re-check later
+          st.ended = true;
+          st.terminated = true; // this watchdog owns the terminal event now
+          closeOpenText(st);
+          closeOpenReasoning(st);
+          outcome = "error";
+          emit({
+            type: "RUN_ERROR",
+            message:
+              "The agent stopped responding mid-task — it was working, then went silent " +
+              "and made no further progress. The run was ended so the conversation isn't " +
+              "stuck; your next message will start a fresh run. If this recurs, check the " +
+              "agent-host logs.",
+            code: "progress_stall_timeout",
+          });
+          // Unblock the wedged agent so the next prompt gets a fresh run.
+          void self.cancel(runId).catch(() => {});
+        }, progressStallMs);
+        // Don't let this timer keep the process alive on its own.
+        (st.stallTimer as { unref?: () => void }).unref?.();
+      };
+      armStall();
+    }
+
     // REVIVE reinjection: on this bridge's FIRST prompt, snapshot the persisted
     // log (the PRIOR turns) BEFORE we append the current user turn below, so the
     // transcript never includes — and can't duplicate — the message we're about
@@ -955,10 +1017,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         }
       }
     } finally {
-      // Always clear the watchdog timer (normal completion, error, or already fired).
+      // Always clear the watchdog timers (normal completion, error, or already fired).
       if (st.activityTimer) {
         clearTimeout(st.activityTimer);
         st.activityTimer = undefined;
+      }
+      if (st.stallTimer) {
+        clearTimeout(st.stallTimer);
+        st.stallTimer = undefined;
       }
       if (currentRun === st) currentRun = undefined;
       // Metrics hook — fire-and-forget, never let it break the run.

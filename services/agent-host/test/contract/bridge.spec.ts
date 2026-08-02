@@ -1121,6 +1121,108 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
   });
 });
 
+describe("bridge progress-stall watchdog (progressStallMs)", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, progressStallMs: number) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      // DOA watchdog off so it can't be the one firing — we isolate the STALL guard.
+      firstActivityTimeoutMs: 0,
+      progressStallMs,
+    });
+  };
+  const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+
+  it("fires RUN_ERROR when a live run makes NO progress for progressStallMs (mid-run wedge)", async () => {
+    const agent = createFakeAcpAgent();
+    // Emit ONE chunk (proves the run is alive — DOA can't explain this), then GATE
+    // so the run hangs with no further ACP updates: a mid-run wedge (a tool call
+    // that never returns, cancelWhenToolsIdle armed but inFlightTools never 0).
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "working on it" } } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 40); // 40ms stall ceiling for a fast test
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "do a big thing" });
+
+    await tick(90); // past the ceiling
+    const runError = events.find((e) => e.type === "RUN_ERROR") as { code?: string; message?: string } | undefined;
+    expect(runError).toBeDefined();
+    expect(runError!.code).toBe("progress_stall_timeout");
+    // EXACTLY ONE terminal — the stall guard cancels, which resolves the gated
+    // prompt(); st.terminated must suppress a second terminal.
+    const terminals = events.filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
+    expect(terminals.length).toBe(1);
+    agent.releaseGate();
+  });
+
+  it("does NOT fire while the run keeps making progress (each ACP update resets the clock)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "start" } } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 40);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "stream steadily" });
+
+    // Keep emitting activity every 20ms (< the 40ms ceiling) for ~120ms — a slow
+    // but LIVE run must never be force-killed.
+    for (let i = 0; i < 6; i++) {
+      await tick(20);
+      agent.emit({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `chunk ${i}` } });
+    }
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+    agent.releaseGate();
+  });
+
+  it("does NOT fire while the run is PAUSED on a permission request (a real approval must not be killed)", async () => {
+    const agent = createFakeAcpAgent();
+    // The run requests a permission and BLOCKS on the answer (the AWS-approval
+    // case). No ACP progress flows while it waits — but this is legitimate, not a
+    // wedge, so the stall guard must exclude it.
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "I need approval" } } },
+      { requestPermission: { toolCallId: "aws1", title: "Approve AWS?", options: [
+        { optionId: "allow", name: "Allow", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ] } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const bridge = mkBridge(agent, 40);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "spend money" });
+
+    // Wait well past the ceiling with the run paused awaiting the answer.
+    await tick(120);
+    // The pause surfaced as an INTERRUPT, NOT a stall-error.
+    const interrupt = events.find((e) => e.type === "RUN_FINISHED" && (e as { outcome?: { type?: string } }).outcome?.type === "interrupt");
+    expect(interrupt).toBeDefined();
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+  });
+
+  it("is disabled when progressStallMs is 0 (opt-out)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 0);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+    await tick(90);
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+    agent.releaseGate();
+  });
+});
+
 describe("clarifyRunError (context-overflow → clear message)", () => {
   it("rewrites known context-overflow errors to a start-a-new-chat nudge", () => {
     for (const raw of [
