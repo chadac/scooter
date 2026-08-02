@@ -128,6 +128,11 @@ export interface InterruptContextValue {
    *  the hydrate-silent-drop class) would go silent. Surfaced here so the UI can
    *  show a visible error banner. Cleared when the next run starts. */
   runError: string | null;
+  /** True when the live stream is being rejected with a 401/403 — an expired
+   *  ingress/auth session in front of the agent-host. Surfaced so the UI can show
+   *  a durable "session expired — reconnecting / sign in again" banner instead of
+   *  silently retrying forever. Self-clears once a reconnect succeeds. */
+  streamAuthError: boolean;
   /** Messages QUEUED behind the active run (empty if none). Sourced from the
    *  bridge run-queue's QUEUE_UPDATED snapshots on the integrity stream, so they
    *  survive a refresh + show across tabs (they used to be client-only). */
@@ -150,6 +155,7 @@ export const InterruptContext = createContext<InterruptContextValue>({
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
+  streamAuthError: false,
   queuedMessages: [],
   renderTick: 0,
 });
@@ -157,6 +163,11 @@ export const InterruptContext = createContext<InterruptContextValue>({
 export const useConversationInterrupts = () => useContext(InterruptContext);
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
+// Idle-watchdog reconnect threshold (ms). Overridable so e2e fault tests can set a
+// small value (via VITE_IDLE_RECONNECT_MS) and not wait the 25s production default.
+const IDLE_RECONNECT_MS = import.meta.env.VITE_IDLE_RECONNECT_MS
+  ? Number(import.meta.env.VITE_IDLE_RECONNECT_MS)
+  : undefined;
 
 export function RuntimeProvider({ children }: Readonly<{ children: ReactNode }>) {
   const { currentId } = useSessions();
@@ -189,7 +200,7 @@ function ConversationRuntime({
   // the reply (the model-switch-mid-conversation bug). Instead we keep the agent
   // stable and update the model in place (effect below).
   const agent = useMemo(
-    () => createIntegrityAgent({ baseUrl: BASE_URL, conversationId, model }),
+    () => createIntegrityAgent({ baseUrl: BASE_URL, conversationId, model, idleReconnectMs: IDLE_RECONNECT_MS }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [conversationId],
   );
@@ -296,6 +307,7 @@ function ConversationRuntime({
   const [contextTokens, setContextTokens] = useState<{ used: number; total: number } | null>(null);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
+  const [streamAuthError, setStreamAuthError] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<
     ReadonlyArray<{ id: string; text: string; priority: number }>
   >([]);
@@ -326,6 +338,7 @@ function ConversationRuntime({
       if (!active) setCancelState("idle"); // run idle → drop optimistic stopping/failed
       setInterrupts(agent.getPendingInterrupts());
       setRunError(agent.getRunError());
+      setStreamAuthError(agent.getStreamAuthError());
       setQueuedMessages(agent.getQueuedMessages());
 
       // MESSAGE RESET is what the guards protect. While REPLAYING history (on open /
@@ -458,10 +471,11 @@ function ConversationRuntime({
       cancel: doCancel,
       cancelState,
       runError,
+      streamAuthError,
       queuedMessages,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, queuedMessages, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, streamAuthError, queuedMessages, renderTick],
   );
 
   return (

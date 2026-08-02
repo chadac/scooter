@@ -77,6 +77,7 @@ function uiState(agent: ReturnType<typeof createIntegrityAgent>) {
     queue: agent.getQueuedMessages().map((q) => q.text),
     interrupts: agent.getPendingInterrupts().map((i) => i.id),
     runError: agent.getRunError(),
+    authError: agent.getStreamAuthError(),
   };
 }
 
@@ -789,6 +790,42 @@ describe("IntegrityAgent", () => {
     stop();
     agent.dispose();
   });
+
+  it("STREAM AUTH ERROR: a 401 on the stream surfaces getStreamAuthError() (not a silent retry loop), then self-clears on recovery", async () => {
+    // An expired ingress/auth session in front of the agent-host makes the stream
+    // 401. The UI must SURFACE this durably (so it can show a banner) instead of
+    // silently reconnecting forever pretending the agent is alive.
+    let authValid = false; // starts expired
+    const okBody = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ].map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (!authValid) return new Response("Unauthorized", { status: 401 });
+      return new Response(okBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl, idleReconnectMs: 0 });
+    const stop = agent.renderPump();
+
+    // The auth error is surfaced (not silently swallowed).
+    await new Promise((r) => setTimeout(r, 60));
+    expect(agent.getStreamAuthError()).toBe(true);
+
+    // Auth renewed (the ingress refreshed the session) — the next reconnect
+    // succeeds and the flag self-clears, no reload required.
+    authValid = true;
+    await new Promise((r) => setTimeout(r, 5200)); // past the 5s auth back-off
+    expect(agent.getStreamAuthError()).toBe(false);
+
+    stop();
+    agent.dispose();
+  }, 8000);
 
   it("cancel() POSTs the agent-host cancel endpoint for the conversation", async () => {
     const fetchSpy = vi.fn(async () => new Response("", { status: 202 })) as unknown as typeof fetch;

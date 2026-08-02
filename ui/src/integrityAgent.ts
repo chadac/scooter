@@ -69,7 +69,7 @@ export interface PendingInterrupt {
 }
 
 /** Result of reading one integrity SSE connection to completion. */
-type ConnectionOutcome = "not-found" | "closed" | "error";
+type ConnectionOutcome = "not-found" | "closed" | "error" | "auth-error";
 
 /** A stable empty-queue reference (so getQueuedMessages returns the SAME array
  *  each idle call — a fresh [] every render would defeat React memoization). */
@@ -234,6 +234,16 @@ export class IntegrityAgent extends AbstractAgent {
   private lastRunError: string | null = null;
   getRunError(): string | null {
     return this.lastRunError;
+  }
+
+  /** Set when the live stream is rejected with an AUTH failure (401/403) — an
+   *  expired ingress/auth session in front of the agent-host. Distinct from a
+   *  normal drop: retrying won't help until the user re-authenticates, so the UI
+   *  must SURFACE it (a durable banner) instead of silently reconnecting forever.
+   *  Cleared the moment a (re)connection succeeds. */
+  private streamAuthError = false;
+  getStreamAuthError(): boolean {
+    return this.streamAuthError;
   }
 
   /** Update `lastRunError` from a single log event, ignoring out-of-band `ext-`
@@ -448,6 +458,9 @@ export class IntegrityAgent extends AbstractAgent {
     try {
       const res = await this.doFetch(url, { headers, signal: controller.signal });
       if (res.status === 404) return "not-found"; // created on first prompt
+      // 401/403: an expired ingress/auth session in front — retrying won't help
+      // until the user re-authenticates. Surfaced durably, not silently retried.
+      if (res.status === 401 || res.status === 403) return "auth-error";
       if (!res.ok || !res.body) return "error";
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -650,6 +663,12 @@ export class IntegrityAgent extends AbstractAgent {
             events$.next(e);
           },
           () => {
+            // A successful (re)connect that reached `synced` — clear any prior auth
+            // error (the session is valid again).
+            if (this.streamAuthError) {
+              this.streamAuthError = false;
+              this.notifyMessages();
+            }
             // Replay complete: the whole history is folded. Flip out of replay and
             // render once — but the base applier's fold is async, so wait a macrotask
             // for its buffered per-event notifications to drain FIRST (they observe
@@ -672,7 +691,17 @@ export class IntegrityAgent extends AbstractAgent {
         controller = undefined;
         if (closed) break;
 
-        if (outcome === "not-found") {
+        if (outcome === "auth-error") {
+          // Expired ingress/auth session (401/403). Retrying immediately won't help
+          // until the user re-authenticates, so SURFACE it (a durable banner) and
+          // back off long — but keep polling so it self-clears once auth is renewed
+          // (e.g. the ingress refreshes the session), no reload required.
+          if (!this.streamAuthError) {
+            this.streamAuthError = true;
+            this.notifyMessages();
+          }
+          if (!closed) await delay(5000);
+        } else if (outcome === "not-found") {
           // Conversation not created yet — back off with exponential delay.
           await delay(notFoundDelay);
           notFoundDelay = Math.min(notFoundDelay * 2, 5000);
