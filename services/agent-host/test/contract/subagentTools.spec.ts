@@ -71,6 +71,21 @@ describe("subagent tools", () => {
     expect(out.content[0].text).toMatch(/running/i);
   });
 
+  it("check_subagent tells a RUNNING subagent's poller to STOP polling + end its turn", async () => {
+    // The livelock fix: a busy check_subagent poll loop keeps the parent busy, so
+    // the event-driven result can't land. A "running" check must steer the agent
+    // to end its turn — it'll be nudged automatically when the subagent finishes.
+    const mgr = fakeManager({ check: vi.fn(async (_p, id) => ({ id, status: "running", lastActivity: "x" })) });
+    const out = await handleCheckSubagent(mgr, PARENT, { subagent_id: "sub-a" });
+    expect(out.content[0].text).toMatch(/end your turn|do not (keep )?poll|you'?ll be (told|notified)/i);
+  });
+
+  it("check_subagent does NOT tell a finished subagent's poller to wait", async () => {
+    const mgr = fakeManager({ check: vi.fn(async (_p, id) => ({ id, status: "ended", lastActivity: "the result" })) });
+    const out = await handleCheckSubagent(mgr, PARENT, { subagent_id: "sub-a" });
+    expect(out.content[0].text).not.toMatch(/end your turn|do not (keep )?poll/i);
+  });
+
   it("check_subagent errors on a missing id", async () => {
     const out = await handleCheckSubagent(fakeManager(), PARENT, { subagent_id: "" });
     expect(out.isError).toBe(true);
