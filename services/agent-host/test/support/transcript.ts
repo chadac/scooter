@@ -7,12 +7,37 @@
  * test/fixtures/transcripts/<provider>/<scenario>.ndjson.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 import type { TranscriptEntry } from "../../src/transcript/recorder.js";
 import type { SessionUpdate } from "../../src/acp/client.js";
 
 export type { TranscriptEntry };
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "transcripts");
+
+/** The providers we record fixtures for. */
+export const PROVIDERS = ["claude", "goose"] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
+/** Path to a recorded fixture (may not exist — use fixtureExists first). */
+export function fixturePath(provider: Provider, scenario: string): string {
+  return join(FIXTURES, provider, `${scenario}.ndjson`);
+}
+export function fixtureExists(provider: Provider, scenario: string): boolean {
+  return existsSync(fixturePath(provider, scenario));
+}
+/** Providers that HAVE a recorded fixture for a scenario (so a cross-provider test
+ *  parametrizes only over what's actually captured). */
+export function providersWith(scenario: string): Provider[] {
+  return PROVIDERS.filter((p) => fixtureExists(p, scenario));
+}
+/** Load a scenario's fixture for a provider. */
+export function loadFixture(provider: Provider, scenario: string): TranscriptEntry[] {
+  return loadTranscript(fixturePath(provider, scenario));
+}
 
 /** Parse an NDJSON transcript into ordered entries. */
 export function loadTranscript(path: string): TranscriptEntry[] {
