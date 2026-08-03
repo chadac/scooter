@@ -13,6 +13,8 @@ import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { SettingsPage } from "./SettingsPage.js";
 import { viewStore, useView } from "./view.js";
+import { useSandboxStatus } from "./SandboxPanel.js";
+import { DeadPodLanding, StartingPodLanding, shouldShowDeadPodLanding } from "./DeadPodLanding.js";
 import { Thread } from "@/components/assistant-ui/thread";
 
 /** The Thread wrapped in an error boundary keyed to the render tick, so a
@@ -25,6 +27,26 @@ function GuardedThread() {
       <Thread components={{ ToolFallback: ToolCallView, ToolGroup: ToolGroupOpen }} />
     </ThreadErrorBoundary>
   );
+}
+
+/** The conversation area: the thread when the pod is up (or coming up), or a
+ *  dead-pod landing (Start button) when it's genuinely DOWN — suspended/ended — so a
+ *  dead pod doesn't render the thread into "upstream failed" but offers a one-click
+ *  resume. Only suspended/ended replace the thread: "starting"/"unknown" still show
+ *  the thread (it handles its own loading, and readiness may be unknown when web-
+ *  services aren't wired — e.g. the fake stack — where we must NOT blank the thread).
+ *  Once a Start is clicked, the state moves to "starting" then "running", and the
+ *  thread returns automatically. Reuses useSandboxStatus for one source of truth. */
+function ConversationArea() {
+  const { state, startSandbox, starting } = useSandboxStatus();
+  // A resume the user kicked off from the landing is in flight → show progress until
+  // the pod is back and ready (starting clears), so the Start click gives feedback.
+  if (starting) return <StartingPodLanding />;
+  // A genuinely down pod → the Start landing. Only suspended/ended replace the thread;
+  // "starting"/"unknown" (incl. when web-services aren't wired, e.g. the fake stack)
+  // still show the thread so a slow/unknown readiness never blanks the conversation.
+  if (shouldShowDeadPodLanding(state)) return <DeadPodLanding state={state} onStart={startSandbox} />;
+  return <GuardedThread />;
 }
 
 export function App() {
@@ -71,8 +93,9 @@ export function App() {
                     the cards + shell commands are visible top-level, not hidden
                     behind a "N tool calls" collapse. The run status (thinking
                     indicator + Stop) now lives INLINE in the thread (above the
-                    composer), not a detached bottom bar — see InlineRunStatus. */}
-                <GuardedThread />
+                    composer), not a detached bottom bar — see InlineRunStatus.
+                    A suspended/ended pod shows a Start landing instead of the thread. */}
+                <ConversationArea />
               </div>
             </main>
             {/* Right-side tabbed panel: Approvals (AG-UI interrupts — a gate the user
