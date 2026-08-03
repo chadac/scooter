@@ -528,7 +528,7 @@ let
           body=$(jq -n --arg n "$name" --arg v "$visibility" --arg d "$description" \
                     --rawfile c "$path" \
                     '{name:$n, visibility:$v, files:{"module.nix":$c}} + (if $d == "" then {} else {description:$d} end)')
-          resp=$(agent-broker -X POST modules -H "Content-Type: application/json" -d "$body") \
+          resp=$(agent-broker modules -X POST -H "Content-Type: application/json" -d "$body") \
             || { echo "scooter-rebuild: publish failed" >&2; exit 1; }
           # A non-2xx comes back as a JSON {detail:...} without an id — surface it.
           if id=$(printf '%s' "$resp" | jq -er '.id' 2>/dev/null); then
