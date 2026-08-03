@@ -28,6 +28,10 @@ export interface Session {
   /** Creating user (server-sourced). undefined = unowned/public. Drives the
    *  Mine/All view filter. */
   owner?: string;
+  /** The spawning conversation, when this is a SUBAGENT (server-sourced).
+   *  undefined = a top-level conversation. Drives sidebar nesting + subagent
+   *  grouping. */
+  parentId?: string;
   /** The conversation's sandbox lifecycle state (server-sourced, live via the
    *  /conversations/events stream): "running" (pod up), "suspended" (idle → pod
    *  dropped, PVCs kept), "ended". Drives the Sandbox status tab + Start button. */
@@ -203,7 +207,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"] }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -234,23 +238,29 @@ export const sessionStore = {
         // Sandbox lifecycle state is server-owned + live (idle-suspend / resume);
         // always take the server's value so the status tab reflects reality.
         status: c.status ?? existing?.status,
+        // The spawning conversation, when this is a subagent (server-owned).
+        parentId: c.parentId ?? existing?.parentId,
       });
     }
 
-    // Drop local pristine placeholders that the server doesn't know about: when
-    // the server already has real conversations, an empty "New chat" the user
-    // never touched shouldn't linger as a phantom extra row. (We keep local
-    // sessions that have a non-default title or that exist on the server.)
+    // Reconcile the local list against the server's:
     //
-    // EXCEPTION: never drop the CURRENTLY-SELECTED pristine session. The user
-    // just clicked "New chat" and is about to type — the server won't know about
-    // it until the first message POSTs /agui, so a background poll would otherwise
-    // yank the conversation out from under them (and jump the selection to another
-    // row) within one poll interval. The selected new chat is live intent, not a
-    // stale phantom; keep it until it either gains a title or the user leaves it.
-    let sessions = [...byId.values()].filter(
-      (s) => serverIds.has(s.id) || !isPristine(s) || s.id === state.currentId,
-    );
+    //  - Keep anything the server still lists.
+    //  - Drop a SUBAGENT (parentId set) the server no longer lists — subagents are
+    //    always server-created, so its absence means it ENDED (the completion
+    //    watcher end()s a finished subagent). Without this it lingered in the
+    //    sidebar after finishing (the reported bug): an ended subagent has a real
+    //    title, so the pristine check below wouldn't drop it.
+    //  - For a local top-level conversation not on the server: keep it unless it's
+    //    an untouched pristine "New chat" placeholder (a phantom extra row once the
+    //    server has real convs) — EXCEPT never drop the CURRENTLY-SELECTED pristine
+    //    one (the user just clicked "New chat" and is about to type; the server
+    //    won't know it until the first /agui POST, so a poll must not yank it).
+    let sessions = [...byId.values()].filter((s) => {
+      if (serverIds.has(s.id)) return true;
+      if (s.parentId) return false; // an ended subagent — prune it
+      return !isPristine(s) || s.id === state.currentId;
+    });
     // Never end up with zero rows (e.g. server has convs but all local were
     // pristine and got dropped — the server ones remain, which is fine).
     if (sessions.length === 0) sessions = [...byId.values()];
@@ -459,6 +469,51 @@ export function filteredSessions(state: State): Session[] {
   return visibleSessions(state).filter(
     (s) => matchesProviders(s, state.providerFilter) && matchesQuery(s, state.query),
   );
+}
+
+/** A sidebar row + its nesting depth (0 = top-level, 1 = a subagent under it).
+ *  `childCount` is set on a COLLAPSED parent (its subagents hidden) so the row can
+ *  show a "▸ N subagents" affordance; 0 when expanded or childless. */
+export interface SidebarRow {
+  session: Session;
+  depth: number;
+  childCount: number;
+}
+
+/** Order a flat session list as a hierarchy for the sidebar: each parent is
+ *  immediately followed by its subagents (depth 1). A child whose parent is NOT in
+ *  the list (e.g. filtered out) renders as a top-level row so it's never lost.
+ *  Preserves the input order among siblings. Multi-level trees flatten to depth-1
+ *  under the nearest present ancestor (one indent level — the UI stays simple).
+ *
+ *  AUTO-COLLAPSE: when `activeId` is given, a parent's subagents are shown only
+ *  when that parent OR one of its subagents is the active conversation; otherwise
+ *  the children are hidden and the parent carries `childCount` (so the UI can show
+ *  "▸ N"). With no activeId, every parent is expanded. */
+export function nestSubagents(sessions: Session[], activeId?: string): SidebarRow[] {
+  const present = new Set(sessions.map((s) => s.id));
+  const childrenOf = new Map<string, Session[]>();
+  const tops: Session[] = [];
+  for (const s of sessions) {
+    // A subagent whose parent IS in the list nests under it; otherwise it's a top.
+    if (s.parentId && present.has(s.parentId)) {
+      (childrenOf.get(s.parentId) ?? childrenOf.set(s.parentId, []).get(s.parentId)!).push(s);
+    } else {
+      tops.push(s);
+    }
+  }
+  const rows: SidebarRow[] = [];
+  for (const top of tops) {
+    const children = childrenOf.get(top.id) ?? [];
+    // Expand this parent's subagents iff no activeId (show-all) OR the active
+    // conversation is this parent or one of its children.
+    const onActiveBranch =
+      activeId === undefined || activeId === top.id || children.some((ch) => ch.id === activeId);
+    const expand = onActiveBranch || children.length === 0;
+    rows.push({ session: top, depth: 0, childCount: expand ? 0 : children.length });
+    if (expand) for (const child of children) rows.push({ session: child, depth: 1, childCount: 0 });
+  }
+  return rows;
 }
 
 export function useSessions(): State {

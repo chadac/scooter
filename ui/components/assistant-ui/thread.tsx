@@ -389,6 +389,7 @@ function systemSourceIcon(source: string): string {
     case "scheduler": return "⏰";
     case "background job": return "⚙️";
     case "broker": return "🔑";
+    case "subagent": return "🤖";
     default: return "⚙️";
   }
 }

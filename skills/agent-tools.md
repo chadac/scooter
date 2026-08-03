@@ -153,3 +153,22 @@ tools, reading/writing files in the workspace. Use it freely there. Just don't u
 it to *respond to people or reach external services* when a tool above already does
 that reliably. For provider APIs beyond a comment, use the broker proxy shape
 above rather than hunting for credentials.
+
+## Subagents (delegating work)
+
+You can delegate an independent task to a **subagent** — a second agent that
+shares this conversation's sandbox (same `/workspace` + credentials) and runs in
+the background:
+
+- **spawn_subagent(prompt, title?)** — start one; returns a subagent id. After
+  spawning, **END YOUR TURN** (or do other work). Do NOT sit in a `check_subagent`
+  loop — you'll be nudged AUTOMATICALLY with the subagent's result the moment it
+  finishes. Its final message is its result.
+- **check_subagent / list_subagents / cancel_subagent** — check in ONCE, list, or
+  stop. If a check shows it's still running, end your turn — don't poll.
+
+**If a tool call is denied with a "Pause…" / "higher-priority work is waiting"
+message: that is NOT an error and you did nothing wrong.** It means a subagent
+just finished (or a message arrived) and its result is queued for you. Simply
+**end your turn** — you'll receive the pending item on your next turn. Do not
+retry the tool, apologize, or work around it.

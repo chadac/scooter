@@ -108,6 +108,50 @@ export interface AcpClientDeps {
   env: Record<string, string>;
   /** Services Goose's fs/* and terminal/* client-method calls. */
   exec: ExecBackend;
+  /** BACK-PRESSURE (goose approve-mode). When set, goose runs with
+   *  GOOSE_MODE=approve so it requests permission before EVERY tool. This callback
+   *  AUTO-answers each request WITHOUT raising a UI prompt: normally ALLOW (silent,
+   *  preserving auto-run); but when it returns true a higher-priority item is
+   *  waiting (a finished subagent's result) so we REJECT the next tool — goose ends
+   *  the turn, the parent idles, and the queued item injects. Omit to keep goose in
+   *  auto mode (no per-tool gate; no back-pressure). See
+   *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
+  shouldYield?: () => boolean;
+}
+
+/** A request is an auto-answerable TOOL GATE — goose's GOOSE_MODE=approve
+ *  per-tool permission prompt — only when it offers BOTH an allow-kind AND a
+ *  reject-kind option (allow / reject the tool). An AGENT-PRESENTED CHOICE (the
+ *  agent asking the USER to pick, e.g. Red/Green/Blue — all allow_once, no reject;
+ *  or a real approval with no reject option) is NOT a tool gate and must reach the
+ *  UI, never be silently auto-answered. Keyed on option kinds, not count. */
+export function isToolGate(options: ReadonlyArray<{ kind: string }>): boolean {
+  const hasAllow = options.some((o) => o.kind === "allow_once" || o.kind === "allow_always");
+  const hasReject = options.some((o) => o.kind === "reject_once" || o.kind === "reject_always");
+  return hasAllow && hasReject;
+}
+
+/** Auto-answer a goose approve-mode permission request (no UI). `yield_` true =
+ *  a higher-priority item is waiting → REJECT (pick a reject option) so goose ends
+ *  the turn; false = ALLOW (pick an allow option), preserving auto-run. Returns
+ *  undefined when this is NOT a tool gate (no allow+reject pair — an agent-presented
+ *  choice the USER must answer) OR there are no options at all; the caller then
+ *  falls through to the UI handler. Exported for unit testing without spawning goose. */
+export function autoAnswerPermission(
+  options: ReadonlyArray<{ optionId: string; kind: string }>,
+  yield_: boolean,
+): schema.RequestPermissionResponse | undefined {
+  if (options.length === 0) return undefined;
+  // Only auto-answer a genuine tool gate. Anything the agent presents for the USER
+  // to choose (no allow+reject pair) falls through so the interrupt reaches the UI.
+  if (!isToolGate(options)) return undefined;
+  const pick = (kinds: string[]) => options.find((o) => kinds.includes(o.kind))?.optionId;
+  if (yield_) {
+    const reject = pick(["reject_once", "reject_always"]) ?? options[options.length - 1].optionId;
+    return { outcome: { outcome: "selected", optionId: reject } };
+  }
+  const allow = pick(["allow_once", "allow_always"]) ?? options[0].optionId;
+  return { outcome: { outcome: "selected", optionId: allow } };
 }
 
 /** Spawns `goose acp` and returns a connected ACP client. */
@@ -187,6 +231,19 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     async requestPermission(
       params: schema.RequestPermissionRequest,
     ): Promise<schema.RequestPermissionResponse> {
+      // BACK-PRESSURE (approve-mode auto-answer): when shouldYield is wired, goose
+      // runs GOOSE_MODE=approve and asks before every TOOL. We answer those tool
+      // gates AUTOMATICALLY here — WITHOUT a UI prompt: normally allow (silent,
+      // preserving auto-run); when a priority item is waiting, REJECT so goose ends
+      // the turn -> parent idles -> the queued result injects. ACP has no free-text
+      // on a reject, so a `.goosehints` line pre-explains the reject option name.
+      // CRUCIALLY, autoAnswerPermission returns undefined for a NON-tool-gate — an
+      // agent-presented CHOICE the user must make (e.g. Red/Green/Blue, or a real
+      // approval) — so it falls through to the UI handler below, never swallowed.
+      if (deps.shouldYield) {
+        const auto = autoAnswerPermission(params.options, deps.shouldYield());
+        if (auto) return auto;
+      }
       if (!permissionHandler) {
         // Finding #25: a permission request arrived but no handler is registered —
         // that's a HOST WIRING BUG, not a user cancel. Returning "cancelled"

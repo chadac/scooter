@@ -12,6 +12,7 @@ import {
   sessionStore,
   useSessions,
   filteredSessions,
+  nestSubagents,
   sessionLabel,
   LINK_PROVIDERS,
   type LabelMode,
@@ -39,7 +40,11 @@ function InfoTip({ text }: { text: string }) {
 export function Sidebar() {
   const state = useSessions();
   const { currentId, scope, query, providerFilter, labelMode } = state;
-  const sessions = filteredSessions(state);
+  // Hierarchy: each parent followed by its subagents (depth 1). filteredSessions
+  // applies Mine/provider/query; nestSubagents groups children under parents and
+  // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
+  // conversation — so an inactive conversation's subagents don't clutter the list.
+  const rows = nestSubagents(filteredSessions(state), currentId);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // How many advanced filters are "active" (non-default) — a badge on the toggle so
@@ -196,18 +201,20 @@ export function Sidebar() {
       </div>
 
       <nav data-testid="session-list" className="flex-1 overflow-y-auto px-2 pb-2">
-        {sessions.length === 0 && (
+        {rows.length === 0 && (
           <p data-testid="session-empty" className="px-3 py-2 text-sm text-muted-foreground">
             No chats match.
           </p>
         )}
-        {sessions.map((s) => (
+        {rows.map(({ session: s, depth, childCount }) => (
           <div
             key={s.id}
             data-testid="session-item"
             data-active={s.id === currentId}
+            data-subagent={depth > 0 ? "true" : undefined}
             className={
               "group mb-1 flex items-center gap-1 rounded-md pe-1 text-sm " +
+              (depth > 0 ? "ms-3 border-s ps-1 " : "") +
               (s.id === currentId ? "bg-accent" : "hover:bg-accent/50")
             }
           >
@@ -219,7 +226,18 @@ export function Sidebar() {
               }
               title={s.title}
             >
+              {depth > 0 && <span className="me-1 text-muted-foreground" aria-hidden>↳</span>}
               <span data-testid="session-title">{sessionLabel(s, labelMode)}</span>
+              {/* Collapsed parent: a compact "▸ N subagents" hint (they expand when
+                  this conversation is opened — the auto-collapse behavior). */}
+              {childCount > 0 && (
+                <span
+                  data-testid="subagent-count"
+                  className="ms-1.5 text-xs text-muted-foreground"
+                >
+                  ▸ {childCount} subagent{childCount === 1 ? "" : "s"}
+                </span>
+              )}
             </button>
             {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
             {s.sources && s.sources.length > 0 && (

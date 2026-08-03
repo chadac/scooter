@@ -163,6 +163,23 @@ describe("management API", () => {
     expect((json as any[])[0]).not.toHaveProperty("bridge");
   });
 
+  it("GET /conversations exposes parentId so the UI can nest subagents", async () => {
+    const s = fakeSessions();
+    // c1 is top-level (no parentId); add a subagent child of c1.
+    const withChild: SessionManager = {
+      ...s,
+      list: () => [
+        conv({ id: "c1", threadId: "c1", title: "Parent" }),
+        conv({ id: "sub1", threadId: "sub1", title: "Subagent", parentId: "c1" as any }),
+      ],
+    };
+    const api = createManagementApi({ sessions: withChild, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { json } = await call(api, "GET", "/conversations");
+    const rows = json as Array<{ id: string; parentId?: string }>;
+    expect(rows.find((r) => r.id === "c1")?.parentId).toBeUndefined();
+    expect(rows.find((r) => r.id === "sub1")?.parentId).toBe("c1");
+  });
+
   it("GET /conversations enriches each row with sources + a compact links summary", async () => {
     const store = fakeStore([]);
     // Attach a GitHub PR link to c1 (what the sidebar shows the name of / filters by).

@@ -94,7 +94,20 @@ export async function handleCheckSubagent(
     return err(`Subagent \`${id}\` is not a subagent of this conversation (or is unknown).`);
   }
   const header = `Subagent \`${id}\`${st.title ? ` (${st.title})` : ""} is ${st.status.toUpperCase()}.`;
-  return ok(st.lastActivity ? `${header}\n\n${st.lastActivity}` : header);
+  const body = st.lastActivity ? `${header}\n\n${st.lastActivity}` : header;
+  // CRITICAL: if it's still running, tell the agent to STOP polling and END its
+  // turn. A tight check_subagent poll loop keeps the parent continuously busy, so
+  // the event-driven completion (which nudges the parent the instant the subagent
+  // finishes) can never find an idle moment to land — the parent livelocks waiting
+  // for a result it's blocking. Ending the turn lets the result arrive promptly.
+  if (st.status === "running") {
+    return ok(
+      `${body}\n\nIt's still working — do NOT keep polling. END YOUR TURN now; ` +
+        `you'll be nudged automatically with its result the moment it finishes. ` +
+        `(Polling in a loop just delays that.)`,
+    );
+  }
+  return ok(body);
 }
 
 export async function handleCancelSubagent(

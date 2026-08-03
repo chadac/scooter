@@ -48,6 +48,9 @@ function view(c: Conversation, now = Date.now()) {
     ageMs: Math.max(0, now - c.createdAt),
     model: c.model,
     owner: c.owner,
+    // The spawning conversation, when this is a subagent (undefined = top-level).
+    // The UI nests children under their parent + shows subagent chips.
+    parentId: c.parentId,
     sandbox: { name: c.sandbox.name, namespace: c.sandbox.namespace },
   };
 }

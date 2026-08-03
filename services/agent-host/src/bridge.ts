@@ -291,6 +291,15 @@ export interface SessionBridge {
    *  whether a run is active, how long it's been going, and the queued backlog. */
   queueState(): { running: boolean; currentRunMs: number; queued: number; maxQueuedPriority: number };
 
+  /** True when a PRIORITY_INTERRUPT item is waiting on the queue — the signal for
+   *  tool-call BACK-PRESSURE: a provider's pre-tool gate (SDK canUseTool / goose
+   *  approve-mode request_permission) denies the NEXT tool while this is true, so
+   *  the run quiesces to a boundary and the queued priority item (e.g. a subagent
+   *  result) can inject instead of waiting for the whole run. A normal queued
+   *  prompt does NOT trigger this (it waits its turn). See
+   *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
+  shouldYieldToQueue(): boolean;
+
   /** Answer a pending permission/option request (resolves the blocked agent run,
    *  or fires the external onAnswer for a raiseInterrupt). optionId must be one
    *  of the offered options; an unknown/empty id cancels. `approver` is the
@@ -1201,6 +1210,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         queued: queue.length,
         maxQueuedPriority: head?.priority ?? 0,
       };
+    },
+
+    shouldYieldToQueue() {
+      return (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
     },
 
     async stop() {

@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { sessionStore, visibleSessions } from "./sessions.js";
+import { sessionStore, visibleSessions, nestSubagents, type Session } from "./sessions.js";
 
 beforeEach(() => {
   globalThis.localStorage?.clear?.();
@@ -47,6 +47,31 @@ describe("deep-link selection (requestSelect)", () => {
       { id: "b", title: "Conv B", createdAt: Date.now() + 1000 },
     ]);
     expect(sessionStore.get().currentId).toBe("a");
+  });
+});
+
+describe("ended subagents are pruned from the sidebar", () => {
+  it("drops a subagent the server no longer lists (it ended), keeping the parent", () => {
+    // Parent + subagent both known.
+    sessionStore.mergeFromServer([
+      { id: "parent-1", title: "Parent" },
+      { id: "sub-1", title: "echo test", parentId: "parent-1" },
+    ]);
+    expect(sessionStore.get().sessions.some((s) => s.id === "sub-1")).toBe(true);
+
+    // Next poll: the subagent finished + was end()ed server-side, so it's absent.
+    sessionStore.mergeFromServer([{ id: "parent-1", title: "Parent" }]);
+    const ids = sessionStore.get().sessions.map((s) => s.id);
+    expect(ids).toContain("parent-1"); // parent stays
+    expect(ids).not.toContain("sub-1"); // ended subagent pruned
+  });
+
+  it("does NOT prune a top-level conversation missing from a single merge", () => {
+    // A local top-level conv with a real title must survive (only subagents prune
+    // on absence — a top-level one may just be filtered out of this scope).
+    sessionStore.mergeFromServer([{ id: "top-1", title: "Real chat" }]);
+    sessionStore.mergeFromServer([{ id: "other", title: "Other" }]);
+    expect(sessionStore.get().sessions.some((s) => s.id === "top-1")).toBe(true);
   });
 });
 
@@ -127,5 +152,47 @@ describe("visibleSessions (Mine/All owner filter)", () => {
     expect(t).toContain("Alice");
     expect(t).toContain("Bob");
     expect(t).toContain("Unowned");
+  });
+});
+
+describe("nestSubagents (sidebar hierarchy)", () => {
+  const s = (id: string, parentId?: string): Session => ({ id, title: id, createdAt: 1, parentId });
+
+  it("with no activeId, expands every parent's children", () => {
+    // Flat input (arbitrary order); children of p1 + p2 interleaved.
+    const flat = [s("p1"), s("p2"), s("c1a", "p1"), s("c2a", "p2"), s("c1b", "p1")];
+    const rows = nestSubagents(flat);
+    expect(rows.map((r) => r.session.id)).toEqual(["p1", "c1a", "c1b", "p2", "c2a"]);
+    expect(rows.map((r) => r.depth)).toEqual([0, 1, 1, 0, 1]);
+  });
+
+  it("AUTO-COLLAPSES a parent's children when neither the parent nor a child is active", () => {
+    const flat = [s("p1"), s("c1a", "p1"), s("c1b", "p1"), s("p2"), s("c2a", "p2")];
+    // p2 is active -> p2's children expand; p1 is off the active branch -> collapsed.
+    const rows = nestSubagents(flat, "p2");
+    expect(rows.map((r) => r.session.id)).toEqual(["p1", "p2", "c2a"]);
+    // The COLLAPSED parent (p1) carries its child count so the UI can show "▸ 2".
+    expect(rows.find((r) => r.session.id === "p1")?.childCount).toBe(2);
+    // p2 is active + expanded, so its children are visible (childCount 0).
+    expect(rows.find((r) => r.session.id === "p2")?.childCount).toBe(0);
+  });
+
+  it("expands a parent's children when a CHILD is the active conversation", () => {
+    const flat = [s("p1"), s("c1a", "p1"), s("c1b", "p1"), s("p2"), s("c2a", "p2")];
+    // c1a (a child of p1) is active -> p1's branch expands, p2 collapses.
+    const rows = nestSubagents(flat, "c1a");
+    expect(rows.map((r) => r.session.id)).toEqual(["p1", "c1a", "c1b", "p2"]);
+  });
+
+  it("a child whose parent is NOT in the list renders as a top-level row", () => {
+    // The parent was filtered out (e.g. Mine hid it) — the orphaned child still shows.
+    const rows = nestSubagents([s("orphan", "missing-parent")]);
+    expect(rows.map((r) => r.session.id)).toEqual(["orphan"]);
+    expect(rows[0].depth).toBe(0);
+  });
+
+  it("top-level-only list is unchanged (all depth 0)", () => {
+    const rows = nestSubagents([s("a"), s("b")]);
+    expect(rows.map((r) => r.depth)).toEqual([0, 0]);
   });
 });

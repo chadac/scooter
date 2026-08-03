@@ -154,3 +154,41 @@ describe("SDK client platform MCP tools (scooter-env)", () => {
     expect(fq.calls[0].options.allowedTools as string[]).not.toContain("mcp__scooter-env");
   });
 });
+
+describe("SDK client back-pressure (canUseTool yields to a queued priority item)", () => {
+  const clientWith = (shouldYield?: () => boolean) => {
+    const fq = fakeQuery();
+    return { fq, make: () => createSdkAcpClient({ oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl: fq.queryImpl, shouldYield }) };
+  };
+  const runOnce = async (make: () => Promise<any>) => {
+    const client = await make();
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+  };
+
+  it("DENYS the next tool with an explanation + interrupt:true when shouldYield() is true", async () => {
+    const { fq, make } = clientWith(() => true);
+    await runOnce(make);
+    const canUseTool = fq.calls[0].options.canUseTool as (n: string, i: unknown) => Promise<any>;
+    const res = await canUseTool("mcp__scooter-env__check_subagent", { subagent_id: "x" });
+    expect(res.behavior).toBe("deny");
+    expect(res.interrupt).toBe(true);
+    expect(res.message).toMatch(/higher.priority|finish your turn|waiting/i);
+  });
+
+  it("ALLOWS the tool when shouldYield() is false", async () => {
+    const { fq, make } = clientWith(() => false);
+    await runOnce(make);
+    const canUseTool = fq.calls[0].options.canUseTool as (n: string, i: unknown) => Promise<any>;
+    const res = await canUseTool("mcp__scooter-env__check_subagent", { a: 1 });
+    expect(res.behavior).toBe("allow");
+  });
+
+  it("ALLOWS the tool when no shouldYield is wired (default behavior unchanged)", async () => {
+    const { fq, make } = clientWith(undefined);
+    await runOnce(make);
+    const canUseTool = fq.calls[0].options.canUseTool as (n: string, i: unknown) => Promise<any>;
+    const res = await canUseTool("bash", { command: "ls" });
+    expect(res.behavior).toBe("allow");
+  });
+});

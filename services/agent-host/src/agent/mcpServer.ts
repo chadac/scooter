@@ -189,9 +189,11 @@ async function buildServer(
         description:
           "Delegate a task to a SUBAGENT — a second agent that shares THIS conversation's sandbox (same " +
           "/workspace files + credentials) and works in the BACKGROUND without blocking your turn. Returns a " +
-          "subagent id; poll it with check_subagent (its FINAL message is its result). Use it to fan out " +
-          "independent work (research a question, investigate a subsystem) in parallel. Note: subagents share " +
-          "your /workspace — avoid having two edit the same files at once.",
+          "subagent id. IMPORTANT: after spawning, END YOUR TURN (or do other work) — you'll be nudged " +
+          "AUTOMATICALLY with the subagent's result the moment it finishes. Do NOT sit in a check_subagent " +
+          "poll loop (that keeps you busy and delays the result). Use it to fan out independent work (research " +
+          "a question, investigate a subsystem) in parallel. Note: subagents share your /workspace — avoid " +
+          "having two edit the same files at once.",
         inputSchema: {
           prompt: z.string().describe("The task for the subagent (be specific; it starts fresh with no context)."),
           title: z.string().optional().describe("A short label for the subagent (shown in the UI)."),
@@ -214,8 +216,9 @@ async function buildServer(
       {
         title: "Check a subagent",
         description:
-          "Report a subagent's status (running / idle / ended) and its latest activity or its final result " +
-          "message once it's done. Only works for a subagent YOU spawned in this conversation.",
+          "Report a subagent's status (running / idle / ended) + its latest activity, or its final result once " +
+          "done. Only for a subagent YOU spawned here. Use it ONCE to check in — if it's still running, end " +
+          "your turn (you'll be nudged with the result automatically); don't call this in a loop.",
         inputSchema: { subagent_id: z.string().describe("The id returned by spawn_subagent.") },
       },
       async (args) => handleCheckSubagent(subagents, conversationId, args) as TR,
