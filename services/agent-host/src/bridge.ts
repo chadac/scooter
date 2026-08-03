@@ -763,7 +763,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // finished) only on a genuine finish; until then the part stays result-less so
         // the UI shows a running spinner (e.g. across a `sleep 30`).
         const status = (u as { status?: string }).status;
-        const hasRealContent = u.content !== undefined && !isTerminalHandoff(u.content);
+        // The structured result rides `content` (goose) OR `rawOutput` (the claude-sdk
+        // provider — its adapter maps a tool_result's content to rawOutput). Either is
+        // "real content" that finishes the tool + carries a result to the UI; without
+        // the rawOutput fallback, EVERY claude MCP tool result was dropped (no
+        // TOOL_CALL_RESULT), so e.g. a marimo_embed island never reached the chat.
+        const resultContent = u.content !== undefined ? u.content : u.rawOutput;
+        const hasRealContent = resultContent !== undefined && !isTerminalHandoff(resultContent);
         // A TERMINAL HANDOFF means the command is now running async in that terminal.
         // Remember it and DON'T finish — the real finish is a later update.
         if (isTerminalHandoff(u.content)) {
@@ -803,7 +809,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           type: "TOOL_CALL_RESULT",
           toolCallId: u.toolCallId,
           messageId,
-          content: typeof u.content === "string" ? u.content : JSON.stringify(u.content ?? ""),
+          content: typeof resultContent === "string" ? resultContent : JSON.stringify(resultContent ?? ""),
         });
         break;
       }
