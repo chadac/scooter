@@ -33,6 +33,12 @@ const SCENARIOS = {
   "plain-text-turn": "Reply with exactly one short sentence and nothing else.",
   "shell-tool-and-result": "Run the shell command `echo HARNESS_MARKER` using your shell tool, then tell me its output.",
   "subagent-poll-loop": "Spawn a subagent with spawn_subagent to run 'sleep 6 && echo SUBDONE'. Then call check_subagent a few times to poll until you receive its result.",
+  // Multi-turn: two prompts in ONE conversation. Turn 2 references turn 1, so a
+  // provider that loses session context (SDK resume / ACP continuation) fails it.
+  "multi-turn": [
+    "Remember the secret word: ZEBRA. Reply with exactly: OK.",
+    "What was the secret word I told you? Reply with just the word.",
+  ],
 };
 
 if (PROVIDER !== "goose") {
@@ -95,19 +101,28 @@ const cid = `rec-${SCENARIO}-${Date.now()}`;
 try {
   await waitReady();
   console.error(">> agent-host ready; driving the scenario (local model — may be slow)...");
-  await fetch(`http://127.0.0.1:${port}/agui`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadId: cid, runId: "r1", messages: [{ id: "u1", role: "user", content: prompt }] }),
-  });
-  // Poll the conversation history until the run(s) finish (or a generous cap).
-  for (let i = 0; i < 180; i++) {
-    await sleep(1000);
+  // A scenario is one prompt or an array of prompts (multi-turn, same conversation).
+  const prompts = Array.isArray(prompt) ? prompt : [prompt];
+  const runsFinished = async () => {
     const h = await fetch(`http://127.0.0.1:${port}/conversations/${cid}/history`).then((r) => r.json()).catch(() => ({}));
     const evs = h.events ?? [];
     const started = evs.filter((e) => e.type === "RUN_STARTED").length;
     const finished = evs.filter((e) => e.type === "RUN_FINISHED" || e.type === "RUN_ERROR").length;
-    if (started > 0 && finished >= started) { console.error(`>> run(s) complete (${finished}/${started})`); break; }
+    return started > 0 && finished >= started ? finished : 0;
+  };
+  for (let t = 0; t < prompts.length; t++) {
+    console.error(`>> turn ${t + 1}/${prompts.length}`);
+    await fetch(`http://127.0.0.1:${port}/agui`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ threadId: cid, runId: `r${t + 1}`, messages: [{ id: `u${t + 1}`, role: "user", content: prompts[t] }] }),
+    });
+    // Wait for THIS turn's run to finish before the next (session continuity).
+    const target = t + 1;
+    for (let i = 0; i < 180; i++) {
+      await sleep(1000);
+      if ((await runsFinished()) >= target) { console.error(`>> turn ${target} complete`); break; }
+    }
   }
   await sleep(1000);
 

@@ -15,9 +15,18 @@
 
 import { describe, it, expect } from "vitest";
 
-import { scenariosForAllProviders, providersWith, derivedUpdateTypes } from "../support/transcript.js";
+import { scenariosForAllProviders, providersWith, derivedUpdateTypes, assistantText } from "../support/transcript.js";
 
 const scenarios = scenariosForAllProviders();
+
+// Scenarios whose PROMPT forces a tool call ("run this shell command…"). For these,
+// every provider MUST call a tool + surface its result. Open-ended scenarios
+// (plain text, multi-turn) let the MODEL decide whether to use a tool — a weak
+// local model (llama3.1) may reach for Read/Todo tools where claude just answers;
+// that's a model choice, not a code divergence, so we don't assert tool-consistency
+// there. (The shape divergences we care about — tool_result dropped, etc. — are
+// still caught on the tool-mandatory scenarios.)
+const TOOL_MANDATORY = new Set(["shell-tool-and-result", "subagent-poll-loop"]);
 
 describe("cross-provider transcript consistency", () => {
   it("has at least one scenario recorded on both providers", () => {
@@ -31,9 +40,12 @@ describe("cross-provider transcript consistency", () => {
       expect(providers.sort()).toEqual(["claude", "goose"]);
     });
 
-    it("emits a tool CALL on all providers or none (consistent)", async () => {
-      const has = await Promise.all(providers.map(async (p) => (await derivedUpdateTypes(p, scenario)).includes("tool_call")));
-      expect(new Set(has).size, `tool_call presence must match across ${providers.join("/")}`).toBe(1);
+    // Only for tool-MANDATORY scenarios (the prompt forces a tool). Open-ended
+    // scenarios let each MODEL decide, so tool-call presence can legitimately differ.
+    (TOOL_MANDATORY.has(scenario) ? it : it.skip)("every provider calls a tool (tool-mandatory scenario)", async () => {
+      for (const p of providers) {
+        expect(await derivedUpdateTypes(p, scenario), `${p} did not call a tool`).toContain("tool_call");
+      }
     });
 
     // A tool-using scenario must surface its RESULT on EVERY provider that called a
@@ -52,6 +64,19 @@ describe("cross-provider transcript consistency", () => {
       for (const p of providers) {
         expect(await derivedUpdateTypes(p, scenario), `${p} produced no assistant text`).toContain("agent_message_chunk");
       }
+    });
+  });
+
+  // SESSION CONTINUITY across turns — claude resumes an SDK session, goose an ACP
+  // continuation. The multi-turn fixture tells the agent a secret in turn 1 and
+  // asks for it in turn 2; if a provider lost cross-turn context, the recall fails.
+  // Recorded as TWO runs in one conversation (concatenated). Both providers must
+  // recall the word — proves session resume works on both.
+  const multiTurn = "multi-turn";
+  (providersWith(multiTurn).length === 2 ? describe : describe.skip)("scenario: multi-turn (session continuity)", () => {
+    it.each(providersWith(multiTurn))("%s recalls the turn-1 secret in its turn-2 reply", (provider) => {
+      // The whole conversation's assistant text — turn 2's answer must contain the word.
+      expect(assistantText(provider, multiTurn).toUpperCase(), `${provider} lost cross-turn context`).toContain("ZEBRA");
     });
   });
 });

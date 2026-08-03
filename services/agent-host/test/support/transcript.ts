@@ -81,6 +81,14 @@ export function sdkMessages(entries: TranscriptEntry[]): unknown[] {
   return entries.filter((e) => e.layer === "sdk-in").map((e) => e.data);
 }
 
+/** All assistant TEXT the bridge emitted for a scenario (concatenated), from the
+ *  normalized agui-out layer — provider-agnostic. Used to assert CONTENT (e.g. a
+ *  multi-turn scenario recalling a value from an earlier turn = session continuity). */
+export function assistantText(provider: Provider, scenario: string): string {
+  const out = aguiOutEntries(loadFixture(provider, scenario)) as Array<{ type?: string; delta?: string }>;
+  return out.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => e.delta ?? "").join("");
+}
+
 /**
  * Re-derive the normalized SessionUpdates a scenario produces UNDER THE CURRENT
  * CODE from its recorded INPUT layer — so a cross-provider test reflects today's
