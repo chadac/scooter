@@ -72,6 +72,28 @@ export function sdkMessages(entries: TranscriptEntry[]): unknown[] {
 }
 
 /**
+ * Re-derive the normalized SessionUpdates a scenario produces UNDER THE CURRENT
+ * CODE from its recorded INPUT layer — so a cross-provider test reflects today's
+ * behavior, not the frozen `agui-out` captured at record time (which would hide a
+ * fix). claude sdk-in runs through the real `sdkMessageToUpdates`; goose acp-in
+ * frames ARE already normalized SessionUpdates (the recorder tapped after
+ * normalization). Returns `sessionUpdate` type names for shape assertions.
+ */
+export async function derivedUpdateTypes(provider: Provider, scenario: string): Promise<string[]> {
+  const entries = loadFixture(provider, scenario);
+  if (provider === "goose") {
+    return acpUpdates(entries).map((u) => (u as { sessionUpdate?: string }).sessionUpdate ?? "?");
+  }
+  // claude: replay the raw SDK messages through the live adapter.
+  const { sdkMessageToUpdates } = await import("@scooter/claude-sdk-provider");
+  const out: string[] = [];
+  for (const msg of sdkMessages(entries)) {
+    for (const u of sdkMessageToUpdates(msg as never, true)) out.push((u as { sessionUpdate?: string }).sessionUpdate ?? "?");
+  }
+  return out;
+}
+
+/**
  * A fake SDK query() that REPLAYS recorded claude messages verbatim — a drop-in
  * for createSdkAcpClient's `queryImpl`. Records calls + honors interrupt() (stops
  * yielding remaining messages, mirroring a real turn cut short by back-pressure).

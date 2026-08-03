@@ -81,15 +81,13 @@ describe("UI-layer replay: real AG-UI log render order", () => {
     expect(order.some((o) => o.kind === "sys" && o.label === "subagent")).toBe(true);
   });
 
-  // KNOWN BUG (todo/docs/AGENT_TRANSCRIPT_HARNESS.md): the subagent-result chip
-  // renders ABOVE the check_subagent tool cards that preceded it — the chip anchors
-  // to the last TEXT_MESSAGE_START, but the tool cards nest into that SAME assistant
-  // message, so the splice puts the chip before them. Server order is correct; this
-  // is a UI render-splice artifact. This test CAPTURES it: the sys chip must come
-  // AFTER the last check_subagent card. `it.fails` = we EXPECT this to fail today;
-  // when the splice/anchor is fixed it will start passing → vitest flags it so we
-  // remove `.fails`. This is the render-layer harness catching a real recorded bug.
-  it.fails("renders the subagent-result chip AFTER the check_subagent tool cards, not above them", async () => {
+  // Was a bug (todo/docs/AGENT_TRANSCRIPT_HARNESS.md): the subagent-result chip
+  // rendered ABOVE the check_subagent tool cards. The base applier folds each tool
+  // call as its OWN top-level message, so a SYSTEM_MESSAGE anchored to the last
+  // TEXT_MESSAGE_START spliced BEFORE the tool cards. Fixed by advancing the anchor
+  // on TOOL_CALL_START too — the chip now anchors to the last tool call. This
+  // render-layer replay (real recording) caught it and now guards the fix.
+  it("renders the subagent-result chip AFTER the check_subagent tool cards, not above them", async () => {
     const order = await renderFrom(loadAguiLog("claude-subagent-chip-order.json"));
     const lastCheck = order.map((o) => o.kind === "tool" && o.label === "check_subagent").lastIndexOf(true);
     const sysIdx = order.findIndex((o) => o.kind === "sys" && o.label === "subagent");

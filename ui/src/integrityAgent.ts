@@ -206,13 +206,19 @@ export class IntegrityAgent extends AbstractAgent {
     return this.systemMessages;
   }
   private trackSystemMessage(e: BaseEvent): boolean {
-    const ev = e as unknown as { type?: string; messageId?: string; source?: string; text?: string };
-    // Every real message START advances the anchor (folded async, so we can't count
-    // this.messages here). Only TEXT_MESSAGE_START creates a TOP-LEVEL folded message
-    // with this id (tool calls nest INTO the preceding assistant message), so it's the
-    // reliable anchor. A SYSTEM_MESSAGE then pins to whatever text message came last.
+    const ev = e as unknown as { type?: string; messageId?: string; toolCallId?: string; source?: string; text?: string };
+    // The anchor is the id of the LAST TOP-LEVEL folded message before a
+    // SYSTEM_MESSAGE, so the chip splices AFTER it. The base applier folds BOTH a
+    // TEXT_MESSAGE (id=messageId) AND EACH tool call (id=toolCallId) as SEPARATE
+    // top-level messages — so a system message following a run of tool calls must
+    // anchor to the LAST TOOL CALL, not the text before it (else the chip renders
+    // ABOVE those tool cards — the subagent-result-chip-order bug).
     if (ev.type === "TEXT_MESSAGE_START" && ev.messageId) {
       this.lastMessageId = ev.messageId;
+      return false;
+    }
+    if (ev.type === "TOOL_CALL_START" && ev.toolCallId) {
+      this.lastMessageId = ev.toolCallId;
       return false;
     }
     if (ev.type !== "SYSTEM_MESSAGE" || !ev.messageId) return false;
