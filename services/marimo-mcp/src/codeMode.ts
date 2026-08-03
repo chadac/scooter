@@ -32,15 +32,17 @@ import json as _json
 import marimo._code_mode as _cm
 async def _op():
     async with _cm.get_context() as ctx:
-        cell = ctx.create_cell(r"""${pyTripleQuoted(code)}"""${nameArg})
-        return getattr(cell, "cell_id", None)
+        # create_cell returns the CellId (a str) directly — NOT an object with
+        # .cell_id (verified against the live marimo _code_mode API).
+        return ctx.create_cell(r"""${pyTripleQuoted(code)}"""${nameArg})
 _cid = await _op()
-print("${CODE_MODE_MARKER} " + _json.dumps({"ok": True, "cell_id": _cid}))
+print("${CODE_MODE_MARKER} " + _json.dumps({"ok": True, "cell_id": str(_cid)}))
 `.trim();
 }
 
-/** run_cell(cell_id) — explicitly queue a cell for execution. create_cell/edit_cell
- *  are structural only, so a caller runs a cell after creating it. */
+/** run_cell(target) — explicitly queue a cell for execution. create_cell/edit_cell
+ *  are structural only, so a caller runs a cell after creating it. The API param is
+ *  `target` (the cell id). */
 export function runCellSnippet(cellId: string): string {
   return `
 import json as _json
@@ -54,7 +56,8 @@ print("${CODE_MODE_MARKER} " + _json.dumps({"ok": True, "cell_id": ${JSON.string
 `.trim();
 }
 
-/** list_cells() — dump the notebook's cells (id + code + name). Prints
+/** list_cells() — dump the notebook's cells (id + code + name). A NotebookCell
+ *  exposes `.id` / `.name` / `.code` (verified live — NOT `.cell_id`). Prints
  *  `<marker> {"ok":true,"cells":[{"cell_id","name","code"}...]}`. */
 export function listCellsSnippet(): string {
   return `
@@ -63,7 +66,7 @@ import marimo._code_mode as _cm
 async def _op():
     async with _cm.get_context() as ctx:
         return [
-            {"cell_id": getattr(c, "cell_id", None), "name": getattr(c, "name", None), "code": getattr(c, "code", None)}
+            {"cell_id": str(getattr(c, "id", "")), "name": getattr(c, "name", None), "code": getattr(c, "code", None)}
             for c in ctx.cells
         ]
 _cells = await _op()
