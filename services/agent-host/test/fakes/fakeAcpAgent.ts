@@ -39,6 +39,10 @@ export interface FakeAcpTransport {
   cancel(sessionId: string): Promise<void>;
   /** Optional: a cancel test can set this to assert active terminals were killed. */
   killActiveTerminals?(): Promise<void>;
+  /** Optional liveness signal for the bridge's mid-stream liveness watchdog. A test
+   *  can flip it to false via FakeAcpAgent.die() to simulate the agent process
+   *  crashing/exiting mid-run. Absent → the adapter treats the agent as alive. */
+  isAlive?(): boolean;
   /** Subscribe to terminal/create (goose's shell command source). A test drives it
    *  via FakeAcpAgent.terminalCreated(...). */
   onTerminalCreated?(cb: (terminalId: string, command: string, args: string[]) => void): void;
@@ -56,6 +60,10 @@ export interface FakeAcpAgent {
   killCount(): number;
   /** Number of prompts that have STARTED (entered the fake's prompt()). */
   startedCount(): number;
+  /** Simulate the agent PROCESS dying mid-run (crash/exit) — isAlive() flips to
+   *  false so the bridge's liveness watchdog observes a dead agent. Does NOT release
+   *  a gated prompt (a real dead process leaves prompt() hanging until cancel). */
+  die(): void;
   /** Push a session update to the CURRENTLY-RUNNING prompt's onUpdate — for a
    *  test to deliver a tool_call_update result while the run is gated. */
   emit(u: SessionUpdate): void;
@@ -72,6 +80,7 @@ export function createFakeAcpAgent(): FakeAcpAgent {
   let releaseGateFn: (() => void) | undefined;
   let kills = 0;
   let starts = 0;
+  let alive = true;
   const cancelledSessions = new Set<string>();
   // The live onUpdate of the currently-running prompt, so a test can push an
   // update MID-RUN (e.g. a tool_call_update result while the run is gated).
@@ -122,6 +131,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     async killActiveTerminals() {
       kills += 1;
     },
+    isAlive() {
+      return alive;
+    },
     onTerminalCreated(cb) {
       terminalCreatedCbs.add(cb);
     },
@@ -148,6 +160,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     startedCount() {
       return starts;
+    },
+    die() {
+      alive = false;
     },
     emit(u: SessionUpdate) {
       liveUpdate?.(u);

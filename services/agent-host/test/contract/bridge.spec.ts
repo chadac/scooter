@@ -1121,6 +1121,107 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
   });
 });
 
+describe("bridge liveness watchdog (livenessProbeMs)", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, livenessProbeMs: number) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      // DOA watchdog off so it can't be the one firing — isolate the liveness probe.
+      firstActivityTimeoutMs: 0,
+      livenessProbeMs,
+    });
+  };
+  const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+
+  it("fires RUN_ERROR when the agent PROCESS dies mid-run (a definitive wedge)", async () => {
+    const agent = createFakeAcpAgent();
+    // Emit one chunk (the run is alive), GATE so prompt() hangs, then simulate the
+    // agent process crashing/exiting — isAlive() flips false. The probe observes a
+    // dead agent and force-terminates so the queue can drain.
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "working on it" } } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 40); // probe every 40ms
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "do a big thing" });
+
+    await tick(20);
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false); // alive → untouched
+    agent.die(); // the goose/claude subprocess exited without a terminal event
+    await tick(90); // next probe observes it
+
+    const runError = events.find((e) => e.type === "RUN_ERROR") as { code?: string } | undefined;
+    expect(runError).toBeDefined();
+    expect(runError!.code).toBe("agent_process_died");
+    // EXACTLY ONE terminal — the guard's cancel resolves the gated prompt; the
+    // terminated flag must suppress a second terminal.
+    const terminals = events.filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
+    expect(terminals.length).toBe(1);
+    agent.releaseGate();
+  });
+
+  it("does NOT fire for a LONG SILENT but ALIVE run (a long tool call is healthy, not a wedge)", async () => {
+    const agent = createFakeAcpAgent();
+    // A single tool call that runs for a long time: one chunk, then GATE — no more
+    // ACP updates flow while the command runs. The old silence-based watchdog would
+    // wrongly kill this. The liveness probe must NOT: the agent is alive.
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "running a 10-minute build" } } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 40);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "build the world" });
+
+    // Many probe cycles pass with the run silent but the agent ALIVE.
+    await tick(200);
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+    agent.releaseGate();
+  });
+
+  it("does NOT fire while the run is PAUSED on a permission request (the agent is alive)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "I need approval" } } },
+      { requestPermission: { toolCallId: "aws1", title: "Approve AWS?", options: [
+        { optionId: "allow", name: "Allow", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ] } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+    const bridge = mkBridge(agent, 40);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "spend money" });
+
+    await tick(200); // many probes while paused
+    const interrupt = events.find((e) => e.type === "RUN_FINISHED" && (e as { outcome?: { type?: string } }).outcome?.type === "interrupt");
+    expect(interrupt).toBeDefined();
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+  });
+
+  it("is disabled when livenessProbeMs is 0 (opt-out) — even a dead agent isn't auto-terminated", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } } },
+    ]);
+    agent.gate();
+    const bridge = mkBridge(agent, 0);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+    agent.die();
+    await tick(90);
+    expect(events.some((e) => e.type === "RUN_ERROR")).toBe(false);
+    agent.releaseGate();
+  });
+});
+
 describe("clarifyRunError (context-overflow → clear message)", () => {
   it("rewrites known context-overflow errors to a start-a-new-chat nudge", () => {
     for (const raw of [

@@ -103,6 +103,11 @@ export interface AgentHostConfig {
    *  window, surface a RUN_ERROR so the conversation unfreezes (the goose-Bedrock-
    *  credential hang produced zero events and never returned). 0 = off. Default 60s. */
   firstActivityTimeoutMs: number;
+  /** Mid-stream liveness watchdog (ms): the cadence at which an active run probes
+   *  acpClient.isAlive(). If the agent PROCESS has died without a terminal event the
+   *  run is force-terminated (RUN_ERROR) so a dead agent can't block the queue. It
+   *  does NOT kill on silence — a long tool call is healthy. 0 = off. Default 30s. */
+  livenessProbeMs: number;
   /** OpenTelemetry metrics (cost + usage + operational), exported over OTLP.
    *  OFF by default. Endpoint/headers come from the standard OTEL_* env. */
   observability: {
@@ -149,6 +154,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     // ms, surface a RUN_ERROR so the conversation unfreezes (the goose-Bedrock-
     // credential hang). Default 60s; FIRST_ACTIVITY_TIMEOUT_MS=0 disables.
     firstActivityTimeoutMs: Number(process.env.FIRST_ACTIVITY_TIMEOUT_MS ?? 60 * 1000),
+    livenessProbeMs: Number(process.env.AGENT_LIVENESS_PROBE_MS ?? 30 * 1000),
     fakeSandbox,
     // The model catalog (rich: ids + hints + default) is the source of truth;
     // `model` (the default) + `availableModels` (the ids) are derived so
@@ -1121,6 +1127,7 @@ export async function main(
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
+      livenessProbeMs: config.livenessProbeMs,
       acpClient: () =>
         // claude-code: drive the agent via the Claude Agent SDK (isolated package)
         // so its tools run IN THE SANDBOX (via ExecBackend) instead of the

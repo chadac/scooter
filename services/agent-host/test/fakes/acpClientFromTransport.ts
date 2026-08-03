@@ -49,6 +49,11 @@ export function acpClientFromTransport(
       // a cancel test can assert terminals were killed. No-op otherwise.
       await transport.killActiveTerminals?.();
     },
+    isAlive() {
+      // In-process fake: alive unless a test simulates the agent process dying via
+      // transport.isAlive(). Default true so existing tests are unaffected.
+      return transport.isAlive?.() ?? true;
+    },
     onSessionUpdate(cb) {
       updateCbs.add(cb);
       return () => updateCbs.delete(cb);

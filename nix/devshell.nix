@@ -34,8 +34,21 @@ pkgs.mkShell {
     echo "  just            — task runner (test-quick, test, test-cluster, ...)"
     echo "  goose: $(command -v goose >/dev/null && goose --version 2>/dev/null | head -1 || echo absent)"
     export GOOSE_BIN="$(command -v goose || true)"
-    # Point Playwright at the Nix browsers + skip its host-req validation.
+    # Point Playwright at the Nix browsers + skip its host-req validation. The
+    # pinned nixpkgs `playwright-driver` version matches `@playwright/test` in
+    # package.json (both 1.60.0), so these browsers are the right revision — the
+    # downloaded ones fail on NixOS (missing libglib etc.).
     export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
     export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+    # playwright.config.ts reads PW_CHROME to set launchOptions.executablePath —
+    # without it Playwright ignores PLAYWRIGHT_BROWSERS_PATH's chrome and tries its
+    # own (unusable-on-NixOS) download. Resolve the chromium binary out of the Nix
+    # browsers bundle by glob so it survives a driver-revision bump (chromium-<rev>).
+    export PW_CHROME="$(echo "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux64/chrome | head -n1)"
+    if [ ! -x "$PW_CHROME" ]; then
+      # Older layouts used chrome-linux/chrome — fall back before giving up.
+      export PW_CHROME="$(echo "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux/chrome | head -n1)"
+    fi
+    echo "  chrome (e2e): ''${PW_CHROME:-not found}"
   '';
 }

@@ -392,6 +392,22 @@ export interface BridgeDeps {
    * start). Default 60_000; 0 disables.
    */
   firstActivityTimeoutMs?: number;
+
+  /**
+   * LIVENESS watchdog for a run that wedges mid-stream. This does NOT guess from
+   * silence — silence is normal (a long `sleep 600` / build / test run emits no ACP
+   * updates for minutes, and the ExecBackend's own commandTimeoutMs already bounds a
+   * genuinely hung command). Instead, while a run is active it periodically PROBES a
+   * DEFINITIVE health signal — `acpClient.isAlive()` — and only force-terminates when
+   * the agent PROCESS has died (crashed/exited) without emitting a terminal event:
+   * an unambiguous wedge. Everything else (a tool in flight, a paused permission
+   * request, an alive-but-idle agent) is left alone — the run keeps waiting, the
+   * user's Stop still works, and the UI idle-watchdog heals the client view. This
+   * guarantees a DEAD agent can't leave the pump blocked forever, without ever
+   * killing a healthy long-running task. `livenessProbeMs` is the probe cadence.
+   * Default 30_000; 0 disables.
+   */
+  livenessProbeMs?: number;
 }
 
 // Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
@@ -462,6 +478,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const terminalCommands = new Map<string, string>();
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
+  const livenessProbeMs = deps.livenessProbeMs ?? 30_000;
   // Resolved on first start(); a ready client or the result of the factory.
   let acpClient: AcpClient | undefined =
     typeof deps.acpClient === "function" ? undefined : deps.acpClient;
@@ -564,6 +581,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // late update re-firing anything once the run is alive.
     sawActivity?: boolean;
     activityTimer?: ReturnType<typeof setTimeout>;
+    // The mid-stream LIVENESS watchdog (see livenessProbeMs): a rearming timer that
+    // probes acpClient.isAlive() and terminates the run ONLY if the agent process
+    // has died without a terminal event. Silence alone never fires it.
+    livenessTimer?: ReturnType<typeof setTimeout>;
     // Set once a terminal event (RUN_FINISHED/RUN_ERROR) has been emitted for this
     // run — by the watchdog OR the normal path — so the other path can't emit a
     // SECOND terminal (which would corrupt the @ag-ui stream).
@@ -818,6 +839,43 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }, firstActivityTimeoutMs);
     }
 
+    // LIVENESS watchdog: a rearming probe that force-terminates a run ONLY when the
+    // agent PROCESS has died (crashed/exited) without emitting a terminal event — an
+    // unambiguous wedge that would otherwise block the pump's queue forever. It does
+    // NOT guess from silence: a long tool call is silent but healthy (the agent is
+    // alive; the ExecBackend commandTimeoutMs already bounds a hung command). So a
+    // tool in flight, a paused permission request, or an alive-but-idle agent all
+    // just re-arm. The DOA watchdog (firstActivityTimeoutMs) covers "never started".
+    if (livenessProbeMs > 0) {
+      const armLiveness = () => {
+        st.livenessTimer = setTimeout(() => {
+          if (st.ended || st.terminated) return;
+          // DEFINITIVE health signal: is the agent process still alive? If it is
+          // (or we can't tell — no client yet), keep watching; silence is fine.
+          if (!acpClient || acpClient.isAlive()) return armLiveness();
+          // The agent DIED without a terminal event — the run is genuinely wedged.
+          st.ended = true;
+          st.terminated = true; // this watchdog owns the terminal event now
+          closeOpenText(st);
+          closeOpenReasoning(st);
+          outcome = "error";
+          emit({
+            type: "RUN_ERROR",
+            message:
+              "The agent process exited unexpectedly mid-task. The run was ended so the " +
+              "conversation isn't stuck; your next message will start a fresh run. If this " +
+              "recurs, check the agent-host logs.",
+            code: "agent_process_died",
+          });
+          // Best-effort cleanup so the next prompt gets a fresh run.
+          void self.cancel(runId).catch(() => {});
+        }, livenessProbeMs);
+        // Don't let this timer keep the process alive on its own.
+        (st.livenessTimer as { unref?: () => void }).unref?.();
+      };
+      armLiveness();
+    }
+
     // REVIVE reinjection: on this bridge's FIRST prompt, snapshot the persisted
     // log (the PRIOR turns) BEFORE we append the current user turn below, so the
     // transcript never includes — and can't duplicate — the message we're about
@@ -955,10 +1013,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         }
       }
     } finally {
-      // Always clear the watchdog timer (normal completion, error, or already fired).
+      // Always clear the watchdog timers (normal completion, error, or already fired).
       if (st.activityTimer) {
         clearTimeout(st.activityTimer);
         st.activityTimer = undefined;
+      }
+      if (st.livenessTimer) {
+        clearTimeout(st.livenessTimer);
+        st.livenessTimer = undefined;
       }
       if (currentRun === st) currentRun = undefined;
       // Metrics hook — fire-and-forget, never let it break the run.

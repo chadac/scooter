@@ -132,6 +132,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
 
   let sessionId = "";
   let active: SdkQuery | undefined; // the in-flight query() for cancel()
+  let closed = false; // set by close(); the SDK runs in-process, so "alive" == not closed
   // The SDK's OWN session UUID (from message.session_id), captured each turn and
   // passed as `resume` on the next prompt so the conversation CONTINUES with full
   // history — without it every query() is a fresh, context-free session (the agent
@@ -272,6 +273,13 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       // The SDK owns tool execution; interrupting the query stops the running
       // tool. Sandbox terminals are ExecBackend handles released per-call.
       await active?.interrupt?.().catch(() => {});
+    },
+
+    isAlive() {
+      // In-process SDK: there's no subprocess to crash, so it's alive until
+      // close(). (A hung tool call here is bounded by the ExecBackend command
+      // timeout, same as goose — not by this liveness signal.)
+      return !closed;
     },
 
     onSessionUpdate(cb) {

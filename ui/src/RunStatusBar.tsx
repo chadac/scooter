@@ -94,7 +94,7 @@ export function ContextFillBar() {
 /** The inline indicator + Stop / error, rendered in the conversation (above the
  *  composer). Returns null when idle with no error. */
 export function InlineRunStatus() {
-  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError } = useConversationInterrupts();
+  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, streamAuthError } = useConversationInterrupts();
 
   // Tick once a second WHILE running so the elapsed time advances — this is what
   // makes a long, silent tool call visibly "still working" instead of looking stuck.
@@ -104,6 +104,25 @@ export function InlineRunStatus() {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [isRunning]);
+
+  // An expired ingress/auth session (the live stream is 401/403ing) takes
+  // precedence over everything: retrying silently would leave the user staring at
+  // a "working" dot forever. Surface a durable banner so they know to re-auth; it
+  // self-clears once the stream reconnects (the pump keeps polling).
+  if (streamAuthError) {
+    return (
+      <div
+        data-testid="stream-auth-error-bar"
+        role="alert"
+        className="mx-auto flex w-full max-w-(--thread-max-width) items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+      >
+        <span aria-hidden className="mt-0.5 font-semibold">⚠</span>
+        <span data-testid="stream-auth-error-message">
+          Your session expired — reconnecting. If this persists, reload the page to sign in again.
+        </span>
+      </div>
+    );
+  }
 
   // A failed run (RUN_ERROR) clears `isRunning` but the base applier renders no
   // message — so when the run isn't in flight but errored, show a visible error
