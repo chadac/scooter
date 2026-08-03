@@ -267,14 +267,22 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           }
           // BACK-PRESSURE (the real gate on the claude-code provider): the SDK does
           // NOT invoke canUseTool for our allowed/aliased tools, so we can't deny a
-          // tool there. Instead, at each TOOL-CALL BOUNDARY (a tool_call_update just
-          // completed), if a higher-priority item is now waiting (a subagent result,
-          // a priority message), INTERRUPT the query so the turn ends cleanly — the
-          // agent goes idle and the queued item injects on the next turn, instead of
-          // spinning in a check_subagent loop that blocks the very result it awaits.
-          // We yield BETWEEN tool calls (never mid-call), so an in-flight tool isn't
-          // killed. The pending item reaches the model as its next prompt.
-          if (deps.shouldYield?.() && updates.some((u) => u.sessionUpdate === "tool_call_update")) {
+          // tool there. Instead, when the agent ISSUES a tool call (a `tool_use`
+          // block → a `tool_call` update), if a higher-priority item is now waiting
+          // (a subagent result, a priority message), INTERRUPT the query so the turn
+          // ends cleanly — the agent goes idle and the queued item injects on the
+          // next turn, instead of spinning in a check_subagent loop that blocks the
+          // very result it awaits.
+          //
+          // We key on `tool_call` (the CALL), NOT `tool_call_update` (the RESULT):
+          // verified from a recorded real transcript that the SDK sends tool_result
+          // in a `user` message the adapter drops — so tool_call_update is NEVER
+          // emitted for claude, and the old hook never fired (the production bug).
+          // The tool_call fires reliably. Interrupting at the call cancels THIS tool
+          // before it runs; that's the intended back-pressure (don't start the next
+          // tool when a priority item is waiting) — the interrupted call re-issues
+          // on the resumed turn after the priority item is handled.
+          if (deps.shouldYield?.() && updates.some((u) => u.sessionUpdate === "tool_call")) {
             debug("[sdk] back-pressure: yielding turn (priority item waiting) — interrupting query");
             stopReason = "end_turn";
             await q.interrupt?.().catch(() => {});
