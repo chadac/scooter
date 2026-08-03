@@ -74,6 +74,25 @@ print("${CODE_MODE_MARKER} " + _json.dumps({"ok": True, "cells": _cells}))
 `.trim();
 }
 
+/** install(packages) — install packages into the notebook's environment via marimo's
+ *  native package manager (ctx.packages.add — verified live). With marimo launched
+ *  under the uv-nix uv (--sandbox), these are uv-managed + wheel-patched so science
+ *  deps import. Prints `<marker> {"ok":true,"installed":[...]}`. */
+export function installSnippet(packages: string[]): string {
+  const pkgList = JSON.stringify(packages);
+  return `
+import json as _json
+import marimo._code_mode as _cm
+async def _op():
+    async with _cm.get_context() as ctx:
+        pkgs = _json.loads(r"""${pyTripleQuoted(pkgList)}""")
+        ctx.packages.add(*pkgs)
+        return pkgs
+_pkgs = await _op()
+print("${CODE_MODE_MARKER} " + _json.dumps({"ok": True, "installed": _pkgs}))
+`.trim();
+}
+
 /** Parse the marker line out of an execute stdout. Returns the JSON object the
  *  snippet printed, or null if the marker isn't present (the op didn't complete —
  *  e.g. a code-mode API change threw before the print). */

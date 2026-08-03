@@ -11,7 +11,7 @@
 
 import type { MarimoClient } from "./client.js";
 import { MarimoError } from "./types.js";
-import { createCellSnippet, runCellSnippet, listCellsSnippet, parseCodeModeResult } from "./codeMode.js";
+import { createCellSnippet, runCellSnippet, listCellsSnippet, installSnippet, parseCodeModeResult } from "./codeMode.js";
 
 /** The MCP tool-result shape (mirrors agent-host's ToolResult). */
 export interface ToolResult {
@@ -48,6 +48,7 @@ export interface MarimoTools {
   createCell(args: { code: string; name?: string; run?: boolean; file?: string; session?: string }): Promise<ToolResult>;
   runCell(args: { cell_id: string; file?: string; session?: string }): Promise<ToolResult>;
   listCells(args: { file?: string; session?: string }): Promise<ToolResult>;
+  install(args: { packages: string[]; file?: string; session?: string }): Promise<ToolResult>;
 }
 
 /** Build the tool handlers over a client. `client` is per-conversation (its target
@@ -123,6 +124,16 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
     async listCells(args) {
       try {
         return (await runCodeMode(listCellsSnippet(), sel(args), "list_cells")).result;
+      } catch (e) {
+        return toErrorResult(e);
+      }
+    },
+
+    async install(args) {
+      const packages = (args.packages ?? []).map((p) => p.trim()).filter(Boolean);
+      if (packages.length === 0) return err("install: `packages` must be a non-empty list.");
+      try {
+        return (await runCodeMode(installSnippet(packages), sel(args), "install")).result;
       } catch (e) {
         return toErrorResult(e);
       }

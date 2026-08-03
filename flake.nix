@@ -27,9 +27,17 @@
       url = "github:chadac/nix-stubs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # uv patched to work under Nix: wheels/interpreters are fixed up so Nix-supplied
+    # native libs (BLAS/LAPACK for numpy/scipy, etc.) resolve without manual
+    # LD_LIBRARY_PATH. Backs the in-pod marimo so `uv add matplotlib` / --sandbox
+    # science deps actually import. The `/bin` variant is a prebuilt binary (no compile).
+    uv-nix = {
+      url = "github:chadac/uv-nix/bin";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs }:
+  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs, uv-nix }:
     let
       # The built-in agent skills: every ./skills/*.md read into the
       # `filename -> content` attrset the platform module's `agent.skills` option
@@ -138,10 +146,14 @@
           # the sandbox-os build so its modules can declare lazy tool shims.
           nixStubsLib = nix-stubs.lib.${system};
 
+          # The uv-nix uv (patched for Nix) — backs the in-pod marimo so science deps
+          # install + import. Passed into the sandbox-os build for marimo.nix.
+          uvNix = uv-nix.packages.${system}.default;
+
           # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
           # services). Built from the shared modules/sandbox-os config.
           sandboxOsImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib nixStubsLib;
+            inherit pkgs lib nixStubsLib uvNix;
           };
 
           # Same image with the read-only-base + writable-upper local-overlay store

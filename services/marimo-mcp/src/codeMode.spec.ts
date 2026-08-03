@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { createCellSnippet, runCellSnippet, listCellsSnippet, parseCodeModeResult, CODE_MODE_MARKER } from "./codeMode.js";
+import { createCellSnippet, runCellSnippet, listCellsSnippet, installSnippet, parseCodeModeResult, CODE_MODE_MARKER } from "./codeMode.js";
 
 describe("code-mode snippets", () => {
   it("createCellSnippet embeds the user code in a triple-quoted block + prints the marker", () => {
@@ -26,10 +26,18 @@ describe("code-mode snippets", () => {
     expect(s).toContain(CODE_MODE_MARKER);
   });
 
-  it("listCellsSnippet dumps cell id/name/code", () => {
+  it("listCellsSnippet dumps cell id/name/code via .id (not .cell_id)", () => {
     const s = listCellsSnippet();
     expect(s).toContain("ctx.cells");
-    expect(s).toContain("cell_id");
+    expect(s).toContain('getattr(c, "id"'); // the real NotebookCell attr
+  });
+
+  it("installSnippet installs via ctx.packages.add(*pkgs)", () => {
+    const s = installSnippet(["matplotlib", "numpy>=2"]);
+    expect(s).toContain("ctx.packages.add(*pkgs)");
+    expect(s).toContain("matplotlib");
+    expect(s).toContain("numpy>=2");
+    expect(s).toContain(CODE_MODE_MARKER);
   });
 });
 

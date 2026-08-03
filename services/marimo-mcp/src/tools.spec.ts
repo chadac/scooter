@@ -130,6 +130,33 @@ describe("marimo tools", () => {
     });
   });
 
+  describe("install", () => {
+    it("installs the packages via a code-mode snippet", async () => {
+      const client = fakeClient({ execute: async (code: string) => { client.calls.push(code); return markerOk({ installed: ["matplotlib"] }); } });
+      const tools = createMarimoTools(client);
+      const r = await tools.install({ packages: ["matplotlib"] });
+      expect(r.isError).toBeFalsy();
+      expect(client.calls[0]).toContain("ctx.packages.add");
+      expect(client.calls[0]).toContain("matplotlib");
+      expect(r.content[0].text).toContain("install ok");
+    });
+
+    it("rejects an empty package list without hitting the client", async () => {
+      const execute = vi.fn(async () => result());
+      const tools = createMarimoTools(fakeClient({ execute }));
+      const r = await tools.install({ packages: ["  ", ""] });
+      expect(r.isError).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("surfaces an install failure (no marker) with the traceback", async () => {
+      const tools = createMarimoTools(fakeClient({ execute: async () => result({ success: false, stderr: "ResolutionImpossible: nope" }) }));
+      const r = await tools.install({ packages: ["does-not-exist-xyz"] });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toContain("ResolutionImpossible");
+    });
+  });
+
   it("passes file/session selectors through to the client", async () => {
     const execute = vi.fn(async () => result());
     const tools = createMarimoTools(fakeClient({ execute }));

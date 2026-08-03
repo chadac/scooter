@@ -48,6 +48,12 @@
   # `nixStubsLib` as a module arg errors "attribute 'nixStubsLib' missing".
   _module.args.nixStubsLib = lib.mkDefault null;
 
+  # The uv-nix uv (patched for Nix), consumed by web-services/marimo.nix to launch
+  # marimo under uv so science deps import. Defaulted to null here (same reasoning as
+  # nixStubsLib) so nixosTests importing modules/sandbox-os directly still evaluate;
+  # marimo.nix falls back to a plain `marimo` when it's null. The image build overrides.
+  _module.args.uvNix = lib.mkDefault null;
+
   # --- systemd base ----------------------------------------------------------
   system.stateVersion = "24.11";
 

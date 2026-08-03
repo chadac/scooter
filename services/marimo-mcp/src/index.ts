@@ -120,6 +120,22 @@ export function registerMarimoTools(server: McpServerLike, clientFor: () => Mari
     },
     async (args: { file?: string; session?: string }) => asMcp((await tools()).listCells(args)),
   );
+
+  reg(
+    "marimo_install",
+    {
+      title: "Install Python packages in the notebook",
+      description:
+        "Install Python packages into the running notebook's environment (e.g. numpy, matplotlib, pandas) so " +
+        "you can import them in marimo_execute / cells. Uses marimo's package manager (uv-backed), so science " +
+        "deps with native libraries work. Call this BEFORE importing a package that isn't already available.",
+      inputSchema: {
+        packages: z.array(z.string()).describe('Package specs to install, e.g. ["matplotlib", "numpy>=2"].'),
+        ...selectorShape,
+      },
+    },
+    async (args: { packages: string[]; file?: string; session?: string }) => asMcp((await tools()).install(args)),
+  );
 }
 
 /** Convenience: build a standalone McpServer wired to a fixed marimo target. Used

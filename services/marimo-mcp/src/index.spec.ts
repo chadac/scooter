@@ -46,6 +46,7 @@ describe("marimo MCP server", () => {
     expect(names).toEqual([
       "marimo_create_cell",
       "marimo_execute",
+      "marimo_install",
       "marimo_list_cells",
       "marimo_list_sessions",
       "marimo_run_cell",
