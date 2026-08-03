@@ -11,6 +11,7 @@ import type { IncomingMessage } from "node:http";
 
 import type { IdentityResolver, UserContext } from "../../src/auth/identity.js";
 import { withIdentityStore, type IdentityStore } from "../../src/auth/identityStore.js";
+import { normalizeEmail } from "../../src/auth/email.js";
 
 const req = {} as IncomingMessage;
 
@@ -28,13 +29,16 @@ function fakeStore(seed: Record<string, { email?: string; name?: string }> = {})
     puts,
     get: vi.fn(async (id: string) => data.get(id)),
     put: vi.fn(async (id: string, rec: { email?: string; name?: string }) => {
-      puts.push({ id, email: rec.email });
-      data.set(id, rec);
+      // Mirror the real Pg store: normalize the email on write so the fake stays a
+      // faithful stand-in (else it diverges from prod on +tag/case matching).
+      const stored = rec.email ? { ...rec, email: normalizeEmail(rec.email) || undefined } : rec;
+      puts.push({ id, email: stored.email });
+      data.set(id, stored);
     }),
     getByEmail: vi.fn(async (email: string) => {
-      const target = email.trim().toLowerCase();
+      const target = normalizeEmail(email);
       if (!target) return undefined;
-      for (const [id, rec] of data) if (rec.email?.toLowerCase() === target) return { id };
+      for (const [id, rec] of data) if (rec.email && normalizeEmail(rec.email) === target) return { id };
       return undefined;
     }),
     close: vi.fn(async () => {}),
@@ -102,6 +106,18 @@ describe("IdentityStore.getByEmail (external-user reverse lookup)", () => {
     const store = fakeStore({ "sub-1": { email: "Alice@Example.com", name: "Alice" } });
     expect(await store.getByEmail("alice@example.com")).toEqual({ id: "sub-1" });
     expect(await store.getByEmail("ALICE@EXAMPLE.COM")).toEqual({ id: "sub-1" });
+  });
+
+  it("matches regardless of a +tag / case (the same mailbox → one user)", async () => {
+    // Stored one way; a webhook resolves the invoking user's email a DIFFERENT
+    // cosmetic way — they must still map to the same Scooter user.
+    const store = fakeStore({ "sub-1": { email: "alice@example.com" } });
+    expect(await store.getByEmail("Alice+slack@Example.com")).toEqual({ id: "sub-1" });
+    expect(await store.getByEmail("alice+github@example.com")).toEqual({ id: "sub-1" });
+
+    // And the reverse: stored WITH a tag, looked up plain.
+    const store2 = fakeStore({ "sub-2": { email: "Bob+work@Corp.com" } });
+    expect(await store2.getByEmail("bob@corp.com")).toEqual({ id: "sub-2" });
   });
 
   it("returns undefined when no user has that email", async () => {
