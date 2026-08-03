@@ -17,7 +17,7 @@
 # recursion). The parent web-services.nix filters on `.enable` when it renders
 # units + the manifest, so an un-enabled marimo produces nothing.
 
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, uvNix ? null, ... }:
 
 let
   cfg = config.webServices.marimo;
@@ -41,17 +41,44 @@ in
     # to its store-path STRING. (A bare derivation type-checks in the image build's
     # coercion path but FAILS the re-converge eval — where webServices.command is read
     # as a plain string.)
-    command = lib.mkDefault "${pkgs.writeShellScript "marimo-web-service" ''
-      set -euo pipefail
-      base="/c/''${CONVERSATION_ID:-unknown}/marimo"
-      proxy_args=()
-      if [ -n "''${PUBLIC_HOST:-}" ]; then proxy_args+=(--proxy "''${PUBLIC_HOST}"); fi
-      # --no-token: access is gated by the platform proxy (the pod isn't public);
-      # marimo-pair also needs a token-less server to attach to.
-      exec marimo edit \
-        --host 0.0.0.0 --port ${toString cfg.port} \
-        --base-url "$base" "''${proxy_args[@]}" \
-        --headless --no-token
-    ''}";
+    # Point uv at a NIX-provided Python so it doesn't download its own managed CPython
+    # — a generic dynamically-linked ELF that can't exec on NixOS (uv-nix's patch of the
+    # download currently misses the real binary → marimo crash-loops; being fixed
+    # upstream). UV_PYTHON_DOWNLOADS=never forbids the fetch; UV_PYTHON pins the Nix
+    # interpreter. Only when running under uv (uvNix set); a bare marimo needs neither.
+    environment = lib.mkIf (uvNix != null) (lib.mkDefault {
+      UV_PYTHON = "${pkgs.python314}/bin/python3.14";
+      UV_PYTHON_DOWNLOADS = "never";
+    });
+
+    # Launch marimo UNDER the uv-nix uv when available: `uv run --with marimo marimo
+    # edit --sandbox` gives each notebook a uv-managed venv, and uv-nix patches the
+    # wheels so Nix-supplied native libs (BLAS/LAPACK for numpy/scipy, matplotlib's
+    # backends…) resolve — so `uv add matplotlib` / the notebook's PEP 723 deps
+    # actually import in the kernel. Without uvNix (nixosTests / no input) fall back to
+    # a bare `marimo edit` on PATH (the lazy tool) — no science-dep patching, but boots.
+    command =
+      let
+        uvBin = if uvNix != null then "${uvNix}/bin/uv" else null;
+        runner =
+          if uvBin != null
+          # `uv run --with marimo` resolves marimo into an ephemeral env; --sandbox
+          # makes each notebook self-contained (inline PEP 723 deps). uv is on PATH via
+          # the absolute store path so the unit needs no extra PATH entry.
+          then ''exec ${uvBin} run --with marimo marimo edit --sandbox''
+          else ''exec marimo edit'';
+      in
+      lib.mkDefault "${pkgs.writeShellScript "marimo-web-service" ''
+        set -euo pipefail
+        base="/c/''${CONVERSATION_ID:-unknown}/marimo"
+        proxy_args=()
+        if [ -n "''${PUBLIC_HOST:-}" ]; then proxy_args+=(--proxy "''${PUBLIC_HOST}"); fi
+        # --no-token: access is gated by the platform proxy (the pod isn't public);
+        # marimo-pair also needs a token-less server to attach to.
+        ${runner} \
+          --host 0.0.0.0 --port ${toString cfg.port} \
+          --base-url "$base" "''${proxy_args[@]}" \
+          --headless --no-token
+      ''}";
   };
 }

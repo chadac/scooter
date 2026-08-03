@@ -29,6 +29,11 @@
   # baked; the built package lands in the writable store on first use). Optional so
   # the nixosTests (which import modules/sandbox-os directly) can pass null.
 , nixStubsLib ? null
+  # The uv-nix uv (patched for Nix): exposed to modules as the `uvNix` module arg so
+  # web-services/marimo.nix can launch marimo under it (science deps import). Optional
+  # so nixosTests importing modules/sandbox-os directly can pass null (marimo falls
+  # back to a plain `marimo` there — see marimo.nix).
+, uvNix ? null
 }:
 
 let
@@ -62,6 +67,9 @@ let
     # import modules/sandbox-os without the packaging layer — the lazy-tools module
     # guards on it and falls back to a normal package there.
     _module.args.nixStubsLib = nixStubsLib;
+    # The uv-nix uv, for web-services/marimo.nix. Null in nixosTests (marimo.nix
+    # guards on it and falls back to a plain marimo).
+    _module.args.uvNix = uvNix;
 
     # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
     boot.isContainer = true;

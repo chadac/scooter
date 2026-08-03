@@ -126,4 +126,32 @@ describe("ToolCallView", () => {
     );
     expect(html).not.toContain("provider-tool-running");
   });
+
+  it("renders a marimo_embed island from the ```marimo-embed fence in the result", () => {
+    const payload = Buffer.from(
+      JSON.stringify({ islandHtml: "<marimo-island>x</marimo-island>", headHtml: "<script></script>", title: "Chart" }),
+      "utf8",
+    ).toString("base64");
+    const html = renderToStaticMarkup(
+      createElement(ToolCallView, part({
+        toolName: "mcp__scooter-env__marimo_embed",
+        // The real result shape: the ACP content-array carrying the fence text.
+        result: [{ content: { text: `Embedded a live marimo cell — Chart in the chat.\n\n\`\`\`marimo-embed\n${payload}\n\`\`\``, type: "text" }, type: "content" }],
+      })),
+    );
+    // The island figure renders (not the generic tool box).
+    expect(html).toContain("marimo-embed");
+    expect(html).toContain('data-testid="marimo-embed-host"');
+    expect(html).toContain("Chart");
+    expect(html).not.toContain("provider-tool-card");
+  });
+
+  it("marimo_embed with no result yet falls through to the generic box (no crash)", () => {
+    const html = renderWithRun(
+      createElement(ToolCallView, part({ toolName: "mcp__scooter-env__marimo_embed", result: undefined })),
+      true,
+    );
+    // No island yet; it doesn't throw and doesn't render an embed.
+    expect(html).not.toContain('data-testid="marimo-embed-host"');
+  });
 });

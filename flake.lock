@@ -134,7 +134,8 @@
         "kubenix": "kubenix",
         "nix-stubs": "nix-stubs",
         "nix2container": "nix2container",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "uv-nix": "uv-nix"
       }
     },
     "systems": {
@@ -169,6 +170,27 @@
       "original": {
         "owner": "numtide",
         "repo": "treefmt-nix",
+        "type": "github"
+      }
+    },
+    "uv-nix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1785704979,
+        "narHash": "sha256-f9vwcna/w7v/wHJi8evRhs585cOT2Rd0TrfcAoIj9NY=",
+        "owner": "chadac",
+        "repo": "uv-nix",
+        "rev": "15d85725c73c9a1163aa6703d326ee7f1d121128",
+        "type": "github"
+      },
+      "original": {
+        "owner": "chadac",
+        "ref": "bin",
+        "repo": "uv-nix",
         "type": "github"
       }
     }

@@ -36,6 +36,16 @@ export default defineConfig({
         },
       },
       {
+        // The isolated marimo MCP server (marimo protocol client + notebook tools).
+        // The fragile /api/kernel/* surface is pinned + tested here against a fake
+        // marimo http.Server (co-located *.spec.ts).
+        test: {
+          name: "marimo-mcp",
+          include: ["services/marimo-mcp/src/**/*.spec.ts"],
+          environment: "node",
+        },
+      },
+      {
         // Match ui/vite.config.ts's "@" -> ui/ alias so tests can import the
         // assistant-ui components (e.g. @/components/assistant-ui/...) the app uses.
         resolve: {

@@ -42,7 +42,8 @@ import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
-import { createMcpEndpoint } from "./agent/mcpServer.js";
+import { createMcpEndpoint, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
   lastAssistantText,
   subagentDoneNotice,
@@ -667,13 +668,65 @@ export async function main(
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
   const subagentManager: SubagentManager = createSubagentManager(sessions, store);
 
+  // marimo notebook tools: target THIS conversation's in-pod marimo at podIP:2718.
+  // Real sandboxes only (a fake/local sandbox has no pod IP). The pod IP is resolved
+  // FRESH per call — it changes across suspend/resume, so we must not cache it.
+  //
+  // marimo runs with `--base-url /c/<CONVERSATION_ID>/marimo` (so it serves correctly
+  // behind the web-service proxy), which prefixes ALL its routes — INCLUDING the
+  // /api/* endpoints the client hits. So the client baseUrl must carry that same
+  // prefix, else GET /api/sessions 404s (the live bug the fake-server tests missed).
+  // CONVERSATION_ID is the full threadId the provisioner injects (see web-services/
+  // marimo.nix). Overridable via MARIMO_BASE_PATH ("" to disable) for a bare server.
+  const MARIMO_PORT = Number(process.env.MARIMO_PORT ?? 2718);
+  const marimoBasePath = (threadId: string) =>
+    process.env.MARIMO_BASE_PATH ?? `/c/${threadId}/marimo`;
+  const publicBase = (process.env.PUBLIC_URL || "").replace(/\/$/, "");
+  const marimoToolsWiring: MarimoToolsWiring | undefined = config.fakeSandbox
+    ? undefined
+    : {
+        clientFor: async (conversationId: string) => {
+          const conv = sessions.get(conversationId as SessionId);
+          if (!conv) throw new Error(`no conversation ${conversationId} for marimo`);
+          const target = await resolvePodTarget(conv.sandbox);
+          const base = marimoBasePath(conv.threadId).replace(/\/$/, "");
+          return createMarimoClient({ baseUrl: `http://${target.podIP}:${MARIMO_PORT}${base}` });
+        },
+        // The user-facing notebook URL: <PUBLIC_URL>/c/<threadId>/marimo/ (the same
+        // path the web-service proxy serves). Undefined when PUBLIC_URL isn't set.
+        notebookUrlFor: (conversationId: string) => {
+          const conv = sessions.get(conversationId as SessionId);
+          if (!conv || !publicBase) return undefined;
+          return `${publicBase}${marimoBasePath(conv.threadId).replace(/\/$/, "")}/`;
+        },
+        // marimo_embed (WASM islands): run the island generator in the pod via
+        // `<uv> run --with marimo python -c <script>`, using the SAME uv env the marimo
+        // service uses (the uv-nix uv + the pinned Nix python; downloads off — see the
+        // uv-nix python-download bug). The image bakes those store paths; the deploy
+        // passes them as MARIMO_UV_BIN / MARIMO_UV_PYTHON. Embed is disabled (undefined)
+        // when they aren't set — the tool then reports it's unavailable.
+        islandFor: async (conversationId: string) => {
+          const uvBin = process.env.MARIMO_UV_BIN;
+          const uvPython = process.env.MARIMO_UV_PYTHON;
+          if (!uvBin || !uvPython) return undefined;
+          const conv = sessions.get(conversationId as SessionId);
+          if (!conv) return undefined;
+          const exec = await connectSandbox(conv.sandbox);
+          return {
+            exec: { execute: (req) => exec.execute({ command: req.command, args: req.args ?? [] }) },
+            uv: { uvBin, env: { UV_PYTHON: uvPython, UV_PYTHON_DOWNLOADS: "never" } },
+          };
+        },
+      };
+
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
     modelToolsWiring !== undefined ||
     resourceToolsWiring !== undefined ||
     schedulerToolsWiring !== undefined ||
-    subagentManager !== undefined
+    subagentManager !== undefined ||
+    marimoToolsWiring !== undefined
       ? createMcpEndpoint({
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
@@ -684,6 +737,7 @@ export async function main(
           resources: resourceToolsWiring,
           scheduler: schedulerToolsWiring,
           subagents: subagentManager,
+          marimo: marimoToolsWiring,
         })
       : undefined;
 
