@@ -41,6 +41,16 @@ in
     # to its store-path STRING. (A bare derivation type-checks in the image build's
     # coercion path but FAILS the re-converge eval — where webServices.command is read
     # as a plain string.)
+    # Point uv at a NIX-provided Python so it doesn't download its own managed CPython
+    # — a generic dynamically-linked ELF that can't exec on NixOS (uv-nix's patch of the
+    # download currently misses the real binary → marimo crash-loops; being fixed
+    # upstream). UV_PYTHON_DOWNLOADS=never forbids the fetch; UV_PYTHON pins the Nix
+    # interpreter. Only when running under uv (uvNix set); a bare marimo needs neither.
+    environment = lib.mkIf (uvNix != null) (lib.mkDefault {
+      UV_PYTHON = "${pkgs.python314}/bin/python3.14";
+      UV_PYTHON_DOWNLOADS = "never";
+    });
+
     # Launch marimo UNDER the uv-nix uv when available: `uv run --with marimo marimo
     # edit --sandbox` gives each notebook a uv-managed venv, and uv-nix patches the
     # wheels so Nix-supplied native libs (BLAS/LAPACK for numpy/scipy, matplotlib's
