@@ -80,48 +80,62 @@ function imageBlock(b: Extract<SdkContentBlock, { type: "image" }>): ContentBloc
  * "message sent twice" bug). tool_use / tool_result / image do NOT come as deltas,
  * so the assistant message is still their only source.
  */
+/** Map one message's content[] blocks to session updates. Shared by the
+ *  `assistant` case (text / thinking / tool_use / image) AND the `user` case
+ *  (tool_result — the SDK delivers a completed tool's result in a USER message,
+ *  NOT the assistant message; if we don't handle `user` the result is dropped and
+ *  the UI's tool card never shows output). */
+function blocksToUpdates(content: SdkContentBlock[], partialsEnabled: boolean): SessionUpdate[] {
+  const out: SessionUpdate[] = [];
+  for (const block of content) {
+    switch (block.type) {
+      case "text":
+        // Skip when partials are on — the stream_event text_deltas already
+        // emitted this text; re-emitting the full block double-sends the reply.
+        if (block.text && !partialsEnabled) out.push({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: block.text } });
+        break;
+      case "thinking":
+        if (block.thinking && !partialsEnabled) out.push({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: block.thinking } });
+        break;
+      case "tool_use":
+        // A tool call — its id correlates the later tool_result. rawInput
+        // carries the command/args so the UI's tool card isn't empty.
+        out.push({ sessionUpdate: "tool_call", toolCallId: block.id, title: toolTitle(block.name), rawInput: block.input });
+        break;
+      case "tool_result": {
+        // The structured result (e.g. a shell's stdout) rides the update so
+        // the UI can show it. is_error → a failed status. RIDES A `user` MESSAGE.
+        out.push({
+          sessionUpdate: "tool_call_update",
+          toolCallId: block.tool_use_id,
+          status: block.is_error ? "failed" : "completed",
+          rawOutput: block.content,
+        });
+        break;
+      }
+      case "image": {
+        const img = imageBlock(block as Extract<SdkContentBlock, { type: "image" }>);
+        if (img) out.push({ sessionUpdate: "agent_message_chunk", content: img });
+        break;
+      }
+      default:
+        break; // unknown block type — ignore (forward-compatible)
+    }
+  }
+  return out;
+}
+
 export function sdkMessageToUpdates(msg: SdkMessage, partialsEnabled = true): SessionUpdate[] {
   switch (msg.type) {
-    case "assistant": {
-      const out: SessionUpdate[] = [];
-      const content = (msg as { message?: { content?: SdkContentBlock[] } }).message?.content ?? [];
-      for (const block of content) {
-        switch (block.type) {
-          case "text":
-            // Skip when partials are on — the stream_event text_deltas already
-            // emitted this text; re-emitting the full block double-sends the reply.
-            if (block.text && !partialsEnabled) out.push({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: block.text } });
-            break;
-          case "thinking":
-            if (block.thinking && !partialsEnabled) out.push({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: block.thinking } });
-            break;
-          case "tool_use":
-            // A tool call — its id correlates the later tool_result. rawInput
-            // carries the command/args so the UI's tool card isn't empty.
-            out.push({ sessionUpdate: "tool_call", toolCallId: block.id, title: toolTitle(block.name), rawInput: block.input });
-            break;
-          case "tool_result": {
-            // The structured result (e.g. a shell's stdout) rides the update so
-            // the UI can show it. is_error → a failed status.
-            out.push({
-              sessionUpdate: "tool_call_update",
-              toolCallId: block.tool_use_id,
-              status: block.is_error ? "failed" : "completed",
-              rawOutput: block.content,
-            });
-            break;
-          }
-          case "image": {
-            const img = imageBlock(block as Extract<SdkContentBlock, { type: "image" }>);
-            if (img) out.push({ sessionUpdate: "agent_message_chunk", content: img });
-            break;
-          }
-          default:
-            break; // unknown block type — ignore (forward-compatible)
-        }
-      }
-      return out;
-    }
+    case "assistant":
+      return blocksToUpdates((msg as { message?: { content?: SdkContentBlock[] } }).message?.content ?? [], partialsEnabled);
+
+    // A `user` message carries the RESULT of a tool the agent called (tool_result
+    // blocks). The SDK sends these as role:user; without this case the result was
+    // dropped, so claude tool cards never showed output and back-pressure couldn't
+    // see the tool boundary (verified from a recorded transcript).
+    case "user":
+      return blocksToUpdates((msg as { message?: { content?: SdkContentBlock[] } }).message?.content ?? [], partialsEnabled);
 
     case "stream_event": {
       const ev = (msg as { event?: SdkStreamEvent }).event;

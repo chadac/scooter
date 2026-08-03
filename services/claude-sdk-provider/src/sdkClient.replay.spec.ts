@@ -19,17 +19,17 @@ import { createSdkAcpClient } from "./sdkClient.js";
 import type { ExecBackend, SessionUpdate } from "./types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// The fixture lives in agent-host's test tree (that package owns the recorder).
-const FIXTURE = join(HERE, "../../agent-host/test/fixtures/transcripts/claude/subagent-poll-loop.ndjson");
+// Fixtures live in agent-host's test tree (that package owns the recorder).
+const fixture = (scenario: string) => join(HERE, `../../agent-host/test/fixtures/transcripts/claude/${scenario}.ndjson`);
 
 const fakeExec: ExecBackend = {
   exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
   createTerminal: async () => ({ id: "t", write: async () => {}, kill: async () => {}, output: async () => "" }),
 } as unknown as ExecBackend;
 
-/** The RAW recorded SDK messages, in order. */
-function recordedSdkMessages(): unknown[] {
-  return readFileSync(FIXTURE, "utf8")
+/** The RAW recorded SDK messages for a scenario, in order. */
+function recordedSdkMessages(scenario = "subagent-poll-loop"): unknown[] {
+  return readFileSync(fixture(scenario), "utf8")
     .split("\n")
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l))
@@ -74,12 +74,9 @@ describe("REPLAY: real claude transcript (subagent-poll-loop)", () => {
     expect(toolCalls.length).toBeGreaterThan(0); // real tool_use blocks became tool_call updates
   });
 
-  it("REGRESSION: back-pressure yields when shouldYield() is true — even though tool_result rides a `user` message the adapter drops", async () => {
-    // The bug: the yield hook keyed on `tool_call_update` (from a tool_result). But
-    // the real SDK sends tool_result in a `user` message that the adapter ignores,
-    // so no tool_call_update is emitted — the loop never yielded. The FIX keys the
-    // yield on the tool CALL (tool_use -> tool_call), which the adapter DOES emit.
-    // With shouldYield() true, replaying the real stream must INTERRUPT.
+  it("REGRESSION: back-pressure yields when shouldYield() is true — keyed on the tool CALL", async () => {
+    // The yield hook keys on the tool CALL (tool_use -> tool_call), which the adapter
+    // emits reliably. With shouldYield() true, replaying the real stream INTERRUPTS.
     const rq = replayQuery(recordedSdkMessages());
     const client = await createSdkAcpClient({
       oauthToken: "t", model: "claude-opus-4-8", exec: fakeExec, systemPrompt: "hi",
@@ -88,5 +85,23 @@ describe("REPLAY: real claude transcript (subagent-poll-loop)", () => {
     await client.newSession({ threadId: "c1" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
     expect(rq.wasInterrupted()).toBe(true);
+  });
+
+  it("FIX: the tool RESULT now surfaces (tool_call_update) — a `user`-message tool_result is no longer dropped", async () => {
+    // Recorded shell-tool run: `echo HARNESS_MARKER`. The SDK sent the result in a
+    // `user` message; the adapter used to drop it (no `case "user"`), so claude tool
+    // output never rendered. With the fix, replaying the real stream emits a
+    // tool_call_update carrying the result.
+    const updates: SessionUpdate[] = [];
+    const rq = replayQuery(recordedSdkMessages("shell-tool-and-result"));
+    const client = await createSdkAcpClient({ oauthToken: "t", model: "claude-opus-4-8", exec: fakeExec, systemPrompt: "hi", queryImpl: rq.queryImpl });
+    client.onSessionUpdate((_id, u) => updates.push(u));
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "run echo" }] } as never);
+
+    const results = updates.filter((u) => u.sessionUpdate === "tool_call_update");
+    expect(results.length).toBeGreaterThan(0); // the tool result now flows
+    // ...and it carries the real output.
+    expect(JSON.stringify(results)).toContain("HARNESS_MARKER");
   });
 });

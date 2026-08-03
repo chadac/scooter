@@ -8,3 +8,6 @@
 export { createSdkAcpClient, type SdkAcpClientDeps } from "./sdkClient.js";
 export { summarizeConversation, type SummaryTurn, type SummarizeDeps } from "./summarize.js";
 export type { AcpClient, ExecBackend } from "./types.js";
+// Exported for the cross-provider transcript harness: re-derive normalized updates
+// from recorded raw SDK messages through the LIVE adapter (see the harness doc).
+export { sdkMessageToUpdates, type SdkMessage } from "./sdkAdapter.js";
