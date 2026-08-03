@@ -60,21 +60,49 @@ function injectHead(headHtml: string) {
   }
 }
 
+/** A PERSISTENT island node cache, keyed by the island HTML. A marimo island is a
+ *  custom element that hydrates itself (React root + pyodide) on connect and CANNOT be
+ *  cheaply re-created — and the tool result collapses via Radix Collapsible, which
+ *  UNMOUNTS its children on close. So we render the island once into a detached <div>
+ *  and, on each mount, MOVE that same (already-hydrated) node into the host. Collapse →
+ *  the node is re-detached (kept alive here); expand → moved back. No re-hydration, so
+ *  the island doesn't vanish. Keyed by islandHtml so identical embeds share one node. */
+const islandNodeCache = new Map<string, HTMLDivElement>();
+
+function islandNodeFor(islandHtml: string): HTMLDivElement {
+  let node = islandNodeCache.get(islandHtml);
+  if (!node) {
+    node = document.createElement("div");
+    node.className = "marimo-island-node";
+    node.innerHTML = islandHtml; // the custom element hydrates itself on connect
+    islandNodeCache.set(islandHtml, node);
+  }
+  return node;
+}
+
 export function MarimoEmbed({ base64Body }: { base64Body: string }) {
   const payload = useMemo(() => parseEmbedPayload(base64Body), [base64Body]);
   const hostRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!payload) return;
+    if (!payload || typeof document === "undefined") return;
     try {
       injectHead(payload.headHtml);
-      // Drop the island HTML into the host. The islands runtime scans the DOM for
-      // <marimo-island> elements and hydrates them — so setting innerHTML is enough.
-      if (hostRef.current) hostRef.current.innerHTML = payload.islandHtml;
+      // Move the persistent (already-hydrated) island node into our host. On collapse
+      // this component unmounts; the node stays in the cache (detached) — not destroyed
+      // — so expanding just re-attaches the SAME node, no re-hydration → it survives.
+      const node = islandNodeFor(payload.islandHtml);
+      hostRef.current?.appendChild(node);
     } catch {
       setFailed(true);
     }
+    // On unmount (collapse), detach the node back to the cache so it's preserved.
+    return () => {
+      if (!payload) return;
+      const node = islandNodeCache.get(payload.islandHtml);
+      if (node?.parentNode) node.parentNode.removeChild(node);
+    };
   }, [payload]);
 
   if (!payload) {
