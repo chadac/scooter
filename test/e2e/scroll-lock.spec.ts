@@ -95,9 +95,23 @@ test.describe("conversation scroll-lock", () => {
     // (the UI's own "not at bottom" signal), which is deterministic regardless of how
     // many px the (variable-height) thread actually scrolled. A loose px check backs
     // it up: distance grew well past the at-bottom tolerance.
-    await chat.viewport().evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }));
+    //
+    // Re-issue the scroll INSIDE the poll: assistant-ui's useStickToBottom can yank the
+    // viewport back down on the animation frame right after a single programmatic
+    // scroll-up (it still believes it's pinned), collapsing distanceFromBottom to ~0
+    // before our measurement — a one-shot scrollTo + poll then flakes. Scrolling up on
+    // every poll tick wins the race deterministically: once the store latches
+    // isAtBottom=false, the yank stops and the distance stays open.
+    await expect
+      .poll(
+        async () => {
+          await chat.viewport().evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }));
+          return chat.distanceFromBottom();
+        },
+        { timeout: 5_000 },
+      )
+      .toBeGreaterThan(AT_BOTTOM_PX);
     await expect(chat.scrollToBottomButton()).toBeEnabled();
-    await expect.poll(() => chat.distanceFromBottom(), { timeout: 5_000 }).toBeGreaterThan(AT_BOTTOM_PX);
 
     // Click the arrow — it re-engages the lock: the view returns to the bottom and the
     // arrow disables again.
