@@ -14,6 +14,22 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { SourceBadge, sourceLabel } from "./sourceIcon.js";
 import { matchToolCall, resultStatusText } from "./toolCallView.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
+import { MarimoEmbed } from "./MarimoEmbed.js";
+
+/** The marimo_embed tool returns a ```marimo-embed\n<base64>\n``` fence in its result
+ *  text. Pull the base64 payload out so we can render the island directly here (a
+ *  tool RESULT never reaches the message markdown renderer). Returns null if absent. */
+function marimoEmbedBase64(result: unknown): string | null {
+  const text = resultStatusText(result);
+  const m = text.match(/```marimo-embed\s*\n([A-Za-z0-9+/=]+)\s*\n```/);
+  return m ? m[1] : null;
+}
+
+/** normalizeToolName strips the mcp__scooter-env__ prefix; the embed tool is
+ *  `marimo_embed` (possibly namespaced). */
+function isMarimoEmbed(toolName: string): boolean {
+  return /(?:^|__)marimo_embed$/.test(toolName);
+}
 
 /** Parse the args object from the part (prefer the parsed `args`, else argsText). */
 function readArgs(props: ToolCallMessagePartProps): unknown {
@@ -27,6 +43,15 @@ function readArgs(props: ToolCallMessagePartProps): unknown {
 }
 
 export const ToolCallView: ToolCallMessagePartComponent = (props) => {
+  // marimo_embed: render the live island inline (the fence is in the tool RESULT,
+  // which otherwise only shows a one-line status). While the result is pending, fall
+  // through to the normal running box.
+  if (isMarimoEmbed(props.toolName)) {
+    const base64 = marimoEmbedBase64(props.result);
+    if (base64) return <MarimoEmbed base64Body={base64} />;
+    // no result yet → show the generic running box until the island arrives.
+  }
+
   const visual = matchToolCall(props.toolName, readArgs(props));
   // Whether the turn is live. In the single-source render model assistant-ui
   // FORCES every folded tool-call part's status to "complete" (ExternalThread's
