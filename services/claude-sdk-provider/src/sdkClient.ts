@@ -67,6 +67,12 @@ export interface SdkAcpClientDeps {
    *  agent spinning in a tool loop that blocks its own result. Omit to disable.
    *  See todo/docs/SUBAGENT_BACKPRESSURE.md. */
   shouldYield?: () => boolean;
+  /** TRANSCRIPT RECORDER (test-harness): when set, called with each RAW SDK
+   *  query() message BEFORE normalization — the ground truth for keeping the fake
+   *  query() faithful. Injected by agent-host (which owns the file writing); this
+   *  isolated package stays dependency-free. Omit to disable (zero overhead).
+   *  See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+  recordRaw?: (msg: unknown) => void;
 }
 
 /** The minimal shape of the SDK's query() we depend on — declared locally so this
@@ -238,6 +244,9 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       let stopReason = "end_turn";
       try {
         for await (const msg of q) {
+          // TRANSCRIPT: record the RAW SDK message before we normalize it — this is
+          // the exact shape the fake query() must reproduce (no-op when unset).
+          deps.recordRaw?.(msg);
           // Capture the SDK's session id from any message that carries it, so the
           // NEXT prompt resumes this same session. (The id is stable across a turn;
           // capturing every time is harmless and covers new/forked sessions.)

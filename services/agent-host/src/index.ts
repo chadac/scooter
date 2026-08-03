@@ -29,6 +29,7 @@ import { createFileConversationStore } from "./session/fileStore.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
+import { createRecorder } from "./transcript/recorder.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { createDeferredConnector } from "./exec/deferredConnect.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
@@ -64,6 +65,12 @@ import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
 import type { SandboxRef, SessionId } from "./types.js";
+
+/** TRANSCRIPT RECORDER (test-harness): one shared instance, OFF unless
+ *  TRANSCRIPT_RECORD_DIR is set. It writes one NDJSON per run capturing the RAW
+ *  agent input + emitted AG-UI, so tests can REPLAY real behavior instead of
+ *  hand-authored fakes. See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+const transcriptRecorder = createRecorder(process.env.TRANSCRIPT_RECORD_DIR);
 
 export interface AgentHostConfig {
   port: number;
@@ -1123,23 +1130,30 @@ export async function main(
     const mcpServers = mcpEndpoint
       ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
       : undefined;
+    const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
     const bridge = createSessionBridge({
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
       livenessProbeMs: config.livenessProbeMs,
+      // TRANSCRIPT RECORDER (test-harness, off unless TRANSCRIPT_RECORD_DIR is set):
+      // record the RAW agent input + emitted AG-UI so tests replay real behavior.
+      recorder: transcriptRecorder,
+      provider: usingClaude ? "claude" : "goose",
       acpClient: () =>
         // claude-code: drive the agent via the Claude Agent SDK (isolated package)
         // so its tools run IN THE SANDBOX (via ExecBackend) instead of the
         // agent-host pod — the fix for the unreachable-scooter-rebuild bug — while
         // keeping subscription auth (CLAUDE_CODE_OAUTH_TOKEN). Other providers keep
         // the goose acp path unchanged.
-        process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox
+        usingClaude
           ? createSdkAcpClient({
               oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "",
               model: resolved ?? cfg.model ?? "claude-sonnet-4-5",
               exec,
               systemPrompt: assembleHints(loadSkills(config.skillsDir), { name: config.agentName }),
+              // TRANSCRIPT: record the RAW SDK messages under this run (no-op off).
+              recordRaw: (m) => bridge.recordRawInput(m),
               // Give the SDK agent the SAME platform MCP tools the goose path gets
               // (scheduler / slack / github / background jobs / model switch / resize),
               // scoped to this conversation via ?conv=<id>. Without this the agent has
@@ -1164,6 +1178,8 @@ export async function main(
               // allow normally, reject the next tool when a priority item waits.
               // Late-bound (bridge assigned below). Gated with GOOSE_MODE above.
               shouldYield: backpressureOn ? () => bridge.shouldYieldToQueue() : undefined,
+              // TRANSCRIPT: record the RAW ACP updates under this run (no-op off).
+              recordRaw: (u) => bridge.recordRawInput(u),
             }),
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
         // Attribute cost to the conversation OWNER (id + email). Resolve async
