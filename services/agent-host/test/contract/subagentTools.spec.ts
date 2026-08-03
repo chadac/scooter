@@ -19,6 +19,9 @@ import {
   handleListSubagents,
   handleCheckSubagent,
   handleCancelSubagent,
+  handleSendToSubagent,
+  handleMonitorSubagent,
+  handleSearchSubagent,
   lastAssistantText,
   subagentDoneNotice,
   type SubagentManager,
@@ -33,6 +36,13 @@ const fakeManager = (over: Partial<SubagentManager> = {}): SubagentManager => ({
   ]),
   check: vi.fn(async (_parentId, id) => ({ id, status: "running", lastActivity: "working on it" })),
   cancel: vi.fn(async () => ({ outcome: "cancelled" })),
+  send: vi.fn(async () => ({ outcome: "sent" })),
+  recentTurns: vi.fn(async () => [
+    { role: "user", text: "find the auth bug" },
+    { role: "tool", text: "ran bash `grep -r auth`" },
+    { role: "assistant", text: "checking auth.ts" },
+  ]),
+  searchHistory: vi.fn(async () => [{ role: "assistant", text: "the auth bug is in login()" }]),
   ...over,
 });
 
@@ -105,6 +115,75 @@ describe("subagent tools", () => {
     expect(mgr.cancel).toHaveBeenCalledWith(PARENT, "sub-a");
     expect(out.isError).toBeFalsy();
     expect(out.content[0].text).toMatch(/cancel/i);
+  });
+
+  // --- send_to_subagent (clarify a RUNNING child) ---
+
+  it("send_to_subagent forwards the clarification to a running child", async () => {
+    const mgr = fakeManager();
+    const out = await handleSendToSubagent(mgr, PARENT, { subagent_id: "sub-a", message: "focus on login()" });
+    expect(mgr.send).toHaveBeenCalledWith(PARENT, "sub-a", "focus on login()");
+    expect(out.isError).toBeFalsy();
+    expect(out.content[0].text).toMatch(/interrupt|clarification/i);
+  });
+
+  it("send_to_subagent FAILS when the child isn't running (nothing to clarify)", async () => {
+    const mgr = fakeManager({ send: vi.fn(async () => ({ outcome: "not-running" })) });
+    const out = await handleSendToSubagent(mgr, PARENT, { subagent_id: "sub-a", message: "hey" });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toMatch(/isn't running|not running/i);
+  });
+
+  it("send_to_subagent errors for a non-child (scoping) and for an empty message", async () => {
+    const mgr = fakeManager({ send: vi.fn(async () => ({ outcome: "unknown" })) });
+    expect((await handleSendToSubagent(mgr, PARENT, { subagent_id: "foreign", message: "x" })).isError).toBe(true);
+    expect((await handleSendToSubagent(fakeManager(), PARENT, { subagent_id: "sub-a", message: "  " })).isError).toBe(true);
+  });
+
+  // --- monitor_subagent (recent turns) ---
+
+  it("monitor_subagent renders recent turns (text + tool summaries)", async () => {
+    const mgr = fakeManager();
+    const out = await handleMonitorSubagent(mgr, PARENT, { subagent_id: "sub-a", turns: 5 });
+    expect(mgr.recentTurns).toHaveBeenCalledWith(PARENT, "sub-a", 5);
+    expect(out.isError).toBeFalsy();
+    const text = out.content[0].text;
+    expect(text).toContain("find the auth bug"); // user turn
+    expect(text).toContain("grep -r auth");        // tool summary
+    expect(text).toContain("checking auth.ts");    // assistant turn
+  });
+
+  it("monitor_subagent clamps turns to the max and defaults when unspecified", async () => {
+    const mgr = fakeManager();
+    await handleMonitorSubagent(mgr, PARENT, { subagent_id: "sub-a", turns: 999 });
+    expect(mgr.recentTurns).toHaveBeenCalledWith(PARENT, "sub-a", 30); // clamped to max
+    await handleMonitorSubagent(mgr, PARENT, { subagent_id: "sub-a" });
+    expect(mgr.recentTurns).toHaveBeenLastCalledWith(PARENT, "sub-a", 6); // default
+  });
+
+  it("monitor_subagent errors for a non-child; friendly note when no messages yet", async () => {
+    expect((await handleMonitorSubagent(fakeManager({ recentTurns: vi.fn(async () => undefined) }), PARENT, { subagent_id: "foreign" })).isError).toBe(true);
+    const empty = await handleMonitorSubagent(fakeManager({ recentTurns: vi.fn(async () => []) }), PARENT, { subagent_id: "sub-a" });
+    expect(empty.isError).toBeFalsy();
+    expect(empty.content[0].text).toMatch(/no messages/i);
+  });
+
+  // --- search_subagent (history) ---
+
+  it("search_subagent returns matching turns", async () => {
+    const mgr = fakeManager();
+    const out = await handleSearchSubagent(mgr, PARENT, { subagent_id: "sub-a", query: "auth bug" });
+    expect(mgr.searchHistory).toHaveBeenCalledWith(PARENT, "sub-a", "auth bug");
+    expect(out.isError).toBeFalsy();
+    expect(out.content[0].text).toContain("login()");
+  });
+
+  it("search_subagent errors for a non-child / empty query; friendly no-match message", async () => {
+    expect((await handleSearchSubagent(fakeManager({ searchHistory: vi.fn(async () => undefined) }), PARENT, { subagent_id: "foreign", query: "x" })).isError).toBe(true);
+    expect((await handleSearchSubagent(fakeManager(), PARENT, { subagent_id: "sub-a", query: "  " })).isError).toBe(true);
+    const none = await handleSearchSubagent(fakeManager({ searchHistory: vi.fn(async () => []) }), PARENT, { subagent_id: "sub-a", query: "zzz" });
+    expect(none.isError).toBeFalsy();
+    expect(none.content[0].text).toMatch(/no turns.*match/i);
   });
 });
 

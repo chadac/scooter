@@ -20,6 +20,9 @@ import {
   handleListSubagents,
   handleCheckSubagent,
   handleCancelSubagent,
+  handleSendToSubagent,
+  handleMonitorSubagent,
+  handleSearchSubagent,
   type SubagentManager,
 } from "./subagentTools.js";
 import type { ConversationLink } from "../session/manager.js";
@@ -197,7 +200,7 @@ async function buildServer(
         inputSchema: {
           prompt: z.string().describe("The task for the subagent (be specific; it starts fresh with no context)."),
           title: z.string().optional().describe("A short label for the subagent (shown in the UI)."),
-          model: z.string().optional().describe("Override the model (defaults to yours)."),
+          model: z.string().optional().describe("Override the subagent's model (defaults to yours). Call list_models to see valid ids — e.g. delegate a big/cheap task to a smaller model."),
         },
       },
       async (args) => handleSpawnSubagent(subagents, conversationId, args) as TR,
@@ -233,6 +236,53 @@ async function buildServer(
         inputSchema: { subagent_id: z.string().describe("The id returned by spawn_subagent.") },
       },
       async (args) => handleCancelSubagent(subagents, conversationId, args) as TR,
+    );
+    server.registerTool(
+      "send_to_subagent",
+      {
+        title: "Clarify a running subagent",
+        description:
+          "Course-correct a subagent you see diverging: send a CLARIFICATION that interrupts its current turn " +
+          "(e.g. 'focus on the login path, not signup'). It factors your note in and keeps working; its result " +
+          "still returns to you automatically. Only works while the subagent is RUNNING — if it's already " +
+          "finished or idle, this fails (its result already came back; use spawn_subagent for new work). Use " +
+          "monitor_subagent first if you're unsure what it's doing.",
+        inputSchema: {
+          subagent_id: z.string().describe("The id returned by spawn_subagent."),
+          message: z.string().describe("The clarification / course-correction to inject into its current turn."),
+        },
+      },
+      async (args) => handleSendToSubagent(subagents, conversationId, args) as TR,
+    );
+    server.registerTool(
+      "monitor_subagent",
+      {
+        title: "Monitor a subagent's recent activity",
+        description:
+          "Read a subagent's RECENT turns — its messages AND a compact summary of the tools it ran — so you can " +
+          "see what it's actually doing and whether it's on track. Only for a subagent you spawned here. Use " +
+          "this to decide if you need to send_to_subagent a clarification. (This is a one-shot read; don't poll " +
+          "it in a loop — you'll be nudged with the result when it finishes.)",
+        inputSchema: {
+          subagent_id: z.string().describe("The id returned by spawn_subagent."),
+          turns: z.number().optional().describe("How many recent turns to show (default 6, max 30)."),
+        },
+      },
+      async (args) => handleMonitorSubagent(subagents, conversationId, args) as TR,
+    );
+    server.registerTool(
+      "search_subagent",
+      {
+        title: "Search a subagent's history",
+        description:
+          "Search a subagent's FULL message history (its text + the tools it ran) for a query string — e.g. find " +
+          "where it touched a file or mentioned an error. Only for a subagent you spawned here.",
+        inputSchema: {
+          subagent_id: z.string().describe("The id returned by spawn_subagent."),
+          query: z.string().describe("Text to search for (case-insensitive)."),
+        },
+      },
+      async (args) => handleSearchSubagent(subagents, conversationId, args) as TR,
     );
   }
   if (agentTools) {
