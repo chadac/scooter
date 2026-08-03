@@ -325,6 +325,17 @@ async def _background_create_conversation(
             # resumed on boot. Don't post a failure and don't flush pending here.
             return
 
+        if result.get("errored"):
+            # The agent crashed mid-run; the conversation exists + did work. Post a
+            # truthful "hit an error partway through" note, not "couldn't start".
+            await _clear_pending(res_type, res_id)
+            conv_id = result.get("conversation_id", "")
+            await post_github_comment(
+                owner=owner, repo=repo_name, issue_number=issue_number,
+                body=f"Scooter hit an error partway through — see the [conversation]({conversation_url(conv_id)}) for details.",
+            )
+            return
+
         conv_id = result.get("conversation_id", "")
 
         # Flush pending messages

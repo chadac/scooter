@@ -109,7 +109,17 @@ async def create_conversation(
         # INTERRUPTED (not a failure) so the caller doesn't post "couldn't start".
         logger.warning("create_conversation for %s was interrupted (restart) — agent-host will resume", conversation_id)
         return {"conversation_id": conversation_id, "result": "", "interrupted": True}
+    except RunErrored as e:
+        # The agent CRASHED mid-run. The conversation EXISTS (on_created posted the
+        # link + anchor) and did work — so this is NOT "couldn't start". Signal
+        # ERRORED (with the message) so the caller posts a truthful "hit an error
+        # partway through" note, not a create-failed one.
+        logger.warning("create_conversation for %s errored mid-run: %s", conversation_id, e)
+        return {"conversation_id": conversation_id, "result": "", "errored": True, "error": str(e)}
     except Exception:
+        # A GENUINE early failure BEFORE the run produced anything (rare — on_created
+        # already ran by here, so the conversation usually exists; this is the
+        # can't-actually-create case). Return None → the caller's "couldn't start".
         logger.exception("create_conversation failed")
         return None
 
@@ -154,8 +164,16 @@ class RunInterrupted(Exception):
     """The /agui SSE dropped before RUN_FINISHED — e.g. the agent-host pod
     restarted mid-run. This is TRANSIENT: the agent-host resumes interrupted
     conversations on boot, so the caller must NOT declare a hard failure (no
-    "couldn't start" post). Distinct from a RUN_ERROR (the agent genuinely
+    "couldn't start" post). Distinct from a RunErrored (the agent genuinely
     failed)."""
+
+
+class RunErrored(Exception):
+    """A RUN_ERROR arrived on the /agui stream — the agent ran but CRASHED mid-task.
+    Crucially the conversation ALREADY EXISTS (on_created ran: the link/anchor were
+    posted) and the agent did real work; it just errored partway. So the caller must
+    NOT post "couldn't start" — the conversation is there. Carries the error message
+    for a truthful "hit an error partway through" note."""
 
 
 def _sa_token() -> str | None:
@@ -178,7 +196,8 @@ async def _run_and_collect(payload: dict) -> str:
     the trusted webhooks caller (TokenReview) and honor `payload.owner`.
 
     Raises RunInterrupted if the connection drops before RUN_FINISHED (a restart);
-    raises RuntimeError on a RUN_ERROR (a genuine agent failure).
+    raises RunErrored on a RUN_ERROR (the agent crashed mid-run — the conversation
+    still exists).
     """
     text_parts: list[str] = []
     saw_finished = False
@@ -206,7 +225,9 @@ async def _run_and_collect(payload: dict) -> str:
                         saw_finished = True
                         break
                     elif etype == "RUN_ERROR":
-                        raise RuntimeError(event.get("message", "agent run error"))
+                        # The agent CRASHED mid-run (not a transport drop). The
+                        # conversation already exists + did work — see RunErrored.
+                        raise RunErrored(event.get("message", "agent run error"))
     except httpx.HTTPError as e:
         # Transport-level drop (connection reset, agent-host restart, read timeout).
         # The run may be resuming on the agent-host — treat as interrupted, not failed.
