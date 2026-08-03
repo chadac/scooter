@@ -191,4 +191,63 @@ describe("SDK client back-pressure (canUseTool yields to a queued priority item)
     const res = await canUseTool("bash", { command: "ls" });
     expect(res.behavior).toBe("allow");
   });
+
+});
+
+// The deployed bug: an agent stuck polling `check_subagent` never yielded to a
+// queued priority item (18 calls, no deny, no "Pausing" log). Verified in prod that
+// the SDK does NOT invoke canUseTool for allowedTools-covered tools (our sandbox
+// aliases + the mcp__scooter-env prefix), so the canUseTool deny is dead. The REAL
+// gate is a tool-call-BOUNDARY interrupt in prompt()'s stream loop: after a
+// tool_result flows, if shouldYield() is true, interrupt the query so the turn ends.
+describe("SDK client back-pressure (stream-loop interrupt at tool-call boundaries)", () => {
+  // A fake query that streams a tool_use + tool_result (a completed tool call),
+  // then — if NOT interrupted — a result. Records whether it was interrupted.
+  function toolLoopQuery() {
+    let interrupted = false;
+    const queryImpl = () => {
+      async function* gen() {
+        yield { type: "assistant", session_id: "s1", message: { content: [] } } as never;
+        // A completed tool call (tool_use + its tool_result → a tool_call_update).
+        yield { type: "assistant", session_id: "s1", message: { content: [
+          { type: "tool_use", id: "tc1", name: "mcp__scooter-env__check_subagent", input: { subagent_id: "x" } },
+        ] } } as never;
+        yield { type: "assistant", session_id: "s1", message: { content: [
+          { type: "tool_result", tool_use_id: "tc1", content: "still running" },
+        ] } } as never;
+        // If the turn ISN'T interrupted here, it would keep looping (another result).
+        yield { type: "result", subtype: "success", session_id: "s1" } as never;
+      }
+      return Object.assign(gen(), { interrupt: async () => { interrupted = true; } });
+    };
+    return { queryImpl, wasInterrupted: () => interrupted };
+  }
+  const mk = (shouldYield?: () => boolean, queryImpl?: any) =>
+    createSdkAcpClient({ oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl, shouldYield });
+
+  it("INTERRUPTS the turn at a tool-call boundary when shouldYield() is true (the check_subagent-loop fix)", async () => {
+    const tl = toolLoopQuery();
+    const client = await mk(() => true, tl.queryImpl); // a priority item IS waiting
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
+    // After the tool_result flowed and shouldYield() was true, the turn interrupted
+    // instead of continuing the loop — so the queued priority item can now inject.
+    expect(tl.wasInterrupted()).toBe(true);
+  });
+
+  it("does NOT interrupt when shouldYield() is false (a normal tool loop runs to completion)", async () => {
+    const tl = toolLoopQuery();
+    const client = await mk(() => false, tl.queryImpl);
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
+    expect(tl.wasInterrupted()).toBe(false);
+  });
+
+  it("does NOT interrupt when no shouldYield is wired (default behavior unchanged)", async () => {
+    const tl = toolLoopQuery();
+    const client = await mk(undefined, tl.queryImpl);
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
+    expect(tl.wasInterrupted()).toBe(false);
+  });
 });

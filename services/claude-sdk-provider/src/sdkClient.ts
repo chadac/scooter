@@ -178,15 +178,16 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // (does not merge), so passing only the token strips PATH/HOME/etc and the
     // spawned claude crashes configuring its HTTP client (the axios baseURL error).
     env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: deps.oauthToken, ...(deps.extraEnv ?? {}) },
-    // canUseTool bridges the SDK permission gate to our handler (best-effort;
-    // our tools are aliased+allowed, so this mainly fires for anything unexpected).
+    // canUseTool bridges the SDK permission gate to our handler.
+    // IMPORTANT: verified in production (2026-08) that the SDK does NOT invoke
+    // canUseTool for tools covered by `allowedTools` (our aliased sandbox tools +
+    // the `mcp__scooter-env` prefix) — a check_subagent loop ran 18× with this
+    // callback never firing. So back-pressure CANNOT rely on this path; the real
+    // yield gate is the tool-call-boundary interrupt in prompt()'s stream loop
+    // below. This deny is kept as defense-in-depth for any tool that DOES reach it.
     canUseTool: async (toolName: string, input: unknown) => {
-      // BACK-PRESSURE: if a higher-priority item is waiting (a subagent finished,
-      // a priority message arrived), don't start another tool — DENY with an
-      // explanation and interrupt:true so the turn ENDS. The agent then goes idle
-      // and the queued item injects, instead of it spinning in a tool loop that
-      // blocks the very result it's waiting for. The message reaches the model, so
-      // this reads as an explained hand-off, not a mysterious permission failure.
+      // BACK-PRESSURE (defense-in-depth; the stream-loop interrupt is primary): if a
+      // higher-priority item is waiting, DENY with interrupt:true so the turn ENDS.
       if (deps.shouldYield?.()) {
         return {
           behavior: "deny",
@@ -251,8 +252,24 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
             if (usage) for (const cb of updateCbs) cb(sessionId, usage);
             continue;
           }
-          for (const u of sdkMessageToUpdates(msg as SdkMessage, INCLUDE_PARTIALS)) {
+          const updates = sdkMessageToUpdates(msg as SdkMessage, INCLUDE_PARTIALS);
+          for (const u of updates) {
             for (const cb of updateCbs) cb(sessionId, u);
+          }
+          // BACK-PRESSURE (the real gate on the claude-code provider): the SDK does
+          // NOT invoke canUseTool for our allowed/aliased tools, so we can't deny a
+          // tool there. Instead, at each TOOL-CALL BOUNDARY (a tool_call_update just
+          // completed), if a higher-priority item is now waiting (a subagent result,
+          // a priority message), INTERRUPT the query so the turn ends cleanly — the
+          // agent goes idle and the queued item injects on the next turn, instead of
+          // spinning in a check_subagent loop that blocks the very result it awaits.
+          // We yield BETWEEN tool calls (never mid-call), so an in-flight tool isn't
+          // killed. The pending item reaches the model as its next prompt.
+          if (deps.shouldYield?.() && updates.some((u) => u.sessionUpdate === "tool_call_update")) {
+            debug("[sdk] back-pressure: yielding turn (priority item waiting) — interrupting query");
+            stopReason = "end_turn";
+            await q.interrupt?.().catch(() => {});
+            break;
           }
         }
       } catch (e) {
