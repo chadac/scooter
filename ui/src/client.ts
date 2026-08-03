@@ -271,6 +271,70 @@ export async function resumeConversation(
   }
 }
 
+/** Rename a conversation (PATCH /conversations/:id/title). Sets a USER title that the
+ *  agent's <title> can no longer override. Returns the updated view, or null on error. */
+export async function renameConversation(
+  config: AgentHostConfig,
+  conversationId: string,
+  title: string,
+): Promise<ConversationView | null> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/title`,
+      { method: "PATCH", headers: { ...authHeaders(config), "content-type": "application/json" }, body: JSON.stringify({ title }) },
+    );
+    if (!res.ok) {
+      console.warn(`[client] renameConversation ${conversationId}: HTTP ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as ConversationView;
+  } catch (e) {
+    console.warn(`[client] renameConversation ${conversationId} failed:`, e);
+    return null;
+  }
+}
+
+/** Star / unstar a conversation (PATCH /conversations/:id/starred). Returns the
+ *  updated view, or null on error. */
+export async function setConversationStarred(
+  config: AgentHostConfig,
+  conversationId: string,
+  starred: boolean,
+): Promise<ConversationView | null> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/starred`,
+      { method: "PATCH", headers: { ...authHeaders(config), "content-type": "application/json" }, body: JSON.stringify({ starred }) },
+    );
+    if (!res.ok) {
+      console.warn(`[client] setConversationStarred ${conversationId}: HTTP ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as ConversationView;
+  } catch (e) {
+    console.warn(`[client] setConversationStarred ${conversationId} failed:`, e);
+    return null;
+  }
+}
+
+/** End + delete a conversation (DELETE /conversations/:id) — destroys the sandbox +
+ *  PVCs and purges the record. Returns true on success (204/404 both mean "gone"). */
+export async function deleteConversation(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE", headers: authHeaders(config) },
+    );
+    return res.ok || res.status === 404;
+  } catch (e) {
+    console.warn(`[client] deleteConversation ${conversationId} failed:`, e);
+    return false;
+  }
+}
+
 /** Fetch the current status of one conversation (GET /conversations/:id) — a light
  *  poll used to track a resume through to "running". */
 export async function loadConversationStatus(

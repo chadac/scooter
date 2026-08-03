@@ -36,6 +36,13 @@ export interface Session {
    *  /conversations/events stream): "running" (pod up), "suspended" (idle → pod
    *  dropped, PVCs kept), "ended". Drives the Sandbox status tab + Start button. */
   status?: "running" | "suspended" | "ended";
+  /** The user renamed this conversation (server-sourced): the title is user-set and
+   *  the agent's <title> no longer overrides it. When true, the server title is
+   *  authoritative (mergeFromServer stops preferring a stale local title). */
+  userTitled?: boolean;
+  /** The user starred this conversation (server-sourced). Drives the sidebar star
+   *  toggle + a stronger delete confirm. */
+  starred?: boolean;
 }
 
 /** One linked external resource, as summarized in the conversation list. */
@@ -207,7 +214,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string; userTitled?: boolean; starred?: boolean }>,
   ) {
     if (convs.length === 0) return;
     const serverIds = new Set(convs.map((c) => c.id));
@@ -218,13 +225,22 @@ export const sessionStore = {
       // Title precedence: a real server title wins; but a local non-default
       // title (e.g. derived from the first message) must NOT be clobbered by the
       // server's "New chat" placeholder — the server often hasn't learned the
-      // title yet. So only take the server title when it's non-default.
+      // title yet. So only take the server title when it's non-default. EXCEPTION:
+      // when the server says the title is USER-set (userTitled), it's authoritative —
+      // a user rename must win over any stale local title immediately.
+      const userTitled = c.userTitled ?? existing?.userTitled ?? false;
       const serverTitle = c.title && c.title !== DEFAULT_TITLE ? c.title : undefined;
       const localTitle =
         existing && existing.title !== DEFAULT_TITLE ? existing.title : undefined;
+      const title = userTitled && c.title
+        ? c.title // user-set title from the server wins outright
+        : serverTitle ?? localTitle ?? c.title ?? existing?.title ?? DEFAULT_TITLE;
       byId.set(c.id, {
         id: c.id,
-        title: serverTitle ?? localTitle ?? c.title ?? existing?.title ?? DEFAULT_TITLE,
+        title,
+        userTitled,
+        // Starred is server-owned; take the server's value.
+        starred: c.starred ?? existing?.starred,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),
         // A locally-chosen model (not yet persisted server-side on first prompt)
         // wins; otherwise take the server's persisted model.
@@ -332,13 +348,35 @@ export const sessionStore = {
     this.setTitle(id, title);
   },
 
-  /** Agent-assigned title (overrides the derived one). No-op if unchanged. */
+  /** Agent-assigned title (overrides the derived one). No-op if unchanged. A
+   *  user-renamed conversation is LOCKED — the agent's title never overrides it. */
   setTitle(id: string, title: string) {
     const s = state.sessions.find((x) => x.id === id);
-    if (!s || s.title === title) return;
+    if (!s || s.userTitled || s.title === title) return;
     setState({
       ...state,
       sessions: state.sessions.map((x) => (x.id === id ? { ...x, title } : x)),
+    });
+  },
+
+  /** User rename: optimistically set the title AND lock it (userTitled) so the
+   *  agent's <title> can't override it. The caller persists via renameConversation. */
+  renameSession(id: string, title: string) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s) return;
+    setState({
+      ...state,
+      sessions: state.sessions.map((x) => (x.id === id ? { ...x, title, userTitled: true } : x)),
+    });
+  },
+
+  /** Optimistically set the star flag. The caller persists via setConversationStarred. */
+  setStarred(id: string, starred: boolean) {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s || s.starred === starred) return;
+    setState({
+      ...state,
+      sessions: state.sessions.map((x) => (x.id === id ? { ...x, starred } : x)),
     });
   },
 

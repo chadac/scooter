@@ -51,6 +51,11 @@ function view(c: Conversation, now = Date.now()) {
     // The spawning conversation, when this is a subagent (undefined = top-level).
     // The UI nests children under their parent + shows subagent chips.
     parentId: c.parentId,
+    // The title is user-set (renamed) — the UI shows it as pinned and the agent's
+    // <title> no longer overrides it.
+    userTitled: c.userTitled ?? false,
+    // Starred by the user (UI highlight + future retention exemption).
+    starred: c.starred ?? false,
     sandbox: { name: c.sandbox.name, namespace: c.sandbox.namespace },
   };
 }
@@ -351,6 +356,48 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
     await sessions.end(ctx.params.id);
     return { status: 204, json: null };
+  });
+
+  // Only the OWNER (or an anonymous / single-user caller, or an unowned conversation)
+  // may rename/star — same inclusion rule as the "mine" view filter. Returns the
+  // conversation if the caller may mutate it, else a 404 (don't reveal ownership) or
+  // 403. Conversations are otherwise public to READ; these are the write boundary.
+  const mutableFor = (id: string, user: { anonymous: boolean; id: string }) => {
+    const conv = sessions.get(id);
+    if (!conv) return { conv: undefined as Conversation | undefined, error: 404 as const };
+    // An identified user may mutate their own or an unowned conversation; not someone
+    // else's. Anonymous (no ingress identity) is single-user mode — may mutate any.
+    if (!user.anonymous && conv.owner && conv.owner !== user.id) {
+      return { conv: undefined, error: 403 as const };
+    }
+    return { conv, error: undefined };
+  };
+
+  // User rename: sets the title AND locks it (userTitled) so the agent's <title> can
+  // no longer overwrite it. A blank/whitespace title is rejected (would orphan the row).
+  r.patch("/conversations/:id/title", async (ctx) => {
+    const { conv, error } = mutableFor(ctx.params.id, ctx.user);
+    if (error === 404) return { status: 404, json: { error: "not found" } };
+    if (error === 403) return { status: 403, json: { error: "not your conversation" } };
+    const body = await ctx.body<{ title?: string }>();
+    const title = (body.title ?? "").trim();
+    if (!title) return { status: 400, json: { error: "title is required" } };
+    if (title.length > 200) return { status: 400, json: { error: "title too long (max 200)" } };
+    await sessions.setUserTitle(conv!.id, title);
+    return { json: view(sessions.get(conv!.id)!) };
+  });
+
+  // Star / unstar. Body { starred: boolean }.
+  r.patch("/conversations/:id/starred", async (ctx) => {
+    const { conv, error } = mutableFor(ctx.params.id, ctx.user);
+    if (error === 404) return { status: 404, json: { error: "not found" } };
+    if (error === 403) return { status: 403, json: { error: "not your conversation" } };
+    const body = await ctx.body<{ starred?: boolean }>();
+    if (typeof body.starred !== "boolean") {
+      return { status: 400, json: { error: "starred (boolean) is required" } };
+    }
+    await sessions.setStarred(conv!.id, body.starred);
+    return { json: view(sessions.get(conv!.id)!) };
   });
 
   r.post("/conversations/:id/suspend", async (ctx) => {
