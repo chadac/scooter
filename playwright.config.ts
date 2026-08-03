@@ -94,13 +94,16 @@ export default defineConfig({
           stderr: "pipe",
         },
         {
-          // A SECOND UI dev server (port 5273) that proxies THROUGH the fault proxy
-          // and runs a small idle-watchdog so recovery fires in seconds. ONLY the
-          // SSE-resilience spec targets this (via its own baseURL); the default
-          // stack above is left pristine for all other specs.
+          // A SECOND UI dev server (port 5273) with a small idle-watchdog so
+          // recovery fires in seconds. ONLY the integrity STREAM is routed through
+          // the fault proxy (AGENT_HOST_STREAM_URL); every other API call goes
+          // straight to agent-host (AGENT_HOST_URL) so multi-turn sends aren't
+          // raced/400'd by the extra hop. ONLY the SSE-resilience spec targets this
+          // (via its baseURL); the default 5173 stack is pristine for other specs.
           command: "npm --prefix ui run dev -- --port 5273",
           env: {
-            AGENT_HOST_URL: "http://localhost:8090",
+            AGENT_HOST_URL: "http://localhost:8080",
+            AGENT_HOST_STREAM_URL: "http://localhost:8090",
             VITE_IDLE_RECONNECT_MS: "2000",
           },
           port: 5273,
