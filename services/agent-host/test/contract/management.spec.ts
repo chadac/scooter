@@ -666,6 +666,7 @@ describe("management API", () => {
       isRunning: async (_id: string, name: string) => running.has(name),
       start: async (_id: string, name: string) => { running.add(name); },
       stop: async (_id: string, name: string) => { running.delete(name); },
+      logs: async () => "",
       ready: async () => true,
       invalidate: () => {},
       ...over,

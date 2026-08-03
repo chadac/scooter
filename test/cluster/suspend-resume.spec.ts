@@ -70,4 +70,55 @@ maybe("suspend / resume workspace persistence", () => {
     const { stdout } = await cluster.exec(SELECTOR(id), ["cat", "/workspace/marker.txt"], NS);
     expect(stdout.trim()).toBe("marker");
   });
+
+  // The reliability fix: a web service the user had RUNNING before hibernate must be
+  // running again after resume — otherwise the proxy 502s ("upstream failed"). This is
+  // the real-PVC end-to-end for what nixos-tests/service-persist.nix proves hermetically.
+  it("a service enabled before suspend is RUNNING again after resume (restore oneshot)", async () => {
+    // Enable via `scooter-service` so the enabled set is recorded on the workspace PVC
+    // (/workspace/.scooter/services.json). `terminal` (ttyd+tmux) is a lazy tool — the
+    // first start does a `nix build` in-pod, so allow generous time.
+    await cluster.exec(SELECTOR(id), ["scooter-service", "start", "terminal"], NS);
+    await waitExec(cluster, id, ["systemctl", "is-active", "--quiet", "webservice-terminal.service"], 180_000);
+
+    // The intent is persisted on the PVC (survives the pod recreate).
+    const state = await cluster.exec(
+      SELECTOR(id),
+      ["cat", "/workspace/.scooter/services.json"],
+      NS,
+    );
+    expect(JSON.parse(state.stdout).enabled?.terminal?.autostart).toBe(true);
+
+    // Hibernate (pod dropped) then resume (fresh pod; every explicit-start unit dead).
+    await provisioner.suspend(ref);
+    await cluster.waitFor("Sandbox", `conv-${id}`, suspendedP, 120_000, NS);
+    await provisioner.resume(ref);
+    await cluster.waitFor("Sandbox", `conv-${id}`, readyP, 180_000, NS);
+
+    // No one re-issued a start — the boot `scooter-service-restore` oneshot brought it
+    // back from services.json. (Again allow for the lazy ttyd build on the new pod.)
+    await waitExec(cluster, id, ["systemctl", "is-active", "--quiet", "webservice-terminal.service"], 180_000);
+  });
 });
+
+/** Poll an in-pod command until it exits 0, or throw after `timeoutMs`. The cluster
+ *  `exec` surfaces a non-zero exit as a rejection, so we retry on any failure. */
+async function waitExec(
+  cluster: Cluster,
+  id: string,
+  command: string[],
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr: unknown;
+  while (Date.now() < deadline) {
+    try {
+      await cluster.exec(SELECTOR(id), command, NS);
+      return;
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  throw new Error(`waitExec timed out after ${timeoutMs}ms: ${command.join(" ")} — ${String(lastErr)}`);
+}

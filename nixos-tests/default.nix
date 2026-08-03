@@ -23,6 +23,11 @@ in
   # The webServices option: renders a proxyable unit + discovery manifest,
   # explicit-start, sub-path serving (the reverse-proxy target contract).
   dev-env-web-services = runTest ./web-services.nix;
+  # Web-service PERSISTENCE across a pod recreate/reboot: `scooter-service start`
+  # records the enabled set in /workspace/.scooter/services.json (on the PVC), and
+  # a `scooter-service-restore` boot oneshot re-starts each autostart service — so a
+  # service that was running before hibernate is running again after resume.
+  dev-env-service-persist = runTest ./service-persist.nix;
   dev-env-nix-build-skill = runTest ./nix-build-skill.nix;
   # SPIKE: runtime re-converge (warm-pod-specializes-on-claim primitive).
   dev-env-switch-specialisation = runTest ./switch-specialisation.nix;

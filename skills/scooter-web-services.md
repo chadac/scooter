@@ -79,16 +79,28 @@ Key rules for the `command`:
 
 ## Starting a service and giving the user the link
 
-Services use **explicit start** (they don't auto-run). After enabling one:
+Prefer **`scooter-service start <name>`** (not raw `systemctl start`). It starts the
+unit AND records the service in `/workspace/.scooter/services.json` on the workspace
+PVC — so after the sandbox hibernates and resumes, a boot oneshot
+(`scooter-service-restore`) brings the service back automatically. Raw `systemctl
+start` would run once and be lost on the next resume. `scooter-service stop <name>`
+clears that intent (a service the user stopped stays stopped across a resume).
+
+After enabling one:
 - Tell the user it's in the **Services panel** — they click **Start**, then
-  **Open**. This is the simplest path.
-- Or start it yourself: `systemctl start webservice-<name>` (once
-  `scooter-rebuild status` reports the switch is `ready`), then share the URL:
+  **Open**. (The panel's Start goes through the same persisted path.)
+- Or start it yourself: `scooter-service start <name>` (once `scooter-rebuild
+  status` reports the switch is `ready`), then share the URL:
   `https://<host>/c/$CONVERSATION_ID/<name>/`. Use `$CONVERSATION_URL` for the
   host if you need the full origin.
 
-Check it's up: `systemctl is-active webservice-<name>` and
-`curl -fsS localhost:<port>/c/$CONVERSATION_ID/<name>/ >/dev/null`.
+You don't have to pre-start it just to share the link: if the user opens a declared
+service that isn't running yet, the platform **auto-starts it** and shows a loading
+page (a spinner + the service's live log) that loads the app once it's healthy.
+
+Check it's up: `scooter-service status <name>` (or `systemctl is-active
+webservice-<name>`) and `curl -fsS localhost:<port>/c/$CONVERSATION_ID/<name>/
+>/dev/null`.
 
 ## marimo: pairing with the running notebook (marimo-pair)
 
