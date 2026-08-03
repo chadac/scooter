@@ -90,6 +90,51 @@ export function parseSystemMessage(
     : { source: rest.slice(0, nl), text: rest.slice(nl + 1) };
 }
 
+/** A SYSTEM message from IntegrityAgent.getSystemMessages(). */
+export interface SplicedSystemMessage {
+  id: string;
+  source: string;
+  text: string;
+  /** The id of the real message this follows in the log (null = before all). */
+  afterMessageId: string | null;
+}
+
+/**
+ * Interleave SYSTEM messages (subagent completions, job/broker events) inline at
+ * their chronological slot in the folded message list — the EXACT logic the live
+ * UI renders from, extracted here so it's unit-testable against a REAL recorded
+ * AG-UI log (the render-layer harness). The base @ag-ui applier drops SYSTEM_MESSAGE
+ * (bespoke), so we splice a synthetic `sys:`-prefixed assistant message right AFTER
+ * the real message with id === afterMessageId (null → before all).
+ *
+ * KNOWN BUG (see todo/docs/AGENT_TRANSCRIPT_HARNESS.md): a system message anchored
+ * to an assistant message that ALSO has tool calls nested into it renders ABOVE
+ * those tool cards — because we splice after the message OBJECT but the message's
+ * own tool parts render as part of it. The UI-layer replay test captures this.
+ */
+export function spliceSystemMessages(
+  messages: readonly unknown[],
+  sys: readonly SplicedSystemMessage[],
+): unknown[] {
+  const out: unknown[] = [];
+  const flush = (afterId: string | null) => {
+    for (const s of sys) {
+      if (s.afterMessageId !== afterId) continue;
+      out.push({
+        id: `sys:${s.id}`,
+        role: "assistant",
+        content: [{ type: "text", text: `${SYSTEM_MSG_MARKER}${s.source}\n${s.text}` }],
+      });
+    }
+  };
+  flush(null); // system messages that preceded any real message
+  for (const m of messages) {
+    out.push(m);
+    flush((m as { id?: string }).id ?? null);
+  }
+  return out;
+}
+
 /** The current conversation's pending interrupts + a resume answerer, sourced
  *  from the IntegrityAgent (the single integrity-log source), so InterruptPanel
  *  reads them directly instead of the react-ag-ui runtime's message-status
@@ -377,23 +422,7 @@ function ConversationRuntime({
       // detects the `sys:` id and renders an auto-collapsed event chip, NOT a bubble.
       // Role is "assistant" only so fromAgUiMessages keeps it (it drops role-less
       // messages) — the custom renderer overrides all assistant styling.
-      const sys = agent.getSystemMessages();
-      const withSystem: unknown[] = [];
-      const flush = (afterId: string | null) => {
-        for (const s of sys) {
-          if (s.afterMessageId !== afterId) continue;
-          withSystem.push({
-            id: `sys:${s.id}`,
-            role: "assistant",
-            content: [{ type: "text", text: `${SYSTEM_MSG_MARKER}${s.source}\n${s.text}` }],
-          });
-        }
-      };
-      flush(null); // system messages that preceded any real message
-      for (const m of enriched) {
-        withSystem.push(m);
-        flush((m as { id?: string }).id ?? null);
-      }
+      const withSystem = spliceSystemMessages(enriched, agent.getSystemMessages());
       runtime.thread.reset(fromAgUiMessages(withSystem));
       // Advance the error-boundary reset key so a transient runtime crash during
       // this reset recovers on the next push.
