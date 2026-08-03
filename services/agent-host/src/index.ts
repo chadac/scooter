@@ -42,7 +42,8 @@ import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus } from "./session/jobManager.js";
-import { createMcpEndpoint } from "./agent/mcpServer.js";
+import { createMcpEndpoint, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
   lastAssistantText,
   subagentDoneNotice,
@@ -667,13 +668,29 @@ export async function main(
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
   const subagentManager: SubagentManager = createSubagentManager(sessions, store);
 
+  // marimo notebook tools: target THIS conversation's in-pod marimo at podIP:2718.
+  // Real sandboxes only (a fake/local sandbox has no pod IP). The pod IP is resolved
+  // FRESH per call — it changes across suspend/resume, so we must not cache it.
+  const MARIMO_PORT = Number(process.env.MARIMO_PORT ?? 2718);
+  const marimoToolsWiring: MarimoToolsWiring | undefined = config.fakeSandbox
+    ? undefined
+    : {
+        clientFor: async (conversationId: string) => {
+          const conv = sessions.get(conversationId as SessionId);
+          if (!conv) throw new Error(`no conversation ${conversationId} for marimo`);
+          const target = await resolvePodTarget(conv.sandbox);
+          return createMarimoClient({ baseUrl: `http://${target.podIP}:${MARIMO_PORT}` });
+        },
+      };
+
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
     modelToolsWiring !== undefined ||
     resourceToolsWiring !== undefined ||
     schedulerToolsWiring !== undefined ||
-    subagentManager !== undefined
+    subagentManager !== undefined ||
+    marimoToolsWiring !== undefined
       ? createMcpEndpoint({
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
@@ -684,6 +701,7 @@ export async function main(
           resources: resourceToolsWiring,
           scheduler: schedulerToolsWiring,
           subagents: subagentManager,
+          marimo: marimoToolsWiring,
         })
       : undefined;
 

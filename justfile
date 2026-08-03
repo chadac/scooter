@@ -102,10 +102,11 @@ cluster-down:
 
 typecheck:
     npm install
-    # agent-host imports @scooter/claude-sdk-provider; build it first so its dist/
-    # (types + js) exists for agent-host's NodeNext resolution. (Nix builds the two
-    # separately; this is the plain-npm/CI path.)
+    # agent-host imports @scooter/claude-sdk-provider AND @scooter/marimo-mcp; build
+    # them first so their dist/ (types + js) exist for agent-host's NodeNext
+    # resolution. (Nix builds each separately; this is the plain-npm/CI path.)
     npm -w services/claude-sdk-provider run build
+    npm -w services/marimo-mcp run build
     npm -w services/agent-host run typecheck
     npm -w ui run typecheck
 

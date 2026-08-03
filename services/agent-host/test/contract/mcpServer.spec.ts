@@ -126,3 +126,61 @@ describe("kill_background MCP tool handler", () => {
     expect(res.isError).toBe(true);
   });
 });
+
+// --- marimo tools wiring ------------------------------------------------------
+// buildServer registers the marimo notebook tools when a `marimo` wiring is given
+// (both providers see them via the shared MCP endpoint). We drive the REAL McpServer
+// through an in-memory client and assert the tools appear + dispatch to the client.
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { buildServer, type MarimoToolsWiring } from "../../src/agent/mcpServer.js";
+import type { MarimoClient } from "@scooter/marimo-mcp";
+
+function fakeMarimoClient(over: Partial<MarimoClient> = {}): MarimoClient {
+  return {
+    listSessions: over.listSessions ?? (async () => ({ s1: { path: "/w/n.py" } })),
+    resolveSession: over.resolveSession ?? (async () => "s1"),
+    execute: over.execute ?? (async () => ({ success: true, stdout: "hi\n", stderr: "", output: "42" })),
+  };
+}
+
+async function clientForServer(marimo?: MarimoToolsWiring): Promise<Client> {
+  // Always wire the jobs tools too, so the server advertises the `tools` capability
+  // even when marimo is absent (an all-empty server has no tools/list method — an
+  // SDK artifact, never a real deployment). We assert on the marimo_* subset.
+  const { jobs } = fakeJobs();
+  const server = await buildServer("conv-1", undefined, jobs, undefined, undefined, undefined, undefined, marimo);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "t", version: "0" });
+  await client.connect(clientT);
+  return client;
+}
+
+describe("marimo tools wiring (buildServer)", () => {
+  it("registers the marimo tools when a marimo wiring is provided", async () => {
+    const client = await clientForServer({ clientFor: () => fakeMarimoClient() });
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    for (const t of ["marimo_execute", "marimo_list_sessions", "marimo_create_cell", "marimo_run_cell", "marimo_list_cells"]) {
+      expect(names).toContain(t);
+    }
+  });
+
+  it("does NOT register marimo tools when the wiring is absent (fake sandbox)", async () => {
+    const client = await clientForServer(undefined);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names.some((n) => n.startsWith("marimo_"))).toBe(false);
+  });
+
+  it("marimo_execute dispatches to the conversation's client", async () => {
+    let seenConv: string | undefined;
+    const client = await clientForServer({
+      clientFor: (id) => { seenConv = id; return fakeMarimoClient({ execute: async () => ({ success: true, stdout: "", stderr: "", output: "99" }) }); },
+    });
+    const res = await client.callTool({ name: "marimo_execute", arguments: { code: "1+1" } });
+    expect(seenConv).toBe("conv-1"); // clientFor got the bound conversation id
+    const text = (res.content as Array<{ type: string; text: string }>)[0].text;
+    expect(text).toContain("=> 99");
+  });
+});

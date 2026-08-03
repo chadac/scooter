@@ -82,7 +82,11 @@
           # tree). agent-host symlinks it into node_modules and imports its AcpClient.
           claudeSdkProvider = pkgs.callPackage ./services/claude-sdk-provider { };
 
-          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider; };
+          # The isolated marimo MCP server (notebook tools). Same isolation pattern:
+          # agent-host symlinks it into node_modules and mounts its tools.
+          marimoMcp = pkgs.callPackage ./services/marimo-mcp { };
+
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp; };
 
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {
@@ -201,6 +205,7 @@
 
             inherit agentHost ui broker webhooks scheduler;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
+            inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
             # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox
             sandbox-os-image = sandboxOsImage.image;
