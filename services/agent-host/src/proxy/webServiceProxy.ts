@@ -68,6 +68,10 @@ export interface WebServiceRegistry {
   start(conversationId: string, name: string): Promise<void>;
   /** Stop the unit: `systemctl stop webservice-<name>` via exec. */
   stop(conversationId: string, name: string): Promise<void>;
+  /** The unit's recent journal (`journalctl -u webservice-<name> -n <lines>`) via
+   *  exec — surfaced on the loading page so a service that fails to bind/crashes is
+   *  debuggable. Returns "" if the pod is unreachable or the read fails. */
+  logs(conversationId: string, name: string, lines?: number): Promise<string>;
   /** Is the sandbox pod actually READY (exec succeeds)? The conversation status can
    *  be "running" (Sandbox operatingMode Running) while the pod is still
    *  ContainerCreating — exec only succeeds once the pod is Ready, so a trivial exec
@@ -120,22 +124,69 @@ export interface WebServiceProxy {
 }
 
 /** Resolve a proxy request to its concrete pod target + service, or an error the
- *  caller renders as an HTTP/handshake status. */
+ *  caller renders as an HTTP/handshake status. `notRunning` is distinct from a plain
+ *  502: the service EXISTS but its unit is down (the auto-start + loading-page case),
+ *  so it carries the ids needed to start it and render/poll the loading page. */
 type Resolution =
   | { ok: true; conversationId: string; podIP: string; port: number; rest: string; stripBasePath: boolean; threadId: string; service: string }
-  | { ok: false; status: 404 | 502 | 503; service: string; threadId: string };
+  | { ok: false; kind: "notRunning"; conversationId: string; service: string; basePath: string; threadId: string }
+  | { ok: false; kind: "error"; status: 404 | 503; service: string; threadId: string };
 
-export function renderNotStartedPage(service: string, threadId: string): string {
-  const safe = (s: string) => s.replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] ?? c));
-  const back = `/?thread=${encodeURIComponent(threadId)}`;
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${safe(service)} isn't running</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222}
-a{color:#2563eb}</style></head><body>
-<h2>${safe(service)} isn't running</h2>
-<p>This service hasn't been started for the conversation yet. Start it from the
-<strong>Services</strong> panel, then reload this page.</p>
-<p><a href="${back}">← Back to the conversation</a></p>
+// (The old static "isn't running — go click Start" page is gone: a dead service now
+// auto-starts behind a live loading page — see renderLoadingPage below.)
+
+/** The sub-path (under /c/<id>/<service>/) the loading page polls for readiness +
+ *  the unit's journal. A reserved segment — no real web service serves it. */
+export const STATUS_SEGMENT = "__scooter_status";
+
+const htmlEscape = (s: string) =>
+  s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] ?? c));
+
+/** Is this request a top-level browser NAVIGATION (wants HTML), vs an XHR/asset
+ *  fetch (which must get its real bytes / a plain error, never an HTML page)? */
+export function wantsHtml(accept: string | undefined): boolean {
+  return (accept ?? "").includes("text/html");
+}
+
+/**
+ * The loading page shown while a just-started service comes up. Self-refreshing:
+ * it polls `<base>/__scooter_status` and, once `running`, reloads into the app —
+ * meanwhile it streams the unit's recent journal below a spinner so a service that
+ * fails to bind/crashes is debuggable in-place. `basePath` is the service's own
+ * external prefix (…/c/<id>/<service>), so the poll + reload stay within it.
+ */
+export function renderLoadingPage(service: string, basePath: string): string {
+  const safe = htmlEscape(service);
+  const base = basePath.replace(/\/$/, "");
+  const statusUrl = `${base}/${STATUS_SEGMENT}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Starting ${safe}…</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+ body{font-family:system-ui,sans-serif;max-width:44rem;margin:12vh auto;padding:0 1rem;color:#222}
+ .row{display:flex;align-items:center;gap:.6rem}
+ .spin{width:1.1rem;height:1.1rem;border:2px solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;animation:s .8s linear infinite}
+ @keyframes s{to{transform:rotate(360deg)}}
+ pre{background:#0b1020;color:#cbd5e1;padding:.75rem 1rem;border-radius:.5rem;overflow:auto;max-height:22rem;font-size:.8rem;line-height:1.35;white-space:pre-wrap}
+ .muted{color:#64748b;font-size:.85rem}
+</style></head><body>
+<div class="row"><div class="spin"></div><h2 style="margin:0">Starting ${safe}…</h2></div>
+<p class="muted">The service is coming up — this page will load it automatically. Recent log:</p>
+<pre id="log">(waiting for output…)</pre>
+<p class="muted">Unit: <code>webservice-${safe}</code></p>
+<script>
+ const STATUS = ${JSON.stringify(statusUrl)};
+ const logEl = document.getElementById("log");
+ async function tick() {
+   try {
+     const r = await fetch(STATUS, { cache: "no-store", headers: { accept: "application/json" } });
+     const j = await r.json();
+     if (j.logs && j.logs.trim()) logEl.textContent = j.logs;
+     if (j.running) { location.reload(); return; }
+   } catch (e) { /* transient (pod still coming up) — keep polling */ }
+   setTimeout(tick, 1200);
+ }
+ tick();
+</script>
 </body></html>`;
 }
 
@@ -167,13 +218,13 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
     // The URL id may be the full threadId (UI) or the short hash — try both.
     const conv = sessions.get(conversationId) ?? (await sessions.getByShortId(conversationId));
     const threadId = conv?.threadId ?? conversationId;
-    if (!conv) return { ok: false, status: 404, service, threadId };
+    if (!conv) return { ok: false, kind: "error", status: 404, service, threadId };
 
     const desc = await registry.get(conv.id, service);
-    if (!desc) return { ok: false, status: 404, service, threadId };
+    if (!desc) return { ok: false, kind: "error", status: 404, service, threadId };
 
     if (!(await registry.isRunning(conv.id, service))) {
-      return { ok: false, status: 502, service, threadId };
+      return { ok: false, kind: "notRunning", conversationId: conv.id, service, basePath: desc.basePath, threadId };
     }
 
     let target: PodTarget;
@@ -181,22 +232,57 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       target = await resolvePodTarget(conv.sandbox);
     } catch {
       // Pod suspended / not ready / no IP.
-      return { ok: false, status: 503, service, threadId };
+      return { ok: false, kind: "error", status: 503, service, threadId };
     }
     return { ok: true, conversationId: conv.id, podIP: target.podIP, port: desc.port, rest, stripBasePath: desc.stripBasePath ?? false, threadId, service };
   }
 
+  /** The readiness/log endpoint the loading page polls: reports whether the unit is
+   *  active yet + its recent journal. Returns true if it handled the request. */
+  async function handleStatus(pathname: string, res: ServerResponse): Promise<boolean> {
+    const parsed = parseProxyPath(pathname);
+    if (!parsed || parsed.rest !== `/${STATUS_SEGMENT}`) return false;
+    const conv = sessions.get(parsed.conversationId) ?? (await sessions.getByShortId(parsed.conversationId));
+    if (!conv) {
+      res.writeHead(404).end();
+      return true;
+    }
+    const [running, logs] = await Promise.all([
+      registry.isRunning(conv.id, parsed.service).catch(() => false),
+      registry.logs(conv.id, parsed.service).catch(() => ""),
+    ]);
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" })
+      .end(JSON.stringify({ running, logs }));
+    return true;
+  }
+
   async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
+
+    // The loading page's poll target — answer it before the normal resolve (which
+    // would 502 while the unit is still down and never report readiness).
+    if (await handleStatus(url.pathname, res)) return;
+
     const r = await resolve(url.pathname);
     if (!r) {
       res.writeHead(404).end();
       return;
     }
     if (!r.ok) {
-      if (r.status === 502) {
-        const page = renderNotStartedPage(r.service, r.threadId);
-        res.writeHead(502, { "content-type": "text/html; charset=utf-8" }).end(page);
+      if (r.kind === "notRunning") {
+        // The service exists but its unit is down (fresh conversation, or the pod was
+        // recreated on resume). For a top-level NAVIGATION, kick off a start and hand
+        // back a self-refreshing loading page (spinner + live journal) that reloads
+        // into the app once healthy. For an XHR/asset fetch, a plain 502 — an HTML
+        // page would corrupt it, and the navigation that spawned it already owns the UX.
+        if (wantsHtml(req.headers.accept)) {
+          // Best-effort start; the loading page polls readiness regardless of this result.
+          await registry.start(r.conversationId, r.service).catch(() => {});
+          const page = renderLoadingPage(r.service, r.basePath);
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(page);
+        } else {
+          res.writeHead(502, { "content-type": "text/plain" }).end(`${r.service} is not running`);
+        }
       } else if (r.status === 503) {
         res.writeHead(503, { "content-type": "text/plain" })
           .end(`${r.service} is asleep — resume the conversation and try again.`);
@@ -233,7 +319,9 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
     const url = new URL(req.url ?? "/", "http://localhost");
     const r = await resolve(url.pathname);
     if (!r || !r.ok) {
-      const status = !r ? 404 : r.status;
+      // A WebSocket to a dead/unreachable service just fails — no loading-page UX for
+      // an upgrade (the navigation that owns the page handles the auto-start).
+      const status = !r ? 404 : r.kind === "notRunning" ? 502 : r.status;
       const text = status === 503 ? "service asleep" : status === 502 ? "service not running" : "not found";
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
       socket.destroy();

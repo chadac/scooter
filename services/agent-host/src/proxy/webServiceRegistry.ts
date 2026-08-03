@@ -107,9 +107,15 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
       const ref = deps.sandboxFor(conversationId);
       if (!u || !ref) throw new Error(`no web service "${name}" for ${conversationId}`);
       const exec = await deps.connect(ref);
-      const r = await exec.execute({ command: "systemctl", args: ["start", u] });
+      // Go through `scooter-service` (NOT raw `systemctl start`) so the enabled set is
+      // PERSISTED to /workspace/.scooter/services.json — that's how the boot restore
+      // oneshot brings this service back after a suspend/resume pod recreate. Every
+      // start path (UI Services panel, the proxy's auto-start, the agent's shell) then
+      // records autostart identically. (`scooter-service` runs `systemctl start` under
+      // the hood, so the unit still comes up the same way.)
+      const r = await exec.execute({ command: "scooter-service", args: ["start", name] });
       if (r.exitCode !== 0) {
-        throw new Error(`systemctl start ${u} failed (${r.exitCode}): ${r.stderr.trim()}`);
+        throw new Error(`scooter-service start ${name} failed (${r.exitCode}): ${r.stderr.trim()}`);
       }
       // A start may reveal a freshly-enabled service; drop the cache so a re-list
       // re-reads the manifest.
@@ -120,9 +126,29 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
       const ref = deps.sandboxFor(conversationId);
       if (!u || !ref) throw new Error(`no web service "${name}" for ${conversationId}`);
       const exec = await deps.connect(ref);
-      const r = await exec.execute({ command: "systemctl", args: ["stop", u] });
+      // Via `scooter-service stop` so autostart is CLEARED in the state file — a service
+      // the user deliberately stopped must not come back on the next resume.
+      const r = await exec.execute({ command: "scooter-service", args: ["stop", name] });
       if (r.exitCode !== 0) {
-        throw new Error(`systemctl stop ${u} failed (${r.exitCode}): ${r.stderr.trim()}`);
+        throw new Error(`scooter-service stop ${name} failed (${r.exitCode}): ${r.stderr.trim()}`);
+      }
+    },
+    async logs(conversationId, name, lines = 50) {
+      const u = await unit(conversationId, name);
+      const ref = deps.sandboxFor(conversationId);
+      if (!u || !ref) return "";
+      try {
+        const exec = await deps.connect(ref);
+        // -n <lines> recent, no pager, no color; --no-hostname keeps it compact.
+        // A never-started unit journals nothing → "" (harmless; the page shows the
+        // spinner). Merge stderr in case journalctl warns but still prints.
+        const r = await exec.execute({
+          command: "journalctl",
+          args: ["-u", u, "-n", String(lines), "--no-pager", "--no-hostname"],
+        });
+        return (r.stdout || r.stderr || "").trim();
+      } catch {
+        return ""; // pod asleep / creating / journalctl unavailable
       }
     },
     async ready(conversationId) {

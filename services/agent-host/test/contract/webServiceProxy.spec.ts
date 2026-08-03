@@ -70,6 +70,33 @@ function fakeRegistry(port: number, opts: { running?: boolean } = {}): WebServic
     get: async (_id, name) => (name === "marimo" ? desc : null),
     isRunning: async () => running,
     start: async () => {},
+    stop: async () => {},
+    logs: async () => "",
+    ready: async () => true,
+    invalidate: () => {},
+  };
+}
+
+/** A registry that flips to running after N isRunning() calls (models a service
+ *  that takes a moment to come up after start), and records start() calls + serves
+ *  a canned journalctl tail. */
+function startingRegistry(
+  port: number,
+  opts: { runningAfter?: number; logs?: string } = {},
+): WebServiceRegistry & { starts: string[] } {
+  const desc = { ...MARIMO, port };
+  const runningAfter = opts.runningAfter ?? 1;
+  let calls = 0;
+  const starts: string[] = [];
+  return {
+    starts,
+    list: async () => [desc],
+    get: async (_id, name) => (name === "marimo" ? desc : null),
+    isRunning: async () => ++calls > runningAfter,
+    start: async (_id, name) => { starts.push(name); },
+    stop: async () => {},
+    logs: async () => opts.logs ?? "starting marimo…",
+    ready: async () => true,
     invalidate: () => {},
   };
 }
@@ -193,11 +220,51 @@ describe("web-service proxy", () => {
     expect(status).toBe(503);
   });
 
-  it("declared but not running -> friendly 502 page", async () => {
-    const proxy = makeProxy(fakeRegistry(svc.port, { running: false }));
-    const { status, body } = await proxyGet(proxy, "/c/conv-1/marimo/x");
+  it("declared-but-not-running HTML nav -> auto-starts + serves a loading page (200)", async () => {
+    const registry = startingRegistry(svc.port, { runningAfter: 99 /* stays down */ });
+    const proxy = makeProxy(registry);
+    // A browser navigation (Accept: text/html) to a dead service.
+    const { status, body } = await proxyGet(proxy, "/c/conv-1/marimo/", {
+      accept: "text/html",
+    });
+    expect(status).toBe(200);
+    // It kicked off a start...
+    expect(registry.starts).toContain("marimo");
+    // ...and returned a loading page (spinner + a poll that reloads when healthy).
+    expect(body.toLowerCase()).toContain("starting");
+    // The page polls the status endpoint (not a static "go click Start" dead-end).
+    expect(body).toContain("__scooter_status");
+  });
+
+  it("the status endpoint reports running + a journalctl tail (loading page polls it)", async () => {
+    const registry = startingRegistry(svc.port, {
+      runningAfter: 99,
+      logs: "marimo edit --host 0.0.0.0\nRunning on http://0.0.0.0:2718",
+    });
+    const proxy = makeProxy(registry);
+    const { status, body } = await proxyGet(proxy, "/c/conv-1/marimo/__scooter_status");
+    expect(status).toBe(200);
+    const j = JSON.parse(body);
+    expect(j.running).toBe(false);
+    expect(j.logs).toContain("Running on http://0.0.0.0:2718");
+  });
+
+  it("a NON-HTML request to a dead service still gets a 502 (no HTML for an XHR/asset)", async () => {
+    // marimo's own asset/XHR fetches shouldn't receive an HTML loading page — that
+    // would corrupt them. Only a top-level navigation gets the loading UX.
+    const proxy = makeProxy(startingRegistry(svc.port, { runningAfter: 99 }));
+    const { status } = await proxyGet(proxy, "/c/conv-1/marimo/assets/app.js", {
+      accept: "*/*",
+    });
     expect(status).toBe(502);
-    expect(body.toLowerCase()).toContain("start"); // "start it from the Services panel"
+  });
+
+  it("once the service is up, the loading page's status endpoint reports running", async () => {
+    // runningAfter:0 → the very first isRunning() call returns true.
+    const registry = startingRegistry(svc.port, { runningAfter: 0 });
+    const proxy = makeProxy(registry);
+    const { body } = await proxyGet(proxy, "/c/conv-1/marimo/__scooter_status");
+    expect(JSON.parse(body).running).toBe(true);
   });
 
   // --- WebSocket upgrade ------------------------------------------------------
@@ -238,11 +305,13 @@ async function withFront(
 function proxyGet(
   proxy: WebServiceProxy,
   path: string,
+  opts: { accept?: string } = {},
 ): Promise<{ status: number; body: string; echoPath: string }> {
   return new Promise((resolve, reject) => {
     void withFront(proxy, (port) =>
       new Promise<void>((done) => {
-        const req = request({ host: "127.0.0.1", port, path, method: "GET" }, (res) => {
+        const headers = opts.accept ? { accept: opts.accept } : undefined;
+        const req = request({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
           let body = "";
           res.on("data", (c) => (body += c));
           res.on("end", () => {

@@ -38,12 +38,49 @@ let
   # systemd units). Reads the discovery manifest for name→unit + basePath, so a
   # human or the agent can `scooter-service start marimo`. The units are
   # explicit-start (not wantedBy multi-user.target), so this IS how they come up.
+  # Where the enabled/autostart set is persisted. On the WORKSPACE PVC (via the
+  # /workspace mount), so it survives suspend/resume — the pod is recreated on
+  # resume, dropping every explicit-start unit, and this file is how the boot
+  # restore oneshot knows what to bring back. Contract:
+  #   { "enabled": { "<name>": { "since": "<iso8601>", "autostart": true } } }
+  stateFile = "/workspace/.scooter/services.json";
+
   scooterService = pkgs.writeShellApplication {
     name = "scooter-service";
     runtimeInputs = [ pkgs.systemd pkgs.jq pkgs.coreutils ];
     text = ''
       set -euo pipefail
       MANIFEST=/run/scooter/web-services.json
+      STATE=${stateFile}
+
+      # --- persisted enabled-set (survives suspend/resume via the workspace PVC) ---
+      # Record/forget a service's autostart intent. Writes are atomic (tmp + mv) so a
+      # crash mid-write can't corrupt the file the boot oneshot reads.
+      state_write() {  # ARGS... = jq args (e.g. --arg n foo) then the filter, LAST
+        mkdir -p "$(dirname "$STATE")"
+        cur='{"enabled":{}}'
+        [ -s "$STATE" ] && cur=$(cat "$STATE")
+        tmp=$(mktemp "$(dirname "$STATE")/.services.XXXXXX")
+        # All args flow straight through to jq (so --arg pairs + the trailing filter
+        # reach it intact). On jq failure DON'T clobber the state file — remove the
+        # empty tmp and return non-zero (the caller's `|| true` keeps the CLI happy,
+        # but we never leave an empty services.json the restore oneshot would choke on).
+        if printf '%s' "$cur" | jq "$@" > "$tmp"; then
+          mv -f "$tmp" "$STATE"
+        else
+          rm -f "$tmp"; return 1
+        fi
+      }
+      state_enable() {  # $1=name — mark autostart, stamp when
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        # shellcheck disable=SC2016  # $n/$t are jq vars (via --arg), not shell
+        state_write --arg n "$1" --arg t "$now" \
+          '.enabled[$n] = {since: $t, autostart: true}'
+      }
+      state_disable() {  # $1=name — drop it so a reboot won't restore it
+        # shellcheck disable=SC2016  # $n is a jq var (via --arg), not shell
+        state_write --arg n "$1" 'del(.enabled[$n])'
+      }
 
       usage() {
         cat >&2 <<'EOF'
@@ -54,6 +91,7 @@ let
         scooter-service start   <name>       start it (systemctl start)
         scooter-service stop    <name>       stop it
         scooter-service restart <name>       restart it
+        scooter-service restore              start every autostart service (boot)
 
       Services are DECLARED in your environment (webServices.<name>); this only
       drives their systemd units, so no `scooter-rebuild` is needed to start one.
@@ -98,8 +136,43 @@ let
           [ -n "$name" ] || { usage; exit 2; }
           u=$(resolve "$name")
           systemctl "$cmd" "$u"
+          # Persist the autostart intent BEFORE reporting, so the state file is the
+          # source of truth the boot restore oneshot reads on the next pod recreate.
+          # start/restart => remember (autostart); stop => forget. Best-effort: a
+          # state-write failure must not fail the systemctl action the user asked for.
+          case "$cmd" in
+            start|restart) state_enable "$name" || true ;;
+            stop)          state_disable "$name" || true ;;
+          esac
           echo "$name: $(state "$u")  ($cmd applied)"
           [ "$cmd" != "stop" ] && echo "url: $(base_of "$name")" || true
+          ;;
+        restore)
+          # Boot path: bring back every service the user/agent had running before the
+          # pod was recreated (suspend/resume). Reads the autostart set from the PVC
+          # state file and starts each unit that still exists in this generation's
+          # manifest (a service removed from the config is silently skipped). Tolerant:
+          # one service failing to start must not fail the whole restore (best-effort,
+          # like a fresh boot's wantedBy). No state => nothing to do (clean first boot).
+          [ -s "$STATE" ] || { echo "scooter-service: no persisted services to restore"; exit 0; }
+          names=$(jq -r '.enabled | to_entries[] | select(.value.autostart == true) | .key' "$STATE" 2>/dev/null || true)
+          [ -n "$names" ] || { echo "scooter-service: no autostart services"; exit 0; }
+          rc=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            u=$(unit_of "$n")
+            if [ -z "$u" ] || [ "$u" = "null" ]; then
+              echo "scooter-service: restore skips '$n' — not in this environment's services" >&2
+              continue
+            fi
+            if systemctl start "$u"; then
+              echo "restored $n ($u)"
+            else
+              echo "scooter-service: restore failed to start '$n' ($u)" >&2
+              rc=1
+            fi
+          done <<< "$names"
+          exit $rc
           ;;
         -h|--help|help) usage ;;
         *) echo "scooter-service: unknown command '$cmd'" >&2; usage; exit 2 ;;
@@ -283,7 +356,28 @@ in
         };
       in
       lib.nameValuePair (unitName name) (lib.recursiveUpdate base s.extraConfig)
-    ) enabled;
+    ) enabled
+    # Boot restore: re-start every service the user had running before the pod was
+    # recreated (suspend/resume drops all explicit-start units). Reads the autostart
+    # set from the workspace-PVC state file and starts each unit. wantedBy
+    # multi-user.target so it runs on every boot; RemainAfterExit so its "success"
+    # is observable. After the web-service units are DEFINED (they're pulled in by
+    # the `systemctl start` it issues, not by an ordering dep). Best-effort: it exits
+    # 0 even if a service fails, so a single bad service can't wedge the boot.
+    // {
+      scooter-service-restore = {
+        description = "restore web services enabled before suspend (from ${stateFile})";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "workspace.mount" "local-fs.target" ];
+        # The state file lives on the workspace PVC; if the mount is a real unit,
+        # wait for it. Harmless when /workspace is just a dir (no such unit).
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${scooterService}/bin/scooter-service restore";
+        };
+      };
+    };
 
     # Render the discovery manifest at boot (tmpfiles → /run, so it's present
     # before the agent-host reads it and survives nothing across restarts, which

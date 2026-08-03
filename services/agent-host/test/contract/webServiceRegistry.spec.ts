@@ -2,8 +2,9 @@
  * Tier 1 contract test — WebServiceRegistry over a fake exec client.
  *
  * Asserts the manifest parse + systemctl coupling: list/get read the in-pod
- * discovery manifest, isRunning maps `systemctl is-active`, start runs
- * `systemctl start` and drops the cache. See docs/WEB_SERVICES_PROXY.md.
+ * discovery manifest, isRunning maps `systemctl is-active`, start/stop go through
+ * `scooter-service` (which persists the enabled set for boot restore) and drop the
+ * cache, and logs() tails the unit journal. See docs/WEB_SERVICES_PROXY.md.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -86,13 +87,15 @@ describe("WebServiceRegistry", () => {
     expect(await inactive.isRunning("conv-1", "marimo")).toBe(false);
   });
 
-  it("start runs `systemctl start <unit>` and invalidates the cache", async () => {
+  it("start runs `scooter-service start <name>` (persists autostart) and invalidates the cache", async () => {
     const execute = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     const download = vi.fn(async () => MANIFEST);
     const reg = make(fakeExec({ execute, download }));
     await reg.list("conv-1"); // populate cache (download #1)
     await reg.start("conv-1", "marimo");
-    expect(execute).toHaveBeenCalledWith({ command: "systemctl", args: ["start", "webservice-marimo"] });
+    // Via scooter-service (which records the enabled set on the PVC), NOT raw systemctl,
+    // so the boot restore oneshot can bring it back after a suspend/resume pod recreate.
+    expect(execute).toHaveBeenCalledWith({ command: "scooter-service", args: ["start", "marimo"] });
     await reg.list("conv-1"); // cache dropped -> download #2
     expect(download).toHaveBeenCalledTimes(2);
   });
@@ -102,16 +105,32 @@ describe("WebServiceRegistry", () => {
     await expect(reg.start("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 
-  it("stop runs `systemctl stop <unit>`", async () => {
+  it("stop runs `scooter-service stop <name>` (clears autostart)", async () => {
     const execute = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
     const reg = make(fakeExec({ execute, download: vi.fn(async () => MANIFEST) }));
     await reg.stop("conv-1", "marimo");
-    expect(execute).toHaveBeenCalledWith({ command: "systemctl", args: ["stop", "webservice-marimo"] });
+    expect(execute).toHaveBeenCalledWith({ command: "scooter-service", args: ["stop", "marimo"] });
   });
 
   it("stop throws when the unit fails", async () => {
     const reg = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "", stderr: "nope", exitCode: 1 })) }));
     await expect(reg.stop("conv-1", "marimo")).rejects.toThrow(/failed/);
+  });
+
+  it("logs() tails the unit journal via journalctl", async () => {
+    const execute = vi.fn(async () => ({ stdout: "Running on http://0.0.0.0:2718\n", stderr: "", exitCode: 0 }));
+    const reg = make(fakeExec({ execute, download: vi.fn(async () => MANIFEST) }));
+    const out = await reg.logs("conv-1", "marimo", 20);
+    expect(execute).toHaveBeenCalledWith({
+      command: "journalctl",
+      args: ["-u", "webservice-marimo", "-n", "20", "--no-pager", "--no-hostname"],
+    });
+    expect(out).toContain("Running on http://0.0.0.0:2718");
+  });
+
+  it("logs() returns '' when the pod is unreachable (never throws)", async () => {
+    const reg = make(fakeExec({ execute: vi.fn(async () => { throw new Error("no pod"); }), download: vi.fn(async () => MANIFEST) }));
+    expect(await reg.logs("conv-1", "marimo")).toBe("");
   });
 
   it("ready() is true when the pod is reachable (manifest download succeeds)", async () => {
