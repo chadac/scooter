@@ -105,6 +105,11 @@ export interface AgentHostConfig {
   idleSuspendMs: number;
   /** How often the idle sweep runs (ms). */
   idleSweepIntervalMs: number;
+  /** Retention reap: DESTROY (end) unstarred conversations inactive longer than this
+   *  (ms). 0 = off (default — opt-in). Starred conversations are exempt. */
+  retentionMaxAgeMs: number;
+  /** How often the retention reap runs (ms). Default 6h. */
+  retentionSweepIntervalMs: number;
   /** Hard per-command exec timeout (ms). A runaway shell command is aborted after
    *  this so it can't deadlock the conversation. 0 = off. Default 5 min. */
   commandTimeoutMs: number;
@@ -157,6 +162,11 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
+    // Retention reap: DESTROY unstarred conversations inactive this long. OFF by
+    // default (0) — opt-in via RETENTION_MAX_AGE_MS (e.g. 30d = 2592000000). Sweep
+    // every 6h. Starred conversations are exempt.
+    retentionMaxAgeMs: Number(process.env.RETENTION_MAX_AGE_MS ?? 0),
+    retentionSweepIntervalMs: Number(process.env.RETENTION_SWEEP_INTERVAL_MS ?? 6 * 60 * 60 * 1000),
     // Hard per-command exec timeout. Default 5 min; COMMAND_TIMEOUT_MS=0 disables.
     commandTimeoutMs: Number(process.env.COMMAND_TIMEOUT_MS ?? 5 * 60 * 1000),
     // Dead-on-arrival run watchdog: if a run emits no ACP activity within this many
@@ -980,6 +990,20 @@ export async function main(
     sweepTimer.unref?.();
   }
 
+  // Retention reap — DESTROY (end) unstarred conversations inactive past the
+  // retention window. Opt-in (0 = off); starred conversations are exempt. Runs on its
+  // own slow cadence (default 6h) since deletion is coarse-grained.
+  let retentionTimer: ReturnType<typeof setInterval> | undefined;
+  if (config.retentionMaxAgeMs > 0) {
+    const reap = () =>
+      void sessions.sweepRetention(config.retentionMaxAgeMs).then((ids) => {
+        if (ids.length) console.log(`[agent-host] retention-reaped ${ids.length} (inactive > ${config.retentionMaxAgeMs}ms, unstarred):`, ids);
+        reportSandboxCounts();
+      }).catch((err) => console.error("[agent-host] retention sweep failed:", err));
+    retentionTimer = setInterval(reap, config.retentionSweepIntervalMs);
+    retentionTimer.unref?.();
+  }
+
   // Background-job cleanup: periodically remove EXITED jobs' on-disk files past the
   // TTL, per RUNNING conversation (a suspended pod has no fs to sweep). Best-effort.
   let jobCleanupTimer: ReturnType<typeof setInterval> | undefined;
@@ -1081,6 +1105,7 @@ export async function main(
 
   return async () => {
     if (sweepTimer) clearInterval(sweepTimer);
+    if (retentionTimer) clearInterval(retentionTimer);
     if (jobCleanupTimer) clearInterval(jobCleanupTimer);
     if (jobWatchTimer) clearInterval(jobWatchTimer);
     if (subagentWatchTimer) clearInterval(subagentWatchTimer);

@@ -756,6 +756,103 @@ describe("SessionManager", () => {
     expect(provisioner.suspend).not.toHaveBeenCalled();
   });
 
+  describe("sweepRetention (auto-delete stale unstarred conversations)", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    it("reaps (end + destroy) a conversation inactive past the window", async () => {
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+      const conv = await sessions.start("old"); // lastActivityAt = t0
+
+      // 31 days later, threshold 30 days → it's stale.
+      const reaped = await sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 31 * DAY);
+
+      expect(reaped).toEqual([conv.id]);
+      expect(sessions.get(conv.id)).toBeUndefined(); // ended → dropped
+      expect(provisioner.destroy).toHaveBeenCalledOnce();
+    });
+
+    it("EXEMPTS a starred conversation (the whole point of the star)", async () => {
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+      const conv = await sessions.start("starred");
+      await sessions.setStarred(conv.id, true);
+
+      const reaped = await sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 365 * DAY);
+
+      expect(reaped).toEqual([]);
+      expect(sessions.get(conv.id)?.status).toBe("running"); // untouched
+      expect(provisioner.destroy).not.toHaveBeenCalled();
+    });
+
+    it("leaves a RECENTLY-active conversation alone (age is lastActivityAt, not createdAt)", async () => {
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+      const conv = await sessions.start("recent");
+
+      // Only 5 days since last activity; threshold 30 → not stale.
+      const reaped = await sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 5 * DAY);
+
+      expect(reaped).toEqual([]);
+      expect(sessions.get(conv.id)?.status).toBe("running");
+    });
+
+    it("reaps old + unstarred while sparing starred + recent in one sweep", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(0);
+        const provisioner = fakeProvisioner();
+        const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+        const old1 = await sessions.start("old1"); // t=0
+        const old2 = await sessions.start("old2"); // t=0
+        const starred = await sessions.start("starred"); // t=0
+        await sessions.setStarred(starred.id, true);
+
+        // A recent one, its lastActivityAt stamped at t=40d (near `now`).
+        vi.setSystemTime(40 * DAY);
+        const recent = await sessions.start("recent"); // t=40d
+
+        // Sweep at t=40d, threshold 30d: old1/old2 are 40d stale; starred is exempt;
+        // recent is 0d old.
+        const reaped = await sessions.sweepRetention(30 * DAY, 40 * DAY);
+
+        expect(reaped.sort()).toEqual([old1.id, old2.id].sort());
+        expect(sessions.get(starred.id)?.status).toBe("running");
+        expect(sessions.get(recent.id)?.status).toBe("running");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does NOT reap a stale conversation that has a LIVE subagent (shared pod)", async () => {
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+      const parent = await sessions.start("parent");
+      // Spawn a subagent sharing the parent's pod.
+      await sessions.spawnChild(parent.id, "child-thread", { prompt: "do a thing" });
+
+      // Even though the parent is old, reaping it would destroy the subagent's pod.
+      const reaped = await sessions.sweepRetention(30 * DAY, parent.lastActivityAt + 40 * DAY);
+
+      expect(reaped).toEqual([]);
+      expect(sessions.get(parent.id)?.status).toBe("running");
+      expect(provisioner.destroy).not.toHaveBeenCalled();
+    });
+
+    it("does not reap subagents on their own (they die with their parent)", async () => {
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+      const parent = await sessions.start("parent");
+      const child = await sessions.spawnChild(parent.id, "child-thread", { prompt: "x" });
+
+      // A subagent (parentId set) is never a reap CANDIDATE itself — even if stale.
+      // Here the parent is also live so nothing is reaped; the point is `child.id`
+      // never appears in the reaped list independently.
+      const reaped = await sessions.sweepRetention(30 * DAY, parent.lastActivityAt + 40 * DAY);
+      expect(reaped).not.toContain(child.id);
+    });
+  });
+
   it("resumeInterrupted revives + nudges ONLY conversations with a dangling run", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {

@@ -318,6 +318,17 @@ export interface SessionManager {
   sweepIdle(idleMs: number, now?: number): Promise<SessionId[]>;
 
   /**
+   * RETENTION REAP: END (destroy pod + PVCs + record) top-level conversations that
+   * have been INACTIVE longer than maxAgeMs — the autonomous cleanup of stale
+   * conversations. EXEMPTS starred conversations (the whole point of the star flag)
+   * and any with a live descendant (the shared pod). Age is measured from
+   * lastActivityAt (a recently-used conversation is never old, however long ago it
+   * was created). Subagents (parentId set) are reaped with their parent, not on their
+   * own. Returns the ids reaped. Unlike sweepIdle (suspend), this is DESTRUCTIVE.
+   */
+  sweepRetention(maxAgeMs: number, now?: number): Promise<SessionId[]>;
+
+  /**
    * Subscribe to conversation LIFECYCLE changes (a new conversation via start(),
    * or a title change via setTitle()) so the GET /conversations/events stream can
    * push the sidebar without the 10s poll. Fires with the changed Conversation
@@ -979,6 +990,43 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       return suspended;
+    },
+
+    async sweepRetention(maxAgeMs, now = nowMs()) {
+      const reaped: SessionId[] = [];
+      // Same shared-pod guard as sweepIdle: a conversation with any non-terminal
+      // descendant owns a pod its subagents share — reaping it would destroy their
+      // pod. (A subagent itself is reaped WITH its parent via end()'s cascade, so we
+      // only consider top-level conversations here.)
+      const hasLiveDescendant = (id: SessionId): boolean => {
+        for (const c of entries.values()) {
+          if (c.parentId !== id) continue;
+          if (c.status !== "ended") return true;
+          if (hasLiveDescendant(c.id)) return true;
+        }
+        return false;
+      };
+      // Snapshot first: end() mutates `entries` (deletes the subtree), so iterating it
+      // live while ending would skip/reorder.
+      const candidates = [...entries.values()].filter((entry) => {
+        if (entry.parentId !== undefined) return false; // subagents die with their parent
+        if (entry.starred) return false; // STARRED = exempt from auto-deletion
+        if (now - entry.lastActivityAt < maxAgeMs) return false; // still recent
+        if (hasLiveDescendant(entry.id)) return false; // keep the shared pod
+        return true;
+      });
+      for (const entry of candidates) {
+        try {
+          await this.end(entry.id);
+          reaped.push(entry.id);
+        } catch (err) {
+          // Best-effort: a failed reap retries next sweep. Log so a conversation that
+          // can NEVER be reaped (e.g. a wedged provisioner.destroy) is visible.
+          // eslint-disable-next-line no-console
+          console.error(`[manager] retention reap failed for ${entry.id} (will retry next sweep):`, err);
+        }
+      }
+      return reaped;
     },
 
     onConversationChange(cb) {
