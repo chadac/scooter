@@ -156,6 +156,24 @@ function SessionRow({
         </span>
       )}
 
+      {/* Explicit rename affordance — a dedicated button (not overloading the title's
+          click/double-click, which raced with switchTo re-rendering the row). */}
+      {!editing && (
+        <button
+          data-testid="session-rename"
+          aria-label={`Rename ${s.title}`}
+          title="Rename"
+          onClick={(e) => {
+            e.stopPropagation();
+            setDraft(s.title);
+            setEditing(true);
+          }}
+          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        >
+          ✎
+        </button>
+      )}
+
       {!editing && (
         <button
           data-testid="session-delete"
