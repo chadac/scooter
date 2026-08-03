@@ -305,6 +305,9 @@ function bedrockEnv(): Record<string, string> {
     // IRSA (EKS pod identity) — the credential source in-cluster.
     "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_STS_REGIONAL_ENDPOINTS",
     "AWS_ROLE_SESSION_NAME",
+    // Ollama (local/cheap provider — used for recording goose transcripts, and any
+    // ollama-backed deploy). GOOSE_PROVIDER=ollama + OLLAMA_HOST points goose at it.
+    "OLLAMA_HOST",
   ]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
