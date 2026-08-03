@@ -49,6 +49,7 @@ import {
   type SubagentManager,
   type SubagentStatus,
 } from "./agent/subagentTools.js";
+import { foldTurnsWithTools } from "./agent/subagentTranscript.js";
 import { lastRunCompleted } from "./session/danglingRun.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
@@ -693,6 +694,44 @@ export async function main(
       if (!c.bridge) return { outcome: "already-idle" };
       c.bridge.cancel();
       return { outcome: "cancelled" };
+    },
+    async send(parentId, subagentId, message) {
+      const c = sessions.get(subagentId as SessionId);
+      if (!c || c.parentId !== parentId) return { outcome: "unknown" }; // not YOUR child
+      // Only interrupt a RUNNING child — a course correction has nothing to land on
+      // if it's idle/ended (its result already returned to the parent).
+      if (subagentStatusOf(c) !== "running") return { outcome: "not-running" };
+      // Priority-interrupt "thinking": preempt the child's current turn with the
+      // clarification (same path the parent-nudge uses). It's a SYSTEM message from
+      // the parent, not a human turn — sourced so the UI renders it as such.
+      await sessions.prompt(
+        subagentId as SessionId,
+        `[Clarification from your parent agent — factor this into your current work]\n\n${message}`,
+        undefined,
+        PRIORITY_INTERRUPT,
+        "thinking",
+        undefined,
+        undefined,
+        "parent-clarification",
+      );
+      return { outcome: "sent" };
+    },
+    async recentTurns(parentId, subagentId, n) {
+      const c = sessions.get(subagentId as SessionId);
+      if (!c || c.parentId !== parentId) return undefined; // not YOUR child
+      // Fold the tail (a few recent runs) into turns, then keep the last n.
+      const events = store.readEventsTail
+        ? await store.readEventsTail(subagentId as SessionId, Math.max(2, Math.ceil(n / 2)))
+        : await collectEventsSafe(store.readEvents(subagentId as SessionId));
+      const turns = foldTurnsWithTools(events);
+      return turns.slice(-n);
+    },
+    async searchHistory(parentId, subagentId, query) {
+      const c = sessions.get(subagentId as SessionId);
+      if (!c || c.parentId !== parentId) return undefined; // not YOUR child
+      const events = await collectEventsSafe(store.readEvents(subagentId as SessionId));
+      const q = query.toLowerCase();
+      return foldTurnsWithTools(events).filter((t) => t.text.toLowerCase().includes(q));
     },
   };
 

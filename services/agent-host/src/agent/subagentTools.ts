@@ -13,6 +13,7 @@
 
 import type { SessionId } from "../types.js";
 import type { AguiEvent } from "../bridge.js";
+import { renderTurns, type SubagentTurn } from "./subagentTranscript.js";
 
 /** An MCP tool result (matches mcpServer.ts's ToolResult). */
 export interface ToolResult {
@@ -48,6 +49,17 @@ export interface SubagentManager {
   check(parentId: SessionId, subagentId: string): Promise<SubagentStatus | undefined>;
   /** Cancel a child's in-flight run (must be a child of `parentId`). */
   cancel(parentId: SessionId, subagentId: string): Promise<{ outcome: "cancelled" | "unknown" | "already-idle" }>;
+  /** Send a CLARIFICATION that interrupts a RUNNING child's current turn (a course
+   *  correction — the child keeps its fire-and-forget lifecycle). Fails if the
+   *  child isn't running (idle/ended/error): nothing to clarify. Scoped to a child
+   *  of `parentId`. */
+  send(parentId: SessionId, subagentId: string, message: string): Promise<{ outcome: "sent" | "not-running" | "unknown" }>;
+  /** A child's RECENT turns (last `n`) — text + compact tool summaries — so the
+   *  parent can see what it's doing. undefined if not a child of `parentId`. */
+  recentTurns(parentId: SessionId, subagentId: string, n: number): Promise<SubagentTurn[] | undefined>;
+  /** Turns from a child's FULL history matching `query` (case-insensitive
+   *  substring over turn text + tool summaries). undefined if not a child. */
+  searchHistory(parentId: SessionId, subagentId: string, query: string): Promise<SubagentTurn[] | undefined>;
 }
 
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -126,6 +138,73 @@ export async function handleCancelSubagent(
       ? `Subagent \`${id}\` had no run in flight — nothing to cancel (check_subagent for its result).`
       : `Cancelled subagent \`${id}\`'s current run.`,
   );
+}
+
+/** Defaults for monitor/search output size (caps keep the parent's context sane). */
+const MONITOR_DEFAULT_TURNS = 6;
+const MONITOR_MAX_TURNS = 30;
+const SEARCH_MAX_RESULTS = 20;
+
+export async function handleSendToSubagent(
+  mgr: SubagentManager,
+  conversationId: string,
+  args: { subagent_id: string; message: string },
+): Promise<ToolResult> {
+  const id = (args.subagent_id ?? "").trim();
+  const message = (args.message ?? "").trim();
+  if (!id) return err("subagent_id is required.");
+  if (!message) return err("message is empty — provide the clarification to send.");
+  const res = await mgr.send(conversationId, id, message);
+  if (res.outcome === "unknown") {
+    return err(`Subagent \`${id}\` is not a subagent of this conversation (or is unknown).`);
+  }
+  if (res.outcome === "not-running") {
+    return err(
+      `Subagent \`${id}\` isn't running — there's no in-flight turn to clarify. ` +
+        `(send_to_subagent only course-corrects a WORKING subagent; a finished one's ` +
+        `result already came back to you, or use spawn_subagent for new work.)`,
+    );
+  }
+  return ok(
+    `Sent your clarification to subagent \`${id}\` — it will interrupt its current ` +
+      `turn and factor it in. Its result still returns to you automatically when it ` +
+      `finishes; use monitor_subagent("${id}") to watch its progress.`,
+  );
+}
+
+export async function handleMonitorSubagent(
+  mgr: SubagentManager,
+  conversationId: string,
+  args: { subagent_id: string; turns?: number },
+): Promise<ToolResult> {
+  const id = (args.subagent_id ?? "").trim();
+  if (!id) return err("subagent_id is required.");
+  const n = Math.min(Math.max(1, args.turns ?? MONITOR_DEFAULT_TURNS), MONITOR_MAX_TURNS);
+  const turns = await mgr.recentTurns(conversationId, id, n);
+  if (turns === undefined) {
+    return err(`Subagent \`${id}\` is not a subagent of this conversation (or is unknown).`);
+  }
+  if (turns.length === 0) return ok(`Subagent \`${id}\` has no messages yet.`);
+  return ok(`Recent activity of subagent \`${id}\` (last ${turns.length}):\n\n${renderTurns(turns)}`);
+}
+
+export async function handleSearchSubagent(
+  mgr: SubagentManager,
+  conversationId: string,
+  args: { subagent_id: string; query: string },
+): Promise<ToolResult> {
+  const id = (args.subagent_id ?? "").trim();
+  const query = (args.query ?? "").trim();
+  if (!id) return err("subagent_id is required.");
+  if (!query) return err("query is empty — provide text to search for.");
+  const all = await mgr.searchHistory(conversationId, id, query);
+  if (all === undefined) {
+    return err(`Subagent \`${id}\` is not a subagent of this conversation (or is unknown).`);
+  }
+  if (all.length === 0) return ok(`No turns in subagent \`${id}\`'s history match "${query}".`);
+  const shown = all.slice(0, SEARCH_MAX_RESULTS);
+  const more = all.length > shown.length ? `\n\n…(${all.length - shown.length} more matches)` : "";
+  return ok(`Matches for "${query}" in subagent \`${id}\`:\n\n${renderTurns(shown)}${more}`);
 }
 
 // --- Completion watcher building blocks (the "result = last message" convention) ---
