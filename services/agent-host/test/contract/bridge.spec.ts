@@ -381,6 +381,37 @@ describe("ACP -> AG-UI bridge", () => {
     expect(types.indexOf("TOOL_CALL_START")).toBeLessThan(types.indexOf("TOOL_CALL_RESULT"));
   });
 
+  it("emits TOOL_CALL_RESULT when the result rides rawOutput (the claude-sdk path)", async () => {
+    // The claude-sdk provider maps a tool_result's content to `rawOutput`, NOT
+    // `content` (its adapter). The bridge must treat rawOutput as real result content
+    // too — else EVERY claude MCP tool result is dropped (no TOOL_CALL_RESULT), which
+    // is why a marimo_embed island never reached the UI. Regression for that fix.
+    const agent = createFakeAcpAgent();
+    agent.setScript([
+      { emit: { sessionUpdate: "tool_call", toolCallId: "e1", title: "marimo_embed", rawInput: { code: "mo.md('hi')" } } },
+      // status completed, NO content — the result is in rawOutput (claude shape).
+      { emit: { sessionUpdate: "tool_call_update", toolCallId: "e1", status: "completed", rawOutput: "```marimo-embed\nBASE64\n```" } },
+      { finish: { stopReason: "end_turn" } },
+    ]);
+
+    const bExec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec: bExec,
+      acpClient: acpClientFromTransport(agent.transport, bExec),
+    });
+    const events = collect(bridge);
+
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "embed something" });
+
+    const result = events.find((e) => e.type === "TOOL_CALL_RESULT") as { content: string } | undefined;
+    expect(result).toBeDefined();
+    // The rawOutput content reached the UI verbatim (the island fence).
+    expect(result?.content).toContain("marimo-embed");
+    expect(result?.content).toContain("BASE64");
+  });
+
   it("emits TOOL_CALL_ARGS from the tool_call_update when the initial tool_call had no rawInput", async () => {
     // The real-world goose shape: the tool_call arrives with NO rawInput (empty
     // card), and the actual args (the shell command / the slack text) come on a
