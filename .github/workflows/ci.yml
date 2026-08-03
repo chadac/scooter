@@ -450,6 +450,9 @@ jobs:
     needs: [e2e-distribute, e2e-shard]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # to post/update the sticky per-shard failure comment
     steps:
       - uses: actions/checkout@v5
 
