@@ -198,24 +198,32 @@ describe("SDK client back-pressure (canUseTool yields to a queued priority item)
 // queued priority item (18 calls, no deny, no "Pausing" log). Verified in prod that
 // the SDK does NOT invoke canUseTool for allowedTools-covered tools (our sandbox
 // aliases + the mcp__scooter-env prefix), so the canUseTool deny is dead. The REAL
-// gate is a tool-call-BOUNDARY interrupt in prompt()'s stream loop: after a
-// tool_result flows, if shouldYield() is true, interrupt the query so the turn ends.
+// gate is in prompt()'s stream loop: when the agent ISSUES a tool call (a `tool_use`
+// block), if shouldYield() is true, interrupt the query so the turn ends.
+//
+// NOTE the message SHAPES here match a RECORDED real transcript (see
+// sdkClient.replay.spec.ts): the tool CALL is a `tool_use` block in an `assistant`
+// message; the RESULT is a `tool_result` block in a `user` message — which the
+// adapter DROPS, so the hook must key on the CALL, not the result. An earlier fake
+// put the result in an `assistant` message and the hook keyed on it — green on a
+// fiction, broken in prod. Don't regress to that.
 describe("SDK client back-pressure (stream-loop interrupt at tool-call boundaries)", () => {
-  // A fake query that streams a tool_use + tool_result (a completed tool call),
-  // then — if NOT interrupted — a result. Records whether it was interrupted.
+  // A fake query mirroring the REAL shapes: a tool_use (the call) then a user-type
+  // tool_result (the completion, which the adapter ignores). Records interrupt().
   function toolLoopQuery() {
     let interrupted = false;
     const queryImpl = () => {
       async function* gen() {
         yield { type: "assistant", session_id: "s1", message: { content: [] } } as never;
-        // A completed tool call (tool_use + its tool_result → a tool_call_update).
+        // The tool CALL — a tool_use block in an ASSISTANT message (real shape).
         yield { type: "assistant", session_id: "s1", message: { content: [
           { type: "tool_use", id: "tc1", name: "mcp__scooter-env__check_subagent", input: { subagent_id: "x" } },
         ] } } as never;
-        yield { type: "assistant", session_id: "s1", message: { content: [
+        // The RESULT — a tool_result in a USER message (real shape; adapter drops it).
+        yield { type: "user", session_id: "s1", message: { content: [
           { type: "tool_result", tool_use_id: "tc1", content: "still running" },
         ] } } as never;
-        // If the turn ISN'T interrupted here, it would keep looping (another result).
+        // If the turn ISN'T interrupted at the CALL, it would keep looping.
         yield { type: "result", subtype: "success", session_id: "s1" } as never;
       }
       return Object.assign(gen(), { interrupt: async () => { interrupted = true; } });

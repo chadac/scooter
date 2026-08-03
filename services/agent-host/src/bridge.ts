@@ -20,6 +20,7 @@ import type {
   ExecBackend,
 } from "./types.js";
 import type { AcpClient, SessionUpdate, ContentBlock } from "./acp/client.js";
+import type { Recorder } from "./transcript/recorder.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
@@ -300,6 +301,12 @@ export interface SessionBridge {
    *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
   shouldYieldToQueue(): boolean;
 
+  /** TRANSCRIPT RECORDER: record one RAW agent-input frame (goose ACP update /
+   *  claude SDK message) under the current run, so the recorded transcript
+   *  correlates real input with the AG-UI output the bridge produces. The ACP/SDK
+   *  client calls this (late-bound, like shouldYield). No-op when recording off. */
+  recordRawInput(data: unknown): void;
+
   /** Answer a pending permission/option request (resolves the blocked agent run,
    *  or fires the external onAnswer for a raiseInterrupt). optionId must be one
    *  of the offered options; an unknown/empty id cancels. `approver` is the
@@ -408,6 +415,14 @@ export interface BridgeDeps {
    * Default 30_000; 0 disables.
    */
   livenessProbeMs?: number;
+
+  /** TRANSCRIPT RECORDER (test-harness). When enabled, the bridge records the RAW
+   *  agent input (goose ACP frames / claude SDK messages) AND its own emitted
+   *  AG-UI events, correlated by runId, so tests can REPLAY real behavior instead
+   *  of hand-authored fakes. Off by default (no-op recorder). `provider` labels
+   *  which agent produced the input. See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+  recorder?: Recorder;
+  provider?: "goose" | "claude";
 }
 
 // Event ids (runId, messageId, sessionId, …) MUST be globally unique across the
@@ -517,10 +532,26 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const stamp = <E extends AguiEvent>(event: E): E =>
     ("ts" in event ? event : { ...event, ts: Date.now() }) as E;
 
+  // TRANSCRIPT RECORDER: correlate every recorded entry with THIS conversation +
+  // the current run. `recordAguiOut` taps emitted AG-UI events; `recordRawInput`
+  // is handed to the ACP/SDK client so it records the RAW agent input under the
+  // same runId. All no-ops when no recorder is configured.
+  const recorder = deps.recorder;
+  const recProvider = deps.provider ?? "goose";
+  const recordAguiOut = (event: AguiEvent) => {
+    if (!recorder?.enabled) return;
+    recorder.record({ layer: "agui-out", provider: recProvider, conversationId: sessionId, runId: currentRun?.runId ?? "no-run", data: event });
+  };
+  const recordRawInput = (data: unknown) => {
+    if (!recorder?.enabled) return;
+    recorder.record({ layer: recProvider === "claude" ? "sdk-in" : "acp-in", provider: recProvider, conversationId: sessionId, runId: currentRun?.runId ?? "no-run", data });
+  };
+
   const emit = (event: AguiEvent) => {
     // Broadcast subscribers (UI) AND persist subscribers (store) both see live
     // events.
     const e = stamp(event);
+    recordAguiOut(e);
     for (const cb of listeners) cb(e);
     for (const cb of persistListeners) cb(e);
   };
@@ -1277,6 +1308,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     shouldYieldToQueue() {
       return (topPriorityItem()?.priority ?? 0) >= PRIORITY_INTERRUPT;
     },
+
+    recordRawInput,
 
     async stop() {
       clearInterruptTimer();

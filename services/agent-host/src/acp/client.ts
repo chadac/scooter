@@ -124,6 +124,10 @@ export interface AcpClientDeps {
    *  auto mode (no per-tool gate; no back-pressure). See
    *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
   shouldYield?: () => boolean;
+  /** TRANSCRIPT RECORDER (test-harness): when set, called with each RAW ACP
+   *  session/update frame goose sends — the ground truth for the fake ACP agent.
+   *  Omit to disable (zero overhead). See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+  recordRaw?: (update: SessionUpdate) => void;
 }
 
 /** A request is an auto-answerable TOOL GATE — goose's GOOSE_MODE=approve
@@ -232,7 +236,12 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   const makeClient = (_agent: Agent): Client => ({
     async sessionUpdate(params: schema.SessionNotification): Promise<void> {
       const norm = normalizeUpdate(params);
-      if (norm) for (const cb of updateCbs) cb(params.sessionId, norm);
+      if (norm) {
+        // TRANSCRIPT: record the (normalized) ACP update — the shape the fake ACP
+        // agent must reproduce (no-op when unset).
+        deps.recordRaw?.(norm);
+        for (const cb of updateCbs) cb(params.sessionId, norm);
+      }
     },
 
     async requestPermission(

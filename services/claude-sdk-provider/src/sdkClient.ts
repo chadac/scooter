@@ -67,6 +67,12 @@ export interface SdkAcpClientDeps {
    *  agent spinning in a tool loop that blocks its own result. Omit to disable.
    *  See todo/docs/SUBAGENT_BACKPRESSURE.md. */
   shouldYield?: () => boolean;
+  /** TRANSCRIPT RECORDER (test-harness): when set, called with each RAW SDK
+   *  query() message BEFORE normalization — the ground truth for keeping the fake
+   *  query() faithful. Injected by agent-host (which owns the file writing); this
+   *  isolated package stays dependency-free. Omit to disable (zero overhead).
+   *  See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+  recordRaw?: (msg: unknown) => void;
 }
 
 /** The minimal shape of the SDK's query() we depend on — declared locally so this
@@ -238,6 +244,9 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       let stopReason = "end_turn";
       try {
         for await (const msg of q) {
+          // TRANSCRIPT: record the RAW SDK message before we normalize it — this is
+          // the exact shape the fake query() must reproduce (no-op when unset).
+          deps.recordRaw?.(msg);
           // Capture the SDK's session id from any message that carries it, so the
           // NEXT prompt resumes this same session. (The id is stable across a turn;
           // capturing every time is harmless and covers new/forked sessions.)
@@ -258,14 +267,22 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           }
           // BACK-PRESSURE (the real gate on the claude-code provider): the SDK does
           // NOT invoke canUseTool for our allowed/aliased tools, so we can't deny a
-          // tool there. Instead, at each TOOL-CALL BOUNDARY (a tool_call_update just
-          // completed), if a higher-priority item is now waiting (a subagent result,
-          // a priority message), INTERRUPT the query so the turn ends cleanly — the
-          // agent goes idle and the queued item injects on the next turn, instead of
-          // spinning in a check_subagent loop that blocks the very result it awaits.
-          // We yield BETWEEN tool calls (never mid-call), so an in-flight tool isn't
-          // killed. The pending item reaches the model as its next prompt.
-          if (deps.shouldYield?.() && updates.some((u) => u.sessionUpdate === "tool_call_update")) {
+          // tool there. Instead, when the agent ISSUES a tool call (a `tool_use`
+          // block → a `tool_call` update), if a higher-priority item is now waiting
+          // (a subagent result, a priority message), INTERRUPT the query so the turn
+          // ends cleanly — the agent goes idle and the queued item injects on the
+          // next turn, instead of spinning in a check_subagent loop that blocks the
+          // very result it awaits.
+          //
+          // We key on `tool_call` (the CALL), NOT `tool_call_update` (the RESULT):
+          // verified from a recorded real transcript that the SDK sends tool_result
+          // in a `user` message the adapter drops — so tool_call_update is NEVER
+          // emitted for claude, and the old hook never fired (the production bug).
+          // The tool_call fires reliably. Interrupting at the call cancels THIS tool
+          // before it runs; that's the intended back-pressure (don't start the next
+          // tool when a priority item is waiting) — the interrupted call re-issues
+          // on the resumed turn after the priority item is handled.
+          if (deps.shouldYield?.() && updates.some((u) => u.sessionUpdate === "tool_call")) {
             debug("[sdk] back-pressure: yielding turn (priority item waiting) — interrupting query");
             stopReason = "end_turn";
             await q.interrupt?.().catch(() => {});
