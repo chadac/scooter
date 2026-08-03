@@ -527,6 +527,19 @@ async def _background_create_conversation(
             # don't flush pending here — leave it to the resumed run.
             return
 
+        if result.get("errored"):
+            # The agent CRASHED mid-run. The conversation exists (link already
+            # posted) and did work — so NOT "couldn't start". Tell the user it hit an
+            # error partway through and point at the conversation for details.
+            await _clear_pending(res_id)
+            conv_id = result.get("conversation_id", "")
+            await post_slack_message(
+                channel=channel,
+                text=f"Scooter hit an error partway through — see the conversation for details: <{conversation_url(conv_id)}|View conversation>",
+                thread_ts=thread_ts,
+            )
+            return
+
         conv_id = result.get("conversation_id", "")
 
         # Flush pending messages

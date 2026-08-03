@@ -103,7 +103,11 @@ async def test_on_created_failure_is_non_fatal(monkeypatch):
     assert result is not None
 
 
-async def test_run_error_returns_none(monkeypatch):
+async def test_run_error_is_ERRORED_not_none(monkeypatch):
+    # A RUN_ERROR = the agent CRASHED mid-run. The conversation already exists (the
+    # on_created hook posted the link + anchor) and did work — so this must NOT return
+    # None (which posts "couldn't start"). It signals `errored` (with the message) so
+    # the caller posts a truthful "hit an error partway through" note instead.
     body = _sse(
         '{"type":"RUN_STARTED","threadId":"t","runId":"r"}',
         '{"type":"RUN_ERROR","message":"agent blew up"}',
@@ -111,7 +115,10 @@ async def test_run_error_returns_none(monkeypatch):
     _patch_stream(monkeypatch, body)
 
     result = await ahc.create_conversation("do a thing")
-    assert result is None
+    assert result is not None
+    assert result.get("errored") is True
+    assert result.get("error") == "agent blew up"
+    assert "conversation_id" in result
 
 
 async def test_connection_drop_mid_run_is_INTERRUPTED_not_failed(monkeypatch):

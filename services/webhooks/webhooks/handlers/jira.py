@@ -229,6 +229,17 @@ async def _background_create_conversation(
             # resumed on boot. Don't post a failure and don't flush pending here.
             return
 
+        if result.get("errored"):
+            # The agent crashed mid-run; the conversation exists + did work. Post a
+            # truthful "hit an error partway through" note, not "couldn't start".
+            await _clear_pending(issue_key)
+            conv_id = result.get("conversation_id", "")
+            await post_jira_comment(
+                issue_key=issue_key,
+                body=f"Scooter hit an error partway through — see the conversation for details: {conversation_url(conv_id)}",
+            )
+            return
+
         conv_id = result.get("conversation_id", "")
 
         # Flush pending messages
