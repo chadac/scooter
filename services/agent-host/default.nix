@@ -1,4 +1,4 @@
-{ lib, buildNpmPackage, nodejs, makeWrapper, goose-cli, agent ? goose-cli, claudeSdkProvider ? null, ... }:
+{ lib, buildNpmPackage, nodejs, makeWrapper, goose-cli, agent ? goose-cli, claudeSdkProvider ? null, marimoMcp ? null, ... }:
 
 # Builds the agent-host TypeScript app (tsc -> dist/) into a node application,
 # with `goose` (the ACP agent) wrapped onto PATH.
@@ -29,6 +29,10 @@ buildNpmPackage {
     mkdir -p node_modules/@scooter
     ln -s ${claudeSdkProvider}/lib/node_modules/@scooter/claude-sdk-provider \
       node_modules/@scooter/claude-sdk-provider
+  '' + lib.optionalString (marimoMcp != null) ''
+    mkdir -p node_modules/@scooter
+    ln -s ${marimoMcp}/lib/node_modules/@scooter/marimo-mcp \
+      node_modules/@scooter/marimo-mcp
   '';
 
   # `npm run build` (tsc) emits dist/; bin agent-host -> dist/index.js.
@@ -44,6 +48,12 @@ buildNpmPackage {
     mkdir -p "$appdir/node_modules/@scooter"
     ln -sf ${claudeSdkProvider}/lib/node_modules/@scooter/claude-sdk-provider \
       "$appdir/node_modules/@scooter/claude-sdk-provider"
+  '' + lib.optionalString (marimoMcp != null) ''
+    appdir="$(dirname "$(dirname "$(find $out/lib/node_modules -name index.js -path '*/dist/index.js' | head -1)")")"
+    echo "linking marimo-mcp into $appdir/node_modules"
+    mkdir -p "$appdir/node_modules/@scooter"
+    ln -sf ${marimoMcp}/lib/node_modules/@scooter/marimo-mcp \
+      "$appdir/node_modules/@scooter/marimo-mcp"
   '';
 
   meta.description = "agent-host — runs goose ACP per conversation, ACP<->AG-UI";
