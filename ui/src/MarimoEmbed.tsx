@@ -33,31 +33,53 @@ export function parseEmbedPayload(base64Body: string): EmbedPayload | null {
  *  loaded a single time, no matter how many islands are embedded. */
 const injectedHeads = new Set<string>();
 
-/** Inject the head assets (parsed from headHtml) into document.head once. headHtml is
- *  a `<script type="module" src=".../islands@X/main.js">` + a stylesheet `<link>`; we
- *  extract the URLs and add real <script>/<link> elements (setting innerHTML on <head>
- *  wouldn't execute a module script). Keyed on the script src so a second embed on the
- *  same runtime version is a no-op. */
-function injectHead(headHtml: string) {
+/** The islands runtime URL (the <script src>) extracted from a headHtml, or null. */
+function islandsScriptSrc(headHtml: string): string | null {
+  return headHtml.match(/<script[^>]+src="([^"]+)"/)?.[1] ?? null;
+}
+
+/** Inject the head STYLES (the islands stylesheet + fonts/katex) once per runtime.
+ *  The runtime SCRIPT itself is loaded via import() in ensureIslandsRuntime (so we get
+ *  the module's `initialize` export), not as a plain <script> — a plain <script>'s
+ *  auto-init runs ONCE on load and misses islands injected later (our case). */
+function injectHeadStyles(headHtml: string) {
   if (typeof document === "undefined") return;
-  const scriptSrc = headHtml.match(/<script[^>]+src="([^"]+)"/)?.[1];
-  const linkHref = headHtml.match(/<link[^>]+href="([^"]+)"/)?.[1];
-  const key = scriptSrc ?? headHtml;
+  const key = islandsScriptSrc(headHtml) ?? headHtml;
   if (injectedHeads.has(key)) return;
   injectedHeads.add(key);
-
-  if (linkHref && !document.head.querySelector(`link[href="${CSS.escape(linkHref)}"]`)) {
+  // Add every stylesheet <link> the head declares (islands CSS, fonts, katex).
+  for (const m of headHtml.matchAll(/<link[^>]+href="([^"]+)"[^>]*>/g)) {
+    const href = m[1];
+    if (!/stylesheet/.test(m[0]) && !/\.css/.test(href)) continue;
+    if (document.head.querySelector(`link[href="${CSS.escape(href)}"]`)) continue;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = linkHref;
+    link.href = href;
+    if (/crossorigin/.test(m[0])) link.crossOrigin = "anonymous";
     document.head.appendChild(link);
   }
-  if (scriptSrc && !document.head.querySelector(`script[src="${CSS.escape(scriptSrc)}"]`)) {
-    const script = document.createElement("script");
-    script.type = "module";
-    script.src = scriptSrc;
-    document.head.appendChild(script);
+}
+
+/** The islands runtime module, imported ONCE per script URL. The bundle exports
+ *  `initialize()` (designed to be called after injecting islands dynamically — e.g.
+ *  client-side nav), which re-scans the DOM + starts the pyodide kernel for reactive
+ *  islands. Loading it via import() (not a plain <script>) is what lets us call
+ *  initialize AFTER our island is in the DOM — a plain <script>'s one-shot auto-init
+ *  on load misses a later-injected island, so the cell never runs (empty plot). */
+const runtimeModules = new Map<string, Promise<{ initialize?: () => Promise<void> }>>();
+
+async function ensureIslandsRuntime(headHtml: string): Promise<void> {
+  const src = islandsScriptSrc(headHtml);
+  if (!src) return;
+  let mod = runtimeModules.get(src);
+  if (!mod) {
+    // @vite-ignore — a runtime CDN URL, not a build-time module.
+    mod = import(/* @vite-ignore */ src) as Promise<{ initialize?: () => Promise<void> }>;
+    runtimeModules.set(src, mod);
   }
+  const m = await mod;
+  // Re-discover + start any islands now in the DOM (idempotent; memoized bootstrap).
+  await m.initialize?.();
 }
 
 /** A PERSISTENT island node cache, keyed by the island HTML. A marimo island is a
@@ -84,17 +106,30 @@ export function MarimoEmbed({ base64Body }: { base64Body: string }) {
   const payload = useMemo(() => parseEmbedPayload(base64Body), [base64Body]);
   const hostRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
+  // "loading" while the islands runtime + pyodide bootstrap (a few seconds, downloads
+  // packages) → a spinner instead of a blank box; cleared when initialize() resolves.
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!payload || typeof document === "undefined") return;
     try {
-      injectHead(payload.headHtml);
-      // Move the persistent (already-hydrated) island node into our host. On collapse
-      // this component unmounts; the node stays in the cache (detached) — not destroyed
-      // — so expanding just re-attaches the SAME node, no re-hydration → it survives.
+      injectHeadStyles(payload.headHtml);
+      // Move the persistent island node into our host. On collapse this component
+      // unmounts; the node stays in the cache (detached) — not destroyed — so expanding
+      // re-attaches the SAME node.
       const node = islandNodeFor(payload.islandHtml);
       hostRef.current?.appendChild(node);
+      // Load the islands runtime and (re)initialize it NOW that our island is in the
+      // DOM — this starts the pyodide kernel for the reactive cell so the plot renders.
+      // (A plain <script>'s auto-init already ran on load, before our island existed.)
+      void ensureIslandsRuntime(payload.headHtml)
+        .then(() => setLoading(false))
+        .catch(() => {
+          setLoading(false);
+          setFailed(true);
+        });
     } catch {
+      setLoading(false);
       setFailed(true);
     }
     // On unmount (collapse), detach the node back to the cache so it's preserved.
@@ -118,6 +153,12 @@ export function MarimoEmbed({ base64Body }: { base64Body: string }) {
     <figure data-testid="marimo-embed" className="my-3 rounded-lg border bg-background p-2">
       {payload.title ? (
         <figcaption className="mb-1 px-1 text-xs font-medium text-muted-foreground">{payload.title}</figcaption>
+      ) : null}
+      {loading && !failed ? (
+        <p data-testid="marimo-embed-loading" className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-primary" aria-hidden />
+          Loading the interactive cell… (first load fetches the Python runtime)
+        </p>
       ) : null}
       {/* The island mounts here (hydrated by the runtime). */}
       <div ref={hostRef} data-testid="marimo-embed-host" className="marimo-island-host" />
