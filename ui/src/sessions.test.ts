@@ -109,6 +109,40 @@ describe("a brand-new conversation survives the background merge", () => {
   });
 });
 
+describe("user rename + starring", () => {
+  const titleOf = (id: string) => sessionStore.get().sessions.find((s) => s.id === id)?.title;
+  const of = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
+
+  it("renameSession sets the title and LOCKS it (userTitled) against the agent", () => {
+    sessionStore.mergeFromServer([{ id: "c", title: "Agent guess" }]);
+    sessionStore.renameSession("c", "My name");
+    expect(titleOf("c")).toBe("My name");
+    expect(of("c")?.userTitled).toBe(true);
+
+    // The agent tries to set a new title — locked, so it's ignored.
+    sessionStore.setTitle("c", "Agent's new guess");
+    expect(titleOf("c")).toBe("My name");
+  });
+
+  it("a server userTitled merge wins over a stale local title immediately", () => {
+    // Local thinks the title is the agent's; the server reports a user rename.
+    sessionStore.mergeFromServer([{ id: "c", title: "Agent guess" }]);
+    sessionStore.mergeFromServer([{ id: "c", title: "Pinned by user", userTitled: true }]);
+    expect(titleOf("c")).toBe("Pinned by user");
+    expect(of("c")?.userTitled).toBe(true);
+  });
+
+  it("setStarred toggles the flag, and a server merge carries it", () => {
+    sessionStore.mergeFromServer([{ id: "c", title: "X" }]);
+    expect(of("c")?.starred).toBeFalsy();
+    sessionStore.setStarred("c", true);
+    expect(of("c")?.starred).toBe(true);
+    // Server confirms it on the next merge.
+    sessionStore.mergeFromServer([{ id: "c", title: "X", starred: true }]);
+    expect(of("c")?.starred).toBe(true);
+  });
+});
+
 describe("visibleSessions (Mine/All owner filter)", () => {
   const seed = () =>
     sessionStore.mergeFromServer([

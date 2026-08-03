@@ -278,6 +278,62 @@ describe("SessionManager", () => {
     }
   });
 
+  describe("user title precedence + starring", () => {
+    it("setTitle (agent <title>) sets the title while the conversation is agent-titled", async () => {
+      const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
+      await sessions.start("t");
+      await sessions.setTitle("t", "Agent's guess");
+      expect(sessions.get("t")?.title).toBe("Agent's guess");
+    });
+
+    it("a user rename LOCKS the title — the agent's <title> can no longer overwrite it", async () => {
+      const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
+      await sessions.start("t");
+      await sessions.setTitle("t", "Agent's guess"); // agent titled it first
+      await sessions.setUserTitle("t", "My name for this");
+      expect(sessions.get("t")?.title).toBe("My name for this");
+      expect(sessions.get("t")?.userTitled).toBe(true);
+
+      // The agent tries again on a later turn — must be ignored (user wins permanently).
+      await sessions.setTitle("t", "Agent's new guess");
+      expect(sessions.get("t")?.title).toBe("My name for this");
+    });
+
+    it("setStarred toggles the star flag", async () => {
+      const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
+      await sessions.start("t");
+      expect(sessions.get("t")?.starred).toBeFalsy();
+      await sessions.setStarred("t", true);
+      expect(sessions.get("t")?.starred).toBe(true);
+      await sessions.setStarred("t", false);
+      expect(sessions.get("t")?.starred).toBe(false);
+    });
+
+    it("userTitled + starred survive a restart (persisted), and the agent still can't override", async () => {
+      const root = mkdtempSync(join(tmpdir(), "convstore-"));
+      try {
+        const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: createFileConversationStore(root) });
+        await m1.start("t");
+        await m1.setUserTitle("t", "Pinned title");
+        await m1.setStarred("t", true);
+
+        // Fresh manager over the same store → hydrate from disk.
+        const m2 = createSessionManager({ provisioner: fakeProvisioner(), store: createFileConversationStore(root) });
+        await m2.hydrate();
+        const c = m2.get("t");
+        expect(c?.title).toBe("Pinned title");
+        expect(c?.userTitled).toBe(true);
+        expect(c?.starred).toBe(true);
+
+        // Still locked after the restart.
+        await m2.setTitle("t", "Agent override attempt");
+        expect(m2.get("t")?.title).toBe("Pinned title");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("conversations survive a restart (file store hydrate)", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {

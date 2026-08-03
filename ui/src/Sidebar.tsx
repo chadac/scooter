@@ -19,6 +19,8 @@ import {
 } from "./sessions.js";
 import { LinkedResources } from "./LinkedResources.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
+import { agentHostConfig } from "./config.js";
+import { renameConversation, setConversationStarred, deleteConversation } from "./client.js";
 
 /** A small "?" affordance with an explanatory tooltip (native title + aria-label,
  *  matching the sidebar's lightweight style). */
@@ -34,6 +36,137 @@ function InfoTip({ text }: { text: string }) {
     >
       ?
     </span>
+  );
+}
+
+/** One conversation row: select, inline rename (double-click the title), star
+ *  toggle, and delete-with-confirm (a stronger confirm when starred). */
+function SessionRow({
+  session: s,
+  depth,
+  childCount,
+  active,
+  labelMode,
+}: {
+  session: import("./sessions.js").Session;
+  depth: number;
+  childCount: number;
+  active: boolean;
+  labelMode: LabelMode;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(s.title);
+
+  const commitRename = () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (!next || next === s.title) return;
+    sessionStore.renameSession(s.id, next); // optimistic + lock
+    void renameConversation(agentHostConfig, s.id, next);
+  };
+
+  const toggleStar = () => {
+    const next = !s.starred;
+    sessionStore.setStarred(s.id, next); // optimistic
+    void setConversationStarred(agentHostConfig, s.id, next);
+  };
+
+  const remove = () => {
+    // Universal confirm on delete; a STARRED conversation gets a stronger warning.
+    const msg = s.starred
+      ? `"${s.title}" is starred. Deleting destroys its sandbox and data permanently. Delete anyway?`
+      : `Delete "${s.title}"? This destroys its sandbox and data permanently.`;
+    if (!window.confirm(msg)) return;
+    sessionStore.deleteSession(s.id); // optimistic local removal
+    void deleteConversation(agentHostConfig, s.id);
+  };
+
+  return (
+    <div
+      data-testid="session-item"
+      data-active={active}
+      data-starred={s.starred ? "true" : undefined}
+      data-subagent={depth > 0 ? "true" : undefined}
+      className={
+        "group mb-1 flex items-center gap-1 rounded-md pe-1 text-sm " +
+        (depth > 0 ? "ms-3 border-s ps-1 " : "") +
+        (active ? "bg-accent" : "hover:bg-accent/50")
+      }
+    >
+      {/* Star toggle — top-level only (subagents aren't independently retained). */}
+      {depth === 0 && (
+        <button
+          data-testid="session-star"
+          aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
+          aria-pressed={s.starred ? true : false}
+          onClick={toggleStar}
+          className={
+            "shrink-0 rounded p-1 " +
+            (s.starred
+              ? "text-amber-500"
+              : "text-muted-foreground opacity-0 hover:text-amber-500 group-hover:opacity-100")
+          }
+        >
+          {s.starred ? "★" : "☆"}
+        </button>
+      )}
+
+      {editing ? (
+        <input
+          data-testid="session-rename-input"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            else if (e.key === "Escape") {
+              setDraft(s.title);
+              setEditing(false);
+            }
+          }}
+          className="min-w-0 flex-1 rounded border bg-background px-2 py-1.5 text-sm"
+        />
+      ) : (
+        <button
+          onClick={() => sessionStore.switchTo(s.id)}
+          onDoubleClick={() => {
+            setDraft(s.title);
+            setEditing(true);
+          }}
+          className={"min-w-0 flex-1 truncate px-3 py-2 text-left " + (active ? "font-medium" : "")}
+          title={`${s.title} — double-click to rename`}
+        >
+          {depth > 0 && <span className="me-1 text-muted-foreground" aria-hidden>↳</span>}
+          <span data-testid="session-title">{sessionLabel(s, labelMode)}</span>
+          {childCount > 0 && (
+            <span data-testid="subagent-count" className="ms-1.5 text-xs text-muted-foreground">
+              ▸ {childCount} subagent{childCount === 1 ? "" : "s"}
+            </span>
+          )}
+        </button>
+      )}
+
+      {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
+      {!editing && s.sources && s.sources.length > 0 && (
+        <span className="flex shrink-0 items-center gap-0.5">
+          {s.sources.map((src) => (
+            <SourceBadge key={src} source={src} />
+          ))}
+        </span>
+      )}
+
+      {!editing && (
+        <button
+          data-testid="session-delete"
+          aria-label={`Delete ${s.title}`}
+          onClick={remove}
+          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        >
+          ✕
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -207,55 +340,14 @@ export function Sidebar() {
           </p>
         )}
         {rows.map(({ session: s, depth, childCount }) => (
-          <div
+          <SessionRow
             key={s.id}
-            data-testid="session-item"
-            data-active={s.id === currentId}
-            data-subagent={depth > 0 ? "true" : undefined}
-            className={
-              "group mb-1 flex items-center gap-1 rounded-md pe-1 text-sm " +
-              (depth > 0 ? "ms-3 border-s ps-1 " : "") +
-              (s.id === currentId ? "bg-accent" : "hover:bg-accent/50")
-            }
-          >
-            <button
-              onClick={() => sessionStore.switchTo(s.id)}
-              className={
-                "min-w-0 flex-1 truncate px-3 py-2 text-left " +
-                (s.id === currentId ? "font-medium" : "")
-              }
-              title={s.title}
-            >
-              {depth > 0 && <span className="me-1 text-muted-foreground" aria-hidden>↳</span>}
-              <span data-testid="session-title">{sessionLabel(s, labelMode)}</span>
-              {/* Collapsed parent: a compact "▸ N subagents" hint (they expand when
-                  this conversation is opened — the auto-collapse behavior). */}
-              {childCount > 0 && (
-                <span
-                  data-testid="subagent-count"
-                  className="ms-1.5 text-xs text-muted-foreground"
-                >
-                  ▸ {childCount} subagent{childCount === 1 ? "" : "s"}
-                </span>
-              )}
-            </button>
-            {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
-            {s.sources && s.sources.length > 0 && (
-              <span className="flex shrink-0 items-center gap-0.5">
-                {s.sources.map((src) => (
-                  <SourceBadge key={src} source={src} />
-                ))}
-              </span>
-            )}
-            <button
-              data-testid="session-delete"
-              aria-label={`Delete ${s.title}`}
-              onClick={() => sessionStore.deleteSession(s.id)}
-              className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-            >
-              ✕
-            </button>
-          </div>
+            session={s}
+            depth={depth}
+            childCount={childCount}
+            active={s.id === currentId}
+            labelMode={labelMode}
+          />
         ))}
       </nav>
       {/* The current conversation's external resources (GitHub PR / Slack thread

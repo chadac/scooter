@@ -84,6 +84,14 @@ export interface ConversationMeta {
    *  shares one root pod (see spawnChild). Persisted so the hierarchy survives an
    *  agent-host restart. */
   parentId?: SessionId;
+  /** The user renamed this conversation, so `title` is USER-set and locked: the
+   *  agent's <title> marker no longer overwrites it (setTitle becomes a no-op).
+   *  undefined/false = still agent-titled (the agent may set/update the title). */
+  userTitled?: boolean;
+  /** The user starred this conversation. Surfaced in the UI and (in a future
+   *  retention reaper) exempts it from auto-deletion. Hibernation is unaffected —
+   *  a starred conversation still idle-suspends. */
+  starred?: boolean;
 }
 
 /** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
@@ -202,6 +210,10 @@ export interface Conversation {
    *  A subagent shares its parent's sandbox; find a conversation's children by
    *  scanning for `parentId === id`. */
   readonly parentId?: SessionId;
+  /** The title is USER-set (renamed) and locked against the agent's <title>. */
+  readonly userTitled?: boolean;
+  /** The user starred it (UI highlight + future retention exemption). */
+  readonly starred?: boolean;
 }
 
 export interface SessionManager {
@@ -272,10 +284,17 @@ export interface SessionManager {
   /** All conversations, newest first. */
   list(): Conversation[];
   /** Set a conversation's title (e.g. agent-assigned). */
-  /** Set a conversation's title and persist it. Returns the persist promise so a
-   *  caller can await durability (e.g. before a restart); fire-and-forget callers
-   *  may ignore it. */
+  /** Set a conversation's title FROM THE AGENT (the <title> marker) and persist it.
+   *  A NO-OP once the user has renamed the conversation (userTitled) — the user's
+   *  title wins permanently. Returns the persist promise so a caller can await
+   *  durability; fire-and-forget callers may ignore it. */
   setTitle(id: SessionId, title: string): Promise<void>;
+  /** Rename FROM THE USER: sets the title AND locks it (userTitled=true) so the
+   *  agent's <title> marker can no longer overwrite it. Returns the persist promise. */
+  setUserTitle(id: SessionId, title: string): Promise<void>;
+  /** Star / unstar a conversation (persisted; surfaced in the UI + future retention
+   *  exemption). Returns the persist promise. */
+  setStarred(id: SessionId, starred: boolean): Promise<void>;
   /** Load persisted conversations from the store into the in-memory list, so
    *  the session list (and GET /conversations) survives an agent-host restart.
    *  Persisted-but-not-live conversations come back as "suspended". */
@@ -343,6 +362,8 @@ interface Entry {
   model?: string;
   owner?: string;
   parentId?: SessionId;
+  userTitled?: boolean;
+  starred?: boolean;
 }
 
 /** Drain an async iterable of events into an array (fallback for stores without
@@ -390,6 +411,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     model: e.model,
     owner: e.owner,
     parentId: e.parentId,
+    userTitled: e.userTitled,
+    starred: e.starred,
   });
 
   // Conversation lifecycle subscribers (the /conversations/events push stream).
@@ -432,6 +455,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       lastActivityAt: m.lastActivityAt,
       model: m.model,
       owner: m.owner,
+      parentId: m.parentId,
+      userTitled: m.userTitled,
+      starred: m.starred,
     };
     entries.set(m.id, entry);
     return entry;
@@ -480,6 +506,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       model: e.model,
       owner: e.owner,
       parentId: e.parentId,
+      userTitled: e.userTitled,
+      starred: e.starred,
     }) ?? Promise.resolve();
 
   const wireEventLog = (e: Entry) => {
@@ -802,9 +830,31 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     setTitle(id, title) {
       const entry = entries.get(id);
       if (!entry) return Promise.resolve();
+      // The agent's <title> marker must NOT clobber a user-chosen name. Once the user
+      // has renamed the conversation, the user title is locked (see setUserTitle).
+      if (entry.userTitled) return Promise.resolve();
       entry.title = title;
-      const persisted = saveMeta(entry); // persist the (possibly agent-assigned) title
+      const persisted = saveMeta(entry); // persist the agent-assigned title
       emitChange(entry); // push the title change to the sidebar stream
+      return persisted;
+    },
+
+    setUserTitle(id, title) {
+      const entry = entries.get(id);
+      if (!entry) return Promise.resolve();
+      entry.title = title;
+      entry.userTitled = true; // lock it: the agent's <title> no longer wins
+      const persisted = saveMeta(entry);
+      emitChange(entry);
+      return persisted;
+    },
+
+    setStarred(id, starred) {
+      const entry = entries.get(id);
+      if (!entry) return Promise.resolve();
+      entry.starred = starred;
+      const persisted = saveMeta(entry);
+      emitChange(entry);
       return persisted;
     },
 

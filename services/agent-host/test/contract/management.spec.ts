@@ -63,7 +63,19 @@ function fakeSessions(): SessionManager {
     list: () => [...store.values()],
     setTitle: vi.fn((id, title) => {
       const c = store.get(id);
-      if (c) store.set(id, conv({ ...c, title }));
+      // Mirror the real no-op-once-user-titled behavior so route tests are faithful.
+      if (c && !c.userTitled) store.set(id, conv({ ...c, title }));
+      return Promise.resolve();
+    }),
+    setUserTitle: vi.fn((id, title) => {
+      const c = store.get(id);
+      if (c) store.set(id, conv({ ...c, title, userTitled: true }));
+      return Promise.resolve();
+    }),
+    setStarred: vi.fn((id, starred) => {
+      const c = store.get(id);
+      if (c) store.set(id, conv({ ...c, starred }));
+      return Promise.resolve();
     }),
     sweepIdle: vi.fn(async () => []),
     onConversationChange: vi.fn(() => () => {}),
@@ -271,6 +283,67 @@ describe("management API", () => {
     expect(sessions.start).toHaveBeenCalledWith("new1", undefined, undefined);
     expect(sessions.setTitle).toHaveBeenCalledWith("new1", "My task");
     expect((json as any).title).toBe("My task");
+  });
+
+  // --- user rename + starring ------------------------------------------------
+
+  it("PATCH /conversations/:id/title renames + locks (userTitled) — anonymous single-user", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status, json } = await call(api, "PATCH", "/conversations/c1/title", { title: "  My pinned name  " });
+    expect(status).toBe(200);
+    expect(sessions.setUserTitle).toHaveBeenCalledWith("c1", "My pinned name"); // trimmed
+    expect((json as any).title).toBe("My pinned name");
+    expect((json as any).userTitled).toBe(true);
+  });
+
+  it("PATCH /conversations/:id/title rejects a blank title (400)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "PATCH", "/conversations/c1/title", { title: "   " });
+    expect(status).toBe(400);
+  });
+
+  it("PATCH /conversations/:id/title 404s an unknown conversation", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "PATCH", "/conversations/nope/title", { title: "x" });
+    expect(status).toBe(404);
+  });
+
+  it("PATCH title 403s when another identified user owns the conversation", async () => {
+    const sessions = fakeSessions();
+    // c1 owned by bob; alice tries to rename it.
+    (sessions.get("c1") as any).owner = "bob";
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "PATCH", "/conversations/c1/title", { title: "x" }, { "x-auth-user": "alice" });
+    expect(status).toBe(403);
+    expect(sessions.setUserTitle).not.toHaveBeenCalled();
+  });
+
+  it("PATCH title is allowed for the OWNER", async () => {
+    const sessions = fakeSessions();
+    (sessions.get("c1") as any).owner = "alice";
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "PATCH", "/conversations/c1/title", { title: "mine" }, { "x-auth-user": "alice" });
+    expect(status).toBe(200);
+    expect(sessions.setUserTitle).toHaveBeenCalledWith("c1", "mine");
+  });
+
+  it("PATCH /conversations/:id/starred toggles the star", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const on = await call(api, "PATCH", "/conversations/c1/starred", { starred: true });
+    expect(on.status).toBe(200);
+    expect(sessions.setStarred).toHaveBeenCalledWith("c1", true);
+    expect((on.json as any).starred).toBe(true);
+
+    const off = await call(api, "PATCH", "/conversations/c1/starred", { starred: false });
+    expect((off.json as any).starred).toBe(false);
+  });
+
+  it("PATCH starred rejects a non-boolean body (400)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "PATCH", "/conversations/c1/starred", { starred: "yes" });
+    expect(status).toBe(400);
   });
 
   it("GET /whoami returns the caller's identity (header)", async () => {

@@ -15,6 +15,8 @@ const sidebar = {
   newButton: '[data-testid="new-session"]',
   title: '[data-testid="session-title"]',
   deleteButton: '[data-testid="session-delete"]',
+  starButton: '[data-testid="session-star"]',
+  renameInput: '[data-testid="session-rename-input"]',
 };
 
 test.describe("session selector & titles", () => {
@@ -41,6 +43,43 @@ test.describe("session selector & titles", () => {
     await expect(chat.assistantMessages().filter({ hasText: /<title>/i })).toHaveCount(0);
   });
 
+  test("the user can rename a conversation, and the agent can't override it", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("help me refactor the parser");
+    await chat.waitForReply(/dummy agent/i);
+    const title = page.locator(sidebar.title).first();
+    await expect(title).toHaveText(/refactor the parser/i, { timeout: 30_000 });
+
+    // Double-click the title to rename, type a custom name, Enter to commit.
+    await title.dblclick();
+    const input = page.locator(sidebar.renameInput).first();
+    await expect(input).toBeVisible();
+    await input.fill("My pinned project");
+    await input.press("Enter");
+    await expect(title).toHaveText(/my pinned project/i, { timeout: 10_000 });
+
+    // The agent titling again on a follow-up turn must NOT override the user's name.
+    await chat.send("now do the other thing");
+    await chat.waitForReply(/dummy agent/i);
+    // Give the merge poll a chance to (wrongly) clobber it, then assert it held.
+    await expect(title).toHaveText(/my pinned project/i, { timeout: 30_000 });
+    await expect(title).not.toHaveText(/refactor/i);
+  });
+
+  test("the user can star and unstar a conversation", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("something worth keeping");
+    await chat.waitForReply(/dummy agent/i);
+
+    const row = page.locator(sidebar.item).first();
+    const star = row.locator(sidebar.starButton);
+    await expect(row).not.toHaveAttribute("data-starred", "true");
+    await star.click();
+    await expect(row).toHaveAttribute("data-starred", "true", { timeout: 10_000 });
+    await star.click();
+    await expect(row).not.toHaveAttribute("data-starred", "true", { timeout: 10_000 });
+  });
+
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {
     await chat.open();
     await chat.send("first conversation");
@@ -62,7 +101,8 @@ test.describe("session selector & titles", () => {
     await chat.waitForReply(/dummy agent/i);
     await expect(page.locator(sidebar.item)).toHaveCount(2);
 
-    // Delete the second (current) conversation.
+    // Delete now shows a confirm dialog (universal) — accept it.
+    page.on("dialog", (d) => d.accept());
     await page.locator(sidebar.item).first().locator(sidebar.deleteButton).click();
     await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 10_000 });
   });
@@ -108,6 +148,7 @@ test.describe("session selector & titles", () => {
     // Delete the CURRENT conversation. deleteSession selects a remaining one,
     // so the view must swap to the survivor — the doomed message must vanish
     // and the survivor's message must appear (the "close is a no-op" bug).
+    page.on("dialog", (d) => d.accept()); // accept the universal delete confirm
     await page
       .locator(sidebar.item)
       .filter({ hasText: /doomed/i })
