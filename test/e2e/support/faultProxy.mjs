@@ -91,7 +91,15 @@ export function startFaultProxy({ port, targetHost, targetPort }) {
           if (killed) return;
           if (fault.mode === "drop") {
             const t = frameEventType(frame);
-            if (t && t === fault.eventType) return; // omit this frame
+            if (t && t === fault.eventType) {
+              // ONE-SHOT by default: drop the FIRST matching frame, then DISARM so
+              // the reconnect's re-fetch of the persisted log (which HAS this frame)
+              // gets it and the UI heals. This models a single LIVE frame being lost
+              // — not a server that permanently omits it. `once:false` drops every
+              // occurrence (a harsher, rarely-needed variant).
+              if (fault.once !== false) fault = { mode: "none" };
+              return; // omit this occurrence
+            }
           }
           res.write(frame + "\n\n");
           forwarded += 1;

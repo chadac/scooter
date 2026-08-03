@@ -39,34 +39,23 @@ test.describe("SSE resilience", () => {
     await clearFault(request);
   });
 
-  // FIXME(sse-resilience): when the integrity stream is faulted DURING a live turn
-  // (drop RUN_FINISHED / mid-run kill), the FOLLOW-UP send lands but its run sticks
-  // in "Starting…" — the new prompt appears to queue behind a run the bridge still
-  // considers active after the reconnect churn. The recovery of the FAULTED turn's
-  // own state works; it's the next turn that wedges. Needs interactive debugging
-  // with the trace/video (is the follow-up prompt racing the reconnect, or is the
-  // bridge genuinely still running?). The stall + authExpire scenarios below pass
-  // and already exercise the proxy + watchdog + auth-banner paths end to end.
-  test.fixme("dropped RUN_FINISHED — the UI un-sticks (Send returns) and can send again", async ({ chat, page, request }) => {
+  test("dropped RUN_FINISHED — the idle-watchdog reconnect un-sticks the run; the user can send again", async ({ chat, page, request }) => {
     await chat.open();
     // Establish a healthy conversation first (creates the durable log the recovery
     // re-folds from), with NO fault active.
     await chat.sendTurn("first, a normal turn");
 
-    // Now DROP the terminal RUN_FINISHED on every future integrity frame: a
-    // finished run will look "still running" on the live stream.
+    // DROP the NEXT RUN_FINISHED frame ONCE on the live stream (the proxy then
+    // disarms), modelling a single LOST terminal frame: the server's persisted log
+    // HAS it, only the live frame was lost. The run looks "still running" until the
+    // idle-watchdog (2s) reconnects and re-folds the intact log.
     await setFault(request, { mode: "drop", eventType: "RUN_FINISHED" });
     await chat.send("this run's finish will be dropped");
 
-    // The reply text still streams (only the terminal frame is dropped), so the
-    // assistant message lands...
-    await expect(chat.assistantMessages().nth(1)).toBeVisible({ timeout: 30_000 });
-
-    // ...but without RUN_FINISHED the composer stays in the running state (no Send)
-    // until the idle-watchdog (2s) forces a reconnect that re-folds the persisted
-    // log — which HAS the RUN_FINISHED — and clears `running`. Send returns. Clear
-    // the fault first so the healing reconnect gets a clean stream.
-    await clearFault(request);
+    // The 2nd turn's reply finalizes and the composer un-sticks: the idle-watchdog
+    // reconnect re-folds the persisted log (which HAS RUN_FINISHED), so `running`
+    // clears and Send returns — no "agent seems dead".
+    await expect(chat.assistantMessages()).toHaveCount(2, { timeout: 30_000 });
     const sendBtn = page.getByRole("button", { name: /send/i }).first();
     await expect(sendBtn).toBeVisible({ timeout: 15_000 });
 
@@ -78,9 +67,7 @@ test.describe("SSE resilience", () => {
     await expect(chat.assistantMessages()).toHaveCount(3, { timeout: 30_000 });
   });
 
-  // FIXME(sse-resilience): same wedge as above — a mid-turn kill leaves the
-  // follow-up run stuck "Starting…". See the note on the dropped-RUN_FINISHED test.
-  test.fixme("killAfter mid-stream — the reconnect re-folds; the reply completes with no duplicate", async ({ chat, page, request }) => {
+  test("killAfter mid-stream — the reconnect re-folds; the reply completes with no duplicate", async ({ chat, page, request }) => {
     await chat.open();
     await chat.sendTurn("baseline turn");
 
@@ -97,12 +84,7 @@ test.describe("SSE resilience", () => {
     await expect(page.getByRole("button", { name: /send/i }).first()).toBeVisible({ timeout: 15_000 });
   });
 
-  // FIXME(sse-resilience): faulting the stream DURING a live turn (here: a 1.5s
-  // stall) can drop that turn's reply — same family as the drop/kill wedges above.
-  // The harness pattern of injecting a fault while a run is in flight needs
-  // rework (arm the fault, THEN drive a turn whose completion the fault can't
-  // swallow). Interactive follow-up with the trace/video.
-  test.fixme("stalled stream — messages arrive late but correctly, no error box", async ({ chat, request }) => {
+  test("stalled stream — messages arrive late but correctly, no error box", async ({ chat, request }) => {
     await chat.open();
     await chat.sendTurn("pre-stall turn");
 
