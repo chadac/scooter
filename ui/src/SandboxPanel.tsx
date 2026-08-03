@@ -110,6 +110,7 @@ export function useSandboxStatus() {
 
   return {
     state,
+    starting,
     services,
     busy,
     conversationId: currentId ?? undefined,
