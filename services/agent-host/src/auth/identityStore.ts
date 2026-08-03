@@ -17,6 +17,7 @@
  */
 
 import { createPgPool } from "../db/pgPool.js";
+import { normalizeEmail } from "./email.js";
 
 import type { AsyncIdentityResolver, UserContext } from "./identity.js";
 
@@ -158,6 +159,10 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
     async put(id, rec) {
       try {
         await ensureTable();
+        // Store the NORMALIZED email (lowercase, trimmed, +tag dropped) so the same
+        // mailbox is one value regardless of the cosmetic form a provider handed us —
+        // getByEmail matches against the same normalization. A blank/absent email → null.
+        const email = rec.email ? normalizeEmail(rec.email) || null : null;
         await pool.query(
           `INSERT INTO user_identity (id, email, name, updated_at)
              VALUES ($1, $2, $3, now())
@@ -165,7 +170,7 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
              email = COALESCE(EXCLUDED.email, user_identity.email),
              name = COALESCE(EXCLUDED.name, user_identity.name),
              updated_at = now()`,
-          [id, rec.email ?? null, rec.name ?? null],
+          [id, email, rec.name ?? null],
         );
       } catch (e) {
         // eslint-disable-next-line no-console
@@ -173,11 +178,14 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
       }
     },
     async getByEmail(email) {
-      const e = (email ?? "").trim();
+      // Match against the SAME normalization we store (lowercase, trimmed, +tag
+      // dropped) so alice+work@Example.com resolves to the same user as alice@example.com.
+      const e = normalizeEmail(email);
       if (!e) return undefined;
       try {
         await ensureTable();
-        // Case-insensitive; most-recently-updated wins if an email is shared.
+        // Emails are stored normalized; the lower() is belt-and-suspenders for any
+        // legacy row written before normalization. Most-recently-updated wins if shared.
         const res = await pool.query(
           `SELECT id FROM user_identity WHERE lower(email) = lower($1) ORDER BY updated_at DESC LIMIT 1`,
           [e],
