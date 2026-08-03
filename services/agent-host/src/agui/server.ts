@@ -157,6 +157,11 @@ export interface AguiServer {
    *  caller (its SA token via TokenReview) — gating the privileged `owner` field.
    *  Absent = owner is never honored. */
   useOwnerVerifier(verify: (req: import("node:http").IncomingMessage) => Promise<boolean>): void;
+  /** Resolve the caller's ingress identity so a UI-created conversation (POST /agui)
+   *  is OWNED by the human who created it. Without this, a browser-created
+   *  conversation gets no owner (the Mine/All filter can't see it as yours). Absent =
+   *  no owner stamped from /agui (single-user / no-FGA deployments). */
+  useIdentityResolver(resolve: (req: import("node:http").IncomingMessage) => { id: string; anonymous: boolean } | Promise<{ id: string; anonymous: boolean }>): void;
   /** Attach an SSE response to a session's persistent event stream (for the
    *  management API's GET .../events). Returns once replay (onAttach) is done. */
   subscribeSSE(sessionId: SessionId, res: ServerResponse): Promise<void>;
@@ -191,6 +196,7 @@ export function createAguiServer(): AguiServer {
   let mountedRouter: Router | undefined;
   let mountedProxy: WebServiceProxy | undefined;
   let ownerVerifier: ((req: IncomingMessage) => Promise<boolean>) | undefined;
+  let identityResolver: ((req: IncomingMessage) => { id: string; anonymous: boolean } | Promise<{ id: string; anonymous: boolean }>) | undefined;
 
   const write = (res: ServerResponse, event: AguiEvent) => {
     res.write(encoder.encodeSSE(toBaseEvent(event)));
@@ -317,14 +323,22 @@ export function createAguiServer(): AguiServer {
       // runtime drives the AG-UI body, so a header is the clean injection point).
       const hdr = req.headers["x-agent-model"];
       const model = (Array.isArray(hdr) ? hdr[0] : hdr) || undefined;
-      // The conversation OWNER for a webhook-spawned run is PRIVILEGED (it claims a
-      // conversation for a Scooter user). Honor it ONLY when the caller is the
-      // TRUSTED webhooks service — verified by its ServiceAccount token via k8s
-      // TokenReview (ownerVerifier), NOT a header the ingress is trusted to strip.
-      // The UI / a browser / any other caller can't set it. Absent verifier → never.
+      // Resolve the conversation OWNER, stamped on first creation so the Mine/All
+      // filter attributes a UI-created conversation to the human who made it.
+      //   1. PRIVILEGED webhooks path: an explicit `input.owner` (a Scooter user the
+      //      webhooks service resolved), honored ONLY when the caller is the TRUSTED
+      //      webhooks SA (TokenReview via ownerVerifier) — not a header the ingress
+      //      is trusted to strip. A browser can't set this.
+      //   2. NORMAL UI path: the browser doesn't send `owner`; instead we resolve the
+      //      caller's INGRESS IDENTITY here (the same resolver /whoami + POST
+      //      /conversations use) and own the conversation to that user. Anonymous
+      //      (no identity / FGA-off / dev) → no owner, preserving single-user mode.
       let owner: string | undefined;
       if (input.owner && ownerVerifier && (await ownerVerifier(req).catch(() => false))) {
         owner = input.owner;
+      } else if (identityResolver) {
+        const user = await Promise.resolve(identityResolver(req)).catch(() => undefined);
+        if (user && !user.anonymous) owner = user.id;
       }
       // Drive the run. If promptHandler THROWS before the run ever emits a terminal
       // event (the big one: revive/provision fails — e.g. 409 AlreadyExists from a
@@ -449,6 +463,9 @@ export function createAguiServer(): AguiServer {
     },
     useOwnerVerifier(verify) {
       ownerVerifier = verify;
+    },
+    useIdentityResolver(resolve) {
+      identityResolver = resolve;
     },
     useProxy(proxy) {
       mountedProxy = proxy;
