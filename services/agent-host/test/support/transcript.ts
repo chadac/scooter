@@ -7,7 +7,7 @@
  * test/fixtures/transcripts/<provider>/<scenario>.ndjson.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -33,6 +33,16 @@ export function fixtureExists(provider: Provider, scenario: string): boolean {
  *  parametrizes only over what's actually captured). */
 export function providersWith(scenario: string): Provider[] {
   return PROVIDERS.filter((p) => fixtureExists(p, scenario));
+}
+/** Scenarios recorded for ALL providers — the cross-provider test iterates these so
+ *  adding a fixture pair automatically extends coverage (no test edit needed). */
+export function scenariosForAllProviders(): string[] {
+  const byProvider = PROVIDERS.map((p) => {
+    const dir = join(FIXTURES, p);
+    return existsSync(dir) ? new Set(readdirSync(dir).filter((f) => f.endsWith(".ndjson")).map((f) => f.replace(/\.ndjson$/, ""))) : new Set<string>();
+  });
+  const [first, ...rest] = byProvider;
+  return [...(first ?? new Set())].filter((s) => rest.every((set) => set.has(s))).sort();
 }
 /** Load a scenario's fixture for a provider. */
 export function loadFixture(provider: Provider, scenario: string): TranscriptEntry[] {
