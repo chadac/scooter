@@ -331,6 +331,19 @@ in
       '';
     };
 
+    retentionMaxAgeMs = mkOption {
+      type = types.int;
+      default = 0;
+      description = ''
+        Retention reap: DESTROY (end — pod + PVCs + record) an UNSTARRED
+        conversation that has been inactive (no prompt/event) longer than this.
+        Age is measured from last activity, so a recently-used conversation is
+        never reaped however old it is. STARRED conversations are exempt. 0
+        disables (the default — opt in for a real deployment, e.g. 30 days =
+        2592000000). Runs on a slow cadence (retentionSweepIntervalMs, default 6h).
+      '';
+    };
+
     auth = {
       # The agent-host trusts an identity header injected by the ingress (an OIDC
       # proxy / forward-auth / basic-auth the deployer configures). It does NOT do
@@ -676,6 +689,12 @@ in
                   { name = "SCRATCH_PATH"; value = "/var/lib/agent-scratch"; }
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
+                ]
+                ++ lib.optional (cfg.retentionMaxAgeMs > 0)
+                  # Auto-delete unstarred conversations inactive past the window
+                  # (0/default = off, so absent unless a deployment opts in).
+                  { name = "RETENTION_MAX_AGE_MS"; value = toString cfg.retentionMaxAgeMs; }
+                ++ [
                   # Agent identity + skills: the agent-host writes these into the
                   # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
                   { name = "AGENT_NAME"; value = cfg.agent.name; }

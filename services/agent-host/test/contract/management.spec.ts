@@ -78,6 +78,7 @@ function fakeSessions(): SessionManager {
       return Promise.resolve();
     }),
     sweepIdle: vi.fn(async () => []),
+    sweepRetention: vi.fn(async () => []),
     onConversationChange: vi.fn(() => () => {}),
   };
 }
