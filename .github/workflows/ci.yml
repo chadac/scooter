@@ -540,9 +540,14 @@ jobs:
               else { try { bad = failedTests(JSON.parse(fs.readFileSync(dir + "/" + rf, "utf8"))); } catch { bad = ["(unreadable report)"]; } }
               if (bad.length) lines.push(`- **shard ${m.shard}** — ${bad.length} failure(s):\n` + bad.map((b) => `    - ${b}`).join("\n"));
             }
-            const body = lines.length
+            // Re-running a SINGLE shard job does NOT re-run this gate (`e2e-collect`) —
+            // GitHub only re-triggers `needs:` dependents from the workflow-level
+            // "Re-run failed jobs" button. So after a fix or a flake, use THAT button
+            // (not the per-shard re-run) or the gate/comment stay stuck on the old result.
+            const rerunNote = `\n\n<sub>⚠️ To re-check after a push or flake, use **“Re-run failed jobs”** on the whole workflow — re-running a single shard alone will NOT refresh this gate.</sub>`;
+            const body = (lines.length
               ? `### ❌ e2e (Playwright) — failing shards\n\n${lines.join("\n")}\n\n<sub>Sharded run: each shard is a separate runner. See the failed shard job(s) for traces/videos.</sub>`
-              : `### ❌ e2e (Playwright) — a shard failed but no per-test failure was recorded (likely an infra/setup error). See the shard job logs.`;
+              : `### ❌ e2e (Playwright) — a shard failed but no per-test failure was recorded (likely an infra/setup error). See the shard job logs.`) + rerunNote;
             fs.writeFileSync("comment.md", body);
           '
           # One sticky comment: edit the existing bot comment if present, else create.
