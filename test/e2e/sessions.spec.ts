@@ -16,6 +16,7 @@ const sidebar = {
   title: '[data-testid="session-title"]',
   deleteButton: '[data-testid="session-delete"]',
   starButton: '[data-testid="session-star"]',
+  renameButton: '[data-testid="session-rename"]',
   renameInput: '[data-testid="session-rename-input"]',
 };
 
@@ -47,12 +48,14 @@ test.describe("session selector & titles", () => {
     await chat.open();
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
-    const title = page.locator(sidebar.title).first();
+    const row = page.locator(sidebar.item).first();
+    const title = row.locator(sidebar.title);
     await expect(title).toHaveText(/refactor the parser/i, { timeout: 30_000 });
 
-    // Double-click the title to rename, type a custom name, Enter to commit.
-    await title.dblclick();
-    const input = page.locator(sidebar.renameInput).first();
+    // Click the dedicated rename button (deterministic — the title's click/dblclick
+    // used to race with switchTo re-rendering the row), type a name, Enter to commit.
+    await row.locator(sidebar.renameButton).click();
+    const input = row.locator(sidebar.renameInput);
     await expect(input).toBeVisible();
     await input.fill("My pinned project");
     await input.press("Enter");
