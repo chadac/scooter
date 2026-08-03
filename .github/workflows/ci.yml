@@ -342,14 +342,67 @@ jobs:
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
 
   # Tier 3 — Playwright E2E through the UI against the fake-agent stack (no
-  # cluster/model). The dev shell provides the Nix-wrapped Playwright browsers
-  # (playwright-driver.browsers + PLAYWRIGHT_BROWSERS_PATH), so no separate browser
-  # install is needed. Runs SERIALLY (playwright.config workers:1) because the whole
-  # suite shares one agent-host webServer + its persisted state; CI=1 also makes
-  # Playwright start fresh servers instead of reusing whatever's on the ports.
-  e2e:
-    name: e2e (Playwright, fake stack)
+  # cluster/model). SHARDED across N parallel runners (default 4): distribute →
+  # e2e-shard (matrix) → e2e-collect (gate). Each shard is its OWN runner with its OWN
+  # fresh webServer + /tmp state, so playwright.config's workers:1 (the suite shares
+  # one backend) is preserved WITHIN a shard while shards run in parallel — which also
+  # cuts flakiness (fewer specs interleaving on shared state per runner). The dev shell
+  # provides the Nix-wrapped Playwright browsers (no separate install).
+
+  # Balance the spec FILES into N shards, weighted by per-file runtime — auto-measured
+  # from the LAST successful e2e run's Playwright JSON report (downloaded here), with a
+  # committed fallback (test/e2e/shard-weights.json). Emits a matrix of {shard, specs}.
+  e2e-distribute:
+    name: e2e distribute (shard)
     runs-on: ubuntu-latest
+    env:
+      # Shard count — tune here (or override per-run via the workflow env). 4 balances
+      # speed vs runner cost for ~19 specs.
+      E2E_SHARDS: "4"
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pull the newest report.json artifact ("e2e-report") from a prior run of THIS
+      # workflow on the default branch, so shard weights reflect real durations. Best-
+      # effort: no artifact yet (first run / expired) → the committed fallback is used.
+      - name: fetch prior e2e report (for weights)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p prior
+          # The most recent successful run of this workflow on the default branch.
+          run_id=$(gh run list --workflow "${{ github.workflow }}" --branch "${{ github.event.repository.default_branch }}" \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "${run_id:-}" ]; then
+            gh run download "$run_id" --name e2e-report --dir prior 2>/dev/null \
+              && echo "downloaded prior e2e report from run $run_id" \
+              || echo "no e2e-report artifact on run $run_id — using committed weights"
+          else
+            echo "no prior successful run — using committed weights"
+          fi
+
+      - id: plan
+        name: plan shards
+        run: |
+          set -euo pipefail
+          report=""
+          [ -f prior/report.json ] && report="prior/report.json"
+          matrix=$(PRIOR_REPORT="$report" SHARDS="$E2E_SHARDS" node test/e2e/support/shard-e2e.mjs)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  # Each shard runs its assigned spec FILES on its own runner + webServer. Emits a
+  # per-shard Playwright JSON report (report.json), merged into the weights artifact.
+  e2e-shard:
+    name: e2e shard ${{ matrix.shard }}
+    needs: e2e-distribute
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # one shard failing must not cancel the others (collect reports all)
+      matrix: ${{ fromJSON(needs.e2e-distribute.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
@@ -358,22 +411,166 @@ jobs:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # npm install (node_modules for the workspaces + the UI). pretest:e2e builds
-      # the agent-host dist the webServer runs; the UI webServer is `npm run dev`.
-      - name: e2e
+      # Run ONLY this shard's specs; emit a JSON report so a later run's distribute can
+      # weight by real durations. PLAYWRIGHT_JSON_OUTPUT_NAME makes the json reporter
+      # write to a file (not stdout). pretest:e2e (via npm) builds the agent-host dist.
+      - name: e2e (shard ${{ matrix.shard }})
         env:
           CI: "1"
-        run: nix develop --command bash -c 'npm install && npm run test:e2e'
+          PLAYWRIGHT_JSON_OUTPUT_NAME: "report-shard-${{ matrix.shard }}.json"
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- --reporter=json,list ${{ matrix.specs }}'
 
-      # Traces/videos/screenshots for any failure — invaluable for a flaky/broken
-      # e2e without a local repro.
-      - name: upload e2e artifacts
+      # The per-shard report (always — success OR failure) so the collect job can merge
+      # a fresh weights artifact from a fully-green run.
+      - name: upload shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-shard-${{ matrix.shard }}
+          path: report-shard-${{ matrix.shard }}.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Traces/videos/screenshots for a failing shard.
+      - name: upload shard artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results
+          name: e2e-results-shard-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+          if-no-files-found: ignore
+
+  # The GATE: succeeds ONLY when every shard passed. On any failure it comments on the
+  # PR which shard(s) failed (one sticky comment, updated). Also merges the per-shard
+  # reports into a single `e2e-report` artifact so the NEXT run's distribute can weight
+  # by real durations (only from a fully-green run, so weights stay clean).
+  e2e-collect:
+    name: e2e (Playwright, fake stack)
+    needs: [e2e-distribute, e2e-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # to post/update the sticky per-shard failure comment
+    steps:
+      - uses: actions/checkout@v5
+
+      # Merge the per-shard reports into one report.json (only meaningful when all
+      # shards ran; a missing one is fine — it just contributes no weights next time).
+      - name: download shard reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-report-shard-*
+          path: shard-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: merge reports → e2e-report
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Concatenate each shard's `suites` into one report.json shaped like a single
+          # Playwright JSON run (the distribute parser only reads `.suites[].file` +
+          # per-test durations, so a merged suites array is sufficient).
+          node -e '
+            const fs = require("fs");
+            const dir = "shard-reports";
+            let suites = [];
+            for (const f of (fs.existsSync(dir) ? fs.readdirSync(dir) : [])) {
+              if (!f.endsWith(".json")) continue;
+              try { const r = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")); suites = suites.concat(r.suites || []); } catch {}
+            }
+            fs.writeFileSync("report.json", JSON.stringify({ suites }));
+            console.log("merged " + suites.length + " top-level suites into report.json");
+          '
+
+      - name: upload merged e2e-report (for next run's shard weights)
+        if: needs.e2e-shard.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Comment on the PR listing the failed shard(s) — ONE sticky comment, only when
+      # something failed (no noise on green). The shard→specs mapping comes from the
+      # distribute matrix so the comment names the actual specs in a failed shard.
+      - name: comment failed shards
+        if: needs.e2e-shard.result != 'success' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MATRIX: ${{ needs.e2e-distribute.outputs.matrix }}
+          # The per-shard results as JSON (GitHub exposes only the aggregate `result`
+          # on `needs`, so we reconstruct per-shard pass/fail from the uploaded report
+          # artifacts: a shard with a report + no failing test passed; a shard whose
+          # report is missing or has failures failed).
+        run: |
+          set -euo pipefail
+          # Determine which shards failed: parse each shard report for a failed/timedOut
+          # test; a MISSING report means that shard crashed before writing one → failed.
+          node -e '
+            const fs = require("fs");
+            const matrix = JSON.parse(process.env.MATRIX).include;
+            const dir = "shard-reports";
+            const has = (f) => fs.existsSync(dir + "/" + f);
+            const failedTests = (report) => {
+              const out = [];
+              const walk = (n, file) => {
+                if (!n || typeof n !== "object") return;
+                file = n.file || file;
+                for (const spec of n.specs || []) {
+                  const sf = spec.file || file;
+                  for (const t of spec.tests || [])
+                    for (const r of t.results || [])
+                      if (r.status === "failed" || r.status === "timedOut")
+                        out.push(`${require("path").basename(sf)} › ${spec.title || ""}`.trim());
+                }
+                for (const c of n.suites || []) walk(c, file);
+              };
+              for (const s of report.suites || []) walk(s, s.file);
+              return out;
+            };
+            const lines = [];
+            for (const m of matrix) {
+              const rf = `report-shard-${m.shard}.json`;
+              let bad = [];
+              if (!has(rf)) bad = ["(no report — the shard crashed / timed out before finishing)"];
+              else { try { bad = failedTests(JSON.parse(fs.readFileSync(dir + "/" + rf, "utf8"))); } catch { bad = ["(unreadable report)"]; } }
+              if (bad.length) lines.push(`- **shard ${m.shard}** — ${bad.length} failure(s):\n` + bad.map((b) => `    - ${b}`).join("\n"));
+            }
+            // Re-running a SINGLE shard job does NOT re-run this gate (`e2e-collect`) —
+            // GitHub only re-triggers `needs:` dependents from the workflow-level
+            // "Re-run failed jobs" button. So after a fix or a flake, use THAT button
+            // (not the per-shard re-run) or the gate/comment stay stuck on the old result.
+            const rerunNote = `\n\n<sub>⚠️ To re-check after a push or flake, use **“Re-run failed jobs”** on the whole workflow — re-running a single shard alone will NOT refresh this gate.</sub>`;
+            const body = (lines.length
+              ? `### ❌ e2e (Playwright) — failing shards\n\n${lines.join("\n")}\n\n<sub>Sharded run: each shard is a separate runner. See the failed shard job(s) for traces/videos.</sub>`
+              : `### ❌ e2e (Playwright) — a shard failed but no per-test failure was recorded (likely an infra/setup error). See the shard job logs.`) + rerunNote;
+            fs.writeFileSync("comment.md", body);
+          '
+          # One sticky comment: edit the existing bot comment if present, else create.
+          marker="<!-- e2e-shard-report -->"
+          printf '%s\n\n' "$marker" | cat - comment.md > body.md
+          existing=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.number }}/comments" \
+            --jq "[.[] | select(.body | contains(\"$marker\"))][0].id" 2>/dev/null || true)
+          if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat body.md)" >/dev/null
+          else
+            gh pr comment "${{ github.event.number }}" --body-file body.md >/dev/null
+          fi
+
+      # The actual gate: fail this job iff any shard failed. (The distribute job failing
+      # also fails this via `needs`.)
+      - name: gate on shard results
+        if: always()
+        run: |
+          if [ "${{ needs.e2e-shard.result }}" != "success" ] || [ "${{ needs.e2e-distribute.result }}" != "success" ]; then
+            echo "e2e failed: distribute=${{ needs.e2e-distribute.result }} shards=${{ needs.e2e-shard.result }}"
+            exit 1
+          fi
+          echo "all e2e shards passed"
 
   # ---------------------------------------------------------------------------
   # Flake detection — NIGHTLY. Run the WHOLE Playwright e2e suite with

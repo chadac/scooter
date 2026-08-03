@@ -67,7 +67,9 @@ export default defineConfig({
             GOOSE_MODEL: "model-default",
             AGENT_AVAILABLE_MODELS: "model-default,model-fast,model-smart",
           },
-          port: 8080,
+          // Wait on the readiness ROUTE (GET /healthz -> 200), not a bare port bind,
+          // so the server is actually serving before tests start.
+          url: "http://localhost:8080/healthz",
           reuseExistingServer: !process.env.CI,
           stdout: "pipe",
           stderr: "pipe",
@@ -76,9 +78,18 @@ export default defineConfig({
           // The DEFAULT UI dev server — unchanged, 5173 -> agent-host 8080 directly.
           // EVERY spec except the SSE-resilience one uses this untouched stack, so
           // the fault proxy + small idle-watchdog below can't perturb them.
+          //
+          // Wait on `url` (a real GET of the page), NOT `port`. Vite binds its port
+          // instantly but compiles the app LAZILY on the first request — a bare
+          // port-bind check lets tests start before the first navigation can serve,
+          // and the cold first-compile (several seconds on a fresh CI runner) then
+          // eats the opening tests as `chat.open()` timeouts. Fetching the page here
+          // forces that compile ONCE at boot; `timeout` gives it room. This got much
+          // worse under sharding: each shard boots its own cold Vite.
           command: "npm --prefix ui run dev",
           env: { AGENT_HOST_URL: "http://localhost:8080" },
-          port: 5173,
+          url: "http://localhost:5173",
+          timeout: 120_000,
           reuseExistingServer: !process.env.CI,
         },
         // --- SSE-resilience-only stack (isolated on its own ports) ----------------
@@ -106,7 +117,9 @@ export default defineConfig({
             AGENT_HOST_STREAM_URL: "http://localhost:8090",
             VITE_IDLE_RECONNECT_MS: "2000",
           },
-          port: 5273,
+          // Same cold-compile warm-up as the 5173 server — GET the page until it 200s.
+          url: "http://localhost:5273",
+          timeout: 120_000,
           reuseExistingServer: !process.env.CI,
         },
       ],
