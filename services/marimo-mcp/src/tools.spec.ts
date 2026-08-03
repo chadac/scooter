@@ -3,11 +3,13 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-import { createMarimoTools } from "./tools.js";
+import { createMarimoTools, MARIMO_EMBED_FENCE } from "./tools.js";
 import type { MarimoClient } from "./client.js";
 import type { ExecuteResult } from "./types.js";
 import { MarimoError } from "./types.js";
 import { CODE_MODE_MARKER } from "./codeMode.js";
+import { ISLAND_MARKER } from "./island.js";
+import type { IslandExec, IslandUvConfig } from "./islandRunner.js";
 
 const result = (over: Partial<ExecuteResult> = {}): ExecuteResult => ({
   success: true,
@@ -172,5 +174,53 @@ describe("marimo tools", () => {
     const tools = createMarimoTools(fakeClient({ execute }));
     await tools.execute({ code: "x", file: "/w/a.py" });
     expect(execute).toHaveBeenCalledWith("x", { file: "/w/a.py", sessionId: undefined });
+  });
+});
+
+// --- marimo_embed (WASM island) ------------------------------------------------
+const islandUv: IslandUvConfig = { uvBin: "/uv", env: { UV_PYTHON: "/py", UV_PYTHON_DOWNLOADS: "never" } };
+const islandStdout = (island = "<marimo-island>c</marimo-island>", head = "<script></script>") =>
+  `${ISLAND_MARKER} ${JSON.stringify({ islandHtml: island, headHtml: head })}`;
+
+function islandExec(over: { stdout?: string; stderr?: string; exitCode?: number } = {}): IslandExec {
+  return {
+    execute: vi.fn(async () => ({ stdout: islandStdout(), stderr: "", exitCode: 0, ...over })),
+  };
+}
+
+describe("marimo_embed", () => {
+  it("errors when no island capability is wired", async () => {
+    const tools = createMarimoTools(fakeClient());
+    const r = await tools.embed({ code: "mo.md('x')" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.toLowerCase()).toContain("unavailable");
+  });
+
+  it("rejects an empty code", async () => {
+    const tools = createMarimoTools(fakeClient(), { island: { exec: islandExec(), uv: islandUv } });
+    const r = await tools.embed({ code: "   " });
+    expect(r.isError).toBe(true);
+  });
+
+  it("returns the island wrapped in the marimo-embed fence (base64 payload)", async () => {
+    const tools = createMarimoTools(fakeClient(), { island: { exec: islandExec(), uv: islandUv } });
+    const r = await tools.embed({ code: "import marimo as mo\nmo.md('hi')", title: "My chart" });
+    expect(r.isError).toBeFalsy();
+    const text = r.content[0].text;
+    expect(text).toContain("Embedded a live marimo cell — My chart");
+    expect(text).toContain("```" + MARIMO_EMBED_FENCE);
+    // Decode the fenced base64 payload → the island html + head + title round-trip.
+    const m = text.match(new RegExp("```" + MARIMO_EMBED_FENCE + "\\n([A-Za-z0-9+/=]+)\\n```"));
+    expect(m).toBeTruthy();
+    const decoded = JSON.parse(Buffer.from(m![1], "base64").toString("utf8"));
+    expect(decoded.islandHtml).toContain("<marimo-island>");
+    expect(decoded.headHtml).toContain("<script>");
+    expect(decoded.title).toBe("My chart");
+  });
+
+  it("surfaces a generation failure as an error", async () => {
+    const tools = createMarimoTools(fakeClient(), { island: { exec: islandExec({ exitCode: 1, stderr: "boom", stdout: "" }), uv: islandUv } });
+    const r = await tools.embed({ code: "x" });
+    expect(r.isError).toBe(true);
   });
 });

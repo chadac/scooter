@@ -45,6 +45,7 @@ describe("marimo MCP server", () => {
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "marimo_create_cell",
+      "marimo_embed",
       "marimo_execute",
       "marimo_install",
       "marimo_list_cells",

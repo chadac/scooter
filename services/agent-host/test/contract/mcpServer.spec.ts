@@ -162,7 +162,7 @@ describe("marimo tools wiring (buildServer)", () => {
   it("registers the marimo tools when a marimo wiring is provided", async () => {
     const client = await clientForServer({ clientFor: () => fakeMarimoClient() });
     const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const t of ["marimo_execute", "marimo_list_sessions", "marimo_create_cell", "marimo_run_cell", "marimo_list_cells", "marimo_install"]) {
+    for (const t of ["marimo_execute", "marimo_list_sessions", "marimo_create_cell", "marimo_run_cell", "marimo_list_cells", "marimo_install", "marimo_embed"]) {
       expect(names).toContain(t);
     }
   });

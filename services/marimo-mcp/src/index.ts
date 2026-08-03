@@ -31,7 +31,17 @@ export interface McpServerLike {
 }
 
 export { createMarimoClient, type MarimoClient } from "./client.js";
-export { createMarimoTools, type MarimoTools, type MarimoToolsOptions, type ToolResult } from "./tools.js";
+export {
+  createMarimoTools,
+  type MarimoTools,
+  type MarimoToolsOptions,
+  type IslandCapability,
+  type ToolResult,
+  MARIMO_EMBED_FENCE,
+  encodeEmbedFence,
+} from "./tools.js";
+export { type IslandExec, type IslandUvConfig, generateIsland } from "./islandRunner.js";
+export { type IslandResult } from "./island.js";
 export * from "./types.js";
 
 /** Common notebook-selector args (target one of several open notebooks). Both are
@@ -139,6 +149,24 @@ export function registerMarimoTools(
       },
     },
     async (args: { packages: string[]; file?: string; session?: string }) => asMcp((await tools()).install(args)),
+  );
+
+  reg(
+    "marimo_embed",
+    {
+      title: "Embed a live marimo cell in the chat",
+      description:
+        "Render a snippet of Python as a LIVE, interactive marimo cell INLINE in the conversation — great for " +
+        "showing a plot, an interactive chart/widget, or a table the user can play with, without them opening a " +
+        "notebook. No session needed. The cell runs in the user's browser (via WASM), so use plotting/UI libraries " +
+        "that work in the browser (matplotlib, plotly, altair, mo.ui.*). Prefer this over describing a result when " +
+        "seeing-it beats telling-it.",
+      inputSchema: {
+        code: z.string().describe("Python for the cell to embed (self-contained; import what it needs, end with the value/plot to show)."),
+        title: z.string().optional().describe("Optional caption shown above the embed."),
+      },
+    },
+    async (args: { code: string; title?: string }) => asMcp((await tools()).embed(args)),
   );
 }
 

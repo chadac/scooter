@@ -12,6 +12,8 @@
 import type { MarimoClient } from "./client.js";
 import { MarimoError } from "./types.js";
 import { createCellSnippet, runCellSnippet, listCellsSnippet, installSnippet, parseCodeModeResult } from "./codeMode.js";
+import { generateIsland, type IslandExec, type IslandUvConfig } from "./islandRunner.js";
+import type { IslandResult } from "./island.js";
 
 /** The MCP tool-result shape (mirrors agent-host's ToolResult). */
 export interface ToolResult {
@@ -59,12 +61,39 @@ export interface MarimoTools {
   runCell(args: { cell_id: string; file?: string; session?: string }): Promise<ToolResult>;
   listCells(args: { file?: string; session?: string }): Promise<ToolResult>;
   install(args: { packages: string[]; file?: string; session?: string }): Promise<ToolResult>;
+  embed(args: { code: string; title?: string }): Promise<ToolResult>;
+}
+
+/** How the embed tool generates islands: run the generator script in the pod (uv run
+ *  python). Supplied by the agent-host (it owns pod exec). Absent → embed is disabled
+ *  (returns an error explaining it's unavailable). */
+export interface IslandCapability {
+  exec: IslandExec;
+  uv: IslandUvConfig;
 }
 
 export interface MarimoToolsOptions {
   /** The URL to tell the USER to open to start a notebook session (a session only
    *  exists once a browser has it open). Surfaced in the no-session message. */
   notebookUrl?: string;
+  /** Enables marimo_embed — generating a WASM island in the pod (no session). */
+  island?: IslandCapability;
+}
+
+/** The fenced-block form the UI markdown renderer detects + swaps for the island. The
+ *  tool returns the island HTML inside this so it flows through the normal tool-result
+ *  → message text path (no new event type); the UI parses it out. Base64 so the HTML's
+ *  own quotes/newlines can't break the fence or the markdown. */
+export const MARIMO_EMBED_FENCE = "marimo-embed";
+
+/** Encode an island as the fenced block the UI renders. The payload is a JSON object
+ *  (islandHtml, headHtml, title) base64'd, so arbitrary HTML survives markdown. */
+export function encodeEmbedFence(island: IslandResult): string {
+  const payload = Buffer.from(
+    JSON.stringify({ islandHtml: island.islandHtml, headHtml: island.headHtml, title: island.title ?? null }),
+    "utf8",
+  ).toString("base64");
+  return "```" + MARIMO_EMBED_FENCE + "\n" + payload + "\n```";
 }
 
 /** Build the tool handlers over a client. `client` is per-conversation (its target
@@ -156,6 +185,23 @@ export function createMarimoTools(client: MarimoClient, opts: MarimoToolsOptions
       if (packages.length === 0) return err("install: `packages` must be a non-empty list.");
       try {
         return (await runCodeMode(installSnippet(packages), sel(args), "install")).result;
+      } catch (e) {
+        return onErr(e);
+      }
+    },
+
+    async embed(args) {
+      if (!opts.island) {
+        return err("marimo_embed is unavailable here (no pod exec / marimo env wired).");
+      }
+      const code = (args.code ?? "").trim();
+      if (!code) return err("embed: `code` is required.");
+      try {
+        const island = await generateIsland(opts.island.exec, opts.island.uv, code, args.title);
+        // Return the island as the fenced block the UI renders inline. Also a short
+        // human line so a text-only view still says what happened.
+        const note = `Embedded a live marimo cell${args.title ? ` — ${args.title}` : ""} in the chat.`;
+        return ok(`${note}\n\n${encodeEmbedFence(island)}`);
       } catch (e) {
         return onErr(e);
       }

@@ -14,6 +14,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
+import { MarimoEmbed } from "@/src/MarimoEmbed";
 
 const MarkdownTextImpl = () => {
   return (
@@ -242,8 +243,13 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  code: function Code({ className, ...props }) {
+  code: function Code({ className, children, ...props }) {
     const isCodeBlock = useIsMarkdownCodeBlock();
+    // A ```marimo-embed fenced block: swap the code for the live marimo island. The
+    // body is the base64 payload (see MarimoEmbed / marimo-mcp encodeEmbedFence).
+    if (isCodeBlock && /(?:^|\s)language-marimo-embed(?:\s|$)/.test(className ?? "")) {
+      return <MarimoEmbed base64Body={String(children ?? "")} />;
+    }
     return (
       <code
         className={cn(
@@ -252,7 +258,9 @@ const defaultComponents = memoizeMarkdownComponents({
           className,
         )}
         {...props}
-      />
+      >
+        {children}
+      </code>
     );
   },
   CodeHeader,

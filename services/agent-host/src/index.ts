@@ -699,6 +699,24 @@ export async function main(
           if (!conv || !publicBase) return undefined;
           return `${publicBase}${marimoBasePath(conv.threadId).replace(/\/$/, "")}/`;
         },
+        // marimo_embed (WASM islands): run the island generator in the pod via
+        // `<uv> run --with marimo python -c <script>`, using the SAME uv env the marimo
+        // service uses (the uv-nix uv + the pinned Nix python; downloads off — see the
+        // uv-nix python-download bug). The image bakes those store paths; the deploy
+        // passes them as MARIMO_UV_BIN / MARIMO_UV_PYTHON. Embed is disabled (undefined)
+        // when they aren't set — the tool then reports it's unavailable.
+        islandFor: async (conversationId: string) => {
+          const uvBin = process.env.MARIMO_UV_BIN;
+          const uvPython = process.env.MARIMO_UV_PYTHON;
+          if (!uvBin || !uvPython) return undefined;
+          const conv = sessions.get(conversationId as SessionId);
+          if (!conv) return undefined;
+          const exec = await connectSandbox(conv.sandbox);
+          return {
+            exec: { execute: (req) => exec.execute({ command: req.command, args: req.args ?? [] }) },
+            uv: { uvBin, env: { UV_PYTHON: uvPython, UV_PYTHON_DOWNLOADS: "never" } },
+          };
+        },
       };
 
   const mcpEndpoint =

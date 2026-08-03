@@ -34,7 +34,7 @@ import {
   handleSetSandboxResources,
   type SandboxResourceToolsWiring,
 } from "./resourceTools.js";
-import { registerMarimoTools, type MarimoClient } from "@scooter/marimo-mcp";
+import { registerMarimoTools, type MarimoClient, type IslandCapability } from "@scooter/marimo-mcp";
 
 /** How buildServer gets a marimo client for a conversation: the agent-host resolves
  *  the conversation's pod IP fresh (it changes across suspend/resume) and returns a
@@ -45,6 +45,9 @@ export interface MarimoToolsWiring {
    *  only exists once a browser has the notebook open). Surfaced in the no-session
    *  message. Undefined when the public URL isn't known. */
   notebookUrlFor?(conversationId: string): string | undefined;
+  /** The island (marimo_embed) capability for a conversation: a pod exec + the uv
+   *  invocation to run the generator script. Undefined when embed isn't available. */
+  islandFor?(conversationId: string): Promise<IslandCapability | undefined>;
 }
 
 /** An MCP tool result (the shape the SDK callback returns). */
@@ -159,7 +162,10 @@ export async function buildServer(
     registerMarimoTools(
       server,
       () => marimo.clientFor(conversationId),
-      () => ({ notebookUrl: marimo.notebookUrlFor?.(conversationId) }),
+      async () => ({
+        notebookUrl: marimo.notebookUrlFor?.(conversationId),
+        island: await marimo.islandFor?.(conversationId),
+      }),
     );
   }
   if (jobs) {
