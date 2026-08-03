@@ -23,16 +23,26 @@ const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] })
 const err = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
 /** Turn any thrown error into an isError ToolResult with a helpful, actionable
- *  message (MarimoError carries a `kind` we can phrase around). */
-function toErrorResult(e: unknown): ToolResult {
+ *  message (MarimoError carries a `kind` we can phrase around). `notebookUrl`, when
+ *  known, is the URL to tell the USER to open — a marimo session only exists once a
+ *  human has the notebook open in a browser (same as marimo-pair; there's no headless
+ *  session). So the no-session message asks the agent to share that link. */
+function toErrorResult(e: unknown, notebookUrl?: string): ToolResult {
   if (e instanceof MarimoError) {
     switch (e.kind) {
-      case "no-session":
-        return err(`No marimo notebook is open. Start marimo (scooter-service start marimo) and open it, then retry. (${e.message})`);
+      case "no-session": {
+        const open = notebookUrl
+          ? `Ask the user to open the notebook in their browser, then retry:\n${notebookUrl}`
+          : `Ask the user to open the marimo notebook (the Services panel → marimo → Open) in their browser, then retry.`;
+        return err(
+          `No marimo notebook is open yet — a session only exists once someone has the notebook open ` +
+          `in a browser (marimo has no headless session). ${open}`,
+        );
+      }
       case "multiple-sessions":
         return err(`${e.message} — pass \`file\` to target one.`);
       case "unreachable":
-        return err(`Couldn't reach the marimo server — the sandbox may be asleep or marimo isn't started yet. (${e.message})`);
+        return err(`Couldn't reach the marimo server — the sandbox may be asleep or marimo isn't started yet (try: scooter-service start marimo). (${e.message})`);
       case "incomplete-stream":
         return err(`${e.message}`);
       default:
@@ -51,10 +61,17 @@ export interface MarimoTools {
   install(args: { packages: string[]; file?: string; session?: string }): Promise<ToolResult>;
 }
 
+export interface MarimoToolsOptions {
+  /** The URL to tell the USER to open to start a notebook session (a session only
+   *  exists once a browser has it open). Surfaced in the no-session message. */
+  notebookUrl?: string;
+}
+
 /** Build the tool handlers over a client. `client` is per-conversation (its target
  *  is the conversation's pod marimo) — the MCP layer constructs one per request. */
-export function createMarimoTools(client: MarimoClient): MarimoTools {
+export function createMarimoTools(client: MarimoClient, opts: MarimoToolsOptions = {}): MarimoTools {
   const sel = (a: { file?: string; session?: string }) => ({ file: a.file, sessionId: a.session });
+  const onErr = (e: unknown) => toErrorResult(e, opts.notebookUrl);
 
   /** Run a code-mode snippet + surface its marker result (or the raw stderr if the
    *  op threw inside the kernel — e.g. a code-mode API drift). Returns the parsed
@@ -79,10 +96,15 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
       try {
         const sessions = await client.listSessions();
         const entries = Object.entries(sessions).map(([id, info]) => ({ id, path: info.path ?? info.filename ?? null }));
-        if (entries.length === 0) return ok("No marimo notebooks are open.");
+        if (entries.length === 0) {
+          const hint = opts.notebookUrl
+            ? ` Ask the user to open it in their browser to start a session:\n${opts.notebookUrl}`
+            : ` Ask the user to open it (Services panel → marimo → Open) to start a session.`;
+          return ok(`No marimo notebooks are open yet.${hint}`);
+        }
         return ok(`Open marimo notebooks:\n${entries.map((e) => `- ${e.id}${e.path ? `  (${e.path})` : ""}`).join("\n")}`);
       } catch (e) {
-        return toErrorResult(e);
+        return onErr(e);
       }
     },
 
@@ -95,7 +117,7 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
         if (!r.success) parts.push(`\n[error]\n${r.stderr.trim()}`);
         return r.success ? ok(parts.join("\n") || "(no output)") : err(parts.join("\n") || "(execution failed)");
       } catch (e) {
-        return toErrorResult(e);
+        return onErr(e);
       }
     },
 
@@ -109,7 +131,7 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
         const ran = await runCodeMode(runCellSnippet(cellId), sel(args), "run_cell");
         return ran.result.isError ? ran.result : ok(`create_cell + run ok: cell_id=${cellId}`);
       } catch (e) {
-        return toErrorResult(e);
+        return onErr(e);
       }
     },
 
@@ -117,7 +139,7 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
       try {
         return (await runCodeMode(runCellSnippet(args.cell_id), sel(args), "run_cell")).result;
       } catch (e) {
-        return toErrorResult(e);
+        return onErr(e);
       }
     },
 
@@ -125,7 +147,7 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
       try {
         return (await runCodeMode(listCellsSnippet(), sel(args), "list_cells")).result;
       } catch (e) {
-        return toErrorResult(e);
+        return onErr(e);
       }
     },
 
@@ -135,7 +157,7 @@ export function createMarimoTools(client: MarimoClient): MarimoTools {
       try {
         return (await runCodeMode(installSnippet(packages), sel(args), "install")).result;
       } catch (e) {
-        return toErrorResult(e);
+        return onErr(e);
       }
     },
   };

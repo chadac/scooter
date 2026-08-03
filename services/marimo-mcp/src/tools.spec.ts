@@ -54,11 +54,21 @@ describe("marimo tools", () => {
       expect(r.content[0].text).toContain("NameError");
     });
 
-    it("maps a no-session error to an actionable message", async () => {
+    it("maps a no-session error to an actionable 'ask the user to open it' message", async () => {
       const tools = createMarimoTools(fakeClient({ execute: async () => { throw new MarimoError("none", "no-session"); } }));
       const r = await tools.execute({ code: "x" });
       expect(r.isError).toBe(true);
-      expect(r.content[0].text.toLowerCase()).toContain("start marimo");
+      expect(r.content[0].text.toLowerCase()).toContain("open");
+      expect(r.content[0].text.toLowerCase()).toContain("browser");
+    });
+
+    it("the no-session message includes the notebook URL when provided", async () => {
+      const tools = createMarimoTools(
+        fakeClient({ execute: async () => { throw new MarimoError("none", "no-session"); } }),
+        { notebookUrl: "https://scooter.example.com/c/t1/marimo/" },
+      );
+      const r = await tools.execute({ code: "x" });
+      expect(r.content[0].text).toContain("https://scooter.example.com/c/t1/marimo/");
     });
 
     it("maps unreachable to a sandbox-asleep hint", async () => {

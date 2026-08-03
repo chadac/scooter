@@ -41,6 +41,10 @@ import { registerMarimoTools, type MarimoClient } from "@scooter/marimo-mcp";
  *  client targeting podIP:2718. Omitted when no real sandbox (fake/local). */
 export interface MarimoToolsWiring {
   clientFor(conversationId: string): MarimoClient | Promise<MarimoClient>;
+  /** The URL to tell the user to open to start a notebook session (a marimo session
+   *  only exists once a browser has the notebook open). Surfaced in the no-session
+   *  message. Undefined when the public URL isn't known. */
+  notebookUrlFor?(conversationId: string): string | undefined;
 }
 
 /** An MCP tool result (the shape the SDK callback returns). */
@@ -150,8 +154,13 @@ export async function buildServer(
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (marimo) {
     // Notebook tools (marimo_execute / list / cell ops) — target THIS conversation's
-    // in-pod marimo. clientFor resolves the pod IP fresh each call.
-    registerMarimoTools(server, () => marimo.clientFor(conversationId));
+    // in-pod marimo. clientFor resolves the pod IP fresh each call; notebookUrlFor
+    // supplies the link the no-session message tells the user to open.
+    registerMarimoTools(
+      server,
+      () => marimo.clientFor(conversationId),
+      () => ({ notebookUrl: marimo.notebookUrlFor?.(conversationId) }),
+    );
   }
   if (jobs) {
     server.registerTool(

@@ -13,7 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { createMarimoClient, type MarimoClient } from "./client.js";
-import { createMarimoTools } from "./tools.js";
+import { createMarimoTools, type MarimoToolsOptions } from "./tools.js";
 import type { MarimoTarget } from "./types.js";
 
 /** The one method we call on the MCP server — structural, so a DIFFERENT copy of
@@ -31,7 +31,7 @@ export interface McpServerLike {
 }
 
 export { createMarimoClient, type MarimoClient } from "./client.js";
-export { createMarimoTools, type MarimoTools, type ToolResult } from "./tools.js";
+export { createMarimoTools, type MarimoTools, type MarimoToolsOptions, type ToolResult } from "./tools.js";
 export * from "./types.js";
 
 /** Common notebook-selector args (target one of several open notebooks). Both are
@@ -47,8 +47,12 @@ const selectorShape = {
  * each call — the IP changes across suspend/resume). Kept as a thunk so a per-request
  * server can bind the right pod without this module knowing about pods.
  */
-export function registerMarimoTools(server: McpServerLike, clientFor: () => MarimoClient | Promise<MarimoClient>): void {
-  const tools = async () => createMarimoTools(await clientFor());
+export function registerMarimoTools(
+  server: McpServerLike,
+  clientFor: () => MarimoClient | Promise<MarimoClient>,
+  optionsFor?: () => MarimoToolsOptions | Promise<MarimoToolsOptions>,
+): void {
+  const tools = async () => createMarimoTools(await clientFor(), optionsFor ? await optionsFor() : {});
   // The SDK's CallToolResult carries an `[x: string]: unknown` index signature our
   // ToolResult interface doesn't; the shape is otherwise identical. Cast at the seam
   // (same as agent-host's mcpServer.ts) rather than polluting ToolResult.

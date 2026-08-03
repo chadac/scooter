@@ -681,6 +681,7 @@ export async function main(
   const MARIMO_PORT = Number(process.env.MARIMO_PORT ?? 2718);
   const marimoBasePath = (threadId: string) =>
     process.env.MARIMO_BASE_PATH ?? `/c/${threadId}/marimo`;
+  const publicBase = (process.env.PUBLIC_URL || "").replace(/\/$/, "");
   const marimoToolsWiring: MarimoToolsWiring | undefined = config.fakeSandbox
     ? undefined
     : {
@@ -690,6 +691,13 @@ export async function main(
           const target = await resolvePodTarget(conv.sandbox);
           const base = marimoBasePath(conv.threadId).replace(/\/$/, "");
           return createMarimoClient({ baseUrl: `http://${target.podIP}:${MARIMO_PORT}${base}` });
+        },
+        // The user-facing notebook URL: <PUBLIC_URL>/c/<threadId>/marimo/ (the same
+        // path the web-service proxy serves). Undefined when PUBLIC_URL isn't set.
+        notebookUrlFor: (conversationId: string) => {
+          const conv = sessions.get(conversationId as SessionId);
+          if (!conv || !publicBase) return undefined;
+          return `${publicBase}${marimoBasePath(conv.threadId).replace(/\/$/, "")}/`;
         },
       };
 
