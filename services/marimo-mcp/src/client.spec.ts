@@ -19,18 +19,26 @@ interface FakeOpts {
   sessionsStatus?: number;
   executeStatus?: number;
   onExecute?: (req: IncomingMessage, body: string, headers: Record<string, string | string[] | undefined>) => string;
+  /** Serve the API UNDER this prefix (mirrors marimo `--base-url /c/<id>/marimo`,
+   *  which prefixes ALL routes incl. /api/*). "" = bare server. */
+  basePath?: string;
 }
 
 function fakeMarimo(opts: FakeOpts = {}): Promise<{ server: Server; baseUrl: string; lastExec?: { sessionId?: string; code?: string } }> {
   const state: { lastExec?: { sessionId?: string; code?: string } } = {};
+  const prefix = opts.basePath ?? "";
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
-      if (req.url === "/api/sessions") {
+      // Only answer under the configured prefix — an unprefixed request 404s, exactly
+      // like the real base-url'd marimo (the live bug this reproduces).
+      const path = req.url ?? "";
+      const under = (p: string) => path === `${prefix}${p}`;
+      if (under("/api/sessions")) {
         res.writeHead(opts.sessionsStatus ?? 200, { "content-type": "application/json" });
         res.end(JSON.stringify(opts.sessions ?? {}));
         return;
       }
-      if (req.url === "/api/kernel/execute" && req.method === "POST") {
+      if (under("/api/kernel/execute") && req.method === "POST") {
         let body = "";
         req.on("data", (c) => (body += c));
         req.on("end", () => {
@@ -52,7 +60,9 @@ function fakeMarimo(opts: FakeOpts = {}): Promise<{ server: Server; baseUrl: str
       res.writeHead(404).end();
     });
     server.listen(0, "127.0.0.1", () =>
-      resolve({ server, baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, ...state }),
+      // baseUrl INCLUDES the prefix — the caller points the client at the base-url'd
+      // origin (as the agent-host wiring does for the real base-url'd marimo).
+      resolve({ server, baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}${prefix}`, ...state }),
     );
   });
 }
@@ -155,6 +165,30 @@ describe("MarimoClient", () => {
       });
       const client = createMarimoClient({ baseUrl: fake.baseUrl });
       await expect(client.execute("x")).rejects.toMatchObject({ kind: "incomplete-stream" });
+    });
+  });
+
+  // Regression: the real in-pod marimo runs with `--base-url /c/<id>/marimo`, which
+  // prefixes ALL routes incl. /api/*. The client's baseUrl must carry that prefix, or
+  // GET /api/sessions 404s (the live bug — the earlier fake had no base-url so it slipped
+  // through). Here the fake serves ONLY under the prefix and the client is pointed at the
+  // prefixed origin, proving the paths compose correctly.
+  describe("served under a --base-url prefix (the real in-pod topology)", () => {
+    const BASE = "/c/00afea75-0725-43d9-8be1-f0ed8b4b2319/marimo";
+
+    it("resolves sessions + executes when marimo is base-url'd", async () => {
+      fake = await fakeMarimo({ basePath: BASE, sessions: { s1: {} }, onExecute: () => doneOk("7") });
+      const client = createMarimoClient({ baseUrl: fake.baseUrl });
+      expect(await client.resolveSession()).toBe("s1");
+      expect((await client.execute("3+4")).output).toBe("7");
+    });
+
+    it("a client pointed at the BARE origin (no prefix) 404s — reproduces the bug", async () => {
+      fake = await fakeMarimo({ basePath: BASE, sessions: { s1: {} } });
+      // Strip the prefix the fake appended, to simulate the old (buggy) wiring.
+      const bare = fake.baseUrl.slice(0, fake.baseUrl.length - BASE.length);
+      const client = createMarimoClient({ baseUrl: bare });
+      await expect(client.listSessions()).rejects.toMatchObject({ kind: "http-error" });
     });
   });
 

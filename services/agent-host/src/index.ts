@@ -671,7 +671,16 @@ export async function main(
   // marimo notebook tools: target THIS conversation's in-pod marimo at podIP:2718.
   // Real sandboxes only (a fake/local sandbox has no pod IP). The pod IP is resolved
   // FRESH per call — it changes across suspend/resume, so we must not cache it.
+  //
+  // marimo runs with `--base-url /c/<CONVERSATION_ID>/marimo` (so it serves correctly
+  // behind the web-service proxy), which prefixes ALL its routes — INCLUDING the
+  // /api/* endpoints the client hits. So the client baseUrl must carry that same
+  // prefix, else GET /api/sessions 404s (the live bug the fake-server tests missed).
+  // CONVERSATION_ID is the full threadId the provisioner injects (see web-services/
+  // marimo.nix). Overridable via MARIMO_BASE_PATH ("" to disable) for a bare server.
   const MARIMO_PORT = Number(process.env.MARIMO_PORT ?? 2718);
+  const marimoBasePath = (threadId: string) =>
+    process.env.MARIMO_BASE_PATH ?? `/c/${threadId}/marimo`;
   const marimoToolsWiring: MarimoToolsWiring | undefined = config.fakeSandbox
     ? undefined
     : {
@@ -679,7 +688,8 @@ export async function main(
           const conv = sessions.get(conversationId as SessionId);
           if (!conv) throw new Error(`no conversation ${conversationId} for marimo`);
           const target = await resolvePodTarget(conv.sandbox);
-          return createMarimoClient({ baseUrl: `http://${target.podIP}:${MARIMO_PORT}` });
+          const base = marimoBasePath(conv.threadId).replace(/\/$/, "");
+          return createMarimoClient({ baseUrl: `http://${target.podIP}:${MARIMO_PORT}${base}` });
         },
       };
 
