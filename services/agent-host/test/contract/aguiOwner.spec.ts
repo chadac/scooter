@@ -8,10 +8,13 @@ import { describe, it, expect } from "vitest";
 
 import { createAguiServer, type RunAgentInput } from "../../src/agui/server.js";
 
-/** Stand up the server (with a given owner-verifier), capture onPrompt, POST once. */
+/** Stand up the server (optional owner-verifier + identity resolver), capture the
+ *  onPrompt input (whose `owner` is the RESOLVED owner the handler computed), POST
+ *  once. `identity` = the ingress user the resolver returns for the caller. */
 async function postAgui(
   body: Record<string, unknown>,
   trusted: boolean | undefined,
+  identity?: { id: string; anonymous: boolean },
 ): Promise<RunAgentInput | undefined> {
   const server = createAguiServer();
   let captured: RunAgentInput | undefined;
@@ -19,6 +22,7 @@ async function postAgui(
     captured = input;
   });
   if (trusted !== undefined) server.useOwnerVerifier(async () => trusted);
+  if (identity) server.useIdentityResolver(async () => identity);
   await server.listen(0);
   const ctrl = new AbortController();
   try {
@@ -57,5 +61,42 @@ describe("/agui owner (trusted-caller gated)", () => {
   it("no owner in the body -> no owner even when trusted", async () => {
     const input = await postAgui({ threadId: "t1", messages: [{ role: "user", content: "hi" }] }, true);
     expect(input?.owner).toBeUndefined();
+  });
+});
+
+// The bug: a browser doesn't send `owner`; the server must resolve the caller's
+// INGRESS IDENTITY and own the conversation to them (like /whoami). Without this a
+// UI-created conversation had no owner and never showed under the Mine filter.
+describe("/agui owner (resolved from ingress identity — the UI path)", () => {
+  const UI_MSG = { threadId: "t1", messages: [{ role: "user", content: "hi" }] };
+
+  it("stamps the RESOLVED user id as owner when the caller is identified (non-anonymous)", async () => {
+    const input = await postAgui(UI_MSG, undefined, { id: "user-alice", anonymous: false });
+    expect(input?.owner).toBe("user-alice");
+  });
+
+  it("does NOT stamp an owner for an ANONYMOUS caller (single-user / FGA-off)", async () => {
+    const input = await postAgui(UI_MSG, undefined, { id: "anonymous", anonymous: true });
+    expect(input?.owner).toBeUndefined();
+  });
+
+  it("the PRIVILEGED webhooks owner wins over the resolved identity", async () => {
+    // A trusted webhooks call with an explicit owner claims for THAT user, even
+    // though the caller's own ingress identity resolves to someone else.
+    const input = await postAgui(
+      { ...UI_MSG, owner: "user-claimed" },
+      /* trusted */ true,
+      { id: "webhooks-sa", anonymous: false },
+    );
+    expect(input?.owner).toBe("user-claimed");
+  });
+
+  it("falls back to the resolved identity when a webhooks owner is present but the caller is NOT trusted", async () => {
+    const input = await postAgui(
+      { ...UI_MSG, owner: "user-spoofed" },
+      /* trusted */ false,
+      { id: "user-real", anonymous: false },
+    );
+    expect(input?.owner).toBe("user-real"); // the spoofed body owner is ignored
   });
 });

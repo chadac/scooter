@@ -593,6 +593,10 @@ export async function main(
     identityStore || staticIdentityMap
       ? withIdentityStore(identityResolver, { store: identityStore, staticMap: staticIdentityMap }).resolve
       : (req: IncomingMessage) => identityResolver.resolve(req);
+  // Own a UI-created conversation (POST /agui) to its ingress-authenticated creator,
+  // the same resolver /whoami + POST /conversations use — otherwise a browser-made
+  // conversation had no owner and never showed under the Mine filter.
+  server.useIdentityResolver(resolveUser);
   const agentToolsWiring = brokerUrl
     ? {
         broker: createBrokerClient({
