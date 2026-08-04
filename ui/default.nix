@@ -13,7 +13,7 @@ buildNpmPackage {
   version = "0.0.0";
   src = ./.;
 
-  npmDepsHash = "sha256-9LU9jGU0TA70VbqYGN2yM1pLkb56qLXU7s8oBXdbHvQ=";
+  npmDepsHash = "sha256-c0EqlWjAAosRNZbSzOfWhJDiAKbMCGHQzkPIAi0JPrA=";
 
   # Same-origin: relative /agui + /sessions (reverse-proxied to the agent-host).
   VITE_AGENT_HOST_URL = "";
