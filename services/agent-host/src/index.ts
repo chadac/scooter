@@ -873,6 +873,11 @@ export async function main(
       identityStore,
       assets,
       scheduler: schedulerClient,
+      // The current sandbox size (cpu/memory/gpu) for the Sandbox tab. Broker path
+      // only (it owns sizing); keyed by shortId like the show/set resource tools.
+      sandboxResources: brokerProvisioner
+        ? (id: string) => brokerProvisioner.getSize(shortId(id))
+        : undefined,
       // Manual compaction — summarize older turns via a one-off SDK query with the
       // SAME token/model the conversation runs on. Off (undefined) without a token.
       compact: process.env.CLAUDE_CODE_OAUTH_TOKEN

@@ -30,6 +30,7 @@ import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
 import type { SchedulerClient } from "../agent/schedulerTools.js";
+import type { SandboxResources } from "../session/resources.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 
@@ -124,6 +125,10 @@ export interface ManagementDeps {
    *  route then leaves the conversation unchanged. Optional (absent = compaction off,
    *  e.g. fake/local mode or no OAuth token). */
   compact?: (conversationId: string) => Promise<{ summarizedTurns: number; keptRuns: number } | null>;
+  /** The current sandbox resource request/limits (cpu/memory/gpu) for a conversation,
+   *  so the Sandbox tab can show the user what the pod is allotted. Wired only on the
+   *  broker path (the broker owns + applies sizing); absent = the route reports none. */
+  sandboxResources?: (conversationId: string) => Promise<SandboxResources | undefined>;
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -690,6 +695,16 @@ export function createManagementApi(deps: ManagementDeps): Router {
       })),
     );
     return { json: { services: withState } };
+  });
+
+  // The sandbox's current resource allotment (cpu/memory/gpu requests + limits), so
+  // the Sandbox tab can show the user what the pod is sized for. Absent getter (no
+  // broker / fake mode) -> {resources: null}, and the UI simply doesn't show the row.
+  r.get("/conversations/:id/resources", async (ctx) => {
+    const id = await resolveConvId(ctx.params.id);
+    if (!id || !deps.sandboxResources) return { json: { resources: null } };
+    const resources = (await deps.sandboxResources(id).catch(() => undefined)) ?? null;
+    return { json: { resources } };
   });
 
   r.post("/conversations/:id/web-services/:name/start", async (ctx) => {

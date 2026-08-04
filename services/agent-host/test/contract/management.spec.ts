@@ -347,6 +347,42 @@ describe("management API", () => {
     expect(status).toBe(400);
   });
 
+  it("GET /conversations/:id/resources returns the sandbox size when wired", async () => {
+    const size = { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "4Gi" } };
+    const api = createManagementApi({
+      sessions: fakeSessions(),
+      store: fakeStore([]),
+      server: stubServer,
+      answerPermission: async () => {},
+      sandboxResources: async () => size,
+    });
+    const { status, json } = await call(api, "GET", "/conversations/c1/resources");
+    expect(status).toBe(200);
+    expect((json as any).resources).toEqual(size);
+  });
+
+  it("GET /conversations/:id/resources -> {resources:null} when unwired (fake/no-broker)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status, json } = await call(api, "GET", "/conversations/c1/resources");
+    expect(status).toBe(200);
+    expect((json as any).resources).toBeNull();
+  });
+
+  it("GET /conversations/:id/resources -> null on a getter error (never 500s the tab)", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(),
+      store: fakeStore([]),
+      server: stubServer,
+      answerPermission: async () => {},
+      sandboxResources: async () => {
+        throw new Error("broker down");
+      },
+    });
+    const { status, json } = await call(api, "GET", "/conversations/c1/resources");
+    expect(status).toBe(200);
+    expect((json as any).resources).toBeNull();
+  });
+
   it("GET /whoami returns the caller's identity (header)", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const me = await call(api, "GET", "/whoami", undefined, { "x-auth-user": "alice", "x-auth-email": "a@x.io" });

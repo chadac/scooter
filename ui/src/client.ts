@@ -373,6 +373,41 @@ export async function loadSandboxReady(
   }
 }
 
+/** A resource quantity side (requests or limits): cpu/memory as k8s quantity
+ *  strings ("500m", "1Gi"), gpu as a count. Any field may be absent. */
+export interface ResourceQuantity {
+  cpu?: string;
+  memory?: string;
+  gpu?: number;
+}
+
+/** The sandbox's resource allotment (GET /:id/resources). null = not available
+ *  (no broker / fake mode) — the UI then omits the resources row. */
+export interface SandboxResources {
+  requests?: ResourceQuantity;
+  limits?: ResourceQuantity;
+}
+
+/** Fetch the conversation's sandbox resource allotment (cpu/memory/gpu requests +
+ *  limits), so the Sandbox tab can show the user what the pod is sized for. Returns
+ *  null on any error / when the deployment doesn't expose it. */
+export async function loadSandboxResources(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<SandboxResources | null> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/resources`,
+      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) return null;
+    const body = (await res.json()) as { resources: SandboxResources | null };
+    return body.resources ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Load ALL conversations from the agent-host so the sidebar survives a page
  * refresh and every conversation is listed/searchable (not just the ones this

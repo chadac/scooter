@@ -72,4 +72,40 @@ describe("SandboxPanelView", () => {
       expect(html).not.toContain('data-testid="sandbox-owner"');
     }
   });
+
+  it("shows the resource allotment (requests + limits) when present", () => {
+    const html = renderToStaticMarkup(
+      createElement(SandboxPanelView, {
+        ...base,
+        state: "running",
+        resources: { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "4Gi" } },
+      }),
+    );
+    expect(html).toContain('data-testid="sandbox-resources"');
+    expect(html).toContain("500m CPU");
+    expect(html).toContain("1Gi"); // requested memory
+    expect(html).toContain("4Gi"); // limit memory
+  });
+
+  it("shows resources even while SUSPENDED (the size applies to the next pod)", () => {
+    const html = renderToStaticMarkup(
+      createElement(SandboxPanelView, {
+        ...base,
+        state: "suspended",
+        resources: { requests: { cpu: "2", memory: "2Gi", gpu: 1 } },
+      }),
+    );
+    expect(html).toContain('data-testid="sandbox-resources"');
+    expect(html).toContain("2 CPU");
+    expect(html).toContain("1 GPU");
+  });
+
+  it("hides the resources section when absent or all-empty (fake mode / no broker)", () => {
+    for (const resources of [undefined, null, {}, { requests: {}, limits: {} }] as const) {
+      const html = renderToStaticMarkup(
+        createElement(SandboxPanelView, { ...base, state: "running", resources }),
+      );
+      expect(html).not.toContain('data-testid="sandbox-resources"');
+    }
+  });
 });
