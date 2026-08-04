@@ -13,8 +13,8 @@ import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { SettingsPage } from "./SettingsPage.js";
 import { viewStore, useView } from "./view.js";
+import { StartingPodLanding } from "./DeadPodLanding.js";
 import { useSandboxStatus } from "./SandboxPanel.js";
-import { DeadPodLanding, StartingPodLanding, shouldShowDeadPodLanding } from "./DeadPodLanding.js";
 import { Thread } from "@/components/assistant-ui/thread";
 
 /** The Thread wrapped in an error boundary keyed to the render tick, so a
@@ -29,23 +29,16 @@ function GuardedThread() {
   );
 }
 
-/** The conversation area: the thread when the pod is up (or coming up), or a
- *  dead-pod landing (Start button) when it's genuinely DOWN — suspended/ended — so a
- *  dead pod doesn't render the thread into "upstream failed" but offers a one-click
- *  resume. Only suspended/ended replace the thread: "starting"/"unknown" still show
- *  the thread (it handles its own loading, and readiness may be unknown when web-
- *  services aren't wired — e.g. the fake stack — where we must NOT blank the thread).
- *  Once a Start is clicked, the state moves to "starting" then "running", and the
- *  thread returns automatically. Reuses useSandboxStatus for one source of truth. */
+/** The conversation area: ALWAYS the thread (its history + composer), even when the
+ *  pod is asleep. A suspended/ended pod no longer takes the screen over with a landing
+ *  that hides the conversation — the history renders straight off the persisted
+ *  integrity stream (no live pod needed), and SENDING a message resumes the pod
+ *  automatically (promptByThread revives before it runs). Start is also available in
+ *  the Sandbox tab for an explicit wake. The only non-thread state is the brief
+ *  spinner while a Sandbox-tab Start is in flight, so that click gives feedback. */
 function ConversationArea() {
-  const { state, startSandbox, starting } = useSandboxStatus();
-  // A resume the user kicked off from the landing is in flight → show progress until
-  // the pod is back and ready (starting clears), so the Start click gives feedback.
+  const { starting } = useSandboxStatus();
   if (starting) return <StartingPodLanding />;
-  // A genuinely down pod → the Start landing. Only suspended/ended replace the thread;
-  // "starting"/"unknown" (incl. when web-services aren't wired, e.g. the fake stack)
-  // still show the thread so a slow/unknown readiness never blanks the conversation.
-  if (shouldShowDeadPodLanding(state)) return <DeadPodLanding state={state} onStart={startSandbox} />;
   return <GuardedThread />;
 }
 
