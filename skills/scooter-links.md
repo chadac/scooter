@@ -30,9 +30,10 @@ proxies through it), the broker sees the created resource in the response and
 attaches it to this conversation for you. That covers, e.g.:
 
 ```bash
-# auto-linked — no extra step
-agent-broker -X POST github/repos/OWNER/REPO/pulls \
-  -H 'Content-Type: application/json' \
+# auto-linked — no extra step. NOTE: the broker path comes FIRST, then curl args
+# (it is NOT plain curl — the path is a positional arg, not a `-`-flagged URL).
+agent-broker github/repos/OWNER/REPO/pulls \
+  -X POST -H 'Content-Type: application/json' \
   -d '{"title":"Fix X","head":"my-branch","base":"main"}'
 ```
 

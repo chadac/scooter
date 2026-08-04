@@ -2,11 +2,14 @@
 # agent-broker — thin curl wrapper for calling the credential broker from inside
 # the sandbox, authenticated with the pod's projected ServiceAccount token.
 #
+# NOT plain curl: the broker <path> is a POSITIONAL first argument, not a
+# `-`-flagged URL. Put curl flags (-X / -H / -d / ...) AFTER the path.
+#
 # Usage:
 #   agent-broker <path> [curl-args...]
 #   e.g.  agent-broker test/whoami
 #         agent-broker github/git-credentials
-#         agent-broker -X POST github/repos/o/r/issues -d '{...}'
+#         agent-broker github/repos/o/r/issues -X POST -d '{...}'   # path FIRST
 #
 #   agent-broker link add <url> [--type pr|mr|issue] [--source github|gitlab|jira] [--title T]
 #   agent-broker link ls
@@ -30,9 +33,13 @@ TOKEN_PATH="${BROKER_TOKEN_PATH:-/var/run/secrets/broker/token}"
 usage() {
     cat >&2 <<'EOF'
 usage:
-  agent-broker <path> [curl-args...]
+  agent-broker <path> [curl-args...]     # <path> is FIRST; curl flags come after
   agent-broker link add <url> [--type pr|mr|issue] [--source github|gitlab|jira] [--title TITLE]
   agent-broker link ls
+
+note: this is NOT plain curl — the broker path is a positional arg, not a URL.
+  right:  agent-broker github/repos/o/r/issues -X POST -d '{...}'
+  wrong:  agent-broker -X POST github/repos/o/r/issues -d '{...}'
 EOF
 }
 
@@ -119,6 +126,20 @@ if [ "$1" = "link" ]; then
             echo "agent-broker link: unknown subcommand '$sub' (want: add | ls)" >&2; exit 2 ;;
     esac
     exit 0
+fi
+
+# The broker path must be FIRST. Agents used to curl reflexively write
+# `agent-broker -X POST <path> ...`, which would silently send `-X` as the path
+# and mangle the request. Catch a leading flag and self-correct instead of
+# failing with a confusing curl error.
+if [ "${1#-}" != "$1" ]; then
+    cat >&2 <<EOF
+agent-broker: the broker path must be the FIRST argument, but got a flag ('$1').
+This is NOT plain curl — pass the path first, then curl flags:
+  right:  agent-broker <path> -X POST -d '{...}'
+  wrong:  agent-broker -X POST <path> -d '{...}'
+EOF
+    exit 2
 fi
 
 path="$1"; shift

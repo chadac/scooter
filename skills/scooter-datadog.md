@@ -23,8 +23,9 @@ the broker injects `DD-API-KEY` + `DD-APPLICATION-KEY` on the outbound request
 and returns Datadog's normal JSON response.
 
 Use the `agent-broker` CLI, which proxies `/datadog/<path>` to the Datadog API
-(`https://api.<site>`). It's a thin `curl` wrapper — pass the API path and any
-`curl` args:
+(`https://api.<site>`). It wraps `curl`, but the API **path comes FIRST** as a
+positional argument (it is not a `-`-flagged URL); any `curl` args go **after**
+it:
 
 ```bash
 agent-broker "datadog/<api-path>" [curl-args...]
@@ -45,8 +46,9 @@ agent-broker "datadog/api/v1/query?from=${from}&to=${now}&query=avg:system.cpu.u
 Search logs (v2 — POST a JSON body):
 
 ```bash
-agent-broker -X POST "datadog/api/v2/logs/events/search" \
-  -H 'Content-Type: application/json' \
+# path FIRST, then the curl args (-X/-H/-d):
+agent-broker "datadog/api/v2/logs/events/search" \
+  -X POST -H 'Content-Type: application/json' \
   -d '{"filter":{"query":"service:web status:error","from":"now-15m","to":"now"},"page":{"limit":25}}'
 ```
 
