@@ -43,6 +43,34 @@ test.describe("multi-turn re-render (tail + replay)", () => {
     await expect(chat.userMessages().filter({ hasText: /a different conversation/i })).toHaveCount(0);
   });
 
+  test("a long conversation opens PINNED AT THE BOTTOM (not stranded at the top)", async ({ chat, page }) => {
+    // The reported bug: opening/switching-back to a long conversation landed at the
+    // TOP of history, forcing a scroll-down. With the incremental messageRepository
+    // render (stable ids, per-message reconcile, head pinned), it must land at the
+    // bottom. Build a thread tall enough to actually scroll first.
+    await chat.open();
+    const markers = ["m1-aa", "m2-bb", "m3-cc", "m4-dd", "m5-ee", "m6-ff", "m7-gg", "m8-hh"];
+    for (const m of markers) {
+      await chat.sendTurn(`turn ${m} — a moderately long line so the thread grows tall enough to scroll`);
+    }
+    await expect(chat.userMessages()).toHaveCount(markers.length, { timeout: 30_000 });
+
+    // Switch away, then back — the open path that used to strand at the top.
+    await page.locator(sidebar.newSession).click();
+    await chat.send("elsewhere");
+    await chat.waitForReply(/dummy agent/i);
+    await page.locator(sidebar.item).filter({ hasText: /turn m1-aa/i }).first().click();
+
+    // Fully repopulated…
+    await expect(chat.userMessages()).toHaveCount(markers.length, { timeout: 30_000 });
+    // …and the thread is genuinely scrollable (else the assertion is vacuous)…
+    await expect.poll(() => chat.scrollableHeight(), { timeout: 10_000 }).toBeGreaterThan(200);
+    // …AND it opened pinned at the bottom (the latest turn visible, no scroll needed).
+    await expect.poll(() => chat.distanceFromBottom(), { timeout: 10_000 }).toBeLessThanOrEqual(40);
+    // The scroll-to-bottom arrow is disabled at the bottom (assistant-ui hides it).
+    await expect(chat.scrollToBottomButton()).toBeDisabled({ timeout: 10_000 });
+  });
+
   test("a longer conversation is populated after a full page reload", async ({ chat, page }) => {
     await chat.open();
     for (const m of ["one-aaa", "two-bbb", "three-ccc", "four-ddd"]) {

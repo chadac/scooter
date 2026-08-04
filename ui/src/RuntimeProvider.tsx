@@ -13,36 +13,27 @@
  * reasoning) — the identical rendering path as a locally-driven /agui run, with
  * no second reducer to drift.
  *
- * TWO SUBTLETIES the react-ag-ui runtime forces on us (both handled below):
+ * We drive assistant-ui via our OWN external-store runtime (useRepositoryRuntime),
+ * NOT useAgUiRuntime — its per-run aggregator would merge our multi-run integrity
+ * replay into one bubble. Two things this hands us:
  *
- *   1. The runtime renders from `core.getMessages()`, NOT `agent.messages`, and
- *      it only applies events through a *per-run* aggregator (one assistant
- *      placeholder + one RUN_STARTED/FINISHED pair per `startRun`). Feeding it
- *      the continuous, multi-run integrity replay through that per-run applier
- *      would merge every run into one bubble. So we do NOT let the runtime drive
- *      rendering: we run our OWN render pump — `agent.renderPump()`, which drives
- *      the base AbstractAgent applier over the integrity stream (with exactly one
- *      subscription per SSE connection, re-folded from empty each connect so the
- *      full-log replay never doubles) and folds it into `agent.messages`; on every
- *      change we push a full snapshot into the thread via
- *      `runtime.thread.reset(fromAgUiMessages(...))` (the same reset + converter
- *      the old history hydration used). We deliberately avoid
- *      AbstractAgent.runAgent here — it subscribes to run() twice and would double
- *      every event.
+ *   1. RENDER via a message-repository SNAPSHOT, not a full reset. Our render pump
+ *      (`agent.renderPump()`) folds the integrity stream into `agent.messages` with
+ *      full fidelity (one SSE subscription per connection, re-folded from empty so a
+ *      replay never doubles). On each change we build an ExportedMessageRepository
+ *      (toRepositorySnapshot) and hand it to the store. Because our message ids are
+ *      STABLE (log-derived + the deterministic `sys:` splice), the core reconciles
+ *      per-message — unchanged messages stay put (NO re-paint), the head stays pinned
+ *      at the bottom. This replaced `runtime.thread.reset(fromAgUiMessages(...))`,
+ *      which rebuilt the whole repo every push (fresh ids → the open-conversation
+ *      jump/flash) and is also the base for load-earlier/prepend.
  *
- *   2. The composer send goes onNew -> core.append -> startRun -> agent.runAgent.
- *      There is no send-override adapter on useAgUiRuntime (checked
- *      react-ag-ui/dist: UseAgUiRuntimeAdapters has no such hook). If we let that
- *      run, it would open a SECOND integrity stream (our run()) that never
- *      completes and NEVER issue the /agui POST — the message would never reach
- *      the server. So we shadow the agent's INSTANCE `runAgent` (what the runtime
- *      calls) to be fire-and-forget: a resume routes to agent.submitResume(), an
- *      ordinary send routes to agent.send() (a single POST /agui whose reply
- *      re-enters through the render pump). It resolves immediately with an empty
- *      result; the reply renders via the stream, not a duplicated direct SSE. The
- *      render pump keeps using the *prototype* runAgent, so the two paths never
- *      collide. Net: messages render from the integrity stream (remote runs
- *      appear), and a user send hits the server as POST /agui exactly once.
+ *   2. SEND directly via the store's `onNew` — no runAgent shadow. A resume routes to
+ *      agent.submitResume(); an ordinary send routes to agent.send() (one POST /agui
+ *      whose reply re-enters through the render pump). There is no core.append ->
+ *      startRun -> runAgent chain to intercept (that was useAgUiRuntime's), so the
+ *      old instance-shadow of AbstractAgent.runAgent is gone. Net unchanged: remote
+ *      runs render from the integrity stream, a user send hits /agui exactly once.
  *
  * Interrupts: an interrupt (RUN_FINISHED outcome=interrupt) rides the integrity
  * log. The base AbstractAgent applier does NOT produce the react-ag-ui runtime's
@@ -55,10 +46,10 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter } from "@assistant-ui/react";
-import type { AbstractAgent, RunAgentInput } from "@ag-ui/client";
-import { useAgUiRuntime, fromAgUiMessages } from "@assistant-ui/react-ag-ui";
+import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter, type AppendMessage } from "@assistant-ui/react";
 
+import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
+import { toRepositorySnapshot, type RepositorySnapshot } from "./messageRepository.js";
 import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { sessionStore, useSessions } from "./sessions.js";
@@ -217,11 +208,10 @@ const IDLE_RECONNECT_MS = import.meta.env.VITE_IDLE_RECONNECT_MS
 export function RuntimeProvider({ children }: Readonly<{ children: ReactNode }>) {
   const { currentId } = useSessions();
 
-  // Remount the runtime per conversation. useAgUiRuntime owns the thread's
-  // message state internally; handing it a new agent mid-render does NOT reset
-  // it, so switching/deleting would leave the previous conversation's messages
-  // on screen. Keying by currentId tears the runtime (and the IntegrityAgent +
-  // its render pump) down and recreates it for the selected conversation.
+  // Remount the runtime per conversation. The runtime + its repository snapshot are
+  // per-conversation state; handing it a new agent mid-render would leave the previous
+  // conversation's messages on screen. Keying by currentId tears the runtime (and the
+  // IntegrityAgent + its render pump + the snapshot) down and recreates it fresh.
   return (
     <ConversationRuntime key={currentId} conversationId={currentId}>
       {children}
@@ -256,53 +246,47 @@ function ConversationRuntime({
   // with the STALE model before the effect ran. setModel is idempotent.
   agent.setModel(model);
 
-  // Shadow the INSTANCE runAgent so the composer's send (onNew -> core.append ->
-  // startRun -> agent.runAgent) becomes fire-and-forget instead of opening a
-  // second integrity stream. A resume answers a pending interrupt; otherwise the
-  // last user message is the prompt. Resolves immediately — the reply renders via
-  // the render pump (below), which uses the PROTOTYPE runAgent and is unaffected
-  // by this shadow. See the file header (subtlety 2).
-  useEffect(() => {
-    const send = (async (input?: RunAgentInput) => {
-      const resume = input?.resume;
+  // The composer send: the external store calls this `onNew` with the appended user
+  // message. Fire-and-forget to /agui — a resume answers a pending interrupt, an
+  // ordinary send routes to agent.send(); the reply re-enters through the render pump
+  // (below). No runAgent shadow needed (we don't use useAgUiRuntime's append→startRun
+  // chain). See the file header (send). Stable across renders (only depends on agent).
+  const onNew = useCallback(
+    async (message: AppendMessage) => {
+      // A resume rides on the append message's `resume` extra (InterruptPanel path).
+      const resume = (message as unknown as { resume?: ResumeEntry[] }).resume;
       if (resume && resume.length > 0) {
-        await agent.submitResume(resume as ResumeEntry[]);
-      } else {
-        const lastUser = [...(input?.messages ?? [])]
-          .reverse()
-          .find((m) => m.role === "user");
-        // content is a string (text-only) OR an array of parts (text + image
-        // attachments). Extract text + images either way.
-        const content = lastUser?.content as unknown;
-        const text = typeof content === "string"
-          ? content
-          : Array.isArray(content)
-            ? content.filter((p) => (p as { type?: string })?.type === "text").map((p) => (p as { text?: string }).text ?? "").join("")
-            : "";
-        // Downscale each attached image under the client cap before sending (the
-        // agent-host also hard-rejects over its cap).
-        const rawImages = imagesFromContent(content);
-        const images: OutboundImage[] = [];
-        for (const raw of rawImages) {
-          const scaled = await downscaleImage(`data:${raw.mimeType};base64,${raw.data}`).catch(() => raw);
-          if (scaled) images.push(scaled);
-        }
-        if (text || images.length) {
-          // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
-          // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
-          // the running turn (bridge "thinking" policy) instead of queuing the message
-          // behind a turn that may never end. Read the LIVE run state (not React
-          // state) so there's no stale-closure race. PRIORITY_INTERRUPT = 10.
-          const priority = agent.runIsActive() ? 10 : undefined;
-          await agent.send(text, { priority, images: images.length ? images : undefined });
-        }
+        await agent.submitResume(resume);
+        return;
       }
-      return { result: undefined, newMessages: [], newState: agent.state };
-    }) as unknown as AbstractAgent["runAgent"];
-    // Instance property shadows the prototype method the runtime invokes; the
-    // render pump calls the prototype directly, so it keeps the real applier.
-    (agent as unknown as { runAgent: AbstractAgent["runAgent"] }).runAgent = send;
-  }, [agent]);
+      // content is a string (text-only) OR an array of parts (text + image
+      // attachments). Extract text + images either way.
+      const content = message.content as unknown;
+      const text = typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.filter((p) => (p as { type?: string })?.type === "text").map((p) => (p as { text?: string }).text ?? "").join("")
+          : "";
+      // Downscale each attached image under the client cap before sending (the
+      // agent-host also hard-rejects over its cap).
+      const rawImages = imagesFromContent(content);
+      const images: OutboundImage[] = [];
+      for (const raw of rawImages) {
+        const scaled = await downscaleImage(`data:${raw.mimeType};base64,${raw.data}`).catch(() => raw);
+        if (scaled) images.push(scaled);
+      }
+      if (text || images.length) {
+        // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
+        // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
+        // the running turn (bridge "thinking" policy) instead of queuing the message
+        // behind a turn that may never end. Read the LIVE run state (not React state)
+        // so there's no stale-closure race. PRIORITY_INTERRUPT = 10.
+        const priority = agent.runIsActive() ? 10 : undefined;
+        await agent.send(text, { priority, images: images.length ? images : undefined });
+      }
+    },
+    [agent],
+  );
 
   const threadListAdapter = useMemo(
     () => ({
@@ -311,8 +295,10 @@ function ConversationRuntime({
         sessionStore.newSession();
       },
       onSwitchToThread: async (threadId: string) => {
+        // Selection only — the render pump re-points at the new thread's log (the
+        // component remounts on currentId). No messages to return: our store renders
+        // from the repository snapshot, not from a switch-time payload.
         sessionStore.switchTo(threadId);
-        return { messages: [] as never };
       },
     }),
     [conversationId],
@@ -322,22 +308,23 @@ function ConversationRuntime({
   // an attached image File into an image content part on the user message (which
   // the send override above extracts, downscales, and forwards to /agui).
   const attachmentAdapter = useMemo(() => new SimpleImageAttachmentAdapter(), []);
-  const runtime = useAgUiRuntime({
-    agent,
-    adapters: { threadList: threadListAdapter, attachments: attachmentAdapter },
-  });
+
+  // The message-repository SNAPSHOT the external store renders. Updated by the render
+  // pump (below) with a fresh object (stable inner ids) on every fold, so the core
+  // reconciles per-message instead of re-painting. Starts empty (fresh thread).
+  const EMPTY_REPO = useMemo<RepositorySnapshot>(() => ({ headId: null, messages: [] }), []);
+  const [repoSnapshot, setRepoSnapshot] = useState<RepositorySnapshot>(EMPTY_REPO);
 
   // The RENDER PUMP. agent.renderPump() folds the integrity stream into
   // agent.messages with full fidelity across all runs, using EXACTLY ONE
   // subscription per SSE connection and re-folding each connection from an empty
   // accumulator — so the log's full-log replay (on connect AND on every reconnect)
   // rebuilds identical state instead of DOUBLING tool-call args / duplicating
-  // messages (the page-refresh replay bug). We do NOT use AbstractAgent.runAgent
-  // here: it subscribes to run() twice and would double every event. On each
-  // message change, replace the thread with the folded snapshot — fromAgUiMessages
-  // preserves tool calls + reasoning, and reset() makes the integrity log the
-  // SINGLE writer (a Slack-driven run and a local run render through the identical
-  // path). This replaces the old one-shot loadHistory: the stream's replay IS the
+  // messages (the page-refresh replay bug). On each message change we build an
+  // ExportedMessageRepository (toRepositorySnapshot) and hand it to the store; the
+  // core reconciles per-message (stable ids → unchanged messages stay put, no
+  // re-paint, head pinned). This replaced the old thread.reset(fromAgUiMessages(...)),
+  // which rebuilt the whole repo (fresh ids) every push. The stream's replay IS the
   // history.
   // The current pending interrupt(s), sourced from the IntegrityAgent (parsed from
   // the integrity log's RUN_FINISHED outcome=interrupt). The base applier does NOT
@@ -361,6 +348,16 @@ function ConversationRuntime({
   // reconnect re-fold (see push() below). Reset per conversation (this component
   // remounts on currentId).
   const lastLen = useRef(0);
+
+  // Our external-store runtime: renders the repository snapshot incrementally + sends
+  // via onNew. Replaces useAgUiRuntime (whose per-run aggregator would merge our
+  // multi-run replay). Interrupts/run-state come from the IntegrityAgent, not here.
+  const runtime = useRepositoryRuntime({
+    messageRepository: repoSnapshot,
+    isRunning,
+    onNew,
+    adapters: { threadList: threadListAdapter, attachments: attachmentAdapter },
+  });
 
   useEffect(() => {
     let disposed = false;
@@ -423,9 +420,12 @@ function ConversationRuntime({
       // Role is "assistant" only so fromAgUiMessages keeps it (it drops role-less
       // messages) — the custom renderer overrides all assistant styling.
       const withSystem = spliceSystemMessages(enriched, agent.getSystemMessages());
-      runtime.thread.reset(fromAgUiMessages(withSystem));
+      // Hand the store a NEW repository snapshot (stable inner ids). The core
+      // reconciles per-message — unchanged messages keep their place (no re-paint),
+      // the head stays pinned. Replaces the old thread.reset (full rebuild).
+      setRepoSnapshot(toRepositorySnapshot(withSystem));
       // Advance the error-boundary reset key so a transient runtime crash during
-      // this reset recovers on the next push.
+      // this render recovers on the next push.
       setRenderTick((n) => n + 1);
     };
     const { unsubscribe } = agent.subscribe({ onMessagesChanged: () => push() });
