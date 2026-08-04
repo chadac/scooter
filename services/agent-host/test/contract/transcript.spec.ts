@@ -1,9 +1,11 @@
 /**
  * Tier 1 — the revive history transcript builder.
  *
- * Folds a persisted AG-UI log into user/assistant turns and formats the preamble
- * that gets prepended to the first prompt of a revived (memory-less) goose
- * session. Only TEXT_MESSAGE_* turns; tool/reasoning/run events are ignored.
+ * Folds a persisted AG-UI log into user/assistant/tool turns and formats the
+ * preamble prepended to the first prompt of a revived (memory-less) goose session.
+ * TEXT_MESSAGE_* turns AND tool activity (name/args → result) are folded — the tool
+ * turns carry the actual work so a model switch continues KNOWING what was done;
+ * reasoning/run-control events are still ignored.
  */
 
 import { describe, it, expect } from "vitest";
@@ -36,13 +38,15 @@ describe("transcript: foldTurns", () => {
     ]);
   });
 
-  it("ignores tool/reasoning/run events entirely", () => {
+  it("includes tool activity (name/args → result) in call order, skips reasoning/run events", () => {
     const log: AguiEvent[] = [
       ...userTurn("u1", "run ls"),
       { type: "RUN_STARTED", threadId: "t", runId: "r" },
       { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "bash" },
-      { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: '{"cmd":"ls"}' },
+      { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: '{"cmd":' },
+      { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: '"ls"}' },
       { type: "TOOL_CALL_END", toolCallId: "c1" },
+      { type: "TOOL_CALL_RESULT", toolCallId: "c1", messageId: "m1", content: "file-a\nfile-b" },
       { type: "REASONING_START", messageId: "z1" },
       { type: "REASONING_MESSAGE_CONTENT", messageId: "z1", delta: "thinking" },
       { type: "REASONING_END", messageId: "z1" },
@@ -51,8 +55,32 @@ describe("transcript: foldTurns", () => {
     ];
     expect(foldTurns(log)).toEqual([
       { role: "user", text: "run ls" },
+      { role: "tool", text: 'bash({"cmd":"ls"}) → file-a\nfile-b' },
       { role: "assistant", text: "done" },
     ]);
+  });
+
+  it("emits a tool turn even when its result never arrives (name/args only)", () => {
+    const log: AguiEvent[] = [
+      { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "read_file" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: '{"path":"a.ts"}' },
+      { type: "TOOL_CALL_END", toolCallId: "c1" },
+    ];
+    expect(foldTurns(log)).toEqual([{ role: "tool", text: 'read_file({"path":"a.ts"})' }]);
+  });
+
+  it("clips a very long tool result so one tool turn can't dominate", () => {
+    const huge = "y".repeat(5_000);
+    const log: AguiEvent[] = [
+      { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "bash" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: "{}" },
+      { type: "TOOL_CALL_END", toolCallId: "c1" },
+      { type: "TOOL_CALL_RESULT", toolCallId: "c1", messageId: "m1", content: huge },
+    ];
+    const [t] = foldTurns(log);
+    expect(t.role).toBe("tool");
+    expect(t.text).toContain("more chars)");
+    expect(t.text.length).toBeLessThan(1_000);
   });
 
   it("drops empty turns (a START/END with no content)", () => {
@@ -84,5 +112,17 @@ describe("transcript: buildHistoryPreamble", () => {
     expect(out).toContain("earlier messages omitted");
     expect(out).toContain("recent"); // the most recent turn is kept
     expect(out.length).toBeLessThan(6_000);
+  });
+
+  it("labels tool turns with a `Tool:` prefix and explains them in the framing", () => {
+    const out = buildHistoryPreamble([
+      ...userTurn("u1", "read the config"),
+      { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "read_file" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: '{"path":"cfg.ts"}' },
+      { type: "TOOL_CALL_END", toolCallId: "c1" },
+      { type: "TOOL_CALL_RESULT", toolCallId: "c1", messageId: "m1", content: "export const x = 1" },
+    ]);
+    expect(out).toContain('Tool: read_file({"path":"cfg.ts"}) → export const x = 1');
+    expect(out).toMatch(/Tool:` record work already done/); // framing tells the model what Tool: means
   });
 });
