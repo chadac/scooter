@@ -100,6 +100,63 @@ describe("per-conversation model (model-switch scoping)", () => {
   });
 });
 
+describe("favoriting pins a conversation to the top of the list", () => {
+  // The store is a module singleton with no per-test reset, so use UNIQUE ids to
+  // avoid cross-test accumulation (the existing tests follow the same convention).
+  // `only` restricts the visible list to just these ids for a clean assertion.
+  const only = (...ids: string[]) => sessionStore.get().sessions.filter((s) => ids.includes(s.id)).map((s) => s.id);
+
+  it("starred conversations sort ABOVE unstarred ones (then newest-first within each group)", () => {
+    sessionStore.mergeFromServer([
+      { id: "star-old", title: "Old", createdAt: 1_000 },
+      { id: "star-mid", title: "Mid", createdAt: 2_000 },
+      { id: "star-new", title: "New", createdAt: 3_000 },
+    ]);
+    expect(only("star-new", "star-mid", "star-old")).toEqual(["star-new", "star-mid", "star-old"]);
+
+    // Star the OLDEST — it jumps to the top despite being least recent.
+    sessionStore.setStarred("star-old", true);
+    expect(only("star-new", "star-mid", "star-old")).toEqual(["star-old", "star-new", "star-mid"]);
+  });
+
+  it("re-sorts immediately on toggle (no wait for a server merge)", () => {
+    sessionStore.mergeFromServer([
+      { id: "imm-a", title: "A", createdAt: 3_000 },
+      { id: "imm-b", title: "B", createdAt: 2_000 },
+      { id: "imm-c", title: "C", createdAt: 1_000 },
+    ]);
+    sessionStore.setStarred("imm-c", true);
+    sessionStore.setStarred("imm-b", true);
+    // Both starred -> above 'imm-a'; newest-first among starred (b @2000 before c @1000).
+    expect(only("imm-a", "imm-b", "imm-c")).toEqual(["imm-b", "imm-c", "imm-a"]);
+  });
+
+  it("un-starring drops a conversation back into recency order", () => {
+    sessionStore.mergeFromServer([
+      { id: "un-a", title: "A", createdAt: 3_000, starred: true },
+      { id: "un-b", title: "B", createdAt: 2_000 },
+      { id: "un-c", title: "C", createdAt: 1_000 },
+    ]);
+    expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]);
+    sessionStore.setStarred("un-a", false);
+    expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]); // a @3000 is still newest
+  });
+
+  it("a server merge that only flips a star re-orders (not skipped by the no-op guard)", () => {
+    sessionStore.mergeFromServer([
+      { id: "poll-a", title: "A", createdAt: 3_000 },
+      { id: "poll-b", title: "B", createdAt: 1_000 },
+    ]);
+    expect(only("poll-a", "poll-b")).toEqual(["poll-a", "poll-b"]);
+    // Next poll: the server reports b as starred (persisted / starred elsewhere).
+    sessionStore.mergeFromServer([
+      { id: "poll-a", title: "A", createdAt: 3_000 },
+      { id: "poll-b", title: "B", createdAt: 1_000, starred: true },
+    ]);
+    expect(only("poll-a", "poll-b")).toEqual(["poll-b", "poll-a"]);
+  });
+});
+
 describe("ended subagents are pruned from the sidebar", () => {
   it("drops a subagent the server no longer lists (it ended), keeping the parent", () => {
     // Parent + subagent both known.

@@ -96,6 +96,15 @@ type State = {
 /** A brand-new, untouched conversation (default title, no messages yet). */
 const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
 
+/** Sidebar order: STARRED conversations first (favoriting pins them to the top),
+ *  then newest-first within each group. Stable for equal keys. */
+export const byStarredThenRecent = (a: Session, b: Session): number => {
+  const sa = a.starred ? 1 : 0;
+  const sb = b.starred ? 1 : 0;
+  if (sa !== sb) return sb - sa; // starred (1) sorts before unstarred (0)
+  return b.createdAt - a.createdAt; // then most-recent first
+};
+
 const freshState = (): State => {
   const id = crypto.randomUUID();
   return {
@@ -280,7 +289,7 @@ export const sessionStore = {
     // Never end up with zero rows (e.g. server has convs but all local were
     // pristine and got dropped — the server ones remain, which is fine).
     if (sessions.length === 0) sessions = [...byId.values()];
-    sessions.sort((a, b) => b.createdAt - a.createdAt);
+    sessions.sort(byStarredThenRecent);
 
     // SELECTION-NEUTRAL: never change currentId here. The merge runs on a
     // background poll, so reassigning the selection would fight an in-flight
@@ -309,7 +318,7 @@ export const sessionStore = {
       ss
         .map(
           (s) =>
-            `${s.id}:${s.title}:${(s.sources ?? []).join(",")}:${(s.links ?? [])
+            `${s.id}:${s.title}:${s.starred ? 1 : 0}:${(s.sources ?? []).join(",")}:${(s.links ?? [])
               .map((l) => l.title ?? l.url ?? "")
               .join(",")}`,
         )
@@ -370,14 +379,15 @@ export const sessionStore = {
     });
   },
 
-  /** Optimistically set the star flag. The caller persists via setConversationStarred. */
+  /** Optimistically set the star flag. The caller persists via setConversationStarred.
+   *  Re-sorts so a newly-starred conversation jumps to the top immediately (not only
+   *  on the next server merge) — and an un-starred one drops back into recency order. */
   setStarred(id: string, starred: boolean) {
     const s = state.sessions.find((x) => x.id === id);
     if (!s || s.starred === starred) return;
-    setState({
-      ...state,
-      sessions: state.sessions.map((x) => (x.id === id ? { ...x, starred } : x)),
-    });
+    const sessions = state.sessions.map((x) => (x.id === id ? { ...x, starred } : x));
+    sessions.sort(byStarredThenRecent);
+    setState({ ...state, sessions });
   },
 
   /** Set a conversation's model (the picker). No-op if unchanged. The next
