@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   resumeConversation,
   loadSandboxReady,
+  loadSandboxResources,
   loadWebServices,
   startWebService,
   stopWebService,
@@ -24,6 +25,7 @@ import {
   installModule,
   type WebService,
   type RegistryModule,
+  type SandboxResources,
 } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { useSessions } from "./sessions.js";
@@ -235,6 +237,55 @@ export function ModulesSection({ conversationId }: { conversationId: string }) {
   );
 }
 
+/** Does a resources object carry any value worth showing? (all-empty -> skip the row) */
+function hasResources(r: SandboxResources | null | undefined): r is SandboxResources {
+  if (!r) return false;
+  const sides = [r.requests, r.limits];
+  return sides.some((q) => q && (q.cpu !== undefined || q.memory !== undefined || q.gpu !== undefined));
+}
+
+/** Format one side (requests | limits) as "cpu · memory · N GPU", omitting absent
+ *  fields. Returns "" when the side has nothing. */
+function formatQuantity(q: SandboxResources["requests"]): string {
+  if (!q) return "";
+  const parts: string[] = [];
+  if (q.cpu) parts.push(`${q.cpu} CPU`);
+  if (q.memory) parts.push(q.memory);
+  if (q.gpu) parts.push(`${q.gpu} GPU`);
+  return parts.join(" · ");
+}
+
+/** Sandbox resource allotment — requests (guaranteed) + limits (ceiling), so the
+ *  user can see what the pod is sized for. Rendered only when there's something to
+ *  show (the broker-owned size; absent in fake mode). */
+export function ResourcesSection({ resources }: { resources: SandboxResources }) {
+  const requests = formatQuantity(resources.requests);
+  const limits = formatQuantity(resources.limits);
+  return (
+    <div data-testid="sandbox-resources">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">Resources</div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+        {requests && (
+          <>
+            <dt className="text-muted-foreground" title="Guaranteed — reserved for this sandbox">
+              Requested
+            </dt>
+            <dd data-testid="sandbox-resources-requests" className="font-mono text-foreground">{requests}</dd>
+          </>
+        )}
+        {limits && (
+          <>
+            <dt className="text-muted-foreground" title="Ceiling — the sandbox can burst up to this">
+              Limit
+            </dt>
+            <dd data-testid="sandbox-resources-limits" className="font-mono text-foreground">{limits}</dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 export interface SandboxPanelViewProps {
   state: SandboxState;
   services: WebService[];
@@ -243,6 +294,8 @@ export interface SandboxPanelViewProps {
   /** The conversation's owner (the user who created it), or undefined/null when
    *  unowned (a legacy conversation or a webhook that couldn't resolve a user). */
   owner?: string | null;
+  /** The sandbox's resource allotment (cpu/memory/gpu). null/empty -> not shown. */
+  resources?: SandboxResources | null;
   onStartSandbox: () => void;
   onStartService: (name: string) => void;
   onStopService: (name: string) => void;
@@ -255,6 +308,7 @@ export function SandboxPanelView({
   busy,
   conversationId,
   owner,
+  resources,
   onStartSandbox,
   onStartService,
   onStopService,
@@ -288,6 +342,10 @@ export function SandboxPanelView({
           <span data-testid="sandbox-owner-value">{owner}</span>
         </div>
       ) : null}
+
+      {/* Resource allotment — shown regardless of running state (the size is set even
+          while suspended, and it's what the pod will come up with). */}
+      {hasResources(resources) ? <ResourcesSection resources={resources} /> : null}
 
       {/* Body: services + modules when running; a hint otherwise. */}
       {state === "running" ? (
@@ -323,6 +381,22 @@ export function SandboxPanel() {
   const s = useSandboxStatus();
   const { sessions, currentId } = useSessions();
   const owner = sessions.find((x) => x.id === currentId)?.owner ?? null;
+
+  // The sandbox size (broker-owned). Fetched per conversation; re-fetched when it
+  // comes up (the broker applies a pending size on restart, so a just-started pod
+  // may report a freshly-applied size). null when unavailable (fake mode) -> hidden.
+  const [resources, setResources] = useState<SandboxResources | null>(null);
+  useEffect(() => {
+    if (!currentId) return;
+    let alive = true;
+    void loadSandboxResources({ baseUrl: BASE_URL }, currentId).then((r) => {
+      if (alive) setResources(r);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [currentId, s.state]);
+
   return (
     <SandboxPanelView
       state={s.state}
@@ -330,6 +404,7 @@ export function SandboxPanel() {
       busy={s.busy}
       conversationId={s.conversationId}
       owner={owner}
+      resources={resources}
       onStartSandbox={() => void s.startSandbox()}
       onStartService={s.startService}
       onStopService={s.stopService}
