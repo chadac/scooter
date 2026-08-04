@@ -51,7 +51,15 @@ export function ModelPicker() {
   // Nothing (or only one option) to choose from -> don't show the picker.
   if (catalog.available.length <= 1) return null;
 
-  const current = sessions.find((s) => s.id === currentId)?.model ?? catalog.default ?? "";
+  // A conversation's model is EITHER explicitly picked here OR inherited from the
+  // host default. Distinguish them: an unset conversation SHOWS the default (so the
+  // select has a value), but we mark it as inherited — otherwise every conversation
+  // you never switched looks identically "set" to the default, which reads as "they
+  // all changed to it" after you switch one. The value is still per-conversation
+  // (proven: switching one never touches another); this is purely the display.
+  const explicitModel = sessions.find((s) => s.id === currentId)?.model;
+  const current = explicitModel ?? catalog.default ?? "";
+  const inherited = explicitModel === undefined;
 
   return (
     <div className="aui-model-picker flex items-center justify-end gap-2 px-2 text-xs text-muted-foreground">
@@ -60,7 +68,14 @@ export function ModelPicker() {
         id="aui-model-select"
         aria-label="Model"
         data-testid="model-picker"
-        className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+        data-inherited={inherited || undefined}
+        // Muted/italic while inheriting the default (not an explicit pick), so a
+        // never-switched conversation is visually distinct from one you set.
+        className={
+          "rounded-md border border-border bg-background px-2 py-1 " +
+          (inherited ? "italic text-muted-foreground" : "text-foreground")
+        }
+        title={inherited ? "Using the host default (not set for this conversation)" : "Model set for this conversation"}
         value={current}
         onChange={(e) => {
           if (e.target.value !== current) setSwitching(true);
@@ -74,6 +89,11 @@ export function ModelPicker() {
           </option>
         ))}
       </select>
+      {inherited && !switching && (
+        <span data-testid="model-inherited" className="text-[10px] uppercase tracking-wide opacity-60" title="Using the host default — not explicitly set for this conversation">
+          inherited
+        </span>
+      )}
       {switching && (
         <span data-testid="model-switching" className="flex items-center gap-1" title="Applying the model change">
           <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" aria-hidden />

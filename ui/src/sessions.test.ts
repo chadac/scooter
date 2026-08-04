@@ -50,6 +50,56 @@ describe("deep-link selection (requestSelect)", () => {
   });
 });
 
+describe("per-conversation model (model-switch scoping)", () => {
+  it("setModel changes ONLY the target conversation, never the others", () => {
+    sessionStore.mergeFromServer([{ id: "a" }, { id: "b" }, { id: "c" }]);
+    sessionStore.setModel("a", "claude-sonnet-4-6");
+
+    const byId = Object.fromEntries(sessionStore.get().sessions.map((s) => [s.id, s.model]));
+    expect(byId.a).toBe("claude-sonnet-4-6");
+    expect(byId.b).toBeUndefined(); // NOT leaked
+    expect(byId.c).toBeUndefined(); // NOT leaked
+  });
+
+  it("a background list-refresh does NOT propagate one conversation's model to the rest", () => {
+    // The reported "one switch, four others followed" shape: switch A, then a poll
+    // (mergeFromServer) arrives. B/C must keep their own (unset) model.
+    sessionStore.mergeFromServer([{ id: "a" }, { id: "b" }, { id: "c" }]);
+    sessionStore.setModel("a", "claude-sonnet-4-6");
+
+    // Poll returns the server's view: A persisted its pick; B/C never set one.
+    sessionStore.mergeFromServer([
+      { id: "a", model: "claude-sonnet-4-6" },
+      { id: "b" },
+      { id: "c" },
+    ]);
+
+    const byId = Object.fromEntries(sessionStore.get().sessions.map((s) => [s.id, s.model]));
+    expect(byId.a).toBe("claude-sonnet-4-6");
+    expect(byId.b).toBeUndefined();
+    expect(byId.c).toBeUndefined();
+  });
+
+  it("a locally-chosen model survives a poll that hasn't persisted it yet (first send pending)", () => {
+    // The merge prefers the LOCAL pick (existing?.model ?? c.model): a switch made
+    // before the first prompt persists it server-side must not be clobbered by a
+    // poll that still reports the conversation with no model.
+    sessionStore.mergeFromServer([{ id: "a" }]);
+    sessionStore.setModel("a", "claude-haiku-4-5");
+    sessionStore.mergeFromServer([{ id: "a" /* server hasn't stored the model yet */ }]);
+    expect(sessionStore.get().sessions.find((s) => s.id === "a")?.model).toBe("claude-haiku-4-5");
+  });
+
+  it("switching conversations does not carry a model between them (switchTo is model-neutral)", () => {
+    sessionStore.mergeFromServer([{ id: "a" }, { id: "b" }]);
+    sessionStore.setModel("a", "claude-sonnet-4-6");
+    sessionStore.switchTo("b");
+    // B's determined model is still its own (unset) — not A's pick.
+    expect(sessionStore.get().sessions.find((s) => s.id === "b")?.model).toBeUndefined();
+    expect(sessionStore.get().currentId).toBe("b");
+  });
+});
+
 describe("ended subagents are pruned from the sidebar", () => {
   it("drops a subagent the server no longer lists (it ended), keeping the parent", () => {
     // Parent + subagent both known.
