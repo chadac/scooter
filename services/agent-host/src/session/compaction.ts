@@ -78,8 +78,14 @@ export async function compactConversation(
   const { older, recent } = splitByRuns(events, keptRuns);
   if (older.length === 0) return null; // nothing older than the kept tail
 
-  const oldTurns = foldTurns(older);
-  if (oldTurns.length === 0) return null; // no summarizable text (only tools/etc.)
+  // foldTurns now also emits `tool` turns (name/args → result) so the summary can
+  // capture the WORK, not just the chat. The summarizer's SummaryTurn is user|
+  // assistant only, so fold a tool turn in as an assistant-side turn (it IS the
+  // assistant's action) — the text already carries the tool label.
+  const oldTurns: SummaryTurn[] = foldTurns(older).map((t) =>
+    t.role === "tool" ? { role: "assistant", text: t.text } : { role: t.role, text: t.text },
+  );
+  if (oldTurns.length === 0) return null; // no summarizable content
 
   const summarize =
     deps.summarize ??
