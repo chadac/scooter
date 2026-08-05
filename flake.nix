@@ -54,6 +54,53 @@
           value = builtins.readFile (dir + "/${name}");
         }) (l.filterAttrs (n: t: t == "regular" && l.hasSuffix ".md" n)
           (builtins.readDir dir));
+
+      # --- Content-tagged ghcr image refs (SYSTEM-INDEPENDENT) -------------------
+      # Hoisted to the top-level let (like scooterSkills) so BOTH the perSystem
+      # renders AND the system-independent kubenixModules can share one definition.
+      # The tag is the image's 12-char store hash; pinned to x86_64-linux (see the
+      # long note by ghcrImages) so the ref is a fixed string on any eval system and
+      # matches exactly what the x86_64 publish-images workflow pushes.
+      #
+      # unsafeDiscardStringContext is REQUIRED: interpolating `img.outPath` attaches
+      # the image derivation as string CONTEXT, and that context survives baseNameOf
+      # + substring — so without discarding it the tag string carries every image as
+      # a build dependency, and any derivation embedding these refs would REALISE all
+      # the images just to read their hashes. We only want the hash as TEXT.
+      ghcrContentTag = img:
+        builtins.unsafeDiscardStringContext
+          (builtins.substring 0 12 (builtins.baseNameOf img.outPath));
+      ghcrPrefix = "ghcr.io/chadac/scooter/";
+      ghcrImageRef = name: img: "${ghcrPrefix}${name}:${ghcrContentTag img}";
+      # CONTENT TAGS ARE PINNED TO x86_64-linux — deliberately, and it's what makes
+      # ghcrImages system-independent (a fixed string regardless of the eval system),
+      # so the bare kubenix module defaults (modules/platform.nix, via the exported
+      # kubenixModules.default) can embed them. It's also what's CORRECT: the
+      # publish-images workflow runs on ubuntu-latest (x86_64) and pushes `.#<attr>` =
+      # the x86_64 image under its x86_64 content tag. Per-system image derivations
+      # hash differently per arch, so computing the tag from the LOCAL (eval-system)
+      # image would, on aarch64, yield a tag that was NEVER pushed. Reading
+      # self.packages.x86_64-linux.<attr> pins to the arch we actually publish. The tag
+      # is a registry ref (pure TEXT), NOT an arch selector; the pushed image can be
+      # multi-arch under that same tag. `nix build .#<attr>` on aarch64 still builds an
+      # aarch64 image locally (unaffected); only the ghcr REF text is x86_64-pinned.
+      pubImages = self.packages.x86_64-linux;
+      # The content-tagged ghcr image refs (the kubenix DEFAULTS). A deploy that ships
+      # to another registry overrides these via agentSandbox.*Image / registryPrefix
+      # (e.g. the odin localhost:5000 deploy). The FREE images are a PURE set (no flags
+      # needed). The claude variant bakes the UNFREE claude-code CLI, so its .outPath
+      # forces an allowUnfree check — split out, resolved only under --impure +
+      # NIXPKGS_ALLOW_UNFREE. Image NAMES match the canonical agent-* convention.
+      ghcrImages = {
+        agentHost = ghcrImageRef "agent-host" pubImages.agent-host-image;
+        ui = ghcrImageRef "agent-sandbox-ui" pubImages.ui-image;
+        broker = ghcrImageRef "agent-broker" pubImages.broker-image;
+        scheduler = ghcrImageRef "agent-scheduler" pubImages.scheduler-image;
+        webhooks = ghcrImageRef "agent-webhooks" pubImages.webhooks-image;
+        sandboxOs = ghcrImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
+        sandboxOsOverlay = ghcrImageRef "agent-sandbox-os-overlay" pubImages.sandbox-os-overlay-image;
+      };
+      ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
@@ -173,48 +220,6 @@
           uiImage = import ./pkgs/ui-image {
             inherit pkgs lib n2c ui;
           };
-
-          # CONTENT TAG — the image's Nix store hash (12 chars), taken from its
-          # .outPath basename WITHOUT building it (eval only). Identical to what the
-          # publish-images workflow computes (`nix eval --raw .#<attr>.outPath | …`),
-          # because these are the SAME in-scope derivations the flake exposes as
-          # packages.<attr>-image. So a manifest built from this flake references the
-          # exact tag the workflow pushed — same content → same tag → no rebuild.
-          #
-          # unsafeDiscardStringContext is REQUIRED: interpolating `img.outPath` attaches
-          # the image derivation as string CONTEXT, and that context survives baseNameOf
-          # + substring — so without discarding it the tag string carries every image as
-          # a build dependency, and `nix build .#ghcr-image-refs` (or any derivation that
-          # embeds these refs) would REALISE all the images just to read their hashes.
-          # We only want the hash as TEXT for a registry ref; the images are built+pushed
-          # separately by the publish workflow. Discarding the context is exactly correct.
-          contentTag = img:
-            builtins.unsafeDiscardStringContext
-              (builtins.substring 0 12 (builtins.baseNameOf img.outPath));
-          # Default registry for the published images. Content-tagged ghcr refs.
-          ghcrPrefix = "ghcr.io/chadac/scooter/";
-          ghcrImage = name: img: "${ghcrPrefix}${name}:${contentTag img}";
-          # The content-tagged ghcr image refs (the kubenix DEFAULTS). A deploy that
-          # ships to another registry overrides these via agentSandbox.*Image /
-          # registryPrefix (e.g. the odin localhost:5000 deploy). The FREE images are
-          # in a PURE set (evaluable with no flags). The claude variant bakes the
-          # UNFREE claude-code CLI, so its .outPath forces an allowUnfree check — it's
-          # split out and only resolved under --impure + NIXPKGS_ALLOW_UNFREE (like the
-          # publish workflow), so pure consumers of ghcrImages stay pure.
-          # Image NAMES match the canonical agent-* convention deploy.sh + the kubenix
-          # module already use (agent-broker, agent-sandbox-ui, …), so ghcr + the local
-          # registry + the manifest all agree.
-          ghcrImages = {
-            agentHost = ghcrImage "agent-host" agentHostImageBuilder.image;
-            ui = ghcrImage "agent-sandbox-ui" uiImage.image;
-            broker = ghcrImage "agent-broker" brokerImage.image;
-            scheduler = ghcrImage "agent-scheduler" schedulerImage.image;
-            webhooks = ghcrImage "agent-webhooks" webhooksImage.image;
-            sandboxOs = ghcrImage "agent-sandbox-os" sandboxOsImage.image;
-            sandboxOsOverlay = ghcrImage "agent-sandbox-os-overlay" sandboxOsOverlayImage.image;
-          };
-          # The unfree claude variant's ghcr ref (impure — see above).
-          ghcrImageClaude = ghcrImage "agent-host-claude" agentHostImageClaudeBuilder.image;
 
           # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
           # kubenix. `mkPlatform` takes the full `agentSandbox` config for a render, so
@@ -368,11 +373,31 @@
         # kubenix modules: SandboxTemplate / SandboxWarmPool / Sandbox generators
         # (+ gateway/broker/webhooks Deployments, post-PoC). See modules/.
         kubenixModules.agentSandbox = ./modules;
-        # The full platform module (agent-host Deployment + broker + webhooks +
-        # RBAC). Import this into a host flake's kubenix eval to deploy the
-        # platform. `default` is the conventional entry point.
+        # The bare platform module — image refs default to the floating
+        # `${registryPrefix}<name>:latest`. Import this if you want to pin images
+        # yourself. `platform` keeps the raw module; `default` (below) adds the
+        # content pins so the CONVENTIONAL entry point is reproducible by default.
         kubenixModules.platform = ./modules/platform.nix;
-        kubenixModules.default = ./modules/platform.nix;
+        # The conventional entry point: the platform module WITH the published-image
+        # defaults set to their CONTENT TAGS (ghcrImages), not :latest. So a host
+        # flake that imports scooter.kubenixModules.default and renders gets a
+        # reproducible pin out of the box — same content → same tag → no needless pod
+        # roll — instead of a floating :latest. The tags are x86_64-pinned pure text
+        # (see ghcrImages), so this module stays system-independent. Override any
+        # agentSandbox.*Image / registryPrefix to ship elsewhere.
+        kubenixModules.default = { lib, ... }: {
+          imports = [ ./modules/platform.nix ];
+          # Per-leaf mkDefault so a consumer's explicit override of any single image
+          # still wins (a set-level mkDefault would clobber sibling agentSandbox config).
+          config.agentSandbox = {
+            agentHostImage = lib.mkDefault ghcrImages.agentHost;
+            sandboxImage = lib.mkDefault ghcrImages.sandboxOs;
+            uiImage = lib.mkDefault ghcrImages.ui;
+            broker.image = lib.mkDefault ghcrImages.broker;
+            webhooks.image = lib.mkDefault ghcrImages.webhooks;
+            scheduler.image = lib.mkDefault ghcrImages.scheduler;
+          };
+        };
       };
     };
 }
