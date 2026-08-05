@@ -153,7 +153,7 @@
           # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
           # services). Built from the shared modules/sandbox-os config.
           sandboxOsImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib nixStubsLib uvNix;
+            inherit pkgs lib n2c nixStubsLib uvNix;
           };
 
           # Same image with the read-only-base + writable-upper local-overlay store
@@ -161,7 +161,7 @@
           # real container — where the lower is the baked store and there's no VM
           # register-nix-paths — to prove the prod topology the nixosTest can't.
           sandboxOsOverlayImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib nixStubsLib;
+            inherit pkgs lib n2c nixStubsLib;
             name = "agent-sandbox-os-overlay";
             extraModules = [ { programs.overlayStore.enable = true; } ];
           };
