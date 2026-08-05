@@ -153,4 +153,8 @@ def test_resolve_order():
     dep = SandboxResources(requests={"cpu": "1"})
     assert resolve_resources(conv, dep) is conv
     assert resolve_resources(None, dep) is dep
-    assert resolve_resources(None, None).to_dict() == {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}
+    # Platform default is Guaranteed QoS: requests == limits on cpu AND memory.
+    assert resolve_resources(None, None).to_dict() == {
+        "requests": {"cpu": "2", "memory": "4Gi"},
+        "limits": {"cpu": "2", "memory": "4Gi"},
+    }
