@@ -108,6 +108,10 @@ let
 
   toplevel = nixos.config.system.build.toplevel;
 
+  # The Nix path-registration for the WHOLE system closure. n2c ships the store
+  # *paths* but we need a REAL, registered, read-only Nix store baked in.
+  closure = pkgs.closureInfo { rootPaths = [ toplevel ]; };
+
   # Files baked at the image root (outside the Nix store): the init symlink,
   # writable machine-id, and the dirs systemd expects to exist at first boot.
   # (Under dockerTools these last three were created in `extraCommands`; n2c has
@@ -123,6 +127,22 @@ let
     mkdir -p $out/var/log $out/run $out/tmp
     chmod 1777 $out/tmp
   '';
+
+  # The baked Nix DB + the FULL /nix/var/nix state layout, at the image root. We do
+  # NOT use n2c's `initializeNixDatabase`: that only bakes db/db.sqlite + gcroots/
+  # docker + .links, but the local-overlay store's read-only lower opens the store
+  # with `root=/`, which expects the COMPLETE state dir the real `nix-store
+  # --load-db` produces (db/{schema,reserved,big-lock}, profiles/, temproots/, …).
+  # With those missing, the in-pod converge failed "database does not exist, and
+  # cannot be created in read-only mode". So reproduce the exact hand-rolled recipe
+  # the dockerTools image used (proven against overlay-store.nix + the MWE): load the
+  # closure into a real DB (which lays down the full state layout) and create the
+  # optimiser's .links dir. See overlay-store.nix + NixOS/nix#11840.
+  nixDb = pkgs.runCommand "sandbox-os-nixdb" { } ''
+    export NIX_STATE_DIR=$out/nix/var/nix
+    mkdir -p $out/nix/var/nix $out/nix/store/.links
+    ${pkgs.buildPackages.nix}/bin/nix-store --load-db < ${closure}/registration
+  '';
 in
 {
   inherit toplevel nixos;
@@ -131,21 +151,13 @@ in
   image = n2c.buildImage {
     inherit name tag;
 
-    # rootExtras ships /sbin/init, /etc/machine-id and the writable boot dirs. Its
-    # /sbin/init symlink references ${toplevel}, so the WHOLE NixOS system closure
-    # is pulled into the image (and thus into the baked Nix DB below) without
-    # unpacking the system root at /.
-    copyToRoot = [ rootExtras ];
+    # rootExtras ships /sbin/init, /etc/machine-id and the writable boot dirs; nixDb
+    # ships the baked Nix DB + full /nix/var/nix state layout. rootExtras's /sbin/init
+    # symlink references ${toplevel}, so the WHOLE NixOS system closure is pulled into
+    # the image without unpacking the system root at /. (We bake the DB ourselves via
+    # nixDb rather than n2c's initializeNixDatabase — see the nixDb comment for why.)
+    copyToRoot = [ rootExtras nixDb ];
     maxLayers = 100;
-
-    # Register the whole closure into a baked, read-only Nix DB and create the
-    # optimiser's /nix/store/.links dir. The local-overlay store's read-only lower
-    # REQUIRES both — it cannot create them read-only (NixOS/nix#11840) — and a
-    # registered DB makes nix queries against the baked store correct in general.
-    # This is n2c's built-in replacement for the old hand-rolled `extraCommands`
-    # (nix-store --load-db + mkdir .links); it derives the DB from copyToRoot's
-    # closure and additionally normalizes registrationTime=0 for reproducibility.
-    initializeNixDatabase = true;
 
     config = {
       # Boot systemd PID 1 via the NixOS stage-2 init directly. (We also ship a
