@@ -494,22 +494,51 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      # Comment on the PR listing the failed shard(s) — ONE sticky comment, only when
-      # something failed (no noise on green). The shard→specs mapping comes from the
-      # distribute matrix so the comment names the actual specs in a failed shard.
-      - name: comment failed shards
-        if: needs.e2e-shard.result != 'success' && github.event_name == 'pull_request'
+      # ONE sticky PR comment reflecting the CURRENT e2e result. On failure it lists the
+      # failing shard(s)/specs; on success it RESOLVES a prior failure comment to a green
+      # "all pass" (so a fail→fix→pass sequence doesn't leave a stale ❌ sitting there).
+      # It never CREATES a fresh comment on green (no noise on an always-green PR) — it
+      # only updates one that already exists. Always runs so the green branch can fire.
+      - name: comment e2e shard result
+        if: always() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MATRIX: ${{ needs.e2e-distribute.outputs.matrix }}
+          SHARDS_RESULT: ${{ needs.e2e-shard.result }}
+          DISTRIBUTE_RESULT: ${{ needs.e2e-distribute.result }}
           # The per-shard results as JSON (GitHub exposes only the aggregate `result`
           # on `needs`, so we reconstruct per-shard pass/fail from the uploaded report
           # artifacts: a shard with a report + no failing test passed; a shard whose
           # report is missing or has failures failed).
         run: |
           set -euo pipefail
-          # Determine which shards failed: parse each shard report for a failed/timedOut
-          # test; a MISSING report means that shard crashed before writing one → failed.
+          marker="<!-- e2e-shard-report -->"
+          # Is the whole e2e green this run?
+          if [ "$SHARDS_RESULT" = "success" ] && [ "$DISTRIBUTE_RESULT" = "success" ]; then
+            passed=1
+          else
+            passed=0
+          fi
+
+          # Find our existing sticky comment (if any) up front — on green we only UPDATE
+          # it (never create), so a green PR that never failed stays comment-free.
+          existing=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.number }}/comments" \
+            --jq "[.[] | select(.body | contains(\"$marker\"))][0].id" 2>/dev/null || true)
+
+          if [ "$passed" = "1" ]; then
+            # GREEN: only resolve a previously-posted failure comment; don't create noise.
+            if [ -z "${existing:-}" ] || [ "$existing" = "null" ]; then
+              echo "e2e green and no prior sticky comment — nothing to post."
+              exit 0
+            fi
+            printf '%s\n\n### ✅ e2e (Playwright) — all shards pass\n\nEvery shard is green on the latest run.\n' "$marker" > body.md
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat body.md)" >/dev/null
+            echo "resolved sticky e2e comment to green"
+            exit 0
+          fi
+
+          # FAILURE: determine which shards failed and render the detail. A MISSING report
+          # means that shard crashed before writing one → failed.
           node -e '
             const fs = require("fs");
             const matrix = JSON.parse(process.env.MATRIX).include;
@@ -551,10 +580,7 @@ jobs:
             fs.writeFileSync("comment.md", body);
           '
           # One sticky comment: edit the existing bot comment if present, else create.
-          marker="<!-- e2e-shard-report -->"
           printf '%s\n\n' "$marker" | cat - comment.md > body.md
-          existing=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.number }}/comments" \
-            --jq "[.[] | select(.body | contains(\"$marker\"))][0].id" 2>/dev/null || true)
           if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat body.md)" >/dev/null
           else
