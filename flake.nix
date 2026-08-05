@@ -174,6 +174,38 @@
             inherit pkgs lib n2c ui;
           };
 
+          # CONTENT TAG — the image's Nix store hash (12 chars), taken from its
+          # .outPath basename WITHOUT building it (eval only). Identical to what the
+          # publish-images workflow computes (`nix eval --raw .#<attr>.outPath | …`),
+          # because these are the SAME in-scope derivations the flake exposes as
+          # packages.<attr>-image. So a manifest built from this flake references the
+          # exact tag the workflow pushed — same content → same tag → no rebuild.
+          contentTag = img: builtins.substring 0 12 (builtins.baseNameOf img.outPath);
+          # Default registry for the published images. Content-tagged ghcr refs.
+          ghcrPrefix = "ghcr.io/chadac/scooter/";
+          ghcrImage = name: img: "${ghcrPrefix}${name}:${contentTag img}";
+          # The content-tagged ghcr image refs (the kubenix DEFAULTS). A deploy that
+          # ships to another registry overrides these via agentSandbox.*Image /
+          # registryPrefix (e.g. the odin localhost:5000 deploy). The FREE images are
+          # in a PURE set (evaluable with no flags). The claude variant bakes the
+          # UNFREE claude-code CLI, so its .outPath forces an allowUnfree check — it's
+          # split out and only resolved under --impure + NIXPKGS_ALLOW_UNFREE (like the
+          # publish workflow), so pure consumers of ghcrImages stay pure.
+          # Image NAMES match the canonical agent-* convention deploy.sh + the kubenix
+          # module already use (agent-broker, agent-sandbox-ui, …), so ghcr + the local
+          # registry + the manifest all agree.
+          ghcrImages = {
+            agentHost = ghcrImage "agent-host" agentHostImageBuilder.image;
+            ui = ghcrImage "agent-sandbox-ui" uiImage.image;
+            broker = ghcrImage "agent-broker" brokerImage.image;
+            scheduler = ghcrImage "agent-scheduler" schedulerImage.image;
+            webhooks = ghcrImage "agent-webhooks" webhooksImage.image;
+            sandboxOs = ghcrImage "agent-sandbox-os" sandboxOsImage.image;
+            sandboxOsOverlay = ghcrImage "agent-sandbox-os-overlay" sandboxOsOverlayImage.image;
+          };
+          # The unfree claude variant's ghcr ref (impure — see above).
+          ghcrImageClaude = ghcrImage "agent-host-claude" agentHostImageClaudeBuilder.image;
+
           # Render the platform manifests (namespace, agent-host Deployment +
           # RBAC) with kubenix. `nix build .#platform-manifests` -> a YAML file.
           platform = kubenix.evalModules.${system} {
@@ -182,6 +214,9 @@
               kubenix.project = "agent-sandbox";
               kubernetes.version = "1.31";
               agentSandbox = {
+                # E2E/cluster-test: images are SIDE-LOADED into k3s, so use bare local
+                # names (override the module's ghcr default registryPrefix back to "").
+                registryPrefix = "";
                 agentHostImage = "agent-host:latest";
                 sandboxImage = "agent-sandbox-os:latest";
                 agent.skills = scooterSkills; # ship the ./skills/*.md set
@@ -249,6 +284,14 @@
 
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             platform-manifests = platform.config.kubernetes.resultYAML;
+
+            # nix build .#ghcr-image-refs  ->  JSON { <name> = "ghcr.io/…:<content-tag>" }
+            # The content-tagged ghcr refs for every published image, computed from
+            # the derivation outPath at EVAL time (no build). Identical to what the
+            # publish-images workflow pushes. A deploy config (or the ghcr platform
+            # module default) reads these so the manifest points at the exact pushed
+            # tag — same content → same tag → no needless pod roll.
+            ghcr-image-refs = pkgs.writeText "ghcr-image-refs.json" (builtins.toJSON ghcrImages);
           };
 
           # Dev shell: everything needed to build, test (Tier 1-3), and drive a

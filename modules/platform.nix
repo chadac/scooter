@@ -53,14 +53,18 @@ in
     };
     registryPrefix = mkOption {
       type = types.str;
-      default = "";
+      default = "ghcr.io/chadac/scooter/";
       example = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myorg/";
       description = ''
         Registry/repository prefix prepended to the default image names
-        (agent-host, agent-broker, agent-webhooks, agent-sandbox-os). Empty =
-        bare local names (`agent-host:latest`) for kind/k3s where images are
-        side-loaded. Set to an ECR/registry prefix (WITH trailing slash) for a
-        real cluster. Per-image options below override this entirely.
+        (agent-host, agent-broker, agent-webhooks, agent-sandbox-os). Defaults to
+        the published ghcr images (the publish-images workflow pushes them there).
+        Set to "" for bare local names (`agent-host:latest`) when images are
+        side-loaded (kind/k3s e2e), or to an ECR/registry prefix (WITH trailing
+        slash) for another cluster. Per-image options below override this entirely.
+
+        For a REPRODUCIBLE pin, override the per-image options with the content tags
+        from `nix build .#ghcr-image-refs` instead of the floating :latest below.
       '';
     };
     pullPolicy = mkOption {
