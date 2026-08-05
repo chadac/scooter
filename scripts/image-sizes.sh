@@ -2,12 +2,11 @@
 # image-sizes.sh — measure the on-disk size of every shipped container image and
 # emit it as JSON, for the CI image-size benchmark (report + compare vs origin/main).
 #
-# Two image kinds, two honest measures of "how big is the thing we push":
-#   * tarball images (sandbox-os*) build a single .tar.gz FILE — the pushed artifact
-#     IS that file, so we measure its byte size directly.
-#   * nix2container images (agent-host/broker/webhooks/ui) build a recipe *.json that
-#     REFERENCES the store paths that become layers — the pushed bytes are that
-#     closure, so we measure `nix path-info -S` (total closure size) of the recipe.
+# Every image is nix2container: the build output is a recipe *.json that REFERENCES
+# the store paths which become the pushed layers — so the honest "how big is the
+# thing we push" is `nix path-info -S` (total closure size) of that recipe, NOT the
+# recipe file's own bytes (which is a tiny ~80KB JSON). Measuring the file (an old
+# tarball-era shortcut) reported sandbox-os as ~empty once it became n2c.
 #
 # Output (stdout): a JSON array [ {"name","bytes","kind"}, ... ], sorted by name.
 # Build logs + progress go to stderr so stdout stays pure JSON (pipe to jq / a file).
@@ -21,11 +20,12 @@
 set -euo pipefail
 
 # attr -> measurement kind. Keep in sync with flake.nix packages.*-image.
-#   tarball  = the build output is a .tar.gz file; size = that file's bytes.
-#   closure  = the build output is a nix2container recipe; size = `nix path-info -S`.
+#   closure = the build output is a nix2container recipe; size = `nix path-info -S`.
+# (All images are n2c now; the `tarball` kind was retired with sandbox-os's n2c
+# conversion — kept as a recognized value so an explicit entry wouldn't error.)
 declare -A KIND=(
-  [sandbox-os-image]=tarball
-  [sandbox-os-overlay-image]=tarball
+  [sandbox-os-image]=closure
+  [sandbox-os-overlay-image]=closure
   [agent-host-image]=closure
   [broker-image]=closure
   [webhooks-image]=closure
