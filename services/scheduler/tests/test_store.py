@@ -68,6 +68,34 @@ async def test_due_tasks_selects_only_overdue_enabled(store):
 
 
 @pytest.mark.asyncio
+async def test_claim_due_advances_next_run_atomically(store):
+    """claim_due must ADVANCE next_run_at as part of claiming, so a second claim in
+    the same instant returns nothing — the multi-replica double-fire guard. (Without
+    this, due_tasks releases its row lock before _fire reschedules, and a second
+    replica re-selects the still-due row.)"""
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(hours=1)
+    t = await store.create_task(title="due", prompt="p", cron="* * * * *", timezone_="UTC", owner="a", enabled=True)
+    await store.reschedule(t.id, last_run_at=past, next_run_at=past)
+
+    # First claim gets the task AND advances its next_run_at into the future.
+    first = await store.claim_due(now)
+    assert {c.id for c in first} == {t.id}
+
+    # A second claim at the same `now` gets nothing — the row is no longer due.
+    second = await store.claim_due(now)
+    assert second == []
+
+    # And the row's next_run_at was moved forward (to the next cron minute).
+    # SQLite returns naive-UTC datetimes; normalize to aware-UTC for the comparison
+    # (the value is correct UTC either way — see the create-computes-next_run note).
+    row = await store.get_task(t.id)
+    next_at = row.next_run_at if row.next_run_at.tzinfo else row.next_run_at.replace(tzinfo=timezone.utc)
+    assert next_at > now
+    assert row.last_run_at is not None
+
+
+@pytest.mark.asyncio
 async def test_patch_recomputes_next_run(store):
     t = await store.create_task(title="x", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="a", enabled=True)
     # disabling clears next_run_at

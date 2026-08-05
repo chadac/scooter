@@ -89,16 +89,42 @@ class Store:
     # --- scheduler loop -----------------------------------------------------
 
     async def due_tasks(self, now: datetime) -> list[TaskRow]:
-        """Enabled tasks whose next_run_at is due (<= now). On Postgres this uses
-        FOR UPDATE SKIP LOCKED so multiple replicas don't double-fire (SQLite ignores
-        the lock clause — fine for single-replica dev)."""
+        """Enabled tasks whose next_run_at is due (<= now). Read-only selection — does
+        NOT claim. Use claim_due() in the scheduler loop; this is for tests/introspection."""
+        stmt = select(TaskRow).where(
+            TaskRow.enabled.is_(True), TaskRow.next_run_at.is_not(None), TaskRow.next_run_at <= now
+        )
+        async with self._session() as s:
+            return list((await s.scalars(stmt)).all())
+
+    async def claim_due(self, now: datetime) -> list[TaskRow]:
+        """ATOMICALLY claim all due tasks: in ONE transaction, select them
+        FOR UPDATE SKIP LOCKED and immediately advance each row's next_run_at (+ set
+        last_run_at) BEFORE releasing the lock. This is the multi-replica double-fire
+        guard: because the reschedule commits inside the locked transaction, a second
+        replica's claim_due sees the already-advanced next_run_at and skips the row —
+        whereas the old due_tasks() released its lock before _fire rescheduled, leaving
+        a window for a second replica to re-select the still-due row and double-fire.
+
+        On Postgres, FOR UPDATE SKIP LOCKED makes two concurrent claim_due calls take
+        disjoint rows. On SQLite (single-writer dev) the whole txn is serialized anyway,
+        so the same advance-before-release invariant holds. Returns the claimed rows
+        (with their PRE-advance schedule) for the loop to fire."""
         stmt = (
             select(TaskRow)
             .where(TaskRow.enabled.is_(True), TaskRow.next_run_at.is_not(None), TaskRow.next_run_at <= now)
             .with_for_update(skip_locked=True)
         )
         async with self._session() as s:
-            return list((await s.scalars(stmt)).all())
+            rows = list((await s.scalars(stmt)).all())
+            for row in rows:
+                # Advance BEFORE releasing the lock — this is what closes the double-fire
+                # window. next_run is computed from `now` (not the stale next_run_at) so a
+                # missed window fires once then advances forward (no backfill storm).
+                row.last_run_at = now
+                row.next_run_at = next_run(row.cron, row.timezone, now)
+            await s.commit()
+            return rows
 
     async def reschedule(self, task_id: str, *, last_run_at: datetime, next_run_at: datetime) -> None:
         async with self._session() as s:

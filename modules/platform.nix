@@ -205,6 +205,20 @@ in
       default = 1;
       description = "agent-host replicas (one host pod runs many goose sessions).";
     };
+    statelessReplicas = mkOption {
+      type = types.int;
+      default = 2;
+      description = ''
+        Replica count for the STATELESS platform services — the broker, scheduler,
+        webhooks, and UI. Defaults to 2 so a node drain / consolidation can't take a
+        whole service down (one replica stays up while the other reschedules). These
+        are safe to scale: state lives in the shared Postgres; the scheduler claims due
+        tasks atomically (FOR UPDATE SKIP LOCKED, no double-fire); the broker's only
+        in-memory state is a short-lived STS-credential cache that re-vends on a miss.
+        NOT applied to agent-host (per-conversation, single-replica via `replicas` + a
+        RWO state PVC) or openfga (its own store).
+      '';
+    };
     fakeAgent = mkOption {
       type = types.bool;
       default = false;
@@ -943,7 +957,9 @@ in
       deployments.ui = {
         metadata = { name = "ui"; namespace = cfg.namespace; };
         spec = {
-          replicas = 1;
+          # Stateless static nginx (+ agent-host proxy) — 2 replicas by default so
+          # consolidation can't take the UI offline.
+          replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "ui";
           template = {
             metadata.labels.app = "ui";
