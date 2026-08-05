@@ -14,6 +14,10 @@ import { sessionStore, visibleSessions, nestSubagents, type Session } from "./se
 
 beforeEach(() => {
   globalThis.localStorage?.clear?.();
+  // The store is a module singleton with no per-test reset. A rename lock left set by
+  // a prior test (setEditing without a matching clearEditing) now FREEZES every later
+  // test's mergeFromServer (the whole-sidebar freeze), so clear it between tests.
+  sessionStore.clearEditing();
 });
 
 describe("deep-link selection (requestSelect)", () => {
@@ -82,7 +86,7 @@ describe("merge reference stability (sidebar re-render / flake root)", () => {
   });
 });
 
-describe("editing lock (rename in progress — the CI rename flake)", () => {
+describe("editing lock (rename in progress freezes the sidebar — the CI rename flake)", () => {
   const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
 
   it("a merge does NOT mutate the row being renamed (title/userTitled held)", () => {
@@ -104,19 +108,24 @@ describe("editing lock (rename in progress — the CI rename flake)", () => {
     expect(byId("edit-ref")).toBe(before);
   });
 
-  it("does NOT lock OTHER rows — only the one being renamed", () => {
+  it("freezes the WHOLE sidebar while renaming (a merge is a full no-op, not just per-row)", () => {
     sessionStore.mergeFromServer([
       { id: "lock-a", title: "A", createdAt: 1 },
       { id: "lock-b", title: "B", createdAt: 2 },
     ]);
     sessionStore.setEditing("lock-a");
-    // A concurrent title change for B (not being edited) applies normally.
+    // A background merge that changes BOTH the editing row AND another row must be
+    // dropped entirely — per-row locking wasn't enough: the merge still re-rendered
+    // <Sidebar> and that reconciliation detached the open input / swallowed the
+    // open-click (the CI flake, mode "input never appears"). So while any rename is
+    // open, mergeFromServer no-ops for every row; the next poll after clearEditing
+    // reconciles server-truth.
     sessionStore.mergeFromServer([
       { id: "lock-a", title: "A changed", createdAt: 1 },
       { id: "lock-b", title: "B changed", createdAt: 2 },
     ]);
-    expect(byId("lock-a")?.title).toBe("A"); // locked
-    expect(byId("lock-b")?.title).toBe("B changed"); // free
+    expect(byId("lock-a")?.title).toBe("A"); // editing row held
+    expect(byId("lock-b")?.title).toBe("B"); // other rows ALSO held (whole-sidebar freeze)
   });
 
   it("applies server-truth again once the rename clears", () => {

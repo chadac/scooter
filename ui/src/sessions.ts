@@ -255,21 +255,22 @@ export const sessionStore = {
     convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string; userTitled?: boolean; starred?: boolean }>,
   ) {
     if (convs.length === 0) return;
+    // RENAME IN PROGRESS: freeze the WHOLE sidebar. While the user has an inline rename
+    // input open (editingId set) the background merge (10s poll + SSE upsert) must not
+    // run at all — not even to update OTHER rows — because any setState here re-renders
+    // <Sidebar> and its reconciliation can detach the open input or swallow the click
+    // that's opening it (the CI rename flake, in two modes: input detaches mid-edit /
+    // input never appears). A rename takes a couple seconds; deferring the merge until
+    // it commits/cancels (clearEditing, which triggers no re-merge itself — the next
+    // 10s poll / SSE frame reconciles) is imperceptible and makes the flake impossible.
+    // Per-row locking wasn't enough: it kept the editing row's data stable but the
+    // merge still re-rendered the sidebar, and that reconciliation was the disruptor.
+    if (state.editingId !== undefined) return;
     const serverIds = new Set(convs.map((c) => c.id));
     const byId = new Map<string, Session>();
     for (const s of state.sessions) byId.set(s.id, s);
     for (const c of convs) {
       const existing = byId.get(c.id);
-      // EDITING LOCK: the user is renaming THIS row right now (the inline input is
-      // open). A merge must not touch it — not its title, not its userTitled, not its
-      // object reference — or the row re-renders and the open <input> detaches under
-      // the user's cursor (the CI rename flake). The row's server-truth is applied
-      // when the rename commits/cancels (clearEditing) and the next merge runs. Keep
-      // the EXISTING object as-is so React.memo skips the row entirely.
-      if (existing && c.id === state.editingId) {
-        byId.set(c.id, existing);
-        continue;
-      }
       // Title precedence: a real server title wins; but a local non-default
       // title (e.g. derived from the first message) must NOT be clobbered by the
       // server's "New chat" placeholder — the server often hasn't learned the
