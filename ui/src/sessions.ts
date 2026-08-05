@@ -91,6 +91,13 @@ type State = {
    *  conversation may not be in the list yet (it arrives via the poll/stream for a
    *  webhook-created thread the user has never opened). Cleared once selected. */
   pendingSelect?: string;
+  /** The conversation whose title the user is CURRENTLY renaming (the open inline
+   *  input in the sidebar). Transient, never persisted. While set, mergeFromServer
+   *  leaves this row's title/userTitled/identity untouched and keeps its object
+   *  reference stable — so a background merge (10s poll + SSE) can't mutate the row,
+   *  re-render it, and detach the open rename input mid-edit (the CI flake). Cleared
+   *  when the rename commits/cancels. */
+  editingId?: string;
 };
 
 /** A brand-new, untouched conversation (default title, no messages yet). */
@@ -248,6 +255,17 @@ export const sessionStore = {
     convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string; userTitled?: boolean; starred?: boolean }>,
   ) {
     if (convs.length === 0) return;
+    // RENAME IN PROGRESS: freeze the WHOLE sidebar. While the user has an inline rename
+    // input open (editingId set) the background merge (10s poll + SSE upsert) must not
+    // run at all — not even to update OTHER rows — because any setState here re-renders
+    // <Sidebar> and its reconciliation can detach the open input or swallow the click
+    // that's opening it (the CI rename flake, in two modes: input detaches mid-edit /
+    // input never appears). A rename takes a couple seconds; deferring the merge until
+    // it commits/cancels (clearEditing, which triggers no re-merge itself — the next
+    // 10s poll / SSE frame reconciles) is imperceptible and makes the flake impossible.
+    // Per-row locking wasn't enough: it kept the editing row's data stable but the
+    // merge still re-rendered the sidebar, and that reconciliation was the disruptor.
+    if (state.editingId !== undefined) return;
     const serverIds = new Set(convs.map((c) => c.id));
     const byId = new Map<string, Session>();
     for (const s of state.sessions) byId.set(s.id, s);
@@ -395,6 +413,24 @@ export const sessionStore = {
       ...state,
       sessions: state.sessions.map((x) => (x.id === id ? { ...x, title } : x)),
     });
+  },
+
+  /** Mark a conversation as being renamed (the sidebar's inline input is open). While
+   *  set, mergeFromServer leaves this row untouched (title/identity/reference), so a
+   *  background poll/SSE can't re-render it and detach the open input mid-edit. No-op
+   *  if already the editing row. */
+  setEditing(id: string) {
+    if (state.editingId === id) return;
+    setState({ ...state, editingId: id });
+  },
+
+  /** Clear the rename lock (the inline input committed or cancelled). The next merge
+   *  then applies any server-truth that arrived while editing. No-op if not editing
+   *  the given id (a stale clear from a row that isn't the current one). */
+  clearEditing(id?: string) {
+    if (state.editingId === undefined) return;
+    if (id !== undefined && state.editingId !== id) return;
+    setState({ ...state, editingId: undefined });
   },
 
   /** User rename: optimistically set the title AND lock it (userTitled) so the

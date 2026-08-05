@@ -7,6 +7,7 @@
  */
 
 import { memo, useState } from "react";
+import { flushSync } from "react-dom";
 
 import {
   sessionStore,
@@ -52,20 +53,43 @@ const SessionRow = memo(function SessionRow({
   depth,
   childCount,
   active,
+  editing,
   labelMode,
 }: {
   session: import("./sessions.js").Session;
   depth: number;
   childCount: number;
   active: boolean;
+  // Whether THIS row's inline rename input is open. Owned by the STORE (editingId),
+  // NOT local useState — see openRename below. Passed down from <Sidebar> so the row
+  // re-derives "am I being renamed?" from the store on every render, surviving any
+  // remount/reconcile the 10s merge poll triggers (the CI rename flake: local editing
+  // state was dropped when a background merge re-rendered/remounted the row mid-edit).
+  editing: boolean;
   labelMode: LabelMode;
 }) {
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
+
+  // Open the rename. flushSync forces React to COMMIT the editing state before the
+  // click handler returns, so the input mounts SYNCHRONOUSLY within the event rather
+  // than on a later, interruptible render. This is HARDENING, not a bug fix: the
+  // state machine is already correct (proven deterministically in jsdom — the input
+  // opens + survives a same-tick merge storm with or without flushSync). But on a
+  // severely CPU-starved main thread (GitHub's 2-core runner, mid agent-turn render
+  // storm) a deferred commit can be delayed long enough that a test's next action —
+  // or a real user's follow-up click — races the not-yet-mounted input. Committing
+  // in-handler shrinks that window to zero. Seeding draft from the current title
+  // (the store lock freezes this row in mergeFromServer, so the title can't shift).
+  const openRename = () => {
+    flushSync(() => {
+      setDraft(s.title);
+      sessionStore.setEditing(s.id);
+    });
+  };
 
   const commitRename = () => {
     const next = draft.trim();
-    setEditing(false);
+    sessionStore.clearEditing(s.id); // close the input (store-owned)
     if (!next || next === s.title) return;
     sessionStore.renameSession(s.id, next); // optimistic + lock
     void renameConversation(agentHostConfig, s.id, next);
@@ -123,19 +147,28 @@ const SessionRow = memo(function SessionRow({
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          // Commit only on a blur that moved focus to a REAL element (a genuine
-          // click-away). A blur with no relatedTarget is almost always a spurious
-          // re-render blur — the sidebar reconciled because the agent's <title>
-          // update arrived on the merge poll mid-rename — which would otherwise
-          // commit + unmount the input under the user's cursor (the rename detaches
-          // mid-edit, a CI-timing flake). Enter/Escape remain the explicit commit/
-          // cancel, so nothing is lost.
-          onBlur={(e) => { if (e.relatedTarget) commitRename(); }}
+          // Commit on a genuine click-away, but NOT on a spurious re-render blur.
+          // Under merge-poll contention the sidebar reconciles mid-rename and the
+          // input transiently BLURS — focus lands on a SIBLING button IN THIS SAME ROW
+          // (the Star/Rename/Delete buttons re-render) — even though the user hasn't
+          // left. A synchronous onBlur commit there would commit + unmount the input
+          // under the user's cursor (the CI flake: fill succeeds, then Enter hits a
+          // detached node). So commit ONLY when focus moved to an element OUTSIDE this
+          // row (a real navigation away — the thread, another row, the composer). A
+          // blur with no relatedTarget, or one landing back inside this row, is a
+          // reconciliation artifact and is ignored. Enter/Escape remain the explicit
+          // commit/cancel paths, so nothing is lost.
+          onBlur={(e) => {
+            const movedOutOfRow =
+              e.relatedTarget instanceof Node &&
+              !e.currentTarget.closest('[data-testid="session-item"]')?.contains(e.relatedTarget);
+            if (movedOutOfRow) commitRename();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") commitRename();
             else if (e.key === "Escape") {
               setDraft(s.title);
-              setEditing(false);
+              sessionStore.clearEditing(s.id);
             }
           }}
           className="min-w-0 flex-1 rounded border bg-background px-2 py-1.5 text-sm"
@@ -143,10 +176,7 @@ const SessionRow = memo(function SessionRow({
       ) : (
         <button
           onClick={() => sessionStore.switchTo(s.id)}
-          onDoubleClick={() => {
-            setDraft(s.title);
-            setEditing(true);
-          }}
+          onDoubleClick={openRename}
           className={"min-w-0 flex-1 truncate px-3 py-2 text-left " + (active ? "font-medium" : "")}
           title={`${s.title} — double-click to rename`}
         >
@@ -178,8 +208,7 @@ const SessionRow = memo(function SessionRow({
           title="Rename"
           onClick={(e) => {
             e.stopPropagation();
-            setDraft(s.title);
-            setEditing(true);
+            openRename();
           }}
           className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover:opacity-100"
         >
@@ -201,9 +230,19 @@ const SessionRow = memo(function SessionRow({
   );
 });
 
-export function Sidebar() {
+// memo()'d: <Sidebar> is a direct child of <RuntimeProvider>, which re-renders on
+// EVERY AG-UI event during an agent turn (streaming reasoning, tool calls, run
+// status, the sandbox "Starting…" poll). It takes no props and reads only its own
+// sessionStore (useSessions), so memo makes it re-render ONLY on store changes — not
+// on every parent tick. That parent-render storm was the surviving rename-flake
+// disruptor: while the agent streamed, the constant <Sidebar> re-renders raced the
+// rename-open click's store update, so the input intermittently never mounted (CI
+// mode "input never appears"). With the merge frozen during edit (mergeFromServer)
+// AND the parent storm gone, the ONLY thing that re-renders the sidebar mid-rename is
+// the user's own setEditing/clearEditing — nothing can drop or detach the input.
+export const Sidebar = memo(function Sidebar() {
   const state = useSessions();
-  const { currentId, scope, query, providerFilter, labelMode } = state;
+  const { currentId, editingId, scope, query, providerFilter, labelMode } = state;
   // Hierarchy: each parent followed by its subagents (depth 1). filteredSessions
   // applies Mine/provider/query; nestSubagents groups children under parents and
   // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
@@ -377,6 +416,7 @@ export function Sidebar() {
             depth={depth}
             childCount={childCount}
             active={s.id === currentId}
+            editing={s.id === editingId}
             labelMode={labelMode}
           />
         ))}
@@ -386,4 +426,4 @@ export function Sidebar() {
       <LinkedResources />
     </aside>
   );
-}
+});
