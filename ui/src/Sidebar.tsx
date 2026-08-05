@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { memo, useEffect, useState } from "react";
+import { memo, useState } from "react";
 
 import {
   sessionStore,
@@ -52,30 +52,35 @@ const SessionRow = memo(function SessionRow({
   depth,
   childCount,
   active,
+  editing,
   labelMode,
 }: {
   session: import("./sessions.js").Session;
   depth: number;
   childCount: number;
   active: boolean;
+  // Whether THIS row's inline rename input is open. Owned by the STORE (editingId),
+  // NOT local useState — see openRename below. Passed down from <Sidebar> so the row
+  // re-derives "am I being renamed?" from the store on every render, surviving any
+  // remount/reconcile the 10s merge poll triggers (the CI rename flake: local editing
+  // state was dropped when a background merge re-rendered/remounted the row mid-edit).
+  editing: boolean;
   labelMode: LabelMode;
 }) {
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
 
-  // Signal the rename to the STORE while the inline input is open: mergeFromServer
-  // then leaves THIS row untouched (title/identity/object reference), so a background
-  // poll/SSE can't re-render the row and detach the open input mid-edit (the CI flake).
-  // Cleared on unmount too, so a row removed while editing never leaves a stale lock.
-  useEffect(() => {
-    if (editing) sessionStore.setEditing(s.id);
-    else sessionStore.clearEditing(s.id);
-    return () => sessionStore.clearEditing(s.id);
-  }, [editing, s.id]);
+  // Open the rename: set the store lock SYNCHRONOUSLY (not via a useEffect, which ran
+  // a paint later — a merge landing in that window either dropped the open-click or
+  // detached the just-mounted input). Seeding draft from the current title here (the
+  // lock immediately freezes this row in mergeFromServer, so the title can't shift).
+  const openRename = () => {
+    setDraft(s.title);
+    sessionStore.setEditing(s.id);
+  };
 
   const commitRename = () => {
     const next = draft.trim();
-    setEditing(false);
+    sessionStore.clearEditing(s.id); // close the input (store-owned)
     if (!next || next === s.title) return;
     sessionStore.renameSession(s.id, next); // optimistic + lock
     void renameConversation(agentHostConfig, s.id, next);
@@ -145,7 +150,7 @@ const SessionRow = memo(function SessionRow({
             if (e.key === "Enter") commitRename();
             else if (e.key === "Escape") {
               setDraft(s.title);
-              setEditing(false);
+              sessionStore.clearEditing(s.id);
             }
           }}
           className="min-w-0 flex-1 rounded border bg-background px-2 py-1.5 text-sm"
@@ -153,10 +158,7 @@ const SessionRow = memo(function SessionRow({
       ) : (
         <button
           onClick={() => sessionStore.switchTo(s.id)}
-          onDoubleClick={() => {
-            setDraft(s.title);
-            setEditing(true);
-          }}
+          onDoubleClick={openRename}
           className={"min-w-0 flex-1 truncate px-3 py-2 text-left " + (active ? "font-medium" : "")}
           title={`${s.title} — double-click to rename`}
         >
@@ -188,8 +190,7 @@ const SessionRow = memo(function SessionRow({
           title="Rename"
           onClick={(e) => {
             e.stopPropagation();
-            setDraft(s.title);
-            setEditing(true);
+            openRename();
           }}
           className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover:opacity-100"
         >
@@ -213,7 +214,7 @@ const SessionRow = memo(function SessionRow({
 
 export function Sidebar() {
   const state = useSessions();
-  const { currentId, scope, query, providerFilter, labelMode } = state;
+  const { currentId, editingId, scope, query, providerFilter, labelMode } = state;
   // Hierarchy: each parent followed by its subagents (depth 1). filteredSessions
   // applies Mine/provider/query; nestSubagents groups children under parents and
   // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
@@ -387,6 +388,7 @@ export function Sidebar() {
             depth={depth}
             childCount={childCount}
             active={s.id === currentId}
+            editing={s.id === editingId}
             labelMode={labelMode}
           />
         ))}
