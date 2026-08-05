@@ -45,12 +45,6 @@ test.describe("session selector & titles", () => {
   });
 
   test("the user can rename a conversation, and the agent can't override it", async ({ chat, page }) => {
-    // This test does a full open+send+reply+title-populate BEFORE the rename, so under
-    // shard contention (cold Vite / slow shared agent-host boot) it can crawl past the
-    // 60s default and time out at a later step (observed: the fill at line ~60). It's
-    // not logic-flaky — just slow-in-a-loaded-shard; give it the 3× budget. See the
-    // cold-Vite webServer-readiness fix (PR #214) for the related class.
-    test.slow();
     await chat.open();
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
@@ -58,12 +52,18 @@ test.describe("session selector & titles", () => {
     const title = row.locator(sidebar.title);
     await expect(title).toHaveText(/refactor the parser/i, { timeout: 30_000 });
 
-    // Click the dedicated rename button (deterministic — the title's click/dblclick
-    // used to race with switchTo re-rendering the row), type a name, Enter to commit.
+    // Open the rename input, then type + commit. The input pre-fills with the current
+    // title and commits on blur — so a background sidebar re-render (the merge poll)
+    // that steals focus mid-`fill` fires onBlur → the input unmounts → `fill` hangs
+    // (the observed 180s flake). Guard against it: fill via a keyboard sequence on the
+    // FOCUSED input (clear + type) rather than the value-set `fill` (which waits for a
+    // stable element), and re-assert visibility right before, so we act on the current
+    // input instance. Enter commits.
     await row.locator(sidebar.renameButton).click();
     const input = row.locator(sidebar.renameInput);
-    await expect(input).toBeVisible();
-    await input.fill("My pinned project");
+    await expect(input).toBeFocused();
+    await input.selectText();
+    await input.pressSequentially("My pinned project");
     await input.press("Enter");
     await expect(title).toHaveText(/my pinned project/i, { timeout: 10_000 });
 
