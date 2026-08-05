@@ -44,13 +44,13 @@ test.describe("session selector & titles", () => {
     await expect(chat.assistantMessages().filter({ hasText: /<title>/i })).toHaveCount(0);
   });
 
-  // QUARANTINED (flaky, tracked): this test flakes under e2e-shard contention — the
-  // rename input intermittently doesn't appear / detaches when a background merge poll
-  // re-renders the sidebar mid-interaction. The reference-stability + blur fixes (#230,
-  // #231) reduced but did NOT eliminate it. Skipped so it stops blocking unrelated PRs
-  // while it's fixed in isolation. Do NOT delete — the rename+lock behavior it guards
-  // still matters. See todo/RENAME_E2E_FLAKE.md.
-  test.skip("the user can rename a conversation, and the agent can't override it", async ({ chat, page }) => {
+  // Previously QUARANTINED (flaked under e2e-shard contention — the rename input
+  // intermittently didn't appear / detached when a background merge poll re-rendered
+  // the sidebar mid-interaction). #230/#231 reduced it; the store-level editing lock
+  // (this branch) is the durable fix. Un-skipped so the flake-focus job actually
+  // exercises it ×5 under cross-spec contention (+ --trace on captures a trace if it
+  // still flakes). See todo/RENAME_E2E_FLAKE.md.
+  test("the user can rename a conversation, and the agent can't override it", async ({ chat, page }) => {
     await chat.open();
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
