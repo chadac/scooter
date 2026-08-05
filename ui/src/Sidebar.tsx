@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import {
   sessionStore,
@@ -40,8 +40,14 @@ function InfoTip({ text }: { text: string }) {
 }
 
 /** One conversation row: select, inline rename (double-click the title), star
- *  toggle, and delete-with-confirm (a stronger confirm when starred). */
-function SessionRow({
+ *  toggle, and delete-with-confirm (a stronger confirm when starred).
+ *
+ *  memo()'d: the 10s merge poll re-renders <Sidebar>, but a row whose Session
+ *  reference + primitive props are unchanged (mergeFromServer reuses the object when
+ *  nothing changed — see sameSession) skips re-render entirely. That's what keeps an
+ *  in-progress interaction (an open rename input, a hover) from being disrupted by a
+ *  background poll (the sidebar flake family). */
+const SessionRow = memo(function SessionRow({
   session: s,
   depth,
   childCount,
@@ -193,7 +199,7 @@ function SessionRow({
       )}
     </div>
   );
-}
+});
 
 export function Sidebar() {
   const state = useSessions();

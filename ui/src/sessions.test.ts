@@ -50,6 +50,38 @@ describe("deep-link selection (requestSelect)", () => {
   });
 });
 
+describe("merge reference stability (sidebar re-render / flake root)", () => {
+  const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
+
+  it("reuses the SAME object reference for an unchanged conversation across merges", () => {
+    sessionStore.mergeFromServer([{ id: "ref-a", title: "Alpha", createdAt: 1000 }]);
+    const first = byId("ref-a");
+    // A later poll returns the SAME conversation, unchanged.
+    sessionStore.mergeFromServer([{ id: "ref-a", title: "Alpha", createdAt: 1000 }]);
+    const second = byId("ref-a");
+    // Same reference -> React.memo skips the row -> no re-render disrupts an
+    // in-progress interaction (open rename / hover). This is the flake-family fix.
+    expect(second).toBe(first);
+  });
+
+  it("produces a NEW reference only for the conversation that actually changed", () => {
+    sessionStore.mergeFromServer([
+      { id: "ch-x", title: "X", createdAt: 1 },
+      { id: "ch-y", title: "Y", createdAt: 2 },
+    ]);
+    const x1 = byId("ch-x");
+    const y1 = byId("ch-y");
+    // Only Y's title changes on the next poll.
+    sessionStore.mergeFromServer([
+      { id: "ch-x", title: "X", createdAt: 1 },
+      { id: "ch-y", title: "Y renamed", createdAt: 2 },
+    ]);
+    expect(byId("ch-x")).toBe(x1); // unchanged -> same ref
+    expect(byId("ch-y")).not.toBe(y1); // changed -> new ref
+    expect(byId("ch-y")?.title).toBe("Y renamed");
+  });
+});
+
 describe("per-conversation model (model-switch scoping)", () => {
   it("setModel changes ONLY the target conversation, never the others", () => {
     sessionStore.mergeFromServer([{ id: "a" }, { id: "b" }, { id: "c" }]);
