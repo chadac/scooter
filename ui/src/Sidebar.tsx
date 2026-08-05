@@ -138,14 +138,23 @@ const SessionRow = memo(function SessionRow({
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          // Commit only on a blur that moved focus to a REAL element (a genuine
-          // click-away). A blur with no relatedTarget is almost always a spurious
-          // re-render blur — the sidebar reconciled because the agent's <title>
-          // update arrived on the merge poll mid-rename — which would otherwise
-          // commit + unmount the input under the user's cursor (the rename detaches
-          // mid-edit, a CI-timing flake). Enter/Escape remain the explicit commit/
-          // cancel, so nothing is lost.
-          onBlur={(e) => { if (e.relatedTarget) commitRename(); }}
+          // Commit on a genuine click-away, but NOT on a spurious re-render blur.
+          // Under merge-poll contention the sidebar reconciles mid-rename and the
+          // input transiently BLURS — focus lands on a SIBLING button IN THIS SAME ROW
+          // (the Star/Rename/Delete buttons re-render) — even though the user hasn't
+          // left. A synchronous onBlur commit there would commit + unmount the input
+          // under the user's cursor (the CI flake: fill succeeds, then Enter hits a
+          // detached node). So commit ONLY when focus moved to an element OUTSIDE this
+          // row (a real navigation away — the thread, another row, the composer). A
+          // blur with no relatedTarget, or one landing back inside this row, is a
+          // reconciliation artifact and is ignored. Enter/Escape remain the explicit
+          // commit/cancel paths, so nothing is lost.
+          onBlur={(e) => {
+            const movedOutOfRow =
+              e.relatedTarget instanceof Node &&
+              !e.currentTarget.closest('[data-testid="session-item"]')?.contains(e.relatedTarget);
+            if (movedOutOfRow) commitRename();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") commitRename();
             else if (e.key === "Escape") {
