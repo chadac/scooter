@@ -221,7 +221,17 @@ const SessionRow = memo(function SessionRow({
   );
 });
 
-export function Sidebar() {
+// memo()'d: <Sidebar> is a direct child of <RuntimeProvider>, which re-renders on
+// EVERY AG-UI event during an agent turn (streaming reasoning, tool calls, run
+// status, the sandbox "Starting…" poll). It takes no props and reads only its own
+// sessionStore (useSessions), so memo makes it re-render ONLY on store changes — not
+// on every parent tick. That parent-render storm was the surviving rename-flake
+// disruptor: while the agent streamed, the constant <Sidebar> re-renders raced the
+// rename-open click's store update, so the input intermittently never mounted (CI
+// mode "input never appears"). With the merge frozen during edit (mergeFromServer)
+// AND the parent storm gone, the ONLY thing that re-renders the sidebar mid-rename is
+// the user's own setEditing/clearEditing — nothing can drop or detach the input.
+export const Sidebar = memo(function Sidebar() {
   const state = useSessions();
   const { currentId, editingId, scope, query, providerFilter, labelMode } = state;
   // Hierarchy: each parent followed by its subagents (depth 1). filteredSessions
@@ -407,4 +417,4 @@ export function Sidebar() {
       <LinkedResources />
     </aside>
   );
-}
+});
