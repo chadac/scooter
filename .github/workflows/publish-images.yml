@@ -34,18 +34,20 @@ jobs:
       fail-fast: false # one image failing must not block the others
       matrix:
         include:
-          # nix2container images: pushed with `<attr>.copyTo`. Image NAMES follow the
-          # canonical agent-* convention deploy.sh + the kubenix module already use.
-          - { image: agent-host, attr: agent-host-image, kind: n2c }
-          - { image: agent-sandbox-ui, attr: ui-image, kind: n2c }
-          - { image: agent-broker, attr: broker-image, kind: n2c }
-          - { image: agent-scheduler, attr: scheduler-image, kind: n2c }
-          - { image: agent-webhooks, attr: webhooks-image, kind: n2c }
+          # Every image is nix2container: pushed with `<attr>.copyTo`. Image NAMES
+          # follow the canonical agent-* convention deploy.sh + the kubenix module
+          # already use.
+          - { image: agent-host, attr: agent-host-image }
+          - { image: agent-sandbox-ui, attr: ui-image }
+          - { image: agent-broker, attr: broker-image }
+          - { image: agent-scheduler, attr: scheduler-image }
+          - { image: agent-webhooks, attr: webhooks-image }
           # claude variant bakes the unfree claude-code CLI → allowUnfree + --impure.
-          - { image: agent-host-claude, attr: agent-host-image-claude, kind: n2c, unfree: true }
-          # dockerTools tarball images: pushed with skopeo from the docker-archive.
-          - { image: agent-sandbox-os, attr: sandbox-os-image, kind: tarball }
-          - { image: agent-sandbox-os-overlay, attr: sandbox-os-overlay-image, kind: tarball }
+          - { image: agent-host-claude, attr: agent-host-image-claude, unfree: true }
+          # sandbox-os is nix2container too now (initializeNixDatabase bakes the
+          # read-only store's Nix DB + .links) — no docker-archive tarball case.
+          - { image: agent-sandbox-os, attr: sandbox-os-image }
+          - { image: agent-sandbox-os-overlay, attr: sandbox-os-overlay-image }
     steps:
       - uses: actions/checkout@v5
 
@@ -56,7 +58,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # skopeo: logs in to ghcr (its ~/.docker/config.json auth is reused by
-      # nix2container's copyTo) AND pushes the tarball images.
+      # nix2container's copyTo) and does the `latest` retag.
       - name: install skopeo
         run: nix profile install nixpkgs#skopeo
 
@@ -88,21 +90,13 @@ jobs:
 
       # Build + push the nix2container image via its .copyTo (content tag).
       - name: build + push (nix2container)
-        if: matrix.kind == 'n2c' && steps.tag.outputs.exists == 'false'
+        if: steps.tag.outputs.exists == 'false'
         env:
           NIXPKGS_ALLOW_UNFREE: ${{ matrix.unfree && '1' || '' }}
         run: |
           set -euo pipefail
           impure=""; [ -n "${NIXPKGS_ALLOW_UNFREE:-}" ] && impure="--impure"
           nix run $impure ".#${{ matrix.attr }}.copyTo" -- "docker://${{ steps.tag.outputs.repo }}:${{ steps.tag.outputs.tag }}"
-
-      # Build the tarball image, push with skopeo (content tag).
-      - name: build + push (tarball)
-        if: matrix.kind == 'tarball' && steps.tag.outputs.exists == 'false'
-        run: |
-          set -euo pipefail
-          tar=$(nix build ".#${{ matrix.attr }}" --no-link --print-out-paths --print-build-logs | tail -1)
-          skopeo --insecure-policy copy "docker-archive:${tar}" "docker://${{ steps.tag.outputs.repo }}:${{ steps.tag.outputs.tag }}"
 
       # Move `latest` to this build's content tag. Cheap registry-side copy (no
       # rebuild) — runs even when the content tag already existed, so `latest`

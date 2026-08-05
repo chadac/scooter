@@ -16,11 +16,11 @@
 # the kernel/initrd that a nixosTest VM needs, so it's a packaging concern, not a
 # capability. The nixosTests import the shared config without it.
 #
-# Output: { image; toplevel; nixos; }. `image` is a dockerTools layered image
-# (tarball-producing) so the cluster-up importers (`k3s ctr images import`, etc.)
-# can load it.
+# Output: { image; toplevel; nixos; }. `image` is a nix2container image (like
+# every other image in this repo), so it pushes to a registry via `.copyTo` and
+# k3s pulls it — no docker-archive tarball special-case.
 
-{ pkgs, lib
+{ pkgs, lib, n2c
 , name ? "agent-sandbox-os"
 , tag ? "latest"
 , extraModules ? [ ]   # let consumers layer extra NixOS config (extra tools/services)
@@ -108,53 +108,44 @@ let
 
   toplevel = nixos.config.system.build.toplevel;
 
-  # The Nix path-registration for the WHOLE system closure. dockerTools ships the
-  # store *paths* but not a Nix DB; we load this into /nix/var/nix/db at build time
-  # so the baked store is a REAL, registered, read-only Nix store. Required by the
-  # local-overlay store (its read-only lower must already have a DB — it can't
-  # create one read-only; see modules/sandbox-os/overlay-store.nix + the MWE), and
-  # harmless/beneficial otherwise (nix queries against the baked store just work).
-  closure = pkgs.closureInfo { rootPaths = [ toplevel ]; };
-
   # Files baked at the image root (outside the Nix store): the init symlink,
-  # writable machine-id, and the dirs systemd expects to exist.
+  # writable machine-id, and the dirs systemd expects to exist at first boot.
+  # (Under dockerTools these last three were created in `extraCommands`; n2c has
+  # no such hook, so they live here in copyToRoot instead. They become tmpfs at
+  # runtime — we only need them to exist so the read-only image layer doesn't
+  # block first boot.)
   rootExtras = pkgs.runCommand "sandbox-os-root" { } ''
     mkdir -p $out/sbin $out/etc
     ln -s ${toplevel}/init $out/sbin/init
     # Empty + writable: first boot seeds it (systemd machine-id contract).
     : > $out/etc/machine-id
+    # systemd writes to these at boot; ship them so the read-only layer is fine.
+    mkdir -p $out/var/log $out/run $out/tmp
+    chmod 1777 $out/tmp
   '';
 in
 {
   inherit toplevel nixos;
 
-  # nix build .#sandbox-os-image  ->  a layered OCI tarball booting systemd PID 1.
-  image = pkgs.dockerTools.buildLayeredImage {
+  # nix build .#sandbox-os-image  ->  a nix2container image booting systemd PID 1.
+  image = n2c.buildImage {
     inherit name tag;
 
-    contents = [ rootExtras ];
-
-    # The whole NixOS system closure must be present in the image.
-    includeStorePaths = true;
+    # rootExtras ships /sbin/init, /etc/machine-id and the writable boot dirs. Its
+    # /sbin/init symlink references ${toplevel}, so the WHOLE NixOS system closure
+    # is pulled into the image (and thus into the baked Nix DB below) without
+    # unpacking the system root at /.
+    copyToRoot = [ rootExtras ];
     maxLayers = 100;
 
-    # Make the store generation visible at /run/current-system etc. happens at
-    # boot via the init; we only need the closure + the init entrypoint here.
-    extraCommands = ''
-      # systemd writes to these at boot; create them so the read-only image layer
-      # doesn't block first boot (they become tmpfs at runtime).
-      mkdir -p var/log run tmp
-      chmod 1777 tmp
-
-      # Register the closure into a baked Nix DB and create the optimiser's .links
-      # dir, so /nix/store is a COMPLETE read-only store (DB + .links present). The
-      # local-overlay store's read-only lower needs both — it cannot create them
-      # read-only (NixOS/nix#11840) — and a registered DB makes nix queries against
-      # the baked store correct in general.
-      export NIX_STATE_DIR=$PWD/nix/var/nix
-      mkdir -p nix/var/nix nix/store/.links
-      ${pkgs.buildPackages.nix}/bin/nix-store --load-db < ${closure}/registration
-    '';
+    # Register the whole closure into a baked, read-only Nix DB and create the
+    # optimiser's /nix/store/.links dir. The local-overlay store's read-only lower
+    # REQUIRES both — it cannot create them read-only (NixOS/nix#11840) — and a
+    # registered DB makes nix queries against the baked store correct in general.
+    # This is n2c's built-in replacement for the old hand-rolled `extraCommands`
+    # (nix-store --load-db + mkdir .links); it derives the DB from copyToRoot's
+    # closure and additionally normalizes registrationTime=0 for reproducibility.
+    initializeNixDatabase = true;
 
     config = {
       # Boot systemd PID 1 via the NixOS stage-2 init directly. (We also ship a

@@ -116,15 +116,20 @@ import_tarball() {
 }
 
 # Build a flake image target and import it; warn+skip if the build fails.
+# The images are nix2container (no docker-archive output of their own), so we
+# materialize one with `<target>.copyTo -- docker-archive:<file>` and feed that
+# to the provider-agnostic importer above — same tarball path as before.
 build_and_import() {
   local target="$1" label="$2" tarball
   log "building $label image with Nix..."
-  tarball="$(cd "$REPO_ROOT" && nix build "$target" --no-link --print-out-paths 2>/dev/null || true)"
-  if [ -z "$tarball" ]; then
+  tarball="$(mktemp --suffix=.tar)"
+  if ! (cd "$REPO_ROOT" && nix run "${target}.copyTo" -- "docker-archive:${tarball}" >/dev/null 2>&1); then
     log "WARN: $label image build not available; skipping import"
+    rm -f "$tarball"
     return
   fi
   import_tarball "$tarball"
+  rm -f "$tarball"
 }
 
 import_images() {
