@@ -80,17 +80,17 @@ jobs:
       - name: broker + webhooks tests (nix build runs pytest)
         run: nix build .#broker .#webhooks --print-build-logs
 
-  # Build the OCI images — REQUIRED, always-on. The `dockerTools.streamLayeredImage`
-  # TAR step (which lays out the whole closure) is a distinct failure surface the
-  # nixosTests never touch (they build the NixOS toplevel, not the tar) and the
-  # heavier path-gated k3d boot job (`cluster-image-boot`, continue-on-error) doesn't
-  # gate on. A musl/static path leaking into the layer closure via a lazy-tool `.drv`
-  # broke this build while every required check stayed green (the bug that shipped in
-  # #95, only caught later at deploy). So build the tar here on EVERY PR — including
-  # ones that only bump a flake input (e.g. nix-stubs) — so a broken image fails the
-  # PR red. Cheap-ish and Cachix-backed; no cluster needed.
+  # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
+  # (its per-layer builds over the whole system closure) is a distinct failure surface
+  # the nixosTests never touch (they build the NixOS toplevel, not the image) and the
+  # heavier path-gated k3d boot job (`cluster-image-boot`) doesn't gate on. A
+  # musl/static path leaking into the layer closure via a lazy-tool `.drv` broke this
+  # build while every required check stayed green (the bug that shipped in #95, only
+  # caught later at deploy). So build the images here on EVERY PR — including ones that
+  # only bump a flake input (e.g. nix-stubs) — so a broken image fails the PR red.
+  # Cheap-ish and Cachix-backed; no cluster needed.
   image-build:
-    name: build sandbox-os images (tar)
+    name: build sandbox-os images
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -99,8 +99,8 @@ jobs:
         with:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      # Build BOTH image tarballs to completion (the streamLayeredImage step that
-      # `os.lstat`s every layered path — where an unrealised closure member fails).
+      # Build BOTH images to completion — forces every layer derivation over the full
+      # system closure, so an unrealised/broken closure member fails here.
       - name: nix build .#sandbox-os-image .#sandbox-os-overlay-image
         run: nix build .#sandbox-os-image .#sandbox-os-overlay-image --print-build-logs
 
@@ -308,16 +308,16 @@ jobs:
           nix shell nixpkgs#k3d nixpkgs#kubectl -c k3d cluster create scooter-ci --no-lb --wait
           nix shell nixpkgs#k3d -c k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
 
-      # Build both OS images (Cachix-cached), load into Docker, import into k3d by
-      # NAME. We import by name (not the tarball) because dockerTools ships a
-      # GZIPPED tar that ctr's importer rejects ("invalid tar header").
+      # Build both OS images (Cachix-cached) and stream them straight into the Docker
+      # daemon, then import into k3d by NAME. The images are nix2container:
+      # `<attr>.copyTo docker-daemon:<name>:<tag>` loads Docker directly with no
+      # intermediate tarball (dockerTools' gzipped tar was what ctr's importer used to
+      # reject). k3d then imports the now-loaded images by name.
       - name: build + import sandbox images
         run: |
           set -euo pipefail
-          for pkg in sandbox-os-image sandbox-os-overlay-image; do
-            tarball=$(nix build ".#${pkg}" --no-link --print-out-paths --print-build-logs)
-            docker load < "$tarball"
-          done
+          nix run ".#sandbox-os-image.copyTo" -- docker-daemon:agent-sandbox-os:latest
+          nix run ".#sandbox-os-overlay-image.copyTo" -- docker-daemon:agent-sandbox-os-overlay:latest
           nix shell nixpkgs#k3d -c k3d image import \
             agent-sandbox-os:latest agent-sandbox-os-overlay:latest -c scooter-ci
 
