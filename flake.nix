@@ -216,32 +216,67 @@
           # The unfree claude variant's ghcr ref (impure — see above).
           ghcrImageClaude = ghcrImage "agent-host-claude" agentHostImageClaudeBuilder.image;
 
-          # Render the platform manifests (namespace, agent-host Deployment +
-          # RBAC) with kubenix. `nix build .#platform-manifests` -> a YAML file.
-          platform = kubenix.evalModules.${system} {
+          # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
+          # kubenix. `mkPlatform` takes the full `agentSandbox` config for a render, so
+          # each flavor declares its own images AND agent config — the e2e flavor is a
+          # dummy agent with test hooks; the ghcr flavor is a real production deploy.
+          mkPlatform = agentSandbox: kubenix.evalModules.${system} {
             module = { kubenix, ... }: {
               imports = [ ./modules/platform.nix ];
               kubenix.project = "agent-sandbox";
               kubernetes.version = "1.31";
-              agentSandbox = {
-                # E2E/cluster-test: images are SIDE-LOADED into k3s, so use bare local
-                # names (override the module's ghcr default registryPrefix back to "").
-                registryPrefix = "";
-                agentHostImage = "agent-host:latest";
-                sandboxImage = "agent-sandbox-os:latest";
-                agent.skills = scooterSkills; # ship the ./skills/*.md set
-                fakeAgent = true; # dummy agent for cluster e2e (no model needed)
-                broker = {
-                  enable = true;
-                  image = "agent-broker:latest";
-                  testProvider = true; # whoami provider for the credential e2e
-                };
-                webhooks = {
-                  enable = true;
-                  image = "agent-webhooks:latest";
-                  testWebhook = true; # /webhooks/test for the spawn e2e
-                };
-              };
+              inherit agentSandbox;
+            };
+          };
+
+          # E2E/cluster-test render (`nix build .#platform-manifests`): the DUMMY agent +
+          # test providers, and images SIDE-LOADED into k3s so it uses bare local names
+          # (registryPrefix "" overrides the module's ghcr default). This is NOT a deploy
+          # manifest — it's the config the Tier-2 cluster + Tier-3 e2e suites apply.
+          platform = mkPlatform {
+            registryPrefix = "";
+            agentHostImage = "agent-host:latest";
+            sandboxImage = "agent-sandbox-os:latest";
+            agent.skills = scooterSkills; # ship the ./skills/*.md set
+            fakeAgent = true; # dummy agent for cluster e2e (no model needed)
+            broker = {
+              enable = true;
+              image = "agent-broker:latest";
+              testProvider = true; # whoami provider for the credential e2e
+            };
+            webhooks = {
+              enable = true;
+              image = "agent-webhooks:latest";
+              testWebhook = true; # /webhooks/test for the spawn e2e
+            };
+          };
+
+          # GHCR render (`nix build .#platform-manifests-ghcr`): the REAL production deploy
+          # manifest — the actual agent (fakeAgent = false), NO test providers/webhooks,
+          # and every image pinned to its published CONTENT TAG (ghcrImages) so the manifest
+          # points at the exact tags the publish-images workflow pushed (same content → same
+          # tag → no needless pod roll). Crucially these refs are pure TEXT (contentTag
+          # discards the outPath string context), so threading them in does NOT drag the
+          # images into the manifest build — the render stays a cheap YAML writeText (proven:
+          # the built YAML has zero image references, and the .drv has empty inputDrvs for
+          # the image paths). registryPrefix stays the module default (ghcr.io/chadac/
+          # scooter/) but every image below is pinned explicitly, so the prefix only shows
+          # through for third-party images we don't own.
+          platformGhcr = mkPlatform {
+            agent.skills = scooterSkills; # ship the ./skills/*.md set
+            fakeAgent = false; # the real agent — this is a production deploy
+            agentHostImage = ghcrImages.agentHost;
+            sandboxImage = ghcrImages.sandboxOs;
+            uiImage = ghcrImages.ui;
+            broker = {
+              enable = true;
+              image = ghcrImages.broker;
+              # NO testProvider — real deploys wire real credential providers.
+            };
+            webhooks = {
+              enable = true;
+              image = ghcrImages.webhooks;
+              # NO testWebhook — the /webhooks/test spawn endpoint is e2e-only.
             };
           };
 
@@ -293,7 +328,16 @@
             ui-image = uiImage.image;
 
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
+            # (e2e/local flavor: bare side-loaded image names).
             platform-manifests = platform.config.kubernetes.resultYAML;
+
+            # nix build .#platform-manifests-ghcr  ->  the same manifests with every image
+            # pinned to its published ghcr CONTENT TAG (from ghcrImages). This is the
+            # reproducible deploy render — no `nix build .#ghcr-image-refs` + manual
+            # per-image override needed. The content tags are pure text (contentTag
+            # discards the outPath string context), so this render does NOT build any
+            # image — it's still just a YAML writeText.
+            platform-manifests-ghcr = platformGhcr.config.kubernetes.resultYAML;
 
             # nix build .#ghcr-image-refs  ->  JSON { <name> = "ghcr.io/…:<content-tag>" }
             # The content-tagged ghcr refs for every published image, computed from
