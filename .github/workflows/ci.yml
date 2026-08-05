@@ -610,8 +610,17 @@ jobs:
   #     flake-test: <playwright -g pattern>
   #
   # e.g.  flake-test: multi-turn re-render
-  # This job then runs ONLY that test 20× to prove the fix holds. Gated on the
-  # label so it never runs on unrelated PRs.
+  #
+  # OPTIONAL — some flakes only reproduce under CROSS-SPEC CONTENTION (the flaky
+  # test interleaved with other specs' load), so a lone `-g <test>` run never
+  # triggers them. Such a PR ALSO lists the spec files to run together:
+  #
+  #     flake-specs: test/e2e/sessions.spec.ts test/e2e/chat-search-filter.spec.ts
+  #
+  # When `flake-specs:` is present the job runs exactly those spec files (each
+  # test 5×) — recreating the contention that surfaces the flake — instead of the
+  # whole suite filtered to the pattern. Gated on the label so it never runs on
+  # unrelated PRs.
   flake-focus:
     name: flake focus (targeted ×20)
     if: contains(github.event.pull_request.labels.*.name, 'flake-check')
@@ -624,16 +633,28 @@ jobs:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # Pull the `flake-test:` pattern out of the PR description. Fail loudly if the
-      # label is set but no pattern is given (so the check can't silently pass by
-      # running nothing).
+      # Pull the `flake-test:` pattern (and optional `flake-specs:` list) out of the
+      # PR description. Fail loudly if the label is set but no pattern is given (so the
+      # check can't silently pass by running nothing).
       - name: resolve flake-test pattern
         id: pat
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: .github/scripts/flake-focus-pattern.sh
 
+      # CONTENTION path: `flake-specs:` was given — run those spec FILES together,
+      # each test 5×, so cross-spec load (the poll/SSE churn that disrupts an
+      # in-progress interaction) recreates the flake. retries=0 → one failure fails.
+      - name: e2e ×5 (contention — flake-specs)
+        if: steps.pat.outputs.specs != ''
+        env:
+          CI: "1"
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- --repeat-each=5 --reporter=list $FLAKE_SPECS'
+
+      # TARGETED path: no `flake-specs:` — hammer just the matching test 20×.
       - name: e2e ×20 (targeted)
+        if: steps.pat.outputs.specs == ''
         env:
           CI: "1"
           FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}

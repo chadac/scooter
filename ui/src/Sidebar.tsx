@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 import {
   sessionStore,
@@ -62,6 +62,16 @@ const SessionRow = memo(function SessionRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
+
+  // Signal the rename to the STORE while the inline input is open: mergeFromServer
+  // then leaves THIS row untouched (title/identity/object reference), so a background
+  // poll/SSE can't re-render the row and detach the open input mid-edit (the CI flake).
+  // Cleared on unmount too, so a row removed while editing never leaves a stale lock.
+  useEffect(() => {
+    if (editing) sessionStore.setEditing(s.id);
+    else sessionStore.clearEditing(s.id);
+    return () => sessionStore.clearEditing(s.id);
+  }, [editing, s.id]);
 
   const commitRename = () => {
     const next = draft.trim();

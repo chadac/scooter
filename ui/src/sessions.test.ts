@@ -82,6 +82,74 @@ describe("merge reference stability (sidebar re-render / flake root)", () => {
   });
 });
 
+describe("editing lock (rename in progress — the CI rename flake)", () => {
+  const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
+
+  it("a merge does NOT mutate the row being renamed (title/userTitled held)", () => {
+    sessionStore.mergeFromServer([{ id: "edit-a", title: "Original", createdAt: 1 }]);
+    sessionStore.setEditing("edit-a");
+    // The agent's <title> update lands on the poll mid-rename — it must be ignored
+    // for the editing row (which is exactly what re-rendered the open input away).
+    sessionStore.mergeFromServer([{ id: "edit-a", title: "Agent-picked title", createdAt: 1 }]);
+    expect(byId("edit-a")?.title).toBe("Original");
+    expect(byId("edit-a")?.userTitled).toBeFalsy();
+  });
+
+  it("keeps the SAME object reference for the editing row across a merge (React.memo skips it)", () => {
+    sessionStore.mergeFromServer([{ id: "edit-ref", title: "Alpha", createdAt: 2 }]);
+    sessionStore.setEditing("edit-ref");
+    const before = byId("edit-ref");
+    // A merge that WOULD otherwise change the title (new object) must not touch it.
+    sessionStore.mergeFromServer([{ id: "edit-ref", title: "Changed by agent", createdAt: 2 }]);
+    expect(byId("edit-ref")).toBe(before);
+  });
+
+  it("does NOT lock OTHER rows — only the one being renamed", () => {
+    sessionStore.mergeFromServer([
+      { id: "lock-a", title: "A", createdAt: 1 },
+      { id: "lock-b", title: "B", createdAt: 2 },
+    ]);
+    sessionStore.setEditing("lock-a");
+    // A concurrent title change for B (not being edited) applies normally.
+    sessionStore.mergeFromServer([
+      { id: "lock-a", title: "A changed", createdAt: 1 },
+      { id: "lock-b", title: "B changed", createdAt: 2 },
+    ]);
+    expect(byId("lock-a")?.title).toBe("A"); // locked
+    expect(byId("lock-b")?.title).toBe("B changed"); // free
+  });
+
+  it("applies server-truth again once the rename clears", () => {
+    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Original", createdAt: 3 }]);
+    sessionStore.setEditing("edit-clear");
+    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Agent title", createdAt: 3 }]);
+    expect(byId("edit-clear")?.title).toBe("Original"); // held while editing
+    // Rename committed/cancelled -> lock clears -> the next merge applies again.
+    sessionStore.clearEditing("edit-clear");
+    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Agent title", createdAt: 3 }]);
+    expect(byId("edit-clear")?.title).toBe("Agent title");
+  });
+
+  it("clearEditing(id) is a no-op when a DIFFERENT row is being edited", () => {
+    sessionStore.mergeFromServer([{ id: "ce-a", title: "A", createdAt: 1 }]);
+    sessionStore.setEditing("ce-a");
+    sessionStore.clearEditing("ce-b"); // stale clear from another row
+    expect(sessionStore.get().editingId).toBe("ce-a");
+    sessionStore.clearEditing("ce-a");
+    expect(sessionStore.get().editingId).toBeUndefined();
+  });
+
+  it("a user rename made during editing survives the merge that arrives before clear", () => {
+    sessionStore.mergeFromServer([{ id: "edit-user", title: "Original", createdAt: 4 }]);
+    sessionStore.setEditing("edit-user");
+    sessionStore.renameSession("edit-user", "My pinned project"); // optimistic + lock
+    // A poll still reporting the agent's guess arrives before the input closes.
+    sessionStore.mergeFromServer([{ id: "edit-user", title: "Agent guess", createdAt: 4 }]);
+    expect(byId("edit-user")?.title).toBe("My pinned project");
+    expect(byId("edit-user")?.userTitled).toBe(true);
+  });
+});
+
 describe("per-conversation model (model-switch scoping)", () => {
   it("setModel changes ONLY the target conversation, never the others", () => {
     sessionStore.mergeFromServer([{ id: "a" }, { id: "b" }, { id: "c" }]);

@@ -91,6 +91,13 @@ type State = {
    *  conversation may not be in the list yet (it arrives via the poll/stream for a
    *  webhook-created thread the user has never opened). Cleared once selected. */
   pendingSelect?: string;
+  /** The conversation whose title the user is CURRENTLY renaming (the open inline
+   *  input in the sidebar). Transient, never persisted. While set, mergeFromServer
+   *  leaves this row's title/userTitled/identity untouched and keeps its object
+   *  reference stable — so a background merge (10s poll + SSE) can't mutate the row,
+   *  re-render it, and detach the open rename input mid-edit (the CI flake). Cleared
+   *  when the rename commits/cancels. */
+  editingId?: string;
 };
 
 /** A brand-new, untouched conversation (default title, no messages yet). */
@@ -253,6 +260,16 @@ export const sessionStore = {
     for (const s of state.sessions) byId.set(s.id, s);
     for (const c of convs) {
       const existing = byId.get(c.id);
+      // EDITING LOCK: the user is renaming THIS row right now (the inline input is
+      // open). A merge must not touch it — not its title, not its userTitled, not its
+      // object reference — or the row re-renders and the open <input> detaches under
+      // the user's cursor (the CI rename flake). The row's server-truth is applied
+      // when the rename commits/cancels (clearEditing) and the next merge runs. Keep
+      // the EXISTING object as-is so React.memo skips the row entirely.
+      if (existing && c.id === state.editingId) {
+        byId.set(c.id, existing);
+        continue;
+      }
       // Title precedence: a real server title wins; but a local non-default
       // title (e.g. derived from the first message) must NOT be clobbered by the
       // server's "New chat" placeholder — the server often hasn't learned the
@@ -395,6 +412,24 @@ export const sessionStore = {
       ...state,
       sessions: state.sessions.map((x) => (x.id === id ? { ...x, title } : x)),
     });
+  },
+
+  /** Mark a conversation as being renamed (the sidebar's inline input is open). While
+   *  set, mergeFromServer leaves this row untouched (title/identity/reference), so a
+   *  background poll/SSE can't re-render it and detach the open input mid-edit. No-op
+   *  if already the editing row. */
+  setEditing(id: string) {
+    if (state.editingId === id) return;
+    setState({ ...state, editingId: id });
+  },
+
+  /** Clear the rename lock (the inline input committed or cancelled). The next merge
+   *  then applies any server-truth that arrived while editing. No-op if not editing
+   *  the given id (a stale clear from a row that isn't the current one). */
+  clearEditing(id?: string) {
+    if (state.editingId === undefined) return;
+    if (id !== undefined && state.editingId !== id) return;
+    setState({ ...state, editingId: undefined });
   },
 
   /** User rename: optimistically set the title AND lock it (userTitled) so the
