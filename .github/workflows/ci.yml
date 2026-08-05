@@ -639,11 +639,24 @@ jobs:
           FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
         # -g greps test titles; --repeat-each=20 hammers the match. retries=0 means
         # one failure across the 20 fails the job.
-        run: nix develop --command bash -c 'npm install && npm run test:e2e -- -g "$FLAKE_PATTERN" --repeat-each=20 --reporter=list'
+        #
+        # --trace on OVERRIDES playwright.config's `trace: on-first-retry`: because
+        # the config also sets retries=0, on-first-retry NEVER fires — so a normal
+        # failure yields only a screenshot + one-line error, never the actionable
+        # trace.zip. This job exists specifically to root-cause a known flake, so we
+        # force a FULL trace (DOM snapshots + action timeline + console + network)
+        # for EVERY repetition regardless of retries. Scoped to this invocation only
+        # — the default e2e shards keep retries=0 / on-first-retry untouched. The
+        # trace.zip lands under test-results/ (uploaded below); open it with
+        # `npx playwright show-trace trace.zip`.
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- -g "$FLAKE_PATTERN" --repeat-each=20 --trace on --reporter=list'
+      # if: always() (not failure()) so the trace.zip survives even when the job is
+      # cancelled/retried — the whole point of this job is to capture the artifact.
       - name: upload artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: flake-focus-results
           path: test-results/
           retention-days: 14
+          if-no-files-found: ignore
