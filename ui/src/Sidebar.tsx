@@ -117,7 +117,14 @@ function SessionRow({
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitRename}
+          // Commit only on a blur that moved focus to a REAL element (a genuine
+          // click-away). A blur with no relatedTarget is almost always a spurious
+          // re-render blur — the sidebar reconciled because the agent's <title>
+          // update arrived on the merge poll mid-rename — which would otherwise
+          // commit + unmount the input under the user's cursor (the rename detaches
+          // mid-edit, a CI-timing flake). Enter/Escape remain the explicit commit/
+          // cancel, so nothing is lost.
+          onBlur={(e) => { if (e.relatedTarget) commitRename(); }}
           onKeyDown={(e) => {
             if (e.key === "Enter") commitRename();
             else if (e.key === "Escape") {

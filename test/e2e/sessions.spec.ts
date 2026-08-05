@@ -45,12 +45,6 @@ test.describe("session selector & titles", () => {
   });
 
   test("the user can rename a conversation, and the agent can't override it", async ({ chat, page }) => {
-    // This test does a full open+send+reply+title-populate BEFORE the rename, so under
-    // shard contention (cold Vite / slow shared agent-host boot) it can crawl past the
-    // 60s default and time out at a later step (observed: the fill at line ~60). It's
-    // not logic-flaky — just slow-in-a-loaded-shard; give it the 3× budget. See the
-    // cold-Vite webServer-readiness fix (PR #214) for the related class.
-    test.slow();
     await chat.open();
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
@@ -58,8 +52,10 @@ test.describe("session selector & titles", () => {
     const title = row.locator(sidebar.title);
     await expect(title).toHaveText(/refactor the parser/i, { timeout: 30_000 });
 
-    // Click the dedicated rename button (deterministic — the title's click/dblclick
-    // used to race with switchTo re-rendering the row), type a name, Enter to commit.
+    // Open the rename input, type a name, Enter to commit. The rename input no longer
+    // closes on a spurious re-render blur (only Enter/Escape/a real click-away commit),
+    // so the agent's <title> update arriving on the merge poll mid-rename can't detach
+    // the input under us (the CI flake). fill retries through a transient reconcile.
     await row.locator(sidebar.renameButton).click();
     const input = row.locator(sidebar.renameInput);
     await expect(input).toBeVisible();
