@@ -887,7 +887,8 @@ export class IntegrityAgent extends AbstractAgent {
     }
   }
 
-  /** Fire-and-forget POST /agui; deliberately does NOT consume the response body. */
+  /** Fire-and-forget POST /agui; deliberately does NOT consume the response body,
+   *  but DOES cancel it (see below). */
   private async postAgui(body: Record<string, unknown>): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -897,15 +898,23 @@ export class IntegrityAgent extends AbstractAgent {
     };
     // Do not await/read the SSE stream — the run drives server-side and its
     // events return via the integrity subscription. We only ensure the POST is
-    // accepted; drop the body.
-    await this.doFetch(`${this.base}/agui`, {
+    // accepted.
+    const res = await this.doFetch(`${this.base}/agui`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     }).catch(() => {
       /* the integrity stream is the source of truth; a failed POST surfaces there
          (no RUN_STARTED) rather than here. Best-effort. */
+      return null;
     });
+    // POST /agui is ITSELF an SSE endpoint: the server streams the whole run's
+    // events into this response until RUN_FINISHED. We render off the integrity
+    // stream, so nothing here needs those bytes — but leaving the body unread lets
+    // it fill the per-stream and then the connection-level HTTP/2 flow-control
+    // window, which stalls EVERY other stream on the connection (notably
+    // events.integrity). Cancel it so the window stays open.
+    res?.body?.cancel().catch(() => {});
   }
 
   /** Close all live integrity subscriptions and release resources. */

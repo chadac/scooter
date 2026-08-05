@@ -175,6 +175,26 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("send() cancels the POST /agui response body (frees the HTTP/2 flow-control window)", async () => {
+    // POST /agui is itself an SSE endpoint: the server streams the whole run's
+    // events into the response until RUN_FINISHED. We drive the render off the
+    // integrity stream instead, so we must NOT leave this body unread — an
+    // unconsumed body fills the per-stream (and then connection-level) HTTP/2
+    // window and stalls OTHER streams on the same connection (notably
+    // events.integrity). The fix cancels the body once the POST is accepted.
+    const cancel = vi.fn(async () => {});
+    const body = { cancel } as unknown as ReadableStream<Uint8Array>;
+    const fetchSpy = vi.fn(
+      async () => ({ ok: true, status: 200, body }) as unknown as Response,
+    ) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+    await agent.send("hello world");
+
+    expect(cancel, "postAgui must cancel the unread SSE body").toHaveBeenCalledTimes(1);
+    agent.dispose();
+  });
+
   it("send({priority}) tags the POST with priority (to force-interrupt a running turn)", async () => {
     const fetchSpy = vi.fn(async () => new Response(new ReadableStream(), { status: 200 })) as unknown as typeof fetch;
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
