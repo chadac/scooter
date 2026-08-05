@@ -138,6 +138,13 @@ export function createFileConversationStore(root: string): ConversationStore {
       return next;
     },
 
+    // Await everything ENQUEUED so far for `id` to be durably written. The chain's
+    // tail is the settled promise of the last append, so awaiting it guarantees all
+    // prior fire-and-forget appends have flushed to disk before a subsequent read.
+    async flush(id) {
+      await (writeChains.get(id) ?? Promise.resolve());
+    },
+
     onAppend(cb) {
       appendListeners.add(cb);
       return () => appendListeners.delete(cb);

@@ -132,6 +132,15 @@ export interface ConversationLink {
 /** Durable conversation store (event log replay + goose state pointer). */
 export interface ConversationStore {
   appendEvent(id: SessionId, event: AguiEvent): Promise<void>;
+  /** Await all appends ENQUEUED so far for `id` to be durably written. appendEvent
+   *  is fired-and-forget (`void store.appendEvent(...)`), so a reader that runs right
+   *  after an event was EMITTED can read a log that doesn't yet include it — the
+   *  subagent-completion race: a subagent's RUN_FINISHED fires onEvent (→ report
+   *  completion → readEvents) BEFORE the fire-and-forget append flushes, so
+   *  lastRunCompleted() sees no finish and the notification is dropped. Awaiting
+   *  flush(id) before reading closes that window. Optional: in-memory test stores
+   *  whose appendEvent is synchronous have nothing pending, so this is a no-op. */
+  flush?(id: SessionId): Promise<void>;
   readEvents(id: SessionId): AsyncIterable<AguiEvent>;
   /** Like readEvents, but each item carries the rolling integrity checksum
    *  through that event (and the previous one) so a streaming client can verify

@@ -1074,6 +1074,13 @@ export async function main(
     const reportCompletion = async (subagentId: SessionId, parentId: SessionId): Promise<void> => {
       if (notified.has(subagentId)) return;
       notified.add(subagentId); // notify-once (mark before the async work)
+      // Flush the subagent's pending appends FIRST. The event-driven path fires from
+      // the bridge's RUN_FINISHED onEvent, but the store write is fire-and-forget
+      // (wireEventLog `void store.appendEvent`), so without this the read below can
+      // miss the just-emitted RUN_FINISHED → lastRunCompleted=false → the completion
+      // is silently dropped (the goose subagent "no result" bug; claude's timing
+      // usually won the race, goose's lost it). Flushing closes that window.
+      await store.flush?.(subagentId).catch(() => {});
       const events = await collectEventsSafe(store.readEvents(subagentId));
       if (!lastRunCompleted(events)) {
         notified.delete(subagentId); // hasn't actually run yet — re-check later
