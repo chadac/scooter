@@ -48,14 +48,18 @@ test.describe("session selector & titles", () => {
     await chat.open();
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
+    // Only one conversation here, so .first() is unambiguous. (Don't filter by title
+    // text: opening the rename swaps the title span for an <input>, so a hasText filter
+    // would stop matching the row the moment editing starts.)
     const row = page.locator(sidebar.item).first();
     const title = row.locator(sidebar.title);
     await expect(title).toHaveText(/refactor the parser/i, { timeout: 30_000 });
 
-    // Open the rename input, type a name, Enter to commit. The rename input no longer
-    // closes on a spurious re-render blur (only Enter/Escape/a real click-away commit),
-    // so the agent's <title> update arriving on the merge poll mid-rename can't detach
-    // the input under us (the CI flake). fill retries through a transient reconcile.
+    // Open the rename input, type a name, Enter to commit. This is robust now that the
+    // sidebar no longer re-renders unchanged rows on the merge poll (SessionRow is
+    // memo'd + mergeFromServer reuses the object reference when nothing changed) AND
+    // the input no longer closes on a spurious re-render blur (#230) — so a background
+    // poll can't detach the input or swallow the open-rename click mid-interaction.
     await row.locator(sidebar.renameButton).click();
     const input = row.locator(sidebar.renameInput);
     await expect(input).toBeVisible();

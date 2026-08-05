@@ -96,6 +96,28 @@ type State = {
 /** A brand-new, untouched conversation (default title, no messages yet). */
 const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
 
+/** Do two Session objects carry the same rendered state? Used to REUSE the existing
+ *  object reference across a merge when nothing changed, so React.memo skips the row.
+ *  Scalars compared directly; sources/links compared by content (they're small). */
+const sameSession = (a: Session, b: Session): boolean => {
+  if (
+    a.id !== b.id ||
+    a.title !== b.title ||
+    a.userTitled !== b.userTitled ||
+    a.starred !== b.starred ||
+    a.createdAt !== b.createdAt ||
+    a.model !== b.model ||
+    a.owner !== b.owner ||
+    a.status !== b.status ||
+    a.parentId !== b.parentId
+  ) return false;
+  const srcA = a.sources ?? [], srcB = b.sources ?? [];
+  if (srcA.length !== srcB.length || srcA.some((v, i) => v !== srcB[i])) return false;
+  const lnA = a.links ?? [], lnB = b.links ?? [];
+  if (lnA.length !== lnB.length) return false;
+  return lnA.every((l, i) => l.url === lnB[i].url && l.title === lnB[i].title && l.source === lnB[i].source);
+};
+
 /** Sidebar order: STARRED conversations first (favoriting pins them to the top),
  *  then newest-first within each group. Stable for equal keys. */
 export const byStarredThenRecent = (a: Session, b: Session): number => {
@@ -244,7 +266,7 @@ export const sessionStore = {
       const title = userTitled && c.title
         ? c.title // user-set title from the server wins outright
         : serverTitle ?? localTitle ?? c.title ?? existing?.title ?? DEFAULT_TITLE;
-      byId.set(c.id, {
+      const merged: Session = {
         id: c.id,
         title,
         userTitled,
@@ -265,7 +287,14 @@ export const sessionStore = {
         status: c.status ?? existing?.status,
         // The spawning conversation, when this is a subagent (server-owned).
         parentId: c.parentId ?? existing?.parentId,
-      });
+      };
+      // REFERENCE STABILITY: if nothing about this conversation actually changed,
+      // keep the EXISTING object (same reference). The 10s merge poll (+ SSE) runs
+      // constantly; without this every poll builds fresh objects → every SessionRow
+      // re-renders → an in-progress interaction (an open rename, a hover) gets
+      // disrupted (the sidebar flake family). Reusing the reference lets React.memo
+      // skip the unchanged rows entirely.
+      byId.set(c.id, existing && sameSession(existing, merged) ? existing : merged);
     }
 
     // Reconcile the local list against the server's:
