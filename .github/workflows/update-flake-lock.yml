@@ -1,0 +1,57 @@
+name: update-flake-lock
+
+# Weekly `nix flake update` → opens a PR bumping flake.lock (nixpkgs, the
+# agent-sandbox input, uv-nix, etc.). Adapted from github:chadac/uv-nix.
+#
+# TOKEN: update-flake-lock is given a PAT (secrets.FLAKE_LOCK_PAT), NOT the
+# default GITHUB_TOKEN. A PR opened by GITHUB_TOKEN does NOT trigger other
+# workflows (GitHub's recursion guard), so ci.yml would never run on the bump —
+# defeating the point. A fine-grained PAT with `contents: write` +
+# `pull-requests: write` on this repo makes the PR trigger CI normally. If the
+# secret is absent the action falls back to GITHUB_TOKEN (PR still opens, but you
+# must push an empty commit / reopen to kick CI).
+#
+# We also run `nix flake check` AFTER the update so a bump that fails to evaluate
+# surfaces in this run's logs (the PR still opens — CI is the gate — but the log
+# gives an immediate signal).
+
+on:
+  workflow_dispatch: # manual trigger
+  schedule:
+    - cron: "0 0 * * 0" # weekly, Sunday 00:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      # Pull expensive closures from the shared cache so the post-update
+      # `nix flake check` is fast; pushes too when the token is set.
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Update flake.lock
+        uses: DeterminateSystems/update-flake-lock@main
+        with:
+          pr-title: "chore: update flake.lock"
+          pr-labels: |
+            dependencies
+            automated
+          commit-msg: "chore: update flake.lock"
+          # PAT so the opened PR triggers ci.yml; falls back to GITHUB_TOKEN.
+          token: ${{ secrets.FLAKE_LOCK_PAT || secrets.GITHUB_TOKEN }}
+
+      # Sanity gate: does the flake still evaluate after the bump? Mirrors the
+      # repo's `just check-flake` (== `nix flake show`) — cheap, no builds. CI is
+      # the real gate; a red here is just an instant heads-up in this run's log.
+      - name: nix flake show (post-update evaluation sanity)
+        run: nix flake show
