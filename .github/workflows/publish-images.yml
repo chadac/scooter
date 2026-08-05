@@ -30,6 +30,14 @@ jobs:
   publish:
     name: publish ${{ matrix.image }}
     runs-on: ubuntu-latest
+    # The ubuntu-latest runner ships an /etc/containers/registries.conf in the OLD v1
+    # format, which the nixpkgs skopeo (and n2c's bundled skopeo, used by `.copyTo`)
+    # rejects: "registries.conf must be in v2 format but is in v1" — failing at
+    # `skopeo login` before anything else. Point every skopeo at an empty conf we own
+    # so it ignores the runner's file. Job-level so it covers login + inspect + copy +
+    # the `nix run .copyTo` push. The file is created in the first step below.
+    env:
+      CONTAINERS_REGISTRIES_CONF: ${{ github.workspace }}/.registries.conf
     strategy:
       fail-fast: false # one image failing must not block the others
       matrix:
@@ -56,6 +64,11 @@ jobs:
         with:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Empty registries.conf (v2-parseable, no content) at CONTAINERS_REGISTRIES_CONF,
+      # so skopeo ignores the runner's incompatible v1 /etc/containers/registries.conf.
+      - name: neutralize the runner's v1 registries.conf
+        run: 'touch "$CONTAINERS_REGISTRIES_CONF"'
 
       # skopeo: logs in to ghcr (its ~/.docker/config.json auth is reused by
       # nix2container's copyTo) and does the `latest` retag.
