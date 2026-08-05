@@ -60,10 +60,11 @@ export interface K8sProvisionerOptions {
   /** Resource requests/limits for the sandbox container. Without these the
    *  scheduler treats a sandbox as ~free and packs many onto one node; a burst of
    *  in-pod nix builds then overwhelms the container runtime and the kubelet's PLEG
-   *  stalls the whole node (the node-death we hit). Default: request cpu 500m /
-   *  memory 1Gi so the scheduler SPREADS sandboxes across nodes, limit memory 4Gi so
-   *  a runaway build is OOM-killed instead of taking the node down, and NO cpu limit
-   *  so bursty builds use spare node CPU freely. Deployment-overridable. */
+   *  stalls the whole node (the node-death we hit). Default: requests == limits on
+   *  cpu (2) AND memory (4Gi) => Guaranteed QoS, so the scheduler reserves the full
+   *  amount per pod and a runaway sandbox is HARD-capped there (throttled at 2 cpu,
+   *  OOM-killed past 4Gi) instead of bursting into and starving its neighbours.
+   *  Deployment-overridable; the agent can also resize its own sandbox on demand. */
   sandboxResources?: {
     requests?: { cpu?: string; memory?: string };
     limits?: { cpu?: string; memory?: string };
@@ -112,12 +113,13 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   const ns = opts.namespace;
   const audience = opts.brokerAudience ?? "agent-broker";
   const storage = opts.workspaceStorage ?? "10Gi";
-  // Sandbox container resources (see the option doc): default requests spread pods
-  // across nodes; a memory limit protects the node from a runaway build; no cpu
-  // limit lets bursty nix builds use spare CPU.
+  // Sandbox container resources (see the option doc): default requests == limits on
+  // cpu AND memory => Guaranteed QoS, so one runaway sandbox is hard-capped and can't
+  // starve its neighbours. Deployment-overridable; the agent can also scale its own
+  // sandbox up via the resize tool when it anticipates heavy compute.
   const sandboxResources = opts.sandboxResources ?? {
-    requests: { cpu: "500m", memory: "1Gi" },
-    limits: { memory: "4Gi" },
+    requests: { cpu: "2", memory: "4Gi" },
+    limits: { cpu: "2", memory: "4Gi" },
   };
 
   const sandboxName = (id: string) => `conv-${id}`;

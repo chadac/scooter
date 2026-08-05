@@ -22,11 +22,12 @@ const render = (deploy: Record<string, unknown>) =>
 
 describe("sandboxManifest resource requests/limits", () => {
   it("applies the passed resources to the sandbox container", () => {
-    const resources = { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "4Gi" } };
+    // Guaranteed-QoS profile (the platform default): requests == limits on cpu + memory.
+    const resources = { requests: { cpu: "2", memory: "4Gi" }, limits: { cpu: "2", memory: "4Gi" } };
     const c = render({ resources }).spec.podTemplate.spec.containers[0];
     expect(c.resources).toEqual(resources);
-    // Memory-limit-only profile: no cpu limit is emitted (bursty builds use spare CPU).
-    expect(c.resources?.limits?.cpu).toBeUndefined();
+    // A cpu limit IS emitted (== the request) so a runaway pod is throttled, not free.
+    expect(c.resources?.limits?.cpu).toBe("2");
   });
 
   it("emits NO resources block when none are configured", () => {
