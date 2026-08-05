@@ -7,6 +7,7 @@
  */
 
 import { memo, useState } from "react";
+import { flushSync } from "react-dom";
 
 import {
   sessionStore,
@@ -69,13 +70,21 @@ const SessionRow = memo(function SessionRow({
 }) {
   const [draft, setDraft] = useState(s.title);
 
-  // Open the rename: set the store lock SYNCHRONOUSLY (not via a useEffect, which ran
-  // a paint later — a merge landing in that window either dropped the open-click or
-  // detached the just-mounted input). Seeding draft from the current title here (the
-  // lock immediately freezes this row in mergeFromServer, so the title can't shift).
+  // Open the rename. flushSync forces React to COMMIT the editing state before the
+  // click handler returns, so the input mounts SYNCHRONOUSLY within the event rather
+  // than on a later, interruptible render. This is HARDENING, not a bug fix: the
+  // state machine is already correct (proven deterministically in jsdom — the input
+  // opens + survives a same-tick merge storm with or without flushSync). But on a
+  // severely CPU-starved main thread (GitHub's 2-core runner, mid agent-turn render
+  // storm) a deferred commit can be delayed long enough that a test's next action —
+  // or a real user's follow-up click — races the not-yet-mounted input. Committing
+  // in-handler shrinks that window to zero. Seeding draft from the current title
+  // (the store lock freezes this row in mergeFromServer, so the title can't shift).
   const openRename = () => {
-    setDraft(s.title);
-    sessionStore.setEditing(s.id);
+    flushSync(() => {
+      setDraft(s.title);
+      sessionStore.setEditing(s.id);
+    });
   };
 
   const commitRename = () => {
