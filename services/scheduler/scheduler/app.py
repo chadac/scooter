@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .config import require_relay_key, settings
-from .cron import InvalidSchedule, next_run
+from .cron import InvalidSchedule
 from .models import Run, Task, TaskCreate, TaskPatch
 from .spawn import spawn_conversation
 from .store import Store
@@ -33,7 +33,9 @@ def _utcnow() -> datetime:
 
 
 async def _fire(store: Store, task) -> None:
-    """Spawn one run for a due task, record it, and advance next_run_at."""
+    """Spawn one run for an ALREADY-CLAIMED task and record it. The task's
+    next_run_at was advanced atomically by claim_due (the double-fire guard), so
+    _fire must NOT reschedule — it only spawns + records the run."""
     run_id = await store.start_run(task.id)
     conv = await spawn_conversation(task.prompt, title=task.title, owner=task.owner)
     await store.finish_run(
@@ -42,8 +44,6 @@ async def _fire(store: Store, task) -> None:
         status="spawned" if conv else "failed",
         error=None if conv else "spawn returned no conversation",
     )
-    now = _utcnow()
-    await store.reschedule(task.id, last_run_at=now, next_run_at=next_run(task.cron, task.timezone, now))
     logger.info("fired task %s (%s) -> conversation %s", task.id, task.title, conv)
 
 
@@ -52,7 +52,11 @@ async def _scheduler_loop(store: Store, stop: asyncio.Event) -> None:
     recovery (next_run_at is in the past) then advances forward — no backfill storm."""
     while not stop.is_set():
         try:
-            due = await store.due_tasks(_utcnow())
+            # claim_due ATOMICALLY claims + advances next_run_at, so with 2+ replicas
+            # each due task is fired by exactly one replica (no double-fire). If a
+            # spawn then fails, next_run_at has already advanced — the run is recorded
+            # 'failed' and we don't retry until the next cron window (at-most-once).
+            due = await store.claim_due(_utcnow())
             for task in due:
                 try:
                     await _fire(store, task)

@@ -160,7 +160,9 @@ in
       deployments.agent-webhooks = {
         metadata = { name = "agent-webhooks"; namespace = cfg.namespace; };
         spec = {
-          replicas = 1;
+          # Stateless (Postgres-backed conversation map; handlers spawn on POST) —
+          # 2 replicas by default so consolidation can't drop inbound webhooks.
+          replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "agent-webhooks";
           template = {
             metadata.labels.app = "agent-webhooks";

@@ -61,9 +61,11 @@ in
       deployments.agent-scheduler = {
         metadata = { name = "agent-scheduler"; namespace = cfg.namespace; };
         spec = {
-          # Single replica: the SQLite default is per-pod, and the loop is cheap.
-          # For multi-replica, use Postgres (due_tasks uses FOR UPDATE SKIP LOCKED).
-          replicas = 1;
+          # 2 replicas by default (consolidation resilience). Safe on Postgres: the
+          # loop uses claim_due, which advances next_run_at atomically under
+          # FOR UPDATE SKIP LOCKED, so each due task fires on exactly one replica (no
+          # double-fire). With the SQLite dev default there's a single pod anyway.
+          replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "agent-scheduler";
           template = {
             metadata.labels.app = "agent-scheduler";

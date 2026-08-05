@@ -302,7 +302,9 @@ in
       deployments.agent-broker = {
         metadata = { name = "agent-broker"; namespace = cfg.namespace; };
         spec = {
-          replicas = 1;
+          # Stateless (Postgres-backed; only an in-memory STS cache that re-vends on a
+          # miss) — 2 replicas by default so consolidation can't take the broker down.
+          replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "agent-broker";
           template = {
             metadata = {
