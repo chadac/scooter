@@ -180,7 +180,17 @@
           # because these are the SAME in-scope derivations the flake exposes as
           # packages.<attr>-image. So a manifest built from this flake references the
           # exact tag the workflow pushed — same content → same tag → no rebuild.
-          contentTag = img: builtins.substring 0 12 (builtins.baseNameOf img.outPath);
+          #
+          # unsafeDiscardStringContext is REQUIRED: interpolating `img.outPath` attaches
+          # the image derivation as string CONTEXT, and that context survives baseNameOf
+          # + substring — so without discarding it the tag string carries every image as
+          # a build dependency, and `nix build .#ghcr-image-refs` (or any derivation that
+          # embeds these refs) would REALISE all the images just to read their hashes.
+          # We only want the hash as TEXT for a registry ref; the images are built+pushed
+          # separately by the publish workflow. Discarding the context is exactly correct.
+          contentTag = img:
+            builtins.unsafeDiscardStringContext
+              (builtins.substring 0 12 (builtins.baseNameOf img.outPath));
           # Default registry for the published images. Content-tagged ghcr refs.
           ghcrPrefix = "ghcr.io/chadac/scooter/";
           ghcrImage = name: img: "${ghcrPrefix}${name}:${contentTag img}";
