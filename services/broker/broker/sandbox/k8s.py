@@ -65,12 +65,34 @@ def _ignore(status: int, e: client.ApiException, ok: int) -> None:
         raise e
 
 
+def _image_tag(image_ref: str) -> str:
+    """The tag portion of an OCI ref (repo:tag) — the warm-pool key. e.g.
+    'ghcr.io/chadac/scooter/agent-sandbox-os:vyk7v5cwsfl6' -> 'vyk7v5cwsfl6'. A digest
+    (@sha256:…) or a bare ref with no tag falls back to the whole ref (still a stable
+    per-image key)."""
+    ref, sep, tag = image_ref.rpartition(":")
+    # rpartition on 'repo:tag' -> tag; but 'host:port/repo' with no tag would misfire,
+    # so require the tag part to be free of '/' (a real tag never contains one).
+    if sep and "/" not in tag:
+        return tag
+    return image_ref
+
+
 class SandboxK8s:
     """Imperative Sandbox/SA/CM lifecycle over the k8s API."""
 
     def __init__(self, deploy: DeployConfig) -> None:
         self.deploy = deploy
         self.ns = deploy.namespace
+        self._warm: object | None = None  # lazy WarmPool (only when the flag is on)
+
+    def _warm_pool(self):
+        """Lazily construct the WarmPool (import-local so the pool code — and its
+        BatchV1 client — is only loaded when the feature is enabled)."""
+        if self._warm is None:
+            from .warmpool import WarmPool
+            self._warm = WarmPool(self.deploy)
+        return self._warm
 
     def _load_overlay(self) -> dict:
         """Read + parse the consumer manifest-overlay ConfigMap (name from
@@ -117,6 +139,18 @@ class SandboxK8s:
         except client.ApiException as e:
             _ignore(e.status, e, 409)
 
+        # WARM POOL (opt-in): claim a pre-warmed overlay-upper PVC for this image tag,
+        # so common tools are already built. None -> fall back to a fresh scooter-rw
+        # volumeClaimTemplate (unchanged behavior). Best-effort: a pool error must never
+        # block sandbox creation. TODO(tier-2): validate the claim/attach on a real
+        # cluster; return_() the PVC on suspend/destroy (see suspend/destroy below).
+        warm_pvc: str | None = None
+        if self.deploy.warm_store_pool and self.deploy.overlay_store:
+            try:
+                warm_pvc = self._warm_pool().claim(_image_tag(self.deploy.sandbox_image))
+            except Exception as e:  # noqa: BLE001 — pool must not break provisioning
+                logger.warning("warm-pool claim failed (using a fresh PVC): %s", e)
+
         # 2. the cold Sandbox. 409 -> adopt the existing one + ensure running.
         already = False
         body = sandbox_manifest(
@@ -127,6 +161,7 @@ class SandboxK8s:
             resources=resources,
             url_thread=thread_id or cid,
             overlay=self._load_overlay() or None,
+            warm_pvc=warm_pvc,
         )
         try:
             custom.create_namespaced_custom_object(
