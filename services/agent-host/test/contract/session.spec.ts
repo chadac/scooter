@@ -742,6 +742,75 @@ describe("SessionManager", () => {
     expect(() => sessions.touchById("nope" as never)).not.toThrow();
   });
 
+  it("sweepIdle() does NOT suspend a conversation with a run IN FLIGHT (a long turn > idle window)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      // A bridge whose queueState we can flip to "running" — modelling goose mid-turn.
+      let running = false;
+      const bridgeFactory = () =>
+        ({
+          start: vi.fn(async () => {}),
+          prompt: vi.fn(async () => "run-x"),
+          stop: vi.fn(async () => {}),
+          onEvent: () => () => {},
+          onPersist: () => () => {},
+          onTitle: () => () => {},
+          queueState: () => ({ running, currentRunMs: running ? 1000 : 0, queued: 0, maxQueuedPriority: 0 }),
+        }) as never;
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory });
+
+      const conv = await sessions.start("busy-thread"); // stamped at t=0
+      await sessions.revive(conv.id); // attach the live bridge
+      running = true; // a long agent turn is now in flight
+
+      // Advance WELL past the idle window — lastActivityAt is stale (the turn started
+      // long ago and nothing bumps it mid-run), so the lastActivityAt check alone would
+      // suspend it. The in-flight-run guard must keep the pod up.
+      const swept = await sessions.sweepIdle(5 * 60_000, 60 * 60_000); // 1h later, 5m threshold
+      expect(swept).not.toContain(conv.id);
+      expect(sessions.get(conv.id)?.status).toBe("running");
+      expect(provisioner.suspend).not.toHaveBeenCalled();
+
+      // Once the run finishes, the same stale-idle conversation IS reclaimed.
+      running = false;
+      const sweptAfter = await sessions.sweepIdle(5 * 60_000, 60 * 60_000);
+      expect(sweptAfter).toContain(conv.id);
+      expect(sessions.get(conv.id)?.status).toBe("suspended");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sweepIdle() does NOT suspend a conversation with QUEUED work (backlog behind the run)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const bridgeFactory = () =>
+        ({
+          start: vi.fn(async () => {}),
+          prompt: vi.fn(async () => "run-x"),
+          stop: vi.fn(async () => {}),
+          onEvent: () => () => {},
+          onPersist: () => () => {},
+          onTitle: () => () => {},
+          // not "running" between turns, but a prompt is queued -> still busy.
+          queueState: () => ({ running: false, currentRunMs: 0, queued: 2, maxQueuedPriority: 0 }),
+        }) as never;
+      const provisioner = fakeProvisioner();
+      const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory });
+      const conv = await sessions.start("queued-thread");
+      await sessions.revive(conv.id);
+
+      const swept = await sessions.sweepIdle(5 * 60_000, 60 * 60_000);
+      expect(swept).not.toContain(conv.id);
+      expect(provisioner.suspend).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sweepIdle() ignores already-suspended conversations", async () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });

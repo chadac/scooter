@@ -987,6 +987,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (entry.status !== "running") continue;
         if (now - entry.lastActivityAt < idleMs) continue;
         if (hasLiveDescendant(entry.id)) continue; // keep the shared pod up
+        // NEVER suspend a conversation with a run IN FLIGHT. lastActivityAt is bumped
+        // at prompt boundaries, not continuously during a turn — so a single agent
+        // turn that runs longer than idleMs (a long nix build, a big test suite, a
+        // slow/stuck tool call) looks "idle" here even though goose is actively
+        // working. Suspending then drops the pod out from under the live run: goose
+        // gets SIGTERM'd (code=null), the ACP stdio pipe tears down, and the bridge
+        // surfaces AbortError / ERR_STREAM_PREMATURE_CLOSE — cutting the conversation
+        // mid-task. The bridge already knows if a run is active/queued (queueState),
+        // so consult it: a running or backlogged conversation is NOT idle.
+        const qs = entry.bridge?.queueState();
+        if (qs && (qs.running || qs.queued > 0)) continue;
         try {
           await this.suspend(entry.id);
           suspended.push(entry.id);
@@ -1022,6 +1033,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (entry.starred) return false; // STARRED = exempt from auto-deletion
         if (now - entry.lastActivityAt < maxAgeMs) return false; // still recent
         if (hasLiveDescendant(entry.id)) return false; // keep the shared pod
+        // Same in-flight guard as sweepIdle, but here it's defense-in-depth: end() is
+        // DESTRUCTIVE (pod + PVCs), so never reap a conversation with a live/queued run
+        // even if lastActivityAt looks stale. (Far less likely than the idle case — the
+        // retention window is days, not minutes — but a wedged multi-day run would
+        // otherwise be deleted mid-flight.)
+        const qs = entry.bridge?.queueState();
+        if (qs && (qs.running || qs.queued > 0)) return false;
         return true;
       });
       for (const entry of candidates) {
