@@ -31,6 +31,10 @@ class DeployConfig:
     broker_audience: str = "agent-broker"
     overlay_store: bool = False
     overlay_storage: str = "20Gi"
+    # Warm /nix/store pool: when on, the broker claims a pre-warmed overlay-upper PVC
+    # (keyed by image content tag) for a new sandbox instead of a fresh empty one, so
+    # common tools are already built. Off by default. See warmpool.py + the spec.
+    warm_store_pool: bool = False
     systemd_image: bool = True
     aws_accounts_configmap: str | None = None
     config_files_configmap: str | None = None
@@ -53,6 +57,7 @@ def sandbox_manifest(
     resources: dict | None = None,  # already-rendered k8s resources block
     url_thread: str | None = None,  # full threadId for CONVERSATION_URL deep-link
     overlay: dict | None = None,  # parsed consumer overlay (see overlay.apply_overlay)
+    warm_pvc: str | None = None,  # a claimed warm-pool PVC name to bind as scooter-rw
 ) -> dict:
     # NOTE: NO module ConfigMap. The pod pulls its module config (deployment defaults
     # + registry modules) as a tarball from the broker (a root sandbox-os Nix module
@@ -127,6 +132,12 @@ def sandbox_manifest(
         volumes.append({"name": "deploy-config", "configMap": {"name": config_files}})
     for aud in extra_auds:
         volumes.append({"name": f"tok-{aud}", "projected": {"sources": [{"serviceAccountToken": {"audience": aud, "path": "token"}}]}})
+    # WARM POOL: bind a CLAIMED pre-warmed PVC as scooter-rw (an existing-claim volume),
+    # instead of the volumeClaimTemplate that would create a fresh empty one. The
+    # warmed upper's paths are valid over this image's lower with no fixup (see spec).
+    # Only meaningful with overlay_store on; None -> fall back to the template below.
+    if overlay_store and warm_pvc:
+        volumes.append({"name": "scooter-rw", "persistentVolumeClaim": {"claimName": warm_pvc}})
 
     # --- volumeClaimTemplates ---
     vcts: list[dict] = [
@@ -135,7 +146,9 @@ def sandbox_manifest(
             "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": deploy.workspace_storage}}},
         }
     ]
-    if overlay_store:
+    # Only template a FRESH scooter-rw PVC when overlay is on AND we did NOT claim a
+    # warm one above (a claimed PVC is bound as a pod volume, not a template).
+    if overlay_store and not warm_pvc:
         vcts.append({
             "metadata": {"name": "scooter-rw"},
             "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": deploy.overlay_storage}}},

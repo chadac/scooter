@@ -83,6 +83,31 @@ def test_overlay_store_adds_upper_pvc_and_mount():
     assert any(v["metadata"]["name"] == "scooter-rw" for v in m["spec"]["volumeClaimTemplates"])
 
 
+def test_warm_pvc_binds_claimed_volume_instead_of_template():
+    # With a claimed warm PVC, scooter-rw is bound as an EXISTING-claim pod volume and
+    # is NOT templated (a template would create a fresh empty PVC, defeating the pool).
+    m = sandbox_manifest(
+        conversation_id="c1", name="conv-c1", service_account="sa",
+        deploy=_deploy(overlay_store=True), warm_pvc="warm-store-tag-1",
+    )
+    assert "scooter-rw" in _mount_names(m)                         # still mounted
+    vols = {v["name"]: v for v in _vols(m)}
+    assert vols["scooter-rw"]["persistentVolumeClaim"]["claimName"] == "warm-store-tag-1"
+    # NO scooter-rw volumeClaimTemplate (the claimed PVC is bound directly instead).
+    assert not any(v["metadata"]["name"] == "scooter-rw" for v in m["spec"]["volumeClaimTemplates"])
+    # workspace template is unaffected.
+    assert any(v["metadata"]["name"] == "workspace" for v in m["spec"]["volumeClaimTemplates"])
+
+
+def test_warm_pvc_ignored_without_overlay_store():
+    # warm_pvc only applies when overlay_store is on; otherwise it's a no-op.
+    m = sandbox_manifest(
+        conversation_id="c1", name="conv-c1", service_account="sa",
+        deploy=_deploy(overlay_store=False), warm_pvc="warm-store-tag-1",
+    )
+    assert "scooter-rw" not in _mount_names(m)
+
+
 def test_no_module_configmap_mount():
     # Modules come from the broker tarball, not a CM — the manifest never mounts a
     # per-conversation module CM or a deployment .scooter CM.

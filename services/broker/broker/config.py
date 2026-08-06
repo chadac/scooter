@@ -108,6 +108,9 @@ class BrokerSettings(BaseSettings):
     sandbox_workspace_storage: str = "10Gi"
     sandbox_overlay_store: bool = False
     sandbox_overlay_storage: str = "20Gi"
+    # Warm /nix/store pool: claim a pre-warmed overlay-upper PVC (keyed by image tag)
+    # for a new sandbox instead of a fresh empty one. Off by default. See warmpool.py.
+    sandbox_warm_store_pool: bool = False
     sandbox_systemd_image: bool = True
     # Deployment default size (friendly {requests,limits} JSON); empty -> platform default.
     sandbox_default_resources_json: str = ""

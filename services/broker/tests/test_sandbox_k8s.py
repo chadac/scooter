@@ -126,3 +126,19 @@ def test_destroy_propagates_non_404(_mock_apis):
     _mock_apis.delete_status = 500
     with pytest.raises(_ApiExc):
         _sb().destroy("c1")
+
+
+# --- warm-pool image-tag key (pure) ----------------------------------------
+
+import pytest
+from broker.sandbox.k8s import _image_tag
+
+
+@pytest.mark.parametrize("ref,tag", [
+    ("ghcr.io/chadac/scooter/agent-sandbox-os:vyk7v5cwsfl6", "vyk7v5cwsfl6"),
+    ("agent-sandbox-os:latest", "latest"),
+    ("localhost:5000/agent-sandbox-os:abc123", "abc123"),   # registry port must not confuse it
+    ("agent-sandbox-os", "agent-sandbox-os"),               # no tag -> whole ref (stable key)
+])
+def test_image_tag_extracts_the_pool_key(ref, tag):
+    assert _image_tag(ref) == tag
