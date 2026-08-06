@@ -584,7 +584,24 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Mark the end of the initial replay so the client knows it's caught up.
     send({ kind: "synced" });
 
-    ctx.req.on("close", () => unsub?.());
+    // SSE HEARTBEAT: an idle conversation emits no events, so without this the stream
+    // goes byte-silent until the next activity. Any proxy in front (the UI's nginx has
+    // proxy_read_timeout 3600s; an ingress/LB may be far stricter) then times the
+    // upstream out — the observed `upstream timed out (110) ... events.integrity`,
+    // dropping a live viewer's stream on a quiet conversation. Send an SSE COMMENT line
+    // (`:`-prefixed) every 25s: it keeps the connection warm for every proxy layer, and
+    // the client parser ignores it (it only reads `data:` lines). Cleared on close.
+    const heartbeat = setInterval(() => {
+      // res.write can throw if the socket is already gone between 'close' and clear.
+      try { res.write(": ping\n\n"); } catch { /* connection closed — the close handler clears this */ }
+    }, 25_000);
+    // Don't let the heartbeat timer keep the process alive on shutdown.
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
+
+    ctx.req.on("close", () => {
+      clearInterval(heartbeat);
+      unsub?.();
+    });
   });
 
   r.post("/conversations/:id/permission/:toolCallId", async (ctx) => {
