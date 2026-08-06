@@ -29,7 +29,19 @@ async def init_db(settings: DatabaseSettings | None = None) -> None:
     global _engine, _session_factory
     if settings is None:
         settings = DatabaseSettings()
-    _engine = create_async_engine(settings.dsn, echo=False)
+    # pool_pre_ping: emit a lightweight liveness check when a connection is checked
+    # out of the pool and RECYCLE it if the server (or an idle-timeout / proxy /
+    # failover) has closed it underneath us — instead of handing out a dead
+    # connection and 500ing the request with asyncpg "connection is closed" on the
+    # next transaction start (observed on POST /webhooks/slack). pool_recycle caps a
+    # connection's lifetime below common idle-timeout windows so stale ones are
+    # retired proactively, not just reactively.
+    _engine = create_async_engine(
+        settings.dsn,
+        echo=False,
+        pool_pre_ping=True,
+        pool_recycle=1800,  # recycle connections older than 30 min
+    )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
