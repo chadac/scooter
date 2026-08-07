@@ -874,7 +874,19 @@ in
                   # lifecycle API. Mounted under either flag.
                   { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
+                # Graceful drain on rollout. preStop sleeps briefly so the Service
+                # stops routing NEW traffic to this pod (endpoint removal propagates)
+                # BEFORE the kubelet sends SIGTERM; the app's SIGTERM handler then
+                # flushes in-flight event-log writes + closes SSE cleanly (clients get
+                # a proper close + reconnect, not a raw 502 from a hard kill). Under
+                # today's Recreate + replicas:1 this slightly lengthens the rollout gap
+                # (accepted — the clean drain is the reusable primitive; once #123 moves
+                # agent-host to a RollingUpdate StatefulSet the drain removes the gap
+                # entirely). grace period bounds the whole stop; keep it > preStop +
+                # SHUTDOWN_TIMEOUT_MS (8s) so the drain can finish.
+                lifecycle.preStop.exec.command = [ "sleep" "5" ];
               };
+              terminationGracePeriodSeconds = 20;
               # Durable event-log PVC + ephemeral scratch/tmp emptyDirs.
               volumes = [
                 { name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }

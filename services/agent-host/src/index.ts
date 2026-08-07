@@ -1292,10 +1292,50 @@ function deferredSandboxApi(sandbox: SandboxRef) {
 }
 
 
+/** Wire SIGTERM (the k8s preStop/rollout signal) + SIGINT to a graceful drain.
+ *  `shutdown` (main()'s return) stops the timers, flushes metrics, and closes the
+ *  server — which flushes in-flight event-log writes + ends SSE connections cleanly
+ *  so clients get a proper close and reconnect, rather than a raw 502 from a hard
+ *  kill. The drain is bounded by SHUTDOWN_TIMEOUT_MS so a stuck close can never hold
+ *  the pod past its terminationGracePeriod. Repeat signals mid-drain are ignored.
+ *  Exported (with injectable proc/timers) so it's unit-testable without the process. */
+export function installShutdownHandlers(
+  shutdown: () => Promise<void>,
+  opts: {
+    proc?: Pick<NodeJS.Process, "on" | "exit">;
+    timeoutMs?: number;
+    setTimeoutFn?: typeof setTimeout;
+    log?: (msg: string) => void;
+  } = {},
+): void {
+  const proc = opts.proc ?? process;
+  const timeoutMs = opts.timeoutMs ?? Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 8000);
+  const setTimeoutFn = opts.setTimeoutFn ?? setTimeout;
+  const log = opts.log ?? ((m) => console.log(m));
+  let shuttingDown = false;
+  const onSignal = (sig: NodeJS.Signals) => {
+    if (shuttingDown) return; // ignore repeat signals mid-drain
+    shuttingDown = true;
+    log(`[agent-host] ${sig} — draining…`);
+    const timer = setTimeoutFn(() => {
+      log(`[agent-host] drain exceeded ${timeoutMs}ms — exiting`);
+      proc.exit(0);
+    }, timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+    shutdown()
+      .then(() => { log("[agent-host] drained cleanly"); proc.exit(0); })
+      .catch((e) => { console.error("[agent-host] drain error:", e); proc.exit(0); });
+  };
+  proc.on("SIGTERM", onSignal);
+  proc.on("SIGINT", onSignal);
+}
+
 // Entry point: when run directly (node dist/index.js), start the service.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
-    console.error("[agent-host] fatal:", err);
-    process.exit(1);
-  });
+  main()
+    .then((shutdown) => installShutdownHandlers(shutdown))
+    .catch((err) => {
+      console.error("[agent-host] fatal:", err);
+      process.exit(1);
+    });
 }
