@@ -412,7 +412,19 @@ export async function main(
   // the SIGTERM drain #248). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md.
   const localStore = createFileConversationStore(config.statePath);
   const mirroredStore = config.mirrorStatePath
-    ? mirroredConversationStore(localStore, createFileConversationStore(config.mirrorStatePath))
+    ? mirroredConversationStore(localStore, createFileConversationStore(config.mirrorStatePath), {
+        // A mirror-write failure is NON-fatal (local is intact) but must not vanish:
+        // it means the backup is diverging from the authority, so surface it debuggably
+        // (full error + stack) AND on the persistence-error metric — same treatment as a
+        // local durable-append failure (store.onAppendError below).
+        onMirrorError: (conversationId, err) => {
+          console.error(
+            `[mirror] backup write FAILED for ${conversationId} (local intact; mirror diverging):`,
+            err, // Node prints the stack/traceback for an Error
+          );
+          metrics.persistenceError?.({ conversationId });
+        },
+      })
     : undefined;
   const store: ConversationStore = mirroredStore ?? localStore;
   // Image/media assets (uploaded images) live alongside the event log on the
@@ -1144,8 +1156,22 @@ export async function main(
     await server.close();
     // Flush the NFS mirror's buffered tail before exit so a PLANNED rollout ships every
     // event to the backup (near-RPO-0); an unclean crash loses at most the in-flight
-    // batch. No-op when the mirror is off. Best-effort — never block the exit on it.
-    if (mirroredStore) await mirroredStore.drainMirror().catch(() => {});
+    // batch. No-op when the mirror is off. Best-effort — never BLOCK the exit on it, but
+    // a drain failure means the backup just lost its buffered tail (exactly the data a
+    // planned rollout was trying to preserve), so LOG it loudly + debuggably (full error
+    // + stack) instead of swallowing — a silent failure here is undiagnosable after the
+    // pod is gone.
+    if (mirroredStore) {
+      try {
+        await mirroredStore.drainMirror();
+      } catch (err) {
+        console.error(
+          "[agent-host] MIRROR DRAIN FAILED on shutdown — the NFS backup may be missing " +
+            "its buffered tail (data loss on this rollout). Error:",
+          err, // Node prints the stack/traceback for an Error
+        );
+      }
+    }
   };
 
   // --- helpers ---
