@@ -26,6 +26,8 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
+import { mirroredConversationStore } from "./session/mirroredStore.js";
+import type { ConversationStore } from "./session/manager.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
@@ -81,6 +83,12 @@ export interface AgentHostConfig {
   /** Durable conversation state: the AG-UI event log (history/replay). On a PVC
    *  so it survives agent-host restarts. */
   statePath: string;
+  /** OPTIONAL RWX/NFS mirror root. When set, the conversation store becomes a
+   *  mirroredConversationStore: LOCAL (statePath) stays the hot-path authority and a
+   *  coalesced async copy of every write is shipped here so ANOTHER pod can revive the
+   *  conversation from the mirror (the multi-replica story). Unset = single local store
+   *  (today's behavior). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md. */
+  mirrorStatePath?: string;
   /** Ephemeral scratch for the agent process: goose's per-conversation cwd
    *  (sessions DB + .goosehints). The real work execs into the sandbox, so this
    *  is throwaway — an emptyDir, NOT the durable PVC. */
@@ -158,6 +166,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest",
     statePath: process.env.STATE_PATH ?? defaultStatePath,
+    mirrorStatePath: process.env.MIRROR_STATE_PATH || undefined,
     scratchPath: process.env.SCRATCH_PATH ?? defaultScratchPath,
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
@@ -395,7 +404,17 @@ export async function main(
   // FATAL (else goose silently runs tools in the agent-host pod — finding #1);
   // on a fake/dev sandbox there's no real goose, so it's best-effort.
   ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
-  const store = createFileConversationStore(config.statePath);
+  // Conversation store: LOCAL fileStore (hot-path authority). When MIRROR_STATE_PATH is
+  // set, wrap it so every write is also mirrored (async, coalesced, non-blocking) to a
+  // second fileStore on the RWX/NFS volume — so another pod can revive from the mirror
+  // (multi-replica). drainMirror is awaited by main()'s returned shutdown fn, so a
+  // graceful stop ships the mirror's tail (near-RPO-0 on a planned rollout — pairs with
+  // the SIGTERM drain #248). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md.
+  const localStore = createFileConversationStore(config.statePath);
+  const mirroredStore = config.mirrorStatePath
+    ? mirroredConversationStore(localStore, createFileConversationStore(config.mirrorStatePath))
+    : undefined;
+  const store: ConversationStore = mirroredStore ?? localStore;
   // Image/media assets (uploaded images) live alongside the event log on the
   // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const assets = createPvcAssetStore({
@@ -1123,6 +1142,10 @@ export async function main(
     if (subagentWatchTimer) clearInterval(subagentWatchTimer);
     await metrics.shutdown();
     await server.close();
+    // Flush the NFS mirror's buffered tail before exit so a PLANNED rollout ships every
+    // event to the backup (near-RPO-0); an unclean crash loses at most the in-flight
+    // batch. No-op when the mirror is off. Best-effort — never block the exit on it.
+    if (mirroredStore) await mirroredStore.drainMirror().catch(() => {});
   };
 
   // --- helpers ---
