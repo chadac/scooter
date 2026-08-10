@@ -144,3 +144,63 @@ def test_is_read_only_policy_ignores_deny_statements():
         {"Effect": "Deny", "Action": "s3:DeleteObject", "Resource": "*"},
     ]}
     assert policy.is_read_only_policy(doc)
+
+
+# --- covered_by_auto_policy (the auto-approve tier: glob superset that skips human) ---
+
+# The assume-a-specific-role example the user asked for.
+ASSUME = {"Version": V, "Statement": [{"Effect": "Allow",
+    "Action": "sts:AssumeRole", "Resource": "arn:aws:iam::123456789012:role/deploy-prod"}]}
+AUTO_ASSUME = {"Statement": [{"Action": ["sts:AssumeRole"],
+    "Resource": ["arn:aws:iam::123456789012:role/deploy-*"]}]}
+
+
+def test_auto_covers_assume_role_via_glob():
+    # sts:AssumeRole to deploy-prod is covered by the deploy-* auto superset -> auto.
+    assert policy.covered_by_auto_policy(ASSUME, [], AUTO_ASSUME, [])
+
+
+def test_auto_rejects_action_outside_the_superset():
+    # A write not in the auto policy -> NOT auto (falls through to human approval).
+    write = stmt("s3:PutObject", "arn:aws:s3:::b/*")
+    assert not policy.covered_by_auto_policy(write, [], AUTO_ASSUME, [])
+
+
+def test_auto_rejects_resource_outside_the_glob():
+    # Right action, wrong resource (a role the glob doesn't cover) -> NOT auto.
+    other = {"Version": V, "Statement": [{"Effect": "Allow",
+        "Action": "sts:AssumeRole", "Resource": "arn:aws:iam::123456789012:role/admin"}]}
+    assert not policy.covered_by_auto_policy(other, [], AUTO_ASSUME, [])
+
+
+def test_auto_empty_tiers_never_auto():
+    assert not policy.covered_by_auto_policy(ASSUME, [], None, [])
+    assert not policy.covered_by_auto_policy(ASSUME, [], {"Statement": []}, [])
+
+
+def test_auto_no_grants_is_not_auto():
+    # A request with no doc and no ARNs has nothing to auto-approve.
+    assert not policy.covered_by_auto_policy(None, [], AUTO_ASSUME, ["*"])
+
+
+def test_auto_managed_arn_matched_by_glob():
+    arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    assert policy.covered_by_auto_policy(None, [arn], None, ["arn:aws:iam::aws:policy/ReadOnly*"])
+
+
+def test_auto_managed_arn_case_sensitive():
+    # ARNs are case-sensitive: a role-name glob must not match a different case.
+    arn = "arn:aws:iam::123456789012:policy/MyPolicy"
+    assert not policy.covered_by_auto_policy(None, [arn], None, ["arn:aws:iam::123456789012:policy/mypolicy"])
+
+
+def test_auto_any_uncovered_managed_arn_blocks():
+    # Doc covered + one managed ARN NOT in the auto-managed list -> NOT auto (all-or-nothing).
+    assert not policy.covered_by_auto_policy(
+        ASSUME, ["arn:aws:iam::aws:policy/AdministratorAccess"], AUTO_ASSUME, ["arn:aws:iam::aws:policy/ReadOnly*"],
+    )
+
+
+def test_auto_doc_plus_managed_both_covered():
+    arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+    assert policy.covered_by_auto_policy(ASSUME, [arn], AUTO_ASSUME, ["arn:aws:iam::aws:policy/ReadOnly*"])

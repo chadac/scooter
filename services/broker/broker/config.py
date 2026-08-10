@@ -56,7 +56,13 @@ class BrokerSettings(BaseSettings):
     # The broker's own IRSA role ARN — the principal the dynamic roles trust.
     aws_broker_principal_arn: str = ""
     # Path to the account-registry JSON (a mounted ConfigMap): alias ->
-    # {account_id, broker_role_arn, enabled, allowed_policy?, allowed_managed_policies?, region?}.
+    # {account_id, broker_role_arn, enabled, allowed_policy?, allowed_managed_policies?,
+    #  region?, auto_approve_read_only?, auto_allowed_policy?, auto_allowed_managed_policies?}.
+    # allowed_policy* = the CEILING (a glob superset a request must fall within).
+    # auto_allowed_policy* = an OPT-IN sub-tier auto-granted with NO human approval — a
+    # glob superset (fnmatch Action+Resource; managed-ARN fnmatch) of pre-approved grants,
+    # e.g. sts:AssumeRole to arn:...:role/deploy-*. Checked after the ceiling, so it can
+    # only auto-approve requests already in-bounds. Absent -> nothing auto-approves.
     aws_accounts_file: str = ""
     aws_role_ttl_hours: int = 12
     # Which identity claim authorizes an approver (must match how the FGA approver

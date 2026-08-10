@@ -209,6 +209,48 @@ def is_read_only_policy(policy_document: dict) -> bool:
     return saw_action
 
 
+def covered_by_auto_policy(
+    policy_document: dict | None,
+    managed_policy_arns: list[str],
+    auto_allowed_policy: dict | None,
+    auto_allowed_managed_policies: list[str],
+) -> bool:
+    """True iff a request is FULLY covered by the account's auto-approve tier — i.e.
+    it can be granted with no human approval. A generalization of the read-only
+    auto-approve gate: instead of "every action is read-only", it's "every action +
+    resource is covered by auto_allowed_policy (fnmatch glob superset) AND every
+    managed ARN matches auto_allowed_managed_policies (fnmatch)".
+
+    Coverage is strict — an UNCOVERED action/resource or ANY managed ARN not matched
+    means NOT auto-approvable (falls through to human approval). This runs AFTER the
+    3 validation layers, so it never widens the ceiling: it only decides whether an
+    already-in-bounds request skips the approval interrupt.
+
+    Empty auto tiers = nothing auto-approves. A request with NO grants (no doc + no
+    ARNs) is not auto-approvable (there's nothing to have opted in)."""
+    has_doc = bool(policy_document and policy_document.get("Statement"))
+    has_arns = bool(managed_policy_arns)
+    if not has_doc and not has_arns:
+        return False
+
+    # Inline doc: every statement must be within auto_allowed_policy (reuses the same
+    # coverage check as the ceiling — no auto_allowed_policy => no inline coverage).
+    if has_doc:
+        if not auto_allowed_policy or not auto_allowed_policy.get("Statement"):
+            return False
+        assert policy_document is not None  # narrowed by has_doc
+        if validate_policy_within_bounds(policy_document, auto_allowed_policy):
+            return False  # some action/resource not covered
+
+    # Managed ARNs: each must match an auto_allowed_managed_policies fnmatch pattern.
+    # ARNs are CASE-SENSITIVE (a role name is), so match case-sensitively — unlike the
+    # case-insensitive action/resource matching in _pattern_list_covers.
+    for arn in managed_policy_arns:
+        if not any(fnmatch.fnmatchcase(arn, p) for p in auto_allowed_managed_policies):
+            return False
+    return True
+
+
 def validate_policy_within_bounds(policy_document: dict, allowed_policy: dict) -> list[str]:
     """Layer 3: every requested action+resource must be covered by the account's
     allowed_policy (same Statement structure, fnmatch patterns). An unrestricted

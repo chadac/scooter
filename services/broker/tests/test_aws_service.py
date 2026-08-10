@@ -63,7 +63,21 @@ REGISTRY = {
     "ro": {"account_id": "999", "broker_role_arn": "arn:...:base", "enabled": True,
            "auto_approve_read_only": True, "description": "read-only sandbox",
            "allowed_policy": {"Statement": [{"Action": ["*"], "Resource": ["*"]}]}},
+    # Opt-in auto-approve TIER: sts:AssumeRole to deploy-* roles is pre-approved; the
+    # ceiling (allowed_policy) is broader (all sts + s3), so a NON-auto request within
+    # the ceiling still needs a human.
+    "auto": {"account_id": "111", "broker_role_arn": "arn:...:base", "enabled": True,
+             "description": "auto-assume deploy roles",
+             "allowed_policy": {"Statement": [{"Action": ["sts:*", "s3:*"], "Resource": ["*"]}]},
+             "auto_allowed_policy": {"Statement": [{"Action": ["sts:AssumeRole"],
+                 "Resource": ["arn:aws:iam::111:role/deploy-*"]}]}},
 }
+
+ASSUME_OK = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow",
+    "Action": "sts:AssumeRole", "Resource": "arn:aws:iam::111:role/deploy-prod"}]}
+# In-ceiling (sts:*) but NOT in the auto tier (an admin role, not deploy-*).
+ASSUME_ADMIN = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow",
+    "Action": "sts:AssumeRole", "Resource": "arn:aws:iam::111:role/admin"}]}
 
 WRITE = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::b/*"}]}
 
@@ -145,6 +159,35 @@ async def test_readonly_request_auto_approves_when_account_opts_in(tmp_path):
     got_req, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
     assert got_req is not None and creds is not None
     assert notified == []  # auto-approved -> the host was never notified
+
+
+async def test_auto_allowed_policy_auto_approves_covered_request(tmp_path):
+    # A request covered by the "auto" account's auto_allowed_policy (assume a deploy-*
+    # role) is granted immediately, no human, recorded as the system approver.
+    from broker.aws.service import AUTO_APPROVE_PRINCIPAL
+
+    notified = []
+    svc = await make_service(tmp_path)
+    svc._on_request = lambda req: notified.append(req)  # type: ignore[assignment]
+
+    req = await svc.request(conversation_id="c1", target_account="auto",
+                            justification="deploy", policy_document=ASSUME_OK)
+    assert req.status == RequestStatus.ACTIVE
+    assert req.approved_by == AUTO_APPROVE_PRINCIPAL
+    assert notified == []  # auto -> host never notified
+
+
+async def test_in_ceiling_but_not_auto_still_needs_human(tmp_path):
+    # sts:AssumeRole to an ADMIN role is within allowed_policy (sts:*) but NOT in the
+    # auto tier (deploy-* only), so it stays PENDING and the host IS notified.
+    notified = []
+    svc = await make_service(tmp_path)
+    svc._on_request = lambda req: notified.append(req)  # type: ignore[assignment]
+
+    req = await svc.request(conversation_id="c1", target_account="auto",
+                            justification="admin", policy_document=ASSUME_ADMIN)
+    assert req.status == RequestStatus.PENDING
+    assert len(notified) == 1  # human approval interrupt raised
 
 
 class ExpiringIam(FakeIam):
