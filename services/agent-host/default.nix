@@ -13,6 +13,12 @@
 # node_modules/@scooter/claude-sdk-provider so agent-host resolves the import both at
 # `tsc` time and at runtime. Optional (null) so a bare callPackage still works.
 
+let
+  # The installed app dir under $out/lib/node_modules is named by package.json "name"
+  # (NOT pname). Read it deterministically at eval time so the provider symlinks target
+  # the RIGHT node_modules (see the postInstall note on the old nondeterministic find).
+  appName = (lib.importJSON ./package.json).name;
+in
 buildNpmPackage {
   pname = "agent-host";
   version = "0.0.0";
@@ -39,19 +45,28 @@ buildNpmPackage {
   postInstall = ''
     wrapProgram $out/bin/agent-host \
       --prefix PATH : ${lib.makeBinPath [ agent nodejs ]}
-  '' + lib.optionalString (claudeSdkProvider != null) ''
-    # The runtime `import("@scooter/claude-sdk-provider")` must resolve from the
-    # installed app's OWN package dir (named by package.json "name", NOT pname). Find
-    # the dir that holds dist/index.js and link the provider into ITS node_modules.
-    appdir="$(dirname "$(dirname "$(find $out/lib/node_modules -name index.js -path '*/dist/index.js' | head -1)")")"
-    echo "linking claude-sdk-provider into $appdir/node_modules"
+  '' + lib.optionalString (claudeSdkProvider != null || marimoMcp != null) ''
+    # The runtime `import("@scooter/...")` must resolve from the installed app's OWN
+    # package dir. buildNpmPackage installs it at $out/lib/node_modules/<name>, where
+    # <name> is package.json "name" (NOT pname) — read it deterministically here.
+    #
+    # DO NOT `find ... -path '*/dist/index.js' | head -1`: that matches ANY dependency's
+    # dist/index.js (e.g. pg-cloudflare) and find's order is filesystem-dependent, so on
+    # some machines it resolved appdir to a NESTED dep and linked the providers into the
+    # wrong node_modules — a nondeterministic build failure. The package name is exact;
+    # read it from the SOURCE package.json at eval time (cwd-independent, deterministic).
+    appdir="$out/lib/node_modules/${appName}"
+    if [ ! -d "$appdir/dist" ]; then
+      echo "postInstall: expected app at $appdir (with dist/), not found — did package.json 'name' change?" >&2
+      exit 1
+    fi
     mkdir -p "$appdir/node_modules/@scooter"
+  '' + lib.optionalString (claudeSdkProvider != null) ''
+    echo "linking claude-sdk-provider into $appdir/node_modules"
     ln -sf ${claudeSdkProvider}/lib/node_modules/@scooter/claude-sdk-provider \
       "$appdir/node_modules/@scooter/claude-sdk-provider"
   '' + lib.optionalString (marimoMcp != null) ''
-    appdir="$(dirname "$(dirname "$(find $out/lib/node_modules -name index.js -path '*/dist/index.js' | head -1)")")"
     echo "linking marimo-mcp into $appdir/node_modules"
-    mkdir -p "$appdir/node_modules/@scooter"
     ln -sf ${marimoMcp}/lib/node_modules/@scooter/marimo-mcp \
       "$appdir/node_modules/@scooter/marimo-mcp"
   '';
