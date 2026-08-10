@@ -59,6 +59,9 @@ def test_git_credentials_requires_auth():
 
 
 def test_test_provider_mounts_git_credentials():
+    # Assert the route is MOUNTED by hitting it (not by introspecting app.routes —
+    # newer Starlette's `_IncludedRouter` wrapper exposes no readable path). Anything
+    # but a 404 means the route is registered.
     app = create_app()
-    paths = {r.path for r in app.routes}  # type: ignore[attr-defined]
-    assert "/test/git-credentials" in paths
+    resp = TestClient(app).get("/test/git-credentials")
+    assert resp.status_code != 404
