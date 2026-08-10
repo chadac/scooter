@@ -184,6 +184,10 @@
           # todo/docs/CONVERSATION_CRD_PR1.md.
           conversationController = pkgs.callPackage ./services/conversation-controller { };
 
+          # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
+          # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
+          conversationRouter = pkgs.callPackage ./services/conversation-router { };
+
           # Conversation controller OCI image.
           conversationControllerImage = import ./pkgs/conversation-controller-image {
             inherit pkgs lib n2c conversationController;
@@ -313,6 +317,7 @@
 
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;
+            conversation-router = conversationRouter;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
