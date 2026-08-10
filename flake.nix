@@ -178,6 +178,17 @@
             inherit pkgs lib n2c scheduler;
           };
 
+          # Conversation CRD controller (Python): leader-elected reconcile loop that
+          # assigns each Conversation CR a hostPod (agent-host replica) + reassigns on
+          # pod death. Multi-replica agent-host, stage 3. See
+          # todo/docs/CONVERSATION_CRD_PR1.md.
+          conversationController = pkgs.callPackage ./services/conversation-controller { };
+
+          # Conversation controller OCI image.
+          conversationControllerImage = import ./pkgs/conversation-controller-image {
+            inherit pkgs lib n2c conversationController;
+          };
+
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
             inherit pkgs lib n2c broker;
@@ -301,6 +312,7 @@
             default = sandboxOsImage.image;
 
             inherit agentHost ui broker webhooks scheduler;
+            conversation-controller = conversationController;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
@@ -323,6 +335,9 @@
 
             # nix build .#scheduler-image  ->  scheduler OCI image
             scheduler-image = schedulerImage.image;
+
+            # nix build .#conversation-controller-image  ->  controller OCI image
+            conversation-controller-image = conversationControllerImage.image;
 
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = agentHostImageBuilder.image;

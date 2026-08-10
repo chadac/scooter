@@ -1,0 +1,141 @@
+# The Conversation CRD + its controller (Deployment + SA + RBAC).
+#
+# The CRD (scooter.chadac.dev/v1alpha1 Conversation) records which agent-host pod owns
+# each conversation (status.hostPod) — the assignment table for multi-replica agent-host
+# (stage 3; see todo/docs/CONVERSATION_CRD_PR1.md). The controller is a leader-elected
+# reconcile loop that assigns/reassigns hostPod. NO request routing yet — this only
+# records ownership.
+#
+# Flag-gated (agentSandbox.conversationController.enable, default false): off => nothing
+# here renders and agent-host is unaffected (single-replica, today's behavior).
+
+{ config, lib, ... }:
+
+let
+  cfg = config.agentSandbox;
+  ccfg = cfg.conversationController;
+in
+{
+  options.agentSandbox.conversationController = with lib; {
+    enable = mkEnableOption "the Conversation CRD + assignment controller (multi-replica agent-host, stage 3)";
+    image = mkOption {
+      type = types.str;
+      default = "${cfg.registryPrefix}conversation-controller:latest";
+      defaultText = literalExpression ''"''${registryPrefix}conversation-controller:latest"'';
+      description = "OCI ref of the conversation-controller image.";
+    };
+    replicas = mkOption {
+      type = types.int;
+      default = 2;
+      description = "Controller replicas (leader-elected; >1 for availability, only the leader reconciles).";
+    };
+    podCap = mkOption {
+      type = types.int;
+      default = 100;
+      description = "Max conversations assigned to one agent-host pod before it's considered full.";
+    };
+  };
+
+  config = lib.mkIf ccfg.enable {
+    kubernetes.resources = {
+      # --- the CRD ---------------------------------------------------------
+      customResourceDefinitions.conversations = {
+        metadata.name = "conversations.scooter.chadac.dev";
+        spec = {
+          group = "scooter.chadac.dev";
+          scope = "Namespaced";
+          names = {
+            plural = "conversations";
+            singular = "conversation";
+            kind = "Conversation";
+            shortNames = [ "conv" ];
+          };
+          versions = [{
+            name = "v1alpha1";
+            served = true;
+            storage = true;
+            subresources.status = { };  # status is a subresource (controller patches it)
+            schema.openAPIV3Schema = {
+              type = "object";
+              properties = {
+                spec = {
+                  type = "object";
+                  properties = {
+                    model = { type = "string"; };
+                    owner = { type = "string"; };
+                    parentId = { type = "string"; };
+                    sandboxRef = { type = "string"; };
+                  };
+                };
+                status = {
+                  type = "object";
+                  properties = {
+                    phase = { type = "string"; };       # Pending | Assigned | Orphaned
+                    hostPod = { type = "string"; nullable = true; };
+                    assignedAt = { type = "string"; };
+                    generation = { type = "integer"; };  # fence epoch, bumps per (re)assignment
+                  };
+                };
+              };
+            };
+            additionalPrinterColumns = [
+              { name = "Phase"; type = "string"; jsonPath = ".status.phase"; }
+              { name = "Host"; type = "string"; jsonPath = ".status.hostPod"; }
+              { name = "Gen"; type = "integer"; jsonPath = ".status.generation"; }
+            ];
+          }];
+        };
+      };
+
+      # --- SA + RBAC (patch Conversation status, watch pods, hold a Lease) --
+      serviceAccounts.conversation-controller.metadata = {
+        name = "conversation-controller";
+        namespace = cfg.namespace;
+      };
+      roles.conversation-controller = {
+        metadata = { name = "conversation-controller"; namespace = cfg.namespace; };
+        rules = [
+          { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" "conversations/status" ]; verbs = [ "get" "list" "watch" "patch" "update" ]; }
+          { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "get" "list" "watch" ]; }
+          { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
+        ];
+      };
+      roleBindings.conversation-controller = {
+        metadata = { name = "conversation-controller"; namespace = cfg.namespace; };
+        roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "conversation-controller"; };
+        subjects = [{ kind = "ServiceAccount"; name = "conversation-controller"; namespace = cfg.namespace; }];
+      };
+
+      # --- the controller Deployment --------------------------------------
+      deployments.conversation-controller = {
+        metadata = { name = "conversation-controller"; namespace = cfg.namespace; };
+        spec = {
+          replicas = ccfg.replicas;
+          selector.matchLabels.app = "conversation-controller";
+          template = {
+            metadata.labels.app = "conversation-controller";
+            spec = {
+              serviceAccountName = "conversation-controller";
+              containers.controller = {
+                name = "controller";
+                image = ccfg.image;
+                imagePullPolicy = cfg.pullPolicy;
+                command = [ "conversation-controller" ];
+                env = [
+                  { name = "NAMESPACE"; value = cfg.namespace; }
+                  { name = "CONVERSATION_POD_CAP"; value = toString ccfg.podCap; }
+                  # Pod name → the leader-election Lease holder identity.
+                  { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
+                ];
+                resources = lib.mkDefault {
+                  requests = { cpu = "25m"; memory = "64Mi"; };
+                  limits = { cpu = "25m"; memory = "64Mi"; };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+}

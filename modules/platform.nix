@@ -43,7 +43,7 @@ let
   hasModels = modelIds != [ ];
 in
 {
-  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ];
+  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ./conversation-controller.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
