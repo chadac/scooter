@@ -229,6 +229,24 @@ class PermissionService:
             )
             return await self._provision(req, approver=AUTO_APPROVE_PRINCIPAL)
 
+        # OPT-IN auto-approve TIER: a per-account glob superset (auto_allowed_policy +
+        # auto_allowed_managed_policies) of grants that need no human. Generalizes the
+        # read-only gate — e.g. "assuming deploy-* roles is pre-approved". Checked AFTER
+        # the 3 validation layers, so it can only auto-approve requests already within
+        # allowed_policy (auto ⊆ allowed is enforced by order, not a separate check).
+        # Default off (no auto tiers = nothing auto-approves).
+        if policy.covered_by_auto_policy(
+            policy_document,
+            managed_policy_arns,
+            acct.get("auto_allowed_policy"),
+            acct.get("auto_allowed_managed_policies", []),
+        ):
+            logger.info(
+                "auto-approving request %s for account '%s' (covered by auto_allowed_policy)",
+                request_id, target_account,
+            )
+            return await self._provision(req, approver=AUTO_APPROVE_PRINCIPAL)
+
         # Otherwise notify the agent-host so it raises the approval interrupt
         # (best-effort — a notify failure must not fail the request; user can poll).
         if self._on_request is not None:
