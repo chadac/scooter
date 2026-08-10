@@ -58,6 +58,10 @@ def test_whoami_records_the_call():
 
 
 def test_test_provider_mounts_whoami():
+    # Assert the route is MOUNTED by hitting it (not by introspecting app.routes —
+    # newer Starlette wraps include_router'd routers in an opaque `_IncludedRouter`
+    # with no readable path, so scanning app.routes can't see the route). A mounted
+    # route returns anything but 404; an unmounted one 404s.
     app = create_app()
-    paths = {r.path for r in app.routes}  # type: ignore[attr-defined]
-    assert "/test/whoami" in paths
+    resp = TestClient(app).get("/test/whoami")
+    assert resp.status_code != 404
