@@ -36,7 +36,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
 
 
 def main() -> None:
-    cfg = Config()
+    cfg = Config.from_env()
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

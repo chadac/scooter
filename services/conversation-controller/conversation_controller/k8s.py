@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import logging
 
+from dataclasses import dataclass
+
 from kubernetes import client, config
 
 from .reconcile import Pod
@@ -36,18 +38,22 @@ def _apis() -> tuple[client.CoreV1Api, client.CustomObjectsApi, client.Coordinat
     return _core, _custom, _coord
 
 
+@dataclass
 class ControllerK8s:
-    """Imperative k8s ops the reconcile LOOP uses. Pure decisions live in reconcile.py."""
+    """Imperative k8s ops the reconcile LOOP uses. Pure decisions live in reconcile.py.
 
-    def __init__(self, namespace: str) -> None:
-        self.ns = namespace
+    :param namespace: the k8s namespace all operations target (list pods, list/patch
+        Conversations) — the controller's own namespace.
+    """
+
+    namespace: str
 
     # --- agent-host pods (assignment targets) ------------------------------
     def list_host_pods(self) -> list[Pod]:
         """READY-ness of every agent-host pod, for pick_host()."""
         core, _, _ = _apis()
         out: list[Pod] = []
-        for p in core.list_namespaced_pod(self.ns, label_selector=AGENT_HOST_LABEL).items:
+        for p in core.list_namespaced_pod(self.namespace, label_selector=AGENT_HOST_LABEL).items:
             ready = _pod_ready(p)
             out.append(Pod(name=p.metadata.name, ready=ready))
         return out
@@ -55,14 +61,14 @@ class ControllerK8s:
     # --- Conversation CRs --------------------------------------------------
     def list_conversations(self) -> list[dict]:
         _, custom, _ = _apis()
-        resp = custom.list_namespaced_custom_object(GROUP, VERSION, self.ns, PLURAL)
+        resp = custom.list_namespaced_custom_object(GROUP, VERSION, self.namespace, PLURAL)
         return resp.get("items", [])
 
     def patch_status(self, name: str, status: dict) -> None:
         """Patch a Conversation's status subresource (the assignment record)."""
         _, custom, _ = _apis()
         custom.patch_namespaced_custom_object_status(
-            GROUP, VERSION, self.ns, PLURAL, name, {"status": status}
+            GROUP, VERSION, self.namespace, PLURAL, name, {"status": status}
         )
 
 
