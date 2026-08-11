@@ -607,7 +607,13 @@ in
               verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
             }
             execRule
-          ];
+          ] ++ lib.optional cfg.conversationController.enable {
+            # Multi-replica FENCING: the agent-host WATCHES Conversations (read-only) so a
+            # reassigned pod stops appending (ownershipGuard). Only when the controller is on.
+            apiGroups = [ "scooter.chadac.dev" ];
+            resources = [ "conversations" ];
+            verbs = [ "get" "list" "watch" ];
+          };
       };
 
       # TokenReview is cluster-scoped → ClusterRole + ClusterRoleBinding. The

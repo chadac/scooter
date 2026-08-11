@@ -27,6 +27,7 @@ import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAu
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { mirroredConversationStore } from "./session/mirroredStore.js";
+import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import type { ConversationStore } from "./session/manager.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
@@ -468,9 +469,19 @@ export async function main(
 
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn
   // goose, and wire its AG-UI events out through the server.
+  // Multi-replica FENCING: when POD_NAME is set (the StatefulSet gives each pod its
+  // ordinal name), watch the Conversation CRD so this pod stops appending to a
+  // conversation reassigned away from it. Unset (single-replica) => allowAllGuard (no-op,
+  // today's behavior); no watch, no k8s dependency. See ownershipGuard.ts.
+  const podName = process.env.POD_NAME;
+  const ownership = podName
+    ? createK8sOwnershipGuard(podName, config.namespace)
+    : undefined;
+
   const sessions = createSessionManager({
     provisioner,
     store,
+    ownershipGuard: ownership?.guard,
     bridgeFactory: ({ conversationId, sandbox, model }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
@@ -1154,6 +1165,7 @@ export async function main(
     if (subagentWatchTimer) clearInterval(subagentWatchTimer);
     await metrics.shutdown();
     await server.close();
+    ownership?.stop(); // end the Conversation-CRD watch (multi-replica only)
     // Flush the NFS mirror's buffered tail before exit so a PLANNED rollout ships every
     // event to the backup (near-RPO-0); an unclean crash loses at most the in-flight
     // batch. No-op when the mirror is off. Best-effort — never BLOCK the exit on it, but

@@ -15,6 +15,7 @@ import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
+import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 
 /** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
  *  Not the user's literal prompt (which would re-do work / double-post): a nudge
@@ -359,6 +360,11 @@ export type BridgeFactory = (args: {
 export interface SessionManagerDeps {
   provisioner: SandboxProvisioner;
   store: ConversationStore;
+  /** Optional multi-replica FENCING guard: before this pod appends to a conversation's
+   *  log, canWrite() checks it still owns the conversation (Conversation CR hostPod/
+   *  generation). Omitted / allowAllGuard = single-replica (always allow, today's
+   *  behavior). See ownershipGuard.ts. */
+  ownershipGuard?: OwnershipGuard;
   /** Optional: how to build a bridge per conversation. Omitted in unit tests
    *  that only assert lifecycle/provisioning. */
   bridgeFactory?: BridgeFactory;
@@ -405,6 +411,7 @@ export function shortId(threadId: string): string {
 
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const { provisioner, store, bridgeFactory } = deps;
+  const ownershipGuard = deps.ownershipGuard ?? allowAllGuard;
   const entries = new Map<SessionId, Entry>();
 
   // Subagent-completion subscribers (see onSubagentComplete). Fired event-driven
@@ -539,6 +546,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     // would double-log every broadcast event (bloated, replay-confusing history).
     e.bridge.onPersist((event) => {
       e.lastActivityAt = nowMs();
+      // FENCING: if a reassignment made another pod the owner, this (stale) pod must
+      // stop appending so it can't corrupt the log the new owner drives. Synchronous +
+      // cache-backed (no k8s call per event). allowAllGuard (single-replica) always
+      // passes — today's behavior. See ownershipGuard.ts.
+      if (!ownershipGuard.canWrite(e.id)) return;
       void store.appendEvent(e.id, event);
     });
   };
