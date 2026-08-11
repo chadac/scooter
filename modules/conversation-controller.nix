@@ -34,6 +34,22 @@ in
       default = 100;
       description = "Max conversations assigned to one agent-host pod before it's considered full.";
     };
+    agentHostReplicas = mkOption {
+      type = types.int;
+      default = 2;
+      description = "agent-host StatefulSet replicas when the controller is enabled (multi-replica).";
+    };
+    routerImage = mkOption {
+      type = types.str;
+      default = "${cfg.registryPrefix}conversation-router:latest";
+      defaultText = literalExpression ''"''${registryPrefix}conversation-router:latest"'';
+      description = "OCI ref of the conversation-router image.";
+    };
+    routerReplicas = mkOption {
+      type = types.int;
+      default = 2;
+      description = "Router replicas (stateless proxy; fronts the agent-host Service).";
+    };
   };
 
   config = lib.mkIf ccfg.enable {
@@ -130,6 +146,55 @@ in
                 resources = lib.mkDefault {
                   requests = { cpu = "25m"; memory = "64Mi"; };
                   limits = { cpu = "25m"; memory = "64Mi"; };
+                };
+              };
+            };
+          };
+        };
+      };
+
+      # --- the ROUTER: SA + RBAC (watch Conversations for the cache) + Deployment ----
+      serviceAccounts.conversation-router.metadata = {
+        name = "conversation-router";
+        namespace = cfg.namespace;
+      };
+      roles.conversation-router = {
+        metadata = { name = "conversation-router"; namespace = cfg.namespace; };
+        rules = [
+          # Read-only: the router only READS status.hostPod (the controller writes it).
+          { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" ]; verbs = [ "get" "list" "watch" ]; }
+        ];
+      };
+      roleBindings.conversation-router = {
+        metadata = { name = "conversation-router"; namespace = cfg.namespace; };
+        roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "conversation-router"; };
+        subjects = [{ kind = "ServiceAccount"; name = "conversation-router"; namespace = cfg.namespace; }];
+      };
+      deployments.conversation-router = {
+        metadata = { name = "conversation-router"; namespace = cfg.namespace; };
+        spec = {
+          replicas = ccfg.routerReplicas;   # stateless proxy — safe to run several
+          selector.matchLabels.app = "conversation-router";
+          template = {
+            metadata.labels.app = "conversation-router";
+            spec = {
+              serviceAccountName = "conversation-router";
+              containers.router = {
+                name = "router";
+                image = ccfg.routerImage;
+                imagePullPolicy = cfg.pullPolicy;
+                command = [ "conversation-router" ];
+                ports = [{ containerPort = 8080; name = "agui"; }];
+                env = [
+                  { name = "NAMESPACE"; value = cfg.namespace; }
+                  { name = "AGENT_HOST_HEADLESS"; value = "agent-host-headless"; }
+                  { name = "UPSTREAM_PORT"; value = "8080"; }
+                  { name = "LISTEN_ADDR"; value = ":8080"; }
+                ];
+                readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
+                resources = lib.mkDefault {
+                  requests = { cpu = "50m"; memory = "64Mi"; };
+                  limits = { memory = "128Mi"; };
                 };
               };
             };

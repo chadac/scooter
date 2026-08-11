@@ -642,16 +642,20 @@ in
         subjects = [{ kind = "ServiceAccount"; name = "agent-host"; namespace = cfg.namespace; }];
       };
 
-      deployments.agent-host = {
+      # agent-host is a StatefulSet (not a Deployment) so each replica has a STABLE
+      # ordinal name + per-pod DNS (agent-host-<n>.agent-host-headless.<ns>.svc) — the
+      # address the conversation-router forwards to for the pod that owns a conversation
+      # (status.hostPod). At replicas=1 this behaves exactly like the old single-replica
+      # Deployment: one pod, one shared state PVC. A StatefulSet's RollingUpdate also
+      # terminates the old ordinal pod BEFORE creating its replacement, so the shared
+      # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
+      # Deployment needed Recreate) — RollingUpdate is safe here.
+      statefulSets.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
+          serviceName = "agent-host-headless";
           replicas = cfg.replicas;
-          # Recreate (not the default RollingUpdate): agent-host mounts the
-          # single RWO `agent-host-state` PVC, which can't be Multi-Attached to
-          # an old + new pod at once. RollingUpdate deadlocks — the new pod waits
-          # on the volume the old pod still holds, and the old pod won't drain
-          # until the new one is Ready. Recreate stops the old pod first.
-          strategy.type = "Recreate";
+          updateStrategy.type = "RollingUpdate";
           selector.matchLabels.app = "agent-host";
           template = {
             metadata.labels.app = "agent-host";
@@ -682,6 +686,11 @@ in
                 env = [
                   { name = "PORT"; value = "8080"; }
                   { name = "NAMESPACE"; value = cfg.namespace; }
+                  # This pod's own name (downward API) — its identity for the
+                  # Conversation CRD hostPod + generation-fencing (multi-replica). Set
+                  # unconditionally (harmless single-replica); the StatefulSet gives it
+                  # the stable ordinal name (agent-host-<n>).
+                  { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   # imagePullPolicy for the per-conversation sandbox pods — mirror the
                   # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always
@@ -954,9 +963,23 @@ in
         };
       };
 
+      # The `agent-host` Service — the DNS every caller uses (agent-host.<ns>.svc:8080).
+      # Flag OFF: selects the agent-host pods directly (today). Flag ON: selects the
+      # ROUTER, which reverse-proxies each request to the pod owning the conversation.
+      # Callers (UI/broker/webhooks) are unchanged — the front door just gains routing.
       services.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
+          selector.app = if cfg.conversationController.enable then "conversation-router" else "agent-host";
+          ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
+        };
+      };
+      # Headless Service backing the StatefulSet — gives each pod stable DNS
+      # (agent-host-<n>.agent-host-headless.<ns>.svc), the address the router forwards to.
+      services.agent-host-headless = {
+        metadata = { name = "agent-host-headless"; namespace = cfg.namespace; };
+        spec = {
+          clusterIP = "None";
           selector.app = "agent-host";
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };

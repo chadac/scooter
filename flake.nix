@@ -193,6 +193,11 @@
             inherit pkgs lib n2c conversationController;
           };
 
+          # Conversation router OCI image.
+          conversationRouterImage = import ./pkgs/conversation-router-image {
+            inherit pkgs lib n2c conversationRouter;
+          };
+
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
             inherit pkgs lib n2c broker;
@@ -343,6 +348,9 @@
 
             # nix build .#conversation-controller-image  ->  controller OCI image
             conversation-controller-image = conversationControllerImage.image;
+
+            # nix build .#conversation-router-image  ->  router OCI image
+            conversation-router-image = conversationRouterImage.image;
 
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = agentHostImageBuilder.image;
