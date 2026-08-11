@@ -11,6 +11,7 @@ class FakeK8s:
         self._pods = pods                       # list[Pod]
         self._convs = {c["metadata"]["name"]: c for c in convs}
         self.patches = []                       # [(name, status)] for assertions
+        self.revives = []                       # [(host_ip, conv_name, generation)] revive-pushes
 
     def list_host_pods(self):
         return list(self._pods)
@@ -22,6 +23,9 @@ class FakeK8s:
         self.patches.append((name, status))
         cur = self._convs[name].setdefault("status", {})
         cur.update({k: v for k, v in status.items()})
+
+    def notify_revive(self, host_ip, conv_name, generation):
+        self.revives.append((host_ip, conv_name, generation))
 
     # test helpers
     def status(self, name):
@@ -44,6 +48,23 @@ def test_pending_conversation_gets_a_host():
     assert k.status("c1")["hostPod"] == "a"
     assert k.status("c1")["phase"] == "Assigned"
     assert k.status("c1")["generation"] == 1
+
+
+def test_assign_patches_host_ip_and_pushes_revive():
+    # The loop records the owner pod's IP (routing address) and pushes a revive to it.
+    k = FakeK8s([Pod("a", True, ip="10.42.0.7")], [_cr("c1")])
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["hostIP"] == "10.42.0.7"
+    # revive-push to the new host: (host_ip, conv_name, generation)
+    assert k.revives == [("10.42.0.7", "c1", 1)]
+
+
+def test_no_revive_push_when_pod_has_no_ip_yet():
+    # A just-scheduled pod (no IP) is assigned but NOT pushed — the next tick re-pushes.
+    k = FakeK8s([Pod("a", True, ip=None)], [_cr("c1")])
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["hostPod"] == "a"
+    assert k.revives == []
 
 
 def test_assigned_to_ready_host_is_noop():

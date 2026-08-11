@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -32,22 +33,20 @@ import (
 )
 
 type config struct {
-	namespace       string
-	headlessService string // agent-host pods' headless Service for stable DNS
-	upstreamPort    int    // agent-host container port
-	listenAddr      string
-	// The pod to fall back to for non-scoped / unassigned requests. With a StatefulSet
-	// this defaults to ordinal 0 (always present); overridable.
-	defaultPod string
+	namespace    string
+	upstreamPort int    // agent-host container port
+	listenAddr   string
+	// The agent-host ClusterIP Service — fallback for non-scoped / unassigned / stale-IP
+	// requests (load-balances to any ready pod). Replaces the old DEFAULT_POD ordinal.
+	clusterIPService string
 }
 
 func configFromEnv() config {
 	return config{
-		namespace:       env("NAMESPACE", "agent-sandbox"),
-		headlessService: env("AGENT_HOST_HEADLESS", "agent-host-headless"),
-		upstreamPort:    atoi(env("UPSTREAM_PORT", "8080")),
-		listenAddr:      env("LISTEN_ADDR", ":8080"),
-		defaultPod:      env("DEFAULT_POD", "agent-host-0"),
+		namespace:        env("NAMESPACE", "agent-sandbox"),
+		upstreamPort:     atoi(env("UPSTREAM_PORT", "8080")),
+		listenAddr:       env("LISTEN_ADDR", ":8080"),
+		clusterIPService: env("AGENT_HOST_SERVICE", "agent-host"),
 	}
 }
 
@@ -70,21 +69,29 @@ func main() {
 		defer c()
 		_ = srv.Shutdown(sctx) // drains in-flight; SSE/WS closed by upstream on their own
 	}()
-	logf("conversation-router listening on %s (ns=%s headless=%s)", cfg.listenAddr, cfg.namespace, cfg.headlessService)
+	logf("conversation-router listening on %s (ns=%s svc=%s)", cfg.listenAddr, cfg.namespace, cfg.clusterIPService)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
 	}
 }
 
-// newRouter builds the HTTP handler: resolve target, reverse-proxy (HTTP/SSE/WS).
+// newRouter builds the HTTP handler: resolve target (owner pod IP or ClusterIP fallback),
+// reverse-proxy (HTTP/SSE/WS), and on a dial failure to the owner IP retry via the fallback.
+//
+// DESIGN STUB — the resolve → proxy wiring is sketched; the dial-fail RETRY (re-issue to
+// FallbackURL when the owner IP is unreachable, e.g. the pod was replaced this tick) is
+// left as a TODO for Implementation. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md Q2.
 func newRouter(cfg config, cache *OwnershipCache) http.Handler {
+	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := resolveHost(cfg, cache, r)
-		target := TargetURL(host, cfg.headlessService, cfg.namespace, cfg.upstreamPort)
+		target := resolveTarget(cfg, cache, r, fallback)
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		// FlushInterval -1 = flush immediately: required for SSE (don't buffer the stream).
 		proxy.FlushInterval = -1
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, e error) {
+			// TODO(impl): on a dial/connect failure to an owner-IP target, retry once
+			// against `fallback` (any ready pod) before returning 502 — covers a stale
+			// hostIP from a just-replaced pod. For now, surface the 502.
 			logf("proxy to %s failed: %v", target.Host, e)
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		}
@@ -92,10 +99,12 @@ func newRouter(cfg config, cache *OwnershipCache) http.Handler {
 	})
 }
 
-// resolveHost decides which agent-host pod a request goes to.
-func resolveHost(cfg config, cache *OwnershipCache, r *http.Request) string {
+// resolveTarget decides the upstream URL for a request: the owner pod's IP when the
+// conversation is scoped + assigned, else the ClusterIP fallback (non-scoped, unassigned,
+// or unknown — the controller converges the owner shortly).
+func resolveTarget(cfg config, cache *OwnershipCache, r *http.Request, fallback *url.URL) *url.URL {
 	if IsNonScoped(r.URL.Path) {
-		return cfg.defaultPod
+		return fallback
 	}
 	convID := ""
 	if IsAguiPost(r.Method, r.URL.Path) {
@@ -104,13 +113,11 @@ func resolveHost(cfg config, cache *OwnershipCache, r *http.Request) string {
 		convID = id
 	}
 	if convID != "" {
-		if h, ok := cache.Host(convID); ok {
-			return h
+		if ip, ok := cache.HostIP(convID); ok {
+			return TargetURL(ip, cfg.upstreamPort)
 		}
 	}
-	// Unknown/unassigned: send to the default pod; the controller assigns hostPod shortly
-	// and subsequent requests route correctly.
-	return cfg.defaultPod
+	return fallback
 }
 
 // aguiThreadID reads the POST /agui JSON body to get threadId, then restores the body on

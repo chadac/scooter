@@ -50,13 +50,29 @@ class ControllerK8s:
 
     # --- agent-host pods (assignment targets) ------------------------------
     def list_host_pods(self) -> list[Pod]:
-        """READY-ness of every agent-host pod, for pick_host()."""
+        """Name, READY-ness, and IP of every agent-host pod. The IP is the routing address
+        the router proxies to (status.hostIP on the CR); None until the pod is scheduled."""
         core, _, _ = _apis()
         out: list[Pod] = []
         for p in core.list_namespaced_pod(self.namespace, label_selector=AGENT_HOST_LABEL).items:
             ready = _pod_ready(p)
-            out.append(Pod(name=p.metadata.name, ready=ready))
+            ip = p.status.pod_ip if p.status is not None else None
+            out.append(Pod(name=p.metadata.name, ready=ready, ip=ip))
         return out
+
+    # --- revive-push (seamless rollout) ------------------------------------
+    def notify_revive(self, host_ip: str, conv_name: str, generation: int) -> None:
+        """Tell the newly-assigned host to revive `conv_name` from the mirror NOW (pre-warm,
+        before user traffic). POSTs http://<host_ip>:<AGENT_HOST_PORT>/internal/revive/<name>.
+
+        Best-effort from the caller's view (loop.py swallows failures — the host also revives
+        lazily on first request). Carries `generation` so the host can fence a stale push
+        (ignore a revive for a generation older than the CR's current one).
+
+        DESIGN STUB — not implemented. Adds the controller's first outbound HTTP dependency.
+        Open: auth to /internal/revive (SA token / netpol / shared secret — see spec Q4).
+        """
+        raise NotImplementedError("notify_revive: DESIGN stub (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md)")
 
     # --- Conversation CRs --------------------------------------------------
     def list_conversations(self) -> list[dict]:

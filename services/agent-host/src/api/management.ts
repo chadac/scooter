@@ -417,6 +417,23 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json: view(sessions.get(ctx.params.id)!) };
   });
 
+  // Cluster-internal REVIVE-ON-ASSIGN (seamless rollout). The controller POSTs this on a
+  // conversation's new host right after (re)assigning it, so the host replays history from
+  // the shared mirror BEFORE user traffic arrives. Unlike /resume above, this MUST work when
+  // the conversation is NOT already in memory (that's the whole point — it was just
+  // reassigned here from a drained pod). Idempotent: a no-op if already revived. Fencing:
+  // the `gen` query param is the CR's current generation; if this pod isn't the current
+  // owner (or the push is stale), skip — the ownership guard still gates writes regardless.
+  //
+  // DESIGN STUB — not implemented. Must: (1) verify caller is the controller (SA/secret —
+  // spec Q4); (2) hydrate-from-mirror if absent; (3) fence on `gen`; (4) be safe to call
+  // concurrently / repeatedly. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+  r.post("/internal/revive/:id", async (_ctx) => {
+    // const gen = Number(new URL(_ctx.req.url ?? "", "http://x").searchParams.get("gen"));
+    // await sessions.reviveFromMirror(_ctx.params.id, gen);  // hydrate-if-absent + fence
+    throw new Error("internal/revive: DESIGN stub (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md)");
+  });
+
   // Manually COMPACT: summarize older turns, then continue on [summary + recent].
   // Summarize + persist the marker FIRST (compact() throws on summarizer failure →
   // 502, conversation untouched); only on success do we revive so the next turn runs

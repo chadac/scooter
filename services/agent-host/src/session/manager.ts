@@ -250,8 +250,17 @@ export interface SessionManager {
    *  Returns an unsubscribe. A RUN_FINISHED with outcome "interrupt" (a pause
    *  awaiting a user answer) is NOT a completion and does not fire. */
   onSubagentComplete(cb: (subagentId: SessionId, parentId: SessionId) => void): () => void;
-  /** Re-attach to / revive a suspended conversation (resume + replay log). */
+  /** Re-attach to / revive a suspended conversation (resume + replay log). Assumes the
+   *  conversation is known to THIS pod (durable state present locally). */
   revive(id: SessionId): Promise<Conversation>;
+  /** REVIVE-ON-ASSIGN (seamless rollout): revive a conversation that may be UNKNOWN to this
+   *  pod, hydrating its history from the shared mirror first (this pod is its NEW owner after
+   *  a rollout reassignment). Idempotent (no-op if already in memory). `expectedGen` is the
+   *  CR's current generation for fencing — revive only if this pod is the current owner at
+   *  that generation; a stale push (older gen) is a no-op. Distinct from `revive()`, which
+   *  404s when the conversation isn't already local. DESIGN STUB — see
+   *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
+  reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
   /** Forward a user prompt into the conversation's goose session. An optional
    *  `model` switches the conversation's model: if it differs from the current
    *  one, the live goose session is rebuilt with the new model. `priority`
@@ -722,6 +731,20 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       return toConversation(entry);
+    },
+
+    async reviveFromMirror(id, expectedGen) {
+      // DESIGN STUB (rollout-drain revive-on-assign) — todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+      // Implementation must:
+      //  1. If `id` is already in `entries` (in memory) → idempotent no-op / ensure running.
+      //  2. Else HYDRATE it from the shared mirror: read its meta + event log from
+      //     MIRROR_STATE_PATH into local state (like boot hydrate(), but for one conversation
+      //     the controller just reassigned here), register the entry, then revive(id).
+      //  3. FENCE on `expectedGen`: only proceed if this pod is the current owner at that
+      //     generation (consult the ownership guard / CR); a stale push is a no-op.
+      // Kept distinct from revive() (which throws on an unknown-to-this-pod id).
+      void expectedGen;
+      throw new Error(`reviveFromMirror: DESIGN stub for ${id} (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md)`);
     },
 
     async prompt(id, text, model, priority, interrupt, images, files, source) {

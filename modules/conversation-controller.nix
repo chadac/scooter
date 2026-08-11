@@ -134,7 +134,13 @@ in
                   type = "object";
                   properties = {
                     phase = { type = "string"; };       # Pending | Assigned | Orphaned
-                    hostPod = { type = "string"; nullable = true; };
+                    hostPod = { type = "string"; nullable = true; };  # owner pod NAME (fencing identity + debugging)
+                    # Owner pod IP — the ROUTING ADDRESS. Deployments give random-named pods no
+                    # stable DNS, so the router proxies to http://<hostIP>:<port> instead of a
+                    # headless-Service DNS name. Re-derived by the controller on every (re)assign
+                    # (ephemeral IPs are fine — the CR is the source of truth). Null when Pending.
+                    # See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+                    hostIP = { type = "string"; nullable = true; };
                     assignedAt = { type = "string"; };
                     generation = { type = "integer"; };  # fence epoch, bumps per (re)assignment
                   };
@@ -144,6 +150,7 @@ in
             additionalPrinterColumns = [
               { name = "Phase"; type = "string"; jsonPath = ".status.phase"; }
               { name = "Host"; type = "string"; jsonPath = ".status.hostPod"; }
+              { name = "IP"; type = "string"; jsonPath = ".status.hostIP"; }
               { name = "Gen"; type = "integer"; jsonPath = ".status.generation"; }
             ];
           }];
@@ -234,7 +241,13 @@ in
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
                   { name = "NAMESPACE"; value = cfg.namespace; }
-                  { name = "AGENT_HOST_HEADLESS"; value = "agent-host-headless"; }
+                  # DESIGN (rollout-drain): route by POD IP, not headless-Service DNS. The
+                  # router reads status.hostIP from the CR and proxies http://<ip>:port; the
+                  # headless Service is removed. AGENT_HOST_SERVICE is the ClusterIP Service
+                  # used as the fallback (non-scoped / unassigned / stale-IP → any ready pod).
+                  # (Replaces AGENT_HOST_HEADLESS + DEFAULT_POD.) See
+                  # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+                  { name = "AGENT_HOST_SERVICE"; value = "agent-host"; }
                   { name = "UPSTREAM_PORT"; value = "8080"; }
                   { name = "LISTEN_ADDR"; value = ":8080"; }
                 ];

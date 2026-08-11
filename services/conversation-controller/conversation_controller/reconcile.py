@@ -23,6 +23,7 @@ from dataclasses import dataclass
 class Pod:
     name: str
     ready: bool
+    ip: str | None = None      # status.podIP — the routing address written into the CR (None until scheduled)
 
 
 @dataclass(frozen=True)
@@ -30,9 +31,10 @@ class ConversationState:
     """The bits of a Conversation CR the decision depends on."""
 
     name: str
-    host_pod: str | None       # status.hostPod
+    host_pod: str | None       # status.hostPod (owner pod NAME — fencing identity)
     phase: str                 # status.phase (Pending | Assigned | Orphaned)
     generation: int            # status.generation (the fence epoch)
+    host_ip: str | None = None # status.hostIP (owner pod IP — routing address)
     parent_id: str | None = None  # spec.parentId — a subagent co-locates on its parent's pod
 
 
@@ -45,9 +47,10 @@ class NoOp:
 
 @dataclass(frozen=True)
 class Assign:
-    host_pod: str
+    host_pod: str              # owner pod NAME (fencing identity)
     generation: int            # the new generation to write
     phase: str = "Assigned"
+    host_ip: str | None = None # owner pod IP (routing address) — the chosen pod's status.podIP
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,7 @@ def reconcile(
     parent's pod (default {} = no parent lookups)."""
     hosts = hosts or {}
     ready_names = {p.name for p in pods if p.ready}
+    ip_of = {p.name: p.ip for p in pods}  # pod name → its status.podIP (routing address)
 
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
     if conv.parent_id is not None:
@@ -92,7 +96,7 @@ def reconcile(
         if parent_host is None or parent_host not in ready_names:
             return LeavePending(reason=f"parent {conv.parent_id} not on a ready pod yet")
         # Pin (or re-pin) to the parent's pod, bumping the fence generation.
-        return Assign(host_pod=parent_host, generation=conv.generation + 1)
+        return Assign(host_pod=parent_host, generation=conv.generation + 1, host_ip=ip_of.get(parent_host))
 
     # Already assigned to a live, ready pod → nothing to do.
     if conv.host_pod is not None and conv.host_pod in ready_names:
@@ -105,4 +109,4 @@ def reconcile(
 
     # Bump the fence generation on every (re)assignment so a stale prior owner can be
     # detected later (routing PR read-checks it before appending).
-    return Assign(host_pod=host, generation=conv.generation + 1)
+    return Assign(host_pod=host, generation=conv.generation + 1, host_ip=ip_of.get(host))

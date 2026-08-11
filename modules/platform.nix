@@ -673,6 +673,17 @@ in
       # terminates the old ordinal pod BEFORE creating its replacement, so the shared
       # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
       # Deployment needed Recreate) — RollingUpdate is safe here.
+      #
+      # DESIGN (rollout-drain, todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — NOT YET APPLIED:
+      # convert this StatefulSet → a Deployment for seamless upgrades:
+      #   - deployments.agent-host (random pod names — routing is by POD IP now, not DNS).
+      #   - strategy RollingUpdate maxSurge=1, maxUnavailable=0 (new pod Ready BEFORE the old
+      #     drains → no capacity gap; terminate-before-create was ONLY forced by the RWO PVC).
+      #   - per-pod `state` volumeClaimTemplate → emptyDir (it's a HOT CACHE; the durable copy
+      #     is the shared RWX history mirror ⇒ no RWO PVC ⇒ no Multi-Attach blocker).
+      #   - REMOVE services.agent-host-headless (no per-pod DNS); keep the `agent-host`
+      #     ClusterIP Service (the router's fallback target).
+      # Kept as a StatefulSet until the Implementation stage (render + Tier-2 rollout test).
       statefulSets.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
