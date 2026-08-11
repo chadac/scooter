@@ -383,15 +383,17 @@ jobs:
       - name: build + import platform images
         run: |
           set -euo pipefail
+          # <flake-attr>=<image:tag> — attr names are the flake's, image names are the bare
+          # local names the fakeAgent platform-manifests reference (registryPrefix "").
           for img in \
-            "agent-host-image:agent-host:latest" \
-            "sandbox-os-image:agent-sandbox-os:latest" \
-            "conversation-controller-image:conversation-controller:latest" \
-            "conversation-router-image:conversation-router:latest" \
-            "agent-broker-image:agent-broker:latest" \
-            "agent-webhooks-image:agent-webhooks:latest" \
-            "ui-image:agent-sandbox-ui:latest"; do
-            attr="${img%%:*}"; name="${img#*:}"
+            "agent-host-image=agent-host:latest" \
+            "sandbox-os-image=agent-sandbox-os:latest" \
+            "conversation-controller-image=conversation-controller:latest" \
+            "conversation-router-image=conversation-router:latest" \
+            "broker-image=agent-broker:latest" \
+            "webhooks-image=agent-webhooks:latest" \
+            "ui-image=agent-sandbox-ui:latest"; do
+            attr="${img%%=*}"; name="${img#*=}"
             nix run ".#${attr}.copyTo" -- "docker-daemon:${name}"
           done
           nix shell nixpkgs#k3d -c k3d image import \
