@@ -47,6 +47,10 @@ function fakeSessions(): SessionManager {
       store.set(id, c);
       return c;
     }),
+    // Read-only hydrate: true iff the conversation exists (in the fake store). Faithful to
+    // the real ensureReadable — the read routes call it before deciding to 404.
+    ensureReadable: vi.fn(async (id) => store.has(id)),
+    reviveFromMirror: vi.fn(async () => {}),
     prompt: vi.fn(async () => {}),
     promptByThread: vi.fn(async () => {}),
     suspend: vi.fn(async (id) => {
@@ -912,6 +916,23 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status } = await call(api, "GET", "/conversations/nope");
     expect(status).toBe(404);
+  });
+
+  it("GET /conversations/:id hydrates a conversation absent from memory (moved by a rollout) instead of 404ing", async () => {
+    // Simulate a reconnect landing on a pod that doesn't have the conversation in memory but
+    // CAN make it readable (ensureReadable pulls it from the mirror). Must NOT 404.
+    const s = fakeSessions();
+    const map = new Map<string, Conversation>();
+    const sessions = {
+      ...s,
+      get: (id: string) => map.get(id),
+      // Not in memory yet, but hydratable → register it and report readable.
+      ensureReadable: vi.fn(async (id: string) => { map.set(id, conv({ id, threadId: id, status: "suspended" })); return true; }),
+    } as unknown as SessionManager;
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "GET", "/conversations/moved-1");
+    expect(status).not.toBe(404);
+    expect(sessions.ensureReadable).toHaveBeenCalledWith("moved-1");
   });
 
   describe("POST /conversations/:id/aws-request (approval interrupt)", () => {

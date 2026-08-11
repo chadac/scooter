@@ -261,6 +261,14 @@ export interface SessionManager {
    *  404s when the conversation isn't already local. DESIGN STUB — see
    *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
   reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
+  /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
+   *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
+   *  the sandbox/bridge (unlike revive*). Pulls events from the mirror into local if absent,
+   *  then registers the entry as a suspended placeholder. Returns true if the conversation
+   *  exists anywhere (in memory, local, or mirror) — false ⇒ genuinely unknown (404). Cheap
+   *  + idempotent; the route calls it before deciding to 404. See ROLLOUT_DRAIN_AND_POD_IP.md
+   *  (the "GET after a pod move / deleted CR" 404 gap). */
+  ensureReadable(id: SessionId): Promise<boolean>;
   /** Forward a user prompt into the conversation's goose session. An optional
    *  `model` switches the conversation's model: if it differs from the current
    *  one, the live goose session is rebuilt with the new model. `priority`
@@ -768,6 +776,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
       void expectedGen; // gen already enforced via the fence above + the append guard.
       await this.revive(id);
+    },
+
+    async ensureReadable(id) {
+      // Already known to this pod → readable.
+      if (entries.get(id)) return true;
+      // Pull its durable state (meta + events) from the mirror into local if a mirror is
+      // configured — so a reconnecting UI (GET events / events.integrity) can read history
+      // even after the owner pod moved (rollout) or the CR was cleared. READ-ONLY: no
+      // sandbox/bridge spin-up (unlike revive*). hydrateByThread then registers the entry as
+      // a suspended placeholder; the next prompt revives the pod on demand.
+      if (deps.hydrateFromMirror) {
+        await deps.hydrateFromMirror(id).catch((err) => {
+          console.error(`[manager] ensureReadable(${id}) mirror pull failed:`, err);
+          return false;
+        });
+      }
+      const entry = await hydrateByThread(id as ThreadId);
+      return entry !== undefined;
     },
 
     async prompt(id, text, model, priority, interrupt, images, files, source) {

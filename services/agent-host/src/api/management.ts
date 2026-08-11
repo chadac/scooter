@@ -352,8 +352,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });
 
-  r.get("/conversations/:id", (ctx) => {
-    const conv = sessions.get(ctx.params.id);
+  r.get("/conversations/:id", async (ctx) => {
+    // Hydrate-if-absent (read-only) so a reconnect after a pod move / cleared CR resolves
+    // instead of 404ing. See events.integrity + ROLLOUT_DRAIN_AND_POD_IP.md.
+    let conv = sessions.get(ctx.params.id);
+    if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
     return conv ? { json: view(conv) } : { status: 404, json: { error: "not found" } };
   });
 
@@ -545,6 +548,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.get("/conversations/:id/events", async (ctx) => {
+    // Ensure history is local first (a reconnect may land on a non-owner pod after a
+    // rollout / cleared CR) so onAttach's store.readEvents replays the full log. Read-only.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     // SSE — the server owns the connection; returns void (no JSON result).
     await server.subscribeSSE(ctx.params.id, ctx.res);
   });
@@ -558,9 +564,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/events.integrity", async (ctx) => {
     const id = ctx.params.id;
     const { res } = ctx;
-    // Unknown conversation -> 404 so the client stops reconnecting (a deleted
-    // conversation otherwise loops retries forever).
-    if (!sessions.get(id)) {
+    // Make history readable on THIS pod first: after a rollout (or a cleared CR) the owner
+    // pod may have moved, so a reconnecting UI lands on a pod that doesn't have the
+    // conversation in memory. ensureReadable pulls it from the mirror (read-only, no sandbox
+    // spin-up). Only 404 if it's genuinely unknown ANYWHERE — so the client stops
+    // reconnecting for a truly deleted conversation, but a moved one self-heals.
+    if (!sessions.get(id) && !(await sessions.ensureReadable(id))) {
       res.writeHead(404, { "Content-Type": "application/json" }).end('{"error":"not found"}');
       return;
     }
