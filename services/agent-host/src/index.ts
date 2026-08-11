@@ -378,6 +378,13 @@ export async function main(
         // generic image was retired): always provision privileged + tmpfs /run,/tmp
         // so systemd PID 1 boots.
         systemdImage: true,
+        // RuntimeClass for the sandbox pod (SANDBOX_RUNTIME_CLASS, e.g. "crun"). A
+        // cgroup-delegating runtime gives systemd PID 1 a writable cgroup subtree in
+        // the pod's OWN private cgroup namespace, so the sandbox runs NON-privileged
+        // (privileged forces the host cgroup ns → the sandbox churns the host
+        // /kubepods.slice tree → node instability / host session logout). Unset = the
+        // cluster default runtime.
+        sandboxRuntimeClass: process.env.SANDBOX_RUNTIME_CLASS || undefined,
         // When the sandbox image has the local-overlay Nix store enabled
         // (agent-sandbox-os-overlay), mount a disk-backed PVC upper at
         // /nix/.scooter-rw so runtime nix builds (re-converge) can write + persist.

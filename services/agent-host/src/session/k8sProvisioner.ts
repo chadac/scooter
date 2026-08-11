@@ -103,6 +103,15 @@ export interface K8sProvisionerOptions {
    *  shareable link to THIS conversation, so the agent can point a human at it
    *  (e.g. "approve my AWS request here") without knowing the deployment host. */
   publicUrl?: string;
+  /** RuntimeClass for the systemd sandbox pod (e.g. "crun"). The systemd image runs
+   *  systemd as PID 1, which needs a writable cgroup subtree to build its hierarchy.
+   *  A cgroup-delegating runtime like crun provides that WITHOUT `privileged` (and so
+   *  keeps the pod in its own private cgroup namespace, instead of the host one that
+   *  privileged forces — which was destabilizing the node / killing the host session).
+   *  Unset => the cluster default runtime (fine on nodes whose default already
+   *  delegates the cgroup; set crun explicitly where it doesn't). Ignored for the
+   *  legacy generic image (it isn't systemd-PID-1). */
+  sandboxRuntimeClass?: string;
   kubeConfig?: KubeConfig;
 }
 
@@ -256,6 +265,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             overlayStorage: opts.overlayStorage,
             moduleConfigMap: moduleCmName(id),
             pullPolicy: opts.sandboxPullPolicy,
+            sandboxRuntimeClass: opts.sandboxRuntimeClass,
             resources: sandboxResources,
           }),
         })
@@ -372,6 +382,10 @@ export function sandboxManifest(
      *  exists in the node's containerd and there's no registry to pull from —
      *  "Always" there fails with ImagePullBackOff. Wired from SANDBOX_PULL_POLICY. */
     pullPolicy?: "Always" | "IfNotPresent" | "Never";
+    /** RuntimeClass for the systemd sandbox pod (e.g. "crun") — a cgroup-delegating
+     *  runtime so systemd PID 1 gets a writable cgroup subtree without `privileged`.
+     *  See K8sProvisionerOptions.sandboxRuntimeClass. */
+    sandboxRuntimeClass?: string;
     resources?: {
       requests?: { cpu?: string; memory?: string };
       limits?: { cpu?: string; memory?: string };
@@ -409,6 +423,15 @@ export function sandboxManifest(
         spec: {
           serviceAccountName: sa,
           automountServiceAccountToken: false,
+          // Cgroup-delegating runtime (e.g. crun) for the systemd sandbox: gives
+          // systemd PID 1 a writable cgroup subtree in the pod's OWN (private)
+          // cgroup namespace, so it doesn't need `privileged` (which would force
+          // the host cgroup namespace and let the sandbox's systemd churn the host
+          // /kubepods.slice tree — the node-destabilizing / host-logout bug). Only
+          // for the systemd image, only when configured; else the cluster default.
+          ...(systemdImage && deploy.sandboxRuntimeClass
+            ? { runtimeClassName: deploy.sandboxRuntimeClass }
+            : {}),
           containers: [
             {
               name: "sandbox",
@@ -422,10 +445,19 @@ export function sandboxManifest(
               // runaway build from OOM-ing the node. Omitted keys (e.g. no cpu limit)
               // simply aren't emitted.
               ...(deploy.resources ? { resources: deploy.resources } : {}),
-              // The systemd NixOS dev image runs systemd as PID 1 — it needs a
-              // privileged context (writable cgroup + CAP_SYS_ADMIN). Accepted on
-              // dev; tighten post-PoC. The legacy generic image runs unprivileged.
-              ...(systemdImage ? { securityContext: { privileged: true } } : {}),
+              // The systemd sandbox runs NON-privileged (see runtimeClassName above:
+              // a cgroup-delegating runtime gives systemd PID 1 its writable cgroup
+              // subtree in the pod's own private cgroup namespace — privileged would
+              // force the HOST cgroup namespace and let the sandbox churn the host
+              // /kubepods.slice tree, destabilizing the node / killing the host
+              // session). It DOES need CAP_SYS_ADMIN, though: NixOS stage-2's
+              // `specialfs` activation snippet mounts /proc, /dev, /run at boot (and,
+              // with overlayStore on, remounts /nix/store) — all mount(2), which needs
+              // SYS_ADMIN. Under crun this cap does NOT re-introduce the host cgroup ns
+              // (the runtime sets the cgroup ns, not the cap), so isolation holds.
+              ...(systemdImage
+                ? { securityContext: { capabilities: { add: ["SYS_ADMIN"] } } }
+                : {}),
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },

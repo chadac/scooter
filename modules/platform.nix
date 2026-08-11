@@ -87,6 +87,21 @@ in
       defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-os:latest"'';
       description = "OCI ref of the generic Nix sandbox image.";
     };
+    sandboxRuntimeClass = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "crun";
+      description = ''
+        RuntimeClass for the per-conversation sandbox pod (the systemd-PID-1 image).
+        A cgroup-delegating runtime (e.g. crun) gives the sandbox's systemd a writable
+        cgroup subtree in its OWN private cgroup namespace, so the sandbox runs
+        NON-privileged. Leaving this null runs sandboxes privileged-equivalent under
+        the cluster default runtime — which forces the HOST cgroup namespace and lets a
+        booting sandbox churn the host /kubepods.slice tree (node instability; on a
+        workstation node, a host-session logout). Set to a runtime present on the
+        cluster (`kubectl get runtimeclass`).
+      '';
+    };
     sandboxViaBroker = mkOption {
       type = types.bool;
       default = false;
@@ -732,6 +747,13 @@ in
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ]
+                ++ lib.optional (cfg.sandboxRuntimeClass != null)
+                  # RuntimeClass for the sandbox pod (e.g. crun) — a cgroup-delegating
+                  # runtime so the sandbox's systemd PID 1 runs NON-privileged in its
+                  # own private cgroup namespace (privileged forces the host cgroup ns
+                  # → the sandbox churns the host /kubepods.slice tree → node instability
+                  # / host logout). Unset ⇒ cluster default runtime.
+                  { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
                 ++ lib.optional cfg.conversationController.historyMirror.enable
                   # The shared cross-pod history mirror (async, off the hot path).
                   # Present ⇒ mirroredStore wraps the local fileStore: every event
