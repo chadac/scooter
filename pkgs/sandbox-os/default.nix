@@ -143,6 +143,26 @@ let
     mkdir -p $out/nix/var/nix $out/nix/store/.links
     ${pkgs.buildPackages.nix}/bin/nix-store --load-db < ${closure}/registration
   '';
+
+  # PID-1 wrapper: make /sys/fs/cgroup writable, THEN exec systemd.
+  #
+  # We run the sandbox NON-privileged under a cgroup-delegating runtime (crun) so it
+  # stays in its OWN private cgroup namespace and can't churn the host cgroup tree
+  # (the node-instability / host-logout bug a privileged container caused). But BOTH
+  # runc and crun mount /sys/fs/cgroup READ-ONLY for a non-privileged container, and
+  # systemd PID 1 needs to CREATE its cgroup subtree there — on a read-only cgroupfs it
+  # exits 255 immediately after "starting systemd...". A privileged container avoided
+  # this only because containerd mounts cgroupfs read-write for privileged pods. This
+  # wrapper replicates just that one effect without full privilege: with CAP_SYS_ADMIN
+  # (granted to the systemd sandbox — also needed by NixOS stage-2's specialfs mounts),
+  # `mount -o remount,rw /sys/fs/cgroup` succeeds. Best-effort: if the cgroupfs is
+  # already rw (e.g. a privileged rollback), the remount is a harmless no-op; we never
+  # fail the boot on it. Then exec the real NixOS stage-2 init as PID 1.
+  initWrapper = pkgs.writeScript "sandbox-init-wrapper" ''
+    #!${pkgs.busybox}/bin/sh
+    ${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>/dev/null || true
+    exec ${toplevel}/init "$@"
+  '';
 in
 {
   inherit toplevel nixos;
@@ -160,10 +180,12 @@ in
     maxLayers = 100;
 
     config = {
-      # Boot systemd PID 1 via the NixOS stage-2 init directly. (We also ship a
-      # /sbin/init symlink for convention, but the entrypoint points at the real
-      # store path so it can't be missing.)
-      Entrypoint = [ "${toplevel}/init" ];
+      # Boot systemd PID 1 via the init WRAPPER (remounts /sys/fs/cgroup rw so systemd
+      # can build its cgroup subtree under crun/non-privileged, then execs the NixOS
+      # stage-2 init). See initWrapper. (We also ship a /sbin/init -> stage-2 init
+      # symlink for convention; the entrypoint points at explicit store paths so
+      # nothing can be missing.)
+      Entrypoint = [ "${initWrapper}" ];
       # systemd's container detection: set explicitly (Docker won't).
       Env = [
         "container=docker"
