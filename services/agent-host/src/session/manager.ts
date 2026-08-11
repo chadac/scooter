@@ -760,22 +760,39 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         return; // fenced out — not our conversation (a stale push).
       }
 
-      // Already live here → idempotent no-op.
-      if (entries.get(id)) return;
-
-      // Not in memory: pull its durable state from the mirror into local, then hydrate the
-      // Entry (hydrateByThread reads the now-local meta) and revive it. threadId === id.
-      if (deps.hydrateFromMirror) {
-        const pulled = await deps.hydrateFromMirror(id).catch((err) => {
-          console.error(`[manager] reviveFromMirror(${id}) mirror pull failed:`, err);
-          return false;
-        });
-        if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
+      // If NOT already live here, pull its durable state from the mirror into local, hydrate
+      // the Entry (hydrateByThread reads the now-local meta), and revive it. If it's ALREADY
+      // in memory this is a no-op — but we STILL run the dangling-run resume below (a
+      // conversation reassigned mid-run may already be revived yet have an unfinished run).
+      if (!entries.get(id)) {
+        if (deps.hydrateFromMirror) {
+          const pulled = await deps.hydrateFromMirror(id).catch((err) => {
+            console.error(`[manager] reviveFromMirror(${id}) mirror pull failed:`, err);
+            return false;
+          });
+          if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
+        }
+        const entry = await hydrateByThread(id as ThreadId);
+        if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
+        void expectedGen; // gen already enforced via the fence above + the append guard.
+        await this.revive(id);
       }
-      const entry = await hydrateByThread(id as ThreadId);
-      if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
-      void expectedGen; // gen already enforced via the fence above + the append guard.
-      await this.revive(id);
+
+      // Whether we just revived it or it was already live: if the conversation was reassigned
+      // MID-RUN (its last run started but never emitted RUN_FINISHED — the old pod drained
+      // before the model finished), re-drive it so the run completes on this host. Without
+      // this the UI is stuck "thinking" forever. Same mechanism boot uses (resumeInterrupted),
+      // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
+      try {
+        if (hasDanglingRun(await collectEvents(store.readEvents(id)))) {
+          console.log(`[manager] reviveFromMirror(${id}): resuming a dangling run`);
+          void this.prompt(id, RESUME_NUDGE).catch((err) =>
+            console.error(`[manager] reviveFromMirror(${id}) dangling-run resume failed:`, err),
+          );
+        }
+      } catch (err) {
+        console.error(`[manager] reviveFromMirror(${id}) dangling-run check failed:`, err);
+      }
     },
 
     async ensureReadable(id) {
