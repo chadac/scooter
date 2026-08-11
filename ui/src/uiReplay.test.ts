@@ -95,3 +95,22 @@ describe("UI-layer replay: real AG-UI log render order", () => {
     expect(sysIdx).toBeGreaterThan(lastCheck); // the chip must come AFTER the polls
   });
 });
+
+describe("spliceSystemMessages — internal-nudge hiding", () => {
+  const msgs = [{ id: "m1", role: "user", content: [] }];
+
+  it("HIDES a resume-nudge system message (internal plumbing, not shown to the user)", () => {
+    const out = spliceSystemMessages(msgs, [
+      { id: "s1", source: "resume", text: "[System: interrupted by a restart…]", afterMessageId: "m1" },
+    ]) as Array<{ id?: string }>;
+    // Only the original user message remains — the resume nudge is filtered out.
+    expect(out.map((o) => o.id)).toEqual(["m1"]);
+  });
+
+  it("still SHOWS a normal system message (e.g. a subagent completion chip)", () => {
+    const out = spliceSystemMessages(msgs, [
+      { id: "s2", source: "subagent", text: "done", afterMessageId: "m1" },
+    ]) as Array<{ id?: string }>;
+    expect(out.map((o) => o.id)).toEqual(["m1", "sys:s2"]); // the chip is spliced in
+  });
+});

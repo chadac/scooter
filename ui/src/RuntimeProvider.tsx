@@ -103,6 +103,12 @@ export interface SplicedSystemMessage {
  * those tool cards — because we splice after the message OBJECT but the message's
  * own tool parts render as part of it. The UI-layer replay test captures this.
  */
+/** System-message sources that are PURELY internal plumbing — the agent needs the nudge
+ *  but the human shouldn't see it. "resume" = the restart / model-switch continue-nudge
+ *  (agent-host injects it on revive; showing it as a chat message is just noise). Filtered
+ *  out of the rendered list entirely (still persisted in the log for the agent's context). */
+const HIDDEN_SYSTEM_SOURCES = new Set(["resume"]);
+
 export function spliceSystemMessages(
   messages: readonly unknown[],
   sys: readonly SplicedSystemMessage[],
@@ -111,6 +117,7 @@ export function spliceSystemMessages(
   const flush = (afterId: string | null) => {
     for (const s of sys) {
       if (s.afterMessageId !== afterId) continue;
+      if (HIDDEN_SYSTEM_SOURCES.has(s.source)) continue; // internal nudge — not shown
       out.push({
         id: `sys:${s.id}`,
         role: "assistant",

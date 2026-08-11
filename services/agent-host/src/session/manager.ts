@@ -786,7 +786,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       try {
         if (hasDanglingRun(await collectEvents(store.readEvents(id)))) {
           console.log(`[manager] reviveFromMirror(${id}): resuming a dangling run`);
-          void this.prompt(id, RESUME_NUDGE).catch((err) =>
+          // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
+          // role:user turn) which the UI hides — the nudge is internal, not a user message.
+          void this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume").catch((err) =>
             console.error(`[manager] reviveFromMirror(${id}) dangling-run resume failed:`, err),
           );
         }
@@ -887,7 +889,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       //      fully up before the nudge is sent).
       await entry.bridge?.cancel().catch(() => {});
       await applyModelSwitch(entry, model);
-      await this.prompt(id, MODEL_SWITCH_NUDGE);
+      // source "resume" → SYSTEM_MESSAGE (UI-hidden): a model-switch nudge is internal too.
+      await this.prompt(id, MODEL_SWITCH_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume");
       return true;
     },
 
@@ -1078,7 +1081,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           const id = queue.shift();
           if (!id) return;
           try {
-            await this.prompt(id, RESUME_NUDGE);
+            // source "resume" → SYSTEM_MESSAGE (UI-hidden); see reviveFromMirror.
+            await this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume");
             resumed.push(id);
           } catch (err) {
             // eslint-disable-next-line no-console
