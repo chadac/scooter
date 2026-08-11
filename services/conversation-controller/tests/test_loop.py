@@ -28,11 +28,14 @@ class FakeK8s:
         return self._convs[name].get("status", {})
 
 
-def _cr(name, host=None, phase="Pending", gen=0):
+def _cr(name, host=None, phase="Pending", gen=0, parent=None):
     st = {"phase": phase, "generation": gen}
     if host is not None:
         st["hostPod"] = host
-    return {"metadata": {"name": name}, "spec": {}, "status": st}
+    spec = {}
+    if parent is not None:
+        spec["parentId"] = parent
+    return {"metadata": {"name": name}, "spec": spec, "status": st}
 
 
 def test_pending_conversation_gets_a_host():
@@ -76,3 +79,20 @@ def test_no_ready_pods_leaves_all_pending():
     k = FakeK8s([Pod("a", False)], [_cr("c1")])
     reconcile_once(k, cap=10)
     assert k.status("c1").get("hostPod") is None
+
+
+def test_subagent_colocates_with_parent_in_one_pass():
+    # Parent p1 unassigned + child pointing at it, both pending, two pods available. The
+    # parent is assigned first; the child follows onto the SAME pod in the same pass —
+    # even though cap=1 and the parent already fills it (co-location bypasses cap).
+    k = FakeK8s([Pod("a", True), Pod("b", True)], [_cr("p1"), _cr("kid", parent="p1")])
+    reconcile_once(k, cap=1)
+    assert k.status("kid")["hostPod"] == k.status("p1")["hostPod"]
+
+
+def test_subagent_stays_pending_until_parent_ready():
+    # Parent lives on a NotReady pod → the child can't co-locate yet.
+    k = FakeK8s([Pod("a", False)], [_cr("p1", host="a", phase="Assigned", gen=1), _cr("kid", parent="p1")])
+    reconcile_once(k, cap=10)
+    assert k.status("kid").get("hostPod") is None
+    assert k.status("kid")["phase"] == "Pending"

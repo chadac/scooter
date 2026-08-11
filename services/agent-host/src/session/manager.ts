@@ -16,6 +16,7 @@ import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
 import { hasDanglingRun } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
+import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 
 /** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
  *  Not the user's literal prompt (which would re-do work / double-post): a nudge
@@ -365,6 +366,10 @@ export interface SessionManagerDeps {
    *  generation). Omitted / allowAllGuard = single-replica (always allow, today's
    *  behavior). See ownershipGuard.ts. */
   ownershipGuard?: OwnershipGuard;
+  /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
+   *  CR so the controller can assign the conversation a hostPod and the router forwards to
+   *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
+  conversationRegistry?: ConversationRegistry;
   /** Optional: how to build a bridge per conversation. Omitted in unit tests
    *  that only assert lifecycle/provisioning. */
   bridgeFactory?: BridgeFactory;
@@ -412,6 +417,7 @@ export function shortId(threadId: string): string {
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const { provisioner, store, bridgeFactory } = deps;
   const ownershipGuard = deps.ownershipGuard ?? allowAllGuard;
+  const conversationRegistry = deps.conversationRegistry ?? noopRegistry;
   const entries = new Map<SessionId, Entry>();
 
   // Subagent-completion subscribers (see onSubagentComplete). Fired event-driven
@@ -601,6 +607,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await saveMeta(entry);
       emitChange(entry); // push the new conversation to the sidebar stream (live)
 
+      // Register the assignment-table CR so the controller assigns a hostPod and the
+      // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
+      // failure must not fail the conversation); noop in single-replica mode. Do it
+      // BEFORE the slow provision so assignment can happen while the sandbox spins up.
+      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name });
+
       // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
       // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).
       entry.sandbox = await provisioner.create(shortId(threadId), threadId);
@@ -641,6 +653,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       entries.set(id, entry);
       await saveMeta(entry);
       emitChange(entry); // show it in the sidebar live (nested under the parent)
+
+      // Register the child CR carrying parentId so the controller CO-LOCATES it on the
+      // parent's pod (it shares the parent's sandbox). Idempotent + non-throwing; noop in
+      // single-replica mode.
+      await conversationRegistry.register(id, {
+        model, owner: parent.owner, parentId, sandboxRef: entry.sandbox.name,
+      });
 
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model });
       wireEventLog(entry);

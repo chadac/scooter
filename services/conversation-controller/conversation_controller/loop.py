@@ -16,11 +16,13 @@ logger = logging.getLogger("conversation-controller")
 
 def _state(cr: dict) -> ConversationState:
     st = cr.get("status") or {}
+    spec = cr.get("spec") or {}
     return ConversationState(
         name=cr["metadata"]["name"],
         host_pod=st.get("hostPod"),
         phase=st.get("phase", "Pending"),
         generation=int(st.get("generation", 0)),
+        parent_id=spec.get("parentId"),
     )
 
 
@@ -40,9 +42,15 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         if c.host_pod is not None and c.host_pod in ready_names:
             load[c.host_pod] = load.get(c.host_pod, 0) + 1
 
+    # hosts maps conversation name → its current host_pod, so a subagent can co-locate on
+    # its parent. Seed from current status; update as we assign this pass. Process PARENTS
+    # before CHILDREN (parentless first) so a child sees its parent's fresh assignment.
+    hosts: dict[str, str | None] = {c.name: c.host_pod for c in convs}
+    convs.sort(key=lambda c: c.parent_id is not None)
+
     results: list[tuple[str, str]] = []
     for c in convs:
-        action = reconcile(c, pods, load, cap)
+        action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
             results.append((c.name, "noop"))
             continue
@@ -50,6 +58,7 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             # Only patch if it isn't already Pending/host-cleared (avoid churn).
             if c.host_pod is not None or c.phase != "Pending":
                 k8s.patch_status(c.name, {"phase": "Pending", "hostPod": None})
+            hosts[c.name] = None
             results.append((c.name, "pending"))
             continue
         # Assign / Reassign.
@@ -59,7 +68,10 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             "hostPod": action.host_pod,
             "generation": action.generation,
         })
-        load[action.host_pod] = load.get(action.host_pod, 0) + 1  # count it for the rest of this pass
+        hosts[c.name] = action.host_pod  # so a child reconciled later co-locates here
+        # A subagent shares its parent's pod — don't double-count it toward pod capacity.
+        if c.parent_id is None:
+            load[action.host_pod] = load.get(action.host_pod, 0) + 1  # count it for the rest of this pass
         results.append((c.name, "assign"))
         logger.info("assigned %s -> %s (gen %d)", c.name, action.host_pod, action.generation)
     return results

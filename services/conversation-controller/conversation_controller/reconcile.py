@@ -8,6 +8,10 @@ Assignment model (see todo/docs/CONVERSATION_CRD_PR1.md):
 - Pick the least-loaded ready pod under a per-pod cap.
 - If the assigned pod is gone / NotReady, reassign (bumping the fence `generation`).
 - If no pod can take it (all at cap / none ready), leave it Pending.
+- A SUBAGENT (spec.parentId set) must be CO-LOCATED with its parent: it shares the
+  parent's sandbox pod and its writes exec into that pod, so it's pinned to the parent's
+  host_pod, bypassing the cap (it consumes no independent capacity). If the parent isn't
+  assigned to a ready pod yet, the child stays Pending until it is.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ class ConversationState:
     host_pod: str | None       # status.hostPod
     phase: str                 # status.phase (Pending | Assigned | Orphaned)
     generation: int            # status.generation (the fence epoch)
+    parent_id: str | None = None  # spec.parentId — a subagent co-locates on its parent's pod
 
 
 # --- Actions the shell will apply -----------------------------------------
@@ -63,10 +68,31 @@ def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
     return min(candidates, key=lambda p: (load.get(p.name, 0), p.name)).name
 
 
-def reconcile(conv: ConversationState, pods: list[Pod], load: dict[str, int], cap: int) -> Action:
+def reconcile(
+    conv: ConversationState,
+    pods: list[Pod],
+    load: dict[str, int],
+    cap: int,
+    hosts: dict[str, str | None] | None = None,
+) -> Action:
     """Decide the action for one Conversation. `load` counts CURRENT assignments per pod
-    (excluding `conv` itself if already counted — the shell computes it consistently)."""
+    (excluding `conv` itself if already counted — the shell computes it consistently).
+    `hosts` maps conversation name → its host_pod, used to co-locate a subagent on its
+    parent's pod (default {} = no parent lookups)."""
+    hosts = hosts or {}
     ready_names = {p.name for p in pods if p.ready}
+
+    # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
+    if conv.parent_id is not None:
+        parent_host = hosts.get(conv.parent_id)
+        # Already co-located on the parent's ready pod → done.
+        if conv.host_pod is not None and conv.host_pod == parent_host and parent_host in ready_names:
+            return NoOp(reason=f"co-located with parent on {parent_host}")
+        # Parent not yet assigned to a ready pod → wait (don't scatter the child).
+        if parent_host is None or parent_host not in ready_names:
+            return LeavePending(reason=f"parent {conv.parent_id} not on a ready pod yet")
+        # Pin (or re-pin) to the parent's pod, bumping the fence generation.
+        return Assign(host_pod=parent_host, generation=conv.generation + 1)
 
     # Already assigned to a live, ready pod → nothing to do.
     if conv.host_pod is not None and conv.host_pod in ready_names:

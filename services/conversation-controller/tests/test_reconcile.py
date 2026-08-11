@@ -79,3 +79,41 @@ def test_leaves_pending_when_all_pods_at_cap():
 def test_leaves_pending_when_no_ready_pods():
     a = reconcile(conv(host=None, gen=0), [Pod("a", False)], {}, cap=10)
     assert isinstance(a, LeavePending)
+
+
+# --- subagent co-location (spec.parentId) -----------------------------------
+
+def child(host=None, gen=0, parent="p1") -> ConversationState:
+    return ConversationState(name="c-child", host_pod=host, phase="Pending", generation=gen, parent_id=parent)
+
+
+def test_subagent_pins_to_parent_pod_ignoring_cap():
+    # Parent p1 lives on pod "a", which is AT cap — the child must still land on "a"
+    # (it shares the parent's pod, so cap doesn't apply).
+    a = reconcile(child(), [Pod("a", True)], {"a": 10}, cap=10, hosts={"p1": "a"})
+    assert isinstance(a, Assign)
+    assert a.host_pod == "a"
+    assert a.generation == 1
+
+
+def test_subagent_pending_when_parent_unassigned():
+    a = reconcile(child(), [Pod("a", True)], {}, cap=10, hosts={"p1": None})
+    assert isinstance(a, LeavePending)
+
+
+def test_subagent_pending_when_parent_pod_not_ready():
+    a = reconcile(child(), [Pod("a", False)], {}, cap=10, hosts={"p1": "a"})
+    assert isinstance(a, LeavePending)
+
+
+def test_subagent_noop_when_already_colocated():
+    a = reconcile(child(host="a", gen=1), [Pod("a", True)], {"a": 1}, cap=10, hosts={"p1": "a"})
+    assert isinstance(a, NoOp)
+
+
+def test_subagent_re_pins_when_parent_moved():
+    # Parent reassigned to "b"; the child was on "a" → follow the parent to "b".
+    a = reconcile(child(host="a", gen=1), [Pod("a", True), Pod("b", True)], {}, cap=10, hosts={"p1": "b"})
+    assert isinstance(a, Assign)
+    assert a.host_pod == "b"
+    assert a.generation == 2

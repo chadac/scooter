@@ -28,6 +28,7 @@ import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { mirroredConversationStore } from "./session/mirroredStore.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
+import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
 import type { ConversationStore } from "./session/manager.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
@@ -477,11 +478,18 @@ export async function main(
   const ownership = podName
     ? createK8sOwnershipGuard(podName, config.namespace)
     : undefined;
+  // The WRITE side of the same CRD: when multi-replica (POD_NAME set), register each new
+  // conversation as a Conversation CR so the controller assigns it a hostPod and the
+  // router forwards to it. Unset => noopRegistry (no CR). See conversationRegistry.ts.
+  const conversationRegistry = podName
+    ? createK8sConversationRegistry(config.namespace)
+    : undefined;
 
   const sessions = createSessionManager({
     provisioner,
     store,
     ownershipGuard: ownership?.guard,
+    conversationRegistry,
     bridgeFactory: ({ conversationId, sandbox, model }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
