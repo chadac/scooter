@@ -77,13 +77,14 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         results.append((c.name, "assign"))
         logger.info("assigned %s -> %s @ %s (gen %d)", c.name, action.host_pod, action.host_ip, action.generation)
         # Push the new host to revive the conversation from the mirror BEFORE user traffic
-        # arrives (seamless rollout — see todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md). Best-effort:
-        # a failed push is logged, not fatal — the host also revives lazily on the first
-        # forwarded request as a backstop. Skipped when the chosen pod has no IP yet (just
-        # scheduled) — the next reconcile tick re-pushes once the IP is known.
+        # arrives (seamless rollout — see todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md). notify_revive
+        # is FIRE-AND-FORGET (spawns a daemon thread) so a stale/unroutable hostIP can never
+        # block the reconcile pass — the host also revives lazily on first request. The
+        # try/except is a belt-and-suspenders guard on the thread SPAWN itself. Skipped when
+        # the pod has no IP yet (just scheduled) — the next tick re-pushes once the IP is known.
         if action.host_ip:
             try:
                 k8s.notify_revive(action.host_ip, c.name, action.generation)
             except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
-                logger.warning("revive-push to %s for %s failed (will rely on lazy revive)", action.host_ip, c.name)
+                logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
     return results

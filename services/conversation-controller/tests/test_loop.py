@@ -50,6 +50,22 @@ def test_pending_conversation_gets_a_host():
     assert k.status("c1")["generation"] == 1
 
 
+def test_notify_revive_returns_immediately_even_if_the_http_hangs():
+    # REGRESSION (found live on odin): notify_revive did a SYNCHRONOUS HTTP POST; a stale,
+    # unroutable hostIP hung the connect well past the timeout, wedging the whole reconcile
+    # pass so NO conversation got assigned. The real ControllerK8s.notify_revive must be
+    # FIRE-AND-FORGET — return promptly regardless of the HTTP outcome. We point it at an
+    # unroutable IP (TEST-NET-1, guaranteed to black-hole) and assert it returns fast.
+    import time
+    from conversation_controller.k8s import ControllerK8s
+
+    k = ControllerK8s(namespace="x")
+    t = time.time()
+    k.notify_revive("192.0.2.1", "c1", 1)  # 192.0.2.0/24 = RFC5737 TEST-NET-1, unroutable
+    elapsed = time.time() - t
+    assert elapsed < 1.0, f"notify_revive blocked {elapsed:.1f}s (must be fire-and-forget)"
+
+
 def test_assign_patches_host_ip_and_pushes_revive():
     # The loop records the owner pod's IP (routing address) and pushes a revive to it.
     k = FakeK8s([Pod("a", True, ip="10.42.0.7")], [_cr("c1")])
