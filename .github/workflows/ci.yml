@@ -259,6 +259,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.filter.outputs.image }}
+      platform: ${{ steps.filter.outputs.platform }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -277,6 +278,17 @@ jobs:
               # k3d converge/tool-on-PATH spec too.
               - 'services/agent-host/src/session/k8sProvisioner.ts'
               - 'test/support/cluster.ts'
+            # Multi-replica PLATFORM topology (Deployment/routing/rollout) — a change here
+            # runs the k3d platform smoke (platform comes up + a conversation routes). Kept a
+            # SEPARATE filter output so the platform smoke can run without the sandbox-image
+            # specs and vice-versa. See ROLLOUT_DRAIN_AND_POD_IP.md.
+            platform:
+              - 'modules/platform.nix'
+              - 'modules/conversation-controller.nix'
+              - 'services/conversation-controller/**'
+              - 'services/conversation-router/**'
+              - 'test/cluster/platform-smoke.spec.ts'
+              - 'flake.nix'
 
   # Tier-2 image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
   # Docker; no root, runs on the standard runner). Covers what the nixosTest VMs
@@ -336,6 +348,81 @@ jobs:
         # for resources (slow boots → flaky readiness) and share the test
         # namespace. One at a time is reliable and still fast.
         run: nix develop --command bash -c 'npm install && npm run test:cluster -- sandbox-os overlay-store scooter-converge --no-file-parallelism'
+
+      - name: tear down k3d
+        if: always()
+        run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+  # Tier-2 PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
+  # (agent-host Deployment + conversation-controller + conversation-router, fake agent) and
+  # assert it comes up + a conversation ROUTES + is assigned a hostIP. Path-gated on the
+  # `platform` filter (topology/controller/router changes) — the class of change that
+  # #254/#255/#256 shipped with NO cluster coverage (validated only manually on odin). See
+  # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+  platform-smoke:
+    name: Tier-2 platform smoke (k3d)
+    needs: cluster-changes
+    if: needs.cluster-changes.outputs.platform == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: create k3d cluster
+        run: |
+          nix shell nixpkgs#k3d nixpkgs#kubectl -c k3d cluster create scooter-ci --no-lb --wait
+          nix shell nixpkgs#k3d -c k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
+
+      # Build + import every image the fakeAgent platform-manifests reference, by bare name
+      # (registryPrefix "" → local names). nix2container `.copyTo docker-daemon:` loads Docker
+      # directly; k3d then imports by name. Cachix-cached so this is mostly download.
+      - name: build + import platform images
+        run: |
+          set -euo pipefail
+          for img in \
+            "agent-host-image:agent-host:latest" \
+            "sandbox-os-image:agent-sandbox-os:latest" \
+            "conversation-controller-image:conversation-controller:latest" \
+            "conversation-router-image:conversation-router:latest" \
+            "agent-broker-image:agent-broker:latest" \
+            "agent-webhooks-image:agent-webhooks:latest" \
+            "ui-image:agent-sandbox-ui:latest"; do
+            attr="${img%%:*}"; name="${img#*:}"
+            nix run ".#${attr}.copyTo" -- "docker-daemon:${name}"
+          done
+          nix shell nixpkgs#k3d -c k3d image import \
+            agent-host:latest agent-sandbox-os:latest conversation-controller:latest \
+            conversation-router:latest agent-broker:latest agent-webhooks:latest \
+            agent-sandbox-ui:latest -c scooter-ci
+
+      # Apply the fakeAgent platform manifests, wait for the multi-replica pods, then run the
+      # smoke spec (deploy up + conversation routes + hostIP assigned).
+      - name: apply platform + smoke
+        env:
+          RUN_CLUSTER_TESTS: "1"
+          CLUSTER_PROVIDER: existing
+          CI: "1"
+        run: |
+          nix shell nixpkgs#kubectl -c bash -c '
+            kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
+            kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
+            kubectl -n agent-sandbox rollout status deployment/conversation-router --timeout=180s
+            kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
+          '
+          nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke --no-file-parallelism'
+
+      - name: dump platform state on failure
+        if: failure()
+        run: |
+          nix shell nixpkgs#kubectl -c bash -c '
+            kubectl -n agent-sandbox get pods,deploy,svc,conversations -o wide || true
+            kubectl -n agent-sandbox logs -l app=conversation-controller --tail=50 || true
+            kubectl -n agent-sandbox logs -l app=conversation-router --tail=50 || true
+          '
 
       - name: tear down k3d
         if: always()

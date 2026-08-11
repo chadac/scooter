@@ -68,6 +68,7 @@ const provider = (): ClusterProvider =>
 const RESOURCES: Record<string, { group: string; version: string; plural: string; core?: boolean }> = {
   // agent-sandbox v0.5.x serves v1beta1 (v1alpha1 deprecated in v0.5.0).
   Sandbox: { group: "agents.x-k8s.io", version: "v1beta1", plural: "sandboxes" },
+  Conversation: { group: "scooter.chadac.dev", version: "v1alpha1", plural: "conversations" },
   SandboxWarmPool: { group: "extensions.agents.x-k8s.io", version: "v1beta1", plural: "sandboxwarmpools" },
   SandboxClaim: { group: "extensions.agents.x-k8s.io", version: "v1beta1", plural: "sandboxclaims" },
   ServiceAccount: { group: "", version: "v1", plural: "serviceaccounts", core: true },
