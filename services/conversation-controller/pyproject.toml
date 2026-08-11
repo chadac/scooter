@@ -1,0 +1,22 @@
+[project]
+name = "conversation-controller"
+version = "0.0.0"
+license = "MIT"
+description = "Scooter Conversation CRD controller — assigns each conversation a hostPod (agent-host replica) + reconciles on pod death"
+requires-python = ">=3.11"
+dependencies = [
+    "kubernetes",
+]
+
+[project.scripts]
+conversation-controller = "conversation_controller.app:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["conversation_controller"]
+
+[dependency-groups]
+dev = ["pytest"]

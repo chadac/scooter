@@ -43,7 +43,7 @@ let
   hasModels = modelIds != [ ];
 in
 {
-  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ];
+  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ./conversation-controller.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -607,6 +607,14 @@ in
               verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
             }
             execRule
+            {
+              # Multi-replica: the agent-host WATCHES Conversations (ownershipGuard fencing)
+              # and CREATES one per new conversation (conversationRegistry) so the controller
+              # can assign it a hostPod. It does NOT patch status — the controller owns that.
+              apiGroups = [ "scooter.chadac.dev" ];
+              resources = [ "conversations" ];
+              verbs = [ "get" "list" "watch" "create" ];
+            }
           ];
       };
 
@@ -642,17 +650,28 @@ in
         subjects = [{ kind = "ServiceAccount"; name = "agent-host"; namespace = cfg.namespace; }];
       };
 
-      deployments.agent-host = {
+      # agent-host is a StatefulSet (not a Deployment) so each replica has a STABLE
+      # ordinal name + per-pod DNS (agent-host-<n>.agent-host-headless.<ns>.svc) — the
+      # address the conversation-router forwards to for the pod that owns a conversation
+      # (status.hostPod). At replicas=1 this behaves exactly like the old single-replica
+      # Deployment: one pod, one shared state PVC. A StatefulSet's RollingUpdate also
+      # terminates the old ordinal pod BEFORE creating its replacement, so the shared
+      # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
+      # Deployment needed Recreate) — RollingUpdate is safe here.
+      statefulSets.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
-          replicas = cfg.replicas;
-          # Recreate (not the default RollingUpdate): agent-host mounts the
-          # single RWO `agent-host-state` PVC, which can't be Multi-Attached to
-          # an old + new pod at once. RollingUpdate deadlocks — the new pod waits
-          # on the volume the old pod still holds, and the old pod won't drain
-          # until the new one is Ready. Recreate stops the old pod first.
-          strategy.type = "Recreate";
+          serviceName = "agent-host-headless";
+          replicas = cfg.conversationController.agentHostReplicas;
+          updateStrategy.type = "RollingUpdate";
           selector.matchLabels.app = "agent-host";
+          # Each pod gets its OWN state PVC (a shared RWO PVC can't Multi-Attach to N
+          # pods). History survives across pods via the NFS mirror (#249) when
+          # MIRROR_STATE_PATH is set to shared storage.
+          volumeClaimTemplates = [{
+            metadata.name = "state";
+            spec = { accessModes = [ "ReadWriteOnce" ]; resources.requests.storage = "5Gi"; };
+          }];
           template = {
             metadata.labels.app = "agent-host";
             spec = {
@@ -682,6 +701,11 @@ in
                 env = [
                   { name = "PORT"; value = "8080"; }
                   { name = "NAMESPACE"; value = cfg.namespace; }
+                  # This pod's own name (downward API) — its identity for the
+                  # Conversation CRD hostPod + generation-fencing (multi-replica). Set
+                  # unconditionally (harmless single-replica); the StatefulSet gives it
+                  # the stable ordinal name (agent-host-<n>).
+                  { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   # imagePullPolicy for the per-conversation sandbox pods — mirror the
                   # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always
@@ -697,7 +721,7 @@ in
                       [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
-                  # Durable: the AG-UI event log (history) on the PVC.
+                  # Durable: the AG-UI event log (history) on the per-pod PVC.
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
                   # Ephemeral scratch (emptyDir): goose's per-conversation cwd +
                   # $HOME (sessions DB + .goosehints). The agent's real work execs
@@ -708,6 +732,13 @@ in
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ]
+                ++ lib.optional cfg.conversationController.historyMirror.enable
+                  # The shared cross-pod history mirror (async, off the hot path).
+                  # Present ⇒ mirroredStore wraps the local fileStore: every event
+                  # is also appended (coalesced, fire-and-forget) to this RWX
+                  # volume so another pod can revive the conversation after a
+                  # reassignment. See mirroredStore.ts + the CRD design doc.
+                  { name = "MIRROR_STATE_PATH"; value = "/var/lib/agent-history/conversations"; }
                 ++ lib.optional (cfg.retentionMaxAgeMs > 0)
                   # Auto-delete unstarred conversations inactive past the window
                   # (0/default = off, so absent unless a deployment opts in).
@@ -855,14 +886,17 @@ in
                   { name = "WEBHOOKS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-webhooks"; key = "password"; }; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; });
                 volumeMounts = [
-                  # Durable history (PVC).
+                  # Per-pod hot history (RWO volumeClaimTemplate).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
                   # Ephemeral agent scratch (emptyDir): goose cwd + $HOME.
                   { name = "scratch"; mountPath = "/var/lib/agent-scratch"; }
                   # The image's /tmp is read-only (nix store). goose needs a
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
-                ] ++ lib.optional (cfg.agent.skills != { })
+                ] ++ lib.optional cfg.conversationController.historyMirror.enable
+                  # Shared cross-pod history mirror (RWX). MIRROR_STATE_PATH lives here.
+                  { name = "history-mirror"; mountPath = "/var/lib/agent-history"; }
+                ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
                 ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
@@ -887,12 +921,15 @@ in
                 lifecycle.preStop.exec.command = [ "sleep" "5" ];
               };
               terminationGracePeriodSeconds = 20;
-              # Durable event-log PVC + ephemeral scratch/tmp emptyDirs.
+              # `state` comes from the StatefulSet's per-pod volumeClaimTemplate (above),
+              # so it's NOT listed here. scratch/tmp are ephemeral emptyDirs.
               volumes = [
-                { name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
-              ] ++ lib.optional (cfg.agent.skills != { })
+              ] ++ lib.optional cfg.conversationController.historyMirror.enable
+                # The one shared RWX mirror PVC (all pods mount it).
+                { name = "history-mirror"; persistentVolumeClaim.claimName = "agent-host-history"; }
+              ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                 { name = "pricing"; configMap.name = "agent-pricing"; }
@@ -903,13 +940,6 @@ in
         };
       };
 
-      persistentVolumeClaims.agent-host-state = {
-        metadata = { name = "agent-host-state"; namespace = cfg.namespace; };
-        spec = {
-          accessModes = [ "ReadWriteOnce" ];
-          resources.requests.storage = "5Gi";
-        };
-      };
 
       # Agent skills (filename -> markdown), injected per conversation as
       # .goosehints. Edit this (the option) to add/change a skill — no image
@@ -954,14 +984,63 @@ in
         };
       };
 
+      # The `agent-host` Service — the DNS every caller uses (agent-host.<ns>.svc:8080).
+      # Flag OFF: selects the agent-host pods directly (today). Flag ON: selects the
+      # ROUTER, which reverse-proxies each request to the pod owning the conversation.
+      # Callers (UI/broker/webhooks) are unchanged — the front door just gains routing.
       services.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
+          selector.app = "conversation-router";  # the front door always fronts the router
+          ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
+        };
+      };
+      # Headless Service backing the StatefulSet — gives each pod stable DNS
+      # (agent-host-<n>.agent-host-headless.<ns>.svc), the address the router forwards to.
+      services.agent-host-headless = {
+        metadata = { name = "agent-host-headless"; namespace = cfg.namespace; };
+        spec = {
+          clusterIP = "None";
           selector.app = "agent-host";
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };
       };
     }
+    (lib.mkIf cfg.conversationController.historyMirror.enable (
+      let hm = cfg.conversationController.historyMirror; in {
+        # Shared history-mirror PVC — ONE ReadWriteMany volume every agent-host
+        # pod appends its events to (async, off the hot path). After a
+        # conversation reassigns to a different pod, the new host reads its
+        # history back from here. This is what makes cross-pod revival work; the
+        # per-pod `state` volumeClaimTemplate is only each pod's local hot copy.
+        persistentVolumeClaims.agent-host-history = {
+          metadata = { name = "agent-host-history"; namespace = cfg.namespace; };
+          spec = {
+            accessModes = [ hm.accessMode ];
+            resources.requests.storage = hm.size;
+          }
+          # hostPath escape hatch (odin: no RWX provisioner) → bind to the
+          # explicit PV below by class; otherwise use the given/ default class.
+          // (if hm.hostPath != null
+              then { storageClassName = "agent-host-history-hostpath"; }
+              else lib.optionalAttrs (hm.storageClassName != null) { storageClassName = hm.storageClassName; });
+        };
+      }
+      # Single-node hostPath PV so a ReadWriteMany PVC binds where there's no RWX
+      # provisioner (all agent-host pods land on the one node, sharing the dir).
+      // lib.optionalAttrs (hm.hostPath != null) {
+        persistentVolumes.agent-host-history = {
+          metadata.name = "agent-host-history";
+          spec = {
+            capacity.storage = hm.size;
+            accessModes = [ hm.accessMode ];
+            storageClassName = "agent-host-history-hostpath";
+            persistentVolumeReclaimPolicy = "Retain";
+            hostPath = { path = hm.hostPath; type = "DirectoryOrCreate"; };
+          };
+        };
+      }
+    ))
     (lib.mkIf cfg.ui.enable {
       # Conversation UI — nginx serving the assistant-ui build and proxying the
       # agent-host API on the same origin (so the browser's /agui SSE + /sessions

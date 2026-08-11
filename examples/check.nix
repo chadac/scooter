@@ -17,7 +17,9 @@ let
 
   # resource-kind -> names the platform MUST render with all features enabled.
   expect = {
-    deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
+    # agent-host is a StatefulSet now (stable per-pod DNS for conversation routing).
+    deployments = [ "agent-broker" "agent-webhooks" "ui" ];
+    statefulSets = [ "agent-host" ];
     services = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
     # deploy-config-files: the deployTools.configFiles ConfigMap (enabled below).
     configMaps = [ "agent-skills" "deploy-config-files" ];
@@ -46,7 +48,7 @@ let
   # deploy-config-files ConfigMap with the file, and (b) tell the agent-host to
   # mount it via SCOOTER_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files.
   hostEnv =
-    let ctrs = builtins.attrValues (res.deployments.agent-host.spec.template.spec.containers or { });
+    let ctrs = builtins.attrValues (res.statefulSets.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   cfWired = builtins.any (e: e.name == "SCOOTER_CONFIG_FILES_CONFIGMAP") hostEnv;
   cfHasFile = (res.configMaps.deploy-config-files.data or { }) ? "nix.conf";
@@ -65,7 +67,7 @@ let
     };
   };
   mHostEnv =
-    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
+    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.statefulSets.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   mEnvVal = name: let m = builtins.filter (e: e.name == name) mHostEnv; in if m == [ ] then "" else (builtins.head m).value;
   modelsJson = mEnvVal "AGENT_MODELS_JSON";
@@ -113,7 +115,9 @@ let
   ioRes = ingressOffPlatform.config.kubernetes.resources;
   envVal = dep: name:
     let
-      ctrs = builtins.attrValues (ioRes.deployments.${dep}.spec.template.spec.containers or { });
+      # agent-host is a StatefulSet, the rest Deployments — look in both.
+      workload = ioRes.deployments.${dep} or ioRes.statefulSets.${dep} or null;
+      ctrs = builtins.attrValues (workload.spec.template.spec.containers or { });
       env = builtins.concatMap (c: c.env or [ ]) ctrs;
       m = builtins.filter (e: e.name == name) env;
     in if m == [ ] then "" else (builtins.head m).value;
