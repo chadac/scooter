@@ -608,11 +608,12 @@ in
             }
             execRule
             {
-              # Multi-replica FENCING: the agent-host WATCHES Conversations (read-only) so
-              # a reassigned pod stops appending (ownershipGuard).
+              # Multi-replica: the agent-host WATCHES Conversations (ownershipGuard fencing)
+              # and CREATES one per new conversation (conversationRegistry) so the controller
+              # can assign it a hostPod. It does NOT patch status — the controller owns that.
               apiGroups = [ "scooter.chadac.dev" ];
               resources = [ "conversations" ];
-              verbs = [ "get" "list" "watch" ];
+              verbs = [ "get" "list" "watch" "create" ];
             }
           ];
       };
@@ -720,7 +721,7 @@ in
                       [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
-                  # Durable: the AG-UI event log (history) on the PVC.
+                  # Durable: the AG-UI event log (history) on the per-pod PVC.
                   { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
                   # Ephemeral scratch (emptyDir): goose's per-conversation cwd +
                   # $HOME (sessions DB + .goosehints). The agent's real work execs
@@ -731,6 +732,13 @@ in
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ]
+                ++ lib.optional cfg.conversationController.historyMirror.enable
+                  # The shared cross-pod history mirror (async, off the hot path).
+                  # Present ⇒ mirroredStore wraps the local fileStore: every event
+                  # is also appended (coalesced, fire-and-forget) to this RWX
+                  # volume so another pod can revive the conversation after a
+                  # reassignment. See mirroredStore.ts + the CRD design doc.
+                  { name = "MIRROR_STATE_PATH"; value = "/var/lib/agent-history/conversations"; }
                 ++ lib.optional (cfg.retentionMaxAgeMs > 0)
                   # Auto-delete unstarred conversations inactive past the window
                   # (0/default = off, so absent unless a deployment opts in).
@@ -878,14 +886,17 @@ in
                   { name = "WEBHOOKS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-webhooks"; key = "password"; }; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; });
                 volumeMounts = [
-                  # Durable history (PVC).
+                  # Per-pod hot history (RWO volumeClaimTemplate).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
                   # Ephemeral agent scratch (emptyDir): goose cwd + $HOME.
                   { name = "scratch"; mountPath = "/var/lib/agent-scratch"; }
                   # The image's /tmp is read-only (nix store). goose needs a
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
-                ] ++ lib.optional (cfg.agent.skills != { })
+                ] ++ lib.optional cfg.conversationController.historyMirror.enable
+                  # Shared cross-pod history mirror (RWX). MIRROR_STATE_PATH lives here.
+                  { name = "history-mirror"; mountPath = "/var/lib/agent-history"; }
+                ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
                 ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
@@ -915,7 +926,10 @@ in
               volumes = [
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
-              ] ++ lib.optional (cfg.agent.skills != { })
+              ] ++ lib.optional cfg.conversationController.historyMirror.enable
+                # The one shared RWX mirror PVC (all pods mount it).
+                { name = "history-mirror"; persistentVolumeClaim.claimName = "agent-host-history"; }
+              ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                 { name = "pricing"; configMap.name = "agent-pricing"; }
@@ -992,6 +1006,41 @@ in
         };
       };
     }
+    (lib.mkIf cfg.conversationController.historyMirror.enable (
+      let hm = cfg.conversationController.historyMirror; in {
+        # Shared history-mirror PVC — ONE ReadWriteMany volume every agent-host
+        # pod appends its events to (async, off the hot path). After a
+        # conversation reassigns to a different pod, the new host reads its
+        # history back from here. This is what makes cross-pod revival work; the
+        # per-pod `state` volumeClaimTemplate is only each pod's local hot copy.
+        persistentVolumeClaims.agent-host-history = {
+          metadata = { name = "agent-host-history"; namespace = cfg.namespace; };
+          spec = {
+            accessModes = [ hm.accessMode ];
+            resources.requests.storage = hm.size;
+          }
+          # hostPath escape hatch (odin: no RWX provisioner) → bind to the
+          # explicit PV below by class; otherwise use the given/ default class.
+          // (if hm.hostPath != null
+              then { storageClassName = "agent-host-history-hostpath"; }
+              else lib.optionalAttrs (hm.storageClassName != null) { storageClassName = hm.storageClassName; });
+        };
+      }
+      # Single-node hostPath PV so a ReadWriteMany PVC binds where there's no RWX
+      # provisioner (all agent-host pods land on the one node, sharing the dir).
+      // lib.optionalAttrs (hm.hostPath != null) {
+        persistentVolumes.agent-host-history = {
+          metadata.name = "agent-host-history";
+          spec = {
+            capacity.storage = hm.size;
+            accessModes = [ hm.accessMode ];
+            storageClassName = "agent-host-history-hostpath";
+            persistentVolumeReclaimPolicy = "Retain";
+            hostPath = { path = hm.hostPath; type = "DirectoryOrCreate"; };
+          };
+        };
+      }
+    ))
     (lib.mkIf cfg.ui.enable {
       # Conversation UI — nginx serving the assistant-ui build and proxying the
       # agent-host API on the same origin (so the browser's /agui SSE + /sessions

@@ -46,6 +46,57 @@ in
       default = 2;
       description = "Router replicas (stateless proxy; fronts the agent-host Service).";
     };
+
+    # --- history mirror (cross-pod conversation revival) --------------------
+    # ONE shared append-only RWX volume every agent-host pod mirrors its events
+    # to (async, off the hot path — see mirroredStore.ts + the CRD design doc).
+    # After a conversation reassigns to a different pod, that pod reads the
+    # conversation's history back from this volume. Multi-writer ⇒ ReadWriteMany.
+    historyMirror = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Provision the shared history-mirror PVC + wire MIRROR_STATE_PATH into
+          agent-host. On by default: cross-pod history revival is the point of
+          multi-replica. Set false on a cluster with no RWX (nothing shared —
+          each pod keeps only its own local history; routing still works).
+        '';
+      };
+      size = mkOption {
+        type = types.str;
+        default = "10Gi";
+        description = "Size of the shared history-mirror PVC.";
+      };
+      accessMode = mkOption {
+        type = types.str;
+        default = "ReadWriteMany";
+        description = ''
+          Access mode of the mirror PVC. ReadWriteMany is required for the real
+          multi-writer mirror (all pods append). Left configurable only for the
+          degenerate replicas=1 case.
+        '';
+      };
+      storageClassName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          storageClassName for the mirror PVC (null = cluster default). Point at
+          an RWX class (EFS/NFS) on a real cluster. Ignored when hostPath is set.
+        '';
+      };
+      hostPath = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/var/lib/scooter/agent-host-history";
+        description = ''
+          Single-node escape hatch (e.g. odin, which has no RWX provisioner):
+          back the mirror with a hostPath PV at this path so a ReadWriteMany PVC
+          binds. All agent-host pods land on the one node and share the host dir.
+          Set null on a real multi-node cluster (use storageClassName instead).
+        '';
+      };
+    };
   };
 
   config = {
