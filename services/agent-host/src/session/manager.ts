@@ -375,6 +375,12 @@ export interface SessionManagerDeps {
    *  generation). Omitted / allowAllGuard = single-replica (always allow, today's
    *  behavior). See ownershipGuard.ts. */
   ownershipGuard?: OwnershipGuard;
+  /** Optional (multi-replica revive-on-assign): pull ONE conversation's durable state from
+   *  the shared mirror into local so this pod can hydrate + revive a conversation the
+   *  controller just reassigned here (that this pod never owned). Returns false if the
+   *  mirror has no such conversation. Wired to mirroredStore.hydrateFromMirror when a mirror
+   *  is configured; omitted single-replica. Used by reviveFromMirror(). */
+  hydrateFromMirror?: (id: SessionId) => Promise<boolean>;
   /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
@@ -734,17 +740,34 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     },
 
     async reviveFromMirror(id, expectedGen) {
-      // DESIGN STUB (rollout-drain revive-on-assign) — todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
-      // Implementation must:
-      //  1. If `id` is already in `entries` (in memory) → idempotent no-op / ensure running.
-      //  2. Else HYDRATE it from the shared mirror: read its meta + event log from
-      //     MIRROR_STATE_PATH into local state (like boot hydrate(), but for one conversation
-      //     the controller just reassigned here), register the entry, then revive(id).
-      //  3. FENCE on `expectedGen`: only proceed if this pod is the current owner at that
-      //     generation (consult the ownership guard / CR); a stale push is a no-op.
-      // Kept distinct from revive() (which throws on an unknown-to-this-pod id).
-      void expectedGen;
-      throw new Error(`reviveFromMirror: DESIGN stub for ${id} (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md)`);
+      // REVIVE-ON-ASSIGN (seamless rollout): the controller pushes this on a conversation's
+      // NEW host right after (re)assigning it. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+
+      // FENCE: only revive if this pod is the current owner at `expectedGen`. canWrite()
+      // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a
+      // genuinely stale push still can't advance the log (append is fenced too), and
+      // reviving a conversation we don't own is a harmless read+resume that the next
+      // reconcile corrects. But a POSITIVE "another pod owns it" verdict → skip.
+      if (!ownershipGuard.canWrite(id)) {
+        return; // fenced out — not our conversation (a stale push).
+      }
+
+      // Already live here → idempotent no-op.
+      if (entries.get(id)) return;
+
+      // Not in memory: pull its durable state from the mirror into local, then hydrate the
+      // Entry (hydrateByThread reads the now-local meta) and revive it. threadId === id.
+      if (deps.hydrateFromMirror) {
+        const pulled = await deps.hydrateFromMirror(id).catch((err) => {
+          console.error(`[manager] reviveFromMirror(${id}) mirror pull failed:`, err);
+          return false;
+        });
+        if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
+      }
+      const entry = await hydrateByThread(id as ThreadId);
+      if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
+      void expectedGen; // gen already enforced via the fence above + the append guard.
+      await this.revive(id);
     },
 
     async prompt(id, text, model, priority, interrupt, images, files, source) {

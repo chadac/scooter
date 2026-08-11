@@ -428,10 +428,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // DESIGN STUB — not implemented. Must: (1) verify caller is the controller (SA/secret —
   // spec Q4); (2) hydrate-from-mirror if absent; (3) fence on `gen`; (4) be safe to call
   // concurrently / repeatedly. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
-  r.post("/internal/revive/:id", async (_ctx) => {
-    // const gen = Number(new URL(_ctx.req.url ?? "", "http://x").searchParams.get("gen"));
-    // await sessions.reviveFromMirror(_ctx.params.id, gen);  // hydrate-if-absent + fence
-    throw new Error("internal/revive: DESIGN stub (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md)");
+  r.post("/internal/revive/:id", async (ctx) => {
+    const gen = Number(new URL(ctx.req.url ?? "", "http://x").searchParams.get("gen") ?? "0");
+    // Hydrate-if-absent + fence (a stale/mis-routed push is a no-op inside reviveFromMirror).
+    // Best-effort from the controller's view; return 202 (accepted) rather than 200 so a
+    // caller can tell it's an async pre-warm, not a synchronous "definitely revived".
+    await sessions.reviveFromMirror(ctx.params.id, Number.isFinite(gen) ? gen : 0);
+    return { status: 202, json: { revived: ctx.params.id } };
   });
 
   // Manually COMPACT: summarize older turns, then continue on [summary + recent].

@@ -241,13 +241,13 @@ in
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
                   { name = "NAMESPACE"; value = cfg.namespace; }
-                  # DESIGN (rollout-drain): route by POD IP, not headless-Service DNS. The
-                  # router reads status.hostIP from the CR and proxies http://<ip>:port; the
-                  # headless Service is removed. AGENT_HOST_SERVICE is the ClusterIP Service
-                  # used as the fallback (non-scoped / unassigned / stale-IP → any ready pod).
-                  # (Replaces AGENT_HOST_HEADLESS + DEFAULT_POD.) See
+                  # Route by POD IP, not headless-Service DNS: the router reads status.hostIP
+                  # from the CR and proxies http://<ip>:port. AGENT_HOST_SERVICE is the
+                  # ClusterIP Service selecting the agent-host PODS — the router's FALLBACK for
+                  # non-scoped / unassigned / stale-IP requests (any ready pod). It must select
+                  # the pods, NOT `agent-host` (that fronts the router → a loop). See
                   # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
-                  { name = "AGENT_HOST_SERVICE"; value = "agent-host"; }
+                  { name = "AGENT_HOST_SERVICE"; value = "agent-host-pods"; }
                   { name = "UPSTREAM_PORT"; value = "8080"; }
                   { name = "LISTEN_ADDR"; value = ":8080"; }
                 ];

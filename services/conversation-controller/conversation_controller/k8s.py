@@ -5,6 +5,9 @@ leader-election Lease. Mirrors the broker's `_apis()` singleton + 409/404 tolera
 from __future__ import annotations
 
 import logging
+import os
+import urllib.error
+import urllib.request
 
 from dataclasses import dataclass
 
@@ -18,6 +21,12 @@ GROUP = "scooter.chadac.dev"
 VERSION = "v1alpha1"
 PLURAL = "conversations"
 AGENT_HOST_LABEL = "app=agent-host"
+
+# agent-host container port + how long to wait on a revive-push before giving up (the push
+# is a best-effort pre-warm — the host also revives lazily on the first forwarded request,
+# so we must not let a slow/hung host stall the reconcile loop).
+AGENT_HOST_PORT = int(os.environ.get("AGENT_HOST_PORT", "8080"))
+REVIVE_TIMEOUT_SECONDS = float(os.environ.get("REVIVE_PUSH_TIMEOUT_SECONDS", "3"))
 
 _core: client.CoreV1Api | None = None
 _custom: client.CustomObjectsApi | None = None
@@ -69,10 +78,25 @@ class ControllerK8s:
         lazily on first request). Carries `generation` so the host can fence a stale push
         (ignore a revive for a generation older than the CR's current one).
 
-        DESIGN STUB — not implemented. Adds the controller's first outbound HTTP dependency.
-        Open: auth to /internal/revive (SA token / netpol / shared secret — see spec Q4).
+        Best-effort from the caller's view (loop.py swallows failures — the host also revives
+        lazily on first request). Carries `generation` so the host can fence a stale push
+        (ignore a revive for a generation older than the CR's current one).
+
+        Cluster-internal: reaches the pod IP directly on the pod network (the CRD's hostIP).
+        Auth is currently network-scoped (in-cluster pod-to-pod); tighten with a NetworkPolicy
+        / SA token if the endpoint is ever exposed more broadly (spec Q4).
         """
-        raise NotImplementedError("notify_revive: DESIGN stub (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md)")
+        url = f"http://{host_ip}:{AGENT_HOST_PORT}/internal/revive/{conv_name}?gen={generation}"
+        req = urllib.request.Request(url, method="POST", data=b"")
+        try:
+            with urllib.request.urlopen(req, timeout=REVIVE_TIMEOUT_SECONDS) as resp:
+                # 2xx (202 Accepted from the host) = the pre-warm was accepted.
+                if resp.status // 100 != 2:
+                    logger.warning("revive-push %s -> HTTP %s", url, resp.status)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # Non-fatal — re-raised as a plain exception so loop.py's except logs + moves on
+            # (the host revives lazily on first request as the backstop).
+            raise RuntimeError(f"revive-push to {url} failed: {e}") from e
 
     # --- Conversation CRs --------------------------------------------------
     def list_conversations(self) -> list[dict]:

@@ -17,10 +17,9 @@ let
 
   # resource-kind -> names the platform MUST render with all features enabled.
   expect = {
-    # agent-host is a StatefulSet now (stable per-pod DNS for conversation routing).
-    deployments = [ "agent-broker" "agent-webhooks" "ui" ];
-    statefulSets = [ "agent-host" ];
-    services = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
+    # agent-host is a Deployment (random pods; routing by pod IP + surge rollout).
+    deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
+    services = [ "agent-host" "agent-host-pods" "agent-broker" "agent-webhooks" "ui" ];
     # deploy-config-files: the deployTools.configFiles ConfigMap (enabled below).
     configMaps = [ "agent-skills" "deploy-config-files" ];
   };
@@ -48,7 +47,7 @@ let
   # deploy-config-files ConfigMap with the file, and (b) tell the agent-host to
   # mount it via SCOOTER_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files.
   hostEnv =
-    let ctrs = builtins.attrValues (res.statefulSets.agent-host.spec.template.spec.containers or { });
+    let ctrs = builtins.attrValues (res.deployments.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   cfWired = builtins.any (e: e.name == "SCOOTER_CONFIG_FILES_CONFIGMAP") hostEnv;
   cfHasFile = (res.configMaps.deploy-config-files.data or { }) ? "nix.conf";
@@ -67,7 +66,7 @@ let
     };
   };
   mHostEnv =
-    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.statefulSets.agent-host.spec.template.spec.containers or { });
+    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   mEnvVal = name: let m = builtins.filter (e: e.name == name) mHostEnv; in if m == [ ] then "" else (builtins.head m).value;
   modelsJson = mEnvVal "AGENT_MODELS_JSON";

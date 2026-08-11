@@ -106,7 +106,12 @@ export function mirroredConversationStore(
   local: ConversationStore,
   mirror: ConversationStore,
   opts: MirrorOptions = {},
-): ConversationStore & { drainMirror: (id?: SessionId) => Promise<void> } {
+): ConversationStore & {
+  drainMirror: (id?: SessionId) => Promise<void>;
+  /** Pull one conversation's durable state MIRROR→LOCAL (revive-on-assign). Returns false
+   *  if the mirror has no such conversation. See the method + ROLLOUT_DRAIN_AND_POD_IP.md. */
+  hydrateFromMirror: (id: SessionId) => Promise<boolean>;
+} {
   const onErr = opts.onMirrorError ?? ((id, e) =>
     console.error(`[mirror] write failed for ${id} (local intact):`, e));
   const coalescer = new CoalescingMirror(
@@ -172,5 +177,40 @@ export function mirroredConversationStore(
     removeConversation: local.removeConversation
       ? async (id) => { const p = local.removeConversation!(id); mirrorWrite(id, () => mirror.removeConversation?.(id)); return p; }
       : undefined,
+
+    // REVIVE-ON-ASSIGN (seamless rollout): copy ONE conversation's durable state from the
+    // MIRROR into LOCAL, so a pod that never owned it can hydrate + revive it after a rollout
+    // reassigned it here. Reads pass through to local (the hot authority), so a
+    // mirror-only conversation is invisible until this pulls it local. Idempotent: skips
+    // events already present locally (append is ordered per id). Best-effort on the
+    // low-frequency extras (meta is the load-bearing part). See
+    // todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md + manager.reviveFromMirror.
+    async hydrateFromMirror(id: SessionId): Promise<boolean> {
+      // 1) meta — without it the conversation isn't listable/hydratable locally.
+      const metas = (await mirror.listConversations?.()) ?? [];
+      const meta = metas.find((m) => (m.id as SessionId) === id);
+      if (!meta) return false; // the mirror doesn't have it either — genuinely unknown.
+      await local.saveMeta?.(meta);
+
+      // 2) events — replay the mirror's log into local, skipping what local already has
+      // (idempotent re-pull). Count local first so a partial prior pull resumes.
+      let localCount = 0;
+      try {
+        for await (const _ of local.readEvents(id)) localCount++;
+      } catch { /* local has none yet */ }
+      let i = 0;
+      for await (const ev of mirror.readEvents(id)) {
+        if (i++ < localCount) continue; // already local
+        await local.appendEvent(id, ev);
+      }
+
+      // 3) low-frequency extras (best-effort — a miss degrades, never blocks the revive):
+      // the agent's self-authored module (re-applied on the in-pod converge).
+      try {
+        const mod = await mirror.readModule?.(id);
+        if (mod != null) await local.saveModule?.(id, mod);
+      } catch { /* module optional */ }
+      return true;
+    },
   };
 }

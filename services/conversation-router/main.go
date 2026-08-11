@@ -11,11 +11,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -76,27 +78,74 @@ func main() {
 }
 
 // newRouter builds the HTTP handler: resolve target (owner pod IP or ClusterIP fallback),
-// reverse-proxy (HTTP/SSE/WS), and on a dial failure to the owner IP retry via the fallback.
-//
-// DESIGN STUB — the resolve → proxy wiring is sketched; the dial-fail RETRY (re-issue to
-// FallbackURL when the owner IP is unreachable, e.g. the pod was replaced this tick) is
-// left as a TODO for Implementation. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md Q2.
+// reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
+// fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
+// the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
 func newRouter(cfg config, cache *OwnershipCache) http.Handler {
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target := resolveTarget(cfg, cache, r, fallback)
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		// FlushInterval -1 = flush immediately: required for SSE (don't buffer the stream).
-		proxy.FlushInterval = -1
-		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, e error) {
-			// TODO(impl): on a dial/connect failure to an owner-IP target, retry once
-			// against `fallback` (any ready pod) before returning 502 — covers a stale
-			// hostIP from a just-replaced pod. For now, surface the 502.
-			logf("proxy to %s failed: %v", target.Host, e)
-			http.Error(w, "upstream unavailable", http.StatusBadGateway)
-		}
-		proxy.ServeHTTP(w, r)
+		// Retry ONLY when the primary target is an owner IP (not already the fallback) AND
+		// nothing has been written to the client yet (a dial error, pre-response). Streaming
+		// bodies (SSE/WS) that fail mid-stream can't be safely retried — but a DIAL failure
+		// happens before any bytes flow, so the guard below (headerWritten) makes it safe.
+		canRetry := target.Host != fallback.Host
+		serveVia(w, r, target, fallback, canRetry)
 	})
+}
+
+// serveVia reverse-proxies r to `target`; on a connect/dial failure (upstream unreachable,
+// pre-response) it retries once against `fallback` when `retry` is set. A failure AFTER the
+// response has begun (headers written / stream started) is surfaced as-is — not retryable.
+func serveVia(w http.ResponseWriter, r *http.Request, target, fallback *url.URL, retry bool) {
+	tw := &trackingWriter{ResponseWriter: w}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1 // flush immediately: required for SSE (don't buffer the stream).
+	proxy.ErrorHandler = func(ww http.ResponseWriter, rr *http.Request, e error) {
+		if retry && !tw.wrote {
+			// Owner IP unreachable before any bytes flowed (e.g. pod replaced) → serve via
+			// the fallback Service (any ready pod). Recurse with retry=false so a fallback
+			// failure returns a real 502.
+			logf("proxy to %s failed pre-response (%v) — retrying via fallback %s", target.Host, e, fallback.Host)
+			serveVia(ww, rr, fallback, fallback, false)
+			return
+		}
+		logf("proxy to %s failed: %v", target.Host, e)
+		http.Error(ww, "upstream unavailable", http.StatusBadGateway)
+	}
+	proxy.ServeHTTP(tw, r)
+}
+
+// trackingWriter records whether ANY response byte/header has been written, so the dial-fail
+// retry only fires while the client response is still untouched (a retry after streaming
+// started would duplicate/corrupt the body).
+type trackingWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *trackingWriter) WriteHeader(code int) { t.wrote = true; t.ResponseWriter.WriteHeader(code) }
+func (t *trackingWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+// Flush lets SSE streaming pass through the tracking wrapper (httputil flushes per write).
+func (t *trackingWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack lets WebSocket upgrades (the /c/<id>/<svc> web-service proxy) pass through: a hijack
+// takes over the conn, so mark the response as "written" (no retry possible after this).
+func (t *trackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := t.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	t.wrote = true
+	return h.Hijack()
 }
 
 // resolveTarget decides the upstream URL for a request: the owner pod's IP when the
