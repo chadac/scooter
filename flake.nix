@@ -264,6 +264,11 @@
             sandboxImage = "agent-sandbox-os:latest";
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             fakeAgent = true; # dummy agent for cluster e2e (no model needed)
+            # The cross-pod history mirror is a ReadWriteMany PVC; k3d's default
+            # local-path provisioner has NO RWX, so it never binds and agent-host stays
+            # Pending. A single-node cluster e2e doesn't need cross-pod revival anyway —
+            # disable the mirror so agent-host schedules on its emptyDir `state` alone.
+            conversationController.historyMirror.enable = false;
             broker = {
               enable = true;
               image = "agent-broker:latest";

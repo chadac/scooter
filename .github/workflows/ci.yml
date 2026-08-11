@@ -421,7 +421,13 @@ jobs:
         if: failure()
         run: |
           nix shell nixpkgs#kubectl -c bash -c '
-            kubectl -n agent-sandbox get pods,deploy,svc,conversations -o wide || true
+            kubectl -n agent-sandbox get pods,deploy,svc,pvc,conversations -o wide || true
+            # describe the not-ready workloads so a Pending pod shows its scheduling reason
+            # (Insufficient cpu/mem, an unbindable PVC, a taint, …) — a bare `get` hides it.
+            kubectl -n agent-sandbox describe deploy/agent-host || true
+            kubectl -n agent-sandbox describe pods -l app=agent-host || true
+            kubectl -n agent-sandbox get events --sort-by=.lastTimestamp | tail -40 || true
+            kubectl -n agent-sandbox logs -l app=agent-host --tail=50 || true
             kubectl -n agent-sandbox logs -l app=conversation-controller --tail=50 || true
             kubectl -n agent-sandbox logs -l app=conversation-router --tail=50 || true
           '
