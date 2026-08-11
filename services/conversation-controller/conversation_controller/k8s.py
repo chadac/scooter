@@ -25,7 +25,11 @@ AGENT_HOST_LABEL = "app=agent-host"
 # agent-host container port + how long to wait on a revive-push before giving up (the push
 # is a best-effort pre-warm — the host also revives lazily on the first forwarded request,
 # so we must not let a slow/hung host stall the reconcile loop).
-AGENT_HOST_PORT = int(os.environ.get("AGENT_HOST_PORT", "8080"))
+#
+# NOTE: do NOT name this env AGENT_HOST_PORT — Kubernetes auto-injects a service-link env
+# `AGENT_HOST_PORT=tcp://<clusterIP>:8080` for the `agent-host` Service, which would shadow a
+# numeric override and crash int(). Use a distinct name.
+AGENT_HOST_PORT = int(os.environ.get("REVIVE_TARGET_PORT", "8080"))
 REVIVE_TIMEOUT_SECONDS = float(os.environ.get("REVIVE_PUSH_TIMEOUT_SECONDS", "3"))
 
 _core: client.CoreV1Api | None = None
