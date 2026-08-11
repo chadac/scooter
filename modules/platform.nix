@@ -607,13 +607,14 @@ in
               verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
             }
             execRule
-          ] ++ lib.optional cfg.conversationController.enable {
-            # Multi-replica FENCING: the agent-host WATCHES Conversations (read-only) so a
-            # reassigned pod stops appending (ownershipGuard). Only when the controller is on.
-            apiGroups = [ "scooter.chadac.dev" ];
-            resources = [ "conversations" ];
-            verbs = [ "get" "list" "watch" ];
-          };
+            {
+              # Multi-replica FENCING: the agent-host WATCHES Conversations (read-only) so
+              # a reassigned pod stops appending (ownershipGuard).
+              apiGroups = [ "scooter.chadac.dev" ];
+              resources = [ "conversations" ];
+              verbs = [ "get" "list" "watch" ];
+            }
+          ];
       };
 
       # TokenReview is cluster-scoped → ClusterRole + ClusterRoleBinding. The
@@ -660,9 +661,16 @@ in
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
           serviceName = "agent-host-headless";
-          replicas = cfg.replicas;
+          replicas = cfg.conversationController.agentHostReplicas;
           updateStrategy.type = "RollingUpdate";
           selector.matchLabels.app = "agent-host";
+          # Each pod gets its OWN state PVC (a shared RWO PVC can't Multi-Attach to N
+          # pods). History survives across pods via the NFS mirror (#249) when
+          # MIRROR_STATE_PATH is set to shared storage.
+          volumeClaimTemplates = [{
+            metadata.name = "state";
+            spec = { accessModes = [ "ReadWriteOnce" ]; resources.requests.storage = "5Gi"; };
+          }];
           template = {
             metadata.labels.app = "agent-host";
             spec = {
@@ -902,9 +910,9 @@ in
                 lifecycle.preStop.exec.command = [ "sleep" "5" ];
               };
               terminationGracePeriodSeconds = 20;
-              # Durable event-log PVC + ephemeral scratch/tmp emptyDirs.
+              # `state` comes from the StatefulSet's per-pod volumeClaimTemplate (above),
+              # so it's NOT listed here. scratch/tmp are ephemeral emptyDirs.
               volumes = [
-                { name = "state"; persistentVolumeClaim.claimName = "agent-host-state"; }
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
               ] ++ lib.optional (cfg.agent.skills != { })
@@ -918,13 +926,6 @@ in
         };
       };
 
-      persistentVolumeClaims.agent-host-state = {
-        metadata = { name = "agent-host-state"; namespace = cfg.namespace; };
-        spec = {
-          accessModes = [ "ReadWriteOnce" ];
-          resources.requests.storage = "5Gi";
-        };
-      };
 
       # Agent skills (filename -> markdown), injected per conversation as
       # .goosehints. Edit this (the option) to add/change a skill — no image
@@ -976,7 +977,7 @@ in
       services.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
-          selector.app = if cfg.conversationController.enable then "conversation-router" else "agent-host";
+          selector.app = "conversation-router";  # the front door always fronts the router
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };
       };

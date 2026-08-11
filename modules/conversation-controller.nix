@@ -1,13 +1,10 @@
-# The Conversation CRD + its controller (Deployment + SA + RBAC).
+# The Conversation CRD + its controller + router (Deployment + SA + RBAC).
 #
 # The CRD (scooter.chadac.dev/v1alpha1 Conversation) records which agent-host pod owns
-# each conversation (status.hostPod) — the assignment table for multi-replica agent-host
-# (stage 3; see todo/docs/CONVERSATION_CRD_PR1.md). The controller is a leader-elected
-# reconcile loop that assigns/reassigns hostPod. NO request routing yet — this only
-# records ownership.
-#
-# Flag-gated (agentSandbox.conversationController.enable, default false): off => nothing
-# here renders and agent-host is unaffected (single-replica, today's behavior).
+# each conversation (status.hostPod) — the assignment table for multi-replica agent-host.
+# The controller is a leader-elected reconcile loop that assigns/reassigns hostPod; the
+# router reverse-proxies each request to the owning pod. ALWAYS ON — agent-host is a
+# multi-replica StatefulSet fronted by the router (no single-replica path).
 
 { config, lib, ... }:
 
@@ -17,7 +14,6 @@ let
 in
 {
   options.agentSandbox.conversationController = with lib; {
-    enable = mkEnableOption "the Conversation CRD + assignment controller (multi-replica agent-host, stage 3)";
     image = mkOption {
       type = types.str;
       default = "${cfg.registryPrefix}conversation-controller:latest";
@@ -52,7 +48,7 @@ in
     };
   };
 
-  config = lib.mkIf ccfg.enable {
+  config = {
     kubernetes.resources = {
       # --- the CRD ---------------------------------------------------------
       customResourceDefinitions.conversations = {
