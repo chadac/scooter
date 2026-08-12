@@ -28,6 +28,16 @@ export interface ConversationSpec {
   sandboxRef?: string;
 }
 
+/** Conversation liveness, folded into the CR's `status.phase` so it's observable via
+ *  `kubectl get conversations`. The controller owns the ASSIGNMENT phases (Pending →
+ *  Assigned, Orphaned); agent-host owns the LIVENESS transition of an already-assigned
+ *  conversation (Assigned ⇄ Suspended) — it publishes Suspended when it idle-suspends the
+ *  sandbox and Assigned again on revive. `Assigned` doubles as "alive". These never race:
+ *  the controller only patches phase during (re)assignment (NoOp on a still-ready host), and
+ *  suspend drops the SANDBOX pod, not the agent-host owner pod — so assignment is unchanged.
+ *  See todo/docs/CONVERSATION_LIFECYCLE_CONTROLLER.md. */
+export type ConversationPhase = "Assigned" | "Suspended";
+
 export interface ConversationRegistry {
   /**
    * Ensure a `Conversation` CR exists for `id`. Idempotent (already-exists => no-op) and
@@ -35,11 +45,20 @@ export interface ConversationRegistry {
    * starts. Fire-and-forget from the caller's perspective; awaiting is optional.
    */
   register(id: string, spec: ConversationSpec): Promise<void>;
+  /**
+   * Publish a liveness transition to `status.phase` (Assigned ⇄ Suspended). Called by
+   * agent-host when it suspends/revives a conversation it OWNS. Idempotent, never throws
+   * (a k8s failure is logged, not propagated), fire-and-forget. A no-op single-replica.
+   */
+  setPhase(id: string, phase: ConversationPhase): Promise<void>;
 }
 
 /** The single-replica / test default: registering a conversation does nothing. */
 export const noopRegistry: ConversationRegistry = {
   async register() {
+    /* no CR in single-replica mode */
+  },
+  async setPhase() {
     /* no CR in single-replica mode */
   },
 };

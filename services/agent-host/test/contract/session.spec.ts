@@ -104,6 +104,36 @@ describe("SessionManager", () => {
     expect(sessions.get(conv.id)?.status).toBe("suspended");
   });
 
+  it("suspend() publishes phase=Suspended to the CR when we OWN the conversation", async () => {
+    const setPhase = vi.fn(async () => {});
+    const registry = { register: vi.fn(async () => {}), setPhase };
+    // A guard that always allows (owner). suspend → setPhase("Suspended"); revive → "Assigned".
+    const guard = { observe: () => {}, canWrite: () => true };
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store: inMemoryStore(),
+      conversationRegistry: registry, ownershipGuard: guard as never,
+    });
+    const conv = await sessions.start("thread-1");
+    await sessions.suspend(conv.id);
+    await sessions.revive(conv.id);
+    // Both liveness transitions were published.
+    expect(setPhase).toHaveBeenCalledWith(conv.id, "Suspended");
+    expect(setPhase).toHaveBeenCalledWith(conv.id, "Assigned");
+  });
+
+  it("suspend() does NOT publish phase when we are NOT the owner (fenced)", async () => {
+    const setPhase = vi.fn(async () => {});
+    const registry = { register: vi.fn(async () => {}), setPhase };
+    const guard = { observe: () => {}, canWrite: () => false }; // not owner
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store: inMemoryStore(),
+      conversationRegistry: registry, ownershipGuard: guard as never,
+    });
+    const conv = await sessions.start("thread-1");
+    await sessions.suspend(conv.id);
+    expect(setPhase).not.toHaveBeenCalled();
+  });
+
   it("revive() resumes the same sandbox and replays the event log", async () => {
     const provisioner = fakeProvisioner();
     const store = inMemoryStore();

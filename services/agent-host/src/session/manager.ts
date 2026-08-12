@@ -721,6 +721,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           console.error(`[manager] onRevived hook failed for ${id}:`, err);
         }
       }
+      // Back to alive: publish phase=Assigned so a suspended→resumed conversation reflects
+      // in `kubectl get conversations`. Owner-fenced, fire-and-forget (see suspend()).
+      if (ownershipGuard.canWrite(id)) void conversationRegistry.setPhase(id, "Assigned");
       return toConversation(entry);
     },
 
@@ -809,6 +812,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await provisioner.suspend(entry.sandbox);
       entry.bridge = undefined;
       entry.status = "suspended";
+      // Publish liveness to the CR (kubectl-observable) — only when we OWN the conversation
+      // (a non-owner must not stomp phase). Fire-and-forget; a failed publish just lags the
+      // view. See conversationRegistry.setPhase + ROLLOUT/lifecycle docs.
+      if (ownershipGuard.canWrite(id)) void conversationRegistry.setPhase(id, "Suspended");
     },
 
     async end(id) {
