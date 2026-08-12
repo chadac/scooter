@@ -733,6 +733,14 @@ in
                   # the stable ordinal name (agent-host-<n>).
                   { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # Warm PVC pool: when the warm-store controller is on, the provisioner
+                  # claims a pre-warmed overlay upper (matching the sandbox image tag) for a
+                  # new conversation instead of a fresh empty one. Gated on the SAME flag that
+                  # deploys the controller, so the claim path is only active when a pool exists.
+                ]
+                ++ lib.optional cfg.warmStore.enable
+                  { name = "WARM_STORE_POOL"; value = "1"; }
+                ++ [
                   # imagePullPolicy for the per-conversation sandbox pods — mirror the
                   # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always
                   # for a registry). Without this the provisioner defaults to "Always",
