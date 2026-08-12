@@ -1,0 +1,22 @@
+[project]
+name = "warm-store-controller"
+version = "0.0.0"
+license = "MIT"
+description = "Scooter warm /nix/store PVC pool controller — warms, GCs, and returns overlay-upper PVCs keyed by sandbox image tag, alongside the sandbox lifecycle"
+requires-python = ">=3.11"
+dependencies = [
+    "kubernetes",
+]
+
+[project.scripts]
+warm-store-controller = "warm_store_controller.app:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["warm_store_controller"]
+
+[dependency-groups]
+dev = ["pytest"]
