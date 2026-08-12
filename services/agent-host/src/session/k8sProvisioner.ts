@@ -193,14 +193,21 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   };
 
   // Claim a WARM overlay-upper PVC from the pool for this conversation, or null if none
-  // is ready for the current image tag. Optimistic label CAS: list `ready` PVCs matching
-  // the sandbox image tag, then try to flip one to `claimed` with a resourceVersion
-  // precondition; on 409 (another replica won the race) try the next candidate. Returns the
-  // claimed PVC name, or null → the caller falls back to a fresh volumeClaimTemplate (a cold
-  // or contended pool NEVER blocks conversation creation). See WARM_STORE_PVC_MANAGER.md.
+  // is ready for the current image tag. Optimistic label CAS via a JSON-PATCH `test` op:
+  // list `ready` PVCs matching the sandbox image tag, then atomically `test` pool-state ==
+  // ready + flip it to `claimed`. If another replica already flipped it, the `test` op
+  // fails (422) → try the next candidate. Returns the claimed PVC name, or null → the caller
+  // falls back to a fresh volumeClaimTemplate (a cold or contended pool NEVER blocks
+  // conversation creation). See WARM_STORE_PVC_MANAGER.md.
+  //
+  // NOTE: this is a JSON-patch test-and-set, NOT a resourceVersion-in-body merge patch —
+  // k8s only honors resourceVersion as an optimistic-lock precondition on PUT (update), not
+  // PATCH (a merge patch carrying resourceVersion 400s). The `test` op IS the CAS for PATCH.
   const claimWarmStorePvc = async (sandboxNameForConv: string): Promise<string | null> => {
     const tag = imageTagOf(opts.sandboxImage);
     if (!tag) return null;
+    // Label keys are JSON-pointer components — '/' is escaped as '~1'.
+    const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
     try {
       const ready = await core.listNamespacedPersistentVolumeClaim({
         namespace: ns,
@@ -208,29 +215,28 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       });
       for (const pvc of ready.items ?? []) {
         const name = pvc.metadata?.name;
-        const rv = pvc.metadata?.resourceVersion;
-        if (!name || !rv) continue;
+        if (!name) continue;
         try {
-          // CAS: replace-with-precondition via a strategic-merge label patch guarded by
-          // resourceVersion, so exactly one claimer wins a concurrent race.
-          await core.patchNamespacedPersistentVolumeClaim({
-            name,
-            namespace: ns,
-            body: {
-              metadata: {
-                resourceVersion: rv, // precondition — a stale rv → 409
-                labels: {
-                  [POOL_STATE_LABEL]: "claimed",
-                  [CLAIMED_BY_LABEL]: sandboxNameForConv,
-                  [LAST_USED_LABEL]: new Date().toISOString(),
-                },
-              },
+          // CAS: test pool-state==ready (fails 422 if another claimer already flipped it),
+          // then replace it + stamp claimed-by + last-used. Atomic on the apiserver.
+          await core.patchNamespacedPersistentVolumeClaim(
+            {
+              name,
+              namespace: ns,
+              body: [
+                { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
+                { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
+                { op: "add", path: ptr(CLAIMED_BY_LABEL), value: sandboxNameForConv },
+                { op: "add", path: ptr(LAST_USED_LABEL), value: new Date().toISOString() },
+              ] as object,
             },
-          });
+            setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
+          );
           return name; // we won the claim
         } catch (e: unknown) {
           const code = (e as { code?: number })?.code;
-          if (code === 409) continue; // lost the race / stale rv — try the next ready PVC
+          // 422 (test op failed) / 409 (conflict) = another claimer won — try the next.
+          if (code === 422 || code === 409) continue;
           throw e;
         }
       }

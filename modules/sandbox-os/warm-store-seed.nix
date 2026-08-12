@@ -35,7 +35,10 @@ in
 
   # On by default whenever the overlay store is on (they're inert without a warm request /
   # only matter to the pool controller). Keep an explicit toggle for nixosTests.
-  config = lib.mkIf (cfg.enable or config.programs.overlayStore.enable) {
+  # NOTE: `||` (boolean or), NOT `cfg.enable or …` — the latter is Nix's attr-default
+  # keyword (`attr or fallback`), which returns cfg.enable (false) verbatim and never
+  # consults the fallback. That bug left the units out of the image entirely.
+  config = lib.mkIf (cfg.enable || config.programs.overlayStore.enable) {
     # --- clean-shutdown marker (every graceful stop) -----------------------
     systemd.services.scooter-store-clean-marker = {
       description = "Write the overlay clean-shutdown marker on graceful stop (warm-pool return signal)";
@@ -81,15 +84,21 @@ in
           set -eu
           expr=$(cat ${request})
           echo "warm-store: seeding golden expr: $expr"
-          # Build each installable through the overlay store → lands in upper/, registered
-          # in state/. `nix build --no-link` is enough to realise + register the closure;
-          # the pool payoff is the closure being PRESENT + valid, not on any profile.
-          # shellcheck disable=SC2086
-          nix build --no-link --print-build-logs $expr
+          # Build the golden expr through the overlay store → lands in upper/, registered in
+          # state/. `nix build --no-link` realises + registers the closure; the pool payoff is
+          # the closure being PRESENT + valid, not on any profile. `eval` so the request can be
+          # EITHER a space-separated list of flake installables (nixpkgs#awscli2 nixpkgs#nodejs)
+          # OR a quoted `--expr '<nix>'` form — both word-split correctly under eval.
+          eval "nix build --no-link --print-build-logs $expr"
           echo "warm-store: seed complete"
         '';
         # After a successful seed: stamp the clean marker (so the fresh PVC returns as a
-        # valid `ready` volume) and power off so the Job completes cleanly.
+        # valid `ready` volume), then bring the system DOWN with exit code 0 so the warm
+        # Job's pod terminates SUCCESSFULLY. `systemctl exit 0` (container-aware) makes PID 1
+        # exit 0 — a plain `poweroff` exits with systemd's shutdown code, which k8s counts as
+        # a pod FAILURE (BackoffLimitExceeded even though the warm succeeded). The graceful
+        # stop still runs scooter-store-clean-marker's ExecStop; we stamp here too as a
+        # belt-and-suspenders so the marker is present regardless of unit stop ordering.
         ExecStartPost = [
           (pkgs.writeShellScript "scooter-warm-seed-finish" ''
             set -eu
@@ -97,7 +106,7 @@ in
             printf '{"tag":"%s","warmedAt":"%s"}\n' "$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${marker} || true
             rm -f ${request} || true
           '')
-          "${pkgs.systemd}/bin/systemctl poweroff --no-block"
+          "${pkgs.systemd}/bin/systemctl exit 0"
         ];
       };
     };
