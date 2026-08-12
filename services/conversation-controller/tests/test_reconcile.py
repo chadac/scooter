@@ -6,9 +6,39 @@ from conversation_controller.reconcile import (
     NoOp,
     Assign,
     LeavePending,
+    SandboxRef,
     pick_host,
     reconcile,
+    find_orphans,
 )
+
+
+# --- find_orphans (the reaper decision) ------------------------------------
+
+def test_orphan_is_unreferenced_and_past_grace():
+    sbs = [SandboxRef("conv-a", age_seconds=1000), SandboxRef("conv-b", age_seconds=1000)]
+    # conv-a is referenced (kept); conv-b is not (reaped).
+    assert find_orphans(sbs, referenced={"conv-a"}, grace_seconds=600) == ["conv-b"]
+
+
+def test_young_unreferenced_sandbox_is_spared_by_grace():
+    # A just-created Sandbox whose Conversation CR isn't registered yet — spare it.
+    sbs = [SandboxRef("conv-new", age_seconds=30)]
+    assert find_orphans(sbs, referenced=set(), grace_seconds=600) == []
+
+
+def test_old_unreferenced_sandbox_at_grace_boundary_is_reaped():
+    sbs = [SandboxRef("conv-x", age_seconds=600)]  # exactly at the window
+    assert find_orphans(sbs, referenced=set(), grace_seconds=600) == ["conv-x"]
+
+
+def test_referenced_sandbox_never_reaped_regardless_of_age():
+    sbs = [SandboxRef("conv-a", age_seconds=999999)]
+    assert find_orphans(sbs, referenced={"conv-a"}, grace_seconds=600) == []
+
+
+def test_no_sandboxes_no_orphans():
+    assert find_orphans([], referenced=set(), grace_seconds=600) == []
 
 
 def conv(host=None, phase="Pending", gen=0) -> ConversationState:

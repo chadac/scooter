@@ -11,17 +11,45 @@ import urllib.error
 import urllib.request
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from kubernetes import client, config
 
-from .reconcile import Pod
+from .reconcile import Pod, SandboxRef
 
 logger = logging.getLogger("conversation-controller")
+
+
+def _parse_ts(ts: str) -> datetime:
+    """Parse a k8s RFC3339 creationTimestamp (…Z) to an aware UTC datetime."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _ignore_404(e: client.ApiException) -> None:
+    """A 404 means the object is already gone — the delete's goal. Re-raise anything else so
+    the reap retries (a swallowed 403/5xx would silently leak)."""
+    if e.status != 404:
+        raise e
 
 GROUP = "scooter.chadac.dev"
 VERSION = "v1alpha1"
 PLURAL = "conversations"
 AGENT_HOST_LABEL = "app=agent-host"
+
+# The upstream agent-sandbox Sandbox CR (what the reaper GCs).
+SANDBOX_GROUP = "agents.x-k8s.io"
+SANDBOX_VERSION = "v1beta1"
+SANDBOX_PLURAL = "sandboxes"
+
+# Per-conversation object names, derived from the Sandbox name `conv-<id>` — MUST match the
+# agent-host provisioner (saName/moduleCmName in k8sProvisioner.ts). The reaper deletes all
+# three because a Sandbox delete cascades its pod + vct PVCs but NOT the SA or module CM.
+def _sa_name(sandbox_name: str) -> str:
+    return "sandbox-" + sandbox_name.removeprefix("conv-")
+
+
+def _module_cm_name(sandbox_name: str) -> str:
+    return sandbox_name + "-module"
 
 # agent-host container port + how long to wait on a revive-push before giving up (the push
 # is a best-effort pre-warm — the host also revives lazily on the first forwarded request,
@@ -116,6 +144,43 @@ class ControllerK8s:
         custom.patch_namespaced_custom_object_status(
             GROUP, VERSION, self.namespace, PLURAL, name, {"status": status}
         )
+
+    # --- orphaned-Sandbox reaper -------------------------------------------
+    def list_sandboxes(self) -> list["SandboxRef"]:
+        """Every per-conversation Sandbox, as (name, age_seconds) for the reaper decision."""
+        _, custom, _ = _apis()
+        resp = custom.list_namespaced_custom_object(
+            SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL
+        )
+        out: list[SandboxRef] = []
+        now = datetime.now(timezone.utc)
+        for cr in resp.get("items", []):
+            name = cr["metadata"]["name"]
+            created = cr["metadata"].get("creationTimestamp")
+            age = (now - _parse_ts(created)).total_seconds() if created else 0.0
+            out.append(SandboxRef(name=name, age_seconds=age))
+        return out
+
+    def delete_sandbox_tree(self, sandbox_name: str) -> None:
+        """Destroy the whole per-conversation tree for an orphaned Sandbox: the Sandbox CR
+        (cascades its pod + vct PVCs), plus the ServiceAccount + module ConfigMap (which the
+        provisioner creates outside the Sandbox's ownership → they don't cascade). 404-tolerant
+        per object (already-gone is the goal); a non-404 error propagates so the reap retries."""
+        core, custom, _ = _apis()
+        try:
+            custom.delete_namespaced_custom_object(
+                SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL, sandbox_name
+            )
+        except client.ApiException as e:
+            _ignore_404(e)
+        try:
+            core.delete_namespaced_service_account(_sa_name(sandbox_name), self.namespace)
+        except client.ApiException as e:
+            _ignore_404(e)
+        try:
+            core.delete_namespaced_config_map(_module_cm_name(sandbox_name), self.namespace)
+        except client.ApiException as e:
+            _ignore_404(e)
 
 
 def _pod_ready(pod) -> bool:

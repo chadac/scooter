@@ -361,7 +361,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.del("/conversations/:id", async (ctx) => {
-    if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
+    // Hydrate-if-absent so a DELETE routed to a pod that doesn't hold the conversation in
+    // memory still destroys it, instead of 404ing and leaking the sandbox (multi-replica:
+    // the DELETE-404 leak — same class as the read-path 404). Mirrors the GET route.
+    let conv = sessions.get(ctx.params.id);
+    if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
+    if (!conv) return { status: 404, json: { error: "not found" } };
+    // STARRED = protected from deletion (accidental-delete guard). A star means "keep this";
+    // the caller must unstar first. 409 Conflict (the resource state forbids the delete).
+    if (conv.starred) return { status: 409, json: { error: "conversation is starred; unstar before deleting" } };
     await sessions.end(ctx.params.id);
     return { status: 204, json: null };
   });
@@ -409,6 +417,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.post("/conversations/:id/suspend", async (ctx) => {
+    // Hydrate-if-absent so suspend reaches the conversation regardless of which replica
+    // answers (same multi-replica 404 class as DELETE/read).
+    if (!sessions.get(ctx.params.id) && (await sessions.ensureReadable(ctx.params.id))) {
+      /* hydrated into memory */
+    }
     if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
     await sessions.suspend(ctx.params.id);
     return { json: view(sessions.get(ctx.params.id)!) };

@@ -1,17 +1,19 @@
 """Tier 1 — the reconcile LOOP against a fake k8s (in-memory CRs + pods). No cluster."""
 
-from conversation_controller.loop import reconcile_once
-from conversation_controller.reconcile import Pod
+from conversation_controller.loop import reconcile_once, reap_orphans
+from conversation_controller.reconcile import Pod, SandboxRef
 
 
 class FakeK8s:
     """In-memory Conversations + agent-host pods. patch_status merges into status."""
 
-    def __init__(self, pods, convs):
+    def __init__(self, pods, convs, sandboxes=None):
         self._pods = pods                       # list[Pod]
         self._convs = {c["metadata"]["name"]: c for c in convs}
+        self._sandboxes = {s.name: s for s in (sandboxes or [])}  # name -> SandboxRef
         self.patches = []                       # [(name, status)] for assertions
         self.revives = []                       # [(host_ip, conv_name, generation)] revive-pushes
+        self.deleted_trees = []                 # [sandbox_name] reaped
 
     def list_host_pods(self):
         return list(self._pods)
@@ -19,9 +21,21 @@ class FakeK8s:
     def list_conversations(self):
         return list(self._convs.values())
 
+    def list_sandboxes(self):
+        return list(self._sandboxes.values())
+
+    def delete_sandbox_tree(self, name):
+        self.deleted_trees.append(name)
+        self._sandboxes.pop(name, None)
+
     def patch_status(self, name, status):
         self.patches.append((name, status))
-        cur = self._convs[name].setdefault("status", {})
+        # Mirror the real status-subresource patch: a null/absent status materializes into
+        # an object (the apiserver creates status on first patch — it's never left null).
+        cur = self._convs[name].get("status")
+        if cur is None:
+            cur = {}
+            self._convs[name]["status"] = cur
         cur.update({k: v for k, v in status.items()})
 
     def notify_revive(self, host_ip, conv_name, generation):
@@ -32,14 +46,55 @@ class FakeK8s:
         return self._convs[name].get("status", {})
 
 
-def _cr(name, host=None, phase="Pending", gen=0, parent=None):
+def _cr(name, host=None, phase="Pending", gen=0, parent=None, sandbox_ref=None):
     st = {"phase": phase, "generation": gen}
     if host is not None:
         st["hostPod"] = host
     spec = {}
     if parent is not None:
         spec["parentId"] = parent
+    if sandbox_ref is not None:
+        spec["sandboxRef"] = sandbox_ref
     return {"metadata": {"name": name}, "spec": spec, "status": st}
+
+
+# --- the orphan reaper loop -------------------------------------------------
+
+def test_reap_deletes_unreferenced_sandbox_past_grace():
+    # conv-a is referenced by a Conversation; conv-orphan is not → reap conv-orphan only.
+    convs = [_cr("c1", sandbox_ref="conv-a")]
+    sbs = [SandboxRef("conv-a", age_seconds=1000), SandboxRef("conv-orphan", age_seconds=1000)]
+    k = FakeK8s([], convs, sandboxes=sbs)
+    reaped = reap_orphans(k, grace_seconds=600)
+    assert reaped == ["conv-orphan"]
+    assert k.deleted_trees == ["conv-orphan"]
+
+
+def test_reap_spares_young_orphan():
+    k = FakeK8s([], [], sandboxes=[SandboxRef("conv-new", age_seconds=10)])
+    assert reap_orphans(k, grace_seconds=600) == []
+    assert k.deleted_trees == []
+
+
+def test_reap_spares_referenced_sandbox():
+    convs = [_cr("c1", sandbox_ref="conv-a")]
+    k = FakeK8s([], convs, sandboxes=[SandboxRef("conv-a", age_seconds=99999)])
+    assert reap_orphans(k, grace_seconds=600) == []
+
+
+def test_reap_one_failure_does_not_abort_the_pass():
+    class Boom(FakeK8s):
+        def delete_sandbox_tree(self, name):
+            if name == "conv-bad":
+                raise RuntimeError("boom")
+            super().delete_sandbox_tree(name)
+
+    sbs = [SandboxRef("conv-bad", age_seconds=1000), SandboxRef("conv-good", age_seconds=1000)]
+    k = Boom([], [], sandboxes=sbs)
+    reaped = reap_orphans(k, grace_seconds=600)
+    # conv-bad raised; conv-good still reaped.
+    assert "conv-good" in k.deleted_trees
+    assert reaped == ["conv-good"]
 
 
 def test_pending_conversation_gets_a_host():
@@ -48,6 +103,26 @@ def test_pending_conversation_gets_a_host():
     assert k.status("c1")["hostPod"] == "a"
     assert k.status("c1")["phase"] == "Assigned"
     assert k.status("c1")["generation"] == 1
+
+
+def test_statusless_cr_unassignable_materializes_pending():
+    # REGRESSION (found live on odin): a brand-new CR with status: null that can't be
+    # assigned (no pod / all at cap) was left at status:null forever — _state defaults
+    # phase to "Pending", so the LeavePending branch thought it was ALREADY Pending and
+    # skipped the patch → empty phase in the UI. It must materialize {phase: Pending}.
+    cr = {"metadata": {"name": "cnew"}, "spec": {}, "status": None}  # status: null
+    k = FakeK8s([], [cr])  # no ready pods → unassignable
+    reconcile_once(k, cap=1)
+    assert k.status("cnew").get("phase") == "Pending", "status:null CR must get phase materialized"
+
+
+def test_already_pending_no_host_is_not_rechurned():
+    # The complement: a CR that ALREADY says {phase: Pending, hostPod: null} and still can't
+    # be assigned must NOT be re-patched every tick (avoid churn).
+    cr = _cr("cp", phase="Pending")  # has status.phase=Pending, no host
+    k = FakeK8s([], [cr])
+    reconcile_once(k, cap=1)
+    assert k.patches == [], "an already-materialized Pending must not be re-patched"
 
 
 def test_notify_revive_returns_immediately_even_if_the_http_hangs():

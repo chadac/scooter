@@ -30,6 +30,25 @@ in
       default = 100;
       description = "Max conversations assigned to one agent-host pod before it's considered full.";
     };
+    reapOrphans = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Reap orphaned Sandboxes — those with no owning Conversation CR — destroying the whole
+        per-conversation tree (Sandbox + its ServiceAccount + module ConfigMap). Fixes the leak
+        where a Sandbox whose Conversation is gone is never cleaned up. See
+        todo/docs/ORPHANED_SANDBOX_REAPER.md.
+      '';
+    };
+    orphanGraceSeconds = mkOption {
+      type = types.int;
+      default = 600;
+      description = ''
+        Only reap a Sandbox with no owning Conversation if it's older than this many seconds —
+        long enough that a normal create has registered its Conversation CR (the provisioner
+        creates the Sandbox a beat before the CR), so only genuine orphans are reaped.
+      '';
+    };
     agentHostReplicas = mkOption {
       type = types.int;
       default = 2;
@@ -172,6 +191,11 @@ in
           { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" "conversations/status" ]; verbs = [ "get" "list" "watch" "patch" "update" ]; }
           { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "get" "list" "watch" ]; }
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
+          # Orphaned-Sandbox reaper: list Sandboxes + DELETE the whole per-conversation tree
+          # (Sandbox CR cascades pod+PVCs; the SA + module CM are provisioner-created and must
+          # be deleted directly). See todo/docs/ORPHANED_SANDBOX_REAPER.md.
+          { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" ]; }
+          { apiGroups = [ "" ]; resources = [ "serviceaccounts" "configmaps" ]; verbs = [ "get" "list" "delete" ]; }
         ];
       };
       roleBindings.conversation-controller = {
@@ -200,6 +224,9 @@ in
                   { name = "CONVERSATION_POD_CAP"; value = toString ccfg.podCap; }
                   # Pod name → the leader-election Lease holder identity.
                   { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
+                  # Orphaned-Sandbox reaper (leader-only).
+                  { name = "REAP_ORPHANED_SANDBOXES"; value = if ccfg.reapOrphans then "1" else "0"; }
+                  { name = "ORPHAN_GRACE_SECONDS"; value = toString ccfg.orphanGraceSeconds; }
                 ];
                 resources = lib.mkDefault {
                   requests = { cpu = "25m"; memory = "64Mi"; };

@@ -10,7 +10,7 @@ import threading
 from .config import Config
 from .k8s import ControllerK8s
 from .leader import LeaderElector
-from .loop import reconcile_once
+from .loop import reconcile_once, reap_orphans
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("conversation-controller")
@@ -27,6 +27,13 @@ def run(cfg: Config, stop: threading.Event) -> None:
                 if not was_leader:
                     logger.info("became leader (%s) — reconciling", cfg.identity)
                 reconcile_once(k8s, cfg.pod_cap)
+                # Reap orphaned Sandboxes (no owning Conversation) — leader-only, same tick.
+                # A reaper failure must NOT abort assignment reconcile, so guard it separately.
+                if cfg.reap_orphans:
+                    try:
+                        reap_orphans(k8s, cfg.orphan_grace_seconds)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("orphan-reaper pass failed (will retry next tick)")
             elif was_leader:
                 logger.info("lost leadership — standing by")
             was_leader = leader
