@@ -333,6 +333,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // is on and one is ready for our image tag. null → a fresh volumeClaimTemplate below
       // (cold pool never blocks). The claimed-by label carries the Sandbox NAME (what the
       // controller matches on for return/leak).
+      console.log(
+        `[k8sProvisioner] warm-store gate for ${name}: overlayStore=${opts.overlayStore} warmStorePool=${opts.warmStorePool}`,
+      );
       const overlayClaimName =
         (opts.overlayStore ?? false) && (opts.warmStorePool ?? false)
           ? await claimWarmStorePvc(name)
