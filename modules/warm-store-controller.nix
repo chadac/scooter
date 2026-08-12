@@ -16,11 +16,6 @@
 let
   cfg = config.agentSandbox;
   wcfg = cfg.warmStore;
-
-  # The pool version KEY = the sandbox image's content tag (the part after the last ':').
-  # The controller keys/GCs PVCs by this; the provisioner claim hook must derive it the
-  # SAME way from the same cfg.sandboxImage so tags match exactly (the no-fixup invariant).
-  imageTag = lib.last (lib.splitString ":" cfg.sandboxImage);
 in
 {
   options.agentSandbox.warmStore = with lib; {
@@ -120,9 +115,10 @@ in
                 command = [ "warm-store-controller" ];
                 env = [
                   { name = "NAMESPACE"; value = cfg.namespace; }
-                  # The pool version key — the current sandbox image's content tag. The warm
-                  # Job boots the FULL image ref; the controller keys/GCs PVCs by the tag.
-                  { name = "SANDBOX_IMAGE_TAG"; value = imageTag; }
+                  # The pool version key is the sandbox image's TAG — the controller DERIVES it
+                  # from SANDBOX_IMAGE at runtime (imageTagOf), the same ref the provisioner
+                  # claims by, so they always agree even when a deploy rewrites …:latest →
+                  # …:git-<sha> (which a separately-computed SANDBOX_IMAGE_TAG would miss).
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   { name = "WARM_STORE_MIN_READY"; value = toString wcfg.minReady; }
                   { name = "WARM_STORE_MAX_TOTAL"; value = toString wcfg.maxTotal; }

@@ -43,12 +43,22 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Build a Config from environment variables (the in-cluster path)."""
+        sandbox_image = os.environ.get("SANDBOX_IMAGE", "")
+        # The pool version key is the sandbox image's TAG. DERIVE it from SANDBOX_IMAGE (the
+        # same ref the provisioner runs imageTagOf() on) so the controller and provisioner
+        # ALWAYS agree — even when the deploy rewrites the image ref (…:latest → …:git-<sha>)
+        # without touching a separately-computed tag env. SANDBOX_IMAGE_TAG is an explicit
+        # override only. (Fixes a deploy tag-mismatch: kubenix computed the tag from
+        # cfg.sandboxImage=…:latest, but the deploy sed rewrote the REF to …:git-<sha>, so
+        # the controller keyed the pool by "latest" while the provisioner claimed by the sha.)
+        from .k8s import _tag_of
+        current_image_tag = os.environ.get("SANDBOX_IMAGE_TAG", "") or _tag_of(sandbox_image)
         return cls(
             namespace=os.environ.get("NAMESPACE", "agent-sandbox"),
-            current_image_tag=os.environ.get("SANDBOX_IMAGE_TAG", ""),
+            current_image_tag=current_image_tag,
             min_ready=int(os.environ.get("WARM_STORE_MIN_READY", "1")),
             max_total=int(os.environ.get("WARM_STORE_MAX_TOTAL", "8")),
-            warm_job_image=os.environ.get("SANDBOX_IMAGE", ""),
+            warm_job_image=sandbox_image,
             warm_golden_expr=os.environ.get("WARM_STORE_GOLDEN_EXPR", ""),
             overlay_storage=os.environ.get("WARM_STORE_STORAGE", "20Gi"),
             reconcile_interval=float(os.environ.get("RECONCILE_INTERVAL_SECONDS", "10")),
