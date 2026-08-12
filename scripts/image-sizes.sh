@@ -25,7 +25,6 @@ set -euo pipefail
 # conversion — kept as a recognized value so an explicit entry wouldn't error.)
 declare -A KIND=(
   [sandbox-os-image]=closure
-  [sandbox-os-overlay-image]=closure
   [agent-host-image]=closure
   [broker-image]=closure
   [webhooks-image]=closure
@@ -36,7 +35,7 @@ declare -A KIND=(
 if [ "$#" -gt 0 ]; then
   IMAGES=("$@")
 else
-  IMAGES=(sandbox-os-image sandbox-os-overlay-image agent-host-image broker-image webhooks-image ui-image)
+  IMAGES=(sandbox-os-image agent-host-image broker-image webhooks-image ui-image)
 fi
 
 measure_one() {

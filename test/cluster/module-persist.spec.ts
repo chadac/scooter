@@ -28,7 +28,7 @@ const maybe = clusterTestsEnabled() ? describe : describe.skip;
 const NS = "agent-sandbox-modpersist-test";
 // The re-converge needs the writable overlay upper (in-pod nix build), so use the
 // overlay image, and the provisioner must enable the overlay + systemd container.
-const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os-overlay:latest";
+const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os:latest";
 const id = "modpersist1";
 const SELECTOR = `agents.x-k8s.io/sandbox-name=conv-${id}`;
 

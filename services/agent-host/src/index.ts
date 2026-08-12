@@ -385,10 +385,13 @@ export async function main(
         // /kubepods.slice tree → node instability / host session logout). Unset = the
         // cluster default runtime.
         sandboxRuntimeClass: process.env.SANDBOX_RUNTIME_CLASS || undefined,
-        // When the sandbox image has the local-overlay Nix store enabled
-        // (agent-sandbox-os-overlay), mount a disk-backed PVC upper at
-        // /nix/.scooter-rw so runtime nix builds (re-converge) can write + persist.
-        overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "") === "1",
+        // The sandbox image ALWAYS has the local-overlay Nix store on, so ALWAYS mount a
+        // disk-backed PVC upper at /nix/.scooter-rw — the overlay's writable layer, holding
+        // runtime nix builds (tool installs, re-converge) + persisting them across
+        // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
+        // upper — the overlay still works, writes just don't persist). The warm PVC pool
+        // will later supply a pre-warmed volume here by claimName.
+        overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter

@@ -49,10 +49,10 @@ export interface K8sProvisionerOptions {
   /** Workspace PVC size, e.g. "10Gi". */
   workspaceStorage?: string;
   /** Mount a writable PVC upper for the local-overlay Nix store (the agent's
-   *  runtime re-converge + in-pod builds land here). Set when using the
-   *  overlay-store-enabled image (agent-sandbox-os-overlay). The PVC persists
-   *  runtime builds across suspend/resume; it MUST be disk-backed (a PVC), never
-   *  tmpfs — a RAM upper charges every runtime closure to pod memory. */
+   *  runtime re-converge + in-pod builds land here). The sandbox image always has the
+   *  overlay store on, so this defaults ON — the PVC persists runtime builds across
+   *  suspend/resume; it MUST be disk-backed (a PVC), never tmpfs (a RAM upper charges
+   *  every runtime closure to pod memory). Off ⇒ an ephemeral emptyDir upper. */
   overlayStore?: boolean;
   /** Overlay-store upper PVC size, e.g. "20Gi" (module rebuild closures are
    *  hundreds of MB). Only used when overlayStore is true. */
