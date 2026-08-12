@@ -113,3 +113,40 @@ def reconcile(
     # Bump the fence generation on every (re)assignment so a stale prior owner can be
     # detected later (routing PR read-checks it before appending).
     return Assign(host_pod=host, generation=conv.generation + 1, host_ip=ip_of.get(host))
+
+
+# --- orphaned-Sandbox reaper (pure decision) -------------------------------
+# A Sandbox with no owning Conversation leaks forever: the per-pod agent-host retention
+# sweep only sees in-memory conversations, so a Sandbox whose Conversation CR is gone from
+# every pod's memory (deleted CR, lost state across redeploy/migration, crash between
+# provisioner-create and CR-register) is never reaped. The controller — where the CR is
+# authoritative — reconciles Sandboxes against Conversations and GCs the difference.
+# See todo/docs/ORPHANED_SANDBOX_REAPER.md.
+
+@dataclass(frozen=True)
+class SandboxRef:
+    """The bits of a Sandbox CR the reaper decision depends on."""
+
+    name: str            # metadata.name (e.g. conv-<id>)
+    age_seconds: float   # now - metadata.creationTimestamp
+
+
+def find_orphans(
+    sandboxes: list[SandboxRef],
+    referenced: set[str],
+    grace_seconds: float,
+) -> list[str]:
+    """Names of Sandboxes to reap: those NOT referenced by any Conversation (via
+    spec.sandboxRef) AND older than `grace_seconds`. The grace window spares a just-created
+    Sandbox whose Conversation CR hasn't been registered yet (the provisioner creates the
+    Sandbox a beat before the CR) — only genuine orphans are reaped. Pure + order-stable.
+
+    `referenced` is the set of sandbox NAMES any Conversation points at (its spec.sandboxRef,
+    across ALL conversations incl. subagents — a subagent shares its parent's sandbox, and
+    the parent conversation references it, so co-located pods are protected as long as the
+    parent conversation exists)."""
+    return [
+        sb.name
+        for sb in sandboxes
+        if sb.name not in referenced and sb.age_seconds >= grace_seconds
+    ]

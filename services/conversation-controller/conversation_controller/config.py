@@ -29,6 +29,11 @@ class Config:
     lease_seconds: int = 15
     lease_name: str = "conversation-controller-leader"
     identity: str = "unknown"
+    # Orphaned-Sandbox reaper: destroy Sandboxes with no owning Conversation, older than the
+    # grace window (spares a just-created Sandbox whose CR isn't registered yet). On by
+    # default; grace defaults to 10 min. See todo/docs/ORPHANED_SANDBOX_REAPER.md.
+    reap_orphans: bool = True
+    orphan_grace_seconds: float = 600.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -41,4 +46,6 @@ class Config:
             lease_name=os.environ.get("LEASE_NAME", "conversation-controller-leader"),
             # The downward-API pod name in-cluster; HOSTNAME is the container fallback.
             identity=os.environ.get("POD_NAME") or os.environ.get("HOSTNAME", "unknown"),
+            reap_orphans=os.environ.get("REAP_ORPHANED_SANDBOXES", "1") != "0",
+            orphan_grace_seconds=float(os.environ.get("ORPHAN_GRACE_SECONDS", "600")),
         )

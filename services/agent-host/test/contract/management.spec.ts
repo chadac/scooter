@@ -1148,4 +1148,57 @@ describe("management API", () => {
       expect(nope.status).toBe(404);
     });
   });
+
+  describe("DELETE / suspend cross-replica + starred guard", () => {
+    // A DELETE routed to a pod that doesn't hold the conversation in memory must HYDRATE it
+    // (ensureReadable) before deciding — else it 404s and leaks the sandbox (the multi-replica
+    // DELETE-404 leak). And a STARRED conversation must be protected from deletion.
+    const mkApi = (over: Partial<Conversation>, opts: { inMemory?: boolean } = {}) => {
+      const c = conv({ id: "cx", threadId: "cx", ...over });
+      const durable = new Map<string, Conversation>([["cx", c]]); // "exists" (hydratable)
+      const memory = new Map<string, Conversation>();             // in THIS pod's memory
+      if (opts.inMemory) memory.set("cx", c);
+      const sessions = {
+        ...fakeSessions(),
+        get: (id: string) => memory.get(id),
+        // Faithful ensureReadable: hydrates a durable conversation INTO memory so the
+        // subsequent get() succeeds (the real behavior the routes rely on). Returns whether
+        // it now exists in memory.
+        ensureReadable: vi.fn(async (id: string) => {
+          if (durable.has(id)) memory.set(id, durable.get(id)!);
+          return memory.has(id);
+        }),
+        end: vi.fn(async () => {}),
+        suspend: vi.fn(async () => {}),
+      } as unknown as SessionManager;
+      return { api: createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} }), sessions };
+    };
+
+    it("DELETE hydrates an absent conversation and destroys it (no 404 leak)", async () => {
+      const { api, sessions } = mkApi({ starred: false }); // not in memory, but hydratable
+      const r = await call(api, "DELETE", "/conversations/cx");
+      expect(r.status).toBe(204);
+      expect(sessions.end).toHaveBeenCalledWith("cx");
+    });
+
+    it("DELETE refuses a STARRED conversation with 409 (accidental-delete guard)", async () => {
+      const { api, sessions } = mkApi({ starred: true }, { inMemory: true });
+      const r = await call(api, "DELETE", "/conversations/cx");
+      expect(r.status).toBe(409);
+      expect(sessions.end).not.toHaveBeenCalled();
+    });
+
+    it("DELETE still 404s when the conversation truly doesn't exist anywhere", async () => {
+      const { api } = mkApi({}, {}); // store has cx, but ask for a different id
+      const r = await call(api, "DELETE", "/conversations/nope");
+      expect(r.status).toBe(404);
+    });
+
+    it("suspend hydrates an absent conversation instead of 404ing", async () => {
+      const { api, sessions } = mkApi({});
+      const r = await call(api, "POST", "/conversations/cx/suspend");
+      expect(sessions.suspend).toHaveBeenCalledWith("cx");
+      expect(r.status).not.toBe(404);
+    });
+  });
 });

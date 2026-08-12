@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from .reconcile import ConversationState, Assign, NoOp, LeavePending, reconcile
+from .reconcile import ConversationState, Assign, NoOp, LeavePending, reconcile, find_orphans
 
 logger = logging.getLogger("conversation-controller")
 
@@ -97,3 +97,29 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
                 logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
     return results
+
+
+def reap_orphans(k8s, grace_seconds: float) -> list[str]:
+    """One reaper pass: destroy Sandboxes with no owning Conversation, older than the grace
+    window. Reaping deletes the whole per-conversation tree (Sandbox + its ServiceAccount +
+    module ConfigMap) — the Sandbox delete cascades its pod + volumeClaimTemplate PVCs, but
+    the SA + module CM are provisioner-created (not Sandbox-owned) so they DON'T cascade and
+    must be deleted too. Leader-gated by the caller. Returns the reaped sandbox names.
+
+    DESTRUCTIVE — logs every reap. Best-effort per sandbox: a failed delete is logged and the
+    pass continues (retries next tick). See todo/docs/ORPHANED_SANDBOX_REAPER.md."""
+    referenced: set[str] = {
+        ref
+        for cr in k8s.list_conversations()
+        if (ref := (cr.get("spec") or {}).get("sandboxRef"))
+    }
+    orphans = find_orphans(k8s.list_sandboxes(), referenced, grace_seconds)
+    reaped: list[str] = []
+    for name in orphans:
+        try:
+            k8s.delete_sandbox_tree(name)
+            reaped.append(name)
+            logger.info("reaped orphaned sandbox %s (no owning Conversation)", name)
+        except Exception:  # noqa: BLE001 — one failed reap must not abort the pass
+            logger.exception("reap of orphaned sandbox %s failed (will retry next pass)", name)
+    return reaped
