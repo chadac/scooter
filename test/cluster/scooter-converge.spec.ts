@@ -30,7 +30,7 @@ import { withCluster, clusterTestsEnabled, type Cluster } from "../support/clust
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
 const NS = "agent-sandbox-converge-test";
-const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os-overlay:latest";
+const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os:latest";
 const POD = "converge-boot";
 const SELECTOR = "app=converge-boot";
 const UPPER = "/nix/.scooter-rw";

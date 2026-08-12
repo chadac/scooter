@@ -112,7 +112,9 @@ class BrokerSettings(BaseSettings):
     sandbox_control_service_accounts: str = ""
     sandbox_image: str = "agent-sandbox-os:latest"
     sandbox_workspace_storage: str = "10Gi"
-    sandbox_overlay_store: bool = False
+    # The sandbox image always has the writable local-overlay Nix store on, so always mount
+    # the .scooter-rw upper (default True). See the agent-host provisioner + pkgs/sandbox-os.
+    sandbox_overlay_store: bool = True
     sandbox_overlay_storage: str = "20Gi"
     sandbox_systemd_image: bool = True
     # Deployment default size (friendly {requests,limits} JSON); empty -> platform default.

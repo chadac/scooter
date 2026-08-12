@@ -54,8 +54,8 @@ jobs:
           - { image: agent-host-claude, attr: agent-host-image-claude, unfree: true }
           # sandbox-os is nix2container too now (initializeNixDatabase bakes the
           # read-only store's Nix DB + .links) — no docker-archive tarball case.
+          # One image — the writable overlay store is always on.
           - { image: agent-sandbox-os, attr: sandbox-os-image }
-          - { image: agent-sandbox-os-overlay, attr: sandbox-os-overlay-image }
     steps:
       - uses: actions/checkout@v5
 

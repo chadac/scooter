@@ -15,8 +15,8 @@
  * The upper is a disk-backed emptyDir (NOT tmpfs) — mirrors prod (emptyDir/PVC);
  * a RAM upper would charge every runtime-built closure to pod memory.
  *
- * Gated: RUN_CLUSTER_TESTS=1. Image: OVERLAY_IMAGE (built + imported by
- * cluster-up as .#sandbox-os-overlay-image). Skipped if unavailable.
+ * Gated: RUN_CLUSTER_TESTS=1. Image: OVERLAY_IMAGE (defaults to agent-sandbox-os — the
+ * sole sandbox image, which always has the overlay store on). Skipped if unavailable.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -28,7 +28,7 @@ const maybe = clusterTestsEnabled() ? describe : describe.skip;
 // races/​conflicts with the other image-boot spec when CI runs them in the same
 // cluster.
 const NS = "agent-sandbox-overlay-test";
-const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os-overlay:latest";
+const IMAGE = process.env.OVERLAY_IMAGE ?? "agent-sandbox-os:latest";
 const POD = "overlay-store-boot";
 const SELECTOR = "app=overlay-store-boot";
 

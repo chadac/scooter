@@ -98,7 +98,6 @@
         scheduler = ghcrImageRef "agent-scheduler" pubImages.scheduler-image;
         webhooks = ghcrImageRef "agent-webhooks" pubImages.webhooks-image;
         sandboxOs = ghcrImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
-        sandboxOsOverlay = ghcrImageRef "agent-sandbox-os-overlay" pubImages.sandbox-os-overlay-image;
       };
       ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
     in
@@ -218,19 +217,12 @@
           uvNix = uv-nix.packages.${system}.default;
 
           # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
-          # services). Built from the shared modules/sandbox-os config.
+          # services). Built from the shared modules/sandbox-os config. The local-overlay
+          # writable /nix/store is ALWAYS ON in this image (pkgs/sandbox-os sets
+          # programs.overlayStore.enable) — there is no longer a separate read-only-store
+          # variant; the writable store is required for runtime tool-install + re-converge.
           sandboxOsImage = import ./pkgs/sandbox-os {
             inherit pkgs lib n2c nixStubsLib uvNix;
-          };
-
-          # Same image with the read-only-base + writable-upper local-overlay store
-          # turned ON (programs.overlayStore). The Tier-2 cluster test runs THIS in a
-          # real container — where the lower is the baked store and there's no VM
-          # register-nix-paths — to prove the prod topology the nixosTest can't.
-          sandboxOsOverlayImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib n2c nixStubsLib;
-            name = "agent-sandbox-os-overlay";
-            extraModules = [ { programs.overlayStore.enable = true; } ];
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
@@ -331,12 +323,9 @@
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
-            # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox
+            # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox with the
+            # writable local-overlay Nix store ALWAYS ON (the sole sandbox image now).
             sandbox-os-image = sandboxOsImage.image;
-
-            # nix build .#sandbox-os-overlay-image  ->  same, with the local-overlay
-            # Nix store enabled. Used by the Tier-2 overlay-store cluster test.
-            sandbox-os-overlay-image = sandboxOsOverlayImage.image;
 
             # The broker tools (agent-broker / git-credential-broker / scooter-aws*),
             # prebuilt; baked into the sandbox-os image via the brokerTools overlay.
