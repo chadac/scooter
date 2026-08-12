@@ -205,14 +205,19 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // PATCH (a merge patch carrying resourceVersion 400s). The `test` op IS the CAS for PATCH.
   const claimWarmStorePvc = async (sandboxNameForConv: string): Promise<string | null> => {
     const tag = imageTagOf(opts.sandboxImage);
-    if (!tag) return null;
+    if (!tag) {
+      console.warn(`[k8sProvisioner] warm-store: no image tag from '${opts.sandboxImage}' — skipping claim`);
+      return null;
+    }
     // Label keys are JSON-pointer components — '/' is escaped as '~1'.
     const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
     try {
+      const selector = `${POOL_STATE_LABEL}=ready,${WARM_STORE_LABEL}=${tag}`;
       const ready = await core.listNamespacedPersistentVolumeClaim({
         namespace: ns,
-        labelSelector: `${POOL_STATE_LABEL}=ready,${WARM_STORE_LABEL}=${tag}`,
+        labelSelector: selector,
       });
+      console.log(`[k8sProvisioner] warm-store: ${ready.items?.length ?? 0} ready PVC(s) for '${selector}'`);
       for (const pvc of ready.items ?? []) {
         const name = pvc.metadata?.name;
         if (!name) continue;
@@ -232,11 +237,13 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             },
             setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
           );
+          console.log(`[k8sProvisioner] warm-store: claimed ${name} for ${sandboxNameForConv}`);
           return name; // we won the claim
         } catch (e: unknown) {
           const code = (e as { code?: number })?.code;
           // 422 (test op failed) / 409 (conflict) = another claimer won — try the next.
           if (code === 422 || code === 409) continue;
+          console.warn(`[k8sProvisioner] warm-store: claim patch on ${name} errored (code=${code}):`, e);
           throw e;
         }
       }
