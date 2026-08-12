@@ -29,8 +29,13 @@ in
     };
     replicas = mkOption {
       type = types.int;
-      default = 2;
-      description = "Controller replicas (leader-elected; >1 for availability, only the leader reconciles).";
+      default = 1;
+      description = ''
+        Controller replicas. Default 1: the controller is leader-elected (only the leader
+        reconciles), so a 2nd replica only buys faster failover — not worth it for a pool
+        controller whose work is a hit-rate optimization (a brief reconcile gap on pod
+        restart just delays a warm/GC, never blocks a conversation). Set >1 for HA.
+      '';
     };
     minReady = mkOption {
       type = types.int;
