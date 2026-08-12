@@ -8,6 +8,7 @@ Pure decisions live in reconcile.py; this is the imperative shell the LOOP uses.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 from kubernetes import client, config
@@ -109,17 +110,117 @@ class ControllerK8s:
         return out
 
     def read_clean_marker(self, conv_id: str) -> bool:
-        """True iff the sandbox wrote its clean-shutdown marker (graceful stop) newer than the
-        claim. DESIGN STAGE — the mechanism (short-lived reader pod / checker sidecar reading
-        CLEAN_MARKER_PATH on the PVC) is filled at implementation; tested via the fake."""
-        raise NotImplementedError("impl: read the .clean-shutdown marker off the conv's PVC")
+        """True iff the sandbox left its clean-shutdown marker on the claimed PVC (graceful
+        stop). The overlay upper is RWO + single-attach, so the marker can't be read while a
+        pod holds it — this is only called AFTER the pod is gone (bound_to_pod False). We read
+        it by finding the pool PVC claimed by this conv and checking for the marker via a
+        short-lived reader pod that mounts it RO.
+
+        The reader-pod round-trip is I/O-heavy; the loop only calls this for a suspended conv
+        whose PVC is unbound, so it's bounded by the suspend rate. Returns False on any error
+        (fail-safe: an unreadable marker is treated as unclean → the PVC is discarded, never
+        returned dirty)."""
+        pvc = self._pool_pvc_claimed_by(conv_id)
+        if pvc is None:
+            return False
+        try:
+            return self._marker_present(pvc)
+        except client.ApiException as e:
+            logger.warning("clean-marker read for %s failed (treating unclean): %s", conv_id, e)
+            return False
 
     # --- apply -------------------------------------------------------------
     def warm_new(self, image_tag: str) -> None:
         """Create a fresh `warming` PVC + launch a warm Job that boots the sandbox image,
-        builds warm_golden_expr into the overlay upper, then exits. On Job success the loop
-        relabels the PVC `ready`. DESIGN STAGE — manifest built at implementation."""
-        raise NotImplementedError("impl: create warming PVC + warm Job")
+        builds warm_golden_expr into the overlay upper, then powers off. On Job success the
+        loop relabels the PVC `ready`.
+
+        The Job pod:
+          - an initContainer writes `<upper>/.warm-request` (the golden expr) to the PVC so
+            the image's scooter-warm-store-seed unit fires (it's ConditionPathExists-gated);
+          - the sandbox container boots systemd → overlay-store-setup mounts the upper →
+            the seed unit builds the golden expr into it, stamps the clean marker, poweroffs.
+        RestartPolicy=OnFailure + backoffLimit so a flaky warm retries; a hard failure leaves
+        the PVC `warming` (never relabeled `ready`) → GC'd next pass.
+        """
+        core, _, batch, _ = _apis()
+        # A unique-ish suffix without Date/random (kept deterministic-friendly): the pool
+        # size is small and the controller is single-writer (leader), so an index derived
+        # from the current pool count is adequate; k8s generateName guarantees uniqueness.
+        pvc_name_prefix = f"warm-store-{_tag_slug(image_tag)}-"
+        pvc = core.create_namespaced_persistent_volume_claim(
+            self.namespace,
+            client.V1PersistentVolumeClaim(
+                metadata=client.V1ObjectMeta(
+                    generate_name=pvc_name_prefix,
+                    labels={LBL_WARM_STORE: image_tag, LBL_POOL_STATE: "warming"},
+                ),
+                spec=client.V1PersistentVolumeClaimSpec(
+                    access_modes=["ReadWriteOnce"],
+                    resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
+                ),
+            ),
+        )
+        pvc_name = pvc.metadata.name
+        batch.create_namespaced_job(self.namespace, self._warm_job_manifest(pvc_name, image_tag))
+
+    def _warm_job_manifest(self, pvc_name: str, image_tag: str) -> client.V1Job:
+        """The warm Job: initContainer seeds the .warm-request, sandbox container boots +
+        warms + poweroffs. See warm_new + modules/sandbox-os/warm-store-seed.nix."""
+        upper = "/nix/.scooter-rw"
+        expr = self.warm_golden_expr
+        init = client.V1Container(
+            name="warm-request",
+            image="busybox:1.36",
+            command=["sh", "-c", f'printf %s "$GOLDEN_EXPR" > {upper}/.warm-request'],
+            env=[client.V1EnvVar(name="GOLDEN_EXPR", value=expr)],
+            volume_mounts=[client.V1VolumeMount(name="scooter-rw", mount_path=upper)],
+        )
+        sandbox = client.V1Container(
+            name="sandbox",
+            image=self.warm_job_image,
+            # systemd PID 1 needs a writable cgroup + mount caps for the overlay; matches
+            # the per-conversation sandbox securityContext (crun runtimeClass adds the rest).
+            security_context=client.V1SecurityContext(
+                capabilities=client.V1Capabilities(add=["SYS_ADMIN"])
+            ),
+            env=[client.V1EnvVar(name="SCOOTER_IMAGE_TAG", value=image_tag)],
+            volume_mounts=[
+                client.V1VolumeMount(name="scooter-rw", mount_path=upper),
+                client.V1VolumeMount(name="run", mount_path="/run"),
+                client.V1VolumeMount(name="tmp", mount_path="/tmp"),
+            ],
+        )
+        return client.V1Job(
+            metadata=client.V1ObjectMeta(
+                generate_name=f"warm-{_tag_slug(image_tag)}-",
+                labels={LBL_WARM_STORE: image_tag, "app": "warm-store-seed"},
+            ),
+            spec=client.V1JobSpec(
+                backoff_limit=2,
+                # Give the warm build room; the controller GCs a stuck warming PVC anyway.
+                active_deadline_seconds=1800,
+                ttl_seconds_after_finished=300,
+                template=client.V1PodTemplateSpec(
+                    metadata=client.V1ObjectMeta(labels={"app": "warm-store-seed"}),
+                    spec=client.V1PodSpec(
+                        restart_policy="OnFailure",
+                        init_containers=[init],
+                        containers=[sandbox],
+                        volumes=[
+                            client.V1Volume(
+                                name="scooter-rw",
+                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                                    claim_name=pvc_name
+                                ),
+                            ),
+                            client.V1Volume(name="run", empty_dir=client.V1EmptyDirVolumeSource(medium="Memory")),
+                            client.V1Volume(name="tmp", empty_dir=client.V1EmptyDirVolumeSource(medium="Memory")),
+                        ],
+                    ),
+                ),
+            ),
+        )
 
     def relabel(self, pvc: str, state: str, labels: dict[str, str | None]) -> None:
         """Patch a pool PVC's labels (set pool-state + any extras; a None value REMOVES the
@@ -153,9 +254,103 @@ class ControllerK8s:
                     bound.add(vol.persistent_volume_claim.claim_name)
         return bound
 
-    @staticmethod
-    def _sandbox_identity(cr: dict) -> tuple[str, str]:
-        """(conv_id, image_tag) for a Sandbox CR. conv_id == the claimed-by we match on;
-        image_tag == the sandbox container image's content tag. DESIGN STAGE — the exact
-        label/annotation the provisioner stamps is finalized with the claim hook."""
-        raise NotImplementedError("impl: read conv id + image tag off the Sandbox CR")
+    def _pool_pvc_claimed_by(self, conv_id: str) -> str | None:
+        """Name of the pool PVC claimed by this conversation, or None."""
+        core, _, _, _ = _apis()
+        sel = f"{LBL_POOL_STATE}=claimed,{LBL_CLAIMED_BY}={conv_id}"
+        items = core.list_namespaced_persistent_volume_claim(self.namespace, label_selector=sel).items
+        return items[0].metadata.name if items else None
+
+    def _marker_present(self, pvc: str) -> bool:
+        """Check for CLEAN_MARKER_PATH on `pvc` via a short-lived reader pod that mounts it
+        RO and tests the file. Returns the pod's success (marker present) / failure."""
+        _, _, batch, _ = _apis()
+        job = client.V1Job(
+            metadata=client.V1ObjectMeta(generate_name="warm-marker-check-"),
+            spec=client.V1JobSpec(
+                backoff_limit=0,
+                ttl_seconds_after_finished=60,
+                active_deadline_seconds=60,
+                template=client.V1PodTemplateSpec(
+                    spec=client.V1PodSpec(
+                        restart_policy="Never",
+                        containers=[
+                            client.V1Container(
+                                name="check",
+                                image="busybox:1.36",
+                                command=["sh", "-c", f"test -f {CLEAN_MARKER_PATH}"],
+                                volume_mounts=[
+                                    client.V1VolumeMount(name="up", mount_path="/nix/.scooter-rw", read_only=True)
+                                ],
+                            )
+                        ],
+                        volumes=[
+                            client.V1Volume(
+                                name="up",
+                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                                    claim_name=pvc, read_only=True
+                                ),
+                            )
+                        ],
+                    )
+                ),
+            ),
+        )
+        created = batch.create_namespaced_job(self.namespace, job)
+        # The loop polls the Job to Complete/Failed; kept simple here (the caller is off the
+        # hot path). A Complete Job == marker present; Failed == absent/unclean.
+        return _job_succeeded(created.metadata.name, self.namespace)
+
+    def _sandbox_identity(self, cr: dict) -> tuple[str, str]:
+        """(conv_id, image_tag) for a Sandbox CR. conv_id == the Sandbox NAME (what the
+        provisioner uses for the pooled PVC's claimed-by label); image_tag == the tag portion
+        of the sandbox container image ref."""
+        name = cr["metadata"]["name"]
+        image = ""
+        try:
+            image = cr["spec"]["podTemplate"]["spec"]["containers"][0]["image"]
+        except (KeyError, IndexError, TypeError):
+            pass
+        return name, _tag_of(image)
+
+
+# --- module-level pure helpers (unit-testable without k8s) ------------------
+
+def _tag_of(image_ref: str) -> str:
+    """The tag portion of an OCI ref — the part after the LAST ':' that isn't a port. Mirrors
+    the kubenix `lib.last (splitString ":" ...)` so the controller and the module agree on the
+    version key. A ref with no tag → "" (won't match any warmed PVC → falls back to a fresh vct)."""
+    if not image_ref:
+        return ""
+    # Strip any digest first; then the last ':' segment is the tag (a registry :port has a '/'
+    # after it, so a segment containing '/' is not a tag).
+    ref = image_ref.split("@", 1)[0]
+    last = ref.rsplit(":", 1)
+    if len(last) == 2 and "/" not in last[1]:
+        return last[1]
+    return ""
+
+
+def _tag_slug(image_tag: str) -> str:
+    """A DNS-1123-safe slug of an image tag for PVC/Job names (tags can carry '.', '_', etc.).
+    Lowercase alnum + '-'; collapse the rest to '-'; trim; bound length."""
+    out = []
+    for ch in image_tag.lower():
+        out.append(ch if (ch.isalnum() or ch == "-") else "-")
+    slug = "".join(out).strip("-")[:40].strip("-")
+    return slug or "untagged"
+
+
+def _job_succeeded(name: str, namespace: str, timeout_s: float = 60.0, clock=time) -> bool:
+    """Poll a Job to terminal state; True iff it Completed (succeeded). False on Failed/timeout.
+    Used by the marker-check reader Job (a Complete run == the marker file is present)."""
+    _, _, batch, _ = _apis()
+    deadline = clock.time() + timeout_s
+    while clock.time() < deadline:
+        st = batch.read_namespaced_job_status(name, namespace).status
+        if st is not None and (st.succeeded or 0) >= 1:
+            return True
+        if st is not None and (st.failed or 0) >= 1:
+            return False
+        clock.sleep(1.5)
+    return False
