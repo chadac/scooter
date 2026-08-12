@@ -134,6 +134,21 @@ describe("SessionManager", () => {
     expect(setPhase).not.toHaveBeenCalled();
   });
 
+  it("revive() RE-REGISTERS the CR (self-heals a conversation whose CR was lost/never made)", async () => {
+    const register = vi.fn(async () => {});
+    const registry = { register, setPhase: vi.fn(async () => {}) };
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store: inMemoryStore(), conversationRegistry: registry,
+    });
+    const conv = await sessions.start("thread-1"); // register #1 (start)
+    await sessions.suspend(conv.id);
+    register.mockClear();
+    await sessions.revive(conv.id);
+    // revive() re-registers (idempotent 409-swallow makes it a no-op when the CR exists) so a
+    // CR lost across a restart/rollout is re-created — visible in kubectl + routable again.
+    expect(register).toHaveBeenCalledWith(conv.id, expect.objectContaining({ sandboxRef: expect.any(String) }));
+  });
+
   it("revive() resumes the same sandbox and replays the event log", async () => {
     const provisioner = fakeProvisioner();
     const store = inMemoryStore();

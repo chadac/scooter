@@ -700,6 +700,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
+      // RE-REGISTER the CR on revive. register() is only called on start()/spawnChild(), so a
+      // conversation revived after a restart/rollout (or hydrated on a lazy prompt) whose CR was
+      // never created / was lost would run CR-less — invisible to `kubectl get conversations`
+      // AND unroutable (no hostPod, so it only works via the router's fallback). register() is
+      // idempotent (409 = already there = no-op), so this is a cheap self-heal. Fire-and-forget.
+      void conversationRegistry.register(id, {
+        model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+      });
       // Register the resume as ACTIVITY. Without this, lastActivityAt stays at its
       // pre-suspend value, so the idle sweep (sweepIdle) sees the conversation as
       // already-idle and re-suspends the pod we JUST started — a UI "Start sandbox"
