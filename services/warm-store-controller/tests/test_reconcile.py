@@ -35,15 +35,18 @@ def test_topup_when_no_ready_pvc_for_current_tag():
     assert warms[0].image_tag == TAG
 
 
-def test_topup_counts_only_ready_of_current_tag():
-    # A `warming` PVC (not yet ready) does NOT satisfy min_ready; a ready one does.
-    pvcs = [PoolPvc(name="w1", image_tag=TAG, state="warming")]
-    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
-    assert any(isinstance(a, WarmNew) for a in actions)  # warming doesn't count -> still top up
-
+def test_topup_ready_and_in_flight_warming_both_count():
+    # A ready PVC satisfies min_ready...
     pvcs = [PoolPvc(name="r1", image_tag=TAG, state="ready")]
     actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
-    assert not any(isinstance(a, WarmNew) for a in actions)  # one ready satisfies min_ready=1
+    assert not any(isinstance(a, WarmNew) for a in actions)
+
+    # ...and so does an IN-FLIGHT warming PVC (its Job is building) — we must NOT warm another
+    # every tick while one is in progress (the over-warm bug). A warming PVC with no resolved
+    # job status is treated as in-flight.
+    pvcs = [PoolPvc(name="w1", image_tag=TAG, state="warming", warm_job_status="running")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
+    assert not any(isinstance(a, WarmNew) for a in actions)
 
 
 def test_topup_ignores_ready_of_other_tag():
@@ -56,6 +59,40 @@ def test_topup_ignores_ready_of_other_tag():
 def test_topup_multiple_to_reach_min_ready():
     actions = reconcile(pvcs=[], sandboxes=[], cfg=cfg(min_ready=3))
     assert sum(isinstance(a, WarmNew) for a in actions) == 3
+
+
+# --- warming → ready promotion (the pool-warms-forever bug guard) -----------
+
+def test_promote_warming_pvc_on_job_success():
+    pvcs = [PoolPvc(name="w1", image_tag=TAG, state="warming", warm_job_status="succeeded")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
+    rels = [a for a in actions if isinstance(a, Relabel) and a.pvc == "w1"]
+    assert rels and rels[0].state == "ready"
+    # Promoted PVC satisfies min_ready → NO new warm.
+    assert not any(isinstance(a, WarmNew) for a in actions)
+
+
+def test_discard_warming_pvc_on_job_failure():
+    pvcs = [PoolPvc(name="w1", image_tag=TAG, state="warming", warm_job_status="failed")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=0))
+    assert any(isinstance(a, DeletePvc) and a.pvc == "w1" for a in actions)
+
+
+def test_in_flight_warming_does_not_over_warm():
+    # A warm still RUNNING counts toward min_ready → we do NOT spawn another every tick
+    # (the live-observed over-warm bug: 0 ready + 1 warming would warm again and again).
+    pvcs = [PoolPvc(name="w1", image_tag=TAG, state="warming", warm_job_status="running")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
+    assert not any(isinstance(a, WarmNew) for a in actions)
+    # ...but with min_ready=2 and only 1 in-flight, we top up exactly ONE more.
+    actions2 = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=2))
+    assert sum(isinstance(a, WarmNew) for a in actions2) == 1
+
+
+def test_warming_retired_tag_is_discarded():
+    pvcs = [PoolPvc(name="w-old", image_tag=OLD, state="warming", warm_job_status="running")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=0))
+    assert any(isinstance(a, DeletePvc) and a.pvc == "w-old" for a in actions)
 
 
 # --- GC by tag -------------------------------------------------------------

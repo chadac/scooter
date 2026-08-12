@@ -124,6 +124,13 @@ in
                   { name = "WARM_STORE_MAX_TOTAL"; value = toString wcfg.maxTotal; }
                   { name = "WARM_STORE_STORAGE"; value = wcfg.storage; }
                   { name = "WARM_STORE_GOLDEN_EXPR"; value = wcfg.goldenExpr; }
+                ]
+                # The warm Job's systemd pod needs the SAME runtimeClass as the per-conversation
+                # sandboxes (crun) — non-privileged systemd PID 1 in a private cgroup ns. Omit
+                # when unset (cluster default).
+                ++ lib.optional (cfg.sandboxRuntimeClass != null)
+                  { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
+                ++ [
                   { name = "RECONCILE_INTERVAL_SECONDS"; value = toString wcfg.reconcileInterval; }
                   { name = "LEASE_DURATION_SECONDS"; value = toString wcfg.leaseSeconds; }
                   # Pod name → the leader-election Lease holder identity.

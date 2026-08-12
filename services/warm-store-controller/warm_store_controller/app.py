@@ -23,6 +23,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
         warm_job_image=cfg.warm_job_image,
         warm_golden_expr=cfg.warm_golden_expr,
         overlay_storage=cfg.overlay_storage,
+        runtime_class=cfg.runtime_class,
     )
     elector = LeaderElector(cfg.namespace, cfg.lease_name, cfg.identity, cfg.lease_seconds)
     pool_cfg = PoolConfig(

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from kubernetes import client, config
 
-from .reconcile import PoolPvc, SandboxRef
+from .reconcile import PoolPvc, SandboxRef, WarmJobStatus
 
 logger = logging.getLogger("warm-store-controller")
 
@@ -27,6 +27,7 @@ LBL_WARM_STORE = "scooter.io/warm-store"   # image content tag (the version key)
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed
 LBL_LAST_USED = "scooter.io/last-used"     # rfc3339, for LRU
+LBL_WARM_PVC = "scooter.io/warm-pvc"       # on a warm Job: the PVC name it warms (PVC↔Job link)
 POOL_SELECTOR = LBL_POOL_STATE             # any PVC carrying a pool-state is a pool PVC
 
 # The clean-shutdown marker the sandbox writes into the overlay upper on graceful stop.
@@ -67,28 +68,57 @@ class ControllerK8s:
     warm_job_image: str = ""
     warm_golden_expr: str = ""
     overlay_storage: str = "20Gi"
+    # RuntimeClass for the warm Job's systemd-PID-1 pod (e.g. "crun") — a cgroup-delegating
+    # runtime so systemd gets a writable cgroup subtree WITHOUT privileged (which would force
+    # the host cgroup ns and let the sandbox churn the node's /kubepods tree — the host-logout
+    # bug). MUST match the per-conversation sandboxRuntimeClass. Empty → cluster default.
+    runtime_class: str = ""
 
     # --- observe -----------------------------------------------------------
     def list_pool_pvcs(self) -> list[PoolPvc]:
         """Every pool PVC (carries a pool-state label), read into the pure PoolPvc shape.
-        `bound_to_pod` is derived from a live-pod scan (a pod mounting the claim)."""
+        `bound_to_pod` is derived from a live-pod scan (a pod mounting the claim); a `warming`
+        PVC's `warm_job_status` from its linked warm Job (→ promote to ready / discard)."""
         core, _, _, _ = _apis()
         bound = self._claim_names_bound_to_live_pods()
+        warm_status = self._warm_job_status_by_pvc()
         out: list[PoolPvc] = []
         for pvc in core.list_namespaced_persistent_volume_claim(
             self.namespace, label_selector=POOL_SELECTOR
         ).items:
             labels = pvc.metadata.labels or {}
+            name = pvc.metadata.name
             out.append(
                 PoolPvc(
-                    name=pvc.metadata.name,
+                    name=name,
                     image_tag=labels.get(LBL_WARM_STORE, ""),
                     state=labels.get(LBL_POOL_STATE, ""),
                     claimed_by=labels.get(LBL_CLAIMED_BY),
                     last_used=labels.get(LBL_LAST_USED),
-                    bound_to_pod=pvc.metadata.name in bound,
+                    bound_to_pod=name in bound,
+                    warm_job_status=warm_status.get(name),
                 )
             )
+        return out
+
+    def _warm_job_status_by_pvc(self) -> dict[str, WarmJobStatus]:
+        """PVC name → its warm Job's terminal state ("succeeded"|"failed"|"running"), via the
+        LBL_WARM_PVC link. A PVC with no warm Job (Job GC'd after ttl) is absent → the loop
+        treats it as still warming until GC/timeout — safe (a stuck warming PVC is bounded by
+        the Job's activeDeadline; a promoted one is already `ready`, not `warming`)."""
+        _, _, batch, _ = _apis()
+        out: dict[str, WarmJobStatus] = {}
+        for job in batch.list_namespaced_job(self.namespace, label_selector="app=warm-store-seed").items:
+            pvc = (job.metadata.labels or {}).get(LBL_WARM_PVC)
+            if not pvc:
+                continue
+            st = job.status
+            if st is not None and (st.succeeded or 0) >= 1:
+                out[pvc] = "succeeded"
+            elif st is not None and (st.failed or 0) >= 1:
+                out[pvc] = "failed"
+            else:
+                out[pvc] = "running"
         return out
 
     def list_sandboxes(self) -> list[SandboxRef]:
@@ -194,7 +224,9 @@ class ControllerK8s:
         return client.V1Job(
             metadata=client.V1ObjectMeta(
                 generate_name=f"warm-{_tag_slug(image_tag)}-",
-                labels={LBL_WARM_STORE: image_tag, "app": "warm-store-seed"},
+                # LBL_WARM_PVC links this Job to the PVC it warms so the loop can resolve each
+                # warming PVC's Job terminal state (→ promote to ready / discard on failure).
+                labels={LBL_WARM_STORE: image_tag, LBL_WARM_PVC: pvc_name, "app": "warm-store-seed"},
             ),
             spec=client.V1JobSpec(
                 backoff_limit=2,
@@ -205,6 +237,10 @@ class ControllerK8s:
                     metadata=client.V1ObjectMeta(labels={"app": "warm-store-seed"}),
                     spec=client.V1PodSpec(
                         restart_policy="OnFailure",
+                        # crun (or whatever the sandboxes use) so systemd PID 1 gets its writable
+                        # cgroup subtree in a PRIVATE cgroup ns — not privileged (which would let
+                        # it churn the host /kubepods tree → node destabilization). None → default.
+                        runtime_class_name=self.runtime_class or None,
                         init_containers=[init],
                         containers=[sandbox],
                         volumes=[

@@ -18,6 +18,10 @@ claim (that's the provisioner) — it tops up, garbage-collects, and returns.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+# Terminal (or in-flight) state of a `warming` PVC's warm Job, resolved by the shell.
+WarmJobStatus = Literal["succeeded", "failed", "running"]
 
 
 # --- Observed state (the bits the decision depends on) ---------------------
@@ -32,6 +36,9 @@ class PoolPvc:
     claimed_by: str | None = None   # label scooter.io/claimed-by (conv id) when claimed
     last_used: str | None = None    # label scooter.io/last-used (rfc3339) for LRU
     bound_to_pod: bool = False       # is a live pod currently mounting it? (RWO single-attach)
+    # For a `warming` PVC: the terminal state of its warm Job, resolved by the shell.
+    # "succeeded" → promote to ready; "failed" → discard; "running"/None → still warming.
+    warm_job_status: WarmJobStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,9 @@ def reconcile(
     # Track which current-tag `ready` PVCs survive this pass, for min_ready/LRU accounting.
     # A PVC that we return (claimed→ready) this pass counts toward readiness too.
     surviving_ready: list[PoolPvc] = []
+    # Current-tag PVCs still WARMING (Job in-flight) — count toward min_ready so we don't
+    # spawn a new warm every tick while one is already building (the over-warm bug).
+    in_flight_warming = 0
 
     for p in pvcs:
         if p.state == "claimed":
@@ -133,7 +143,23 @@ def reconcile(
             surviving_ready.append(p)
             continue
 
-        # `warming` / `retiring` PVCs: in-flight; don't count toward ready, no action here.
+        if p.state == "warming":
+            # Promote on the warm Job's terminal state: succeeded → ready (it now counts
+            # toward min_ready, so we don't over-warm); failed → discard the half-baked PVC
+            # (a fresh warm tops back up next pass). A retired-tag warming PVC is also junk.
+            if p.image_tag != cfg.current_image_tag:
+                actions.append(DeletePvc(pvc=p.name, reason="retired-tag"))
+            elif p.warm_job_status == "succeeded":
+                actions.append(Relabel(pvc=p.name, state="ready"))
+                surviving_ready.append(p)
+            elif p.warm_job_status == "failed":
+                actions.append(DeletePvc(pvc=p.name, reason="warm-failed"))
+            else:
+                # "running"/None → still warming; count it so we don't over-warm this tick.
+                in_flight_warming += 1
+            continue
+
+        # `retiring` PVCs: in-flight teardown; no action here.
 
     # LRU-evict current-tag `ready` PVCs past max_total (coldest last_used first).
     if len(surviving_ready) > cfg.max_total:
@@ -145,7 +171,10 @@ def reconcile(
         surviving_ready = by_age[len(surviving_ready) - cfg.max_total :]
 
     # Top up the CURRENT tag toward min_ready (after evictions, so we don't warm-then-evict).
-    deficit = cfg.min_ready - len(surviving_ready)
+    # Count in-flight warming PVCs toward the target so we don't spawn a new warm on EVERY
+    # tick while one is already building (the over-warm bug: 0 ready + a warm in progress
+    # would otherwise warm again and again until the first finishes).
+    deficit = cfg.min_ready - len(surviving_ready) - in_flight_warming
     for _ in range(max(0, deficit)):
         actions.append(WarmNew(image_tag=cfg.current_image_tag))
 
