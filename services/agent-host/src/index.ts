@@ -496,6 +496,9 @@ export async function main(
     provisioner,
     store,
     ownershipGuard: ownership?.guard,
+    // Revive-on-assign (multi-replica rollout): pull a reassigned conversation's state
+    // from the mirror. Only when a mirror is configured. See ROLLOUT_DRAIN_AND_POD_IP.md.
+    hydrateFromMirror: mirroredStore ? (id) => mirroredStore.hydrateFromMirror(id) : undefined,
     conversationRegistry,
     bridgeFactory: ({ conversationId, sandbox, model }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is

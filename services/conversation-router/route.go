@@ -54,13 +54,31 @@ func IsNonScoped(path string) bool {
 	return false
 }
 
-// TargetURL builds the upstream base URL for an owner pod's stable DNS name. `hostPod`
-// is the StatefulSet ordinal pod name (e.g. "agent-host-0"); it's reached at
-// <hostPod>.<headlessService>.<namespace>.svc.cluster.local:<port>.
-func TargetURL(hostPod, headlessService, namespace string, port int) *url.URL {
+// TargetURL builds the upstream base URL for an owner pod, addressed by its POD IP.
+// Deployments give random-named pods no stable DNS, so the router proxies straight to
+// the IP the controller recorded in status.hostIP (see route table in the CR). `hostIP`
+// is e.g. "10.42.0.49"; the upstream is http://<hostIP>:<port>.
+//
+// DESIGN NOTE: this replaces the old headless-Service DNS form
+// (<hostPod>.<headless>.<ns>.svc). The headless Service is being removed.
+func TargetURL(hostIP string, port int) *url.URL {
 	return &url.URL{
 		Scheme: "http",
-		Host:   hostPod + "." + headlessService + "." + namespace + ".svc.cluster.local:" + itoa(port),
+		Host:   hostIP + ":" + itoa(port),
+	}
+}
+
+// FallbackURL is the upstream for non-scoped / unassigned / stale-IP requests: the
+// regular agent-host ClusterIP Service, which load-balances to ANY ready pod. Used when
+// (a) the path isn't conversation-scoped, (b) the conversation has no known hostIP yet, or
+// (c) a dial to the owner's hostIP fails (the pod was replaced this tick) — the controller
+// converges the correct hostIP shortly.
+//
+// DESIGN STUB — signature only; the dial-fail retry that routes here lives in main.go.
+func FallbackURL(clusterIPService, namespace string, port int) *url.URL {
+	return &url.URL{
+		Scheme: "http",
+		Host:   clusterIPService + "." + namespace + ".svc.cluster.local:" + itoa(port),
 	}
 }
 

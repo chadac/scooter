@@ -138,7 +138,13 @@ in
                     # LIVENESS of an assigned conversation (Assigned ⇄ Suspended) so it's visible
                     # in `kubectl get conversations`. See CONVERSATION_LIFECYCLE_CONTROLLER.md.
                     phase = { type = "string"; };
-                    hostPod = { type = "string"; nullable = true; };
+                    hostPod = { type = "string"; nullable = true; };  # owner pod NAME (fencing identity + debugging)
+                    # Owner pod IP — the ROUTING ADDRESS. Deployments give random-named pods no
+                    # stable DNS, so the router proxies to http://<hostIP>:<port> instead of a
+                    # headless-Service DNS name. Re-derived by the controller on every (re)assign
+                    # (ephemeral IPs are fine — the CR is the source of truth). Null when Pending.
+                    # See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+                    hostIP = { type = "string"; nullable = true; };
                     assignedAt = { type = "string"; };
                     generation = { type = "integer"; };  # fence epoch, bumps per (re)assignment
                   };
@@ -148,6 +154,7 @@ in
             additionalPrinterColumns = [
               { name = "Phase"; type = "string"; jsonPath = ".status.phase"; }
               { name = "Host"; type = "string"; jsonPath = ".status.hostPod"; }
+              { name = "IP"; type = "string"; jsonPath = ".status.hostIP"; }
               { name = "Gen"; type = "integer"; jsonPath = ".status.generation"; }
             ];
           }];
@@ -238,7 +245,13 @@ in
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
                   { name = "NAMESPACE"; value = cfg.namespace; }
-                  { name = "AGENT_HOST_HEADLESS"; value = "agent-host-headless"; }
+                  # Route by POD IP, not headless-Service DNS: the router reads status.hostIP
+                  # from the CR and proxies http://<ip>:port. AGENT_HOST_SERVICE is the
+                  # ClusterIP Service selecting the agent-host PODS — the router's FALLBACK for
+                  # non-scoped / unassigned / stale-IP requests (any ready pod). It must select
+                  # the pods, NOT `agent-host` (that fronts the router → a loop). See
+                  # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+                  { name = "AGENT_HOST_SERVICE"; value = "agent-host-pods"; }
                   { name = "UPSTREAM_PORT"; value = "8080"; }
                   { name = "LISTEN_ADDR"; value = ":8080"; }
                 ];

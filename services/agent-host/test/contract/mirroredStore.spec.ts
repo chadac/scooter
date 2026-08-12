@@ -120,4 +120,48 @@ describe("mirroredConversationStore", () => {
     await tick();
     expect(saveMeta).toHaveBeenCalledTimes(1);
   });
+
+  describe("hydrateFromMirror (revive-on-assign)", () => {
+    const meta = (id: SessionId) => ({ id, threadId: "t" as never, title: "x", createdAt: 0, lastActivityAt: 0 });
+
+    it("copies a mirror-only conversation's meta + events into local", async () => {
+      // Local is EMPTY (this pod never owned it); the mirror holds meta + a 3-event log.
+      const savedMeta: unknown[] = [];
+      const local = memStore({ saveMeta: async (m) => { savedMeta.push(m); } });
+      const mlog = [ev("a"), ev("b"), ev("c")];
+      const mirror = memStore({
+        listConversations: async () => [meta(ID) as never],
+        async *readEvents() { for (const e of mlog) yield e; },
+      });
+      const store = mirroredConversationStore(local, mirror);
+
+      const ok = await store.hydrateFromMirror(ID);
+      expect(ok).toBe(true);
+      expect(savedMeta).toEqual([meta(ID)]);                    // meta pulled local
+      expect(local.log.map((e) => (e as { delta: string }).delta)).toEqual(["a", "b", "c"]); // events pulled local
+    });
+
+    it("is idempotent — skips events already present locally", async () => {
+      // Local already has the first event (a prior partial pull); only the tail is copied.
+      const local = memStore();
+      await local.appendEvent(ID, ev("a"));
+      const before = local.appendCalls;
+      const mirror = memStore({
+        listConversations: async () => [meta(ID) as never],
+        async *readEvents() { for (const e of [ev("a"), ev("b")]) yield e; },
+      });
+      const store = mirroredConversationStore(local, mirror);
+
+      await store.hydrateFromMirror(ID);
+      expect(local.log.map((e) => (e as { delta: string }).delta)).toEqual(["a", "b"]); // no dup "a"
+      expect(local.appendCalls - before).toBe(1); // only "b" appended
+    });
+
+    it("returns false when the mirror has no such conversation", async () => {
+      const local = memStore();
+      const mirror = memStore({ listConversations: async () => [] });
+      const store = mirroredConversationStore(local, mirror);
+      expect(await store.hydrateFromMirror(ID)).toBe(false);
+    });
+  });
 });

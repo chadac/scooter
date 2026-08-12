@@ -19,18 +19,20 @@ var conversationGVR = schema.GroupVersionResource{
 	Resource: "conversations",
 }
 
-// OwnershipCache maps conversationId -> hostPod, updated from the CRD watch.
+// OwnershipCache maps conversationId -> owner pod IP (status.hostIP), updated from the
+// CRD watch. The IP is the routing address (Deployments give random pods no stable DNS).
 type OwnershipCache struct {
 	mu    sync.RWMutex
-	hosts map[string]string
+	hosts map[string]string // convID -> hostIP
 }
 
 func NewOwnershipCache() *OwnershipCache {
 	return &OwnershipCache{hosts: map[string]string{}}
 }
 
-// Host returns the assigned hostPod for a conversation, or ("", false) if unknown/unassigned.
-func (c *OwnershipCache) Host(convID string) (string, bool) {
+// HostIP returns the assigned owner pod IP for a conversation, or ("", false) if
+// unknown/unassigned (caller then uses the ClusterIP fallback).
+func (c *OwnershipCache) HostIP(convID string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	h, ok := c.hosts[convID]
@@ -94,9 +96,10 @@ func (c *OwnershipCache) Run(ctx context.Context, dyn dynamic.Interface, namespa
 	}
 }
 
-// hostFrom pulls (name, status.hostPod) from a Conversation object.
-func hostFrom(obj *unstructured.Unstructured) (convID, host string) {
+// hostFrom pulls (name, status.hostIP) from a Conversation object. The IP is the routing
+// address; we track it (not the pod name) because the router proxies straight to the pod IP.
+func hostFrom(obj *unstructured.Unstructured) (convID, hostIP string) {
 	convID = obj.GetName()
-	host, _, _ = unstructuredNestedString(obj.Object, "status", "hostPod")
-	return convID, host
+	hostIP, _, _ = unstructuredNestedString(obj.Object, "status", "hostIP")
+	return convID, hostIP
 }

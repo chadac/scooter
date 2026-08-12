@@ -11,13 +11,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -32,22 +35,20 @@ import (
 )
 
 type config struct {
-	namespace       string
-	headlessService string // agent-host pods' headless Service for stable DNS
-	upstreamPort    int    // agent-host container port
-	listenAddr      string
-	// The pod to fall back to for non-scoped / unassigned requests. With a StatefulSet
-	// this defaults to ordinal 0 (always present); overridable.
-	defaultPod string
+	namespace    string
+	upstreamPort int    // agent-host container port
+	listenAddr   string
+	// The agent-host ClusterIP Service — fallback for non-scoped / unassigned / stale-IP
+	// requests (load-balances to any ready pod). Replaces the old DEFAULT_POD ordinal.
+	clusterIPService string
 }
 
 func configFromEnv() config {
 	return config{
-		namespace:       env("NAMESPACE", "agent-sandbox"),
-		headlessService: env("AGENT_HOST_HEADLESS", "agent-host-headless"),
-		upstreamPort:    atoi(env("UPSTREAM_PORT", "8080")),
-		listenAddr:      env("LISTEN_ADDR", ":8080"),
-		defaultPod:      env("DEFAULT_POD", "agent-host-0"),
+		namespace:        env("NAMESPACE", "agent-sandbox"),
+		upstreamPort:     atoi(env("UPSTREAM_PORT", "8080")),
+		listenAddr:       env("LISTEN_ADDR", ":8080"),
+		clusterIPService: env("AGENT_HOST_SERVICE", "agent-host"),
 	}
 }
 
@@ -70,32 +71,89 @@ func main() {
 		defer c()
 		_ = srv.Shutdown(sctx) // drains in-flight; SSE/WS closed by upstream on their own
 	}()
-	logf("conversation-router listening on %s (ns=%s headless=%s)", cfg.listenAddr, cfg.namespace, cfg.headlessService)
+	logf("conversation-router listening on %s (ns=%s svc=%s)", cfg.listenAddr, cfg.namespace, cfg.clusterIPService)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
 	}
 }
 
-// newRouter builds the HTTP handler: resolve target, reverse-proxy (HTTP/SSE/WS).
+// newRouter builds the HTTP handler: resolve target (owner pod IP or ClusterIP fallback),
+// reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
+// fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
+// the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
 func newRouter(cfg config, cache *OwnershipCache) http.Handler {
+	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := resolveHost(cfg, cache, r)
-		target := TargetURL(host, cfg.headlessService, cfg.namespace, cfg.upstreamPort)
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		// FlushInterval -1 = flush immediately: required for SSE (don't buffer the stream).
-		proxy.FlushInterval = -1
-		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, e error) {
-			logf("proxy to %s failed: %v", target.Host, e)
-			http.Error(w, "upstream unavailable", http.StatusBadGateway)
-		}
-		proxy.ServeHTTP(w, r)
+		target := resolveTarget(cfg, cache, r, fallback)
+		// Retry ONLY when the primary target is an owner IP (not already the fallback) AND
+		// nothing has been written to the client yet (a dial error, pre-response). Streaming
+		// bodies (SSE/WS) that fail mid-stream can't be safely retried — but a DIAL failure
+		// happens before any bytes flow, so the guard below (headerWritten) makes it safe.
+		canRetry := target.Host != fallback.Host
+		serveVia(w, r, target, fallback, canRetry)
 	})
 }
 
-// resolveHost decides which agent-host pod a request goes to.
-func resolveHost(cfg config, cache *OwnershipCache, r *http.Request) string {
+// serveVia reverse-proxies r to `target`; on a connect/dial failure (upstream unreachable,
+// pre-response) it retries once against `fallback` when `retry` is set. A failure AFTER the
+// response has begun (headers written / stream started) is surfaced as-is — not retryable.
+func serveVia(w http.ResponseWriter, r *http.Request, target, fallback *url.URL, retry bool) {
+	tw := &trackingWriter{ResponseWriter: w}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1 // flush immediately: required for SSE (don't buffer the stream).
+	proxy.ErrorHandler = func(ww http.ResponseWriter, rr *http.Request, e error) {
+		if retry && !tw.wrote {
+			// Owner IP unreachable before any bytes flowed (e.g. pod replaced) → serve via
+			// the fallback Service (any ready pod). Recurse with retry=false so a fallback
+			// failure returns a real 502.
+			logf("proxy to %s failed pre-response (%v) — retrying via fallback %s", target.Host, e, fallback.Host)
+			serveVia(ww, rr, fallback, fallback, false)
+			return
+		}
+		logf("proxy to %s failed: %v", target.Host, e)
+		http.Error(ww, "upstream unavailable", http.StatusBadGateway)
+	}
+	proxy.ServeHTTP(tw, r)
+}
+
+// trackingWriter records whether ANY response byte/header has been written, so the dial-fail
+// retry only fires while the client response is still untouched (a retry after streaming
+// started would duplicate/corrupt the body).
+type trackingWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *trackingWriter) WriteHeader(code int) { t.wrote = true; t.ResponseWriter.WriteHeader(code) }
+func (t *trackingWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+// Flush lets SSE streaming pass through the tracking wrapper (httputil flushes per write).
+func (t *trackingWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack lets WebSocket upgrades (the /c/<id>/<svc> web-service proxy) pass through: a hijack
+// takes over the conn, so mark the response as "written" (no retry possible after this).
+func (t *trackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := t.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	t.wrote = true
+	return h.Hijack()
+}
+
+// resolveTarget decides the upstream URL for a request: the owner pod's IP when the
+// conversation is scoped + assigned, else the ClusterIP fallback (non-scoped, unassigned,
+// or unknown — the controller converges the owner shortly).
+func resolveTarget(cfg config, cache *OwnershipCache, r *http.Request, fallback *url.URL) *url.URL {
 	if IsNonScoped(r.URL.Path) {
-		return cfg.defaultPod
+		return fallback
 	}
 	convID := ""
 	if IsAguiPost(r.Method, r.URL.Path) {
@@ -104,13 +162,11 @@ func resolveHost(cfg config, cache *OwnershipCache, r *http.Request) string {
 		convID = id
 	}
 	if convID != "" {
-		if h, ok := cache.Host(convID); ok {
-			return h
+		if ip, ok := cache.HostIP(convID); ok {
+			return TargetURL(ip, cfg.upstreamPort)
 		}
 	}
-	// Unknown/unassigned: send to the default pod; the controller assigns hostPod shortly
-	// and subsequent requests route correctly.
-	return cfg.defaultPod
+	return fallback
 }
 
 // aguiThreadID reads the POST /agui JSON body to get threadId, then restores the body on

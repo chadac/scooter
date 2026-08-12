@@ -11,6 +11,7 @@ class FakeK8s:
         self._pods = pods                       # list[Pod]
         self._convs = {c["metadata"]["name"]: c for c in convs}
         self.patches = []                       # [(name, status)] for assertions
+        self.revives = []                       # [(host_ip, conv_name, generation)] revive-pushes
 
     def list_host_pods(self):
         return list(self._pods)
@@ -22,6 +23,9 @@ class FakeK8s:
         self.patches.append((name, status))
         cur = self._convs[name].setdefault("status", {})
         cur.update({k: v for k, v in status.items()})
+
+    def notify_revive(self, host_ip, conv_name, generation):
+        self.revives.append((host_ip, conv_name, generation))
 
     # test helpers
     def status(self, name):
@@ -44,6 +48,39 @@ def test_pending_conversation_gets_a_host():
     assert k.status("c1")["hostPod"] == "a"
     assert k.status("c1")["phase"] == "Assigned"
     assert k.status("c1")["generation"] == 1
+
+
+def test_notify_revive_returns_immediately_even_if_the_http_hangs():
+    # REGRESSION (found live on odin): notify_revive did a SYNCHRONOUS HTTP POST; a stale,
+    # unroutable hostIP hung the connect well past the timeout, wedging the whole reconcile
+    # pass so NO conversation got assigned. The real ControllerK8s.notify_revive must be
+    # FIRE-AND-FORGET — return promptly regardless of the HTTP outcome. We point it at an
+    # unroutable IP (TEST-NET-1, guaranteed to black-hole) and assert it returns fast.
+    import time
+    from conversation_controller.k8s import ControllerK8s
+
+    k = ControllerK8s(namespace="x")
+    t = time.time()
+    k.notify_revive("192.0.2.1", "c1", 1)  # 192.0.2.0/24 = RFC5737 TEST-NET-1, unroutable
+    elapsed = time.time() - t
+    assert elapsed < 1.0, f"notify_revive blocked {elapsed:.1f}s (must be fire-and-forget)"
+
+
+def test_assign_patches_host_ip_and_pushes_revive():
+    # The loop records the owner pod's IP (routing address) and pushes a revive to it.
+    k = FakeK8s([Pod("a", True, ip="10.42.0.7")], [_cr("c1")])
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["hostIP"] == "10.42.0.7"
+    # revive-push to the new host: (host_ip, conv_name, generation)
+    assert k.revives == [("10.42.0.7", "c1", 1)]
+
+
+def test_no_revive_push_when_pod_has_no_ip_yet():
+    # A just-scheduled pod (no IP) is assigned but NOT pushed — the next tick re-pushes.
+    k = FakeK8s([Pod("a", True, ip=None)], [_cr("c1")])
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["hostPod"] == "a"
+    assert k.revives == []
 
 
 def test_assigned_to_ready_host_is_noop():

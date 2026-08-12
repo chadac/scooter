@@ -22,6 +22,7 @@ def _state(cr: dict) -> ConversationState:
         host_pod=st.get("hostPod"),
         phase=st.get("phase", "Pending"),
         generation=int(st.get("generation", 0)),
+        host_ip=st.get("hostIP"),
         parent_id=spec.get("parentId"),
     )
 
@@ -66,6 +67,7 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         k8s.patch_status(c.name, {
             "phase": action.phase,
             "hostPod": action.host_pod,
+            "hostIP": action.host_ip,
             "generation": action.generation,
         })
         hosts[c.name] = action.host_pod  # so a child reconciled later co-locates here
@@ -73,5 +75,16 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         if c.parent_id is None:
             load[action.host_pod] = load.get(action.host_pod, 0) + 1  # count it for the rest of this pass
         results.append((c.name, "assign"))
-        logger.info("assigned %s -> %s (gen %d)", c.name, action.host_pod, action.generation)
+        logger.info("assigned %s -> %s @ %s (gen %d)", c.name, action.host_pod, action.host_ip, action.generation)
+        # Push the new host to revive the conversation from the mirror BEFORE user traffic
+        # arrives (seamless rollout — see todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md). notify_revive
+        # is FIRE-AND-FORGET (spawns a daemon thread) so a stale/unroutable hostIP can never
+        # block the reconcile pass — the host also revives lazily on first request. The
+        # try/except is a belt-and-suspenders guard on the thread SPAWN itself. Skipped when
+        # the pod has no IP yet (just scheduled) — the next tick re-pushes once the IP is known.
+        if action.host_ip:
+            try:
+                k8s.notify_revive(action.host_ip, c.name, action.generation)
+            except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
+                logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
     return results

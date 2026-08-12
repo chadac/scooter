@@ -43,7 +43,7 @@ let
   hasModels = modelIds != [ ];
 in
 {
-  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ./conversation-controller.nix ];
+  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ./conversation-controller.nix ./legacy-state-migration.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -673,28 +673,39 @@ in
       # terminates the old ordinal pod BEFORE creating its replacement, so the shared
       # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
       # Deployment needed Recreate) — RollingUpdate is safe here.
-      statefulSets.agent-host = {
+      #
+      # DESIGN (rollout-drain, todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — NOT YET APPLIED:
+      # convert this StatefulSet → a Deployment for seamless upgrades:
+      #   - deployments.agent-host (random pod names — routing is by POD IP now, not DNS).
+      #   - strategy RollingUpdate maxSurge=1, maxUnavailable=0 (new pod Ready BEFORE the old
+      #     drains → no capacity gap; terminate-before-create was ONLY forced by the RWO PVC).
+      #   - per-pod `state` volumeClaimTemplate → emptyDir (it's a HOT CACHE; the durable copy
+      #     is the shared RWX history mirror ⇒ no RWO PVC ⇒ no Multi-Attach blocker).
+      #   - REMOVE services.agent-host-headless (no per-pod DNS); keep the `agent-host`
+      #     ClusterIP Service (the router's fallback target).
+      # SEAMLESS ROLLOUT (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md): a Deployment with
+      # maxSurge=1/maxUnavailable=0 — a new-gen pod becomes Ready BEFORE any old pod drains,
+      # so capacity never dips during an upgrade (the StatefulSet's terminate-before-create,
+      # forced by the RWO PVC's Multi-Attach, was what caused the gap). Routing is by POD IP
+      # now (status.hostIP), so random Deployment pod names are fine — no ordinal/DNS needed.
+      # The per-pod `state` volume is an emptyDir HOT CACHE: durable history lives on the
+      # shared RWX mirror (MIRROR_STATE_PATH), and a reassigned conversation is revived from
+      # it (controller revive-push). No RWO PVC ⇒ no Multi-Attach ⇒ surge is safe.
+      deployments.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
-          serviceName = "agent-host-headless";
           replicas = cfg.conversationController.agentHostReplicas;
-          updateStrategy.type = "RollingUpdate";
+          strategy = {
+            type = "RollingUpdate";
+            rollingUpdate = { maxSurge = 1; maxUnavailable = 0; };
+          };
           selector.matchLabels.app = "agent-host";
-          # Each pod gets its OWN state PVC (a shared RWO PVC can't Multi-Attach to N
-          # pods). History survives across pods via the NFS mirror (#249) when
-          # MIRROR_STATE_PATH is set to shared storage.
-          volumeClaimTemplates = [{
-            metadata.name = "state";
-            spec = { accessModes = [ "ReadWriteOnce" ]; resources.requests.storage = "5Gi"; };
-          }];
           template = {
             metadata.labels.app = "agent-host";
             spec = {
               serviceAccountName = "agent-host";
-              # The state PVC (EBS/ext4) is owned root:root with restrictive
-              # access; the agent-host process can't write its per-conversation
-              # dirs without an fsGroup that the kubelet uses to relabel/chgrp
-              # the volume. 0 = root group (the uid the container runs as).
+              # fsGroup 0 (root group) so the agent-host process — running as root — can write
+              # its scratch/state dirs. (Kept from the PVC era; harmless with emptyDir.)
               securityContext = {
                 fsGroup = 0;
                 fsGroupChangePolicy = "OnRootMismatch";
@@ -943,9 +954,12 @@ in
                 lifecycle.preStop.exec.command = [ "sleep" "5" ];
               };
               terminationGracePeriodSeconds = 20;
-              # `state` comes from the StatefulSet's per-pod volumeClaimTemplate (above),
-              # so it's NOT listed here. scratch/tmp are ephemeral emptyDirs.
+              # `state` is an emptyDir HOT CACHE (not a PVC): the durable copy is the shared
+              # RWX history mirror, and a reassigned conversation is revived from it. Using an
+              # emptyDir (no RWO PVC) is what lets the Deployment surge (maxSurge=1) without a
+              # Multi-Attach deadlock. scratch/tmp are also ephemeral emptyDirs.
               volumes = [
+                { name = "state"; emptyDir = { }; }
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
               ] ++ lib.optional cfg.conversationController.historyMirror.enable
@@ -1006,10 +1020,10 @@ in
         };
       };
 
-      # The `agent-host` Service — the DNS every caller uses (agent-host.<ns>.svc:8080).
-      # Flag OFF: selects the agent-host pods directly (today). Flag ON: selects the
-      # ROUTER, which reverse-proxies each request to the pod owning the conversation.
-      # Callers (UI/broker/webhooks) are unchanged — the front door just gains routing.
+      # The `agent-host` Service — the public front door every caller uses
+      # (agent-host.<ns>.svc:8080). Selects the ROUTER, which reverse-proxies each request to
+      # the pod owning the conversation (status.hostIP). Callers (UI/broker/webhooks) are
+      # unchanged.
       services.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         spec = {
@@ -1017,12 +1031,13 @@ in
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };
       };
-      # Headless Service backing the StatefulSet — gives each pod stable DNS
-      # (agent-host-<n>.agent-host-headless.<ns>.svc), the address the router forwards to.
-      services.agent-host-headless = {
-        metadata = { name = "agent-host-headless"; namespace = cfg.namespace; };
+      # ClusterIP Service selecting the agent-host PODS directly — the ROUTER'S FALLBACK
+      # target (AGENT_HOST_SERVICE) for non-scoped / unassigned / stale-IP requests: k8s
+      # load-balances to any ready pod. (Replaces the per-pod headless Service — routing is
+      # by pod IP now, so no per-pod DNS is needed; this is just the "any ready pod" door.)
+      services.agent-host-pods = {
+        metadata = { name = "agent-host-pods"; namespace = cfg.namespace; };
         spec = {
-          clusterIP = "None";
           selector.app = "agent-host";
           ports = [{ port = 8080; targetPort = "agui"; name = "agui"; }];
         };

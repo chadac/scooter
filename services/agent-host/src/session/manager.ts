@@ -250,8 +250,25 @@ export interface SessionManager {
    *  Returns an unsubscribe. A RUN_FINISHED with outcome "interrupt" (a pause
    *  awaiting a user answer) is NOT a completion and does not fire. */
   onSubagentComplete(cb: (subagentId: SessionId, parentId: SessionId) => void): () => void;
-  /** Re-attach to / revive a suspended conversation (resume + replay log). */
+  /** Re-attach to / revive a suspended conversation (resume + replay log). Assumes the
+   *  conversation is known to THIS pod (durable state present locally). */
   revive(id: SessionId): Promise<Conversation>;
+  /** REVIVE-ON-ASSIGN (seamless rollout): revive a conversation that may be UNKNOWN to this
+   *  pod, hydrating its history from the shared mirror first (this pod is its NEW owner after
+   *  a rollout reassignment). Idempotent (no-op if already in memory). `expectedGen` is the
+   *  CR's current generation for fencing — revive only if this pod is the current owner at
+   *  that generation; a stale push (older gen) is a no-op. Distinct from `revive()`, which
+   *  404s when the conversation isn't already local. DESIGN STUB — see
+   *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
+  reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
+  /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
+   *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
+   *  the sandbox/bridge (unlike revive*). Pulls events from the mirror into local if absent,
+   *  then registers the entry as a suspended placeholder. Returns true if the conversation
+   *  exists anywhere (in memory, local, or mirror) — false ⇒ genuinely unknown (404). Cheap
+   *  + idempotent; the route calls it before deciding to 404. See ROLLOUT_DRAIN_AND_POD_IP.md
+   *  (the "GET after a pod move / deleted CR" 404 gap). */
+  ensureReadable(id: SessionId): Promise<boolean>;
   /** Forward a user prompt into the conversation's goose session. An optional
    *  `model` switches the conversation's model: if it differs from the current
    *  one, the live goose session is rebuilt with the new model. `priority`
@@ -366,6 +383,12 @@ export interface SessionManagerDeps {
    *  generation). Omitted / allowAllGuard = single-replica (always allow, today's
    *  behavior). See ownershipGuard.ts. */
   ownershipGuard?: OwnershipGuard;
+  /** Optional (multi-replica revive-on-assign): pull ONE conversation's durable state from
+   *  the shared mirror into local so this pod can hydrate + revive a conversation the
+   *  controller just reassigned here (that this pod never owned). Returns false if the
+   *  mirror has no such conversation. Wired to mirroredStore.hydrateFromMirror when a mirror
+   *  is configured; omitted single-replica. Used by reviveFromMirror(). */
+  hydrateFromMirror?: (id: SessionId) => Promise<boolean>;
   /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
@@ -735,6 +758,74 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return toConversation(entry);
     },
 
+    async reviveFromMirror(id, expectedGen) {
+      // REVIVE-ON-ASSIGN (seamless rollout): the controller pushes this on a conversation's
+      // NEW host right after (re)assigning it. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+
+      // FENCE: only revive if this pod is the current owner at `expectedGen`. canWrite()
+      // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a
+      // genuinely stale push still can't advance the log (append is fenced too), and
+      // reviving a conversation we don't own is a harmless read+resume that the next
+      // reconcile corrects. But a POSITIVE "another pod owns it" verdict → skip.
+      if (!ownershipGuard.canWrite(id)) {
+        return; // fenced out — not our conversation (a stale push).
+      }
+
+      // If NOT already live here, pull its durable state from the mirror into local, hydrate
+      // the Entry (hydrateByThread reads the now-local meta), and revive it. If it's ALREADY
+      // in memory this is a no-op — but we STILL run the dangling-run resume below (a
+      // conversation reassigned mid-run may already be revived yet have an unfinished run).
+      if (!entries.get(id)) {
+        if (deps.hydrateFromMirror) {
+          const pulled = await deps.hydrateFromMirror(id).catch((err) => {
+            console.error(`[manager] reviveFromMirror(${id}) mirror pull failed:`, err);
+            return false;
+          });
+          if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
+        }
+        const entry = await hydrateByThread(id as ThreadId);
+        if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
+        void expectedGen; // gen already enforced via the fence above + the append guard.
+        await this.revive(id);
+      }
+
+      // Whether we just revived it or it was already live: if the conversation was reassigned
+      // MID-RUN (its last run started but never emitted RUN_FINISHED — the old pod drained
+      // before the model finished), re-drive it so the run completes on this host. Without
+      // this the UI is stuck "thinking" forever. Same mechanism boot uses (resumeInterrupted),
+      // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
+      try {
+        if (hasDanglingRun(await collectEvents(store.readEvents(id)))) {
+          console.log(`[manager] reviveFromMirror(${id}): resuming a dangling run`);
+          // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
+          // role:user turn) which the UI hides — the nudge is internal, not a user message.
+          void this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume").catch((err) =>
+            console.error(`[manager] reviveFromMirror(${id}) dangling-run resume failed:`, err),
+          );
+        }
+      } catch (err) {
+        console.error(`[manager] reviveFromMirror(${id}) dangling-run check failed:`, err);
+      }
+    },
+
+    async ensureReadable(id) {
+      // Already known to this pod → readable.
+      if (entries.get(id)) return true;
+      // Pull its durable state (meta + events) from the mirror into local if a mirror is
+      // configured — so a reconnecting UI (GET events / events.integrity) can read history
+      // even after the owner pod moved (rollout) or the CR was cleared. READ-ONLY: no
+      // sandbox/bridge spin-up (unlike revive*). hydrateByThread then registers the entry as
+      // a suspended placeholder; the next prompt revives the pod on demand.
+      if (deps.hydrateFromMirror) {
+        await deps.hydrateFromMirror(id).catch((err) => {
+          console.error(`[manager] ensureReadable(${id}) mirror pull failed:`, err);
+          return false;
+        });
+      }
+      const entry = await hydrateByThread(id as ThreadId);
+      return entry !== undefined;
+    },
+
     async prompt(id, text, model, priority, interrupt, images, files, source) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
@@ -809,7 +900,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       //      fully up before the nudge is sent).
       await entry.bridge?.cancel().catch(() => {});
       await applyModelSwitch(entry, model);
-      await this.prompt(id, MODEL_SWITCH_NUDGE);
+      // source "resume" → SYSTEM_MESSAGE (UI-hidden): a model-switch nudge is internal too.
+      await this.prompt(id, MODEL_SWITCH_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume");
       return true;
     },
 
@@ -1012,7 +1104,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           const id = queue.shift();
           if (!id) return;
           try {
-            await this.prompt(id, RESUME_NUDGE);
+            // source "resume" → SYSTEM_MESSAGE (UI-hidden); see reviveFromMirror.
+            await this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume");
             resumed.push(id);
           } catch (err) {
             // eslint-disable-next-line no-console

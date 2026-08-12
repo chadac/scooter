@@ -52,6 +52,14 @@ def test_assigns_a_pending_conversation_and_bumps_generation():
     assert a.phase == "Assigned"
 
 
+def test_assign_carries_the_chosen_pods_ip():
+    # The routing address (pod IP) rides along on the Assign so loop.py can patch hostIP.
+    a = reconcile(conv(host=None, gen=0), [Pod("a", True, ip="10.42.0.7")], {}, cap=10)
+    assert isinstance(a, Assign)
+    assert a.host_pod == "a"
+    assert a.host_ip == "10.42.0.7"
+
+
 def test_noop_when_host_still_ready():
     a = reconcile(conv(host="a", phase="Assigned", gen=1), [Pod("a", True)], {"a": 1}, cap=10)
     assert isinstance(a, NoOp)

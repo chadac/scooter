@@ -53,9 +53,19 @@ func TestIsNonScoped(t *testing.T) {
 }
 
 func TestTargetURL(t *testing.T) {
-	u := TargetURL("agent-host-0", "agent-host-headless", "agent-sandbox", 8080)
-	want := "http://agent-host-0.agent-host-headless.agent-sandbox.svc.cluster.local:8080"
+	// Route by POD IP (Deployments give random pods no stable DNS).
+	u := TargetURL("10.42.0.49", 8080)
+	want := "http://10.42.0.49:8080"
 	if u.String() != want {
 		t.Errorf("TargetURL = %q, want %q", u.String(), want)
+	}
+}
+
+func TestFallbackURL(t *testing.T) {
+	// Non-scoped / unassigned / stale-IP → the agent-host ClusterIP Service (any ready pod).
+	u := FallbackURL("agent-host", "agent-sandbox", 8080)
+	want := "http://agent-host.agent-sandbox.svc.cluster.local:8080"
+	if u.String() != want {
+		t.Errorf("FallbackURL = %q, want %q", u.String(), want)
 	}
 }

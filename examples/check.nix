@@ -17,10 +17,9 @@ let
 
   # resource-kind -> names the platform MUST render with all features enabled.
   expect = {
-    # agent-host is a StatefulSet now (stable per-pod DNS for conversation routing).
-    deployments = [ "agent-broker" "agent-webhooks" "ui" ];
-    statefulSets = [ "agent-host" ];
-    services = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
+    # agent-host is a Deployment (random pods; routing by pod IP + surge rollout).
+    deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" ];
+    services = [ "agent-host" "agent-host-pods" "agent-broker" "agent-webhooks" "ui" ];
     # deploy-config-files: the deployTools.configFiles ConfigMap (enabled below).
     configMaps = [ "agent-skills" "deploy-config-files" ];
   };
@@ -48,13 +47,33 @@ let
   # deploy-config-files ConfigMap with the file, and (b) tell the agent-host to
   # mount it via SCOOTER_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files.
   hostEnv =
-    let ctrs = builtins.attrValues (res.statefulSets.agent-host.spec.template.spec.containers or { });
+    let ctrs = builtins.attrValues (res.deployments.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   cfWired = builtins.any (e: e.name == "SCOOTER_CONFIG_FILES_CONFIGMAP") hostEnv;
   cfHasFile = (res.configMaps.deploy-config-files.data or { }) ? "nix.conf";
   cfProblems =
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
+
+  # Rollout-drain topology invariants (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — the fields a
+  # seamless rollout depends on. A regression here (reverting to a StatefulSet, dropping the
+  # surge strategy, re-adding a per-pod PVC, or losing the routing IP field) silently
+  # reintroduces the capacity gap / breaks routing, so pin them at render time.
+  ahDep = res.deployments.agent-host.spec or { };
+  ahStrategy = ahDep.strategy or { };
+  ahRolling = ahStrategy.rollingUpdate or { };
+  stateVol = builtins.head (builtins.filter (v: v.name == "state")
+    (res.deployments.agent-host.spec.template.spec.volumes or [ ]) ++ [ { } ]);
+  crdVersions = res.customResourceDefinitions.conversations.spec.versions or [ ];
+  crdStatusProps =
+    if crdVersions == [ ] then { }
+    else (builtins.head crdVersions).schema.openAPIV3Schema.properties.status.properties or { };
+  rolloutProblems =
+    (if (ahStrategy.type or "") == "RollingUpdate" then [ ] else [ "agent-host.strategy.type != RollingUpdate (needs surge, not Recreate/STS)" ])
+    ++ (if (ahRolling.maxUnavailable or null) == 0 then [ ] else [ "agent-host.strategy.maxUnavailable != 0 (a rollout would drop capacity)" ])
+    ++ (if (ahRolling.maxSurge or null) == 1 then [ ] else [ "agent-host.strategy.maxSurge != 1 (no new-pod-before-old-drains)" ])
+    ++ (if (stateVol ? emptyDir) then [ ] else [ "agent-host `state` volume is not an emptyDir (a per-pod PVC blocks surge via Multi-Attach)" ])
+    ++ (if (crdStatusProps ? hostIP) then [ ] else [ "Conversation CRD status.hostIP missing (the router's routing address)" ]);
 
   # The model catalog (agent.availableModels attrset) must render AGENT_MODELS_JSON
   # (rich: ids + hints + default) into the agent-host env, and GOOSE_MODEL as the
@@ -67,7 +86,7 @@ let
     };
   };
   mHostEnv =
-    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.statefulSets.agent-host.spec.template.spec.containers or { });
+    let ctrs = builtins.attrValues (modelPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   mEnvVal = name: let m = builtins.filter (e: e.name == name) mHostEnv; in if m == [ ] then "" else (builtins.head m).value;
   modelsJson = mEnvVal "AGENT_MODELS_JSON";
@@ -130,7 +149,7 @@ let
     ++ (if managerUrlSet then [ ] else [ "ingress-disabled: AGENT_MANAGER_URL empty (should derive from host)" ])
     ++ (if noChatIngress then [ ] else [ "ingress-disabled: a chat Ingress was rendered anyway (competing router)" ]);
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems;
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired; models wired\n"

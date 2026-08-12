@@ -352,8 +352,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });
 
-  r.get("/conversations/:id", (ctx) => {
-    const conv = sessions.get(ctx.params.id);
+  r.get("/conversations/:id", async (ctx) => {
+    // Hydrate-if-absent (read-only) so a reconnect after a pod move / cleared CR resolves
+    // instead of 404ing. See events.integrity + ROLLOUT_DRAIN_AND_POD_IP.md.
+    let conv = sessions.get(ctx.params.id);
+    if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
     return conv ? { json: view(conv) } : { status: 404, json: { error: "not found" } };
   });
 
@@ -415,6 +418,26 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
     await sessions.revive(ctx.params.id);
     return { json: view(sessions.get(ctx.params.id)!) };
+  });
+
+  // Cluster-internal REVIVE-ON-ASSIGN (seamless rollout). The controller POSTs this on a
+  // conversation's new host right after (re)assigning it, so the host replays history from
+  // the shared mirror BEFORE user traffic arrives. Unlike /resume above, this MUST work when
+  // the conversation is NOT already in memory (that's the whole point — it was just
+  // reassigned here from a drained pod). Idempotent: a no-op if already revived. Fencing:
+  // the `gen` query param is the CR's current generation; if this pod isn't the current
+  // owner (or the push is stale), skip — the ownership guard still gates writes regardless.
+  //
+  // DESIGN STUB — not implemented. Must: (1) verify caller is the controller (SA/secret —
+  // spec Q4); (2) hydrate-from-mirror if absent; (3) fence on `gen`; (4) be safe to call
+  // concurrently / repeatedly. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+  r.post("/internal/revive/:id", async (ctx) => {
+    const gen = Number(new URL(ctx.req.url ?? "", "http://x").searchParams.get("gen") ?? "0");
+    // Hydrate-if-absent + fence (a stale/mis-routed push is a no-op inside reviveFromMirror).
+    // Best-effort from the controller's view; return 202 (accepted) rather than 200 so a
+    // caller can tell it's an async pre-warm, not a synchronous "definitely revived".
+    await sessions.reviveFromMirror(ctx.params.id, Number.isFinite(gen) ? gen : 0);
+    return { status: 202, json: { revived: ctx.params.id } };
   });
 
   // Manually COMPACT: summarize older turns, then continue on [summary + recent].
@@ -525,6 +548,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.get("/conversations/:id/events", async (ctx) => {
+    // Ensure history is local first (a reconnect may land on a non-owner pod after a
+    // rollout / cleared CR) so onAttach's store.readEvents replays the full log. Read-only.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     // SSE — the server owns the connection; returns void (no JSON result).
     await server.subscribeSSE(ctx.params.id, ctx.res);
   });
@@ -538,9 +564,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/events.integrity", async (ctx) => {
     const id = ctx.params.id;
     const { res } = ctx;
-    // Unknown conversation -> 404 so the client stops reconnecting (a deleted
-    // conversation otherwise loops retries forever).
-    if (!sessions.get(id)) {
+    // Make history readable on THIS pod first: after a rollout (or a cleared CR) the owner
+    // pod may have moved, so a reconnecting UI lands on a pod that doesn't have the
+    // conversation in memory. ensureReadable pulls it from the mirror (read-only, no sandbox
+    // spin-up). Only 404 if it's genuinely unknown ANYWHERE — so the client stops
+    // reconnecting for a truly deleted conversation, but a moved one self-heals.
+    if (!sessions.get(id) && !(await sessions.ensureReadable(id))) {
       res.writeHead(404, { "Content-Type": "application/json" }).end('{"error":"not found"}');
       return;
     }
