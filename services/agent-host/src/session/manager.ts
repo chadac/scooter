@@ -969,7 +969,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       for (const m of metas) {
         if (entries.has(m.id)) continue; // a live one already exists
         const name = `conv-${shortId(m.threadId)}`;
-        hydrateEntry(m, live.get(name));
+        const entry = hydrateEntry(m, live.get(name));
+        // RE-REGISTER the CR on boot so EVERY persisted conversation is observable + routable,
+        // not just ones that get prompted again. register() is only otherwise called on
+        // start()/spawnChild()/revive() — a conversation that predates CR registration, or whose
+        // CR was lost, would be invisible until its next revive. Idempotent (409 = no-op),
+        // fire-and-forget; the controller (re)assigns the CR a host on its next reconcile.
+        void conversationRegistry.register(entry.id, {
+          model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+        });
       }
     },
 
