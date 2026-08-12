@@ -47,7 +47,9 @@ const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
 const WARM_STORE_LABEL = "scooter.io/warm-store";   // image content tag (the version key)
 const POOL_STATE_LABEL = "scooter.io/pool-state";   // warming|ready|claimed|retiring
 const CLAIMED_BY_LABEL = "scooter.io/claimed-by";   // conv id (the sandbox NAME) when claimed
-const LAST_USED_LABEL = "scooter.io/last-used";     // rfc3339, for LRU
+// last-used is an ANNOTATION, not a label: it's an rfc3339 timestamp whose COLONS are invalid
+// in a label value (a label patch 422s "invalid label value"). Annotations allow any value.
+const LAST_USED_ANNOTATION = "scooter.io/last-used"; // rfc3339, for LRU
 
 /** The tag portion of an OCI ref — the part after the LAST ':' that isn't a registry
  *  port. Mirrors the kubenix `lib.last (splitString ":" ...)` AND the controller's
@@ -205,25 +207,23 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // PATCH (a merge patch carrying resourceVersion 400s). The `test` op IS the CAS for PATCH.
   const claimWarmStorePvc = async (sandboxNameForConv: string): Promise<string | null> => {
     const tag = imageTagOf(opts.sandboxImage);
-    if (!tag) {
-      console.warn(`[k8sProvisioner] warm-store: no image tag from '${opts.sandboxImage}' — skipping claim`);
-      return null;
-    }
+    if (!tag) return null;
     // Label keys are JSON-pointer components — '/' is escaped as '~1'.
     const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
     try {
-      const selector = `${POOL_STATE_LABEL}=ready,${WARM_STORE_LABEL}=${tag}`;
       const ready = await core.listNamespacedPersistentVolumeClaim({
         namespace: ns,
-        labelSelector: selector,
+        labelSelector: `${POOL_STATE_LABEL}=ready,${WARM_STORE_LABEL}=${tag}`,
       });
-      console.log(`[k8sProvisioner] warm-store: ${ready.items?.length ?? 0} ready PVC(s) for '${selector}'`);
       for (const pvc of ready.items ?? []) {
         const name = pvc.metadata?.name;
         if (!name) continue;
         try {
           // CAS: test pool-state==ready (fails 422 if another claimer already flipped it),
-          // then replace it + stamp claimed-by + last-used. Atomic on the apiserver.
+          // then replace it + stamp claimed-by (all LABELS). last-used is an ANNOTATION (its
+          // colons are illegal in a label) → set via a separate merge patch after we win, so
+          // the CAS body carries only valid label values (else the whole patch 422s and we'd
+          // mistake it for a lost race). The claimed-by flip is the atomic win.
           await core.patchNamespacedPersistentVolumeClaim(
             {
               name,
@@ -232,11 +232,22 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
                 { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
                 { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
                 { op: "add", path: ptr(CLAIMED_BY_LABEL), value: sandboxNameForConv },
-                { op: "add", path: ptr(LAST_USED_LABEL), value: new Date().toISOString() },
               ] as object,
             },
             setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
           );
+          // We won the CAS. Stamp last-used (LRU) as an annotation — a merge patch auto-creates
+          // the annotations map. Best-effort: a failure here doesn't un-claim (LRU is a hint).
+          await core
+            .patchNamespacedPersistentVolumeClaim(
+              {
+                name,
+                namespace: ns,
+                body: { metadata: { annotations: { [LAST_USED_ANNOTATION]: new Date().toISOString() } } },
+              },
+              setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+            )
+            .catch((e) => console.warn(`[k8sProvisioner] warm-store: last-used stamp failed (non-fatal):`, e));
           console.log(`[k8sProvisioner] warm-store: claimed ${name} for ${sandboxNameForConv}`);
           return name; // we won the claim
         } catch (e: unknown) {
@@ -333,9 +344,6 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // is on and one is ready for our image tag. null → a fresh volumeClaimTemplate below
       // (cold pool never blocks). The claimed-by label carries the Sandbox NAME (what the
       // controller matches on for return/leak).
-      console.log(
-        `[k8sProvisioner] warm-store gate for ${name}: overlayStore=${opts.overlayStore} warmStorePool=${opts.warmStorePool}`,
-      );
       const overlayClaimName =
         (opts.overlayStore ?? false) && (opts.warmStorePool ?? false)
           ? await claimWarmStorePvc(name)

@@ -26,7 +26,9 @@ SANDBOX_PLURAL = "sandboxes"
 LBL_WARM_STORE = "scooter.io/warm-store"   # image content tag (the version key)
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed
-LBL_LAST_USED = "scooter.io/last-used"     # rfc3339, for LRU
+# last-used is an ANNOTATION, not a label — an rfc3339 timestamp's colons are illegal in a
+# label value (the claim's label patch would 422). Read for LRU from annotations.
+ANN_LAST_USED = "scooter.io/last-used"     # rfc3339, for LRU
 LBL_WARM_PVC = "scooter.io/warm-pvc"       # on a warm Job: the PVC name it warms (PVC↔Job link)
 POOL_SELECTOR = LBL_POOL_STATE             # any PVC carrying a pool-state is a pool PVC
 
@@ -87,6 +89,7 @@ class ControllerK8s:
             self.namespace, label_selector=POOL_SELECTOR
         ).items:
             labels = pvc.metadata.labels or {}
+            annotations = pvc.metadata.annotations or {}
             name = pvc.metadata.name
             out.append(
                 PoolPvc(
@@ -94,7 +97,7 @@ class ControllerK8s:
                     image_tag=labels.get(LBL_WARM_STORE, ""),
                     state=labels.get(LBL_POOL_STATE, ""),
                     claimed_by=labels.get(LBL_CLAIMED_BY),
-                    last_used=labels.get(LBL_LAST_USED),
+                    last_used=annotations.get(ANN_LAST_USED),
                     bound_to_pod=name in bound,
                     warm_job_status=warm_status.get(name),
                 )

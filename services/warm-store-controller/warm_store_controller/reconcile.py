@@ -34,7 +34,7 @@ class PoolPvc:
     image_tag: str            # label scooter.io/warm-store — the version key (overlay lower identity)
     state: str                # label scooter.io/pool-state: warming|ready|claimed|retiring
     claimed_by: str | None = None   # label scooter.io/claimed-by (conv id) when claimed
-    last_used: str | None = None    # label scooter.io/last-used (rfc3339) for LRU
+    last_used: str | None = None    # annotation scooter.io/last-used (rfc3339) for LRU
     bound_to_pod: bool = False       # is a live pod currently mounting it? (RWO single-attach)
     # For a `warming` PVC: the terminal state of its warm Job, resolved by the shell.
     # "succeeded" → promote to ready; "failed" → discard; "running"/None → still warming.
