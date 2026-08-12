@@ -32,10 +32,13 @@ class ConversationState:
 
     name: str
     host_pod: str | None       # status.hostPod (owner pod NAME — fencing identity)
-    phase: str                 # status.phase (Pending | Assigned | Orphaned)
+    phase: str                 # status.phase (Pending | Assigned | Orphaned) — "Pending" default
     generation: int            # status.generation (the fence epoch)
     host_ip: str | None = None # status.hostIP (owner pod IP — routing address)
     parent_id: str | None = None  # spec.parentId — a subagent co-locates on its parent's pod
+    # False when the CR carries NO status.phase yet (status: null) — the shell must still
+    # materialize Pending for such a CR even though `phase` defaulted to "Pending".
+    phase_present: bool = True
 
 
 # --- Actions the shell will apply -----------------------------------------

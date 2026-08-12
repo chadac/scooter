@@ -21,7 +21,12 @@ class FakeK8s:
 
     def patch_status(self, name, status):
         self.patches.append((name, status))
-        cur = self._convs[name].setdefault("status", {})
+        # Mirror the real status-subresource patch: a null/absent status materializes into
+        # an object (the apiserver creates status on first patch — it's never left null).
+        cur = self._convs[name].get("status")
+        if cur is None:
+            cur = {}
+            self._convs[name]["status"] = cur
         cur.update({k: v for k, v in status.items()})
 
     def notify_revive(self, host_ip, conv_name, generation):
@@ -48,6 +53,26 @@ def test_pending_conversation_gets_a_host():
     assert k.status("c1")["hostPod"] == "a"
     assert k.status("c1")["phase"] == "Assigned"
     assert k.status("c1")["generation"] == 1
+
+
+def test_statusless_cr_unassignable_materializes_pending():
+    # REGRESSION (found live on odin): a brand-new CR with status: null that can't be
+    # assigned (no pod / all at cap) was left at status:null forever — _state defaults
+    # phase to "Pending", so the LeavePending branch thought it was ALREADY Pending and
+    # skipped the patch → empty phase in the UI. It must materialize {phase: Pending}.
+    cr = {"metadata": {"name": "cnew"}, "spec": {}, "status": None}  # status: null
+    k = FakeK8s([], [cr])  # no ready pods → unassignable
+    reconcile_once(k, cap=1)
+    assert k.status("cnew").get("phase") == "Pending", "status:null CR must get phase materialized"
+
+
+def test_already_pending_no_host_is_not_rechurned():
+    # The complement: a CR that ALREADY says {phase: Pending, hostPod: null} and still can't
+    # be assigned must NOT be re-patched every tick (avoid churn).
+    cr = _cr("cp", phase="Pending")  # has status.phase=Pending, no host
+    k = FakeK8s([], [cr])
+    reconcile_once(k, cap=1)
+    assert k.patches == [], "an already-materialized Pending must not be re-patched"
 
 
 def test_notify_revive_returns_immediately_even_if_the_http_hangs():

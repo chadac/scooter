@@ -21,6 +21,10 @@ def _state(cr: dict) -> ConversationState:
         name=cr["metadata"]["name"],
         host_pod=st.get("hostPod"),
         phase=st.get("phase", "Pending"),
+        # Whether the CR actually carries a phase (vs. the "Pending" default above). A
+        # status-less CR (status: null / no phase) needs its phase MATERIALIZED even when it
+        # stays Pending — see the LeavePending branch.
+        phase_present=st.get("phase") is not None,
         generation=int(st.get("generation", 0)),
         host_ip=st.get("hostIP"),
         parent_id=spec.get("parentId"),
@@ -56,8 +60,13 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             results.append((c.name, "noop"))
             continue
         if isinstance(action, LeavePending):
-            # Only patch if it isn't already Pending/host-cleared (avoid churn).
-            if c.host_pod is not None or c.phase != "Pending":
+            # Write Pending unless it's ALREADY a materialized Pending with no host — i.e.
+            # don't churn a CR that already says {phase: Pending, hostPod: null}. Critically,
+            # a brand-new CR with NO status yet (status: null → _state defaults phase to
+            # "Pending") must STILL be patched so its phase MATERIALIZES — else an unassignable
+            # new conversation (all pods at cap) sits at status:null forever (empty phase in
+            # the UI). `phase_present` distinguishes "genuinely Pending" from "defaulted".
+            if c.host_pod is not None or not c.phase_present or c.phase != "Pending":
                 k8s.patch_status(c.name, {"phase": "Pending", "hostPod": None})
             hosts[c.name] = None
             results.append((c.name, "pending"))
