@@ -74,11 +74,12 @@ jobs:
           CI: "1"
         run: nix develop --command just ci
 
-      # broker + webhooks: their nix build runs the python test suite
-      # (pytestCheckHook). Building them here gives PR coverage of the Python
-      # services without a separate Python toolchain in CI.
-      - name: broker + webhooks tests (nix build runs pytest)
-        run: nix build .#broker .#webhooks --print-build-logs
+      # Python services: their nix build runs the test suite (pytestCheckHook).
+      # Building them here gives PR coverage of the Python services without a
+      # separate Python toolchain in CI. Keep in sync with the buildPythonApplication
+      # services (broker, webhooks, conversation-controller, warm-store-controller).
+      - name: python service tests (nix build runs pytest)
+        run: nix build .#broker .#webhooks .#conversation-controller .#warm-store-controller --print-build-logs
 
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface
