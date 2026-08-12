@@ -700,6 +700,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
       entry.status = "running";
+      // RE-REGISTER the CR on revive. register() is only called on start()/spawnChild(), so a
+      // conversation revived after a restart/rollout (or hydrated on a lazy prompt) whose CR was
+      // never created / was lost would run CR-less — invisible to `kubectl get conversations`
+      // AND unroutable (no hostPod, so it only works via the router's fallback). register() is
+      // idempotent (409 = already there = no-op), so this is a cheap self-heal. Fire-and-forget.
+      void conversationRegistry.register(id, {
+        model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+      });
       // Register the resume as ACTIVITY. Without this, lastActivityAt stays at its
       // pre-suspend value, so the idle sweep (sweepIdle) sees the conversation as
       // already-idle and re-suspends the pod we JUST started — a UI "Start sandbox"
@@ -721,6 +729,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           console.error(`[manager] onRevived hook failed for ${id}:`, err);
         }
       }
+      // Back to alive: publish phase=Assigned so a suspended→resumed conversation reflects
+      // in `kubectl get conversations`. Owner-fenced, fire-and-forget (see suspend()).
+      if (ownershipGuard.canWrite(id)) void conversationRegistry.setPhase(id, "Assigned");
       return toConversation(entry);
     },
 
@@ -809,6 +820,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await provisioner.suspend(entry.sandbox);
       entry.bridge = undefined;
       entry.status = "suspended";
+      // Publish liveness to the CR (kubectl-observable) — only when we OWN the conversation
+      // (a non-owner must not stomp phase). Fire-and-forget; a failed publish just lags the
+      // view. See conversationRegistry.setPhase + ROLLOUT/lifecycle docs.
+      if (ownershipGuard.canWrite(id)) void conversationRegistry.setPhase(id, "Suspended");
     },
 
     async end(id) {
@@ -954,7 +969,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       for (const m of metas) {
         if (entries.has(m.id)) continue; // a live one already exists
         const name = `conv-${shortId(m.threadId)}`;
-        hydrateEntry(m, live.get(name));
+        const entry = hydrateEntry(m, live.get(name));
+        // RE-REGISTER the CR on boot so EVERY persisted conversation is observable + routable,
+        // not just ones that get prompted again. register() is only otherwise called on
+        // start()/spawnChild()/revive() — a conversation that predates CR registration, or whose
+        // CR was lost, would be invisible until its next revive. Idempotent (409 = no-op),
+        // fire-and-forget; the controller (re)assigns the CR a host on its next reconcile.
+        void conversationRegistry.register(entry.id, {
+          model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+        });
       }
     },
 

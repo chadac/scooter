@@ -133,7 +133,11 @@ in
                 status = {
                   type = "object";
                   properties = {
-                    phase = { type = "string"; };       # Pending | Assigned | Orphaned
+                    # Pending | Assigned | Suspended | Orphaned. The controller owns the
+                    # ASSIGNMENT phases (Pending → Assigned; Orphaned); agent-host publishes the
+                    # LIVENESS of an assigned conversation (Assigned ⇄ Suspended) so it's visible
+                    # in `kubectl get conversations`. See CONVERSATION_LIFECYCLE_CONTROLLER.md.
+                    phase = { type = "string"; };
                     hostPod = { type = "string"; nullable = true; };
                     assignedAt = { type = "string"; };
                     generation = { type = "integer"; };  # fence epoch, bumps per (re)assignment
