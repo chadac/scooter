@@ -35,6 +35,7 @@ GROUP = "scooter.chadac.dev"
 VERSION = "v1alpha1"
 PLURAL = "conversations"
 AGENT_HOST_LABEL = "app=agent-host"
+AGENT_HOST_DEPLOYMENT = "agent-host"  # the Deployment the controller autoscales
 
 # The upstream agent-sandbox Sandbox CR (what the reaper GCs).
 SANDBOX_GROUP = "agents.x-k8s.io"
@@ -64,10 +65,11 @@ REVIVE_TIMEOUT_SECONDS = float(os.environ.get("REVIVE_PUSH_TIMEOUT_SECONDS", "3"
 _core: client.CoreV1Api | None = None
 _custom: client.CustomObjectsApi | None = None
 _coord: client.CoordinationV1Api | None = None
+_apps: client.AppsV1Api | None = None
 
 
 def _apis() -> tuple[client.CoreV1Api, client.CustomObjectsApi, client.CoordinationV1Api]:
-    global _core, _custom, _coord
+    global _core, _custom, _coord, _apps
     if _core is None:
         try:
             config.load_incluster_config()
@@ -76,8 +78,15 @@ def _apis() -> tuple[client.CoreV1Api, client.CustomObjectsApi, client.Coordinat
         _core = client.CoreV1Api()
         _custom = client.CustomObjectsApi()
         _coord = client.CoordinationV1Api()
+        _apps = client.AppsV1Api()
     assert _core is not None and _custom is not None and _coord is not None
     return _core, _custom, _coord
+
+
+def _apps_api() -> client.AppsV1Api:
+    _apis()  # ensure init
+    assert _apps is not None
+    return _apps
 
 
 @dataclass
@@ -181,6 +190,19 @@ class ControllerK8s:
             core.delete_namespaced_config_map(_module_cm_name(sandbox_name), self.namespace)
         except client.ApiException as e:
             _ignore_404(e)
+
+    # --- agent-host autoscaling (the controller IS the autoscaler) ----------
+    def get_agent_host_replicas(self) -> int:
+        """The agent-host Deployment's DESIRED replica count (spec.replicas)."""
+        d = _apps_api().read_namespaced_deployment(AGENT_HOST_DEPLOYMENT, self.namespace)
+        return int(d.spec.replicas or 0)
+
+    def set_agent_host_replicas(self, replicas: int) -> None:
+        """Scale the agent-host Deployment to `replicas` via the scale subresource (a small,
+        conflict-free patch that touches ONLY spec.replicas — not the whole Deployment)."""
+        _apps_api().patch_namespaced_deployment_scale(
+            AGENT_HOST_DEPLOYMENT, self.namespace, {"spec": {"replicas": replicas}}
+        )
 
 
 def _pod_ready(pod) -> bool:

@@ -7,10 +7,13 @@ import logging
 import signal
 import threading
 
+import time
+
+from . import metrics
 from .config import Config
 from .k8s import ControllerK8s
 from .leader import LeaderElector
-from .loop import reconcile_once, reap_orphans
+from .loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("conversation-controller")
@@ -19,6 +22,9 @@ logger = logging.getLogger("conversation-controller")
 def run(cfg: Config, stop: threading.Event) -> None:
     k8s = ControllerK8s(cfg.namespace)
     elector = LeaderElector(cfg.namespace, cfg.lease_name, cfg.identity, cfg.lease_seconds)
+    autoscale_state = AutoscaleState()
+    # /metrics on every replica (leader or standby) so a scrape target is always up.
+    metrics.serve(cfg.metrics_port, stop)
     was_leader = False
     while not stop.is_set():
         try:
@@ -34,6 +40,14 @@ def run(cfg: Config, stop: threading.Event) -> None:
                         reap_orphans(k8s, cfg.orphan_grace_seconds)
                     except Exception:  # noqa: BLE001
                         logger.exception("orphan-reaper pass failed (will retry next tick)")
+                # Autoscale the agent-host fleet to fit demand + export the metric. Leader-only
+                # (single writer of replicas). Guarded so a scale failure can't abort the tick.
+                if cfg.autoscale:
+                    try:
+                        m = autoscale_once(k8s, cfg, autoscale_state, time.monotonic())
+                        metrics.update(m["demand"], m["ready_pods"], m["per_pod"], m["target"])
+                    except Exception:  # noqa: BLE001
+                        logger.exception("autoscale pass failed (will retry next tick)")
             elif was_leader:
                 logger.info("lost leadership — standing by")
             was_leader = leader
