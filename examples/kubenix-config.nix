@@ -125,6 +125,15 @@
       tlsSecretName = "chat-tls";
     };
 
+    # Warm /nix/store PVC pool controller: pre-warms overlay-upper PVCs so a fresh
+    # conversation finds common tools already built. Off in prod by default (the pool
+    # is a hit-rate optimization, not a correctness dependency); enabled here so the
+    # render check exercises its Deployment + RBAC.
+    warmStore = {
+      enable = true;
+      goldenExpr = "nixpkgs#awscli2 nixpkgs#nodejs";
+    };
+
     # Webhooks receiver (GitHub/Slack/…): its own host + NO auth (providers sign
     # their requests). Generic ingress under agentSandbox.webhooks.ingress.
     webhooks.ingress = {
