@@ -12,9 +12,9 @@
  * controller is the single assigner, and self-assigning would race its load accounting.
  */
 
-import { KubeConfig, CustomObjectsApi } from "@kubernetes/client-node";
+import { KubeConfig, CustomObjectsApi, setHeaderOptions, PatchStrategy } from "@kubernetes/client-node";
 
-import type { ConversationRegistry, ConversationSpec } from "./conversationRegistry.js";
+import type { ConversationRegistry, ConversationSpec, ConversationPhase } from "./conversationRegistry.js";
 
 const GROUP = "scooter.chadac.dev";
 const VERSION = "v1alpha1";
@@ -62,6 +62,22 @@ export function createK8sConversationRegistry(
           // to the default pod until a later register() (or the controller) creates the CR.
           if (e?.code === 409) return;
           console.error(`[conversationRegistry] failed to create Conversation CR ${id}:`, e);
+        });
+    },
+
+    async setPhase(id: string, phase: ConversationPhase): Promise<void> {
+      // Publish the liveness transition to status.phase (the status SUBRESOURCE — same as the
+      // controller patches). A merge patch of just {phase} leaves hostPod/hostIP/generation
+      // untouched. Never throws: a 404 (CR gone / not created yet) or any error is logged and
+      // swallowed — a failed publish only means the kubectl view lags, never blocks suspend.
+      await custom
+        .patchNamespacedCustomObjectStatus(
+          { group: GROUP, version: VERSION, namespace, plural: PLURAL, name: id, body: { status: { phase } } },
+          setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+        )
+        .catch((e: { code?: number }) => {
+          if (e?.code === 404) return; // CR not there (yet) — nothing to update.
+          console.error(`[conversationRegistry] failed to set phase=${phase} on ${id}:`, e);
         });
     },
   };

@@ -104,6 +104,51 @@ describe("SessionManager", () => {
     expect(sessions.get(conv.id)?.status).toBe("suspended");
   });
 
+  it("suspend() publishes phase=Suspended to the CR when we OWN the conversation", async () => {
+    const setPhase = vi.fn(async () => {});
+    const registry = { register: vi.fn(async () => {}), setPhase };
+    // A guard that always allows (owner). suspend → setPhase("Suspended"); revive → "Assigned".
+    const guard = { observe: () => {}, canWrite: () => true };
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store: inMemoryStore(),
+      conversationRegistry: registry, ownershipGuard: guard as never,
+    });
+    const conv = await sessions.start("thread-1");
+    await sessions.suspend(conv.id);
+    await sessions.revive(conv.id);
+    // Both liveness transitions were published.
+    expect(setPhase).toHaveBeenCalledWith(conv.id, "Suspended");
+    expect(setPhase).toHaveBeenCalledWith(conv.id, "Assigned");
+  });
+
+  it("suspend() does NOT publish phase when we are NOT the owner (fenced)", async () => {
+    const setPhase = vi.fn(async () => {});
+    const registry = { register: vi.fn(async () => {}), setPhase };
+    const guard = { observe: () => {}, canWrite: () => false }; // not owner
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store: inMemoryStore(),
+      conversationRegistry: registry, ownershipGuard: guard as never,
+    });
+    const conv = await sessions.start("thread-1");
+    await sessions.suspend(conv.id);
+    expect(setPhase).not.toHaveBeenCalled();
+  });
+
+  it("revive() RE-REGISTERS the CR (self-heals a conversation whose CR was lost/never made)", async () => {
+    const register = vi.fn(async () => {});
+    const registry = { register, setPhase: vi.fn(async () => {}) };
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store: inMemoryStore(), conversationRegistry: registry,
+    });
+    const conv = await sessions.start("thread-1"); // register #1 (start)
+    await sessions.suspend(conv.id);
+    register.mockClear();
+    await sessions.revive(conv.id);
+    // revive() re-registers (idempotent 409-swallow makes it a no-op when the CR exists) so a
+    // CR lost across a restart/rollout is re-created — visible in kubectl + routable again.
+    expect(register).toHaveBeenCalledWith(conv.id, expect.objectContaining({ sandboxRef: expect.any(String) }));
+  });
+
   it("revive() resumes the same sandbox and replays the event log", async () => {
     const provisioner = fakeProvisioner();
     const store = inMemoryStore();

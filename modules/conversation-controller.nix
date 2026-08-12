@@ -133,7 +133,11 @@ in
                 status = {
                   type = "object";
                   properties = {
-                    phase = { type = "string"; };       # Pending | Assigned | Orphaned
+                    # Pending | Assigned | Suspended | Orphaned. The controller owns the
+                    # ASSIGNMENT phases (Pending → Assigned; Orphaned); agent-host publishes the
+                    # LIVENESS of an assigned conversation (Assigned ⇄ Suspended) so it's visible
+                    # in `kubectl get conversations`. See CONVERSATION_LIFECYCLE_CONTROLLER.md.
+                    phase = { type = "string"; };
                     hostPod = { type = "string"; nullable = true; };  # owner pod NAME (fencing identity + debugging)
                     # Owner pod IP — the ROUTING ADDRESS. Deployments give random-named pods no
                     # stable DNS, so the router proxies to http://<hostIP>:<port> instead of a
