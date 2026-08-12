@@ -187,6 +187,13 @@
           # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
 
+          # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
+          # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
+          # (top-up warm Jobs, GC retired tags, return-on-suspend, leak recovery). Runs
+          # alongside the upstream agent-sandbox controller. See
+          # todo/docs/WARM_STORE_PVC_MANAGER.md.
+          warmStoreController = pkgs.callPackage ./services/warm-store-controller { };
+
           # Conversation controller OCI image.
           conversationControllerImage = import ./pkgs/conversation-controller-image {
             inherit pkgs lib n2c conversationController;
@@ -195,6 +202,11 @@
           # Conversation router OCI image.
           conversationRouterImage = import ./pkgs/conversation-router-image {
             inherit pkgs lib n2c conversationRouter;
+          };
+
+          # Warm-store controller OCI image.
+          warmStoreControllerImage = import ./pkgs/warm-store-controller-image {
+            inherit pkgs lib n2c warmStoreController;
           };
 
           # Broker OCI image.
@@ -320,6 +332,7 @@
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
+            warm-store-controller = warmStoreController;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
@@ -345,6 +358,9 @@
 
             # nix build .#conversation-router-image  ->  router OCI image
             conversation-router-image = conversationRouterImage.image;
+
+            # nix build .#warm-store-controller-image  ->  warm-store controller OCI image
+            warm-store-controller-image = warmStoreControllerImage.image;
 
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = agentHostImageBuilder.image;

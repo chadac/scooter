@@ -42,6 +42,27 @@ const VERSION = "v1beta1";
 const PLURAL = "sandboxes";
 const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
 
+// Warm-store pool PVC labels (see modules/warm-store-controller.nix + the controller's
+// k8s.py — they MUST agree). The provisioner claims a `ready` PVC by flipping these.
+const WARM_STORE_LABEL = "scooter.io/warm-store";   // image content tag (the version key)
+const POOL_STATE_LABEL = "scooter.io/pool-state";   // warming|ready|claimed|retiring
+const CLAIMED_BY_LABEL = "scooter.io/claimed-by";   // conv id (the sandbox NAME) when claimed
+// last-used is an ANNOTATION, not a label: it's an rfc3339 timestamp whose COLONS are invalid
+// in a label value (a label patch 422s "invalid label value"). Annotations allow any value.
+const LAST_USED_ANNOTATION = "scooter.io/last-used"; // rfc3339, for LRU
+
+/** The tag portion of an OCI ref — the part after the LAST ':' that isn't a registry
+ *  port. Mirrors the kubenix `lib.last (splitString ":" ...)` AND the controller's
+ *  `_tag_of`, so all three agree on the pool version key. No tag → "". */
+export function imageTagOf(imageRef: string): string {
+  if (!imageRef) return "";
+  const ref = imageRef.split("@", 1)[0]; // strip any digest
+  const idx = ref.lastIndexOf(":");
+  if (idx < 0) return "";
+  const tag = ref.slice(idx + 1);
+  return tag.includes("/") ? "" : tag; // a ':' before a '/' is a registry port, not a tag
+}
+
 export interface K8sProvisionerOptions {
   namespace: string;
   /** Generic Nix sandbox image ref. */
@@ -57,6 +78,15 @@ export interface K8sProvisionerOptions {
   /** Overlay-store upper PVC size, e.g. "20Gi" (module rebuild closures are
    *  hundreds of MB). Only used when overlayStore is true. */
   overlayStorage?: string;
+  /** Claim a WARM overlay-upper PVC from the warm-store pool (a PVC pre-populated
+   *  with common tools by the warm-store-controller, keyed by the sandbox image
+   *  tag) instead of a fresh empty one — so a new conversation finds tools already
+   *  built. On CREATE the provisioner claims a `ready` PVC matching the image tag
+   *  (optimistic label CAS) and the Sandbox references it by claimName; if none is
+   *  ready it falls back to a fresh volumeClaimTemplate (a cold pool NEVER blocks a
+   *  conversation). Only meaningful when overlayStore is true. Default off. See
+   *  todo/docs/WARM_STORE_PVC_MANAGER.md. */
+  warmStorePool?: boolean;
   /** Resource requests/limits for the sandbox container. Without these the
    *  scheduler treats a sandbox as ~free and packs many onto one node; a burst of
    *  in-pod nix builds then overwhelms the container runtime and the kubelet's PLEG
@@ -164,6 +194,78 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     }
   };
 
+  // Claim a WARM overlay-upper PVC from the pool for this conversation, or null if none
+  // is ready for the current image tag. Optimistic label CAS via a JSON-PATCH `test` op:
+  // list `ready` PVCs matching the sandbox image tag, then atomically `test` pool-state ==
+  // ready + flip it to `claimed`. If another replica already flipped it, the `test` op
+  // fails (422) → try the next candidate. Returns the claimed PVC name, or null → the caller
+  // falls back to a fresh volumeClaimTemplate (a cold or contended pool NEVER blocks
+  // conversation creation). See WARM_STORE_PVC_MANAGER.md.
+  //
+  // NOTE: this is a JSON-patch test-and-set, NOT a resourceVersion-in-body merge patch —
+  // k8s only honors resourceVersion as an optimistic-lock precondition on PUT (update), not
+  // PATCH (a merge patch carrying resourceVersion 400s). The `test` op IS the CAS for PATCH.
+  const claimWarmStorePvc = async (sandboxNameForConv: string): Promise<string | null> => {
+    const tag = imageTagOf(opts.sandboxImage);
+    if (!tag) return null;
+    // Label keys are JSON-pointer components — '/' is escaped as '~1'.
+    const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+    try {
+      const ready = await core.listNamespacedPersistentVolumeClaim({
+        namespace: ns,
+        labelSelector: `${POOL_STATE_LABEL}=ready,${WARM_STORE_LABEL}=${tag}`,
+      });
+      for (const pvc of ready.items ?? []) {
+        const name = pvc.metadata?.name;
+        if (!name) continue;
+        try {
+          // CAS: test pool-state==ready (fails 422 if another claimer already flipped it),
+          // then replace it + stamp claimed-by (all LABELS). last-used is an ANNOTATION (its
+          // colons are illegal in a label) → set via a separate merge patch after we win, so
+          // the CAS body carries only valid label values (else the whole patch 422s and we'd
+          // mistake it for a lost race). The claimed-by flip is the atomic win.
+          await core.patchNamespacedPersistentVolumeClaim(
+            {
+              name,
+              namespace: ns,
+              body: [
+                { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
+                { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
+                { op: "add", path: ptr(CLAIMED_BY_LABEL), value: sandboxNameForConv },
+              ] as object,
+            },
+            setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
+          );
+          // We won the CAS. Stamp last-used (LRU) as an annotation — a merge patch auto-creates
+          // the annotations map. Best-effort: a failure here doesn't un-claim (LRU is a hint).
+          await core
+            .patchNamespacedPersistentVolumeClaim(
+              {
+                name,
+                namespace: ns,
+                body: { metadata: { annotations: { [LAST_USED_ANNOTATION]: new Date().toISOString() } } },
+              },
+              setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+            )
+            .catch((e) => console.warn(`[k8sProvisioner] warm-store: last-used stamp failed (non-fatal):`, e));
+          console.log(`[k8sProvisioner] warm-store: claimed ${name} for ${sandboxNameForConv}`);
+          return name; // we won the claim
+        } catch (e: unknown) {
+          const code = (e as { code?: number })?.code;
+          // 422 (test op failed) / 409 (conflict) = another claimer won — try the next.
+          if (code === 422 || code === 409) continue;
+          console.warn(`[k8sProvisioner] warm-store: claim patch on ${name} errored (code=${code}):`, e);
+          throw e;
+        }
+      }
+      return null; // no ready PVC for this tag
+    } catch (e) {
+      // A pool-read failure must NEVER block conversation creation — fall back to a fresh vct.
+      console.warn(`[k8sProvisioner] warm-store claim failed (using a fresh upper):`, e);
+      return null;
+    }
+  };
+
   // A ref's namespace may be EMPTY: hydrateEntry() (manager.ts) hands out a
   // placeholder ref { name, namespace: "" } for a conversation whose Sandbox is
   // absent from reconcile (GC'd / suspended-and-gone). A k8s namespaced call with
@@ -238,6 +340,14 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
 
       // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
       const name = sandboxName(id);
+      // Warm-store: claim a pre-warmed overlay upper PVC for this conversation if the pool
+      // is on and one is ready for our image tag. null → a fresh volumeClaimTemplate below
+      // (cold pool never blocks). The claimed-by label carries the Sandbox NAME (what the
+      // controller matches on for return/leak).
+      const overlayClaimName =
+        (opts.overlayStore ?? false) && (opts.warmStorePool ?? false)
+          ? await claimWarmStorePvc(name)
+          : null;
       let alreadyExisted = false;
       await custom
         .createNamespacedCustomObject({
@@ -263,6 +373,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             ],
             overlayStore: opts.overlayStore ?? false,
             overlayStorage: opts.overlayStorage,
+            // A claimed warm PVC → reference it by claimName (a pooled volume that outlives
+            // the Sandbox); null → a fresh per-conversation volumeClaimTemplate.
+            overlayClaimName,
             moduleConfigMap: moduleCmName(id),
             pullPolicy: opts.sandboxPullPolicy,
             sandboxRuntimeClass: opts.sandboxRuntimeClass,
@@ -375,6 +488,10 @@ export function sandboxManifest(
     extraEnv?: Array<{ name: string; value: string }>;
     overlayStore?: boolean;
     overlayStorage?: string;
+    /** A claimed warm-store pool PVC name. When set (and overlayStore is on), the
+     *  `scooter-rw` overlay upper references THIS pooled PVC by claimName instead of a
+     *  fresh per-conversation volumeClaimTemplate. null/undefined → the fresh vct. */
+    overlayClaimName?: string | null;
     moduleConfigMap?: string;
     /** imagePullPolicy for the sandbox container. Defaults to "Always" (a
      *  registry-backed cluster picks up a re-pushed :latest). Set "IfNotPresent"
@@ -403,6 +520,10 @@ export function sandboxManifest(
   // (/nix/.scooter-rw). Only when the overlay-store image is in use.
   const overlayStore = deploy.overlayStore ?? false;
   const overlayStorage = deploy.overlayStorage ?? "20Gi";
+  // A claimed warm-pool PVC → the overlay upper is a NAMED volume (claimName), NOT a
+  // per-conversation volumeClaimTemplate. The pooled PVC outlives the Sandbox (the
+  // controller returns it to the pool on suspend).
+  const overlayClaimName = overlayStore ? (deploy.overlayClaimName ?? null) : null;
   // The agent-host-owned per-conversation module ConfigMap, mounted read-only at
   // the SAME path scooterModule.dir points at (/etc/agent-sandbox/scooter), so
   // scooter-apply-module reads the agent's self-authored module from it and the
@@ -552,6 +673,12 @@ export function sandboxManifest(
             ...(configFilesCm
               ? [{ name: "deploy-config", configMap: { name: configFilesCm } }]
               : []),
+            // A CLAIMED warm-pool PVC: the scooter-rw upper is a named volume referencing
+            // the pooled PVC. When NOT claimed it comes from the volumeClaimTemplate below
+            // (the agent-sandbox controller auto-creates a fresh scooter-rw-<name> PVC).
+            ...(overlayClaimName
+              ? [{ name: "scooter-rw", persistentVolumeClaim: { claimName: overlayClaimName } }]
+              : []),
             ...extraAudiences.map((aud) => ({
               name: `tok-${aud}`,
               projected: { sources: [{ serviceAccountToken: { audience: aud, path: "token" } }] },
@@ -568,8 +695,10 @@ export function sandboxManifest(
           },
         },
         // The overlay-store upper PVC (disk-backed; persists runtime builds across
-        // suspend/resume). Only when the overlay-store image is in use.
-        ...(overlayStore
+        // suspend/resume). Only when the overlay-store image is in use AND we did NOT
+        // claim a pooled PVC — a claimed warm PVC is a NAMED volume above (a vct with the
+        // same name would collide + create a second, empty PVC).
+        ...(overlayStore && !overlayClaimName
           ? [
               {
                 metadata: { name: "scooter-rw" },

@@ -13,9 +13,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   KubeConfig,
   CoreV1Api,
+  BatchV1Api,
   CustomObjectsApi,
   KubernetesObjectApi,
   Exec,
+  setHeaderOptions,
+  PatchStrategy,
   type V1Status,
 } from "@kubernetes/client-node";
 import { Writable } from "node:stream";
@@ -40,6 +43,18 @@ export interface Cluster {
     command: string[],
     namespace?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /**
+   * Optimistic label CAS on a PVC via a JSON-patch `test` op: `test` that guard label ==
+   * its expected value (the call REJECTS with 422 if it changed), then set new labels.
+   * Mirrors the provisioner's claimWarmStorePvc so a test exercises the exact race.
+   */
+  patchPvcLabelsCAS(
+    name: string,
+    namespace: string,
+    expectStateLabel: string,
+    expectStateValue: string,
+    setLabels: Record<string, string>,
+  ): Promise<void>;
   /**
    * Run a curl from inside the cluster (a throwaway curl pod) against an
    * in-cluster URL. Returns the response body. For hitting Services whose pods
@@ -74,6 +89,7 @@ const RESOURCES: Record<string, { group: string; version: string; plural: string
   ServiceAccount: { group: "", version: "v1", plural: "serviceaccounts", core: true },
   PersistentVolumeClaim: { group: "", version: "v1", plural: "persistentvolumeclaims", core: true },
   Pod: { group: "", version: "v1", plural: "pods", core: true },
+  Job: { group: "batch", version: "v1", plural: "jobs" },
 };
 
 export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Cluster> {
@@ -82,6 +98,7 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
   kc.loadFromDefault();
 
   const core = kc.makeApiClient(CoreV1Api);
+  const batch = kc.makeApiClient(BatchV1Api);
   const custom = kc.makeApiClient(CustomObjectsApi);
   const objects = KubernetesObjectApi.makeApiClient(kc);
   const execClient = new Exec(kc);
@@ -89,6 +106,7 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
   const getResource = async <T>(kind: string, name: string, ns: string): Promise<T> => {
     const r = RESOURCES[kind];
     if (!r) throw new Error(`unknown kind: ${kind}`);
+    if (kind === "Job") return (await batch.readNamespacedJob({ name, namespace: ns })) as T;
     if (r.core) {
       const fn =
         kind === "ServiceAccount"
@@ -174,6 +192,22 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
           .catch(reject);
       });
       return { stdout, stderr, exitCode };
+    },
+
+    async patchPvcLabelsCAS(name, ns, expectStateLabel, expectStateValue, setLabels) {
+      // Optimistic label CAS via a JSON-PATCH `test` op — the SAME mechanism the provisioner's
+      // claimWarmStorePvc uses: `test` the guard label == its expected value (fails 422 if
+      // another claimer already changed it), then set the new labels. k8s only honors
+      // resourceVersion as a precondition on PUT, not PATCH — the `test` op IS the CAS for PATCH.
+      const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+      const body = [
+        { op: "test", path: ptr(expectStateLabel), value: expectStateValue },
+        ...Object.entries(setLabels).map(([k, v]) => ({ op: "add", path: ptr(k), value: v })),
+      ];
+      await core.patchNamespacedPersistentVolumeClaim(
+        { name, namespace: ns, body: body as object },
+        setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
+      );
     },
 
     async curlInCluster(url, opts = {}) {

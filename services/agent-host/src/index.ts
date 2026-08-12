@@ -389,10 +389,15 @@ export async function main(
         // disk-backed PVC upper at /nix/.scooter-rw — the overlay's writable layer, holding
         // runtime nix builds (tool installs, re-converge) + persisting them across
         // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
-        // upper — the overlay still works, writes just don't persist). The warm PVC pool
-        // will later supply a pre-warmed volume here by claimName.
+        // upper — the overlay still works, writes just don't persist).
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
+        // Warm PVC pool: when on, claim a pre-warmed overlay upper (matching the sandbox
+        // image tag) from the warm-store-controller's pool instead of a fresh empty one —
+        // so a new conversation finds common tools already built. Off by default;
+        // WARM_STORE_POOL=1 enables it (set by kubenix when agentSandbox.warmStore.enable).
+        // A cold/contended pool falls back to a fresh upper (never blocks).
+        warmStorePool: (process.env.WARM_STORE_POOL || "0") === "1",
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).
