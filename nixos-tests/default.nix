@@ -13,10 +13,15 @@
 let
   # The NixOS module under test — imported by each test's node.
   sandboxModule = ../modules/sandbox-os;
+  # The MINIMAL bootstrap config (Tier C — the barebones swap-only image).
+  bootstrapModule = ../modules/sandbox-bootstrap;
 
   runTest = path: import path { inherit pkgs lib sandboxModule; };
 in
 {
+  # The bootstrap switches to the real generation on boot (Tier C core contract).
+  bootstrap-firstboot = import ./bootstrap-firstboot.nix { inherit pkgs lib bootstrapModule; };
+
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
   dev-env-service = runTest ./service.nix;
