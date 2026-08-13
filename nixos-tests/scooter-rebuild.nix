@@ -23,6 +23,14 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     machine.wait_for_unit("default.target")
 
+    # SLIMMING (system.disableInstallerTools): the NixOS-default nixos-rebuild /
+    # nixos-generate-config installer tools are dropped from the image (~305MB) — the
+    # agent converges via scooter-rebuild (nix build --expr + switch-to-configuration),
+    # never nixos-rebuild. Assert the fat installer CLI is GONE from PATH while
+    # scooter-rebuild (below) still works — proving the slim didn't break the entrypoint.
+    machine.fail("command -v nixos-rebuild")
+    machine.fail("command -v nixos-generate-config")
+
     # /etc/scooter/modules exists (the tmpfiles symlink -> workspace PVC dir).
     machine.succeed("test -L /etc/scooter/modules")
     machine.succeed("test -d /etc/scooter/modules")

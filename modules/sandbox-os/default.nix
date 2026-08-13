@@ -61,6 +61,14 @@
   # No display/doc/etc. — keep it lean.
   documentation.enable = lib.mkDefault false;
 
+  # Drop the NixOS-default installer tools (nixos-rebuild, nixos-generate-config,
+  # nixos-installer) — ~305 MB off the baked overlay LOWER. The agent NEVER uses
+  # nixos-rebuild: scooter-rebuild converges via `nix build --expr` +
+  # `switch-to-configuration switch` directly (runtime-converge.nix), so these
+  # installer CLIs are dead weight. mkDefault so a test/deploy can re-enable them
+  # if it ever needs the stock tools. See todo/docs/SLIM_SANDBOX_OS_LAZY_OVERLAY.md.
+  system.disableInstallerTools = lib.mkDefault true;
+
   # In a k8s pod the kubelet/CNI owns networking and there's no host name-service
   # cache — dhcpcd + nscd just fail and leave the system "degraded". Turn them off
   # so a healthy boot reaches "running". (Harmless in a VM too.)
