@@ -237,6 +237,15 @@
             inherit pkgs lib n2c nixStubsLib uvNix;
           };
 
+          # The "PVC-starter" sandbox image: nixpkgs (~202MB) NOT baked, so the image is
+          # a thin starter and the overlay upper (a cloned golden PVC / warm-pool PVC)
+          # must carry nixpkgs. ~882MiB vs ~1.0GiB. For EKS/EBS-CSI deploys that clone a
+          # golden upper. See todo/docs/SNAPSHOT_UPPER_AND_MINIMAL_BOOTSTRAP.md.
+          sandboxOsImageStarter = import ./pkgs/sandbox-os {
+            inherit pkgs lib n2c nixStubsLib uvNix;
+            bakeNixpkgs = false;
+          };
+
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
           ui = pkgs.callPackage ./ui { };
 
@@ -340,6 +349,10 @@
             # writable local-overlay Nix store ALWAYS ON (the sole sandbox image now).
             sandbox-os-image = sandboxOsImage.image;
 
+            # nix build .#sandbox-os-image-starter  ->  the thin PVC-starter image
+            # (nixpkgs NOT baked; the overlay upper must carry it). ~882MiB.
+            sandbox-os-image-starter = sandboxOsImageStarter.image;
+
             # The broker tools (agent-broker / git-credential-broker / scooter-aws*),
             # prebuilt; baked into the sandbox-os image via the brokerTools overlay.
             broker-tools = brokerTools.agent-broker;
@@ -398,6 +411,32 @@
 
           checks = {
             inherit agentHost ui;
+
+            # The PVC-starter slim CONTRACT (a fast build-time closure assertion, no VM):
+            # the starter image's system closure must NOT contain the ~202MB nixpkgs source
+            # (it's carried by the overlay upper), while the DEFAULT image still bakes it
+            # (self-sufficient). Pins the bakeNixpkgs split so neither can silently regress.
+            sandbox-os-starter-omits-nixpkgs = pkgs.runCommand "sandbox-os-starter-omits-nixpkgs"
+              {
+                # exportReferencesGraph bakes each toplevel's full closure listing into the
+                # build sandbox as a file (no live-store query — which fails in the sandbox).
+                exportReferencesGraph = [
+                  "starter-closure" sandboxOsImageStarter.toplevel
+                  "default-closure" sandboxOsImage.toplevel
+                ];
+              } ''
+                # The nixpkgs source lands in the store as `…-source`. Assert it is ABSENT
+                # from the starter closure and PRESENT in the default one.
+                if grep -qE '/[a-z0-9]{32}-source$' starter-closure; then
+                  echo "FAIL: the starter (bakeNixpkgs=false) closure still contains the nixpkgs source" >&2
+                  exit 1
+                fi
+                if ! grep -qE '/[a-z0-9]{32}-source$' default-closure; then
+                  echo "FAIL: the default image no longer bakes the nixpkgs source (self-sufficiency lost)" >&2
+                  exit 1
+                fi
+                echo "OK: starter omits nixpkgs source; default bakes it" > $out
+              '';
           } // devEnvTests;
         };
 

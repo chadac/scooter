@@ -34,6 +34,13 @@
   # so nixosTests importing modules/sandbox-os directly can pass null (marimo falls
   # back to a plain `marimo` there — see marimo.nix).
 , uvNix ? null
+  # Bake the ~202MB nixpkgs SOURCE into the image (so the in-pod converge can `import`
+  # it OFFLINE). Default true = self-sufficient image (any pod converges with no upper).
+  # Set FALSE to slim the image ~202MB when the deployment GUARANTEES the overlay upper
+  # carries nixpkgs — a cloned golden PVC (EKS/EBS CSI) or a warm-pool PVC. A fresh
+  # (non-clone, pool-miss) pod then SELF-WARMS nixpkgs from the flake input on first boot
+  # (network fetch, rare). See modules/sandbox-os/nixpkgs-warm.nix + the Tier B slim.
+, bakeNixpkgs ? true
 }:
 
 let
@@ -103,8 +110,12 @@ let
       nixpkgs = lib.mkForce nixpkgsSourceStr;
     };
     # Ship the SAME source object the script references (see nixpkgsSource above).
-    # The in-pod re-converge `nix build` imports it — offline, no fetch.
-    system.extraDependencies = [ nixpkgsSource ];
+    # The in-pod re-converge `nix build` imports it — offline, no fetch. Baked by
+    # DEFAULT (self-sufficient image); omitted when bakeNixpkgs = false to slim ~202MB —
+    # the "PVC-starter" image, where the overlay upper (a cloned golden PVC or a warm-pool
+    # PVC) carries nixpkgs. The lazy-tool + converge STRING refs above are context-free, so
+    # they don't re-pull it — dropping this line drops it from the closure entirely.
+    system.extraDependencies = lib.optionals bakeNixpkgs [ nixpkgsSource ];
 
     # Built-in web services ON by DEFAULT (marimo notebook, ttyd terminal, web
     # VS Code) — so they're DECLARED + listed in the manifest and startable from the
