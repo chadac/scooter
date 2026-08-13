@@ -228,13 +228,21 @@
           # install + import. Passed into the sandbox-os build for marimo.nix.
           uvNix = uv-nix.packages.${system}.default;
 
-          # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
-          # services). Built from the shared modules/sandbox-os config. The local-overlay
-          # writable /nix/store is ALWAYS ON in this image (pkgs/sandbox-os sets
-          # programs.overlayStore.enable) — there is no longer a separate read-only-store
-          # variant; the writable store is required for runtime tool-install + re-converge.
-          sandboxOsImage = import ./pkgs/sandbox-os {
+          # The FULL NixOS dev-environment sandbox config (systemd PID 1, lazy tools,
+          # services). Built from modules/sandbox/root. In the minimal-bootstrap model this
+          # is NOT the image conversations boot — it's the REAL system the warm pipeline
+          # builds into the PVC (config/root). Kept as an image builder for that golden build
+          # + as the config the nixosTests exercise. The local-overlay writable /nix/store is
+          # ALWAYS ON (pkgs/sandbox/root sets programs.overlayStore.enable).
+          sandboxOsImage = import ./pkgs/sandbox/root {
             inherit pkgs lib n2c nixStubsLib uvNix;
+          };
+
+          # The MINIMAL bootstrap image — the barebones swap-only container every
+          # conversation actually boots (systemd + overlay-store + firstboot; NO real
+          # system). Reaches the first switch to the real generation the PVC carries.
+          sandboxImage = import ./pkgs/sandbox/bootstrap {
+            inherit pkgs lib n2c;
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
@@ -325,9 +333,9 @@
         in
         {
           packages = {
-            # The sandbox is the NixOS systemd-PID-1 dev image (the legacy generic
-            # pkgs/sandbox-image was retired).
-            default = sandboxOsImage.image;
+            # The default sandbox image is the MINIMAL bootstrap — the barebones swap-only
+            # container every conversation boots.
+            default = sandboxImage.image;
 
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;
@@ -336,8 +344,13 @@
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
-            # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox with the
-            # writable local-overlay Nix store ALWAYS ON (the sole sandbox image now).
+            # nix build .#sandbox-image  ->  the MINIMAL bootstrap image (systemd PID 1;
+            # overlay-store + firstboot; NO real system — the PVC brings that).
+            sandbox-image = sandboxImage.image;
+
+            # nix build .#sandbox-os-image  ->  the FULL real config as an image. Not booted
+            # by conversations in the bootstrap model; used for the warm pipeline's golden
+            # build (config/root) + closure inspection. Writable local-overlay store ALWAYS ON.
             sandbox-os-image = sandboxOsImage.image;
 
             # The broker tools (agent-broker / git-credential-broker / scooter-aws*),

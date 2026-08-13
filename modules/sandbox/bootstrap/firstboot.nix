@@ -1,18 +1,17 @@
 # scooter-firstboot — the bootstrap's ONE job: switch to the real generation on boot.
 #
-# DESIGN BOILERPLATE — the unit SHAPE is defined; the switch itself lives in the SHARED
-# scooter-rebuild derivation (pkgs/sandbox-shared/scooter-rebuild), consumed here. Design
-# stage of the PoC process.
+# The unit; the switch itself lives in the SHARED scooter-apply-module derivation
+# (pkgs/sandbox-shared/scooter-apply-module), consumed here.
 #
 # The real system toplevel + its closure are ALREADY PRESENT in the overlay upper (the
 # conversation's PVC is a clone of the golden VolumeSnapshot the warm Job produced). So
-# firstboot does NOT build from scratch — scooter-rebuild resolves the agent-host directive
-# ($SCOOTER_FIRSTBOOT_TARGET, a prebuilt store path present in the upper) and switches to it.
+# firstboot does NOT build from scratch — scooter-apply-module resolves the agent-host
+# directive ($SCOOTER_FIRSTBOOT_TARGET, a prebuilt store path in the upper) + switches to it.
 #
-# ASYNC: the switch runs detached (scooter-rebuild switch --detach) so it does NOT gate
-# multi-user.target / readiness — the pod is exec-reachable on the bootstrap immediately;
-# the real generation lands when the switch finishes. A failed switch leaves the pod on the
-# bootstrap (not bricked) + surfaces status; agent-host can retry.
+# ASYNC: the switch runs detached (--detach) so it does NOT gate multi-user.target /
+# readiness — the pod is exec-reachable on the bootstrap immediately; the real generation
+# lands when the switch finishes. A failed switch leaves the pod on the bootstrap (not
+# bricked) + surfaces status; agent-host can retry.
 
 { config, lib, pkgs, ... }:
 
@@ -21,10 +20,10 @@ let
 
   # The ONE switch engine, shared with the real config's re-converge. A plain derivation,
   # not a module hook — it decides "resolve a prebuilt target vs build the flake" at runtime.
-  scooterApplyModule = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-apply-module {
+  scooterApplyModule = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-apply-module {
     inherit (cfg) configPath directiveEnv;
   };
-  scooterEnvStatus = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-env-status { };
+  scooterEnvStatus = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-env-status { };
 in
 {
   options.programs.scooterFirstboot = {

@@ -35,7 +35,7 @@ pkgs.runCommand "dev-env-registry-modules"
     nix eval --impure --offline --extra-experimental-features 'nix-command flakes' --json --expr '
       let
         lib = (import ${pkgs.path} {}).lib;
-        m = import ${../modules/sandbox-os/registry-modules.nix} { inherit lib; };
+        m = import ${../modules/sandbox/root/registry-modules.nix} { inherit lib; };
       in map (p: builtins.baseNameOf (builtins.dirOf p)) m.imports
     ')
   echo "imported ids: $imported"
@@ -47,7 +47,7 @@ pkgs.runCommand "dev-env-registry-modules"
     nix eval --impure --offline --extra-experimental-features 'nix-command flakes' --json --expr '
       let
         lib = (import ${pkgs.path} {}).lib;
-        m = import ${../modules/sandbox-os/registry-modules.nix} { inherit lib; };
+        m = import ${../modules/sandbox/root/registry-modules.nix} { inherit lib; };
       in m.imports
     ')
   echo "empty-case imports: $empty"

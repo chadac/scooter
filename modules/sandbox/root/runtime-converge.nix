@@ -23,7 +23,7 @@ let
   # agent-broker (the authenticated broker curl wrapper) — used by scooter-rebuild's
   # registry subcommands (module add/detach + publish) to talk to the broker's module
   # registry with the pod's SA token. Same package that carry-over.nix puts on PATH.
-  brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
+  brokerTools = pkgs.callPackage ../../../pkgs/broker-tools { };
 
   # The base-config entrypoint + vendored modules tree the in-pod build feeds to it.
   # Factored into a shared helper so the nixosTest pre-builds the re-converged
@@ -42,7 +42,7 @@ let
   # valid". Both the `nix build` modulesPath arg AND extraDependencies must use the baked
   # tree, or the re-converged scooter-apply-module bakes the bad path into its own script.
   effTree = if cfg.modulesTree != null then builtins.storePath cfg.modulesTree else modulesTree;
-  effModulesSrc = if cfg.modulesTree != null then "${builtins.storePath cfg.modulesTree}/modules/sandbox-os" else modulesSrc;
+  effModulesSrc = if cfg.modulesTree != null then "${builtins.storePath cfg.modulesTree}/modules/sandbox/root" else modulesSrc;
 
   # The canonical system profile — registering each switch here gives us the
   # numbered-generation ladder NixOS uses for rollback. The symlinks

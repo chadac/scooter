@@ -27,7 +27,7 @@ let
   # real toplevel + closure; firstboot's directive is that store path; the switch is a pure
   # activation (no build). Built here so it's present in the VM store, like the cloned upper.
   realGeneration = (pkgs.nixos ({ lib, ... }: {
-    imports = [ "${../modules/sandbox-os}/sample-service.nix" ];
+    imports = [ "${../modules/sandbox/root}/sample-service.nix" ];
     boot.isContainer = true;
     services.sampleDevService = { enable = true; port = 8899; };
   })).config.system.build.toplevel;
@@ -38,7 +38,7 @@ pkgs.testers.runNixOSTest {
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
       bootstrapModule                              # the barebones bootstrap config
-      "${../modules/sandbox-os}/sample-service.nix" # the marker service MODULE (off in base)
+      "${../modules/sandbox/root}/sample-service.nix" # the marker service MODULE (off in base)
     ];
 
     programs.scooterFirstboot.enable = true;

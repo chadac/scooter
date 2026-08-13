@@ -33,11 +33,11 @@ let
 
   # The EXACT inputs the in-pod build feeds base-config.nix, from the SAME helper
   # runtime-converge.nix uses (single source of truth). `modulesSrc` is a VENDORED
-  # tree (modules/sandbox-os + pkgs/broker-tools at a fixed layout), NOT the bare
+  # tree (modules/sandbox/root + pkgs/broker-tools at a fixed layout), NOT the bare
   # module dir: building `reconverged` with `sandboxModule` directly produces a
   # DIFFERENT derivation than the runtime builds -> cache miss -> from-source build
   # that hangs OFFLINE in the VM.
-  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
+  reconvergeInputs = import ../modules/sandbox/root/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
 
   # Pre-build the re-converged toplevel (base config + the layered modules) so its
   # closure is in the VM store and the in-pod build is a pure CACHE HIT (offline
@@ -86,7 +86,7 @@ pkgs.testers.runNixOSTest {
     virtualisation.diskSize = 6144;
 
     # LAYER the runtime re-converge on top of the running system. scooter-apply-
-    # module builds its toplevel from the SHARED base config (modules/sandbox-os),
+    # module builds its toplevel from the SHARED base config (modules/sandbox/root),
     # which does NOT include the nixosTest framework's `backdoor.service` (the test
     # control channel) — so without this, switch-to-configuration stops backdoor as
     # a "removed" unit, the driver loses its connection, and

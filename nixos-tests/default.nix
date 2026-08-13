@@ -12,9 +12,9 @@
 
 let
   # The NixOS module under test — imported by each test's node.
-  sandboxModule = ../modules/sandbox-os;
+  sandboxModule = ../modules/sandbox/root;
   # The MINIMAL bootstrap config (Tier C — the barebones swap-only image).
-  bootstrapModule = ../modules/sandbox-bootstrap;
+  bootstrapModule = ../modules/sandbox/bootstrap;
 
   runTest = path: import path { inherit pkgs lib sandboxModule; };
 in

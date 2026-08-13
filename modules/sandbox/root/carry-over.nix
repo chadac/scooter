@@ -28,7 +28,7 @@ let
   # via nixpkgs.overlays, which conflicts with the nixosTest framework's own
   # nixpkgs.pkgs). The relative path resolves in the in-pod runtime-converge build
   # too (the modulesTree vendors pkgs/broker-tools at the same layout).
-  brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
+  brokerTools = pkgs.callPackage ../../../pkgs/broker-tools { };
   scooterAwsCredentials = brokerTools.scooter-aws-credentials;
 
   # awscli2 (+ its python) is ~280MB — too heavy to bake into the base image for a

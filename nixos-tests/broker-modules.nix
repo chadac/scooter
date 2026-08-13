@@ -34,7 +34,7 @@ pkgs.runCommand "dev-env-broker-modules"
     nix eval --impure --offline --extra-experimental-features 'nix-command flakes' --json --expr '
       let
         lib = (import ${pkgs.path} {}).lib;
-        m = import ${../modules/sandbox-os/broker-modules.nix} { inherit lib; };
+        m = import ${../modules/sandbox/root/broker-modules.nix} { inherit lib; };
       in map (p: builtins.baseNameOf p) m.imports
     ')
   echo "imported: $imported"
@@ -46,7 +46,7 @@ pkgs.runCommand "dev-env-broker-modules"
     nix eval --impure --offline --extra-experimental-features 'nix-command flakes' --json --expr '
       let
         lib = (import ${pkgs.path} {}).lib;
-        m = import ${../modules/sandbox-os/broker-modules.nix} { inherit lib; };
+        m = import ${../modules/sandbox/root/broker-modules.nix} { inherit lib; };
       in m.imports
     ')
   echo "empty-case imports: $empty"

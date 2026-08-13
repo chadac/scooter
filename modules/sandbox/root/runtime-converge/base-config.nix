@@ -55,13 +55,13 @@ let
   nixpkgsPath = /. + nixpkgsBare;
   # The `path:` string form (idempotent — don't double-prefix).
   nixpkgsRef = if hasPathPrefix then nixpkgsStr else "path:" + nixpkgsStr;
-  # The baked sandbox-os source-tree ROOT: modulesPath is `<tree>/modules/sandbox-os`
+  # The baked source-tree ROOT: modulesPath is `<tree>/modules/sandbox/root`
   # (reconverge-inputs.modulesSrc), so strip that trailing subdir to get the tree the
   # image baked. Context-free so `programs.scooterModule.modulesTree` (a str option) holds
   # a plain store path; `builtins.storePath` (in runtime-converge.nix) re-adds it as a
   # valid dependency. `lib` isn't a fn arg here, so strip the fixed suffix with builtins.
   modulesPathStr = builtins.unsafeDiscardStringContext (toString modulesPath);
-  modulesSubdir = "/modules/sandbox-os";
+  modulesSubdir = "/modules/sandbox/root";
   modulesTreeRoot =
     builtins.substring 0 (builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir) modulesPathStr;
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {

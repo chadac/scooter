@@ -1,12 +1,9 @@
 # The MINIMAL sandbox BOOTSTRAP config (Tier C — the barebones swap-only image).
 #
-# DESIGN BOILERPLATE — inputs/outputs defined, implementation STUBBED (see `throw`s /
-# `# IMPL:` markers). Do not ship; this is the Design stage of the PoC process.
-#
-# What this is: the sandbox image no longer carries the "real" system (web services,
-# marimo, lazy tools, broker carry-over, …). It is a tiny bootstrap whose ONLY job is:
+# The sandbox image no longer carries the "real" system (web services, marimo, lazy tools,
+# broker carry-over, …). It is a tiny bootstrap whose ONLY job is:
 #   boot systemd  ->  mount the overlay upper (the cloned/warm PVC)  ->  run the first
-#   `scooter-rebuild switch /etc/scooter/config`  ->  hand off to the REAL generation.
+#   `scooter-apply-module switch`  ->  hand off to the REAL generation.
 #
 # The real system is defined in KUBENIX and built into the warmed PVC (a golden
 # VolumeSnapshot the conversation's upper clones) as:
@@ -15,18 +12,20 @@
 # The agent's customizations live at /etc/scooter/config/custom (a subdir mounted from
 # the WORKSPACE PVC); the root flake imports ./custom, so the switch is root-with-custom.
 #
-# Contrast with modules/sandbox-os (which BECOMES the real config kubenix builds into
-# config/root — it is NOT imported here). See todo/docs/MINIMAL_BOOTSTRAP_SANDBOX.md.
+# The real config now lives in modules/sandbox/root (moved from the old modules/sandbox-os);
+# it is NOT imported here (it's what kubenix builds into config/root). See
+# todo/docs/MINIMAL_BOOTSTRAP_SANDBOX.md.
 
 { config, lib, pkgs, ... }:
 
 {
   imports = [
-    # The overlay store is the ONE piece of the old config the bootstrap KEEPS: it makes
-    # the cloned/warm PVC the writable upper of /nix/store, so the prebuilt closure is
-    # present + the switch's generation registration lands on the PVC. Reused verbatim.
-    ../sandbox-os/overlay-store.nix
-    # firstboot puts the SHARED scooter-rebuild / scooter-env-status derivations
+    # The overlay store: the cloned/warm PVC upper becomes the writable upper of /nix/store,
+    # so the prebuilt closure is present + the switch's generation registration lands on the
+    # PVC. The bootstrap ships its OWN copy (no cross-import from root — the barebones image
+    # must not depend on the real config). Identical to sandbox/root/overlay-store.nix.
+    ./overlay-store.nix
+    # firstboot puts the SHARED scooter-apply-module / scooter-env-status derivations
     # (pkgs/sandbox-shared) on PATH + runs the boot switch. The real config puts the SAME
     # derivations on PATH, so there's one switch implementation across both images.
     ./firstboot.nix
