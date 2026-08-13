@@ -26,9 +26,9 @@
     # the cloned/warm PVC the writable upper of /nix/store, so the prebuilt closure is
     # present + the switch's generation registration lands on the PVC. Reused verbatim.
     ../sandbox-os/overlay-store.nix
-    # The SHARED switch core (scooter-rebuild / scooter-env-status), used by both the
-    # bootstrap and the real config — one implementation, no drift. firstboot.nix enables it.
-    ../sandbox-common/scooter-switch.nix
+    # firstboot puts the SHARED scooter-rebuild / scooter-env-status derivations
+    # (pkgs/sandbox-shared) on PATH + runs the boot switch. The real config puts the SAME
+    # derivations on PATH, so there's one switch implementation across both images.
     ./firstboot.nix
   ];
 

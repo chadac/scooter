@@ -1,24 +1,30 @@
 # scooter-firstboot — the bootstrap's ONE job: switch to the real generation on boot.
 #
-# DESIGN BOILERPLATE — the unit + script SHAPE are defined; the switch body is STUBBED
-# (`# IMPL:` markers). Design stage of the PoC process.
+# DESIGN BOILERPLATE — the unit SHAPE is defined; the switch itself lives in the SHARED
+# scooter-rebuild derivation (pkgs/sandbox-shared/scooter-rebuild), consumed here. Design
+# stage of the PoC process.
 #
 # The real system toplevel + its closure are ALREADY PRESENT in the overlay upper (the
-# conversation's PVC is a clone of the golden VolumeSnapshot the warm Job produced; the
-# Job built the real toplevel into the upper + dropped the config/root flake at
-# /etc/scooter/config). So firstboot does NOT build from scratch — it realizes the
-# root+custom generation (fast: closure present) and switches to it.
+# conversation's PVC is a clone of the golden VolumeSnapshot the warm Job produced). So
+# firstboot does NOT build from scratch — scooter-rebuild resolves the agent-host directive
+# ($SCOOTER_FIRSTBOOT_TARGET, a prebuilt store path present in the upper) and switches to it.
 #
-# ASYNC: the switch runs detached so it does NOT gate multi-user.target / the sandbox's
-# readiness — the pod is exec-reachable on the bootstrap immediately; the real generation
-# lands when the switch finishes. A failed switch leaves the pod on the bootstrap (not
-# bricked) + surfaces status; agent-host can retry. Mirrors the current converge's
-# health-gate + detach model (runtime-converge.nix).
+# ASYNC: the switch runs detached (scooter-rebuild switch --detach) so it does NOT gate
+# multi-user.target / readiness — the pod is exec-reachable on the bootstrap immediately;
+# the real generation lands when the switch finishes. A failed switch leaves the pod on the
+# bootstrap (not bricked) + surfaces status; agent-host can retry.
 
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.programs.scooterFirstboot;
+
+  # The ONE switch command, shared with the real config's re-converge. A plain derivation,
+  # not a module hook — it decides "resolve a prebuilt target vs build the flake" at runtime.
+  scooterRebuild = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-rebuild {
+    inherit (cfg) configPath directiveEnv;
+  };
+  scooterEnvStatus = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-env-status { };
 in
 {
   options.programs.scooterFirstboot = {
@@ -29,20 +35,20 @@ in
       default = "/etc/scooter/config";
       description = ''
         The root config flake to switch to (provided by the warmed PVC upper). Its
-        flake.nix imports ./custom (the agent's workspace-PVC customizations). The
-        firstboot switch builds `<configPath>#<attr>` and switch-to-configurations to it.
+        flake.nix imports ./custom (the agent's workspace-PVC customizations). When there
+        is no prebuilt directive, scooter-rebuild builds
+        `path:<configPath>#sandboxSystem` and switches to it.
       '';
     };
 
-    # The agent-host DIRECTIVE: agent-host may pass the exact target (a store path to the
-    # prebuilt toplevel, or a URL serving a gzipped expr) via this env var so the bootstrap
-    # switches to the deployment's CURRENT real generation without the image knowing it.
-    # Empty ⇒ fall back to building `configPath` from the upper's flake. (User: "agent-host
-    # directive passed via an env var; expose a URL with the gzipped expression to build.")
     directiveEnv = lib.mkOption {
       type = lib.types.str;
       default = "SCOOTER_FIRSTBOOT_TARGET";
-      description = "Env var carrying the firstboot target (store path or directive URL).";
+      description = ''
+        Env var carrying the firstboot target: a /nix/store path (the prebuilt real
+        toplevel, present in the cloned upper — the happy path, no build) or a URL serving
+        a gzipped store path (the agent-host directive). Empty ⇒ build the config flake.
+      '';
     };
 
     detach = lib.mkOption {
@@ -53,50 +59,27 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Turn on the SHARED switch core (modules/sandbox-common/scooter-switch.nix). The
-    # bootstrap's scooter-rebuild is that core with a bootstrap-specific produceToplevel
-    # hook — resolve the agent-host directive (a prebuilt store path present in the cloned
-    # upper) OR build the config/root flake. Everything else (status protocol, --detach,
-    # generation register, switch-in-scope, health-gate, rollback) is the shared library.
-    programs.scooterSwitch.enable = true;
-
-    # IMPL: scooter-rebuild = config.lib.scooter.mkSwitchCommand {
-    #   name = "scooter-rebuild";
-    #   extraRuntimeInputs = [ pkgs.curl pkgs.gzip ];
-    #   produceToplevel = ''
-    #     directive="''${${cfg.directiveEnv}:-}"
-    #     if [ -n "$directive" ]; then
-    #       case "$directive" in
-    #         /nix/store/*) toplevel="$directive" ;;                 # prebuilt, in the upper
-    #         http*://*)    toplevel=$(curl -fsSL "$directive" | gunzip | { read -r p; echo "$p"; }) ;;
-    #       esac                                                     # (URL -> store path)
-    #     else
-    #       toplevel=$(nix build --no-link --print-out-paths \
-    #         "path:${cfg.configPath}#sandboxSystem.config.system.build.toplevel")
-    #     fi
-    #   '';
-    # };
-    # environment.systemPackages = [ scooter-rebuild ];   # IMPL (via the shared builder)
+    # Both shared commands on PATH (the real config puts the SAME derivations on PATH too,
+    # so there's exactly one scooter-rebuild implementation across both images).
+    environment.systemPackages = [ scooterRebuild scooterEnvStatus ];
 
     systemd.services.scooter-firstboot = {
       description = "Switch to the real sandbox generation on boot (root + custom)";
       wantedBy = [ "multi-user.target" ];
-      # After the overlay upper is mounted (so the prebuilt closure + config/root are
-      # visible) and the nix daemon is up (for the generation registration).
+      # After the overlay upper is mounted (prebuilt closure + config/root visible) and the
+      # nix daemon is up (generation registration).
       after = [ "overlay-store-setup.service" "nix-daemon.socket" ];
       requires = [ "overlay-store-setup.service" ];
-      # ConditionPathExists the config flake — if the upper didn't carry it (misprovisioned
-      # / no clone), skip rather than fail-loop; agent-host surfaces the missing config.
-      unitConfig.ConditionPathExists = "${cfg.configPath}/flake.nix";
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # IMPL: pass --detach when cfg.detach so the switch backgrounds and this unit
-        # returns immediately (readiness not gated). The detached child does the real
-        # switch + maintains status (mirror runtime-converge's --detach re-exec).
-        ExecStart = "${pkgs.coreutils}/bin/true # IMPL: scooter-rebuild switch ${cfg.configPath}"
+        # scooter-rebuild switch [--detach]. --detach backgrounds the switch as its own
+        # transient unit so this oneshot returns immediately (readiness not gated).
+        ExecStart = "${scooterRebuild}/bin/scooter-rebuild switch"
           + lib.optionalString cfg.detach " --detach";
       };
+      # The directive env is passed by the provisioner (SCOOTER_FIRSTBOOT_TARGET). In a
+      # deploy the agent-host sets it; the nixosTest sets it on this unit directly.
     };
   };
 }
