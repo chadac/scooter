@@ -36,6 +36,15 @@
   system.stateVersion = "24.11";
   documentation.enable = lib.mkDefault false;
 
+  # The overlay store: the cloned/warm PVC upper becomes the writable upper of /nix/store,
+  # so the prebuilt real toplevel + closure are present and firstboot's generation
+  # registration lands on the PVC. Core to the model — on by default in the image.
+  # (A nixosTest may leave it off; firstboot only `wants` overlay-store-setup, so the switch
+  # still runs against a plain /nix/store there.) The image build (pkgs) mounts the upper.
+  programs.overlayStore.enable = lib.mkDefault true;
+  # firstboot switches to the real generation on boot (async).
+  programs.scooterFirstboot.enable = lib.mkDefault true;
+
   # k8s pod networking: kubelet/CNI own it; no nscd/dhcpcd (they'd degrade the boot).
   networking.dhcpcd.enable = lib.mkDefault false;
   services.nscd.enable = lib.mkDefault false;

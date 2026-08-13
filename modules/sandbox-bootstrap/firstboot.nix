@@ -19,9 +19,9 @@
 let
   cfg = config.programs.scooterFirstboot;
 
-  # The ONE switch command, shared with the real config's re-converge. A plain derivation,
+  # The ONE switch engine, shared with the real config's re-converge. A plain derivation,
   # not a module hook — it decides "resolve a prebuilt target vs build the flake" at runtime.
-  scooterRebuild = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-rebuild {
+  scooterApplyModule = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-apply-module {
     inherit (cfg) configPath directiveEnv;
   };
   scooterEnvStatus = pkgs.callPackage ../../pkgs/sandbox-shared/scooter-env-status { };
@@ -60,22 +60,26 @@ in
 
   config = lib.mkIf cfg.enable {
     # Both shared commands on PATH (the real config puts the SAME derivations on PATH too,
-    # so there's exactly one scooter-rebuild implementation across both images).
-    environment.systemPackages = [ scooterRebuild scooterEnvStatus ];
+    # so there's exactly one switch implementation across both images).
+    environment.systemPackages = [ scooterApplyModule scooterEnvStatus ];
 
     systemd.services.scooter-firstboot = {
       description = "Switch to the real sandbox generation on boot (root + custom)";
       wantedBy = [ "multi-user.target" ];
-      # After the overlay upper is mounted (prebuilt closure + config/root visible) and the
-      # nix daemon is up (generation registration).
+      # Order AFTER the overlay upper is mounted (prebuilt closure + config/root visible)
+      # and the nix daemon is up (generation registration) — but only `wants`, not
+      # `requires`: the overlay is a PROD deployment concern (the image enables it + the
+      # provisioner mounts the PVC). If it's absent (a VM test, a bare run), firstboot still
+      # runs — the switch just lands on whatever /nix/store is. A hard `requires` would
+      # BLOCK firstboot forever when overlay-store-setup doesn't exist.
       after = [ "overlay-store-setup.service" "nix-daemon.socket" ];
-      requires = [ "overlay-store-setup.service" ];
+      wants = [ "overlay-store-setup.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # scooter-rebuild switch [--detach]. --detach backgrounds the switch as its own
+        # scooter-apply-module switch [--detach]. --detach backgrounds the switch as its own
         # transient unit so this oneshot returns immediately (readiness not gated).
-        ExecStart = "${scooterRebuild}/bin/scooter-rebuild switch"
+        ExecStart = "${scooterApplyModule}/bin/scooter-apply-module switch"
           + lib.optionalString cfg.detach " --detach";
       };
       # The directive env is passed by the provisioner (SCOOTER_FIRSTBOOT_TARGET). In a
