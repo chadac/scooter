@@ -253,6 +253,15 @@ function ConversationRuntime({
   // with the STALE model before the effect ran. setModel is idempotent.
   agent.setModel(model);
 
+  // OPTIMISTIC pending sends: a message the user just submitted, shown INSTANTLY (as a queued
+  // item) so it doesn't "disappear" in the window between the /agui POST and the server's first
+  // confirmation (the QUEUE_UPDATED snapshot, or the message landing in the log). Each is
+  // cleared once the server confirms it (see the push pump). Declared before onNew so the send
+  // handler can add to it.
+  const [optimisticSends, setOptimisticSends] = useState<
+    ReadonlyArray<{ id: string; text: string; priority: number }>
+  >([]);
+
   // The composer send: the external store calls this `onNew` with the appended user
   // message. Fire-and-forget to /agui — a resume answers a pending interrupt, an
   // ordinary send routes to agent.send(); the reply re-enters through the render pump
@@ -283,16 +292,36 @@ function ConversationRuntime({
         if (scaled) images.push(scaled);
       }
       if (text || images.length) {
+        // OPTIMISTIC solidify: title the session from this first message NOW, before the
+        // fire-and-forget send round-trips, so a brand-new "New chat" doesn't stay pristine
+        // (and droppable by the background merge) until the server echoes it back.
+        if (text) sessionStore.titleFromFirstMessage(conversationId, text);
         // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
         // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
         // the running turn (bridge "thinking" policy) instead of queuing the message
         // behind a turn that may never end. Read the LIVE run state (not React state)
         // so there's no stale-closure race. PRIORITY_INTERRUPT = 10.
         const priority = agent.runIsActive() ? 10 : undefined;
-        await agent.send(text, { priority, images: images.length ? images : undefined });
+        // OPTIMISTIC show: surface the message as a pending queued item IMMEDIATELY so it
+        // never "disappears" between this POST and the server's first confirmation. The push
+        // pump clears it once the server's queue/log contains this text. Only for text (an
+        // image-only send has nothing to show as a queued line).
+        const optId = text ? `optimistic-${crypto.randomUUID()}` : null;
+        if (optId) {
+          setOptimisticSends((cur) => [...cur, { id: optId, text, priority: priority ?? 0 }]);
+        }
+        try {
+          await agent.send(text, { priority, images: images.length ? images : undefined });
+        } catch (e) {
+          // The POST itself failed — drop the optimistic entry so it doesn't linger forever
+          // (the server will never confirm a send that never landed). The composer surfaces
+          // the error separately; this just cleans up the pending line.
+          if (optId) setOptimisticSends((cur) => cur.filter((o) => o.id !== optId));
+          throw e;
+        }
       }
     },
-    [agent],
+    [agent, conversationId],
   );
 
   const threadListAdapter = useMemo(
@@ -388,7 +417,27 @@ function ConversationRuntime({
       setInterrupts(agent.getPendingInterrupts());
       setRunError(agent.getRunError());
       setStreamAuthError(agent.getStreamAuthError());
-      setQueuedMessages(agent.getQueuedMessages());
+      const serverQueue = agent.getQueuedMessages();
+      setQueuedMessages(serverQueue);
+      // Clear an optimistic pending send once the SERVER has confirmed it — either it's now in
+      // the server's queue (same text) or it landed in the message log as a user message. Until
+      // then it stays visible (merged into queuedMessages for the render), so the message never
+      // vanishes between POST and confirmation.
+      setOptimisticSends((cur) => {
+        if (cur.length === 0) return cur;
+        const queuedTexts = new Set(serverQueue.map((q) => q.text));
+        const loggedUserTexts = new Set(
+          (agent.messages as unknown as Array<{ role?: string; content?: unknown }>)
+            .filter((m) => m.role === "user")
+            .map((m) => (typeof m.content === "string"
+              ? m.content
+              : Array.isArray(m.content)
+                ? m.content.filter((p) => (p as { type?: string })?.type === "text").map((p) => (p as { text?: string }).text ?? "").join("")
+                : "")),
+        );
+        const next = cur.filter((o) => !queuedTexts.has(o.text) && !loggedUserTexts.has(o.text));
+        return next.length === cur.length ? cur : next;
+      });
 
       // MESSAGE RESET is what the guards protect. While REPLAYING history (on open /
       // switch / reconnect), don't reset the thread on every folded event — that
@@ -493,6 +542,16 @@ function ConversationRuntime({
     };
   }, []);
 
+  // The queue the UI renders = the server's confirmed queue PLUS any optimistic pending send
+  // not yet reflected there. Dedup by text so a send that already made it into the server queue
+  // isn't shown twice (the optimistic clear + the server snapshot can briefly overlap).
+  const renderedQueue = useMemo(() => {
+    if (optimisticSends.length === 0) return queuedMessages;
+    const serverTexts = new Set(queuedMessages.map((q) => q.text));
+    const extras = optimisticSends.filter((o) => !serverTexts.has(o.text));
+    return extras.length === 0 ? queuedMessages : [...queuedMessages, ...extras];
+  }, [queuedMessages, optimisticSends]);
+
   const interruptValue = useMemo<InterruptContextValue>(
     () => ({
       interrupts,
@@ -508,10 +567,10 @@ function ConversationRuntime({
       cancelState,
       runError,
       streamAuthError,
-      queuedMessages,
+      queuedMessages: renderedQueue,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, streamAuthError, queuedMessages, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, streamAuthError, renderedQueue, renderTick],
   );
 
   return (
