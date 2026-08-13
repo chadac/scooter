@@ -9,7 +9,15 @@ from __future__ import annotations
 
 import logging
 
-from .reconcile import ConversationState, Assign, NoOp, LeavePending, reconcile, find_orphans
+from .reconcile import (
+    ConversationState,
+    Assign,
+    NoOp,
+    LeavePending,
+    reconcile,
+    find_orphans,
+    desired_replicas,
+)
 
 logger = logging.getLogger("conversation-controller")
 
@@ -97,6 +105,46 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
                 logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
     return results
+
+
+class AutoscaleState:
+    """Mutable cooldown state the caller owns across ticks (scale-down hysteresis)."""
+
+    def __init__(self) -> None:
+        self.last_scale_down: float = 0.0
+
+
+def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
+    """Scale the agent-host Deployment to fit conversation demand, and return metrics for
+    export. Leader-gated by the caller. The controller IS the autoscaler — do NOT also run an
+    HPA on agent-host replicas (two writers on spec.replicas fight).
+
+    Demand = TOP-LEVEL conversations (subagents co-locate on the parent's pod, consuming no
+    independent capacity — same rule as assignment). Scale UP immediately (a waiting user);
+    scale DOWN only after a cooldown so a brief dip doesn't drop a pod mid-conversation.
+    Returns {demand, current, target, ready_pods, per_pod} — per_pod is the observability
+    metric (also exported at /metrics)."""
+    convs = [_state(cr) for cr in k8s.list_conversations()]
+    demand = sum(1 for c in convs if c.parent_id is None)
+    ready_pods = sum(1 for p in k8s.list_host_pods() if p.ready)
+    current = k8s.get_agent_host_replicas()
+
+    target = desired_replicas(demand, cfg.pod_cap, cfg.min_replicas, cfg.max_replicas)
+    per_pod = (demand / ready_pods) if ready_pods else float(demand)
+
+    if target > current:
+        # Scale UP immediately — a Pending conversation is a user waiting for a slot.
+        k8s.set_agent_host_replicas(target)
+        logger.info("autoscale UP %d -> %d (demand=%d cap=%d)", current, target, demand, cfg.pod_cap)
+    elif target < current:
+        # Scale DOWN only after the cooldown (avoid flapping / dropping a pod on a brief dip).
+        if now - state.last_scale_down >= cfg.scale_down_cooldown_seconds:
+            k8s.set_agent_host_replicas(target)
+            state.last_scale_down = now
+            logger.info("autoscale DOWN %d -> %d (demand=%d cap=%d)", current, target, demand, cfg.pod_cap)
+        # else: within cooldown — hold at `current`.
+
+    return {"demand": demand, "current": current, "target": target, "ready_pods": ready_pods, "per_pod": per_pod}
 
 
 def reap_orphans(k8s, grace_seconds: float) -> list[str]:

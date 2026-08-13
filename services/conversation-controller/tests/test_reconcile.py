@@ -10,7 +10,38 @@ from conversation_controller.reconcile import (
     pick_host,
     reconcile,
     find_orphans,
+    desired_replicas,
 )
+
+
+# --- desired_replicas (the autoscaler decision) ----------------------------
+
+def test_desired_rounds_up_to_fit_demand():
+    # 3 conversations @ cap 2 -> 2 pods (never leave a conversation without a slot).
+    assert desired_replicas(demand=3, cap=2, min_replicas=1, max_replicas=10) == 2
+    assert desired_replicas(demand=4, cap=2, min_replicas=1, max_replicas=10) == 2
+    assert desired_replicas(demand=5, cap=2, min_replicas=1, max_replicas=10) == 3
+
+
+def test_desired_respects_min_floor():
+    # No demand -> the min floor (never scale to 0; keep a warm fleet).
+    assert desired_replicas(demand=0, cap=1, min_replicas=2, max_replicas=10) == 2
+    # A tiny demand still can't drop below min.
+    assert desired_replicas(demand=1, cap=100, min_replicas=2, max_replicas=10) == 2
+
+
+def test_desired_clamps_to_max():
+    assert desired_replicas(demand=1000, cap=1, min_replicas=2, max_replicas=10) == 10
+
+
+def test_desired_cap_one_is_replicas_equals_demand():
+    # cap=1 (the odin test config) -> one pod per conversation, clamped to [min,max].
+    assert desired_replicas(demand=5, cap=1, min_replicas=2, max_replicas=10) == 5
+
+
+def test_desired_defends_against_zero_cap():
+    # A misconfigured cap<1 is treated as 1 (never divide by zero / infinite pods).
+    assert desired_replicas(demand=3, cap=0, min_replicas=1, max_replicas=10) == 3
 
 
 # --- find_orphans (the reaper decision) ------------------------------------

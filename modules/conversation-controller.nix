@@ -49,6 +49,38 @@ in
         creates the Sandbox a beat before the CR), so only genuine orphans are reaped.
       '';
     };
+    # --- agent-host autoscaling -------------------------------------------
+    autoscale = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        The controller autoscales the agent-host Deployment to fit conversation demand
+        (desired = ceil(top-level conversations / podCap), clamped to [minReplicas, maxReplicas]).
+        The controller is the SINGLE writer of agent-host replicas — do NOT also attach an HPA
+        to agent-host (two writers fight). A conversations-per-pod metric is still exported at
+        :metricsPort/metrics for observability. See todo/docs/AGENT_HOST_FLEET_SCALING.md.
+      '';
+    };
+    minReplicas = mkOption {
+      type = types.int;
+      default = 2;
+      description = "Autoscaler floor — never scale the agent-host below this (a warm fleet).";
+    };
+    maxReplicas = mkOption {
+      type = types.int;
+      default = 10;
+      description = "Autoscaler ceiling — never scale the agent-host above this.";
+    };
+    scaleDownCooldownSeconds = mkOption {
+      type = types.int;
+      default = 300;
+      description = "Wait this long between scale-DOWNs (hysteresis; scale-up is immediate).";
+    };
+    metricsPort = mkOption {
+      type = types.int;
+      default = 9090;
+      description = "Port the controller serves Prometheus /metrics on (conversations-per-pod).";
+    };
     agentHostReplicas = mkOption {
       type = types.int;
       default = 2;
@@ -196,6 +228,11 @@ in
           # be deleted directly). See todo/docs/ORPHANED_SANDBOX_REAPER.md.
           { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" ]; }
           { apiGroups = [ "" ]; resources = [ "serviceaccounts" "configmaps" ]; verbs = [ "get" "list" "delete" ]; }
+          # Autoscaler: read the agent-host Deployment + patch its scale subresource (the
+          # controller IS the autoscaler — desired = ceil(conversations / podCap)). See
+          # todo/docs/AGENT_HOST_FLEET_SCALING.md.
+          { apiGroups = [ "apps" ]; resources = [ "deployments" ]; verbs = [ "get" "list" "watch" ]; }
+          { apiGroups = [ "apps" ]; resources = [ "deployments/scale" ]; verbs = [ "get" "patch" "update" ]; }
         ];
       };
       roleBindings.conversation-controller = {
@@ -227,7 +264,14 @@ in
                   # Orphaned-Sandbox reaper (leader-only).
                   { name = "REAP_ORPHANED_SANDBOXES"; value = if ccfg.reapOrphans then "1" else "0"; }
                   { name = "ORPHAN_GRACE_SECONDS"; value = toString ccfg.orphanGraceSeconds; }
+                  # Agent-host autoscaler (leader-only, single writer of agent-host replicas).
+                  { name = "AUTOSCALE_AGENT_HOST"; value = if ccfg.autoscale then "1" else "0"; }
+                  { name = "AGENT_HOST_MIN_REPLICAS"; value = toString ccfg.minReplicas; }
+                  { name = "AGENT_HOST_MAX_REPLICAS"; value = toString ccfg.maxReplicas; }
+                  { name = "SCALE_DOWN_COOLDOWN_SECONDS"; value = toString ccfg.scaleDownCooldownSeconds; }
+                  { name = "METRICS_PORT"; value = toString ccfg.metricsPort; }
                 ];
+                ports = [{ name = "metrics"; containerPort = ccfg.metricsPort; }];
                 resources = lib.mkDefault {
                   requests = { cpu = "25m"; memory = "64Mi"; };
                   limits = { cpu = "25m"; memory = "64Mi"; };

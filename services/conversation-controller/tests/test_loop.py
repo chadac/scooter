@@ -1,19 +1,28 @@
 """Tier 1 — the reconcile LOOP against a fake k8s (in-memory CRs + pods). No cluster."""
 
-from conversation_controller.loop import reconcile_once, reap_orphans
+from conversation_controller.loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
 from conversation_controller.reconcile import Pod, SandboxRef
 
 
 class FakeK8s:
     """In-memory Conversations + agent-host pods. patch_status merges into status."""
 
-    def __init__(self, pods, convs, sandboxes=None):
+    def __init__(self, pods, convs, sandboxes=None, replicas=2):
         self._pods = pods                       # list[Pod]
         self._convs = {c["metadata"]["name"]: c for c in convs}
         self._sandboxes = {s.name: s for s in (sandboxes or [])}  # name -> SandboxRef
+        self._replicas = replicas               # agent-host Deployment spec.replicas
+        self.scale_calls = []                   # [replicas] each set_agent_host_replicas
         self.patches = []                       # [(name, status)] for assertions
         self.revives = []                       # [(host_ip, conv_name, generation)] revive-pushes
         self.deleted_trees = []                 # [sandbox_name] reaped
+
+    def get_agent_host_replicas(self):
+        return self._replicas
+
+    def set_agent_host_replicas(self, n):
+        self.scale_calls.append(n)
+        self._replicas = n
 
     def list_host_pods(self):
         return list(self._pods)
@@ -208,3 +217,66 @@ def test_subagent_stays_pending_until_parent_ready():
     reconcile_once(k, cap=10)
     assert k.status("kid").get("hostPod") is None
     assert k.status("kid")["phase"] == "Pending"
+
+
+# --- the agent-host autoscaler loop ----------------------------------------
+
+class _Cfg:
+    """Minimal config for autoscale_once (only the fields it reads)."""
+    def __init__(self, pod_cap=1, min_replicas=2, max_replicas=10, cooldown=300.0):
+        self.pod_cap = pod_cap
+        self.min_replicas = min_replicas
+        self.max_replicas = max_replicas
+        self.scale_down_cooldown_seconds = cooldown
+
+
+def _cr_a(name, parent=None):
+    # A minimal assigned conversation CR (host set so it counts as demand regardless).
+    return _cr(name, host="a", phase="Assigned", gen=1, parent=parent)
+
+
+def test_autoscale_scales_up_immediately():
+    # 4 top-level conversations @ cap 1, currently 2 replicas -> scale to 4 at once.
+    convs = [_cr_a(f"c{i}") for i in range(4)]
+    k = FakeK8s([Pod("a", True), Pod("b", True)], convs, replicas=2)
+    st = AutoscaleState()
+    m = autoscale_once(k, _Cfg(pod_cap=1, max_replicas=10), st, now=1000.0)
+    assert k.scale_calls == [4]
+    assert m["demand"] == 4 and m["target"] == 4
+
+
+def test_autoscale_subagents_do_not_count():
+    # A subagent (parentId set) co-locates on the parent's pod -> not independent demand.
+    convs = [_cr_a("p1"), _cr_a("kid", parent="p1")]
+    k = FakeK8s([Pod("a", True)], convs, replicas=2)
+    m = autoscale_once(k, _Cfg(pod_cap=1), AutoscaleState(), now=1.0)
+    assert m["demand"] == 1  # only the top-level p1
+
+
+def test_autoscale_scale_down_waits_for_cooldown():
+    # Demand dropped (0 top-level) -> target = min (2), but current is 5. First tick is within
+    # cooldown of the initial last_scale_down=0? No — now is large, so first down happens; then
+    # a second down within cooldown is HELD.
+    k = FakeK8s([Pod("a", True)], [], replicas=5)
+    st = AutoscaleState()
+    # First down at t=1000: allowed (1000 - 0 >= 300).
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=1000.0)
+    assert k.scale_calls == [2]
+    # Bump replicas back up (simulate churn) and try to scale down again 100s later -> HELD.
+    k._replicas = 4
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=1100.0)
+    assert k.scale_calls == [2]  # no new down within cooldown
+
+
+def test_autoscale_noop_when_target_equals_current():
+    convs = [_cr_a("c1"), _cr_a("c2")]
+    k = FakeK8s([Pod("a", True), Pod("b", True)], convs, replicas=2)
+    autoscale_once(k, _Cfg(pod_cap=1), AutoscaleState(), now=1.0)
+    assert k.scale_calls == []  # 2 demand @ cap 1 = 2 = current, no change
+
+
+def test_autoscale_per_pod_metric():
+    convs = [_cr_a(f"c{i}") for i in range(6)]
+    k = FakeK8s([Pod("a", True), Pod("b", True)], convs, replicas=2)
+    m = autoscale_once(k, _Cfg(pod_cap=5), AutoscaleState(), now=1.0)
+    assert m["per_pod"] == 3.0  # 6 conversations / 2 ready pods

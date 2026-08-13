@@ -693,8 +693,16 @@ in
       # it (controller revive-push). No RWO PVC ⇒ no Multi-Attach ⇒ surge is safe.
       deployments.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
-        spec = {
+        # When the controller autoscales the agent-host, it is the SINGLE writer of
+        # spec.replicas — so OMIT replicas from the manifest (a re-apply that set it would
+        # fight the autoscaler, resetting the fleet to a fixed count each deploy). k8s keeps
+        # the controller-set value on apply when the field is absent. The autoscaler's
+        # minReplicas is the effective floor (+ its initial scale-up on first tick). When
+        # autoscale is OFF, pin the fixed count as before. (lib.optionalAttrs, NOT mkIf: this is
+        # a kubenix RESOURCE attrset, not a module option — mkIf would pass through unmerged.)
+        spec = (lib.optionalAttrs (!cfg.conversationController.autoscale) {
           replicas = cfg.conversationController.agentHostReplicas;
+        }) // {
           strategy = {
             type = "RollingUpdate";
             rollingUpdate = { maxSurge = 1; maxUnavailable = 0; };

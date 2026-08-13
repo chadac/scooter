@@ -34,6 +34,16 @@ class Config:
     # default; grace defaults to 10 min. See todo/docs/ORPHANED_SANDBOX_REAPER.md.
     reap_orphans: bool = True
     orphan_grace_seconds: float = 600.0
+    # Agent-host AUTOSCALING: the controller scales the agent-host Deployment to fit demand
+    # (ceil(top-level conversations / pod_cap), clamped to [min,max]). On by default. Do NOT
+    # also run an HPA on agent-host replicas (two writers fight). scale_down_cooldown avoids
+    # flapping. metrics_port serves a Prometheus /metrics (conversations_per_pod) for
+    # observability / a future HPA. See todo/docs/AGENT_HOST_FLEET_SCALING.md.
+    autoscale: bool = True
+    min_replicas: int = 2
+    max_replicas: int = 10
+    scale_down_cooldown_seconds: float = 300.0
+    metrics_port: int = 9090
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -48,4 +58,9 @@ class Config:
             identity=os.environ.get("POD_NAME") or os.environ.get("HOSTNAME", "unknown"),
             reap_orphans=os.environ.get("REAP_ORPHANED_SANDBOXES", "1") != "0",
             orphan_grace_seconds=float(os.environ.get("ORPHAN_GRACE_SECONDS", "600")),
+            autoscale=os.environ.get("AUTOSCALE_AGENT_HOST", "1") != "0",
+            min_replicas=int(os.environ.get("AGENT_HOST_MIN_REPLICAS", "2")),
+            max_replicas=int(os.environ.get("AGENT_HOST_MAX_REPLICAS", "10")),
+            scale_down_cooldown_seconds=float(os.environ.get("SCALE_DOWN_COOLDOWN_SECONDS", "300")),
+            metrics_port=int(os.environ.get("METRICS_PORT", "9090")),
         )

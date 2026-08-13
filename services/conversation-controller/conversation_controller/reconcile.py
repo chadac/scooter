@@ -115,6 +115,40 @@ def reconcile(
     return Assign(host_pod=host, generation=conv.generation + 1, host_ip=ip_of.get(host))
 
 
+# --- agent-host autoscaling (pure decision) --------------------------------
+# The controller IS the autoscaler: it already lists Conversations + pods every tick, so it
+# owns "how many agent-host pods do these conversations need." desired = ceil(demand / cap),
+# clamped to [min, max]. Demand = top-level conversations (subagents co-locate on the parent's
+# pod → no independent capacity, same rule as assignment). Single-writer (patches the
+# Deployment's spec.replicas) — do NOT also run an HPA on replicas (two writers fight). A
+# custom conversations-per-pod METRIC is still exported for observability / a future HPA.
+# See todo/docs/AGENT_HOST_FLEET_SCALING.md.
+
+import math
+
+
+def desired_replicas(
+    demand: int,
+    cap: int,
+    min_replicas: int,
+    max_replicas: int,
+) -> int:
+    """The target agent-host replica count for `demand` top-level conversations at `cap`
+    conversations/pod, clamped to [min_replicas, max_replicas]. HYSTERESIS: scale UP promptly
+    (a Pending conversation is a user waiting), but never scale DOWN below what's needed +
+    never below min — the CALLER applies a cooldown so a brief dip doesn't drop a pod
+    mid-conversation (see loop.autoscale_once). Pure: given the counts, return the target.
+
+    - demand 0 → min_replicas (keep a warm floor; never scale to 0).
+    - Rounds UP: 3 convs @ cap 2 → 2 pods (never leave a conversation without a slot).
+    """
+    if cap < 1:
+        cap = 1
+    need = math.ceil(demand / cap) if demand > 0 else 0
+    target = max(min_replicas, need)
+    return min(target, max_replicas)
+
+
 # --- orphaned-Sandbox reaper (pure decision) -------------------------------
 # A Sandbox with no owning Conversation leaks forever: the per-pod agent-host retention
 # sweep only sees in-memory conversations, so a Sandbox whose Conversation CR is gone from
