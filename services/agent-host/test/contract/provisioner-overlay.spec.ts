@@ -20,7 +20,14 @@ type Manifest = {
         volumes?: Array<{ name: string; configMap?: { name: string }; persistentVolumeClaim?: { claimName: string } }>;
       };
     };
-    volumeClaimTemplates: Array<{ metadata: { name: string }; spec: { resources: { requests: { storage: string } } } }>;
+    volumeClaimTemplates: Array<{
+      metadata: { name: string };
+      spec: {
+        resources: { requests: { storage: string } };
+        dataSource?: { kind: string; name: string; apiGroup?: string };
+        storageClassName?: string;
+      };
+    }>;
   };
 };
 
@@ -77,6 +84,61 @@ describe("sandboxManifest warm-store claimed PVC", () => {
   it("ignores overlayClaimName when overlayStore is off (no upper at all)", () => {
     const m = render({ overlayStore: false, overlayClaimName: "warm-store-latest-3" });
     expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-rw")).toBeUndefined();
+    expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeUndefined();
+  });
+});
+
+describe("sandboxManifest overlay-upper CLONE from a golden PVC (EBS CSI dataSource)", () => {
+  // On EKS the EBS CSI driver clones a golden overlay-upper PVC (nixpkgs + warm tools
+  // pre-populated) into each conversation's scooter-rw as a CoW copy — instant,
+  // fully-populated, no warm-pool. Wired via spec.dataSource on the vct. See
+  // todo/docs/SNAPSHOT_UPPER_AND_MINIMAL_BOOTSTRAP.md.
+  it("adds a PVC dataSource clone to the scooter-rw vct when overlayDataSource is a PVC", () => {
+    const m = render({
+      overlayStore: true,
+      overlayDataSource: { kind: "PersistentVolumeClaim", name: "golden-upper-latest" },
+    });
+    const pvc = m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw");
+    expect(pvc!.spec.dataSource).toEqual({
+      kind: "PersistentVolumeClaim",
+      name: "golden-upper-latest",
+    });
+  });
+
+  it("adds a VolumeSnapshot dataSource (with the snapshot apiGroup) when kind is VolumeSnapshot", () => {
+    const m = render({
+      overlayStore: true,
+      overlayDataSource: { kind: "VolumeSnapshot", name: "golden-snap-latest" },
+    });
+    const pvc = m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw");
+    expect(pvc!.spec.dataSource).toEqual({
+      kind: "VolumeSnapshot",
+      name: "golden-snap-latest",
+      apiGroup: "snapshot.storage.k8s.io",
+    });
+  });
+
+  it("emits NO dataSource when overlayDataSource is unset (fresh empty upper)", () => {
+    const m = render({ overlayStore: true });
+    const pvc = m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw");
+    expect(pvc!.spec.dataSource).toBeUndefined();
+  });
+
+  it("ignores overlayDataSource when a warm PVC is claimed (claimName wins, no vct)", () => {
+    // A claimed pool PVC is a NAMED volume, not a vct — there's nothing to clone into.
+    const m = render({
+      overlayStore: true,
+      overlayClaimName: "warm-store-latest-3",
+      overlayDataSource: { kind: "PersistentVolumeClaim", name: "golden-upper-latest" },
+    });
+    expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeUndefined();
+  });
+
+  it("ignores overlayDataSource when overlayStore is off", () => {
+    const m = render({
+      overlayStore: false,
+      overlayDataSource: { kind: "PersistentVolumeClaim", name: "golden-upper-latest" },
+    });
     expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeUndefined();
   });
 });

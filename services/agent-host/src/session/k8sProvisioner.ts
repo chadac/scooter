@@ -87,6 +87,12 @@ export interface K8sProvisionerOptions {
    *  conversation). Only meaningful when overlayStore is true. Default off. See
    *  todo/docs/WARM_STORE_PVC_MANAGER.md. */
   warmStorePool?: boolean;
+  /** Clone the fresh per-conversation overlay upper from a golden PVC/snapshot (EKS/EBS
+   *  CSI CoW clone) instead of an empty vct — an instant, fully-populated upper (nixpkgs +
+   *  warm tools), no warm-pool controller, no pool miss. Only applies when overlayStore is
+   *  on AND no warm PVC is claimed. Ignored on storage that can't clone (k3s local-path).
+   *  See todo/docs/SNAPSHOT_UPPER_AND_MINIMAL_BOOTSTRAP.md. */
+  overlayDataSource?: { kind: "PersistentVolumeClaim" | "VolumeSnapshot"; name: string } | null;
   /** Resource requests/limits for the sandbox container. Without these the
    *  scheduler treats a sandbox as ~free and packs many onto one node; a burst of
    *  in-pod nix builds then overwhelms the container runtime and the kubelet's PLEG
@@ -376,6 +382,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             // A claimed warm PVC → reference it by claimName (a pooled volume that outlives
             // the Sandbox); null → a fresh per-conversation volumeClaimTemplate.
             overlayClaimName,
+            // When NOT claiming a warm PVC, clone the fresh upper from a golden PVC/snapshot
+            // (EKS/EBS CSI CoW clone) if one is configured — instant, pre-populated upper.
+            overlayDataSource: opts.overlayDataSource ?? null,
             moduleConfigMap: moduleCmName(id),
             pullPolicy: opts.sandboxPullPolicy,
             sandboxRuntimeClass: opts.sandboxRuntimeClass,
@@ -492,6 +501,14 @@ export function sandboxManifest(
      *  `scooter-rw` overlay upper references THIS pooled PVC by claimName instead of a
      *  fresh per-conversation volumeClaimTemplate. null/undefined → the fresh vct. */
     overlayClaimName?: string | null;
+    /** A golden source to CLONE the per-conversation overlay upper from (EBS CSI
+     *  dataSource). When set — and overlayStore is on and NO warm PVC is claimed — the
+     *  fresh `scooter-rw` vct is provisioned as a CoW copy of this golden PVC/snapshot
+     *  (nixpkgs + warm tools pre-populated), instant + fully-populated, no warm pool.
+     *  Ignored when a claimName wins (a named volume, no vct to clone into) or when
+     *  overlayStore is off. kind is "PersistentVolumeClaim" or "VolumeSnapshot"
+     *  (the latter carries the snapshot apiGroup). Wired from OVERLAY_DATA_SOURCE_*. */
+    overlayDataSource?: { kind: "PersistentVolumeClaim" | "VolumeSnapshot"; name: string } | null;
     moduleConfigMap?: string;
     /** imagePullPolicy for the sandbox container. Defaults to "Always" (a
      *  registry-backed cluster picks up a re-pushed :latest). Set "IfNotPresent"
@@ -524,6 +541,21 @@ export function sandboxManifest(
   // per-conversation volumeClaimTemplate. The pooled PVC outlives the Sandbox (the
   // controller returns it to the pool on suspend).
   const overlayClaimName = overlayStore ? (deploy.overlayClaimName ?? null) : null;
+  // A golden source to clone the fresh scooter-rw upper from (EBS CSI CoW clone). Only
+  // when overlayStore is on AND we're using the fresh vct (no claimName — a claimed pool
+  // PVC is a named volume with nothing to clone into). A VolumeSnapshot source needs the
+  // snapshot apiGroup; a PersistentVolumeClaim source omits it (core group). See
+  // todo/docs/SNAPSHOT_UPPER_AND_MINIMAL_BOOTSTRAP.md.
+  const overlayDataSource =
+    overlayStore && !overlayClaimName && deploy.overlayDataSource
+      ? {
+          kind: deploy.overlayDataSource.kind,
+          name: deploy.overlayDataSource.name,
+          ...(deploy.overlayDataSource.kind === "VolumeSnapshot"
+            ? { apiGroup: "snapshot.storage.k8s.io" }
+            : {}),
+        }
+      : null;
   // The agent-host-owned per-conversation module ConfigMap, mounted read-only at
   // the SAME path scooterModule.dir points at (/etc/agent-sandbox/scooter), so
   // scooter-apply-module reads the agent's self-authored module from it and the
@@ -705,6 +737,9 @@ export function sandboxManifest(
                 spec: {
                   accessModes: ["ReadWriteOnce"],
                   resources: { requests: { storage: overlayStorage } },
+                  // CoW-clone the upper from a golden PVC/snapshot when configured
+                  // (EKS/EBS CSI) — instant, pre-populated upper, no warm pool.
+                  ...(overlayDataSource ? { dataSource: overlayDataSource } : {}),
                 },
               },
             ]

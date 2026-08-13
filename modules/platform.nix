@@ -102,6 +102,32 @@ in
         cluster (`kubectl get runtimeclass`).
       '';
     };
+    overlayDataSource = mkOption {
+      type = types.nullOr (types.submodule {
+        options = {
+          kind = mkOption {
+            type = types.enum [ "PersistentVolumeClaim" "VolumeSnapshot" ];
+            default = "PersistentVolumeClaim";
+            description = "The golden source kind — a directly-cloneable PVC, or a VolumeSnapshot.";
+          };
+          name = mkOption {
+            type = types.str;
+            description = "Name of the golden PVC / VolumeSnapshot to clone each conversation's overlay upper from.";
+          };
+        };
+      });
+      default = null;
+      example = { kind = "PersistentVolumeClaim"; name = "golden-upper-latest"; };
+      description = ''
+        Golden-upper CLONE source (EKS/EBS CSI). When set, each conversation's fresh
+        overlay-upper PVC (/nix/.scooter-rw) is provisioned as a CoW clone of this golden
+        PVC/snapshot — pre-populated with nixpkgs + warm tools, instant, no warm pool and
+        no pool miss. Requires a snapshot/clone-capable CSI driver (EBS on EKS); IGNORED on
+        storage that can't clone (k3s local-path — use warmStore there instead). Mutually
+        redundant with warmStore.enable (a claimed warm PVC wins; the clone only applies to
+        a fresh vct). See todo/docs/SNAPSHOT_UPPER_AND_MINIMAL_BOOTSTRAP.md.
+      '';
+    };
     sandboxViaBroker = mkOption {
       type = types.bool;
       default = false;
@@ -748,6 +774,12 @@ in
                 ]
                 ++ lib.optional cfg.warmStore.enable
                   { name = "WARM_STORE_POOL"; value = "1"; }
+                # Golden-upper clone (EKS/EBS CSI): a fresh overlay upper is CoW-cloned from
+                # the golden PVC/snapshot instead of starting empty. Only when configured.
+                ++ lib.optionals (cfg.overlayDataSource != null) [
+                  { name = "OVERLAY_DATA_SOURCE_KIND"; value = cfg.overlayDataSource.kind; }
+                  { name = "OVERLAY_DATA_SOURCE_NAME"; value = cfg.overlayDataSource.name; }
+                ]
                 ++ [
                   # imagePullPolicy for the per-conversation sandbox pods — mirror the
                   # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always

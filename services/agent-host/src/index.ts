@@ -398,6 +398,21 @@ export async function main(
         // WARM_STORE_POOL=1 enables it (set by kubenix when agentSandbox.warmStore.enable).
         // A cold/contended pool falls back to a fresh upper (never blocks).
         warmStorePool: (process.env.WARM_STORE_POOL || "0") === "1",
+        // Golden-upper CLONE (EKS/EBS CSI): when a fresh upper is provisioned (no warm
+        // claim), CoW-clone it from this golden PVC/snapshot so it's instantly populated
+        // (nixpkgs + warm tools) — replaces the warm pool on snapshot-capable storage.
+        // OVERLAY_DATA_SOURCE_NAME names the golden source; OVERLAY_DATA_SOURCE_KIND is
+        // "PersistentVolumeClaim" (default — a directly-cloneable golden PVC) or
+        // "VolumeSnapshot". Unset ⇒ a plain empty upper. Set by kubenix on EKS.
+        overlayDataSource: process.env.OVERLAY_DATA_SOURCE_NAME
+          ? {
+              kind:
+                process.env.OVERLAY_DATA_SOURCE_KIND === "VolumeSnapshot"
+                  ? "VolumeSnapshot"
+                  : "PersistentVolumeClaim",
+              name: process.env.OVERLAY_DATA_SOURCE_NAME,
+            }
+          : null,
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).
