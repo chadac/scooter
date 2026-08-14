@@ -11,7 +11,44 @@ from conversation_controller.reconcile import (
     reconcile,
     find_orphans,
     desired_replicas,
+    demand_of,
 )
+
+
+def _cs(name, phase="Assigned", host: str | None = "p1", parent=None):
+    return ConversationState(
+        name=name, host_pod=host, phase=phase, generation=1, parent_id=parent
+    )
+
+
+# --- demand_of (the autoscale demand — Suspended conversations DON'T count) -----
+
+def test_demand_counts_assigned_and_pending_but_not_suspended():
+    convs = [
+        _cs("a", phase="Assigned"),
+        _cs("b", phase="Pending", host=None),
+        _cs("c", phase="Suspended", host=None),   # idle — no pod needed
+        _cs("d", phase="Suspended", host=None),
+    ]
+    # Only a + b need a pod; the two Suspended don't (they revive on demand).
+    assert demand_of(convs) == 2
+
+
+def test_demand_all_suspended_is_zero():
+    # The bug: idle conversations kept the fleet pinned. All-suspended → zero demand →
+    # the autoscaler can scale down to the min floor (the pods finally sleep).
+    convs = [_cs("a", phase="Suspended", host=None), _cs("b", phase="Suspended", host=None)]
+    assert demand_of(convs) == 0
+
+
+def test_demand_excludes_subagents():
+    # A subagent co-locates on its parent's pod — no independent capacity.
+    convs = [_cs("parent", phase="Assigned"), _cs("child", phase="Assigned", parent="parent")]
+    assert demand_of(convs) == 1
+
+
+def test_demand_empty_is_zero():
+    assert demand_of([]) == 0
 
 
 # --- desired_replicas (the autoscaler decision) ----------------------------

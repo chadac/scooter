@@ -127,6 +127,26 @@ def reconcile(
 import math
 
 
+# Phases that DO NOT consume a pod slot → excluded from autoscale demand. A Suspended
+# conversation has no pod (its Sandbox is suspended); it revives on the next prompt (the
+# host resumes it + republishes Assigned), so it must not hold a replica open while idle.
+# WITHOUT this exclusion the fleet never scales down: every conversation ever created keeps
+# counting as demand, so idle-suspended conversations pin the agent-host at max — the
+# "conversations still not sleeping" symptom (the pods stay up though the Sandboxes suspend).
+_NON_DEMAND_PHASES = frozenset({"Suspended"})
+
+
+def demand_of(convs: list["ConversationState"]) -> int:
+    """Top-level conversations that NEED a pod right now — the autoscale demand. Excludes
+    subagents (they co-locate on the parent's pod, consuming no independent capacity) AND
+    Suspended conversations (no pod; revive on demand). Pending + Assigned count."""
+    return sum(
+        1
+        for c in convs
+        if c.parent_id is None and c.phase not in _NON_DEMAND_PHASES
+    )
+
+
 def desired_replicas(
     demand: int,
     cap: int,

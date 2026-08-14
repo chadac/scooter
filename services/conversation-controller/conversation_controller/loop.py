@@ -17,6 +17,7 @@ from .reconcile import (
     reconcile,
     find_orphans,
     desired_replicas,
+    demand_of,
 )
 
 logger = logging.getLogger("conversation-controller")
@@ -125,7 +126,10 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     Returns {demand, current, target, ready_pods, per_pod} — per_pod is the observability
     metric (also exported at /metrics)."""
     convs = [_state(cr) for cr in k8s.list_conversations()]
-    demand = sum(1 for c in convs if c.parent_id is None)
+    # Demand = top-level conversations that NEED a pod (Pending + Assigned). Suspended
+    # conversations are excluded — they have no pod and revive on demand, so counting them
+    # pinned the fleet at max and the pods never slept though the Sandboxes suspended.
+    demand = demand_of(convs)
     ready_pods = sum(1 for p in k8s.list_host_pods() if p.ready)
     current = k8s.get_agent_host_replicas()
 
