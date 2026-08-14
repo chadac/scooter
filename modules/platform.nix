@@ -625,10 +625,23 @@ in
             {
               # Multi-replica: the agent-host WATCHES Conversations (ownershipGuard fencing)
               # and CREATES one per new conversation (conversationRegistry) so the controller
-              # can assign it a hostPod. It does NOT patch status — the controller owns that.
+              # can assign it a hostPod.
               apiGroups = [ "scooter.chadac.dev" ];
               resources = [ "conversations" ];
               verbs = [ "get" "list" "watch" "create" ];
+            }
+            {
+              # The agent-host PUBLISHES liveness to status.phase (Assigned on
+              # revive/resume, Suspended on idle-suspend) via conversationRegistry.setPhase
+              # — owner-fenced, so only the hosting pod writes. WITHOUT this the setPhase
+              # PATCH 403s silently (fire-and-forget), the phase never reaches Suspended, and
+              # the autoscaler counts the conversation as demand forever → the fleet never
+              # sleeps. (The controller ALSO patches status for assignment; both are writers,
+              # coordinated by ownership-fencing + phase semantics.) status is its OWN
+              # subresource RBAC-wise, hence a separate rule.
+              apiGroups = [ "scooter.chadac.dev" ];
+              resources = [ "conversations/status" ];
+              verbs = [ "get" "patch" "update" ];
             }
           ];
       };
