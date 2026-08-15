@@ -181,6 +181,32 @@ def test_host_gone_triggers_reassign_with_gen_bump():
     assert k.status("c1")["generation"] == 2
 
 
+def test_phase_drift_corrects_stuck_assigned_to_suspended():
+    # The live bug end-to-end: a conversation Assigned to a ready host, but its Sandbox is
+    # actually Suspended (idle-suspended long ago; the setPhase(Suspended) 403'd). reconcile_once
+    # must correct the CR phase → Suspended (self-heal), so the autoscaler stops counting it.
+    k = FakeK8s(
+        [Pod("a", True)],
+        [_cr("c1", host="a", phase="Assigned", gen=1, sandbox_ref="conv-1")],
+        sandboxes=[SandboxRef("conv-1", age_seconds=99999, operating_mode="Suspended")],
+    )
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["phase"] == "Suspended"
+    assert k.status("c1")["hostPod"] is None  # dropped the host (no pod needed while suspended)
+
+
+def test_phase_drift_leaves_assigned_when_sandbox_running():
+    # A genuinely-active conversation (Sandbox Running) must stay Assigned — no false correction.
+    k = FakeK8s(
+        [Pod("a", True)],
+        [_cr("c1", host="a", phase="Assigned", gen=1, sandbox_ref="conv-1")],
+        sandboxes=[SandboxRef("conv-1", age_seconds=99999, operating_mode="Running")],
+    )
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["phase"] == "Assigned"
+    assert k.patches == []
+
+
 def test_two_pending_convs_balance_across_two_pods():
     k = FakeK8s([Pod("a", True), Pod("b", True)], [_cr("c1"), _cr("c2")])
     reconcile_once(k, cap=10)

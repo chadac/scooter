@@ -179,10 +179,39 @@ def desired_replicas(
 
 @dataclass(frozen=True)
 class SandboxRef:
-    """The bits of a Sandbox CR the reaper decision depends on."""
+    """The bits of a Sandbox CR the reaper + phase-drift decisions depend on."""
 
     name: str            # metadata.name (e.g. conv-<id>)
     age_seconds: float   # now - metadata.creationTimestamp
+    operating_mode: str = "Running"  # spec.operatingMode ("Running" | "Suspended")
+
+
+def find_phase_drift(
+    conversations: list["ConversationState"],
+    sandbox_mode: dict[str, str],
+    conv_sandbox: dict[str, str],
+) -> list[str]:
+    """Conversation NAMES whose phase must be corrected to Suspended: their Sandbox is
+    Suspended (operatingMode) but the CR still says Assigned. SELF-HEAL for a missed
+    setPhase — phase is otherwise written ONLY at the host's suspend()/revive() transition
+    events, so a single failed setPhase (e.g. the agent-host RBAC 403 on conversations/status)
+    leaves the phase stuck Assigned forever → the autoscaler counts it as demand → the fleet
+    never sleeps. Suspended-direction ONLY: the controller never sets Assigned (that stays the
+    host's revive() job — no two-writer flap on the same phase).
+
+    :param sandbox_mode: sandbox NAME -> operatingMode ("Running" | "Suspended").
+    :param conv_sandbox: conversation NAME -> its spec.sandboxRef (the Sandbox it owns).
+    """
+    out: list[str] = []
+    for c in conversations:
+        if c.phase != "Assigned":
+            continue  # only Assigned can be stale-vs-Suspended (Pending has no sandbox yet)
+        sb = conv_sandbox.get(c.name)
+        if sb is None:
+            continue  # no sandbox linked yet
+        if sandbox_mode.get(sb) == "Suspended":
+            out.append(c.name)
+    return out
 
 
 def find_orphans(

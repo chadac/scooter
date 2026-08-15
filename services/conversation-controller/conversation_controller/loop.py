@@ -18,6 +18,7 @@ from .reconcile import (
     find_orphans,
     desired_replicas,
     demand_of,
+    find_phase_drift,
 )
 
 logger = logging.getLogger("conversation-controller")
@@ -48,7 +49,14 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     conversations spreads across pods instead of all landing on the least-loaded one."""
     pods = k8s.list_host_pods()
     ready_names = {p.name for p in pods if p.ready}
-    convs = [_state(cr) for cr in k8s.list_conversations()]
+    raw_convs = k8s.list_conversations()
+    convs = [_state(cr) for cr in raw_convs]
+    # conversation NAME -> its spec.sandboxRef (for the phase-drift reconciler below).
+    conv_sandbox = {
+        cr["metadata"]["name"]: ref
+        for cr in raw_convs
+        if (ref := (cr.get("spec") or {}).get("sandboxRef"))
+    }
 
     # Seed load from conversations currently assigned to a still-ready pod (those stay).
     load: dict[str, int] = {}
@@ -105,6 +113,25 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                 k8s.notify_revive(action.host_ip, c.name, action.generation)
             except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
                 logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
+
+    # PHASE-DRIFT SELF-HEAL: correct any conversation still phase=Assigned whose Sandbox is
+    # actually Suspended. Phase is otherwise written ONLY at the host's suspend()/revive()
+    # transition events, so a single missed setPhase (e.g. the agent-host RBAC 403 on
+    # conversations/status) left the phase stuck Assigned forever → the autoscaler counted it
+    # as demand → the fleet never slept. Reconciling against the true operatingMode here is
+    # idempotent + resumes NOTHING (Suspended-direction only; Assigned stays the host's job).
+    # Uses the freshly-updated `hosts`/status via a re-read of the sandbox modes.
+    sandbox_mode = {s.name: s.operating_mode for s in k8s.list_sandboxes()}
+    # Re-state from the CRs we already read, but with THIS pass's assignments applied so a
+    # conversation we just (re)assigned to a ready pod isn't mis-flagged. (An assign sets
+    # phase=Assigned; if its Sandbox is Suspended it genuinely needs correcting next tick once
+    # the assign settles — we use the pre-assignment `convs` snapshot, which is correct for the
+    # STUCK case that motivated this: long-Assigned convs whose Sandbox suspended long ago.)
+    for name in find_phase_drift(convs, sandbox_mode, conv_sandbox):
+        k8s.patch_status(name, {"phase": "Suspended", "hostPod": None})
+        results.append((name, "phase-drift-suspended"))
+        logger.info("phase-drift: %s Assigned but Sandbox Suspended → corrected to Suspended", name)
+
     return results
 
 
