@@ -62,7 +62,15 @@ class LeavePending:
     reason: str
 
 
-Action = NoOp | Assign | LeavePending
+@dataclass(frozen=True)
+class Detach:
+    """A SUSPENDED conversation needs no pod — clear its hostPod (owner released). Phase
+    stays Suspended (the agent-host owns that transition); we only release placement. On
+    wake, the host sets phase=Assigned and the next reconcile assigns a fresh host."""
+    reason: str
+
+
+Action = NoOp | Assign | LeavePending | Detach
 
 
 def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
@@ -88,6 +96,20 @@ def reconcile(
     hosts = hosts or {}
     ready_names = {p.name for p in pods if p.ready}
     ip_of = {p.name: p.ip for p in pods}  # pod name → its status.podIP (routing address)
+
+    # SUSPENDED conversations need NO pod — the agent-host set phase=Suspended (idle-suspend).
+    # Respect it: never (re)assign a suspended conversation, and RELEASE any stale hostPod it
+    # still carries (suspend() writes phase but not hostPod, so a just-suspended conv still
+    # points at its old — now draining — pod). WITHOUT this, when that pod dies the placement
+    # logic below would see "host gone" and RE-ASSIGN it (clobbering Suspended → Assigned),
+    # putting it back in the autoscale demand → the fleet never sleeps. On wake the host sets
+    # phase=Assigned (a request reaches any pod via the router's hostless fallback) and the
+    # next reconcile assigns a fresh host. Subagents follow their parent, so a suspended
+    # subagent is covered by the parent's suspension (its own phase tracks too).
+    if conv.phase == "Suspended":
+        if conv.host_pod is not None:
+            return Detach(reason="suspended — release host (no pod needed until wake)")
+        return NoOp(reason="suspended — no host needed")
 
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
     if conv.parent_id is not None:
@@ -179,39 +201,10 @@ def desired_replicas(
 
 @dataclass(frozen=True)
 class SandboxRef:
-    """The bits of a Sandbox CR the reaper + phase-drift decisions depend on."""
+    """The bits of a Sandbox CR the reaper decision depends on."""
 
     name: str            # metadata.name (e.g. conv-<id>)
     age_seconds: float   # now - metadata.creationTimestamp
-    operating_mode: str = "Running"  # spec.operatingMode ("Running" | "Suspended")
-
-
-def find_phase_drift(
-    conversations: list["ConversationState"],
-    sandbox_mode: dict[str, str],
-    conv_sandbox: dict[str, str],
-) -> list[str]:
-    """Conversation NAMES whose phase must be corrected to Suspended: their Sandbox is
-    Suspended (operatingMode) but the CR still says Assigned. SELF-HEAL for a missed
-    setPhase — phase is otherwise written ONLY at the host's suspend()/revive() transition
-    events, so a single failed setPhase (e.g. the agent-host RBAC 403 on conversations/status)
-    leaves the phase stuck Assigned forever → the autoscaler counts it as demand → the fleet
-    never sleeps. Suspended-direction ONLY: the controller never sets Assigned (that stays the
-    host's revive() job — no two-writer flap on the same phase).
-
-    :param sandbox_mode: sandbox NAME -> operatingMode ("Running" | "Suspended").
-    :param conv_sandbox: conversation NAME -> its spec.sandboxRef (the Sandbox it owns).
-    """
-    out: list[str] = []
-    for c in conversations:
-        if c.phase != "Assigned":
-            continue  # only Assigned can be stale-vs-Suspended (Pending has no sandbox yet)
-        sb = conv_sandbox.get(c.name)
-        if sb is None:
-            continue  # no sandbox linked yet
-        if sandbox_mode.get(sb) == "Suspended":
-            out.append(c.name)
-    return out
 
 
 def find_orphans(

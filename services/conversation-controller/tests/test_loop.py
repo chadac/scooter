@@ -181,29 +181,22 @@ def test_host_gone_triggers_reassign_with_gen_bump():
     assert k.status("c1")["generation"] == 2
 
 
-def test_phase_drift_corrects_stuck_assigned_to_suspended():
-    # The live bug end-to-end: a conversation Assigned to a ready host, but its Sandbox is
-    # actually Suspended (idle-suspended long ago; the setPhase(Suspended) 403'd). reconcile_once
-    # must correct the CR phase → Suspended (self-heal), so the autoscaler stops counting it.
-    k = FakeK8s(
-        [Pod("a", True)],
-        [_cr("c1", host="a", phase="Assigned", gen=1, sandbox_ref="conv-1")],
-        sandboxes=[SandboxRef("conv-1", age_seconds=99999, operating_mode="Suspended")],
-    )
+def test_suspended_conversation_is_detached_end_to_end():
+    # The live bug end-to-end: a conversation phase=Suspended still carries a stale hostPod
+    # (suspend() wrote phase, not host). reconcile_once must RELEASE the host (Detach) — never
+    # reassign it — so it stops counting as demand + isn't shown on a dead pod. Phase stays
+    # Suspended (the host owns that transition).
+    k = FakeK8s([Pod("a", True)], [_cr("c1", host="a", phase="Suspended", gen=1)])
     reconcile_once(k, cap=10)
-    assert k.status("c1")["phase"] == "Suspended"
-    assert k.status("c1")["hostPod"] is None  # dropped the host (no pod needed while suspended)
+    assert k.status("c1")["hostPod"] is None
+    assert k.status("c1").get("phase") == "Suspended"  # untouched — only host released
 
 
-def test_phase_drift_leaves_assigned_when_sandbox_running():
-    # A genuinely-active conversation (Sandbox Running) must stay Assigned — no false correction.
-    k = FakeK8s(
-        [Pod("a", True)],
-        [_cr("c1", host="a", phase="Assigned", gen=1, sandbox_ref="conv-1")],
-        sandboxes=[SandboxRef("conv-1", age_seconds=99999, operating_mode="Running")],
-    )
+def test_suspended_conversation_already_hostless_is_noop():
+    # Steady state {Suspended, hostPod: null} → no patch (no churn every tick).
+    cr = _cr("c1", phase="Suspended")  # no host
+    k = FakeK8s([Pod("a", True)], [cr])
     reconcile_once(k, cap=10)
-    assert k.status("c1")["phase"] == "Assigned"
     assert k.patches == []
 
 

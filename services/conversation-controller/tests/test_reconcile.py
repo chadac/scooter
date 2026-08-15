@@ -12,50 +12,32 @@ from conversation_controller.reconcile import (
     find_orphans,
     desired_replicas,
     demand_of,
-    find_phase_drift,
+    Detach,
 )
 
 
-# --- find_phase_drift (self-heal a stuck-Assigned phase) --------------------
+# --- reconcile RESPECTS the Suspended phase (needs no pod) -------------------
 
-def test_phase_drift_corrects_assigned_whose_sandbox_is_suspended():
-    # The live bug: a conversation idle-suspended (Sandbox Suspended) but its phase stuck
-    # Assigned because the setPhase(Suspended) 403'd (RBAC). Nothing re-runs suspend(), so
-    # the controller must correct it against the true operatingMode.
-    convs = [_cs("c1", phase="Assigned"), _cs("c2", phase="Assigned")]
-    drift = find_phase_drift(
-        convs,
-        sandbox_mode={"conv-1": "Suspended", "conv-2": "Running"},
-        conv_sandbox={"c1": "conv-1", "c2": "conv-2"},
-    )
-    assert drift == ["c1"]  # c1's sandbox is Suspended; c2's is Running → only c1 drifts
+def test_suspended_with_stale_host_is_detached():
+    # A conversation the host suspended (phase=Suspended) still carries its old hostPod
+    # (suspend() writes phase, not hostPod). The controller RELEASES the host — a suspended
+    # conversation needs no pod. Without this, when that pod dies reconcile would RE-ASSIGN it
+    # (clobbering Suspended → Assigned) and it'd re-count as demand → the fleet never sleeps.
+    a = reconcile(conv(host="a", phase="Suspended", gen=1), [Pod("a", True)], {"a": 1}, cap=10)
+    assert isinstance(a, Detach)
 
 
-def test_phase_drift_ignores_pending_and_already_suspended():
-    convs = [_cs("p", phase="Pending", host=None), _cs("s", phase="Suspended", host=None)]
-    drift = find_phase_drift(
-        convs,
-        sandbox_mode={"conv-p": "Suspended", "conv-s": "Suspended"},
-        conv_sandbox={"p": "conv-p", "s": "conv-s"},
-    )
-    assert drift == []  # Pending has no sandbox to reconcile; Suspended is already correct
+def test_suspended_with_no_host_is_noop():
+    # Already clean ({Suspended, hostPod: null}) → nothing to do (no churn).
+    a = reconcile(conv(host=None, phase="Suspended", gen=1), [Pod("a", True)], {}, cap=10)
+    assert isinstance(a, NoOp)
 
 
-def test_phase_drift_skips_conversations_with_no_linked_sandbox():
-    convs = [_cs("c1", phase="Assigned")]
-    assert find_phase_drift(convs, sandbox_mode={}, conv_sandbox={}) == []
-
-
-def test_phase_drift_never_corrects_toward_assigned():
-    # Suspended-direction ONLY: a conversation whose Sandbox is Running is left to the host's
-    # revive() to set Assigned — the controller must not co-write Assigned (no two-writer flap).
-    convs = [_cs("c1", phase="Suspended", host=None)]
-    drift = find_phase_drift(
-        convs,
-        sandbox_mode={"conv-1": "Running"},
-        conv_sandbox={"c1": "conv-1"},
-    )
-    assert drift == []
+def test_suspended_never_reassigned_even_when_host_gone():
+    # The stuck case: a suspended conversation whose host pod is GONE must NOT be reassigned
+    # (that's what re-woke it as demand). It's detached (host released), not Assigned/Pending.
+    a = reconcile(conv(host="dead-pod", phase="Suspended", gen=1), [Pod("b", True)], {"b": 0}, cap=10)
+    assert isinstance(a, Detach)
 
 
 def _cs(name, phase="Assigned", host: str | None = "p1", parent=None):

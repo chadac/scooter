@@ -156,8 +156,7 @@ class ControllerK8s:
 
     # --- orphaned-Sandbox reaper -------------------------------------------
     def list_sandboxes(self) -> list["SandboxRef"]:
-        """Every per-conversation Sandbox as (name, age_seconds, operating_mode) — for the
-        reaper (name+age) AND the phase-drift reconciler (operatingMode)."""
+        """Every per-conversation Sandbox, as (name, age_seconds) for the reaper decision."""
         _, custom, _ = _apis()
         resp = custom.list_namespaced_custom_object(
             SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL
@@ -168,8 +167,7 @@ class ControllerK8s:
             name = cr["metadata"]["name"]
             created = cr["metadata"].get("creationTimestamp")
             age = (now - _parse_ts(created)).total_seconds() if created else 0.0
-            mode = (cr.get("spec") or {}).get("operatingMode", "Running")
-            out.append(SandboxRef(name=name, age_seconds=age, operating_mode=mode))
+            out.append(SandboxRef(name=name, age_seconds=age))
         return out
 
     def delete_sandbox_tree(self, sandbox_name: str) -> None:
