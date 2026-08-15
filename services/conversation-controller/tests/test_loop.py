@@ -55,10 +55,12 @@ class FakeK8s:
         return self._convs[name].get("status", {})
 
 
-def _cr(name, host=None, phase="Pending", gen=0, parent=None, sandbox_ref=None):
+def _cr(name, host=None, phase="Pending", gen=0, parent=None, sandbox_ref=None, host_ip=None):
     st = {"phase": phase, "generation": gen}
     if host is not None:
         st["hostPod"] = host
+    if host_ip is not None:
+        st["hostIP"] = host_ip
     spec = {}
     if parent is not None:
         spec["parentId"] = parent
@@ -171,6 +173,41 @@ def test_assigned_to_ready_host_is_noop():
     k = FakeK8s([Pod("a", True)], [_cr("c1", host="a", phase="Assigned", gen=1)])
     reconcile_once(k, cap=10)
     assert k.patches == []  # nothing patched
+
+
+def test_noop_reassures_hydration_by_repushing_revive_to_assigned_host():
+    # BUG (found live on odin): after a rollout, a conversation gets reassigned but the
+    # revive-push doesn't land (target pod was ContainerCreating). With no user traffic
+    # there's no lazy revive, so it sits Assigned-but-UNHYDRATED forever — invisible to the
+    # host's idle sweeper (which only sees hydrated entries) → counted as demand forever →
+    # the fleet never sleeps. The controller does NoOp on an already-Assigned conv, so it
+    # must RE-PUSH the (idempotent) revive each reconcile so a missed push self-heals.
+    k = FakeK8s(
+        [Pod("a", True, ip="10.42.0.7")],
+        [_cr("c1", host="a", phase="Assigned", gen=1, host_ip="10.42.0.7")],
+    )
+    reconcile_once(k, cap=10)
+    assert k.patches == []                              # still a NoOp (no status churn)
+    assert k.revives == [("10.42.0.7", "c1", 1)]        # ...but revive re-pushed
+
+
+def test_noop_does_not_repush_revive_for_suspended():
+    # A Suspended conversation must NOT be revived by the reconcile — it has no pod and
+    # revives only on demand. (Also it's a NoOp: reconcile leaves it be.)
+    k = FakeK8s(
+        [Pod("a", True, ip="10.42.0.7")],
+        [_cr("c1", host="a", phase="Suspended", gen=1, host_ip="10.42.0.7")],
+    )
+    reconcile_once(k, cap=10)
+    assert k.revives == []
+
+
+def test_noop_skips_repush_when_no_host_ip():
+    # No routing address yet → nothing to push to (the assign path already handles the
+    # first push once the IP appears).
+    k = FakeK8s([Pod("a", True)], [_cr("c1", host="a", phase="Assigned", gen=1)])
+    reconcile_once(k, cap=10)
+    assert k.revives == []
 
 
 def test_host_gone_triggers_reassign_with_gen_bump():

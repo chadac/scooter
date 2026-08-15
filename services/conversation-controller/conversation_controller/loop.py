@@ -66,6 +66,20 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     for c in convs:
         action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
+            # HYDRATION SELF-HEAL: a conversation Assigned to a ready host may NOT be
+            # hydrated on that host — if the revive-push at assign time missed (the pod was
+            # still ContainerCreating) and no user traffic has arrived to lazily revive it,
+            # it sits Assigned-but-unhydrated forever: invisible to the host's idle sweeper
+            # (which only sweeps in-memory entries), so it never suspends → counts as demand
+            # → the fleet never sleeps. reviveFromMirror is IDEMPOTENT (a no-op if already
+            # live), so re-push it each reconcile; a missed push then self-heals on the next
+            # tick. Only for Assigned convs with a known host IP — never Suspended (those
+            # revive on demand only).
+            if c.phase == "Assigned" and c.host_ip:
+                try:
+                    k8s.notify_revive(c.host_ip, c.name, c.generation)
+                except Exception:  # noqa: BLE001 — a push failure must not abort the pass
+                    logger.warning("revive re-push for %s failed (lazy revive will cover it)", c.name)
             results.append((c.name, "noop"))
             continue
         if isinstance(action, LeavePending):
