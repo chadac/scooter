@@ -26,6 +26,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# --- the caller-injected BUILD STRATEGY (no-directive branch) ---------------
+# default.nix replaceVars's @buildCommand@ with the caller's build: the bootstrap builds the
+# config/root flake; the real config builds via base-config `nix build --expr`. It MUST set
+# `toplevel` to the built store path (and exit non-zero on build failure — the switch gate).
+scooter_rebuild_build() {
+@buildCommand@
+}
+
 # --- status/log protocol (read by scooter-env-status) --------------------
 #   $status_dir/status : one word — building | switching | done | failed | idle
 #   $status_dir/error  : the failure summary (empty on success)
@@ -103,13 +111,12 @@ else
     trap - EXIT
     exit 0
   fi
-  echo "scooter-rebuild: building toplevel from $config_path (flake #sandboxSystem)..."
-  # --no-update-lock-file + --no-write-lock-file: the config flake ships a BAKED flake.lock, and
-  # it lives at a read-only store path (or a symlink to one). Without these, nix tries to RE-LOCK
-  # on build — which can't write into the read-only tree and re-resolves the nixpkgs input.
-  toplevel=$(nix build --no-link --print-out-paths --impure \
-    --no-update-lock-file --no-write-lock-file \
-    "path:$config_path#sandboxSystem.config.system.build.toplevel")
+  echo "scooter-rebuild: building toplevel from $config_path ..."
+  # The BUILD STRATEGY is injected by default.nix (@buildCommand@) so one engine serves both
+  # callers: the bootstrap builds the config/root FLAKE (path:<config>#sandboxSystem); the real
+  # config builds via its base-config `nix build --expr`. The strategy sets `toplevel`. A build
+  # failure exits non-zero HERE (set -e), before any switch — the gate.
+  scooter_rebuild_build   # defined below via @buildCommand@ (sets $toplevel)
 fi
 
 # --- the invariant switch core -----------------------------------------------

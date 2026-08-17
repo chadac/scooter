@@ -33,13 +33,31 @@
 , statusDir ? "/run/scooter/env-switch"
 , configPath ? "/etc/scooter/config"
 , directiveEnv ? "SCOOTER_FIRSTBOOT_TARGET"
+  # The no-directive BUILD STRATEGY (a shell snippet that sets `toplevel`). ONE engine, two
+  # callers: the BOOTSTRAP (default) builds the config/root FLAKE; the REAL config passes its
+  # base-config `nix build --expr` snippet. Retiring base-config in favour of the flake is a
+  # later step — this flag lets both coexist behind one binary/script meanwhile.
+, buildCommand ? ''
+    if [ ! -e "$config_path/flake.nix" ]; then
+      echo "scooter-rebuild: no directive and no config flake at $config_path — nothing to apply" >&2
+      write_status idle
+      trap - EXIT
+      exit 0
+    fi
+    echo "scooter-rebuild: building config/root flake ($config_path#sandboxSystem)..."
+    # --no-*-lock-file: the config flake ships a BAKED flake.lock at a read-only store path;
+    # without these nix tries to RE-LOCK (can't write + re-resolves the nixpkgs input).
+    toplevel=$(nix build --no-link --print-out-paths --impure \
+      --no-update-lock-file --no-write-lock-file \
+      "path:$config_path#sandboxSystem.config.system.build.toplevel")
+  ''
 }:
 
 let
   # The switch body, with the Nix knobs substituted into the standalone .sh (@name@ → value).
   # replaceVars is the current nixpkgs API (substituteAll was removed).
   body = replaceVars ./scooter-rebuild.sh {
-    inherit systemProfile statusDir configPath directiveEnv;
+    inherit systemProfile statusDir configPath directiveEnv buildCommand;
   };
 in
 writeShellApplication {
