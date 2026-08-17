@@ -62,6 +62,9 @@ let
   # real config; only the BUILD strategy differs (the flag). See pkgs/sandbox-shared/scooter-rebuild.
   # (`applyModule` keeps its name here for the callers below; the BINARY is now `scooter-rebuild`.)
   applyModule = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-rebuild {
+    # A DISTINCT name from the scooter-rebuild CLI dispatcher below (which wraps this engine) —
+    # the dispatcher execs it by store path, so `scooter-rebuild switch` doesn't recurse.
+    name = "scooter-rebuild-switch";
     inherit systemProfile statusDir;
     # The real config's build: resolve --module (forwarded as "$@") + the deployment-CM
     # fallback, skip a genuine no-op, else build base-config with the extra module spliced in.
@@ -203,7 +206,7 @@ let
         switch)
           # Pass through --detach; scooter-apply-module with NO --module composes the
           # base config (which imports local + deployment/broker modules) -> the switch.
-          exec scooter-rebuild switch "$@"
+          exec ${applyModule}/bin/scooter-rebuild-switch switch "$@"
           ;;
         status)
           exec scooter-env-status "$@"
@@ -275,7 +278,7 @@ let
                 tmp=$(mktemp)
                 jq --arg n "$name" '. + [$n] | unique' "$REGISTRY_IDS_FILE" > "$tmp" && mv "$tmp" "$REGISTRY_IDS_FILE"
                 echo "attached $name — applying..."
-                exec scooter-rebuild switch "''${@:2}"
+                exec ${applyModule}/bin/scooter-rebuild-switch switch "''${@:2}"
               fi
               ;;
             detach)
@@ -293,7 +296,7 @@ let
                 tmp=$(mktemp)
                 jq --arg n "$name" 'map(select(. != $n))' "$REGISTRY_IDS_FILE" > "$tmp" && mv "$tmp" "$REGISTRY_IDS_FILE"
                 echo "detached $name — applying..."
-                exec scooter-rebuild switch "''${@:2}"
+                exec ${applyModule}/bin/scooter-rebuild-switch switch "''${@:2}"
               else
                 echo "$ref is not attached"
               fi
@@ -437,7 +440,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${applyModule}/bin/scooter-rebuild switch --detach";
+        ExecStart = "${applyModule}/bin/scooter-rebuild-switch switch --detach";
       };
     };
   };

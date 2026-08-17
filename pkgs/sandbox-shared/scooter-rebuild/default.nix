@@ -29,6 +29,11 @@
 , gawk
 , curl
 , gzip
+  # The binary name. Default `scooter-rebuild` (the bootstrap uses it directly). The REAL config
+  # wraps this engine in its own `scooter-rebuild` CLI dispatcher (module authoring + switch), so
+  # it instantiates the engine under a DISTINCT name (scooter-rebuild-switch) and the dispatcher
+  # execs it by store path — otherwise the dispatcher's `exec scooter-rebuild` recurses into itself.
+, name ? "scooter-rebuild"
 , systemProfile ? "/nix/var/nix/profiles/system"
 , statusDir ? "/run/scooter/env-switch"
 , configPath ? "/etc/scooter/config"
@@ -61,7 +66,7 @@ let
   };
 in
 writeShellApplication {
-  name = "scooter-rebuild";
+  inherit name;
   runtimeInputs = [ nix coreutils systemd gnugrep gawk curl gzip ];
   # shellcheck OFF (as the original scooter-apply-module had): the `trap 'rc=$?…'` (SC2154 can't
   # see the assignment inside the trap string) + the @buildCommand@ injection shift line numbers

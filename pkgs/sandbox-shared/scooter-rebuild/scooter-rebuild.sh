@@ -108,21 +108,12 @@ if [ -n "$directive" ]; then
     exit 1
   fi
 else
-  # No directive: build the config flake (the real-config re-converge). The flake at config_path
-  # pins its own nixpkgs + imports ./custom, so this one build is the whole generation. A build
-  # failure exits non-zero HERE (set -e), before any switch — the gate.
-  if [ ! -e "$config_path/flake.nix" ]; then
-    echo "scooter-rebuild: no directive and no config flake at $config_path — nothing to apply" >&2
-    write_status idle
-    trap - EXIT
-    exit 0
-  fi
-  echo "scooter-rebuild: building toplevel from $config_path ..."
-  # The BUILD STRATEGY is injected by default.nix (the buildCommand var) so one engine serves
-  # both callers: the bootstrap builds the config/root FLAKE (path:<config>#sandboxSystem); the
-  # real config builds via its base-config nix build --expr. The strategy sets `toplevel`. A
-  # build failure exits non-zero HERE (set -e), before any switch — the gate.
-  scooter_rebuild_build "${build_args[@]}"   # the injected build function (sets $toplevel)
+  # No directive → run the caller-injected BUILD STRATEGY (default.nix's buildCommand): the
+  # bootstrap builds the config/root FLAKE (path:<config>#sandboxSystem, with its own flake-
+  # presence check); the real config builds base-config via `nix build --expr` (with its own
+  # --module resolution + no-op check). The strategy sets `toplevel`, or `write_status idle;
+  # trap - EXIT; exit 0` for a genuine no-op. A build failure exits non-zero (set -e) — the gate.
+  scooter_rebuild_build "${build_args[@]}"
 fi
 
 # --- the invariant switch core -----------------------------------------------
