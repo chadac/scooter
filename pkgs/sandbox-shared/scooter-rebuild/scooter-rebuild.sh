@@ -16,20 +16,26 @@ config_path="@configPath@"
 status_dir="@statusDir@"
 directive="${@directiveEnv@:-}"
 
-# --- arg parse (accept a leading `switch` verb for CLI parity; --detach) ---------------------
+# --- arg parse (accept a leading `switch` verb; --detach; pass the REST to the build) --------
+# `switch` + `--detach` are handled here. Any OTHER args (e.g. the real config's `--module
+# <path>`) are collected into build_args[] and forwarded to scooter_rebuild_build — the injected
+# build strategy owns them. --detach re-execs "$0 <build_args>" so the background run sees them too.
 detach=0
+build_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    switch) shift ;;                 # the only verb here; module/status are the dispatcher's
+    switch) shift ;;                       # the CLI verb; module/status are the dispatcher's
     --detach) detach=1; shift ;;
-    *) echo "scooter-rebuild: unknown arg: $1" >&2; exit 2 ;;
+    *) build_args+=("$1"); shift ;;        # forwarded to the build strategy (e.g. --module X)
   esac
 done
 
 # --- the caller-injected BUILD STRATEGY (no-directive branch) ---------------
 # default.nix replaceVars's the buildCommand var (below) with the caller's build: the bootstrap
-# builds the config/root flake; the real config builds via base-config nix build --expr. It MUST
-# set `toplevel` to the built store path (and exit non-zero on build failure — the switch gate).
+# builds the config/root flake; the real config builds via base-config nix build --expr (+ its
+# --module / no-op logic). It receives the forwarded args as "$@", MUST set `toplevel` to the
+# built store path (and exit non-zero on build failure — the switch gate). It may `write_status
+# idle; trap - EXIT; exit 0` for a genuine no-op.
 scooter_rebuild_build() {
 @buildCommand@
 }
@@ -59,13 +65,13 @@ if [ "$detach" -eq 1 ]; then
     exit 3
   fi
   write_status building
-  # Re-exec the SAME script WITHOUT --detach as a transient unit, log appended so the caller's
-  # `building` line is preserved. Not tied to this unit's lifetime.
+  # Re-exec the SAME script WITHOUT --detach as a transient unit, forwarding the build_args so the
+  # background run sees --module etc. log appended so the caller's `building` line is preserved.
   systemd-run --collect --quiet \
     --unit="scooter-env-switch-$$" \
     --property=StandardOutput="append:$status_dir/log" \
     --property=StandardError="append:$status_dir/log" \
-    "$0"
+    "$0" "${build_args[@]}"
   echo "scooter-rebuild: applying in the background — poll scooter-env-status"
   exit 0
 fi
@@ -116,7 +122,7 @@ else
   # both callers: the bootstrap builds the config/root FLAKE (path:<config>#sandboxSystem); the
   # real config builds via its base-config nix build --expr. The strategy sets `toplevel`. A
   # build failure exits non-zero HERE (set -e), before any switch — the gate.
-  scooter_rebuild_build   # the injected build function (sets $toplevel)
+  scooter_rebuild_build "${build_args[@]}"   # the injected build function (sets $toplevel)
 fi
 
 # --- the invariant switch core -----------------------------------------------
