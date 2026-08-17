@@ -21,6 +21,8 @@ in
 {
   # The bootstrap switches to the real generation on boot (Tier C core contract).
   bootstrap-firstboot = import ./bootstrap-firstboot.nix { inherit pkgs lib bootstrapModule; };
+  # firstboot BUILDS config/root#sandboxSystem in-pod (no directive) + switches.
+  bootstrap-config-root = import ./bootstrap-config-root.nix { inherit pkgs lib bootstrapModule; };
 
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
