@@ -1,11 +1,11 @@
 # scooter-firstboot — the bootstrap's ONE job: switch to the real generation on boot.
 #
-# The unit; the switch itself lives in the SHARED scooter-apply-module derivation
-# (pkgs/sandbox-shared/scooter-apply-module), consumed here.
+# The unit; the switch itself lives in the SHARED scooter-rebuild derivation
+# (pkgs/sandbox-shared/scooter-rebuild), consumed here.
 #
 # The real system toplevel + its closure are ALREADY PRESENT in the overlay upper (the
 # conversation's PVC is a clone of the golden VolumeSnapshot the warm Job produced). So
-# firstboot does NOT build from scratch — scooter-apply-module resolves the agent-host
+# firstboot does NOT build from scratch — scooter-rebuild resolves the agent-host
 # directive ($SCOOTER_FIRSTBOOT_TARGET, a prebuilt store path in the upper) + switches to it.
 #
 # ASYNC: the switch runs detached (--detach) so it does NOT gate multi-user.target /
@@ -18,9 +18,9 @@
 let
   cfg = config.programs.scooterFirstboot;
 
-  # The ONE switch engine, shared with the real config's re-converge. A plain derivation,
+  # The ONE switch command, shared with the real config's re-converge. A plain derivation,
   # not a module hook — it decides "resolve a prebuilt target vs build the flake" at runtime.
-  scooterApplyModule = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-apply-module {
+  scooterRebuild = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-rebuild {
     inherit (cfg) configPath directiveEnv;
   };
   scooterEnvStatus = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-env-status { };
@@ -60,7 +60,7 @@ in
   config = lib.mkIf cfg.enable {
     # Both shared commands on PATH (the real config puts the SAME derivations on PATH too,
     # so there's exactly one switch implementation across both images).
-    environment.systemPackages = [ scooterApplyModule scooterEnvStatus ];
+    environment.systemPackages = [ scooterRebuild scooterEnvStatus ];
 
     systemd.services.scooter-firstboot = {
       description = "Switch to the real sandbox generation on boot (root + custom)";
@@ -76,9 +76,9 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # scooter-apply-module switch [--detach]. --detach backgrounds the switch as its own
+        # scooter-rebuild switch [--detach]. --detach backgrounds the switch as its own
         # transient unit so this oneshot returns immediately (readiness not gated).
-        ExecStart = "${scooterApplyModule}/bin/scooter-apply-module switch"
+        ExecStart = "${scooterRebuild}/bin/scooter-rebuild switch"
           + lib.optionalString cfg.detach " --detach";
       };
       # The directive env is passed by the provisioner (SCOOTER_FIRSTBOOT_TARGET). In a
