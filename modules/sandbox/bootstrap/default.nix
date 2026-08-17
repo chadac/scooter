@@ -73,20 +73,21 @@
   nix.enable = true;
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  # --- config layout (both OUTSIDE the image) --------------------------------
-  # /etc/scooter/config        = the kubenix-built ROOT flake, from the warmed PVC upper.
-  # /etc/scooter/config/custom = agent customizations, from the WORKSPACE PVC.
-  # The root flake.nix imports ./custom. tmpfiles ensures the custom dir + the mount
-  # target exist on boot (idempotent); the provisioner mounts the workspace PVC subpath
-  # onto /etc/scooter/config/custom (wired in kubenix, not here).
+  # --- config layout (NO flake — scooter-rebuild builds root + custom via impure --expr) -----
+  # /etc/scooter/config/root   = the real config MODULE DIR (baked in image / kubenix ConfigMap).
+  # /etc/scooter/config/custom = the agent's own modules, on the WORKSPACE PVC, exposed at the
+  #                              stable config path via a SYMLINK (the same proven pattern the old
+  #                              /etc/scooter/modules used). The agent edits *.nix there + runs
+  #                              `scooter-rebuild switch`; the switch layers custom AFTER root.
+  # tmpfiles creates the PVC-side dir + the symlink on boot (idempotent). No k8s subPath mount
+  # needed — the symlink into the /workspace PVC is enough (HOME=/workspace, durable).
   systemd.tmpfiles.rules = [
     "d /workspace/.scooter/custom 0755 root root -"
-    # config/ itself is provided by the upper (config/root flake) — do NOT create it here;
-    # only ensure the workspace-side custom dir exists for the bind.
+    "d /etc/scooter/config 0755 root root -"
+    "L+ /etc/scooter/config/custom - - - - /workspace/.scooter/custom"
   ];
 
-  # NOTE (IMPL): the actual /etc/scooter/config content (the root flake) is NOT built
-  # into the image — it is materialized into the PVC by the warm Job (kubenix). This
-  # module only provides the SWITCH machinery + the mount points. The firstboot unit
-  # (./firstboot.nix) performs `scooter-rebuild switch /etc/scooter/config` async on boot.
+  # NOTE: /etc/scooter/config/root (the real config modules) is delivered separately — baked in
+  # the image or mounted from a kubenix ConfigMap (next increment). This module provides the
+  # SWITCH machinery + the config/custom link. firstboot runs `scooter-rebuild switch` on boot.
 }

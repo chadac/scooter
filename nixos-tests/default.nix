@@ -21,8 +21,8 @@ in
 {
   # The bootstrap switches to the real generation on boot (the directive path — prod).
   bootstrap-firstboot = import ./bootstrap-firstboot.nix { inherit pkgs lib bootstrapModule; };
-  # NOTE: the in-pod config/root build (root + custom via impure --expr, no flake) wants its own
-  # test; the former flake-based bootstrap-config-{root,custom} were removed with the flake.
+  # config/custom (the agent-editable layer) end-to-end: author/override/no-op/bad-module.
+  bootstrap-config-custom = import ./bootstrap-config-custom.nix { inherit pkgs lib bootstrapModule; };
 
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
