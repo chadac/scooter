@@ -55,279 +55,81 @@ let
   # /run (tmpfs): a fresh boot starts with no stale status, and it's writable.
   statusDir = "/run/scooter/env-switch";
 
-  applyModule = pkgs.writeShellApplication {
-    name = "scooter-apply-module";
-    # systemd provides `systemd-run` (the --detach path launches the background
-    # converge as its own transient unit so it survives the boot unit's restart).
-    runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.systemd pkgs.gnugrep pkgs.gawk ];
-    checkPhase = "";
-    text = ''
-      # scooter-apply-module — re-converge this sandbox to include a NixOS module,
-      # via switch-to-configuration, with generation registration + auto-rollback.
-      #
-      #   scooter-apply-module [--module <path>] [--detach]
-      #
-      # --module <path>   the module.nix to apply (default: the mounted
-      #                   <scooterModule.dir>/module.nix — the boot/ConfigMap path).
-      #                   The agent-host passes an uploaded path for a live apply.
-      # --detach          run the build+switch in the BACKGROUND (setsid) and return
-      #                   IMMEDIATELY. The foreground writes STATUS + a full combined
-      #                   stdout/stderr LOG to ${statusDir} so the caller can poll
-      #                   (scooter-env-status). Used by the boot converge (fast, non-
-      #                   blocking startup) AND the agent's async modify_environment.
-      #
-      # Safety model: the in-pod `nix build` is the validation gate (a bad module
-      # fails the build BEFORE any switch). Each good build is registered as a
-      # system generation; if the switch then leaves the system with NEW failed
-      # units, we roll the profile back to the prior generation and re-switch, so a
-      # bad module can never leave the sandbox stuck in a broken config. Idempotent.
-      set -euo pipefail
-
-      # An EXTRA module to splice into the re-converge. Optional: with none, we build
-      # the BASE config alone — which already imports local-modules (/etc/scooter/modules)
-      # + broker/registry modules — so `scooter-rebuild switch` picks up the agent's
-      # authored modules WITHOUT needing a --module. The legacy per-conversation module
-      # ConfigMap (cfg.dir/module.nix) is used ONLY as a fallback when it exists and is
-      # non-empty (the old deployment path); a missing/empty CM no longer blocks the
-      # base re-converge.
+  # The real config's switch = the SHARED scooter-rebuild engine (status/log protocol,
+  # --detach re-exec, generation register, switch-in-scope, health-gate → rollback) with a
+  # REAL-CONFIG buildCommand: the base-config `nix build --expr` + the --module resolution / CM
+  # fallback / no-op guards. So there is ONE switch implementation across the bootstrap + the
+  # real config; only the BUILD strategy differs (the flag). See pkgs/sandbox-shared/scooter-rebuild.
+  # (`applyModule` keeps its name here for the callers below; the BINARY is now `scooter-rebuild`.)
+  applyModule = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-rebuild {
+    inherit systemProfile statusDir;
+    # The real config's build: resolve --module (forwarded as "$@") + the deployment-CM
+    # fallback, skip a genuine no-op, else build base-config with the extra module spliced in.
+    buildCommand = ''
+      # An EXTRA module to splice into the re-converge (forwarded via "$@" from the engine).
+      # None → build the BASE config alone (it imports local-modules /etc/scooter/modules +
+      # broker/registry modules), so a plain `scooter-rebuild switch` picks up authored modules.
       module=""
       cm_module=${lib.escapeShellArg cfg.dir}/module.nix
-      detach=0
       while [ $# -gt 0 ]; do
         case "$1" in
           --module) module="$2"; shift 2 ;;
-          --detach) detach=1; shift ;;
-          *) echo "scooter-apply-module: unknown arg: $1" >&2; exit 2 ;;
+          *) echo "scooter-rebuild: unknown build arg: $1" >&2; exit 2 ;;
         esac
       done
-      # No explicit --module: fall back to the deployment CM module IF it has content;
-      # otherwise leave $module empty and re-converge the base config alone.
+      # No explicit --module: fall back to the deployment CM module IF it has content.
       if [ -z "$module" ] && [ -s "$cm_module" ] && [ -n "$(tr -d '[:space:]' < "$cm_module" 2>/dev/null)" ]; then
         module="$cm_module"
       fi
 
-      # --- status/log protocol (read by scooter-env-status) --------------------
-      # ${statusDir}/status : one word — building | switching | done | failed | idle
-      # ${statusDir}/error  : the failure summary (empty on success)
-      # ${statusDir}/log    : the full combined stdout+stderr of the run
-      status_dir=${lib.escapeShellArg statusDir}
-      write_status() {
-        mkdir -p "$status_dir"
-        printf '%s\n' "$1" > "$status_dir/status"
-        [ $# -ge 2 ] && printf '%s\n' "$2" > "$status_dir/error" || : > "$status_dir/error"
-      }
-
-      # --- --detach: re-exec THIS run in a SEPARATE systemd unit, then return ---
-      # The background converge must OUTLIVE its caller. setsid alone is NOT enough:
-      # setsid escapes the controlling terminal + process group, but the child stays
-      # in the CALLER'S cgroup — and the boot unit (scooter-apply-module.service) is
-      # exactly a unit that switch-to-configuration RESTARTS (its own diff includes
-      # itself), so systemd tears down that cgroup mid-switch and kills the child
-      # BEFORE it writes `done`. The status then wedges at `switching` forever even
-      # though the switch itself succeeded (system-path activates earlier, so the
-      # tool still lands — but scooter-env-status reads a perpetual in-progress).
-      #
-      # Run the child as its OWN transient systemd unit (systemd-run) so it lives in
-      # a separate cgroup, unmanaged by the switch, and survives the restart to write
-      # its terminal status. --collect reaps the unit when it exits. The foreground
-      # child does the real work WITHOUT --detach and maintains status/log. mkdir the
-      # status dir FIRST (foreground) so the log redirect can't race it (the
-      # run_background mkdir-before-& lesson). A switch already in flight
-      # (status=building|switching) is refused — no overlapping switches in one pod.
-      if [ "$detach" -eq 1 ]; then
-        mkdir -p "$status_dir"
-        cur=$(cat "$status_dir/status" 2>/dev/null || echo idle)
-        if [ "$cur" = "building" ] || [ "$cur" = "switching" ]; then
-          echo "scooter-apply-module: a switch is already in progress ($cur) — refusing" >&2
-          exit 3
-        fi
-        write_status building
-        # Re-exec the SAME command ("$0" = this script's store path, the exact same
-        # build) WITHOUT --detach, as a transient unit. StandardOutput/Error -> the
-        # log file (append so the caller's building status line is preserved). It is
-        # NOT tied to this unit's lifetime, so it survives switch-to-configuration
-        # restarting the boot unit.
-        systemd-run --collect --quiet \
-          --unit="scooter-env-switch-$$" \
-          --property=StandardOutput="append:$status_dir/log" \
-          --property=StandardError="append:$status_dir/log" \
-          "$0" --module "$module"
-        echo "scooter-apply-module: applying in the background — poll scooter-env-status"
-        exit 0
-      fi
-
-      # The foreground (real) run also maintains status, so a detached run reports
-      # its phases + a synchronous run (tests / direct call) does too.
-      write_status building
-
-      # If an EXPLICIT extra module was resolved ($module non-empty) but it's missing or
-      # empty/whitespace, that's a no-op ONLY for that extra module — we still re-converge
-      # the base config (which imports local-modules). A 0-byte file is not a valid Nix
-      # module, so `import`ing it would fail the build; drop it and continue base-only.
-      # (The per-conversation module ConfigMap is seeded with a 0-byte module.nix, so this
-      # empty case is normal, not an error.)
+      # An EXPLICIT --module that's missing/empty/whitespace → drop it, re-converge base only (a
+      # 0-byte file isn't a valid Nix module; the per-conversation CM is seeded 0-byte).
       if [ -n "$module" ] && { [ ! -e "$module" ] || [ ! -s "$module" ] || [ -z "$(tr -d '[:space:]' < "$module")" ]; }; then
-        echo "scooter-apply-module: extra module $module is missing/empty — re-converging base config only" >&2
+        echo "scooter-rebuild: extra module $module is missing/empty — re-converging base only" >&2
         module=""
       fi
 
-      # Genuine no-op: no extra module AND nothing for the base to pick up (no
-      # local /etc/scooter/modules/*.nix and no attached registry modules). Building
-      # base-only here would just rebuild the running config for nothing — and worse,
-      # a sandbox with a placeholder nixpkgs (tests, or a not-yet-provisioned pod)
-      # can't build at all. Exit idle WITHOUT building. Base-only re-converge still
-      # runs whenever there IS something authored to pick up.
+      # Genuine no-op: no extra module AND nothing for the base to pick up (no local *.nix, no
+      # attached registry modules). Building base-only would rebuild for nothing — and a sandbox
+      # with a placeholder nixpkgs (tests / not-yet-provisioned) can't build. Exit idle, no build.
       if [ -z "$module" ]; then
         local_mods=""
         [ -d /etc/scooter/modules ] && local_mods=$(find -L /etc/scooter/modules -maxdepth 1 -name '*.nix' -type f 2>/dev/null | head -1)
         reg_mods=""
         [ -s /etc/scooter/registry-modules.json ] && reg_mods=$(tr -d '[]" \n\t' < /etc/scooter/registry-modules.json 2>/dev/null)
         if [ -z "$local_mods" ] && [ -z "$reg_mods" ]; then
-          echo "scooter-apply-module: no module and nothing to converge — nothing to apply" >&2
+          echo "scooter-rebuild: no module and nothing to converge — nothing to apply" >&2
           write_status idle
+          trap - EXIT
           exit 0
         fi
       fi
 
-      # On ANY unexpected exit before we reach the explicit done/failed writes, mark
-      # failed so a poller never sees a stuck "building" after the process died.
-      trap 'rc=$?; if [ "$rc" -ne 0 ]; then write_status failed "scooter-apply-module exited $rc"; fi' EXIT
-
       if [ -n "$module" ]; then
-        echo "scooter-apply-module: building toplevel (base + $module)..."
+        echo "scooter-rebuild: building toplevel (base + $module)..."
         module_expr="$module"
       else
-        echo "scooter-apply-module: building toplevel (base config + local/registry modules)..."
+        echo "scooter-rebuild: building toplevel (base config + local/registry modules)..."
         module_expr=""
       fi
-      # Build the base config (+ the optional extra module). --impure so we can read the
-      # module path + the local-modules dir; the nixpkgs + modules source are fixed store
-      # paths baked in. We re-inject programs.scooterModule.nixpkgs so the re-evaluated
-      # base config type-checks — it has no default. A build failure exits non-zero HERE
-      # (set -e), before any profile/switch change: the gate. With no extra module this
-      # still re-converges local-modules (/etc/scooter/modules) — the agent's authored
-      # modules — since the base config imports them.
+      # Build base-config (+ the optional extra module). --impure to read the module path + the
+      # local-modules dir; nixpkgs + modules source are fixed store paths baked in.
       toplevel=$(nix build --no-link --print-out-paths --impure --expr "
         (import ${baseConfig} {
           nixpkgs = ${cfg.nixpkgs};
           modulesPath = ${effModulesSrc};
           extraModules = [
-            # base-config.nix itself now force-sets programs.scooterModule.{enable,nixpkgs}
-            # for the re-converge (it has the nixpkgs ref), so we do NOT set them here —
-            # a second mkForce would conflict.
-            # Layer the currently-running system's extra config (so the switch
-            # preserves what's already active — see extraReconvergeModules).
             ${lib.concatStringsSep "\n            " cfg.extraReconvergeModules}
             $module_expr
           ];
         }).toplevel
       ")
-
-      # Remember the current generation so we can roll back to it. (Empty on the
-      # very first apply — nothing to roll back to; a failed first switch just
-      # surfaces as a non-zero exit.)
-      # Capture the CURRENTLY-RUNNING system (what's actually active, /run/current-
-      # system) as the rollback target — NOT the profile link, which nix-env --set
-      # is about to repoint. Re-switching to this path is what returns us to the
-      # last-good config on failure.
-      prev=$(readlink -f /run/current-system 2>/dev/null || readlink -f ${systemProfile} 2>/dev/null || true)
-
-      # Snapshot the units that are ALREADY failed before the switch, so we can
-      # tell a failure THE SWITCH INTRODUCED from pre-existing noise (a bare
-      # sandbox may have unrelated degraded units). This is the real rollback
-      # signal — NOT switch-to-configuration's exit code, which is unreliable in a
-      # container (it returns non-zero for benign restart-skips even on success).
-      failed_before=$(systemctl list-units --state=failed --plain --no-legend 2>/dev/null | awk '{print $1}' | sort || true)
-
-      # Register the built toplevel as a NEW numbered system generation, then
-      # switch to it. nix-env --set bumps /nix/var/nix/profiles/system to a fresh
-      # system-N-link — this is the rollback ladder NixOS uses.
-      echo "scooter-apply-module: registering generation + switching to $toplevel..."
-      write_status switching
-      nix-env -p ${systemProfile} --set "$toplevel"
-
-      # Run the switch in a TRANSIENT systemd scope, detached from THIS unit.
-      # switch-to-configuration restarts the changed-unit diff — which would
-      # include scooter-apply-module.service if we're the boot unit — and would
-      # SIGTERM us mid-switch if run inline. A --scope process isn't a unit the
-      # switch manages, so it survives. `systemd-run --scope` runs the program
-      # SYNCHRONOUSLY (it's the scope's main process) and returns when the switch
-      # finishes — so no --wait/--pipe (both re-couple/break it) and no manual
-      # polling are needed. The switch's exit code is unreliable in a container,
-      # so we IGNORE it and let the failed-unit diff below decide success.
-      systemd-run --scope --collect --quiet \
-        --unit="scooter-switch-$$" \
-        "$toplevel/bin/switch-to-configuration" switch || true
-
-      # Health gate (the AUTHORITATIVE signal). The switch has finished (the scope
-      # ran synchronously); did it introduce any NEW failed units? A unit
-      # failed-before-and-after is pre-existing noise; a unit failed now but not
-      # before is the bad module's doing -> roll back.
-      health_ok=1
-      failed_after=$(systemctl list-units --state=failed --plain --no-legend 2>/dev/null | awk '{print $1}' | sort || true)
-      new_failures=$(comm -13 <(printf '%s\n' "$failed_before") <(printf '%s\n' "$failed_after") || true)
-      if [ -n "$new_failures" ]; then
-        echo "scooter-apply-module: switch introduced FAILED units:" >&2
-        printf '  %s\n' $new_failures >&2
-        health_ok=0
-      fi
-
-      if [ "$health_ok" -ne 1 ]; then
-        echo "scooter-apply-module: apply FAILED (new failed units after switch)" >&2
-        write_status failed "switch introduced failed units: $(printf '%s ' $new_failures)"
-        if [ -n "$prev" ]; then
-          echo "scooter-apply-module: ROLLING BACK to $prev..." >&2
-          # Roll the profile back to the prior generation and re-switch to it, so
-          # the sandbox is left in the last-good config rather than a broken one.
-          nix-env -p ${systemProfile} --rollback || true
-          # Re-switch to the prior generation (same synchronous detached scope).
-          systemd-run --scope --collect --quiet \
-            --unit="scooter-rollback-$$" \
-            "$prev/bin/switch-to-configuration" switch || \
-            echo "scooter-apply-module: rollback switch ALSO failed — manual intervention needed" >&2
-        else
-          echo "scooter-apply-module: no prior generation to roll back to" >&2
-        fi
-        exit 1
-      fi
-
-      echo "scooter-apply-module: applied."
-      write_status done
-      trap - EXIT
     '';
   };
 
-  # scooter-env-status — the agent's window into the (async) env switch. Prints the
-  # current status; on failure, the error + the full build/switch log so the agent
-  # can read the exact error and fix its module. Exit code mirrors the state so a
-  # script can gate on it: 0=done/idle, 1=failed, 2=in-progress (building/switching).
-  envStatus = pkgs.writeShellApplication {
-    name = "scooter-env-status";
-    runtimeInputs = [ pkgs.coreutils ];
-    text = ''
-      # scooter-env-status [--log]   show the env-switch status (+ log on failure)
-      set -euo pipefail
-      status_dir=${lib.escapeShellArg statusDir}
-      show_log=0
-      [ "''${1:-}" = "--log" ] && show_log=1
-      st=$(cat "$status_dir/status" 2>/dev/null || echo idle)
-      case "$st" in
-        done|idle)
-          echo "environment: $st (ready)"; exit 0 ;;
-        building|switching)
-          echo "environment: $st — the switch is still in progress; check again shortly."; exit 2 ;;
-        failed)
-          echo "environment: FAILED" >&2
-          err=$(cat "$status_dir/error" 2>/dev/null || true)
-          [ -n "$err" ] && echo "reason: $err" >&2
-          echo "--- full build/switch log ---" >&2
-          cat "$status_dir/log" 2>/dev/null >&2 || echo "(no log)" >&2
-          exit 1 ;;
-        *)
-          echo "environment: $st"; [ "$show_log" -eq 1 ] && cat "$status_dir/log" 2>/dev/null || true; exit 0 ;;
-      esac
-    '';
-  };
+  # scooter-env-status — the agent's window into the (async) env switch — is the SHARED
+  # derivation (pkgs/sandbox-shared/scooter-env-status), same statusDir contract as the engine.
+  envStatus = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-env-status { inherit statusDir; };
 
   # scooter-rebuild — THE agent's environment entrypoint (nixos-rebuild-like). Owns
   # /etc/scooter (HARDCODED — no configurability). A thin dispatcher over the existing
@@ -401,7 +203,7 @@ let
         switch)
           # Pass through --detach; scooter-apply-module with NO --module composes the
           # base config (which imports local + deployment/broker modules) -> the switch.
-          exec scooter-apply-module "$@"
+          exec scooter-rebuild switch "$@"
           ;;
         status)
           exec scooter-env-status "$@"
@@ -473,7 +275,7 @@ let
                 tmp=$(mktemp)
                 jq --arg n "$name" '. + [$n] | unique' "$REGISTRY_IDS_FILE" > "$tmp" && mv "$tmp" "$REGISTRY_IDS_FILE"
                 echo "attached $name — applying..."
-                exec scooter-apply-module "''${@:2}"
+                exec scooter-rebuild switch "''${@:2}"
               fi
               ;;
             detach)
@@ -491,7 +293,7 @@ let
                 tmp=$(mktemp)
                 jq --arg n "$name" 'map(select(. != $n))' "$REGISTRY_IDS_FILE" > "$tmp" && mv "$tmp" "$REGISTRY_IDS_FILE"
                 echo "detached $name — applying..."
-                exec scooter-apply-module "''${@:2}"
+                exec scooter-rebuild switch "''${@:2}"
               else
                 echo "$ref is not attached"
               fi
@@ -635,7 +437,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${applyModule}/bin/scooter-apply-module --detach";
+        ExecStart = "${applyModule}/bin/scooter-rebuild switch --detach";
       };
     };
   };
