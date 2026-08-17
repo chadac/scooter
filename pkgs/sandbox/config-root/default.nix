@@ -26,6 +26,15 @@
 , pkgs
 , nix
 , nixpkgs          # the nixpkgs flake SOURCE (path) to pin config/root at
+  # The initial config/custom/default.nix contents. Defaults to a NO-OP — in prod the
+  # workspace-PVC mount at /etc/scooter/config/custom shadows it with the agent's authored
+  # modules. Tests pass a concrete module to exercise the root+custom layering.
+, customModule ? ''
+    # config/custom — the agent's own NixOS modules (edit here, then scooter-rebuild switch).
+    # This shipped placeholder is a NO-OP; the workspace-PVC mount at /etc/scooter/config/custom
+    # shadows it with the agent's real modules.
+    { ... }: { }
+  ''
 }:
 
 let
@@ -56,12 +65,6 @@ let
     }
   '';
 
-  customDefault = ''
-    # config/custom — the agent's own NixOS modules (edit here, then scooter-rebuild switch).
-    # This shipped placeholder is a NO-OP; the workspace-PVC mount at /etc/scooter/config/custom
-    # shadows it with the agent's real modules.
-    { ... }: { }
-  '';
 in
 # The flake.lock pinning the `path:` nixpkgs input is BAKED (below) so the in-pod `nix build`
 # never tries to WRITE a lock into the read-only store path (a bare `nix build path:<store>#…`
@@ -69,7 +72,8 @@ in
 # content-only (no network), so this is deterministic + offline.
 runCommand "scooter-config-root"
   {
-    inherit flakeNix customDefault;
+    inherit flakeNix;
+    customDefault = customModule;
     passAsFile = [ "flakeNix" "customDefault" ];
     nativeBuildInputs = [ nix ];
     # nix flake needs these in the sandbox.

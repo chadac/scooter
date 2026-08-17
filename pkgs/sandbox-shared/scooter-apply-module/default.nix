@@ -147,7 +147,13 @@ writeShellApplication {
         exit 0
       fi
       echo "scooter-apply-module: building toplevel from $config_path (flake #sandboxSystem)..."
+      # --no-update-lock-file + --no-write-lock-file: the config flake ships a BAKED flake.lock
+      # (config-root assembler), and it lives at a read-only store path (or a symlink to one).
+      # Without these, nix tries to RE-LOCK on build — which (a) can't write into the read-only
+      # tree and (b) re-resolves the `path:` nixpkgs input, hitting a symlinked source in the
+      # store ("path '…-source' is a symlink"). Honor the baked lock instead of re-locking.
       toplevel=$(nix build --no-link --print-out-paths --impure \
+        --no-update-lock-file --no-write-lock-file \
         "path:$config_path#sandboxSystem.config.system.build.toplevel")
     fi
 

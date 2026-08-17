@@ -23,6 +23,8 @@ in
   bootstrap-firstboot = import ./bootstrap-firstboot.nix { inherit pkgs lib bootstrapModule; };
   # firstboot BUILDS config/root#sandboxSystem in-pod (no directive) + switches.
   bootstrap-config-root = import ./bootstrap-config-root.nix { inherit pkgs lib bootstrapModule; };
+  # config/custom (agent modules) is layered onto config/root by the switch.
+  bootstrap-config-custom = import ./bootstrap-config-custom.nix { inherit pkgs lib bootstrapModule; };
 
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
