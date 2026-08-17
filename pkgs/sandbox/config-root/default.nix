@@ -24,8 +24,14 @@
 { lib
 , runCommand
 , pkgs
-, nix
-, nixpkgs          # the nixpkgs flake SOURCE (path) to pin config/root at
+  # (nix not needed — we no longer lock in-sandbox; see the runCommand note.)
+  # The nixpkgs flake REF config/root pins — a normal flake ref string like
+  # `github:NixOS/nixpkgs/<rev>`, NOT a store path. Rationale (user, 2026-08-17): the bootstrap
+  # image carries NO nixpkgs; nixpkgs only matters at BUILD time, and in prod config/root is built
+  # ONCE by the golden/warm build (which has network) then cloned — the pod never builds it. So a
+  # standard github: pin is correct + is what a user's OWN sandbox flake would look like. Avoids
+  # the `path:<store>` input that gets re-materialized as a symlinked source in the nixosTest VM.
+, nixpkgsRef
   # The initial config/custom/default.nix contents. Defaults to a NO-OP — in prod the
   # workspace-PVC mount at /etc/scooter/config/custom shadows it with the agent's authored
   # modules. Tests pass a concrete module to exercise the root+custom layering.
@@ -48,7 +54,7 @@ let
   flakeNix = ''
     {
       description = "scooter sandbox real system (config/root + agent config/custom)";
-      inputs.nixpkgs.url = "path:${nixpkgs}";
+      inputs.nixpkgs.url = "${nixpkgsRef}";
       outputs = { self, nixpkgs }: {
         sandboxSystem = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
@@ -66,31 +72,23 @@ let
   '';
 
 in
-# The flake.lock pinning the `path:` nixpkgs input is BAKED (below) so the in-pod `nix build`
-# never tries to WRITE a lock into the read-only store path (a bare `nix build path:<store>#…`
-# errors "Read-only file system" without a pre-existing lock). The narHash of a path input is
-# content-only (no network), so this is deterministic + offline.
+# We do NOT bake flake.lock here: a `github:` ref needs NETWORK to lock, and the nix build
+# SANDBOX blocks network. Instead, the lock is created when config/root is first BUILT — the
+# golden/warm build (which has network). The in-pod re-converge passes
+# `--no-update-lock-file --no-write-lock-file` (scooter-rebuild), so it never tries to write a
+# lock into the read-only store path; it uses the lock the golden build produced (carried in the
+# cloned snapshot alongside config/root). A pod without that lock is the rare no-snapshot
+# fallback — it re-locks over the network like any first flake build.
 runCommand "scooter-config-root"
   {
     inherit flakeNix;
     customDefault = customModule;
     passAsFile = [ "flakeNix" "customDefault" ];
-    nativeBuildInputs = [ nix ];
-    # nix flake needs these in the sandbox.
-    requiredSystemFeatures = [ ];
   } ''
-    export HOME=$TMPDIR NIX_STATE_DIR=$TMPDIR/nix/var NIX_STORE_DIR=/nix/store
-    # Assemble into a WRITABLE staging dir first (nix flake lock must write flake.lock).
-    stage=$TMPDIR/config-root
-    mkdir -p "$stage/custom"
-    cp -r ${modulesTree}/. "$stage/"
-    chmod -R u+w "$stage"
-    cp $flakeNixPath "$stage/flake.nix"
-    cp $customDefaultPath "$stage/custom/default.nix"
-    # Generate the lock in-sandbox (offline path-input narHash). --extra-experimental-features
-    # so it works regardless of the builder's nix.conf.
-    nix --extra-experimental-features 'nix-command flakes' \
-      flake lock --offline "$stage" 2>&1 || true
-    # Ship the fully-assembled tree (incl. flake.lock) to $out.
-    cp -r "$stage" "$out"
+    mkdir -p $out/custom
+    # The vendored tree gives <out>/modules/sandbox/root + pkgs/ + services/ at repo layout.
+    cp -r ${modulesTree}/. $out/
+    chmod -R u+w $out
+    cp $flakeNixPath $out/flake.nix
+    cp $customDefaultPath $out/custom/default.nix
   ''
