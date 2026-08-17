@@ -38,23 +38,34 @@
 , statusDir ? "/run/scooter/env-switch"
 , configPath ? "/etc/scooter/config"
 , directiveEnv ? "SCOOTER_FIRSTBOOT_TARGET"
-  # The no-directive BUILD STRATEGY (a shell snippet that sets `toplevel`). ONE engine, two
-  # callers: the BOOTSTRAP (default) builds the config/root FLAKE; the REAL config passes its
-  # base-config `nix build --expr` snippet. Retiring base-config in favour of the flake is a
-  # later step — this flag lets both coexist behind one binary/script meanwhile.
+  # The nixpkgs the default (impure --expr) build imports. A store PATH (the deploy sets it; a
+  # bare `<nixpkgs>`-style path). Only used by the DEFAULT buildCommand below.
+, nixpkgs ? "<nixpkgs>"
+  # The no-directive BUILD STRATEGY (a shell snippet that sets `toplevel`). ONE engine, callers
+  # differ only here. DEFAULT (the bootstrap): build config/root + config/custom as plain module
+  # DIRS via `import <nixpkgs>/nixos/lib/eval-config.nix` — NO FLAKE (no flake.lock, no fetch, no
+  # store-symlink games; works offline in-pod). The REAL config passes its base-config --expr
+  # snippet (same shape). See memory config-root-pure-flake-delivery.
 , buildCommand ? ''
-    if [ ! -e "$config_path/flake.nix" ]; then
-      echo "scooter-rebuild: no directive and no config flake at $config_path — nothing to apply" >&2
+    root="$config_path/root"
+    custom="$config_path/custom"
+    if [ ! -d "$root" ]; then
+      echo "scooter-rebuild: no directive and no config/root at $root — nothing to apply" >&2
       write_status idle
       trap - EXIT
       exit 0
     fi
-    echo "scooter-rebuild: building config/root flake ($config_path#sandboxSystem)..."
-    # --no-*-lock-file: the config flake ships a BAKED flake.lock at a read-only store path;
-    # without these nix tries to RE-LOCK (can't write + re-resolves the nixpkgs input).
-    toplevel=$(nix build --no-link --print-out-paths --impure \
-      --no-update-lock-file --no-write-lock-file \
-      "path:$config_path#sandboxSystem.config.system.build.toplevel")
+    echo "scooter-rebuild: building toplevel from $root + $custom (impure eval-config)..."
+    # --impure: read the mounted module dirs (root baked/ConfigMap, custom on the workspace PVC).
+    # custom is layered AFTER root (extends/overrides). A missing custom dir is fine (dropped).
+    toplevel=$(nix build --no-link --print-out-paths --impure --expr "
+      (import ${nixpkgs}/nixos/lib/eval-config.nix {
+        system = builtins.currentSystem;
+        modules =
+          [ $root { boot.isContainer = true; } ]
+          ++ (if builtins.pathExists $custom then [ $custom ] else [ ]);
+      }).config.system.build.toplevel
+    ")
   ''
 }:
 

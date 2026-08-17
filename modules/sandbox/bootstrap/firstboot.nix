@@ -18,8 +18,10 @@
 let
   cfg = config.programs.scooterFirstboot;
 
-  # The ONE switch command, shared with the real config's re-converge. A plain derivation,
-  # not a module hook — it decides "resolve a prebuilt target vs build the flake" at runtime.
+  # The ONE switch command, shared with the real config's re-converge. Decides at runtime:
+  # resolve a prebuilt directive (prod) or build config/root+custom via impure --expr (fallback).
+  # We do NOT pass `nixpkgs` — the bootstrap bakes no nixpkgs; the fallback build resolves
+  # `<nixpkgs>` from the deploy's NIX_PATH/registry (prod uses the directive path anyway).
   scooterRebuild = pkgs.callPackage ../../../pkgs/sandbox-shared/scooter-rebuild {
     inherit (cfg) configPath directiveEnv;
   };

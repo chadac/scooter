@@ -84,7 +84,7 @@ write_status building
 # sees a stuck "building" after the process died.
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then write_status failed "scooter-rebuild exited $rc"; fi' EXIT
 
-# --- BRANCH: resolve a PREBUILT target, or BUILD the config flake -------------
+# --- BRANCH: resolve a PREBUILT target, or BUILD the config (impure --expr) -------------
 if [ -n "$directive" ]; then
   case "$directive" in
     http://*|https://*)
@@ -108,11 +108,11 @@ if [ -n "$directive" ]; then
     exit 1
   fi
 else
-  # No directive → run the caller-injected BUILD STRATEGY (default.nix's buildCommand): the
-  # bootstrap builds the config/root FLAKE (path:<config>#sandboxSystem, with its own flake-
-  # presence check); the real config builds base-config via `nix build --expr` (with its own
-  # --module resolution + no-op check). The strategy sets `toplevel`, or `write_status idle;
-  # trap - EXIT; exit 0` for a genuine no-op. A build failure exits non-zero (set -e) — the gate.
+  # No directive → run the caller-injected BUILD STRATEGY (default.nix's buildCommand). Both
+  # callers build via impure `nix build --expr` (NO flake): the bootstrap composes config/root +
+  # config/custom module dirs through eval-config.nix; the real config builds base-config with its
+  # --module resolution. The strategy sets `toplevel`, or `write_status idle; trap - EXIT; exit 0`
+  # for a genuine no-op. A build failure exits non-zero (set -e) — the gate.
   scooter_rebuild_build "${build_args[@]}"
 fi
 
