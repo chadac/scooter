@@ -55,10 +55,12 @@ class FakeK8s:
         return self._convs[name].get("status", {})
 
 
-def _cr(name, host=None, phase="Pending", gen=0, parent=None, sandbox_ref=None):
+def _cr(name, host=None, phase="Pending", gen=0, parent=None, sandbox_ref=None, host_ip=None):
     st = {"phase": phase, "generation": gen}
     if host is not None:
         st["hostPod"] = host
+    if host_ip is not None:
+        st["hostIP"] = host_ip
     spec = {}
     if parent is not None:
         spec["parentId"] = parent
@@ -185,16 +187,31 @@ def test_suspended_conversation_is_detached_end_to_end():
     # The live bug end-to-end: a conversation phase=Suspended still carries a stale hostPod
     # (suspend() wrote phase, not host). reconcile_once must RELEASE the host (Detach) — never
     # reassign it — so it stops counting as demand + isn't shown on a dead pod. Phase stays
-    # Suspended (the host owns that transition).
-    k = FakeK8s([Pod("a", True)], [_cr("c1", host="a", phase="Suspended", gen=1)])
+    # Suspended (the host owns that transition). BOTH placement fields are released: hostPod
+    # (fencing identity) AND hostIP (routing address) — else the router keeps dialing the IP.
+    k = FakeK8s([Pod("a", True)], [_cr("c1", host="a", phase="Suspended", gen=1, host_ip="10.1.4.35")])
     reconcile_once(k, cap=10)
     assert k.status("c1")["hostPod"] is None
-    assert k.status("c1").get("phase") == "Suspended"  # untouched — only host released
+    assert k.status("c1")["hostIP"] is None  # stale routing IP cleared, not left on a dead pod
+    assert k.status("c1").get("phase") == "Suspended"  # untouched — only placement released
+
+
+def test_suspended_stale_hostip_without_hostpod_is_repaired():
+    # THE stale-hostIP bug (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md): after a
+    # rollout the CR is {Suspended, hostPod: null, hostIP: <dead pod>}. reconcile_once must
+    # REPAIR it — clear the stale hostIP — so the router falls back to a live pod instead of
+    # dialing the dead address forever. (Before the fix this was a NoOp: hostPod was already
+    # null so nothing was patched, and hostIP lingered.)
+    k = FakeK8s([Pod("a", True)], [_cr("c1", phase="Suspended", gen=2, host_ip="10.1.4.35")])
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["hostIP"] is None
+    assert k.status("c1")["hostPod"] is None
+    assert k.status("c1").get("phase") == "Suspended"
 
 
 def test_suspended_conversation_already_hostless_is_noop():
-    # Steady state {Suspended, hostPod: null} → no patch (no churn every tick).
-    cr = _cr("c1", phase="Suspended")  # no host
+    # Steady state {Suspended, hostPod: null, hostIP: null} → no patch (no churn every tick).
+    cr = _cr("c1", phase="Suspended")  # no host, no ip
     k = FakeK8s([Pod("a", True)], [cr])
     reconcile_once(k, cap=10)
     assert k.patches == []
