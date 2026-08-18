@@ -474,9 +474,17 @@ class PermissionService:
         # expired/near-expiry (skew margin) while the role TTL is still valid, so the
         # client transparently gets a live token; if the role TTL has passed, return
         # none so the agent re-requests.
-        if creds is not None and self._creds_stale(creds):
+        #
+        # RE-MINT ON A CACHE MISS TOO (creds is None), not only on a stale hit: the cache is a
+        # per-POD in-memory dict, so with the broker at replicas>1 behind a round-robin Service
+        # ~half of status() calls land on a pod that never provisioned/refreshed this grant (and
+        # after a rollout BOTH new pods start cold). Returning None there made the sandbox see
+        # "not granted" → 403 on an active grant. refresh() re-assumes the role from the DB
+        # (cache-independent), so any pod can vend any active grant on demand — stateless
+        # vending. See docs/scooter-bug-broker-creds-cache-not-shared-across-replicas.md.
+        if creds is None or self._creds_stale(creds):
             if req.role_expires_at and req.role_expires_at <= _now():
-                return req, None  # role TTL gone — a refresh can't help; re-request
+                return req, None  # role TTL gone — a refresh/re-assume can't help; re-request
             try:
                 _, creds = await self.refresh(request_id=request_id, conversation_id=conversation_id)
             except RequestError:
