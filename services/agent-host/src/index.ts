@@ -870,16 +870,45 @@ export async function main(
 
   // assistant-ui resumes a paused run by POSTing /agui with resume[] — route the
   // answer to the conversation's bridge (interruptId == the request's toolCallId).
+  //
+  // REVIVE-BEFORE-ANSWER: after a rollout or idle-suspend the paused run is gone from
+  // memory — no live bridge, or a bridge that no longer has this interrupt registered
+  // (answerPermission returns false). Answering only the already-live bridge silently
+  // no-ops there, the SSE is left open with no data, and the approval hangs → 502
+  // forever (docs/scooter-bug-resume-hangs-when-run-not-live.md). So if the direct
+  // answer doesn't land, REVIVE the conversation (rebuilds the bridge; onRevived →
+  // reRaisePendingAwsInterrupts re-raises the still-pending broker request, restoring
+  // answer-routing) and also re-raise directly (covers a live bridge that merely lost
+  // the interrupt), then retry. Returns whether it was ultimately answered so the /agui
+  // resume branch can close with RUN_ERROR instead of hanging when it genuinely can't.
   server.onResume(async (sessionId, entry) => {
-    const bridge = sessions.get(sessionId)?.bridge;
-    if (!bridge) return;
     // cancelled -> empty optionId (the bridge treats an unknown/empty id as a
     // cancel); resolved -> the chosen optionId from the payload.
     const optionId =
       entry.status === "cancelled"
         ? ""
         : ((entry.payload as { optionId?: string } | undefined)?.optionId ?? "");
-    bridge.answerPermission(entry.interruptId, optionId);
+
+    const answer = () => sessions.get(sessionId)?.bridge?.answerPermission(entry.interruptId, optionId) ?? false;
+
+    // 1) Fast path — the run is still live and holding this interrupt.
+    if (answer()) return { ok: true };
+
+    // 2) Dormant / lost-interrupt path — revive + re-raise, then retry. Both are
+    //    best-effort and idempotent (revive is a no-op if already live; re-raise keys
+    //    on the request id). A revive failure (e.g. conversation genuinely gone) is not
+    //    fatal — we still attempt the answer and, failing that, report ok:false.
+    await sessions.revive(sessionId as SessionId).catch((err) => {
+      console.warn(`[agent-host] resume: revive of ${sessionId} failed (answering best-effort):`, err);
+    });
+    await reRaisePendingAwsInterrupts(sessionId).catch((err) => {
+      console.warn(`[agent-host] resume: re-raise pending interrupts for ${sessionId} failed:`, err);
+    });
+    if (answer()) return { ok: true };
+
+    // 3) Genuinely unanswerable (interrupt expired / already answered / unknown). The
+    //    caller turns this into a RUN_ERROR on the stream rather than a silent hang.
+    return { ok: false, reason: "this approval is no longer awaiting an answer (it may have expired or already been answered)" };
   });
 
   server.onAttach(async (sessionId, conn) => {

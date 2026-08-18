@@ -19,6 +19,15 @@ import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
 import type { WebServiceProxy } from "../proxy/webServiceProxy.js";
 
+/** Defensive guard for the /agui RESUME branch: after answering, the resumed run's
+ *  events stream back over the SSE. If NOTHING streams within this window (any silent-
+ *  hang cause), close the stream with a RUN_ERROR instead of relying on a proxy to kill
+ *  an idle upstream. Must comfortably exceed a legitimately-slow resume (a revive can
+ *  re-spawn goose + replay history), so it's generous — it only fires on a true hang.
+ *  Read per-branch (not at module load) so it's overridable via SCOOTER_RESUME_GUARD_MS,
+ *  including in tests. */
+const resumeStreamGuardMs = (): number => Number(process.env.SCOOTER_RESUME_GUARD_MS ?? 60_000);
+
 /** A raw inbound image on a user message (base64 bytes + mime) — before it's
  *  stored in the AssetStore. The promptHandler (index.ts) stores it and passes the
  *  resulting assetId to the bridge. */
@@ -127,6 +136,14 @@ export interface AguiConnection {
   close(): void;
 }
 
+/** The result of handling one resume entry. `ok:false` (with an optional human reason)
+ *  tells the /agui resume branch to close the SSE with a RUN_ERROR rather than leave it
+ *  open with no data — the difference between a rendered failure and a silent hang/502. */
+export interface ResumeOutcome {
+  ok: boolean;
+  reason?: string;
+}
+
 export interface AguiServer {
   listen(port: number): Promise<void>;
   /** The bound port after listen() (for tests binding to :0). undefined if not listening. */
@@ -137,12 +154,14 @@ export interface AguiServer {
   onPermission(handler: (sessionId: SessionId, toolCallId: string, optionId: string) => Promise<void>): void;
   /** Resume a paused run: the user answered an interrupt via RunAgentInput.resume.
    *  status "cancelled" -> the request is cancelled; otherwise payload carries the
-   *  chosen optionId. */
+   *  chosen optionId. Returns whether the answer was routed: `ok:false` means the run
+   *  isn't (and couldn't be revived into) a state that can accept this answer, so the
+   *  resume branch closes the SSE with a RUN_ERROR instead of leaving it open + silent. */
   onResume(
     handler: (
       sessionId: SessionId,
       entry: { interruptId: string; status: "resolved" | "cancelled"; payload?: unknown },
-    ) => Promise<void>,
+    ) => Promise<ResumeOutcome>,
   ): void;
   broadcast(sessionId: SessionId, event: AguiEvent): void;
   /** Replay the persisted event log to a newly-attached connection. */
@@ -186,7 +205,7 @@ export function createAguiServer(): AguiServer {
     | ((
         sessionId: SessionId,
         entry: { interruptId: string; status: "resolved" | "cancelled"; payload?: unknown },
-      ) => Promise<void>)
+      ) => Promise<ResumeOutcome>)
     | undefined;
   let attachHandler:
     | ((sessionId: SessionId, conn: AguiConnection) => Promise<void>)
@@ -310,7 +329,51 @@ export function createAguiServer(): AguiServer {
       // run and unpauses it — its continued events stream back over THIS SSE. We
       // do NOT start a new prompt for a resume.
       if (input.resume && input.resume.length > 0) {
-        for (const r of input.resume) await resumeHandler?.(sessionId, r);
+        // The handler REVIVES the run if needed, then answers; it reports whether the
+        // answer was actually routed. If ANY entry can't be answered (dormant/expired
+        // interrupt with nothing to revive into), close with a RUN_ERROR instead of
+        // leaving the stream open + silent — the reported hang/502
+        // (docs/scooter-bug-resume-hangs-when-run-not-live.md). When answered, the run
+        // resumes and streams its continued events over THIS res (via broadcast), which
+        // terminal-closes it as usual.
+        const outcomes = await Promise.all(
+          input.resume.map((r) => resumeHandler?.(sessionId, r) ?? Promise.resolve({ ok: true } as ResumeOutcome)),
+        );
+        const failed = outcomes.find((o) => o && !o.ok);
+        if (failed) {
+          try {
+            write(res, {
+              type: "RUN_ERROR",
+              message: `This approval could not be applied: ${failed.reason ?? "the run is no longer awaiting it"}.`,
+            });
+          } catch {
+            /* stream already torn down */
+          }
+          set.delete(res);
+          res.end();
+          return;
+        }
+        // Answered — keep the stream open for the resumed run's continued events, but
+        // GUARD against a silent hang from ANY other cause: if this res is still open
+        // and has streamed nothing by the deadline, close it with a RUN_ERROR rather
+        // than relying on a proxy to kill an idle upstream. broadcast() removes res from
+        // `set` + res.end()s it on the run's terminal event, so "still in set and
+        // writable" == "the resumed run never produced anything".
+        const guard = setTimeout(() => {
+          if (!set.has(res) || res.writableEnded) return; // run already streamed/closed it
+          try {
+            write(res, {
+              type: "RUN_ERROR",
+              message: "This approval was accepted but the run did not resume; please try again.",
+            });
+          } catch {
+            /* stream already torn down */
+          }
+          set.delete(res);
+          res.end();
+        }, resumeStreamGuardMs());
+        // Never let the guard outlive the connection.
+        res.on("close", () => clearTimeout(guard));
         return;
       }
 
