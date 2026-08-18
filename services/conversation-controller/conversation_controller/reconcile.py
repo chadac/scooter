@@ -62,7 +62,15 @@ class LeavePending:
     reason: str
 
 
-Action = NoOp | Assign | LeavePending
+@dataclass(frozen=True)
+class Detach:
+    """A SUSPENDED conversation needs no pod — clear its hostPod (owner released). Phase
+    stays Suspended (the agent-host owns that transition); we only release placement. On
+    wake, the host sets phase=Assigned and the next reconcile assigns a fresh host."""
+    reason: str
+
+
+Action = NoOp | Assign | LeavePending | Detach
 
 
 def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
@@ -88,6 +96,20 @@ def reconcile(
     hosts = hosts or {}
     ready_names = {p.name for p in pods if p.ready}
     ip_of = {p.name: p.ip for p in pods}  # pod name → its status.podIP (routing address)
+
+    # SUSPENDED conversations need NO pod — the agent-host set phase=Suspended (idle-suspend).
+    # Respect it: never (re)assign a suspended conversation, and RELEASE any stale hostPod it
+    # still carries (suspend() writes phase but not hostPod, so a just-suspended conv still
+    # points at its old — now draining — pod). WITHOUT this, when that pod dies the placement
+    # logic below would see "host gone" and RE-ASSIGN it (clobbering Suspended → Assigned),
+    # putting it back in the autoscale demand → the fleet never sleeps. On wake the host sets
+    # phase=Assigned (a request reaches any pod via the router's hostless fallback) and the
+    # next reconcile assigns a fresh host. Subagents follow their parent, so a suspended
+    # subagent is covered by the parent's suspension (its own phase tracks too).
+    if conv.phase == "Suspended":
+        if conv.host_pod is not None:
+            return Detach(reason="suspended — release host (no pod needed until wake)")
+        return NoOp(reason="suspended — no host needed")
 
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
     if conv.parent_id is not None:
@@ -125,6 +147,26 @@ def reconcile(
 # See todo/docs/AGENT_HOST_FLEET_SCALING.md.
 
 import math
+
+
+# Phases that DO NOT consume a pod slot → excluded from autoscale demand. A Suspended
+# conversation has no pod (its Sandbox is suspended); it revives on the next prompt (the
+# host resumes it + republishes Assigned), so it must not hold a replica open while idle.
+# WITHOUT this exclusion the fleet never scales down: every conversation ever created keeps
+# counting as demand, so idle-suspended conversations pin the agent-host at max — the
+# "conversations still not sleeping" symptom (the pods stay up though the Sandboxes suspend).
+_NON_DEMAND_PHASES = frozenset({"Suspended"})
+
+
+def demand_of(convs: list["ConversationState"]) -> int:
+    """Top-level conversations that NEED a pod right now — the autoscale demand. Excludes
+    subagents (they co-locate on the parent's pod, consuming no independent capacity) AND
+    Suspended conversations (no pod; revive on demand). Pending + Assigned count."""
+    return sum(
+        1
+        for c in convs
+        if c.parent_id is None and c.phase not in _NON_DEMAND_PHASES
+    )
 
 
 def desired_replicas(

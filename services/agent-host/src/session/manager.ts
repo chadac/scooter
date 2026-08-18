@@ -1070,6 +1070,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         void conversationRegistry.register(entry.id, {
           model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
         });
+        // RE-PUBLISH PHASE for a conversation hydrated as SUSPENDED. phase is otherwise only
+        // written at the suspend()/revive() TRANSITION events — so a conversation that was
+        // suspended but whose setPhase never landed (e.g. the historical RBAC 403, or the pod
+        // died before publishing) stays phase=Assigned/Pending FOREVER: suspend() never re-runs
+        // on an already-suspended conversation, and the controller (which respects the phase)
+        // then keeps it in the demand count. Publishing Suspended here makes phase self-heal on
+        // the next hydrate — the single place a pod re-observes a suspended conversation. A
+        // RUNNING hydrate needs no publish: revive()/the assign path sets Assigned. Owner-fenced.
+        if (entry.status === "suspended" && ownershipGuard.canWrite(entry.id)) {
+          void conversationRegistry.setPhase(entry.id, "Suspended");
+        }
       }
     },
 

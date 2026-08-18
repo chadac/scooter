@@ -181,6 +181,25 @@ def test_host_gone_triggers_reassign_with_gen_bump():
     assert k.status("c1")["generation"] == 2
 
 
+def test_suspended_conversation_is_detached_end_to_end():
+    # The live bug end-to-end: a conversation phase=Suspended still carries a stale hostPod
+    # (suspend() wrote phase, not host). reconcile_once must RELEASE the host (Detach) — never
+    # reassign it — so it stops counting as demand + isn't shown on a dead pod. Phase stays
+    # Suspended (the host owns that transition).
+    k = FakeK8s([Pod("a", True)], [_cr("c1", host="a", phase="Suspended", gen=1)])
+    reconcile_once(k, cap=10)
+    assert k.status("c1")["hostPod"] is None
+    assert k.status("c1").get("phase") == "Suspended"  # untouched — only host released
+
+
+def test_suspended_conversation_already_hostless_is_noop():
+    # Steady state {Suspended, hostPod: null} → no patch (no churn every tick).
+    cr = _cr("c1", phase="Suspended")  # no host
+    k = FakeK8s([Pod("a", True)], [cr])
+    reconcile_once(k, cap=10)
+    assert k.patches == []
+
+
 def test_two_pending_convs_balance_across_two_pods():
     k = FakeK8s([Pod("a", True), Pod("b", True)], [_cr("c1"), _cr("c2")])
     reconcile_once(k, cap=10)

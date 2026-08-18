@@ -14,9 +14,11 @@ from .reconcile import (
     Assign,
     NoOp,
     LeavePending,
+    Detach,
     reconcile,
     find_orphans,
     desired_replicas,
+    demand_of,
 )
 
 logger = logging.getLogger("conversation-controller")
@@ -67,6 +69,17 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         if isinstance(action, NoOp):
             results.append((c.name, "noop"))
             continue
+        if isinstance(action, Detach):
+            # A SUSPENDED conversation that still carries a stale hostPod → release it (the
+            # controller owns hostPod; the agent-host owns the Suspended phase, which we leave
+            # as-is). Clears the host so a suspended conversation isn't shown "on" a dead pod
+            # and — crucially — so the placement/demand logic stops treating it as hosted.
+            # (Only patches when there's actually a host to clear; reconcile returns NoOp once
+            # it's already {Suspended, hostPod: null}, so no churn.)
+            k8s.patch_status(c.name, {"hostPod": None})
+            hosts[c.name] = None
+            results.append((c.name, "detach"))
+            continue
         if isinstance(action, LeavePending):
             # Write Pending unless it's ALREADY a materialized Pending with no host — i.e.
             # don't churn a CR that already says {phase: Pending, hostPod: null}. Critically,
@@ -104,6 +117,7 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                 k8s.notify_revive(action.host_ip, c.name, action.generation)
             except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
                 logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
+
     return results
 
 
@@ -125,7 +139,10 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     Returns {demand, current, target, ready_pods, per_pod} — per_pod is the observability
     metric (also exported at /metrics)."""
     convs = [_state(cr) for cr in k8s.list_conversations()]
-    demand = sum(1 for c in convs if c.parent_id is None)
+    # Demand = top-level conversations that NEED a pod (Pending + Assigned). Suspended
+    # conversations are excluded — they have no pod and revive on demand, so counting them
+    # pinned the fleet at max and the pods never slept though the Sandboxes suspended.
+    demand = demand_of(convs)
     ready_pods = sum(1 for p in k8s.list_host_pods() if p.ready)
     current = k8s.get_agent_host_replicas()
 

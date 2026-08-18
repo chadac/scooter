@@ -408,6 +408,34 @@ describe("SessionManager", () => {
     }
   });
 
+  it("hydrate publishes phase=Suspended for a conversation hydrated as suspended (self-heal)", async () => {
+    // phase is otherwise written ONLY at the suspend()/revive() transition events, so a
+    // conversation whose setPhase(Suspended) never landed (historical RBAC 403, or the pod
+    // died before publishing) stays phase=Assigned/Pending forever — suspend() never re-runs.
+    // hydrate() re-publishes Suspended for any conversation it hydrates as suspended, so the
+    // phase self-heals on the next hydrate (the one place a pod re-observes a suspended conv).
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      await m1.start("alpha");
+
+      const setPhase = vi.fn(async () => {});
+      const registry = { register: vi.fn(async () => {}), setPhase };
+      const guard = { canWrite: () => true };
+      const store2 = createFileConversationStore(root);
+      const m2 = createSessionManager({
+        provisioner: fakeProvisioner(), store: store2,
+        conversationRegistry: registry, ownershipGuard: guard as never,
+      });
+      await m2.hydrate();
+      // alpha hydrates as suspended (fakeProvisioner reconcile reports no running pod) → publish.
+      expect(setPhase).toHaveBeenCalledWith("alpha", "Suspended");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("hydrate reconciles a still-running Sandbox as running so the idle sweep reclaims it", async () => {
     // The leak bug: after a restart the pods may NOT have been suspended, but
     // hydrate() assumed they were -> sweepIdle (running-only) never reclaimed

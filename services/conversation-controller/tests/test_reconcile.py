@@ -11,7 +11,69 @@ from conversation_controller.reconcile import (
     reconcile,
     find_orphans,
     desired_replicas,
+    demand_of,
+    Detach,
 )
+
+
+# --- reconcile RESPECTS the Suspended phase (needs no pod) -------------------
+
+def test_suspended_with_stale_host_is_detached():
+    # A conversation the host suspended (phase=Suspended) still carries its old hostPod
+    # (suspend() writes phase, not hostPod). The controller RELEASES the host — a suspended
+    # conversation needs no pod. Without this, when that pod dies reconcile would RE-ASSIGN it
+    # (clobbering Suspended → Assigned) and it'd re-count as demand → the fleet never sleeps.
+    a = reconcile(conv(host="a", phase="Suspended", gen=1), [Pod("a", True)], {"a": 1}, cap=10)
+    assert isinstance(a, Detach)
+
+
+def test_suspended_with_no_host_is_noop():
+    # Already clean ({Suspended, hostPod: null}) → nothing to do (no churn).
+    a = reconcile(conv(host=None, phase="Suspended", gen=1), [Pod("a", True)], {}, cap=10)
+    assert isinstance(a, NoOp)
+
+
+def test_suspended_never_reassigned_even_when_host_gone():
+    # The stuck case: a suspended conversation whose host pod is GONE must NOT be reassigned
+    # (that's what re-woke it as demand). It's detached (host released), not Assigned/Pending.
+    a = reconcile(conv(host="dead-pod", phase="Suspended", gen=1), [Pod("b", True)], {"b": 0}, cap=10)
+    assert isinstance(a, Detach)
+
+
+def _cs(name, phase="Assigned", host: str | None = "p1", parent=None):
+    return ConversationState(
+        name=name, host_pod=host, phase=phase, generation=1, parent_id=parent
+    )
+
+
+# --- demand_of (the autoscale demand — Suspended conversations DON'T count) -----
+
+def test_demand_counts_assigned_and_pending_but_not_suspended():
+    convs = [
+        _cs("a", phase="Assigned"),
+        _cs("b", phase="Pending", host=None),
+        _cs("c", phase="Suspended", host=None),   # idle — no pod needed
+        _cs("d", phase="Suspended", host=None),
+    ]
+    # Only a + b need a pod; the two Suspended don't (they revive on demand).
+    assert demand_of(convs) == 2
+
+
+def test_demand_all_suspended_is_zero():
+    # The bug: idle conversations kept the fleet pinned. All-suspended → zero demand →
+    # the autoscaler can scale down to the min floor (the pods finally sleep).
+    convs = [_cs("a", phase="Suspended", host=None), _cs("b", phase="Suspended", host=None)]
+    assert demand_of(convs) == 0
+
+
+def test_demand_excludes_subagents():
+    # A subagent co-locates on its parent's pod — no independent capacity.
+    convs = [_cs("parent", phase="Assigned"), _cs("child", phase="Assigned", parent="parent")]
+    assert demand_of(convs) == 1
+
+
+def test_demand_empty_is_zero():
+    assert demand_of([]) == 0
 
 
 # --- desired_replicas (the autoscaler decision) ----------------------------
