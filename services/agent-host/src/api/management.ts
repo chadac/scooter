@@ -608,6 +608,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
       }
     });
 
+    // FLUSH pending appends before replaying: appends are fire-and-forget (void
+    // store.appendEvent), so a fresh revive's just-sent user message can still be mid-write when
+    // the UI opens this stream. readEventsWithChecksum would then read a log WITHOUT it, and its
+    // onAppend fires only AFTER the write lands — so it's in neither the replay nor the pre-live
+    // buffer, and the message "disappears" until the user refreshes. Awaiting flush(id) makes
+    // every enqueued append durable (and its onAppend fired → buffered) before we read. (No-op
+    // for synchronous in-memory stores.)
+    await store.flush?.(id);
+
     // Replay persisted history with checksums.
     if (store.readEventsWithChecksum) {
       for await (const c of store.readEventsWithChecksum(id)) {
