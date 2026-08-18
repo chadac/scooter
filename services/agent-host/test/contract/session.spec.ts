@@ -186,6 +186,47 @@ describe("SessionManager", () => {
     expect(sweptLater).toContain(conv.id);
   });
 
+  it("sweepIdle does NOT suspend a conversation with a RUNNING background job", async () => {
+    // A long-running background job (run_background) is a detached in-pod process; suspend
+    // drops the pod → the process is SIGTERM'd mid-run. lastActivityAt isn't bumped while a
+    // job runs, so an idle-but-busy conversation would be swept. sweepIdle must consult the
+    // job state (hasRunningBackgroundJob) and keep the pod up while a job is running.
+    const provisioner = fakeProvisioner();
+    let jobRunning = true;
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      hasRunningBackgroundJob: async (_id) => jobRunning,
+    });
+    const conv = await sessions.start("thread-1");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000; // well past a 60s window
+
+    // Job still running → NOT swept, even though it's idle by lastActivityAt.
+    expect(await sessions.sweepIdle(60_000, idleAt)).not.toContain(conv.id);
+    expect(sessions.get(conv.id)?.status).toBe("running");
+
+    // Job finishes → now eligible for suspend.
+    jobRunning = false;
+    expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
+  });
+
+  it("sweepIdle suspends normally when the job check is absent or fails (fail-open)", async () => {
+    // The job check is best-effort: without the hook (jobs disabled) OR when it throws
+    // (an exec/probe error), suspend still proceeds — a job check must never PIN a pod up
+    // forever on an error.
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      hasRunningBackgroundJob: async () => {
+        throw new Error("exec probe failed");
+      },
+    });
+    const conv = await sessions.start("thread-1");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+    expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
+  });
+
   it("revive() calls onRevived (with a live bridge) so index.ts can re-raise dropped interrupts", async () => {
     // A pod rollout loses in-memory approval interrupts; index.ts wires onRevived to
     // re-query the broker for PENDING requests and re-raise them. Assert the hook

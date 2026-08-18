@@ -528,6 +528,21 @@ export async function main(
         console.error(`[agent-host] re-raise pending AWS interrupts failed for ${id}:`, err),
       );
     },
+    // Keep the pod up while a background job is still running — else the idle sweep would
+    // SIGTERM a long-running run_background job (see sweepIdle). Consults the jobManager
+    // (defined below; this closure runs only at sweep time). Only probes jobs NOT yet
+    // announced as complete (notifiedAt unset) — an announced job already exited. Returns
+    // true on the FIRST job still "running"; a null jobManager (jobs disabled) → false.
+    hasRunningBackgroundJob: async (id) => {
+      if (!jobManager) return false;
+      const jobs = await jobManager.list(id as SessionId);
+      for (const job of jobs) {
+        if (job.notifiedAt) continue; // already announced complete
+        const st = await jobManager.check(id as SessionId, job.jobId);
+        if (st.state === "running") return true;
+      }
+      return false;
+    },
   });
 
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
