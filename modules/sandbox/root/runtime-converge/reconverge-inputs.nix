@@ -7,10 +7,12 @@
 #
 # `baseConfig`  — the base-config.nix entrypoint the in-pod `nix build` imports.
 # `modulesTree` — a vendored source tree placing modules/sandbox/root AND
-#                 pkgs/broker-tools + the broker cli.py at the SAME relative layout as the
-#                 repo, so the base config's `../../../pkgs/broker-tools` overlay resolves
-#                 (the copied config sits at <tree>/modules/sandbox/root — 3 deep, matching
-#                 the repo, so its relative paths are byte-identical).
+#                 pkgs/broker-tools + pkgs/sandbox-shared + the broker cli.py at the SAME
+#                 relative layout as the repo, so the config's `../../../pkgs/broker-tools`
+#                 overlay AND `../../../pkgs/sandbox-shared/scooter-rebuild` callPackage (the
+#                 shared switch engine runtime-converge folds onto) resolve (the copied config
+#                 sits at <tree>/modules/sandbox/root — 3 deep, matching the repo, so its
+#                 relative paths are byte-identical).
 # `modulesSrc`  — modulesPath passed to base-config.nix (<tree>/modules/sandbox/root).
 
 { pkgs, lib }:
@@ -22,6 +24,7 @@ let
     mkdir -p $out/modules/sandbox $out/pkgs $out/services/broker/broker/aws
     cp -r ${lib.cleanSource ../.} $out/modules/sandbox/root
     cp -r ${../../../../pkgs/broker-tools} $out/pkgs/broker-tools
+    cp -r ${lib.cleanSource ../../../../pkgs/sandbox-shared} $out/pkgs/sandbox-shared
     cp ${../../../../services/broker/broker/aws/cli.py} $out/services/broker/broker/aws/cli.py
   '';
   modulesSrc = "${modulesTree}/modules/sandbox/root";

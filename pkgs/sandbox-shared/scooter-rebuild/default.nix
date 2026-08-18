@@ -38,14 +38,21 @@
 , statusDir ? "/run/scooter/env-switch"
 , configPath ? "/etc/scooter/config"
 , directiveEnv ? "SCOOTER_FIRSTBOOT_TARGET"
-  # The nixpkgs the default (impure --expr) build imports. A store PATH (the deploy sets it; a
-  # bare `<nixpkgs>`-style path). Only used by the DEFAULT buildCommand below.
-, nixpkgs ? "<nixpkgs>"
+  # The nixpkgs pin for the default (impure --expr) build is a FLAKE REF (e.g.
+  # `github:NixOS/nixpkgs/<sha>`), carried by k8s in $nixpkgsRefEnv and resolved ONCE in the
+  # sandbox via `builtins.getFlake` — the resolved source rides in the overlay upper + Nix's
+  # fetcher/tarball caches (on the /workspace PVC, HOME set by the units) so every later switch is
+  # an offline sqlite lookup, no re-fetch. `nixpkgsRefDefault` is a self-contained fallback for an
+  # UNCONFIGURED sandbox (tests, bare runs); prod overrides it via the env. No flake.lock (the
+  # config is impure — the ref IS the pin). Only used by the DEFAULT buildCommand below.
+, nixpkgsRefEnv ? "SCOOTER_NIXPKGS_REF"
+, nixpkgsRefDefault ? "github:NixOS/nixpkgs/f13ff45afd1bb73e640eaa08a7066dbed07e3238"
   # The no-directive BUILD STRATEGY (a shell snippet that sets `toplevel`). ONE engine, callers
   # differ only here. DEFAULT (the bootstrap): build config/root + config/custom as plain module
-  # DIRS via `import <nixpkgs>/nixos/lib/eval-config.nix` — NO FLAKE (no flake.lock, no fetch, no
-  # store-symlink games; works offline in-pod). The REAL config passes its base-config --expr
-  # snippet (same shape). See memory config-root-pure-flake-delivery.
+  # DIRS via `import (nixpkgs + "/nixos/lib/eval-config.nix")`, where nixpkgs is resolved from the
+  # k8s-carried flake ref (getFlake, cached on the PVC after first switch) — the config itself is
+  # impure/flakeless (the ref IS the pin). The REAL config passes its base-config --expr snippet
+  # (same shape). See memory config-root-pure-flake-delivery.
 , buildCommand ? ''
     root="$config_path/root"
     custom="$config_path/custom"
@@ -57,13 +64,28 @@
     fi
     echo "scooter-rebuild: building toplevel from $root + $custom (impure eval-config)..."
     # --impure: read the mounted module dirs (root baked/ConfigMap, custom on the workspace PVC).
-    # custom is layered AFTER root (extends/overrides). A missing custom dir is fine (dropped).
+    # custom is layered AFTER root (extends/overrides). custom is included ONLY when it holds a
+    # real module — `custom/default.nix` present + NON-EMPTY. The custom DIR always exists (a
+    # symlink to the workspace PVC), and an empty/whitespace default.nix is not a valid module
+    # (importing it fails), so gate on the FILE having content — an empty custom is a clean no-op
+    # (root-only), matching how the agent starts before authoring anything.
+    custom_arg=""
+    if [ -s "$custom/default.nix" ] && [ -n "$(tr -d '[:space:]' < "$custom/default.nix" 2>/dev/null)" ]; then
+      custom_arg="$custom"
+    fi
+    # The nixpkgs PIN is a flake ref from k8s ($nixpkgsRefEnv), with a baked default for an
+    # unconfigured sandbox. Resolve it ONCE via getFlake in the --expr — a full immutable ref
+    # (github:owner/repo/<sha>) is fetcher-cache-keyed, so after the first switch it's an offline
+    # sqlite→store lookup (the units point HOME at the /workspace PVC so that cache is durable).
+    nixpkgs_ref="''${${nixpkgsRefEnv}:-${nixpkgsRefDefault}}"
+    echo "scooter-rebuild: resolving nixpkgs $nixpkgs_ref (getFlake; cached after first switch)"
     toplevel=$(nix build --no-link --print-out-paths --impure --expr "
-      (import ${nixpkgs}/nixos/lib/eval-config.nix {
+      let nixpkgs = (builtins.getFlake \"$nixpkgs_ref\").outPath; in
+      (import (nixpkgs + \"/nixos/lib/eval-config.nix\") {
         system = builtins.currentSystem;
         modules =
           [ $root { boot.isContainer = true; } ]
-          ++ (if builtins.pathExists $custom then [ $custom ] else [ ]);
+          ++ (if \"$custom_arg\" != \"\" then [ $custom_arg ] else [ ]);
       }).config.system.build.toplevel
     ")
   ''
@@ -73,7 +95,7 @@ let
   # The switch body, with the Nix knobs substituted into the standalone .sh (@name@ → value).
   # replaceVars is the current nixpkgs API (substituteAll was removed).
   body = replaceVars ./scooter-rebuild.sh {
-    inherit systemProfile statusDir configPath directiveEnv buildCommand;
+    inherit systemProfile statusDir configPath directiveEnv nixpkgsRefEnv buildCommand;
   };
 in
 writeShellApplication {

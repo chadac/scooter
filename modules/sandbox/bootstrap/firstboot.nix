@@ -35,10 +35,11 @@ in
       type = lib.types.str;
       default = "/etc/scooter/config";
       description = ''
-        The root config flake to switch to (provided by the warmed PVC upper). Its
-        flake.nix imports ./custom (the agent's workspace-PVC customizations). When there
-        is no prebuilt directive, scooter-rebuild builds
-        `path:<configPath>#sandboxSystem` and switches to it.
+        The config dir holding `root/` (the real config MODULE dir, baked/ConfigMap) and
+        `custom/` (the agent's workspace-PVC modules, symlinked). When there is no prebuilt
+        directive, scooter-rebuild builds the toplevel via `import
+        <nixpkgs>/nixos/lib/eval-config.nix` over `[ root {isContainer} custom ]` — NO flake;
+        nixpkgs is the k8s-pinned flake ref resolved by getFlake — and switches to it.
       '';
     };
 
@@ -48,7 +49,7 @@ in
       description = ''
         Env var carrying the firstboot target: a /nix/store path (the prebuilt real
         toplevel, present in the cloned upper — the happy path, no build) or a URL serving
-        a gzipped store path (the agent-host directive). Empty ⇒ build the config flake.
+        a gzipped store path (the agent-host directive). Empty ⇒ build config/root+custom.
       '';
     };
 
@@ -78,6 +79,12 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # HOME on the /workspace PVC so `nix`'s flake fetcher/tarball caches (getFlake resolving
+        # the pinned nixpkgs ref) are DURABLE — the first switch fetches nixpkgs once; every later
+        # switch (and post-resume boot) is an offline sqlite→store lookup, no re-fetch. Matches the
+        # HOME=/workspace convention the rest of the sandbox uses. The detached transient unit
+        # inherits this env (systemd-run --property carries the ExecStart process's environment).
+        Environment = [ "HOME=/workspace" ];
         # scooter-rebuild switch [--detach]. --detach backgrounds the switch as its own
         # transient unit so this oneshot returns immediately (readiness not gated).
         ExecStart = "${scooterRebuild}/bin/scooter-rebuild switch"

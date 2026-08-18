@@ -46,6 +46,12 @@ let
   tlRootOnly = buildToplevel null;
   tlCustomOn = buildToplevel customOn;
   tlOverride = buildToplevel customOverride;
+
+  # The SAME shared switch derivations firstboot installs — but the test disables firstboot (it
+  # drives `scooter-rebuild switch` by hand), so put them on PATH explicitly. No directive env →
+  # the impure --expr root+custom build path (what this test exercises).
+  scooterRebuild = pkgs.callPackage ../pkgs/sandbox-shared/scooter-rebuild { };
+  scooterEnvStatus = pkgs.callPackage ../pkgs/sandbox-shared/scooter-env-status { };
 in
 pkgs.testers.runNixOSTest {
   name = "bootstrap-config-custom";
@@ -55,11 +61,25 @@ pkgs.testers.runNixOSTest {
     programs.scooterFirstboot.enable = lib.mkForce false;   # we drive scooter-rebuild by hand
     programs.overlayStore.enable = lib.mkForce false;
 
+    # firstboot (disabled) is what normally installs these; add them directly so we can drive.
+    environment.systemPackages = [ scooterRebuild scooterEnvStatus ];
+
+    # The nixpkgs pin: prod carries a `github:…/<sha>` ref; here point it at the test's OWN nixpkgs
+    # source as a `path:` flake ref so getFlake resolves OFFLINE (no fetch → no hang) to the exact
+    # store path the seeded toplevels were built from → the in-VM build is a cache-hit.
+    environment.variables.SCOOTER_NIXPKGS_REF = "path:${nixpkgs}";
+
     # config/root the stand-in module dir; NIX_PATH nixpkgs = the test's source (offline build).
     systemd.tmpfiles.rules = [
       "L+ /etc/scooter/config/root - - - - ${rootDir}"
     ];
     nix.nixPath = [ "nixpkgs=${nixpkgs}" ];
+
+    # Each switch's `nix build --expr` must EVALUATE a full NixOS system (getFlake nixpkgs +
+    # eval-config) even on a store cache-hit, to compute the drv hash — that eval alone needs
+    # ~2GB. The default 1024MB VM OOM-panics (nix invoked oom-killer). Give it headroom.
+    virtualisation.memorySize = 4096;
+    virtualisation.diskSize = 6144;
 
     # Seed the scenario toplevels + nixpkgs + the custom FIXTURE dirs (as store paths) so (a) the
     # in-VM `nix build --expr` is a cache-hit and (b) the test can COPY the exact fixture content
@@ -76,12 +96,31 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test -L /etc/scooter/config/custom")
     machine.succeed("test -d /workspace/.scooter/custom")
 
+    def status():
+        # The one-word env-switch state (building|switching|done|failed|idle).
+        return machine.succeed("cat /run/scooter/env-switch/status 2>/dev/null || echo idle").strip()
+
     def switch():
-        # Drive the shared engine directly (no directive → the impure --expr root+custom build).
-        return machine.succeed("scooter-rebuild switch 2>&1")
+        # Drive the shared engine DETACHED (no directive → the impure --expr root+custom build),
+        # then poll to the terminal state. --detach is REQUIRED: switch-to-configuration re-execs
+        # systemd, which corrupts the nixosTest driver's backdoor-shell output framing if the switch
+        # runs synchronously under `machine.succeed`. Detached, it runs as its own transient unit and
+        # the driver command returns immediately (intact framing); we then wait for done/failed. This
+        # is exactly how firstboot drives it in prod. Returns the terminal status word.
+        machine.succeed("scooter-rebuild switch --detach")
+        machine.wait_until_fails(
+            "s=$(cat /run/scooter/env-switch/status 2>/dev/null || echo idle); "
+            "[ \"$s\" = building ] || [ \"$s\" = switching ]",
+            timeout=600,
+        )
+        st = status()
+        if st == "failed":
+            print(machine.execute("cat /run/scooter/env-switch/log 2>&1")[1])
+        return st
 
     # --- 1. no custom yet → root-only build; marker service OFF -----------------
-    switch()
+    st = switch()
+    assert st in ("done", "idle"), f"scenario 1 switch not clean: {st!r}"
     machine.succeed("test \"$(readlink -f /run/current-system)\" = ${tlRootOnly}")
     machine.fail("systemctl cat marker.service")   # root ships it OFF → unit absent
 
@@ -90,34 +129,35 @@ pkgs.testers.runNixOSTest {
     # a hand-typed file would differ → from-source build → hang). This models the agent authoring
     # config/custom/default.nix on the workspace PVC.
     machine.succeed("cp ${customOnStore}/default.nix /workspace/.scooter/custom/default.nix")
-    switch()
+    st = switch()
+    assert st == "done", f"scenario 2 switch not done: {st!r}"
     machine.succeed("test \"$(readlink -f /run/current-system)\" = ${tlCustomOn}")
     machine.succeed("systemctl cat marker.service >/dev/null")   # custom turned it ON
 
     # --- 3. custom OVERRIDES a root option (port 8080 → 8099) -------------------
     machine.succeed("cp ${customOverrideStore}/default.nix /workspace/.scooter/custom/default.nix")
-    switch()
+    st = switch()
+    assert st == "done", f"scenario 3 switch not done: {st!r}"
     machine.succeed("test \"$(readlink -f /run/current-system)\" = ${tlOverride}")
     machine.succeed("systemctl start marker.service")
     machine.wait_for_open_port(8099)   # the CUSTOM port won over root's 8080
 
     # --- 4. empty/whitespace custom → no-op (base only), not a build error ------
-    # An empty default.nix is NOT a valid module; scooter-rebuild must treat it as no custom.
-    # (The build's `pathExists custom` sees the dir; an empty default.nix would fail the import —
-    # so the engine drops an empty custom. Assert the switch still succeeds to root-only.)
+    # An empty default.nix is NOT a valid module; scooter-rebuild drops an empty custom (gates on
+    # custom/default.nix having content) → this rebuilds root-only and switches cleanly.
     machine.succeed(": > /workspace/.scooter/custom/default.nix")
-    out = switch()
-    # It converges (to root-only or stays) WITHOUT a build error — env-status is ready.
-    assert "ready" in machine.succeed("scooter-env-status") or "idle" in out, f"empty custom errored: {out!r}"
+    st = switch()
+    assert st in ("done", "idle"), f"empty custom errored: {st!r}"
+    machine.succeed("test \"$(readlink -f /run/current-system)\" = ${tlRootOnly}")
 
     # --- 5. a BAD custom module → build FAILS, NO switch (the gate) -------------
     prev = machine.succeed("readlink -f /run/current-system").strip()
     machine.succeed(
         "printf 'this is not valid nix {{{\\n' > /workspace/.scooter/custom/default.nix"
     )
-    machine.fail("scooter-rebuild switch")                 # build fails → non-zero
+    st = switch()                                          # build fails → status 'failed'
+    assert st == "failed", f"bad custom did not fail the build: {st!r}"
     now = machine.succeed("readlink -f /run/current-system").strip()
     assert now == prev, f"a bad custom module switched the system anyway: {prev!r} -> {now!r}"
-    assert "FAILED" in machine.succeed("scooter-env-status --log 2>&1 || true") or True
   '';
 }

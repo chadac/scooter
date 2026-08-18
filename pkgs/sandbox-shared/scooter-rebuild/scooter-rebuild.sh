@@ -2,8 +2,8 @@
 # scooter-rebuild switch [--detach] — resolve/build the target toplevel, then switch, with
 # generation registration + health-gated auto-rollback.
 #
-# The at-wrapped vars below (systemProfile, statusDir, configPath, directiveEnv) are replaced by
-# default.nix (replaceVars) so this file stays valid shell to edit standalone.
+# The at-wrapped vars below (systemProfile, statusDir, configPath, directiveEnv, nixpkgsRefEnv) are
+# replaced by default.nix (replaceVars) so this file stays valid shell to edit standalone.
 #
 # Safety model: a build failure (build branch) exits non-zero BEFORE any profile/switch change
 # — the gate. Each good target is registered as a system generation; if the switch then leaves
@@ -67,8 +67,15 @@ if [ "$detach" -eq 1 ]; then
   write_status building
   # Re-exec the SAME script WITHOUT --detach as a transient unit, forwarding the build_args so the
   # background run sees --module etc. log appended so the caller's `building` line is preserved.
+  # systemd-run starts the transient unit with a CLEAN environment (system manager), so forward the
+  # env the build needs: HOME (the flake cache lands here — must stay on the PVC for a durable
+  # one-time nixpkgs resolve) and the nixpkgs-ref pin from k8s. Absent vars forward as empty (the
+  # build's own defaults apply). NIX_PATH is forwarded too for any deploy that still sets it.
   systemd-run --collect --quiet \
     --unit="scooter-env-switch-$$" \
+    --setenv=HOME="${HOME:-}" \
+    --setenv=@nixpkgsRefEnv@="${@nixpkgsRefEnv@:-}" \
+    --setenv=NIX_PATH="${NIX_PATH:-}" \
     --property=StandardOutput="append:$status_dir/log" \
     --property=StandardError="append:$status_dir/log" \
     "$0" "${build_args[@]}"
