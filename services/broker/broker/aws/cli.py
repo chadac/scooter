@@ -178,7 +178,7 @@ def _not_granted_message(profile: str) -> str:
 
 # --- request / management CLI -------------------------------------------
 def cli_main(argv: list[str] | None = None) -> int:
-    """`scooter-aws <request|status|accounts|revoke>` — the request/management CLI."""
+    """`scooter-aws <request|escalate|status|accounts|refresh|revoke>` — the request/management CLI."""
     ap = argparse.ArgumentParser(prog="scooter-aws")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -187,6 +187,16 @@ def cli_main(argv: list[str] | None = None) -> int:
     p_req.add_argument("--policy", help="path to an IAM policy JSON (or - for stdin)")
     p_req.add_argument("--managed", action="append", default=[], help="managed policy ARN (repeatable)")
     p_req.add_argument("--justification", required=True)
+
+    # escalate: expand an existing grant. Same shape as `request` + the parent request id.
+    # The broker links it (parent_request_id) and, once approved, supersedes the parent so
+    # exactly one grant is live per account (no zombie grants).
+    p_esc = sub.add_parser("escalate", help="request MORE permissions, expanding an existing request")
+    p_esc.add_argument("request_id", help="the existing request to expand (its request_id)")
+    p_esc.add_argument("--profile", required=True, help="account profile/alias (same account as the parent)")
+    p_esc.add_argument("--policy", help="path to an IAM policy JSON with the ADDITIONAL scope (or - for stdin)")
+    p_esc.add_argument("--managed", action="append", default=[], help="managed policy ARN (repeatable)")
+    p_esc.add_argument("--justification", required=True)
 
     sub.add_parser("accounts", help="list available account profiles")
     p_st = sub.add_parser("status", help="show a request's status")
@@ -218,7 +228,7 @@ def cli_main(argv: list[str] | None = None) -> int:
         print(json.dumps(body, indent=2))
         return 0 if status == 200 else 1
 
-    if args.cmd == "request":
+    if args.cmd in ("request", "escalate"):
         policy_doc = None
         if args.policy:
             raw = sys.stdin.read() if args.policy == "-" else open(args.policy).read()
@@ -231,13 +241,19 @@ def cli_main(argv: list[str] | None = None) -> int:
             "managed_policy_arns": args.managed,
             "justification": args.justification,
         }
+        # escalate expands an EXISTING request: link the parent so the broker supersedes it
+        # once this is approved (one live grant per account). Same route shape otherwise.
+        route = "request"
+        if args.cmd == "escalate":
+            route = "escalate"
+            req_body["parent_request_id"] = args.request_id
         # A link to THIS conversation (where the human approves) — the agent-host
         # injects CONVERSATION_URL into the sandbox. Lets the approval UI / the
         # requester jump straight to the request.
         conv_url = os.environ.get("CONVERSATION_URL")
         if conv_url:
             req_body["conversation_url"] = conv_url
-        status, body = _call("POST", "request", req_body)
+        status, body = _call("POST", route, req_body)
         if status == 201:
             rid = body["request_id"]
             if body.get("status") == "active":

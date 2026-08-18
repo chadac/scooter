@@ -362,6 +362,78 @@ async def test_revoke_tears_down(tmp_path):
     assert creds is None
 
 
+# --- supersede: one live grant per (conversation, account) ---------------
+# The bug: an agent that requests perms for an account it already has a request on
+# ends up with TWO requests. Only one's creds are ever selectable (cli._pick_active_
+# request), so the other sits ACTIVE-but-useless — a zombie whose IAM role is orphaned.
+# Fix: a new request/escalate for the same (conversation, account) SUPERSEDES the prior
+# one. A pending sibling is cancelled at request time (dedupe the approval queue); an
+# ACTIVE sibling keeps working until the new one is APPROVED, then it's torn down — so
+# expanding perms never leaves an access gap and a DENIED expansion keeps the original.
+
+async def test_new_request_supersedes_a_pending_sibling_immediately(tmp_path):
+    # R1 pending; requesting R2 for the SAME account cancels R1 now (no duplicate approval
+    # prompt), R2 is the only live request.
+    svc = await make_service(tmp_path)
+    r1 = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    r2 = await svc.request(conversation_id="c1", target_account="dev", justification="read+write", policy_document=WRITE)
+    g1, _ = await svc.status(request_id=r1.request_id, conversation_id="c1")
+    assert g1.status == RequestStatus.SUPERSEDED, f"pending sibling not superseded: {g1.status}"
+    assert r2.status == RequestStatus.PENDING
+
+
+async def test_active_sibling_kept_until_new_one_is_approved_then_torn_down(tmp_path):
+    # R1 ACTIVE (agent is using it). Requesting R2 must NOT tear R1 down yet — the agent
+    # keeps working while R2 awaits approval. Approving R2 tears R1 down (role deleted)
+    # and marks it SUPERSEDED, leaving exactly one active grant.
+    iam = FakeIam()
+    svc = await make_service(tmp_path, iam=iam)
+    r1 = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    await svc.approve(request_id=r1.request_id, approver="a")
+    r1_role = (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0].iam_role_arn
+    assert r1_role in iam.roles
+
+    r2 = await svc.request(conversation_id="c1", target_account="dev", justification="+write", policy_document=WRITE)
+    # R1 STILL ACTIVE while R2 pends — no access gap.
+    assert (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0].status == RequestStatus.ACTIVE
+
+    await svc.approve(request_id=r2.request_id, approver="a")
+    g1 = (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0]
+    assert g1.status == RequestStatus.SUPERSEDED, f"active sibling not superseded on approval: {g1.status}"
+    assert r1_role not in iam.roles, "the superseded request's IAM role must be torn down"
+    g2 = (await svc.status(request_id=r2.request_id, conversation_id="c1"))[0]
+    assert g2.status == RequestStatus.ACTIVE  # the new grant is the live one
+
+
+async def test_denied_new_request_leaves_the_active_sibling_intact(tmp_path):
+    # R1 ACTIVE, R2 requested then DENIED → R1 must be untouched (still active). Expanding
+    # is a bet the agent shouldn't lose their working grant over.
+    iam = FakeIam()
+    svc = await make_service(tmp_path, iam=iam)
+    r1 = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    await svc.approve(request_id=r1.request_id, approver="a")
+    r1_role = (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0].iam_role_arn
+
+    r2 = await svc.request(conversation_id="c1", target_account="dev", justification="+write", policy_document=WRITE)
+    await svc.deny(request_id=r2.request_id, approver="a", reason="too broad")
+    g1 = (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0]
+    assert g1.status == RequestStatus.ACTIVE, "a denied expansion must not disturb the original grant"
+    assert r1_role in iam.roles
+
+
+async def test_supersede_is_scoped_to_same_conversation_and_account(tmp_path):
+    # A request for a DIFFERENT account, or a different conversation, never supersedes.
+    svc = await make_service(tmp_path)
+    r1 = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    # different account (prod) — R1 untouched
+    await svc.request(conversation_id="c1", target_account="prod", justification="x",
+                      policy_document={"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"}]})
+    assert (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0].status == RequestStatus.PENDING
+    # different conversation, same account — R1 untouched (isolation)
+    await svc.request(conversation_id="c2", target_account="dev", justification="x", policy_document=WRITE)
+    assert (await svc.status(request_id=r1.request_id, conversation_id="c1"))[0].status == RequestStatus.PENDING
+
+
 async def test_revoke_does_not_mark_revoked_when_teardown_fails(tmp_path):
     """Finding #6: a failed IAM role teardown must NOT flip the request to a
     terminal REVOKED status — that orphans a live role behind a status the sweep

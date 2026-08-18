@@ -213,6 +213,15 @@ class PermissionService:
         )
         await self._store.insert(req)
 
+        # SUPERSEDE the approval QUEUE: cancel any older PENDING sibling for the same
+        # (conversation, account) now. A second request for an account you already have a
+        # pending request on shouldn't pile up a duplicate approval prompt or, once both are
+        # approved, leave two IAM roles where only one's creds are ever used (the zombie bug).
+        # A pending sibling has no IAM role yet, so this is a pure status flip — no teardown.
+        # An ACTIVE sibling is left alone here: it keeps working until THIS request is approved
+        # (_provision tears it down then), so expanding perms never opens an access gap.
+        await self._supersede_pending_siblings(req)
+
         # OPT-IN read-only auto-approval: if the account enables it and the request
         # is a pure read-only inline policy (no managed ARNs — those can grant
         # writes), grant it immediately with a synthetic system approver instead of
@@ -346,7 +355,55 @@ class PermissionService:
             credentials_issued_at=approved_at,
             expires_at=creds.expires_at,
         )
+        # This new grant is now live — SUPERSEDE any older active/approved sibling for the
+        # same (conversation, account) so exactly one grant is live and no orphaned IAM role
+        # lingers. Done AFTER the new one is ACTIVE (not at request time) so the agent never
+        # lost access while this was pending, and a denied request never reached here.
+        await self._supersede_active_siblings(req)
         return await self._store.get(req.request_id)  # type: ignore[return-value]
+
+    # --- supersede: keep one live grant per (conversation, account) --------
+    async def _siblings(self, req: PermissionRequest) -> list[PermissionRequest]:
+        """Other requests in the SAME conversation + account as `req` (never `req` itself,
+        never a cross-conversation/account request)."""
+        return [
+            r
+            for r in await self._store.list_for_conversation(req.conversation_id)
+            if r.request_id != req.request_id and r.target_account == req.target_account
+        ]
+
+    async def _supersede_pending_siblings(self, req: PermissionRequest) -> None:
+        """Cancel older PENDING/APPROVED (not-yet-active) siblings when `req` is created.
+        No IAM role exists yet on a pending request, so this is a pure status flip →
+        SUPERSEDED. Dedupes the approval queue; keeps ACTIVE siblings alone (torn down only
+        when `req` itself goes active — see _supersede_active_siblings)."""
+        for sib in await self._siblings(req):
+            if sib.status in (RequestStatus.PENDING, RequestStatus.APPROVED):
+                await self._store.update(sib.request_id, status=RequestStatus.SUPERSEDED)
+
+    async def _supersede_active_siblings(self, req: PermissionRequest) -> None:
+        """When `req` becomes ACTIVE, tear down + SUPERSEDE any older ACTIVE sibling so only
+        one grant is live per (conversation, account). Best-effort per sibling: a teardown
+        failure is logged but must NOT fail the new grant (the sweep/revoke retries the stale
+        role); the important invariant — the NEW request is active — already holds."""
+        for sib in await self._siblings(req):
+            if sib.status != RequestStatus.ACTIVE:
+                continue
+            try:
+                if sib.iam_role_arn:
+                    self._iam.delete_dynamic_role(
+                        target_account=sib.target_account,
+                        role_arn=sib.iam_role_arn,
+                        policy_arn=sib.iam_policy_arn,
+                    )
+                elif sib.iam_policy_arn:
+                    self._iam.delete_dynamic_policy(
+                        target_account=sib.target_account, policy_arn=sib.iam_policy_arn
+                    )
+            except Exception:
+                logger.exception("superseding sibling %s: IAM teardown failed", sib.request_id)
+            self._creds.pop(sib.request_id, None)
+            await self._store.update(sib.request_id, status=RequestStatus.SUPERSEDED)
 
     async def approve(self, *, request_id: str, approver: str) -> PermissionRequest:
         req = await self._store.get(request_id)
