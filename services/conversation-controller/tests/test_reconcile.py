@@ -28,9 +28,25 @@ def test_suspended_with_stale_host_is_detached():
 
 
 def test_suspended_with_no_host_is_noop():
-    # Already clean ({Suspended, hostPod: null}) → nothing to do (no churn).
+    # Fully clean ({Suspended, hostPod: null, hostIP: null}) → nothing to do (no churn).
     a = reconcile(conv(host=None, phase="Suspended", gen=1), [Pod("a", True)], {}, cap=10)
     assert isinstance(a, NoOp)
+
+
+def test_suspended_with_stale_hostip_but_no_hostpod_is_detached():
+    # THE stale-hostIP bug (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md): after a
+    # rollout the suspended conversation has hostPod cleared but a STALE hostIP still pointing
+    # at the deleted pod. The router dials that dead IP forever. reconcile must treat a lingering
+    # hostIP (even with no hostPod) as a state to REPAIR — Detach so loop clears hostIP — not a
+    # NoOp that leaves the dead address in place. The invariant: hostIP is empty whenever hostPod
+    # is empty (they name the same owner).
+    a = reconcile(
+        conv(host=None, phase="Suspended", gen=2, host_ip="10.1.4.35"),
+        [Pod("a", True)],
+        {},
+        cap=10,
+    )
+    assert isinstance(a, Detach)
 
 
 def test_suspended_never_reassigned_even_when_host_gone():
@@ -134,8 +150,10 @@ def test_no_sandboxes_no_orphans():
     assert find_orphans([], referenced=set(), grace_seconds=600) == []
 
 
-def conv(host=None, phase="Pending", gen=0) -> ConversationState:
-    return ConversationState(name="c1", host_pod=host, phase=phase, generation=gen)
+def conv(host=None, phase="Pending", gen=0, host_ip=None) -> ConversationState:
+    return ConversationState(
+        name="c1", host_pod=host, phase=phase, generation=gen, host_ip=host_ip
+    )
 
 
 # --- pick_host --------------------------------------------------------------

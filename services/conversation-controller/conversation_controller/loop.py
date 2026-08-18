@@ -70,13 +70,17 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             results.append((c.name, "noop"))
             continue
         if isinstance(action, Detach):
-            # A SUSPENDED conversation that still carries a stale hostPod → release it (the
-            # controller owns hostPod; the agent-host owns the Suspended phase, which we leave
-            # as-is). Clears the host so a suspended conversation isn't shown "on" a dead pod
-            # and — crucially — so the placement/demand logic stops treating it as hosted.
-            # (Only patches when there's actually a host to clear; reconcile returns NoOp once
-            # it's already {Suspended, hostPod: null}, so no churn.)
-            k8s.patch_status(c.name, {"hostPod": None})
+            # A SUSPENDED conversation that still carries stale placement → release it (the
+            # controller owns hostPod/hostIP; the agent-host owns the Suspended phase, which we
+            # leave as-is). Clear BOTH the fencing identity (hostPod) AND the routing address
+            # (hostIP): hostPod so a suspended conversation isn't shown "on" a dead pod and the
+            # placement/demand logic stops treating it as hosted; hostIP so the router stops
+            # dialing the (now-dead) pod and falls back to a live one
+            # (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md). The invariant: hostIP is
+            # empty whenever hostPod is empty. (Only patches when there's actually placement to
+            # clear; reconcile returns NoOp once it's already {hostPod: null, hostIP: null}, so
+            # no churn.)
+            k8s.patch_status(c.name, {"hostPod": None, "hostIP": None})
             hosts[c.name] = None
             results.append((c.name, "detach"))
             continue

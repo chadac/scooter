@@ -64,9 +64,12 @@ class LeavePending:
 
 @dataclass(frozen=True)
 class Detach:
-    """A SUSPENDED conversation needs no pod — clear its hostPod (owner released). Phase
-    stays Suspended (the agent-host owns that transition); we only release placement. On
-    wake, the host sets phase=Assigned and the next reconcile assigns a fresh host."""
+    """A SUSPENDED conversation needs no pod — release its placement (clear BOTH hostPod, the
+    fencing identity, AND hostIP, the routing address). Phase stays Suspended (the agent-host
+    owns that transition); we only release placement. On wake, the host sets phase=Assigned and
+    the next reconcile assigns a fresh host. Clearing hostIP is essential: the router keys on
+    hostIP, so a lingering (now-dead) hostIP makes it dial a deleted pod forever
+    (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md)."""
     reason: str
 
 
@@ -98,18 +101,24 @@ def reconcile(
     ip_of = {p.name: p.ip for p in pods}  # pod name → its status.podIP (routing address)
 
     # SUSPENDED conversations need NO pod — the agent-host set phase=Suspended (idle-suspend).
-    # Respect it: never (re)assign a suspended conversation, and RELEASE any stale hostPod it
-    # still carries (suspend() writes phase but not hostPod, so a just-suspended conv still
-    # points at its old — now draining — pod). WITHOUT this, when that pod dies the placement
-    # logic below would see "host gone" and RE-ASSIGN it (clobbering Suspended → Assigned),
-    # putting it back in the autoscale demand → the fleet never sleeps. On wake the host sets
-    # phase=Assigned (a request reaches any pod via the router's hostless fallback) and the
-    # next reconcile assigns a fresh host. Subagents follow their parent, so a suspended
+    # Respect it: never (re)assign a suspended conversation, and RELEASE any stale placement it
+    # still carries (suspend() writes phase but not hostPod/hostIP, so a just-suspended conv
+    # still points at its old — now draining — pod). WITHOUT this, when that pod dies the
+    # placement logic below would see "host gone" and RE-ASSIGN it (clobbering Suspended →
+    # Assigned), putting it back in the autoscale demand → the fleet never sleeps. On wake the
+    # host sets phase=Assigned (a request reaches any pod via the router's hostless fallback)
+    # and the next reconcile assigns a fresh host. Subagents follow their parent, so a suspended
     # subagent is covered by the parent's suspension (its own phase tracks too).
+    #
+    # Detach on EITHER placement field being set — including a lingering hostIP with no hostPod.
+    # After a rollout the suspend path (or a prior partial Detach) can leave {hostPod: null,
+    # hostIP: <dead pod>}; the router keys on hostIP and would dial that dead address forever.
+    # Repair it — a Detach clears BOTH — so hostIP is never non-empty while hostPod is empty
+    # (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md).
     if conv.phase == "Suspended":
-        if conv.host_pod is not None:
-            return Detach(reason="suspended — release host (no pod needed until wake)")
-        return NoOp(reason="suspended — no host needed")
+        if conv.host_pod is not None or conv.host_ip is not None:
+            return Detach(reason="suspended — release placement (clear hostPod + hostIP)")
+        return NoOp(reason="suspended — no placement to release")
 
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
     if conv.parent_id is not None:
