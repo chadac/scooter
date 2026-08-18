@@ -402,6 +402,12 @@ export interface SessionManagerDeps {
    *  request still sits PENDING in the broker (source of truth), so on revive we
    *  re-query + re-raise. Fire-and-forget; a failure must not fail the revive. */
   onRevived?: (id: SessionId) => void;
+  /** Optional: does this conversation have a RUNNING background job (run_background)?
+   *  Consulted by sweepIdle so a long-running detached in-pod job isn't SIGTERM'd by an
+   *  idle-suspend (lastActivityAt isn't bumped while a job runs). Wired to the jobManager in
+   *  index.ts; omitted when jobs are disabled. Best-effort: a throw/absence fails OPEN (the
+   *  sweep still suspends) — a job probe must never pin a pod up forever on an error. */
+  hasRunningBackgroundJob?: (id: SessionId) => Promise<boolean>;
 }
 
 interface Entry {
@@ -1156,6 +1162,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // so consult it: a running or backlogged conversation is NOT idle.
         const qs = entry.bridge?.queueState();
         if (qs && (qs.running || qs.queued > 0)) continue;
+        // NEVER suspend a conversation with a RUNNING background job (run_background). It's a
+        // detached in-pod process; suspend drops the pod → the job is SIGTERM'd mid-run and its
+        // work is lost, even though lastActivityAt (bumped only at prompt boundaries) makes the
+        // conversation LOOK idle. Consult the job state, same as queueState covers active agent
+        // work. Best-effort + FAIL-OPEN: a probe error must not pin the pod up forever, so a
+        // throw is logged and the sweep proceeds (the pod can still be reclaimed).
+        if (deps.hasRunningBackgroundJob) {
+          let jobRunning = false;
+          try {
+            jobRunning = await deps.hasRunningBackgroundJob(entry.id);
+          } catch (err) {
+            console.error(`[manager] background-job check failed for ${entry.id} (suspending anyway):`, err);
+          }
+          if (jobRunning) continue;
+        }
         try {
           await this.suspend(entry.id);
           suspended.push(entry.id);
