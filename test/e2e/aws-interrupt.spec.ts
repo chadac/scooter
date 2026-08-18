@@ -89,6 +89,55 @@ test.describe("AWS approval interrupt", () => {
     await expect(page.locator(panel.option).filter({ hasText: /approve/i })).toHaveCount(1);
   });
 
+  test("ANSWERING via /agui resume returns (does not hang) after the bridge was dropped", async ({ chat, page, baseURL, request }) => {
+    // THE reported bug (docs/scooter-bug-resume-hangs-when-run-not-live.md): after a
+    // rollout / idle-suspend, the paused run is gone from memory. The user's Approve
+    // POSTs /agui { resume:[…] }, but onResume no-ops on the bridge-less conversation and
+    // the SSE is left OPEN with 0 bytes → the request hangs until a proxy 502s it and the
+    // approval can never complete. The fix REVIVES + re-raises before answering, and the
+    // resume branch closes with a RUN_ERROR rather than hanging if it still can't answer.
+    // Either way the POST must RETURN promptly — never a 0-byte indefinite stream.
+    const base = (baseURL ?? "").replace(/\/$/, "");
+    await chat.open();
+    await chat.send("terraform apply needing AWS");
+    await chat.waitForReply(/dummy agent/i);
+
+    const list = await (await request.get(`${base}/conversations`)).json();
+    const conversationId: string = list[0].id;
+
+    // Raise the AWS interrupt, then SUSPEND to drop the in-memory bridge (the rollout /
+    // idle case). The panel is present (persisted), but the run is no longer live.
+    const reqId = `awsreq-resume-${Date.now()}`;
+    expect((await requestAws(request, base, conversationId, reqId)).status()).toBe(202);
+    await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
+    expect((await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`)).ok()).toBeTruthy();
+
+    // Answer the approval exactly like InterruptPanel.tsx does — POST /agui with resume[].
+    // BEFORE the fix this never returns (0 bytes) and only unblocks when a proxy/socket
+    // timeout kills the idle stream — i.e. it takes the full request timeout. The fix
+    // revives + answers (or closes with RUN_ERROR), so it returns in well under a second.
+    // ASSERT ON ELAPSED TIME: a hang resolves only at the ~15s+ timeout; the fix is
+    // sub-second. A generous 8s ceiling cleanly separates fixed (fast) from broken (hang).
+    const started = Date.now();
+    const resume = await request.post(`${base}/agui`, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 20_000, // the bug hangs to here; the fix returns FAR sooner.
+      data: {
+        threadId: conversationId,
+        resume: [{ interruptId: reqId, status: "resolved", payload: { optionId: "approve" } }],
+      },
+    });
+    const elapsed = Date.now() - started;
+    expect(resume.ok(), "the resume POST must return, not hang").toBeTruthy();
+    const body = await resume.text();
+    // Well-formed SSE that actually carried a terminal/answer frame — not 0 bytes. (In the
+    // fake stack, with no BROKER_URL, the revived bridge answers the re-raised interrupt.)
+    expect(body.length, "the resume stream must carry frames, not 0 bytes").toBeGreaterThan(0);
+    // The decisive assertion: it RETURNED PROMPTLY. A dormant-run hang would only resolve
+    // at the request timeout (~20s); the fix returns in well under a second.
+    expect(elapsed, `resume took ${elapsed}ms — a hang would take ~20s`).toBeLessThan(8_000);
+  });
+
   test("the AWS approval panel is still present after a page reload", async ({ chat, page, baseURL, request }) => {
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();
