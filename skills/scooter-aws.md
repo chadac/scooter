@@ -103,10 +103,28 @@ approves — a write request comes back `pending` and you must **poll** until it
 4. If it goes `denied`, read the reason, adjust the scope, and ask the human —
    don't silently re-request the same thing.
 
-**Do NOT create a NEW request while one is still `pending`** for the same account.
-Duplicate requests pile up and confuse which grant is live — poll the ONE you
-already made. (If you truly need MORE than you asked for, use
-`scooter-aws request` again only after the first is resolved, or escalate.)
+## Need MORE permissions than you asked for? — `escalate`
+
+If you already have a request (pending OR active) for an account and need ADDITIONAL
+scope, **escalate it** — don't fire a second plain `request`:
+
+```bash
+scooter-aws escalate <request_id> --profile <account-alias> \
+    --policy more.json --justification "also need s3:PutObject to upload the build"
+```
+
+`escalate` creates a new request linked to the parent and, **once a human approves it**,
+SUPERSEDES the old one — so exactly one grant is live per account (your old, narrower
+grant is replaced cleanly, and its IAM role is torn down). Escalation needs approval like
+any request. Your existing grant keeps working while the escalation is pending, and if the
+escalation is **denied** your original grant is left untouched.
+
+The `--policy` you pass is the FULL policy you now need (state the complete scope, not just
+the delta) — the approved grant is exactly that policy.
+
+**Do NOT create a NEW plain `request` while one is still `pending`/`active`** for the same
+account — use `escalate` instead. (A second plain request now supersedes the first anyway,
+so piling them up only wastes approvals; escalate makes the intent — expanding — explicit.)
 
 If `aws --profile … ` ever fails with an expired/invalid token even though your
 request is `active`, force a fresh token instead of re-requesting:

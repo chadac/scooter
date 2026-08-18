@@ -86,6 +86,39 @@ def test_request_sends_conversation_url_from_env(monkeypatch, tmp_path, capsys):
     assert "https://ui/?thread=conv-1" in out  # the agent is told to share the link
 
 
+def test_escalate_posts_to_escalate_route_with_parent(monkeypatch, tmp_path, capsys):
+    """`scooter-aws escalate <parent_request_id> --policy … --justification …` POSTs
+    /aws/escalate with parent_request_id — the SUPPORTED way to expand perms after a
+    request was already made. Without this subcommand the agent had no way to escalate
+    (the skill mentioned 'escalate' but the CLI didn't expose it)."""
+    captured = {}
+
+    def fake_call(method, path, body=None):
+        captured["method"], captured["path"], captured["body"] = method, path, body
+        return 201, {"request_id": "def456", "status": "pending"}
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    monkeypatch.setenv("CONVERSATION_URL", "https://ui/?thread=conv-1")
+    pol = tmp_path / "more.json"
+    pol.write_text('{"Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"*"}]}')
+
+    rc = cli.cli_main(["escalate", "abc123", "--profile", "dev", "--policy", str(pol), "--justification", "need write too"])
+    assert rc == 0
+    assert captured["method"] == "POST"
+    assert captured["path"] == "escalate"
+    assert captured["body"]["parent_request_id"] == "abc123"
+    assert captured["body"]["target_account"] == "dev"
+    assert captured["body"]["justification"] == "need write too"
+    assert captured["body"]["conversation_url"] == "https://ui/?thread=conv-1"
+
+
+def test_escalate_requires_a_policy_or_managed(monkeypatch, capsys):
+    """Escalation must carry the ADDITIONAL scope — refuse an empty escalate."""
+    monkeypatch.setattr(cli, "_call", lambda *a, **k: (201, {"request_id": "x", "status": "pending"}))
+    with __import__("pytest").raises(SystemExit):
+        cli.cli_main(["escalate", "abc123", "--profile", "dev", "--justification", "why"])
+
+
 def test_pick_active_request_takes_newest_nonexpired_not_the_first_zombie():
     """The credential helper must NOT take the FIRST (oldest) active request — a
     zombie whose STS creds lapsed hours ago (teardown stuck) sits at the front of the

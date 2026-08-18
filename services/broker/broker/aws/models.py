@@ -16,7 +16,8 @@ class RequestStatus(str, enum.Enum):
     """Permission-request lifecycle.
 
     pending → approved → active → expired, with branches → denied, → revoked,
-    and approved → error (IAM provisioning failed).
+    → superseded (replaced by a newer request for the same account), and
+    approved → error (IAM provisioning failed).
     """
 
     PENDING = "pending"
@@ -25,6 +26,7 @@ class RequestStatus(str, enum.Enum):
     EXPIRED = "expired"     # role TTL elapsed, role deleted
     DENIED = "denied"
     REVOKED = "revoked"
+    SUPERSEDED = "superseded"  # replaced by a newer request for the same (conversation, account)
     ERROR = "error"         # IAM provisioning failed
 
 
