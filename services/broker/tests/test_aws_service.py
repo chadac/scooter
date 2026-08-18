@@ -342,6 +342,40 @@ async def test_cross_conversation_isolation(tmp_path):
     assert got is None or creds is None
 
 
+# --- cross-replica: status() re-mints on a cache MISS --------------------
+# The multi-replica bug (docs/scooter-bug-broker-creds-cache-not-shared-across-replicas.md):
+# STS creds are cached in a per-POD dict. approve()/refresh() populate it on ONE pod; with the
+# broker at replicas>1 behind a round-robin Service, status() (hit on EVERY aws call) lands on
+# the OTHER pod ~half the time, where the cache is empty → it returned (req, None) → the sandbox
+# saw "not granted" → 403. Fix: status() must re-mint on a cache MISS (not only on a stale hit),
+# since refresh() re-assumes the role from the DB (cache-independent) — making vending stateless.
+
+async def test_status_remints_on_cache_miss_cross_replica(tmp_path):
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    # Simulate the request landing on a DIFFERENT replica: a pod whose in-memory cache never
+    # saw this grant (identical to a cold pod after a rollout). status() must still vend creds.
+    svc._creds.clear()
+    got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got.status == RequestStatus.ACTIVE
+    assert creds is not None and creds.session_token, "cold-pod status() must re-mint, not return None"
+
+
+async def test_status_cache_miss_with_expired_role_ttl_returns_none(tmp_path):
+    # A cold miss where the ROLE TTL has already passed → re-assume can't help; return None so
+    # the agent re-requests (never a false "granted" without a token).
+    svc = await make_service(tmp_path)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    svc._creds.clear()
+    # Expire the role TTL in the store (past).
+    await svc._store.update(req.request_id, role_expires_at="2000-01-01T00:00:00+00:00")
+    got, creds = await svc.status(request_id=req.request_id, conversation_id="c1")
+    assert got.status == RequestStatus.ACTIVE
+    assert creds is None
+
+
 # --- refresh + revoke ----------------------------------------------------
 async def test_refresh_mints_new_creds(tmp_path):
     svc = await make_service(tmp_path)
