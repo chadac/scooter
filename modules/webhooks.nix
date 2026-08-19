@@ -261,11 +261,15 @@ in
           ingressClassName = lib.mkIf (wcfg.ingress.className != "") wcfg.ingress.className;
           rules = [{
             host = wcfg.ingress.host;
-            http.paths = [{
-              path = "/webhooks";
+            # /webhooks -> provider intake (signature-verified). /claude-bridge ->
+            # the BYO-Claude unauthed WS front door (join-token-verified in-app),
+            # which reverse-proxies to the agent-host's internal /remote-agent/connect.
+            # Both are deliberately UNAUTH at the ingress (each verifies in-app).
+            http.paths = map (path: {
+              inherit path;
               pathType = "Prefix";
               backend.service = { name = "agent-webhooks"; port.number = 8080; };
-            }];
+            }) [ "/webhooks" "/claude-bridge" ];
           }];
           tls = lib.optionals wcfg.ingress.tls [
             ({ hosts = [ wcfg.ingress.host ]; }
