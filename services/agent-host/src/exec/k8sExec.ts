@@ -46,6 +46,12 @@ export interface K8sExecOptions {
   container?: string;
   /** Explicit pod name; otherwise resolved from the Sandbox's labelled pod. */
   podName?: string;
+  /** Self-heal a suspended sandbox: if the pod-readiness poll finds NO pod at all, the sandbox may
+   *  have been idle-SUSPENDED (operatingMode=Suspended, pod deleted) out from under a still-live
+   *  bridge — the mid-run-reassign case where bridge-liveness and pod-liveness diverge. Called ONCE
+   *  when the first lookup is empty to resume it (idempotent `provisioner.resume`), then the poll
+   *  picks up the recreated pod instead of timing out with "no ready pod". Absent = no self-heal. */
+  ensureRunning?: () => Promise<void>;
 }
 
 /**
@@ -62,7 +68,7 @@ export async function connectSandbox(
   // after the Sandbox, so ref.name IS the pod name). That lets the agent-host exec
   // WITHOUT `get/list pods` RBAC. Fall back to the k8s label lookup (legacy k8s
   // provisioner path, whose ref carries no podIP).
-  const podName = opts.podName ?? (ref.podIP ? ref.name : await resolvePodName(kc, ref));
+  const podName = opts.podName ?? (ref.podIP ? ref.name : await resolvePodName(kc, ref, opts.ensureRunning));
   return createK8sSandboxApiClient(ref, { ...opts, kubeConfig: kc, podName });
 }
 
@@ -76,28 +82,39 @@ export interface PodTarget {
 
 type Pod = Awaited<ReturnType<CoreV1Api["readNamespacedPod"]>>;
 
-/** Poll until a RUNNING + Ready pod backs the sandbox, returning the pod object.
- *  A freshly-provisioned sandbox may still be ContainerCreating when the first
- *  request arrives; exec'ing / proxying to a not-ready pod fails, so we wait. */
-async function resolveReadyPod(kc: KubeConfig, ref: SandboxRef): Promise<Pod> {
-  const core = kc.makeApiClient(CoreV1Api);
-  const deadline = Date.now() + 90_000;
+/** Options for the ready-pod poll — injectable so the self-heal logic is unit-testable without a
+ *  real k8s client. `listCandidates` returns the current pods for the ref; `sleep` + `deadlineMs`
+ *  let a test collapse the poll. */
+export interface ResolveReadyPodDeps {
+  listCandidates: () => Promise<Pod[]>;
+  ensureRunning?: () => Promise<void>;
+  sleep?: (ms: number) => Promise<void>;
+  deadlineMs?: number;
+}
+
+/** Poll until a RUNNING + Ready pod backs the sandbox (the pure/injectable core). Fires
+ *  `ensureRunning` ONCE if the first lookup finds no pod at all — the idle-suspend self-heal. */
+export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps): Promise<Pod> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const deadline = Date.now() + (deps.deadlineMs ?? 90_000);
   let lastRunning: Pod | undefined;
+  let healed = false; // ensureRunning is fired at most once
   for (;;) {
-    // Try both the label selector (v0.4.x) and direct pod name lookup (v0.5.0+
-    // where the controller names the pod after the Sandbox but may not propagate
-    // podTemplate labels).
-    const pods = await core.listNamespacedPod({
-      namespace: ref.namespace,
-      labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
-    });
-    let candidates = pods.items;
-    if (candidates.length === 0) {
-      // v0.5.0 controller: pod is named after the Sandbox, label may be hash-only.
+    const candidates = await deps.listCandidates();
+    // SELF-HEAL: no pod at all → the sandbox may be idle-SUSPENDED (mode=Suspended, pod deleted) out
+    // from under a live bridge. Resume it ONCE (idempotent) so the controller recreates the pod, then
+    // keep polling for it instead of timing out with "no ready pod". Without this, a mid-run-reassign +
+    // idle-suspend leaves the pod gone while the bridge issues tool calls that all fail.
+    if (candidates.length === 0 && deps.ensureRunning && !healed) {
+      healed = true;
       try {
-        const pod = await core.readNamespacedPod({ namespace: ref.namespace, name: ref.name });
-        if (pod) candidates = [pod];
-      } catch { /* pod not yet created */ }
+        await deps.ensureRunning();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[k8sExec] resume-on-missing-pod for ${ref.namespace}/${ref.name} failed:`, err);
+      }
+      await sleep(1500);
+      continue; // re-poll: the pod is now being recreated
     }
     const ready = candidates.find(
       (p) =>
@@ -111,12 +128,45 @@ async function resolveReadyPod(kc: KubeConfig, ref: SandboxRef): Promise<Pod> {
       if (lastRunning) return lastRunning;
       throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}`);
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    await sleep(1500);
   }
 }
 
-async function resolvePodName(kc: KubeConfig, ref: SandboxRef): Promise<string> {
-  const pod = await resolveReadyPod(kc, ref);
+/** Poll until a RUNNING + Ready pod backs the sandbox, returning the pod object.
+ *  A freshly-provisioned sandbox may still be ContainerCreating when the first
+ *  request arrives; exec'ing / proxying to a not-ready pod fails, so we wait. */
+async function resolveReadyPod(
+  kc: KubeConfig,
+  ref: SandboxRef,
+  ensureRunning?: () => Promise<void>,
+): Promise<Pod> {
+  const core = kc.makeApiClient(CoreV1Api);
+  return pollForReadyPod(ref, {
+    ensureRunning,
+    // Try both the label selector (v0.4.x) and direct pod name lookup (v0.5.0+ where the controller
+    // names the pod after the Sandbox but may not propagate podTemplate labels).
+    listCandidates: async () => {
+      const pods = await core.listNamespacedPod({
+        namespace: ref.namespace,
+        labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
+      });
+      if (pods.items.length > 0) return pods.items;
+      try {
+        const pod = await core.readNamespacedPod({ namespace: ref.namespace, name: ref.name });
+        return pod ? [pod] : [];
+      } catch {
+        return []; // pod not yet created
+      }
+    },
+  });
+}
+
+async function resolvePodName(
+  kc: KubeConfig,
+  ref: SandboxRef,
+  ensureRunning?: () => Promise<void>,
+): Promise<string> {
+  const pod = await resolveReadyPod(kc, ref, ensureRunning);
   const name = pod.metadata?.name;
   if (!name) throw new Error(`ready pod for sandbox ${ref.namespace}/${ref.name} has no name`);
   return name;

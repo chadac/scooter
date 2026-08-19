@@ -631,7 +631,10 @@ export async function main(
   const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!store.saveJob;
   const jobManager = jobsEnabled
     ? createJobManager({
-        client: (id) => deferredSandboxApi(sessions.get(id as SessionId)!.sandbox),
+        client: (id) => {
+          const sb = sessions.get(id as SessionId)!.sandbox;
+          return deferredSandboxApi(sb, () => provisioner.resume(sb).then(() => {}));
+        },
         registry: {
           saveJob: (id, job) => store.saveJob!(id as SessionId, job),
           listJobs: (id) => store.listJobs!(id as SessionId),
@@ -1270,7 +1273,9 @@ export async function main(
     // exec API (resolved on first use). The ACP client (goose) is created by the
     // factory the bridge calls on first start().
     const exec = createSandboxExecBackend(
-      config.fakeSandbox ? createLocalSandboxApiClient() : deferredSandboxApi(sandbox),
+      config.fakeSandbox
+        ? createLocalSandboxApiClient()
+        : deferredSandboxApi(sandbox, () => provisioner.resume(sandbox).then(() => {})),
       { commandTimeoutMs: config.commandTimeoutMs },
     );
     // Per-conversation model override: GOOSE_MODEL in the agent's launch env.
@@ -1403,11 +1408,13 @@ export async function main(
  * A SandboxApiClient that resolves the real pod-exec client on first use.
  * (connectSandbox is async; the ExecBackend interface is sync-constructed.)
  */
-function deferredSandboxApi(sandbox: SandboxRef) {
+function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<void>) {
   // In-flight dedupe: a burst of concurrent first tool calls shares ONE connect
   // (one pod-readiness wait), not N. (`real ??= await connect()` would not dedupe
   // — it caches only the resolved value, so concurrent awaits each connect.)
-  const ensure = createDeferredConnector(() => connectSandbox(sandbox));
+  // ensureRunning self-heals a sandbox idle-suspended out from under a live bridge:
+  // if connect finds no pod, it resumes the sandbox (idempotent) + re-polls.
+  const ensure = createDeferredConnector(() => connectSandbox(sandbox, { ensureRunning }));
   return {
     mode: "k8s-exec" as const,
     async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0]) {
