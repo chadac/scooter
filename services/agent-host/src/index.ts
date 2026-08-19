@@ -19,6 +19,9 @@ import { tmpdir } from "node:os";
 import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
+import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
+import { createRemoteAgentConnectHandler } from "./acp/remoteAgentConnect.js";
+import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import { createBrokerProvisioner, type BrokerProvisioner } from "./session/brokerProvisioner.js";
@@ -461,6 +464,21 @@ export async function main(
     }),
   );
 
+  // BRING-YOUR-OWN-CLAUDE (Increment 2): a registry of connected remote agents (keyed by owner) +
+  // the /remote-agent/connect WS endpoint the user's container dials in on. Gated on
+  // REMOTE_AGENT_JOIN_SECRET being set (the HS256 secret join tokens are signed with) — absent =
+  // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
+  // in. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+  const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
+  const remoteAgentRegistry = remoteAgentJoinSecret ? createRemoteAgentRegistry() : undefined;
+  if (remoteAgentRegistry && remoteAgentJoinSecret) {
+    server.onUpgrade(
+      "/remote-agent/connect",
+      createRemoteAgentConnectHandler({ registry: remoteAgentRegistry, joinSecret: remoteAgentJoinSecret }),
+    );
+    console.log("[agent-host] bring-your-own-Claude: /remote-agent/connect enabled");
+  }
+
   // Metrics (OFF unless OTEL_METRICS_ENABLED=1). Cost needs goose's per-session
   // token usage, which it persists under its $HOME; the reader degrades to "no
   // cost" if that DB isn't present. Tokens/cost are attributed to the resolved
@@ -508,10 +526,10 @@ export async function main(
     // from the mirror. Only when a mirror is configured. See ROLLOUT_DRAIN_AND_POD_IP.md.
     hydrateFromMirror: mirroredStore ? (id) => mirroredStore.hydrateFromMirror(id) : undefined,
     conversationRegistry,
-    bridgeFactory: ({ conversationId, sandbox, model }) => {
+    bridgeFactory: ({ conversationId, sandbox, model, owner }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
-      const bridge = makeBridge(conversationId, sandbox, config, model, metrics);
+      const bridge = makeBridge(conversationId, sandbox, config, model, metrics, owner);
       // The agent titles the conversation by emitting <title>…</title> as its
       // first action; the bridge extracts it -> set it on the conversation.
       bridge.onTitle((title) => sessions.setTitle(conversationId, title));
@@ -1262,6 +1280,7 @@ export async function main(
     cfg: AgentHostConfig,
     model: string | undefined,
     metrics: MetricsSink,
+    owner?: string,
   ) {
     // In fake mode there is no pod, so the agent's tool calls run as local
     // subprocesses; in cluster mode they exec into the sandbox pod via the K8s
@@ -1309,16 +1328,11 @@ export async function main(
       ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
       : undefined;
     const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
-    const bridge = createSessionBridge({
-      config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
-      exec,
-      firstActivityTimeoutMs: config.firstActivityTimeoutMs,
-      livenessProbeMs: config.livenessProbeMs,
-      // TRANSCRIPT RECORDER (test-harness, off unless TRANSCRIPT_RECORD_DIR is set):
-      // record the RAW agent input + emitted AG-UI so tests replay real behavior.
-      recorder: transcriptRecorder,
-      provider: usingClaude ? "claude" : "goose",
-      acpClient: () =>
+    // The FLOOR ACP client factory — the cloud brain (SDK-claude on Bedrock, or goose). This is
+    // what a run uses when no personalized remote agent applies (a scheduled trigger, an offline
+    // agent, or BYO not enabled). Extracted so the BYO remote provider can sit ABOVE it in the
+    // per-run resolver.
+    const floorAcpClientFactory = () =>
         // claude-code: drive the agent via the Claude Agent SDK (isolated package)
         // so its tools run IN THE SANDBOX (via ExecBackend) instead of the
         // agent-host pod — the fix for the unreachable-scooter-rebuild bug — while
@@ -1358,7 +1372,35 @@ export async function main(
               shouldYield: backpressureOn ? () => bridge.shouldYieldToQueue() : undefined,
               // TRANSCRIPT: record the RAW ACP updates under this run (no-op off).
               recordRaw: (u) => bridge.recordRawInput(u),
-            }),
+            });
+
+    // Per-run ACP provider registry. Without BYO (no registry), the bridge gets the single floor
+    // client (behavior-identical to before). WITH BYO, the resolver prefers the owner's remote
+    // agent for HUMAN triggers (remote-personalized, pri 10) and falls to the floor otherwise
+    // (scheduler / offline). The remote provider's tools exec into THIS conversation's cloud
+    // sandbox via `exec` — the body stays cloud-side. See remoteAgentRegistry.ts.
+    const floorProvider: AcpProvider = {
+      id: usingClaude ? "sdk-claude" : "bedrock-goose",
+      kind: usingClaude ? "claude" : "goose",
+      priority: 0,
+      eligible: () => true,
+      createClient: floorAcpClientFactory,
+    };
+    const acpProviders: AcpProvider[] = remoteAgentRegistry
+      ? [createRemotePersonalizedProvider({ registry: remoteAgentRegistry, exec }), floorProvider]
+      : [floorProvider];
+
+    const bridge = createSessionBridge({
+      config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
+      exec,
+      firstActivityTimeoutMs: config.firstActivityTimeoutMs,
+      livenessProbeMs: config.livenessProbeMs,
+      // TRANSCRIPT RECORDER (test-harness, off unless TRANSCRIPT_RECORD_DIR is set):
+      // record the RAW agent input + emitted AG-UI so tests replay real behavior.
+      recorder: transcriptRecorder,
+      provider: usingClaude ? "claude" : "goose",
+      owner,
+      acpProviders,
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
         // Attribute cost to the conversation OWNER (id + email). Resolve async
         // (email may need the identity store) but don't block the run — the metric

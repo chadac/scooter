@@ -172,6 +172,11 @@ export interface AguiServer {
    *  HTTP fallback before the 404, and wired to the server's `upgrade` event for
    *  WebSocket services (marimo/xterm/vscode). */
   useProxy(proxy: WebServiceProxy): void;
+  /** Register a raw WebSocket upgrade handler for an exact pathname (e.g.
+   *  /remote-agent/connect for bring-your-own-Claude). Consulted on `upgrade` BEFORE the
+   *  proxy; the handler owns the socket (auth + protocol). Generic — the server needs no
+   *  knowledge of what it connects. */
+  onUpgrade(pathname: string, handler: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void): void;
   /** Set the verifier that decides whether a /agui request is the TRUSTED webhooks
    *  caller (its SA token via TokenReview) — gating the privileged `owner` field.
    *  Absent = owner is never honored. */
@@ -214,6 +219,9 @@ export function createAguiServer(): AguiServer {
   let server: Server | undefined;
   let mountedRouter: Router | undefined;
   let mountedProxy: WebServiceProxy | undefined;
+  // Exact-pathname WS upgrade handlers (bring-your-own-Claude /remote-agent/connect, etc.),
+  // consulted before the proxy on `upgrade`.
+  const upgradeHandlers = new Map<string, (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void>();
   let ownerVerifier: ((req: IncomingMessage) => Promise<boolean>) | undefined;
   let identityResolver: ((req: IncomingMessage) => { id: string; anonymous: boolean } | Promise<{ id: string; anonymous: boolean }>) | undefined;
 
@@ -488,7 +496,10 @@ export function createAguiServer(): AguiServer {
         // vscode RPC). The agent-host had no upgrade handler before this.
         server.on("upgrade", (req, socket, head) => {
           const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-          if (mountedProxy && mountedProxy.matches(pathname)) {
+          const registered = upgradeHandlers.get(pathname);
+          if (registered) {
+            registered(req, socket, head);
+          } else if (mountedProxy && mountedProxy.matches(pathname)) {
             mountedProxy.handleUpgrade(req, socket, head).catch(() => socket.destroy());
           } else {
             socket.destroy();
@@ -529,6 +540,9 @@ export function createAguiServer(): AguiServer {
     },
     useIdentityResolver(resolve) {
       identityResolver = resolve;
+    },
+    onUpgrade(pathname, handler) {
+      upgradeHandlers.set(pathname, handler);
     },
     useProxy(proxy) {
       mountedProxy = proxy;

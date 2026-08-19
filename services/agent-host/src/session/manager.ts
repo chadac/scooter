@@ -384,6 +384,10 @@ export type BridgeFactory = (args: {
   sandbox: SandboxRef;
   /** Per-conversation model override (undefined = host default). */
   model?: string;
+  /** The conversation OWNER — passed to the bridge's per-run ACP provider resolver so an
+   *  owner-bound provider (the BYO remote agent) can route this conversation to that user's
+   *  agent. Undefined for an unowned/anonymous conversation. */
+  owner?: string;
 }) => SessionBridge | undefined;
 
 export interface SessionManagerDeps {
@@ -661,7 +665,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
       // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).
       entry.sandbox = await provisioner.create(shortId(threadId), threadId);
-      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model });
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
       wireEventLog(entry); // wire AFTER the bridge exists (it no-ops on a null bridge)
       // Re-persist with the real sandbox ref (a crash mid-provision must not leave a
       // dangling entry with no namespace that revive() then can't resume).
@@ -706,7 +710,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         model, owner: parent.owner, parentId, sandboxRef: entry.sandbox.name,
       });
 
-      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model });
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
       wireEventLog(entry);
       // Event-driven completion: fire onSubagentComplete the instant this
       // subagent's run terminates, so the host injects the result into the parent
@@ -743,7 +747,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       entry.sandbox = entry.sandbox.namespace
         ? await provisioner.resume(entry.sandbox)
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
-      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model }) ?? entry.bridge;
+      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model, owner: entry.owner }) ?? entry.bridge;
       entry.status = "running";
       // RE-REGISTER the CR on revive. register() is only called on start()/spawnChild(), so a
       // conversation revived after a restart/rollout (or hydrated on a lazy prompt) whose CR was
