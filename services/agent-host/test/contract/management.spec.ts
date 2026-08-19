@@ -10,7 +10,8 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi, raiseAwsApprovalInterrupt } from "../../src/api/management.js";
+import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "../../src/api/management.js";
+import { shortId } from "../../src/session/manager.js";
 import type { Conversation, SessionManager, ConversationStore, ConversationLink } from "../../src/session/manager.js";
 import type { AguiServer } from "../../src/agui/server.js";
 import type { AguiEvent } from "../../src/bridge.js";
@@ -1030,6 +1031,62 @@ describe("management API", () => {
       arg.onAnswer("deny", undefined);
       await Promise.resolve();
       expect(resolveAwsRequest).toHaveBeenCalledWith("conv-1", "req-9", false, { id: "conv-1" });
+    });
+  });
+
+  describe("fetchPendingAwsRequests (revive re-raise query — the short-id id-space)", () => {
+    // Regression for scooter-bug-reraise-pending-uses-threadid-not-shortid: the re-raise path queried
+    // the broker with the thread UUID, but the broker keys AWS requests by the sandbox SHORT-id, so it
+    // got [] and the Approve window never reappeared after a rollout/resume/revive.
+    const UUID = "5e1949ce-c98c-4c52-bb43-afe923b040ce";
+    const SHORT = shortId(UUID); // what the broker actually keys on
+
+    const mockFetch = (byShortId: Record<string, unknown[]>) =>
+      vi.fn(async (url: string) => {
+        const convId = new URL(url).searchParams.get("conversation_id") ?? "";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ requests: byShortId[convId] ?? [] }),
+        } as Response;
+      });
+
+    it("queries the broker by the SHORT-id (not the thread UUID) so pending requests are found", async () => {
+      // The broker holds the request under the short-id ONLY (as it does in production).
+      const fetchFn = mockFetch({ [SHORT]: [{ request_id: "req-pending-1" }] });
+      vi.stubGlobal("fetch", fetchFn);
+      try {
+        // The caller (index.ts) resolves shortId(id) before calling — assert that's what hits the wire.
+        const pending = await fetchPendingAwsRequests("http://broker:8080", shortId(UUID), {});
+        expect(fetchFn).toHaveBeenCalledOnce();
+        const calledUrl = new URL(fetchFn.mock.calls[0][0] as string);
+        expect(calledUrl.searchParams.get("conversation_id")).toBe(SHORT);
+        expect(calledUrl.searchParams.get("conversation_id")).not.toBe(UUID); // the bug
+        expect(pending).toEqual([{ request_id: "req-pending-1" }]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("returns [] (not throw) on a 404/501 no-broker response, and drops rows without a request_id", async () => {
+      const fetch404 = vi.fn(async () => ({ ok: false, status: 404 }) as Response);
+      vi.stubGlobal("fetch", fetch404);
+      try {
+        expect(await fetchPendingAwsRequests("http://broker:8080", SHORT, {})).toEqual([]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      const fetchJunk = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ requests: [{ request_id: "ok" }, { target_account: "no-id" }] }),
+      }) as Response);
+      vi.stubGlobal("fetch", fetchJunk);
+      try {
+        expect(await fetchPendingAwsRequests("http://broker:8080", SHORT, {})).toEqual([{ request_id: "ok" }]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   });
 

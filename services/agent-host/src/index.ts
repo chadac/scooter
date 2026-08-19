@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createAguiServer } from "./agui/server.js";
-import { createManagementApi, raiseAwsApprovalInterrupt, type AwsRequestSummary } from "./api/management.js";
+import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
@@ -559,20 +559,15 @@ export async function main(
     if (!brokerUrl) return; // no broker (local/dev) — nothing to re-raise
     const bridge = sessions.get(id as SessionId)?.bridge;
     if (!bridge) return;
-    const res = await fetch(`${brokerUrl}/aws/aws/pending?conversation_id=${encodeURIComponent(id)}`, {
-      method: "GET",
-      headers: await brokerAuthHeaders(),
-    });
-    if (!res.ok) {
-      // 404/501 = no AWS broker configured; anything else is worth a log but not fatal.
-      if (res.status !== 404 && res.status !== 501) {
-        console.warn(`[agent-host] broker /aws/pending for ${id}: HTTP ${res.status}`);
-      }
-      return;
-    }
-    const body = (await res.json().catch(() => ({}))) as { requests?: AwsRequestSummary[] };
-    for (const req of body.requests ?? []) {
-      if (!req.request_id) continue;
+    // The broker keys AWS requests by the sandbox SHORT-id (`sandbox-{shortId}`), NOT the full thread
+    // UUID the session map uses — the same id-space mismatch the request-time route resolves. Query by
+    // shortId(id) (what every other broker call already uses); querying by the UUID returns [], so a
+    // still-pending request would never be re-raised after a rollout/resume/revive and the Approve
+    // window would never reappear. Keep RAISING the interrupt on the real conversation `id`/bridge.
+    const pending = await fetchPendingAwsRequests(brokerUrl, shortId(id), await brokerAuthHeaders(), (status) =>
+      console.warn(`[agent-host] broker /aws/pending for ${id}: HTTP ${status}`),
+    );
+    for (const req of pending) {
       raiseAwsApprovalInterrupt(bridge, id, req, resolveAwsRequestForBroker);
     }
   };

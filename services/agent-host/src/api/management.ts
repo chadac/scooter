@@ -141,6 +141,34 @@ export interface AwsRequestSummary {
   justification?: string;
 }
 
+/** Query the broker for a conversation's still-PENDING AWS requests (used by the revive re-raise).
+ *
+ *  CRITICAL id-space note: `brokerConversationId` MUST be the sandbox SHORT-id (the broker keys AWS
+ *  requests by `sandbox-{shortId}`, extracted from the sandbox SA name), NOT the full thread UUID the
+ *  session map uses. Passing the UUID returns an empty list — the bug where, after a rollout / resume /
+ *  dangling-run revive, the pending Approve window never reappears. Callers resolve the short-id
+ *  (via `shortId(threadId)`) before calling. Returns [] on any non-OK / error (best-effort). */
+export async function fetchPendingAwsRequests(
+  brokerUrl: string,
+  brokerConversationId: string,
+  authHeaders: Record<string, string>,
+  onWarn?: (status: number) => void,
+): Promise<AwsRequestSummary[]> {
+  const base = brokerUrl.replace(/\/$/, "");
+  if (!base) return [];
+  const res = await fetch(
+    `${base}/aws/aws/pending?conversation_id=${encodeURIComponent(brokerConversationId)}`,
+    { method: "GET", headers: authHeaders },
+  );
+  if (!res.ok) {
+    // 404/501 = no AWS broker configured; anything else is worth a log but not fatal.
+    if (res.status !== 404 && res.status !== 501) onWarn?.(res.status);
+    return [];
+  }
+  const body = (await res.json().catch(() => ({}))) as { requests?: AwsRequestSummary[] };
+  return (body.requests ?? []).filter((r) => r.request_id);
+}
+
 /** Raise the Approve/Deny interrupt for a broker AWS request on a conversation's
  *  bridge, wiring the answer back to the broker via `resolveAwsRequest`. Shared by
  *  the /aws-request route (broker notifies at request time) AND the revive re-raise
