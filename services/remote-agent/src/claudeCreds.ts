@@ -11,10 +11,17 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 
+// Values captured from the real `claude setup-token` flow (claude-code 2.1.172). This is the
+// setup-CODE variant: Claude redirects to a CONSOLE callback that DISPLAYS a `code#state` string
+// the user copies back — there is no loopback port. Matching the CLI exactly (host, redirect,
+// code=true, scope) is what makes claude.com/cai/oauth/authorize accept the request; verify against
+// the current CLI if Anthropic rotates any of these.
 export const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-export const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
+export const AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
 export const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-export const SCOPES = "user:inference user:profile";
+// The console callback that renders the copy-paste code (NOT a loopback redirect).
+export const CONSOLE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
+export const SCOPES = "user:inference";
 
 /** The ~/.claude/.credentials.json shape Claude Code reads. expiresAt is ms-since-epoch. */
 export interface ClaudeCredsFile {
