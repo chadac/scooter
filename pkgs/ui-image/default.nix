@@ -82,6 +82,21 @@ let
         # webhooks reverse lookup (/users/by-email). Same proxy-or-405 rule as above.
         location /users         { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
 
+        # Bring-your-own-Claude (Increment 2): /remote-agent/status + /remote-agent/join-token are
+        # JSON (Settings section), and /remote-agent/connect is a persistent WebSocket the user's
+        # container dials in on — so this needs the WS-upgrade headers + no buffering + a long read
+        # timeout (like /c/). Same proxy-or-405 rule: without this location, /remote-agent/* falls
+        # through to `location /` (SPA HTML on GET, 405 on the POST).
+        location /remote-agent {
+          proxy_pass ''${AGENT_HOST_URL};
+          proxy_set_header Host $host;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+        }
+
         # Web-service reverse proxy: /c/<id>/<service>/... -> the agent-host, which
         # resolves the conversation's pod and forwards to the in-pod service. Needs
         # WebSocket upgrade (marimo kernel / xterm PTY / vscode RPC) and no
