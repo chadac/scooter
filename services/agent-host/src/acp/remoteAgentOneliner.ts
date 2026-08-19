@@ -9,14 +9,18 @@ import { mintJoinToken } from "../auth/remoteAgentToken.js";
 /** The published container image (ghcr). Overridable for a private registry / a pinned tag. */
 const DEFAULT_IMAGE = "ghcr.io/chadac/scooter-remote-agent:latest";
 
-/** Derive the wss connect URL from the deployment's public base URL. http→ws, https→wss; a bare
- *  host defaults to wss. Always the /remote-agent/connect path (same host as the UI). */
-export function connectWsUrl(publicUrl: string | undefined): string {
-  const base = (publicUrl ?? "").trim().replace(/\/$/, "");
-  if (!base) return "wss://<your-scooter-host>/remote-agent/connect";
-  if (base.startsWith("https://")) return base.replace(/^https:\/\//, "wss://") + "/remote-agent/connect";
-  if (base.startsWith("http://")) return base.replace(/^http:\/\//, "ws://") + "/remote-agent/connect";
-  return `wss://${base}/remote-agent/connect`;
+/** The wss connect URL the CONTAINER dials. This is the WEBHOOKS bridge (/claude-bridge/connect),
+ *  NOT the agent-host — webhooks has no user-facing auth (the ALB/user-auth that fronts the UI
+ *  would otherwise block the container), verifies the join token, and proxies to the agent-host's
+ *  internal /remote-agent/connect. `bridgeUrl` is the webhooks public base URL
+ *  (REMOTE_AGENT_BRIDGE_URL). http→ws, https→wss; a bare host defaults to wss. */
+export function connectWsUrl(bridgeUrl: string | undefined): string {
+  const base = (bridgeUrl ?? "").trim().replace(/\/$/, "");
+  const path = "/claude-bridge/connect";
+  if (!base) return `wss://<your-webhooks-host>${path}`;
+  if (base.startsWith("https://")) return base.replace(/^https:\/\//, "wss://") + path;
+  if (base.startsWith("http://")) return base.replace(/^http:\/\//, "ws://") + path;
+  return `wss://${base}${path}`;
 }
 
 /** The full `docker run` one-liner (restart-always service form). The container serves the local
@@ -34,7 +38,9 @@ export function dockerCommand(wsUrl: string, token: string, image = DEFAULT_IMAG
 
 export interface RemoteAgentUiDeps {
   joinSecret: string;
-  publicUrl?: string;
+  /** The WEBHOOKS bridge public base URL (REMOTE_AGENT_BRIDGE_URL) the container dials —
+   *  /claude-bridge/connect is appended. The bridge (unauthed) verifies + proxies to the agent-host. */
+  bridgeUrl?: string;
   /** Synchronous connected check (in-memory live registry). Use this OR isConnectedAsync. */
   isConnected?: (owner: string) => boolean;
   /** Async connected check (the durable Postgres badge, cross-replica). Preferred when a DB is
@@ -47,7 +53,7 @@ export interface RemoteAgentUiDeps {
 
 /** The `remoteAgent` dep the management API's Settings routes consume. */
 export function createRemoteAgentUi(deps: RemoteAgentUiDeps) {
-  const wsUrl = connectWsUrl(deps.publicUrl);
+  const wsUrl = connectWsUrl(deps.bridgeUrl);
   return {
     mint(owner: string) {
       const token = mintJoinToken(owner, deps.joinSecret, { ttlSeconds: deps.ttlSeconds ?? 900 });

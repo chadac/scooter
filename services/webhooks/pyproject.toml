@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi",
   "uvicorn",
+  "websockets",  # WS server (FastAPI) + client (claude-bridge proxy to the agent-host)
   "httpx",
   "pydantic",
   "pydantic-settings",

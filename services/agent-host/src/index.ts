@@ -499,7 +499,9 @@ export async function main(
     remoteAgentRegistry && remoteAgentJoinSecret
       ? createRemoteAgentUi({
           joinSecret: remoteAgentJoinSecret,
-          publicUrl: process.env.PUBLIC_URL || undefined,
+          // The container dials the WEBHOOKS bridge (unauthed front door), not the agent-host —
+          // REMOTE_AGENT_BRIDGE_URL is the webhooks public base URL.
+          bridgeUrl: process.env.REMOTE_AGENT_BRIDGE_URL || undefined,
           isConnected: remoteAgentStore
             ? undefined
             : (owner) => remoteAgentRegistry.has(owner),

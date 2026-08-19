@@ -344,6 +344,17 @@ in
           default = "ghcr.io/chadac/scooter-remote-agent:latest";
           description = "The ghcr container image the Settings one-liner tells users to `docker run` (REMOTE_AGENT_IMAGE).";
         };
+        bridgeUrl = mkOption {
+          type = types.str;
+          default = "";
+          example = "https://webhooks.example.com";
+          description = ''
+            Public base URL of the WEBHOOKS bridge the container dials (/claude-bridge/connect is
+            appended). Webhooks is the unauthed front door (no ALB/user-auth) that verifies the join
+            token + proxies to the agent-host. Empty ⇒ the Settings one-liner shows a placeholder
+            host. Set to the webhooks receiver's public host (agentSandbox.webhooks.ingress.host).
+          '';
+        };
       };
       name = mkOption {
         type = types.str;
@@ -919,6 +930,11 @@ in
                   # The ghcr image the Settings one-liner references.
                   { name = "REMOTE_AGENT_IMAGE"; value = cfg.agent.remoteAgent.image; }
                 ]
+                ++ lib.optional (cfg.agent.remoteAgent.enable && cfg.agent.remoteAgent.bridgeUrl != "")
+                  # The WEBHOOKS bridge public URL the container dials (/claude-bridge/connect is
+                  # appended). Webhooks is the unauthed front door that verifies + proxies to the
+                  # agent-host — so the container isn't blocked by the ALB/user-auth on the UI host.
+                  { name = "REMOTE_AGENT_BRIDGE_URL"; value = cfg.agent.remoteAgent.bridgeUrl; }
                 ++ lib.optionals cfg.broker.aws.enable [
                   # AWS permissions broker: the agent-host mounts the account
                   # ConfigMap into each sandbox, and resolves approvals against the

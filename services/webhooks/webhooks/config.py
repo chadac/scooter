@@ -56,6 +56,11 @@ class WebhooksSettings(BaseSettings):
     # Root log level (LOG_LEVEL env). INFO by default; DEBUG for verbose tracing.
     log_level: str = "INFO"
 
+    # Bring-your-own-Claude: the HS256 signing key for join tokens (SAME secret the agent-host
+    # signs with). Set → webhooks verifies + proxies /claude-bridge/connect to the agent-host's
+    # internal /remote-agent/connect. Empty → the bridge is disabled (closes with 4404).
+    remote_agent_join_secret: str = ""
+
     # Integration toggles
     gitlab_enabled: bool = True
     github_enabled: bool = False

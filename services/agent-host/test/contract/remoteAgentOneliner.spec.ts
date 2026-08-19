@@ -8,15 +8,15 @@ import { describe, it, expect } from "vitest";
 import { connectWsUrl, dockerCommand, createRemoteAgentUi } from "../../src/acp/remoteAgentOneliner.js";
 import { verifyJoinToken } from "../../src/auth/remoteAgentToken.js";
 
-describe("connectWsUrl", () => {
-  it("maps http→ws, https→wss, bare-host→wss, always the /remote-agent/connect path", () => {
-    expect(connectWsUrl("https://scooter.example.com")).toBe("wss://scooter.example.com/remote-agent/connect");
-    expect(connectWsUrl("http://scooter.odin.lan")).toBe("ws://scooter.odin.lan/remote-agent/connect");
-    expect(connectWsUrl("scooter.odin.lan")).toBe("wss://scooter.odin.lan/remote-agent/connect");
-    expect(connectWsUrl("https://host/")).toBe("wss://host/remote-agent/connect"); // trailing slash trimmed
+describe("connectWsUrl (the webhooks bridge)", () => {
+  it("maps http→ws, https→wss, bare-host→wss, always the /claude-bridge/connect path", () => {
+    expect(connectWsUrl("https://webhooks.example.com")).toBe("wss://webhooks.example.com/claude-bridge/connect");
+    expect(connectWsUrl("http://webhooks.odin.lan")).toBe("ws://webhooks.odin.lan/claude-bridge/connect");
+    expect(connectWsUrl("webhooks.odin.lan")).toBe("wss://webhooks.odin.lan/claude-bridge/connect");
+    expect(connectWsUrl("https://host/")).toBe("wss://host/claude-bridge/connect"); // trailing slash trimmed
   });
-  it("falls back to a placeholder when no public URL is configured", () => {
-    expect(connectWsUrl(undefined)).toContain("<your-scooter-host>");
+  it("falls back to a placeholder when no bridge URL is configured", () => {
+    expect(connectWsUrl(undefined)).toContain("<your-webhooks-host>");
   });
 });
 
@@ -35,13 +35,13 @@ describe("dockerCommand", () => {
 describe("createRemoteAgentUi", () => {
   it("mints a VERIFIABLE owner-bound token + a one-liner containing it", () => {
     const secret = "s3cr3t";
-    const ui = createRemoteAgentUi({ joinSecret: secret, publicUrl: "https://scooter.odin.lan", isConnected: () => false });
+    const ui = createRemoteAgentUi({ joinSecret: secret, bridgeUrl: "https://webhooks.odin.lan", isConnected: () => false });
     const { token, dockerCommand: cmd, wsUrl } = ui.mint("alice");
 
     const v = verifyJoinToken(token, secret);
     expect(v.ok).toBe(true);
     if (v.ok) expect(v.claims.owner).toBe("alice");
-    expect(wsUrl).toBe("wss://scooter.odin.lan/remote-agent/connect");
+    expect(wsUrl).toBe("wss://webhooks.odin.lan/claude-bridge/connect");
     expect(cmd).toContain(token);
     expect(cmd).toContain(wsUrl);
   });
