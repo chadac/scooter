@@ -20,6 +20,11 @@ import type {
   ExecBackend,
 } from "./types.js";
 import type { AcpClient, SessionUpdate, ContentBlock } from "./acp/client.js";
+import {
+  pickAcpProvider,
+  type AcpProvider,
+  type RunContext,
+} from "./acp/provider.js";
 import type { Recorder } from "./transcript/recorder.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
@@ -350,8 +355,27 @@ export interface BridgeDeps {
    * Tests inject a ready in-process fake; production passes a factory that
    * spawns `goose acp` lazily (so the connection isn't established until the
    * first prompt). A factory avoids the brittle sync/async adapter shims.
+   *
+   * Single-provider shorthand: internally wrapped into a one-entry AcpProvider registry
+   * (always-eligible) so the bridge's per-run resolution path is uniform. Most tests use this.
+   * Mutually exclusive with `acpProviders`.
    */
-  acpClient: AcpClient | (() => Promise<AcpClient>);
+  acpClient?: AcpClient | (() => Promise<AcpClient>);
+
+  /**
+   * MULTI-PROVIDER path: a capability-tagged registry resolved PER RUN (pickAcpProvider). The
+   * bridge picks the provider for each run from its RunContext (owner + source), so a conversation
+   * can use a personalized brain for a human trigger and the cloud brain for a scheduled one. When
+   * set, takes precedence over `acpClient`. makeBridge (index.ts) passes this. See acp/provider.ts.
+   */
+  acpProviders?: readonly AcpProvider[];
+
+  /**
+   * The conversation OWNER (Scooter user), if known — part of the per-run RunContext an
+   * owner-bound provider (e.g. the remote personalized agent) selects on. Optional; the ported
+   * Increment-1 providers don't use it.
+   */
+  owner?: string;
 
   /**
    * Optional run-completion hook for metrics. Called once per run (after the
@@ -495,8 +519,30 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
   const livenessProbeMs = deps.livenessProbeMs ?? 30_000;
   // Resolved on first start(); a ready client or the result of the factory.
-  let acpClient: AcpClient | undefined =
-    typeof deps.acpClient === "function" ? undefined : deps.acpClient;
+  // ACP PROVIDER REGISTRY. Either the explicit multi-provider list (makeBridge) or a single
+  // always-eligible provider wrapping the legacy `acpClient` shorthand (tests + single-provider
+  // deploys). Selection is per-run (pickAcpProvider); today one provider is eligible so the choice
+  // is stable — behavior-identical to the old single-client bridge.
+  const acpProviders: readonly AcpProvider[] =
+    deps.acpProviders ??
+    [
+      {
+        id: "default",
+        kind: deps.provider ?? "goose",
+        priority: 0,
+        eligible: () => true,
+        createClient: () =>
+          typeof deps.acpClient === "function"
+            ? (deps.acpClient as () => Promise<AcpClient>)()
+            : (deps.acpClient as AcpClient),
+      },
+    ];
+
+  // One READY (initialize+newSession+hooks-wired) client per provider id, plus the client serving
+  // the CURRENT run. `acpClient`/`acpSessionId` track the ACTIVE run's client so the run loop,
+  // cancel(), and the liveness probe operate on it (unchanged shape; now sourced per-run).
+  const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string }>>();
+  let acpClient: AcpClient | undefined;
 
   // Permission/option requests awaiting a user answer. Two kinds:
   //  - goose tool-permission: the ACP requestPermission call blocks on `resolve`.
@@ -964,7 +1010,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     }
 
     try {
-      if (!started || !acpSessionId) await self.start();
+      if (!started) await self.start();
+      // PER-RUN provider selection: resolve the provider for THIS run's context (owner + trigger
+      // source) and point acpClient/acpSessionId at its ready client. Under Increment-1 config a
+      // single provider is eligible, so this returns the same client every run (behavior-
+      // identical). Increment 2's remote provider makes this vary by source (human vs scheduled).
+      await resolveForRun(runContextFor(input));
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Prepend the history preamble as a separate text block on the first prompt
       // of a revived session (empty → omitted). The user text is the COMBINED batch
@@ -1168,61 +1219,56 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     }
   };
 
-  const self: SessionBridge = {
-    sessionId,
+  // --- ACP client resolution (per-run provider selection) ---------------------------------
+  // The RunContext for a run: this conversation + its owner + the run's trigger source. The
+  // ported Increment-1 providers ignore owner/source (single eligible provider), so selection is
+  // stable; Increment 2's remote provider keys on them.
+  const defaultRunContext = (): RunContext => ({
+    conversationId: sessionId,
+    owner: deps.owner,
+  });
+  const runContextFor = (input: PromptInput): RunContext => ({
+    conversationId: sessionId,
+    owner: deps.owner,
+    source: input.source,
+  });
 
-    async start() {
-      if (started) return;
-            debug("[bridge] start: creating ACP client");
-      if (!acpClient) {
-        acpClient = await (deps.acpClient as () => Promise<AcpClient>)();
-      }
-            debug("[bridge] start: client created, initialize()");
-      await acpClient.initialize({
+  // Lazily ready ONE client per provider: initialize → newSession → wire the update/terminal/
+  // permission hooks ONCE (the same lifecycle the old single-client start() ran). Cached by
+  // provider id; a failed init drops the cache entry so the next run retries.
+  const readyProvider = (provider: AcpProvider): Promise<{ client: AcpClient; acpSessionId: string }> => {
+    let ready = readySessions.get(provider.id);
+    if (ready) return ready;
+    ready = (async () => {
+      debug("[bridge] readyProvider(%s): createClient + initialize", provider.id);
+      const client = await provider.createClient(defaultRunContext());
+      await client.initialize({
         protocolVersion: 1,
-        clientCapabilities: {
-          fs: { readTextFile: true, writeTextFile: true },
-          terminal: true,
-        },
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
       });
-            debug("[bridge] start: initialized, newSession(cwd=%s)", deps.config.cwd);
-      const { sessionId: sid } = await acpClient.newSession({
+      const { sessionId: sid } = await client.newSession({
         cwd: deps.config.cwd,
         mcpServers: deps.config.mcpServers,
       });
-            debug("[bridge] start: newSession ->", sid);
-      acpSessionId = sid;
-      // Subscribe to updates ONCE for the lifetime of the session and route
-      // them to the current run. Avoids per-prompt subscribe/unsubscribe (which
-      // mis-wired updates across runs).
-      acpClient.onSessionUpdate((_sid, u) => {
+      debug("[bridge] readyProvider(%s): newSession -> %s", provider.id, sid);
+      // Subscribe ONCE per client and route updates to the current run (handleUpdate keys on
+      // currentRun; only the in-flight run's provider emits at a time).
+      client.onSessionUpdate((_sid, u) => {
         if (currentRun) handleUpdate(currentRun, u);
       });
-
-      // goose's shell tool carries the COMMAND in terminal/create, not in the
-      // tool_call's rawInput — so this is the only place we learn what ran. Stash it
-      // by terminalId; the tool_call_update that hands off this terminal
-      // (content:[{terminalId,…}]) looks it up and emits it as the tool call's args,
-      // so the UI can show `$ <command>` instead of an empty shell card.
-      acpClient.onTerminalCreated((terminalId, command, args) => {
+      // goose's shell tool carries the COMMAND in terminal/create, not the tool_call rawInput —
+      // stash it by terminalId so the tool_call_update can show `$ <command>`.
+      client.onTerminalCreated((terminalId, command, args) => {
         terminalCommands.set(terminalId, formatCommand(command, args));
       });
-
-      // The agent asks the user to choose (ACP session/request_permission). We
-      // emit a PERMISSION_REQUEST to the UI and BLOCK the agent on a promise that
-      // answerPermission() resolves. The text/reasoning currently streaming is
-      // closed first so the request renders as its own affordance.
-      acpClient.onPermissionRequest(async (req) => {
+      // The agent asks the user to choose (ACP session/request_permission): emit a PERMISSION
+      // interrupt + BLOCK the agent until answerPermission() resolves.
+      client.onPermissionRequest(async (req) => {
         const run = currentRun;
-        // Close any open text/reasoning so the run is well-formed before it pauses.
         if (run) {
           closeOpenText(run);
           closeOpenReasoning(run);
         }
-        // Pause the run as an AG-UI INTERRUPT: RUN_FINISHED with outcome
-        // "interrupt" carrying this request. assistant-ui surfaces it as a pending
-        // interrupt and resumes via the next run's RunAgentInput.resume[]. The
-        // ACP requestPermission call stays blocked here until answerPermission().
         const optionId = await new Promise<string | null>((resolve) => {
           pendingPermissions.set(req.toolCallId, {
             resolve,
@@ -1240,7 +1286,6 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
                   reason: "confirmation",
                   message: req.title ?? "The agent needs your choice",
                   toolCallId: req.toolCallId,
-                  // The choices the UI renders + answers with.
                   metadata: { options: req.options },
                 },
               ],
@@ -1248,18 +1293,44 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           });
         });
         pendingPermissions.delete(req.toolCallId);
-        // PERSIST-ONLY: PERMISSION_RESOLVED is OUR record for history replay, not
-        // a standard AG-UI event — broadcasting it to the @ag-ui client would be
-        // rejected (invalid event type). The store logs it; the live UI already
-        // reflects the answer via assistant-ui's interrupt resolution.
+        // PERSIST-ONLY record for history replay (not a live AG-UI event).
         persist({ type: "PERMISSION_RESOLVED", toolCallId: req.toolCallId, optionId });
-        // Resume: a fresh RUN_STARTED so the continued turn is well-formed.
         if (run) {
           emit({ type: "RUN_STARTED", threadId: run.threadId, runId: run.runId });
           run.ended = false;
         }
         return optionId ? { optionId } : { cancelled: true as const };
       });
+      return { client, acpSessionId: sid };
+    })();
+    readySessions.set(provider.id, ready);
+    ready.catch(() => readySessions.delete(provider.id));
+    return ready;
+  };
+
+  // Resolve the provider for a run + set acpClient/acpSessionId to its ready client. Throws if no
+  // provider is eligible (a registry must include an always-eligible floor).
+  const resolveForRun = async (ctx: RunContext): Promise<void> => {
+    const provider = pickAcpProvider(acpProviders, ctx);
+    if (!provider) {
+      throw new Error(
+        `no ACP provider eligible (source=${ctx.source ?? "-"}, owner=${ctx.owner ?? "-"})`,
+      );
+    }
+    const ready = await readyProvider(provider);
+    acpClient = ready.client;
+    acpSessionId = ready.acpSessionId;
+  };
+
+  const self: SessionBridge = {
+    sessionId,
+
+    async start() {
+      if (started) return;
+      // Warm the provider eligible for a default (interactive, human) context. The run loop
+      // re-resolves per run; this just establishes the first session so start() keeps its
+      // "connection ready" contract. resolveForRun sets acpClient/acpSessionId.
+      await resolveForRun(defaultRunContext());
       started = true;
     },
 
@@ -1319,8 +1390,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     async stop() {
       clearInterruptTimer();
-      if (acpClient) await acpClient.close();
+      // Close EVERY started provider client (there may be more than one after provider switches).
+      const settled = await Promise.allSettled([...readySessions.values()]);
+      readySessions.clear();
+      acpClient = undefined;
+      acpSessionId = undefined;
       started = false;
+      await Promise.allSettled(
+        settled.map((r) => (r.status === "fulfilled" ? r.value.client.close() : Promise.resolve())),
+      );
     },
 
     onEvent(cb) {
