@@ -129,6 +129,16 @@ export interface ManagementDeps {
    *  so the Sandbox tab can show the user what the pod is allotted. Wired only on the
    *  broker path (the broker owns + applies sizing); absent = the route reports none. */
   sandboxResources?: (conversationId: string) => Promise<SandboxResources | undefined>;
+  /** Bring-your-own-Claude (Increment 2): powers the Settings "Connect your Claude agent"
+   *  section — mint an owner-bound join token + the copyable docker one-liner, and report whether
+   *  the caller's agent is currently connected (for the live badge). Optional — absent when BYO
+   *  isn't enabled (REMOTE_AGENT_JOIN_SECRET unset), so the UI hides the section. */
+  remoteAgent?: {
+    /** Mint a fresh short-lived join token for `owner` + the full `docker run …` one-liner. */
+    mint(owner: string): { token: string; dockerCommand: string; wsUrl: string };
+    /** Is this owner's remote agent connected right now? (registry.has(owner)) */
+    isConnected(owner: string): boolean;
+  };
 }
 
 /** The fields of a broker AWS request needed to render its approval interrupt.
@@ -240,6 +250,24 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/whoami", (ctx) => ({
     json: { id: ctx.user.id, email: ctx.user.email ?? null, anonymous: ctx.user.anonymous },
   }));
+
+  // --- Bring-your-own-Claude: connect a personal Claude agent (Increment 2) ------------------
+  // Owner-scoped: a caller manages ONLY their own agent (ctx.user.id). Absent deps.remoteAgent
+  // (BYO not enabled) → 404 so the UI hides the section. Anonymous → 401 (an agent must bind to a
+  // real user for routing + fencing).
+  r.post("/remote-agent/join-token", (ctx) => {
+    if (!deps.remoteAgent) return { status: 404, json: { error: "remote agents not enabled" } };
+    if (ctx.user.anonymous) return { status: 401, json: { error: "sign in to connect a Claude agent" } };
+    const { token, dockerCommand, wsUrl } = deps.remoteAgent.mint(ctx.user.id);
+    // Return the raw token + the ready-to-copy one-liner (token baked in) + the wss URL.
+    return { json: { token, dockerCommand, wsUrl } };
+  });
+
+  r.get("/remote-agent/status", (ctx) => {
+    if (!deps.remoteAgent) return { status: 404, json: { error: "remote agents not enabled" } };
+    const connected = !ctx.user.anonymous && deps.remoteAgent.isConnected(ctx.user.id);
+    return { json: { connected, owner: ctx.user.anonymous ? null : ctx.user.id } };
+  });
 
   // Reverse identity lookup: the Scooter user id for an email. The webhooks service
   // uses this to map an invoking external (github/gitlab/slack) user — resolved to

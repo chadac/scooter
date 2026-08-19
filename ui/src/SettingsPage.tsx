@@ -21,6 +21,8 @@ import {
   deleteScheduledTask,
   loadUsers,
   searchModules,
+  loadRemoteAgentStatus,
+  requestRemoteAgentJoinToken,
   type ScheduledTaskView,
   type ScheduledTaskInput,
   type UserView,
@@ -439,22 +441,119 @@ function ScheduledTasksSection() {
  *  subscription and scooter routes the brain to it. The settings UI for this ships
  *  with the BYO feature itself (PR #275, still in review); this tab is the shell it
  *  drops into, so the section can be added without restructuring the page again. */
+/** Connect-your-Claude-agent section (bring-your-own-Claude). Shows a copyable `docker run`
+ *  one-liner (with a freshly-minted owner-bound join token) + a LIVE status badge that flips to
+ *  "Connected" when the user's container registers. Hidden when BYO isn't enabled (routes 404). */
 function ClaudeAgentSection() {
+  const [enabled, setEnabled] = useState(true);
+  const [connected, setConnected] = useState(false);
+  const [command, setCommand] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Poll status so the badge flips to Connected once the container dials in (no refresh needed).
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      const s = await loadRemoteAgentStatus(agentHostConfig);
+      if (!alive) return;
+      setEnabled(s.enabled);
+      setConnected(s.connected);
+      setLoading(false);
+    };
+    void tick();
+    const h = setInterval(() => void tick(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(h);
+    };
+  }, []);
+
+  const generate = useCallback(async () => {
+    setError(null);
+    try {
+      const r = await requestRemoteAgentJoinToken(agentHostConfig);
+      setCommand(r.dockerCommand);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate a command");
+    }
+  }, []);
+
+  const copy = useCallback(() => {
+    if (!command) return;
+    void navigator.clipboard?.writeText(command).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [command]);
+
+  if (loading) return null; // avoid a flash before we know if BYO is enabled
+  if (!enabled) return null; // feature off on this deployment → hide entirely
+
   return (
     <section data-testid="claude-agent-section" className="flex flex-col gap-3">
       <div>
-        <h2 className="font-medium">Bring your own Claude</h2>
+        <h2 className="font-medium">Your Claude agent</h2>
         <p className="text-sm text-muted-foreground">
-          Run a container on your own machine holding your Claude subscription, and let Scooter
-          route the agent to it — your token never leaves your machine.
+          Run Claude on your own machine with your subscription. Scooter routes your conversations
+          to it; scheduled tasks still use the shared cloud model.
         </p>
       </div>
-      <p
-        data-testid="claude-agent-unavailable"
-        className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground"
-      >
-        This feature isn’t enabled on this deployment yet.
-      </p>
+
+      <div className="flex items-center gap-2 text-sm" data-testid="claude-agent-status">
+        <span
+          aria-hidden
+          className={`inline-block h-2.5 w-2.5 rounded-full ${connected ? "bg-green-500" : "bg-muted-foreground/40"}`}
+        />
+        {connected ? (
+          <span data-testid="claude-agent-connected" className="font-medium text-green-700">Connected</span>
+        ) : (
+          <span data-testid="claude-agent-disconnected" className="text-muted-foreground">Not connected</span>
+        )}
+      </div>
+
+      {!command ? (
+        <button
+          type="button"
+          data-testid="claude-agent-generate"
+          onClick={() => void generate()}
+          className="self-start rounded-md border px-3 py-1.5 text-sm hover:bg-muted/50"
+        >
+          Connect your Claude agent
+        </button>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            Run this on your machine (needs Docker). On first run, open{" "}
+            <span className="font-mono">http://localhost:1717/login</span> to sign in to Claude.
+          </p>
+          <pre
+            data-testid="claude-agent-command"
+            className="overflow-x-auto rounded-md border bg-muted/30 p-3 text-xs font-mono whitespace-pre"
+          >
+            {command}
+          </pre>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              data-testid="claude-agent-copy"
+              onClick={copy}
+              className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted/50"
+            >
+              {copied ? "Copied ✓" : "Copy command"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void generate()}
+              className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50"
+            >
+              Regenerate
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <p data-testid="claude-agent-error" className="text-sm text-red-600">{error}</p>}
     </section>
   );
 }

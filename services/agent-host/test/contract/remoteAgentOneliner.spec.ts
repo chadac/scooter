@@ -1,0 +1,54 @@
+/**
+ * Tier 1 contract — the BYO "Connect your Claude agent" one-liner builder. Locks the wss URL
+ * derivation + the docker one-liner shape (token + url baked in). See remoteAgentOneliner.ts.
+ */
+
+import { describe, it, expect } from "vitest";
+
+import { connectWsUrl, dockerCommand, createRemoteAgentUi } from "../../src/acp/remoteAgentOneliner.js";
+import { verifyJoinToken } from "../../src/auth/remoteAgentToken.js";
+
+describe("connectWsUrl", () => {
+  it("maps http→ws, https→wss, bare-host→wss, always the /remote-agent/connect path", () => {
+    expect(connectWsUrl("https://scooter.example.com")).toBe("wss://scooter.example.com/remote-agent/connect");
+    expect(connectWsUrl("http://scooter.odin.lan")).toBe("ws://scooter.odin.lan/remote-agent/connect");
+    expect(connectWsUrl("scooter.odin.lan")).toBe("wss://scooter.odin.lan/remote-agent/connect");
+    expect(connectWsUrl("https://host/")).toBe("wss://host/remote-agent/connect"); // trailing slash trimmed
+  });
+  it("falls back to a placeholder when no public URL is configured", () => {
+    expect(connectWsUrl(undefined)).toContain("<your-scooter-host>");
+  });
+});
+
+describe("dockerCommand", () => {
+  it("bakes the url + token + the restart-always + volume + 1717 publish", () => {
+    const cmd = dockerCommand("wss://s/remote-agent/connect", "TOK", "ghcr.io/x/agent:1");
+    expect(cmd).toContain("--restart always");
+    expect(cmd).toContain("-p 127.0.0.1:1717:1717");
+    expect(cmd).toContain("-v scooter-claude:/root/.claude");
+    expect(cmd).toContain("ghcr.io/x/agent:1");
+    expect(cmd).toContain("--url wss://s/remote-agent/connect");
+    expect(cmd).toContain("--join TOK");
+  });
+});
+
+describe("createRemoteAgentUi", () => {
+  it("mints a VERIFIABLE owner-bound token + a one-liner containing it", () => {
+    const secret = "s3cr3t";
+    const ui = createRemoteAgentUi({ joinSecret: secret, publicUrl: "https://scooter.odin.lan", isConnected: () => false });
+    const { token, dockerCommand: cmd, wsUrl } = ui.mint("alice");
+
+    const v = verifyJoinToken(token, secret);
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.claims.owner).toBe("alice");
+    expect(wsUrl).toBe("wss://scooter.odin.lan/remote-agent/connect");
+    expect(cmd).toContain(token);
+    expect(cmd).toContain(wsUrl);
+  });
+
+  it("passes through isConnected", () => {
+    const ui = createRemoteAgentUi({ joinSecret: "s", isConnected: (o) => o === "alice" });
+    expect(ui.isConnected("alice")).toBe(true);
+    expect(ui.isConnected("bob")).toBe(false);
+  });
+});

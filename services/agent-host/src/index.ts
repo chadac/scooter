@@ -21,6 +21,7 @@ import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests
 import { createSessionManager, shortId } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
 import { createRemoteAgentConnectHandler } from "./acp/remoteAgentConnect.js";
+import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
@@ -478,6 +479,17 @@ export async function main(
     );
     console.log("[agent-host] bring-your-own-Claude: /remote-agent/connect enabled");
   }
+  // The Settings "Connect your Claude agent" backing (mint one-liner + connected badge). Only when
+  // BYO is enabled; the management route 404s otherwise so the UI hides the section.
+  const remoteAgentUi =
+    remoteAgentRegistry && remoteAgentJoinSecret
+      ? createRemoteAgentUi({
+          joinSecret: remoteAgentJoinSecret,
+          publicUrl: process.env.PUBLIC_URL || undefined,
+          isConnected: (owner) => remoteAgentRegistry.has(owner),
+          image: process.env.REMOTE_AGENT_IMAGE || undefined,
+        })
+      : undefined;
 
   // Metrics (OFF unless OTEL_METRICS_ENABLED=1). Cost needs goose's per-session
   // token usage, which it persists under its $HOME; the reader degrades to "no
@@ -1006,6 +1018,8 @@ export async function main(
       sandboxResources: brokerProvisioner
         ? (id: string) => brokerProvisioner.getSize(shortId(id))
         : undefined,
+      // BYO-Claude Settings section (mint one-liner + connected badge). Undefined = BYO off.
+      remoteAgent: remoteAgentUi,
       // Manual compaction — summarize older turns via a one-off SDK query with the
       // SAME token/model the conversation runs on. Off (undefined) without a token.
       compact: process.env.CLAUDE_CODE_OAUTH_TOKEN

@@ -697,3 +697,48 @@ export async function loadHistory(
   // Keep a message if it has text OR images (an image-only message has empty text).
   return order.map((id) => byId.get(id)!).filter((m) => m.content.trim() !== "" || (m.images?.length ?? 0) > 0);
 }
+
+// --- Bring-your-own-Claude: connect a personal Claude agent (Settings) ----------------------
+
+export interface RemoteAgentStatus {
+  /** BYO enabled on this deployment? false when the /remote-agent routes 404 (feature off). */
+  enabled: boolean;
+  /** Is the caller's Claude agent connected right now? */
+  connected: boolean;
+}
+
+/** Poll whether the caller has a connected Claude agent. 404 → BYO not enabled (hide the section). */
+export async function loadRemoteAgentStatus(config: AgentHostConfig): Promise<RemoteAgentStatus> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/remote-agent/status`, {
+      headers: authHeaders(config),
+    });
+    if (res.status === 404) return { enabled: false, connected: false };
+    if (!res.ok) return { enabled: true, connected: false };
+    const body = (await res.json()) as { connected?: boolean };
+    return { enabled: true, connected: !!body.connected };
+  } catch (e) {
+    console.warn("[client] loadRemoteAgentStatus failed:", e);
+    return { enabled: true, connected: false };
+  }
+}
+
+export interface JoinTokenResult {
+  token: string;
+  dockerCommand: string;
+  wsUrl: string;
+}
+
+/** Mint a fresh join token + the copyable docker one-liner for the caller. Throws on 401 (sign in)
+ *  / 404 (not enabled) so the caller can message accordingly. */
+export async function requestRemoteAgentJoinToken(config: AgentHostConfig): Promise<JoinTokenResult> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/remote-agent/join-token`, {
+    method: "POST",
+    headers: authHeaders(config),
+  });
+  if (!res.ok) {
+    const detail = res.status === 401 ? "Sign in to connect a Claude agent." : `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return (await res.json()) as JoinTokenResult;
+}
