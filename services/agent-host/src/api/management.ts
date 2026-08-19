@@ -136,8 +136,9 @@ export interface ManagementDeps {
   remoteAgent?: {
     /** Mint a fresh short-lived join token for `owner` + the full `docker run …` one-liner. */
     mint(owner: string): { token: string; dockerCommand: string; wsUrl: string };
-    /** Is this owner's remote agent connected right now? (registry.has(owner)) */
-    isConnected(owner: string): boolean;
+    /** Is this owner's remote agent connected right now? Durable (DB, cross-replica) when a DB is
+     *  wired, else the local live registry — hence async. */
+    isConnected(owner: string): Promise<boolean>;
   };
 }
 
@@ -263,9 +264,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json: { token, dockerCommand, wsUrl } };
   });
 
-  r.get("/remote-agent/status", (ctx) => {
+  r.get("/remote-agent/status", async (ctx) => {
     if (!deps.remoteAgent) return { status: 404, json: { error: "remote agents not enabled" } };
-    const connected = !ctx.user.anonymous && deps.remoteAgent.isConnected(ctx.user.id);
+    const connected = ctx.user.anonymous ? false : await deps.remoteAgent.isConnected(ctx.user.id);
     return { json: { connected, owner: ctx.user.anonymous ? null : ctx.user.id } };
   });
 

@@ -43,7 +43,14 @@ export interface RemoteAgentRegistry {
   has(owner: string): boolean;
 }
 
-export function createRemoteAgentRegistry(): RemoteAgentRegistry {
+/** Optional durable-binding hooks — persist online/offline to the shared DB so the badge is
+ *  cross-replica + restart-durable (see remoteAgentStore.ts). Best-effort; fire-and-forget. */
+export interface RemoteAgentRegistryHooks {
+  onOnline?: (owner: string) => void;
+  onOffline?: (owner: string) => void;
+}
+
+export function createRemoteAgentRegistry(hooks: RemoteAgentRegistryHooks = {}): RemoteAgentRegistry {
   const byOwner = new Map<string, AgentConnection>();
   return {
     register(conn) {
@@ -51,12 +58,16 @@ export function createRemoteAgentRegistry(): RemoteAgentRegistry {
       byOwner.set(conn.owner, conn);
       // Latest-wins: drop the superseded connection so we never route to a stale agent.
       if (prev && prev.transport !== conn.transport) prev.transport.close();
+      hooks.onOnline?.(conn.owner); // persist ONLINE (durable badge)
     },
     unregister(owner, transport) {
       const cur = byOwner.get(owner);
       // Only clear if THIS transport is still the registered one (a late close of a superseded
-      // connection must not evict the new one).
-      if (cur && cur.transport === transport) byOwner.delete(owner);
+      // connection must not evict the new one — nor flip the reconnected owner offline).
+      if (cur && cur.transport === transport) {
+        byOwner.delete(owner);
+        hooks.onOffline?.(owner); // persist OFFLINE
+      }
     },
     get(owner) {
       const conn = byOwner.get(owner);

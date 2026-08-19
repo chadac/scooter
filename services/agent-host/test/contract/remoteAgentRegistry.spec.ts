@@ -99,6 +99,31 @@ describe("remote agent registry", () => {
     expect(reg.has("alice")).toBe(true);
     expect(reg.get("alice")?.transport).toBe(second.transport);
   });
+
+  it("fires onOnline/onOffline hooks for durable persistence (badge across replicas)", () => {
+    const online: string[] = [];
+    const offline: string[] = [];
+    const reg = createRemoteAgentRegistry({
+      onOnline: (o) => online.push(o),
+      onOffline: (o) => offline.push(o),
+    });
+    const c = conn("alice");
+    reg.register(c);
+    expect(online).toEqual(["alice"]);
+
+    reg.unregister("alice", c.transport);
+    expect(offline).toEqual(["alice"]);
+
+    // A late close of a SUPERSEDED connection must NOT fire offline (the reconnected owner stays
+    // online) — onOffline fires only for the CURRENT transport.
+    const first = conn("bob");
+    const second = conn("bob");
+    reg.register(first);
+    reg.register(second);
+    offline.length = 0;
+    reg.unregister("bob", first.transport); // superseded → no offline
+    expect(offline).toEqual([]);
+  });
 });
 
 describe("remote-personalized provider eligibility", () => {

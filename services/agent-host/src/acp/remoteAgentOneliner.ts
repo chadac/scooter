@@ -35,7 +35,11 @@ export function dockerCommand(wsUrl: string, token: string, image = DEFAULT_IMAG
 export interface RemoteAgentUiDeps {
   joinSecret: string;
   publicUrl?: string;
-  isConnected(owner: string): boolean;
+  /** Synchronous connected check (in-memory live registry). Use this OR isConnectedAsync. */
+  isConnected?: (owner: string) => boolean;
+  /** Async connected check (the durable Postgres badge, cross-replica). Preferred when a DB is
+   *  wired; falls back to isConnected otherwise. */
+  isConnectedAsync?: (owner: string) => Promise<boolean>;
   image?: string;
   /** Join-token TTL (seconds). Long enough to copy + start the container. */
   ttlSeconds?: number;
@@ -49,6 +53,12 @@ export function createRemoteAgentUi(deps: RemoteAgentUiDeps) {
       const token = mintJoinToken(owner, deps.joinSecret, { ttlSeconds: deps.ttlSeconds ?? 900 });
       return { token, wsUrl, dockerCommand: dockerCommand(wsUrl, token, deps.image) };
     },
-    isConnected: deps.isConnected,
+    /** Is the owner's agent connected? Prefers the durable (async) check; falls back to the
+     *  sync live-registry check; false if neither is wired. */
+    async isConnected(owner: string): Promise<boolean> {
+      if (deps.isConnectedAsync) return deps.isConnectedAsync(owner);
+      if (deps.isConnected) return deps.isConnected(owner);
+      return false;
+    },
   };
 }

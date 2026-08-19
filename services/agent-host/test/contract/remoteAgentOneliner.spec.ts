@@ -46,9 +46,19 @@ describe("createRemoteAgentUi", () => {
     expect(cmd).toContain(wsUrl);
   });
 
-  it("passes through isConnected", () => {
-    const ui = createRemoteAgentUi({ joinSecret: "s", isConnected: (o) => o === "alice" });
-    expect(ui.isConnected("alice")).toBe(true);
-    expect(ui.isConnected("bob")).toBe(false);
+  it("isConnected: prefers the async (durable) check, falls back to sync, else false", async () => {
+    const sync = createRemoteAgentUi({ joinSecret: "s", isConnected: (o) => o === "alice" });
+    expect(await sync.isConnected("alice")).toBe(true);
+    expect(await sync.isConnected("bob")).toBe(false);
+    // async (durable) wins over sync when both are wired.
+    const both = createRemoteAgentUi({
+      joinSecret: "s",
+      isConnected: () => false,
+      isConnectedAsync: async (o) => o === "carol",
+    });
+    expect(await both.isConnected("carol")).toBe(true);
+    expect(await both.isConnected("alice")).toBe(false);
+    // neither → false.
+    expect(await createRemoteAgentUi({ joinSecret: "s" }).isConnected("alice")).toBe(false);
   });
 });

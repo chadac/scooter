@@ -325,6 +325,26 @@ in
           '';
         };
       };
+      # BRING-YOUR-OWN-CLAUDE (Increment 2): users run a container with THEIR Claude subscription
+      # that dials in over a WS; scooter routes their human-triggered conversations to it.
+      remoteAgent = {
+        enable = mkEnableOption "bring-your-own-Claude remote agents (/remote-agent/connect + Settings UI)";
+        joinSecret = mkOption {
+          type = types.str;
+          default = "agent-remote-join-secret";
+          description = ''
+            Name of the Secret holding the HS256 signing key (key `secret`) the agent-host uses to
+            sign + verify owner-bound join tokens. ONE server-side key (not per-user). Wired to
+            REMOTE_AGENT_JOIN_SECRET when remoteAgent.enable = true. Create out-of-band:
+            kubectl create secret generic <name> --from-literal=secret=$(openssl rand -hex 32).
+          '';
+        };
+        image = mkOption {
+          type = types.str;
+          default = "ghcr.io/chadac/scooter-remote-agent:latest";
+          description = "The ghcr container image the Settings one-liner tells users to `docker run` (REMOTE_AGENT_IMAGE).";
+        };
+      };
       name = mkOption {
         type = types.str;
         default = "Scooter";
@@ -889,6 +909,16 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; }
+                ++ lib.optionals cfg.agent.remoteAgent.enable [
+                  # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
+                  # The HS256 signing key for owner-bound join tokens (one server-side secret).
+                  {
+                    name = "REMOTE_AGENT_JOIN_SECRET";
+                    valueFrom.secretKeyRef = { name = cfg.agent.remoteAgent.joinSecret; key = "secret"; };
+                  }
+                  # The ghcr image the Settings one-liner references.
+                  { name = "REMOTE_AGENT_IMAGE"; value = cfg.agent.remoteAgent.image; }
+                ]
                 ++ lib.optionals cfg.broker.aws.enable [
                   # AWS permissions broker: the agent-host mounts the account
                   # ConfigMap into each sandbox, and resolves approvals against the

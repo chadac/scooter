@@ -22,6 +22,7 @@ import { createSessionManager, shortId } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
 import { createRemoteAgentConnectHandler } from "./acp/remoteAgentConnect.js";
 import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
+import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
 import { createK8sProvisioner } from "./session/k8sProvisioner.js";
@@ -471,7 +472,19 @@ export async function main(
   // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
   // in. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
   const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
-  const remoteAgentRegistry = remoteAgentJoinSecret ? createRemoteAgentRegistry() : undefined;
+  // DURABLE binding on the shared Postgres (same DSN as the identity store): persist an owner's
+  // online/offline so the "Connected" badge is correct across replicas + survives a restart (the
+  // in-memory registry lives on one replica). Absent DSN → in-memory only (badge = local live conn).
+  const remoteAgentDsn = webhooksResourceDsn();
+  const remoteAgentStore =
+    remoteAgentJoinSecret && remoteAgentDsn ? createPgRemoteAgentStore({ dsn: remoteAgentDsn }) : undefined;
+  const remoteAgentRegistry = remoteAgentJoinSecret
+    ? createRemoteAgentRegistry({
+        // Fire-and-forget DB persistence on connect/disconnect (best-effort).
+        onOnline: remoteAgentStore ? (owner) => void remoteAgentStore.markOnline(owner) : undefined,
+        onOffline: remoteAgentStore ? (owner) => void remoteAgentStore.markOffline(owner) : undefined,
+      })
+    : undefined;
   if (remoteAgentRegistry && remoteAgentJoinSecret) {
     server.onUpgrade(
       "/remote-agent/connect",
@@ -480,13 +493,17 @@ export async function main(
     console.log("[agent-host] bring-your-own-Claude: /remote-agent/connect enabled");
   }
   // The Settings "Connect your Claude agent" backing (mint one-liner + connected badge). Only when
-  // BYO is enabled; the management route 404s otherwise so the UI hides the section.
+  // BYO is enabled; the management route 404s otherwise so the UI hides the section. The badge reads
+  // the DURABLE store (cross-replica) when available, else the local live registry.
   const remoteAgentUi =
     remoteAgentRegistry && remoteAgentJoinSecret
       ? createRemoteAgentUi({
           joinSecret: remoteAgentJoinSecret,
           publicUrl: process.env.PUBLIC_URL || undefined,
-          isConnected: (owner) => remoteAgentRegistry.has(owner),
+          isConnected: remoteAgentStore
+            ? undefined
+            : (owner) => remoteAgentRegistry.has(owner),
+          isConnectedAsync: remoteAgentStore ? (owner) => remoteAgentStore.isOnline(owner) : undefined,
           image: process.env.REMOTE_AGENT_IMAGE || undefined,
         })
       : undefined;
