@@ -142,6 +142,13 @@
 
           agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp; };
 
+          # Bring-your-own-Claude container app: drives the user's LOCAL Claude via the SAME
+          # claudeSdkProvider, tunnels tool-exec to the cloud sandbox. Bakes the (unfree) claude CLI.
+          remoteAgent = pkgs.callPackage ./services/remote-agent {
+            inherit claudeSdkProvider;
+            claude-code = pkgs.claude-code;
+          };
+
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {
             inherit pkgs lib n2c agentHost agent; # agent (goose) for its own layer
@@ -175,6 +182,12 @@
           # Scheduler OCI image.
           schedulerImage = import ./pkgs/scheduler-image {
             inherit pkgs lib n2c scheduler;
+          };
+
+          # Bring-your-own-Claude remote agent OCI image (ghcr). Bakes the UNFREE claude CLI (via
+          # remoteAgent), so like the claude image its .outPath needs allowUnfree.
+          remoteAgentImage = import ./pkgs/remote-agent-image {
+            inherit pkgs lib n2c remoteAgent;
           };
 
           # Conversation CRD controller (Python): leader-elected reconcile loop that
@@ -352,6 +365,11 @@
 
             # nix build .#scheduler-image  ->  scheduler OCI image
             scheduler-image = schedulerImage.image;
+
+            # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
+            remote-agent = remoteAgent;
+            # nix build .#remote-agent-image  ->  BYO-Claude remote agent OCI image (ghcr; unfree claude)
+            remote-agent-image = remoteAgentImage.image;
 
             # nix build .#conversation-controller-image  ->  controller OCI image
             conversation-controller-image = conversationControllerImage.image;
