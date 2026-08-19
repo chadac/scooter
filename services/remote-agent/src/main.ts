@@ -1,16 +1,17 @@
 /**
  * scooter-remote-agent entrypoint (bring-your-own-Claude container).
  *
- *   scooter-remote-agent login                         one-time interactive Claude login (serves
- *                                                       127.0.0.1:1717, exits when done)
- *   scooter-remote-agent --url <wss> --join <token>    run: ensure Claude login (serving :1717 if
+ *   scooter-remote-agent login                         one-time token entry (serves 127.0.0.1:34579
+ *                                                       to paste a `claude setup-token`, exits when done)
+ *   scooter-remote-agent --url <wss> --join <token>    run: ensure a Claude token (serving :34579 if
  *                                                       needed), then connect + drive
  *
- * The Claude subscription token lives ONLY in the mounted volume (~/.claude); it never reaches
- * scooter. The join token (--join) authenticates the container TO scooter. See §H of the doc.
+ * The Claude subscription token (from `claude setup-token`, run on the user's own machine) lives
+ * ONLY in the mounted volume; it never reaches scooter. The join token (--join) authenticates the
+ * container TO scooter. See §H of the doc.
  */
 
-import { getValidAccessToken, readCreds } from "./claudeCreds.js";
+import { readToken } from "./claudeCreds.js";
 import { startLoginServer } from "./loginServer.js";
 import { runRemoteAgentClient } from "./remoteAgentClient.js";
 
@@ -29,16 +30,16 @@ function parseArgs(argv: string[]): { cmd?: string; url?: string; join?: string;
   return out;
 }
 
-/** Ensure a valid Claude login: if none, start the login server + wait for the browser flow. */
+/** Ensure a Claude setup token: if none, serve the token-entry page + wait for the user to paste it. */
 async function ensureLogin(): Promise<string> {
-  let token = await getValidAccessToken();
+  let token = await readToken();
   if (token) return token;
   const srv = startLoginServer(log);
-  log(`Not logged in to Claude. Open ${srv.url} in your browser to sign in.`);
+  log(`No Claude token yet. Open ${srv.url} and paste your \`claude setup-token\` output.`);
   await srv.done;
   srv.close();
-  token = await getValidAccessToken();
-  if (!token) throw new Error("login completed but no valid token — check ~/.claude");
+  token = await readToken();
+  if (!token) throw new Error("token entry completed but no token found — check the volume");
   return token;
 }
 
@@ -46,12 +47,12 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.cmd === "login") {
-    if (await readCreds()) {
-      log("Already logged in to Claude (credentials present).");
+    if (await readToken()) {
+      log("Claude token already present.");
       return;
     }
     const srv = startLoginServer(log);
-    log(`Open ${srv.url} to sign in to Claude.`);
+    log(`Open ${srv.url} and paste your \`claude setup-token\` output.`);
     await srv.done;
     srv.close();
     log("Done. You can now run the agent.");

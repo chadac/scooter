@@ -1,101 +1,44 @@
 /**
- * The user's Claude subscription credentials — read/write ~/.claude/.credentials.json (the format
- * Claude Code reads) + refresh when the short-lived access token expires. The token lives ONLY in
- * the container's volume; it never leaves the user's machine. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §H.
- *
- * Constants (public Claude Code client) confirmed from reverse-engineering write-ups; verify against
- * the current CLI if Anthropic rotates hosts/scopes.
+ * The user's Claude subscription token, stored ONLY in the container's volume. We do NOT run the
+ * OAuth flow ourselves — that authorize step is gated by a browser-minted hCaptcha attestation
+ * (proven via HAR 2026-08-19: POST claude.ai/v1/oauth/{org}/authorize carries
+ * client_attestation.hcaptcha_token, which no headless client can produce). Instead the USER runs
+ * `claude setup-token` on their own machine (real browser does the hCaptcha OAuth) and pastes the
+ * resulting `sk-ant-oat01-…` token into our /login page; we persist it here. The SDK consumes it as
+ * CLAUDE_CODE_OAUTH_TOKEN (createSdkAcpClient sets it in the claude subprocess env). Token never
+ * touches scooter. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §H.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 
-// Values captured from the real `claude setup-token` flow (claude-code 2.1.172). This is the
-// setup-CODE variant: Claude redirects to a CONSOLE callback that DISPLAYS a `code#state` string
-// the user copies back — there is no loopback port. Matching the CLI exactly (host, redirect,
-// code=true, scope) is what makes claude.com/cai/oauth/authorize accept the request; verify against
-// the current CLI if Anthropic rotates any of these.
-export const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-export const AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
-export const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-// The console callback that renders the copy-paste code (NOT a loopback redirect).
-export const CONSOLE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
-export const SCOPES = "user:inference";
-
-/** The ~/.claude/.credentials.json shape Claude Code reads. expiresAt is ms-since-epoch. */
-export interface ClaudeCredsFile {
-  claudeAiOauth: {
-    accessToken: string;
-    refreshToken: string;
-    expiresAt: number;
-    scopes: string[];
-  };
+/** Long-lived setup tokens are prefixed `sk-ant-oat…`. Loosely validate a pasted value. */
+export function looksLikeSetupToken(raw: string): boolean {
+  return /^sk-ant-oat\d*-/.test(raw.trim());
 }
 
-export function credsPath(): string {
-  return join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), ".credentials.json");
+/** Where we persist the pasted token (a plain file in the mounted volume). */
+export function tokenPath(): string {
+  return join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "setup-token");
 }
 
-export async function readCreds(): Promise<ClaudeCredsFile | undefined> {
+/** Read the persisted setup token, or an override from the env (CLAUDE_CODE_OAUTH_TOKEN). */
+export async function readToken(): Promise<string | undefined> {
+  const fromEnv = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
   try {
-    const raw = await readFile(credsPath(), "utf8");
-    const parsed = JSON.parse(raw) as ClaudeCredsFile;
-    if (parsed?.claudeAiOauth?.accessToken) return parsed;
+    const raw = (await readFile(tokenPath(), "utf8")).trim();
+    if (raw) return raw;
   } catch {
-    /* absent / unreadable → not logged in */
+    /* absent → not logged in */
   }
   return undefined;
 }
 
-export async function writeCreds(creds: ClaudeCredsFile): Promise<void> {
-  const p = credsPath();
+/** Persist the pasted setup token to the volume (0600). */
+export async function writeToken(token: string): Promise<void> {
+  const p = tokenPath();
   await mkdir(dirname(p), { recursive: true });
-  await writeFile(p, JSON.stringify(creds, null, 2), { mode: 0o600 });
-}
-
-/** A ~60s skew: treat a token as expired slightly early so we refresh before a call fails. */
-const SKEW_MS = 60_000;
-
-export function isExpired(creds: ClaudeCredsFile, now = Date.now()): boolean {
-  return !creds.claudeAiOauth.expiresAt || creds.claudeAiOauth.expiresAt - SKEW_MS <= now;
-}
-
-/** Exchange a refresh token for a fresh access token (+ rotated refresh token). Writes the result. */
-export async function refreshCreds(creds: ClaudeCredsFile): Promise<ClaudeCredsFile> {
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: creds.claudeAiOauth.refreshToken,
-      client_id: CLAUDE_CLIENT_ID,
-    }),
-  });
-  if (!res.ok) throw new Error(`token refresh failed: HTTP ${res.status}`);
-  const body = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number; scope?: string };
-  const next: ClaudeCredsFile = {
-    claudeAiOauth: {
-      accessToken: body.access_token,
-      refreshToken: body.refresh_token ?? creds.claudeAiOauth.refreshToken,
-      expiresAt: Date.now() + body.expires_in * 1000,
-      scopes: (body.scope ?? SCOPES).split(" "),
-    },
-  };
-  await writeCreds(next);
-  return next;
-}
-
-/** Return a VALID access token (refreshing if needed), or undefined if not logged in. */
-export async function getValidAccessToken(): Promise<string | undefined> {
-  let creds = await readCreds();
-  if (!creds) return undefined;
-  if (isExpired(creds)) {
-    try {
-      creds = await refreshCreds(creds);
-    } catch {
-      return undefined; // refresh failed → treat as logged out (re-login)
-    }
-  }
-  return creds.claudeAiOauth.accessToken;
+  await writeFile(p, token.trim() + "\n", { mode: 0o600 });
 }

@@ -28,8 +28,9 @@
         "CLAUDE_CONFIG_DIR=/root/.claude"
         "HOME=/root"
       ];
-      # The local Claude login server (127.0.0.1:1717 in the container, published to the host).
-      ExposedPorts = { "1717/tcp" = { }; };
+      # The local Claude login server (127.0.0.1:34579 in the container, published to the host).
+      # Port 34579 is in the high ephemeral range Anthropic's OAuth client whitelists for loopback.
+      ExposedPorts = { "34579/tcp" = { }; };
     };
   };
 }

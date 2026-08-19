@@ -24,11 +24,13 @@ export function connectWsUrl(bridgeUrl: string | undefined): string {
 }
 
 /** The full `docker run` one-liner (restart-always service form). The container serves the local
- *  Claude login on 127.0.0.1:1717 (published to the host) on first run, then connects. */
+ *  token-entry page on 127.0.0.1:34579 (published to the host) on first run — the user pastes their
+ *  `claude setup-token` output there — then connects. (We can't run Claude's OAuth in-container: the
+ *  authorize step is gated by a browser-minted hCaptcha attestation.) */
 export function dockerCommand(wsUrl: string, token: string, image = DEFAULT_IMAGE): string {
   return [
     "docker run -d --restart always --name scooter-agent",
-    "  -p 127.0.0.1:1717:1717",
+    "  -p 127.0.0.1:34579:34579",
     "  -v scooter-claude:/root/.claude",
     `  ${image}`,
     `  --url ${wsUrl}`,
