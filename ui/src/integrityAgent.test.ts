@@ -983,3 +983,62 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 });
+
+describe("seedTail + full replay must not leave DUPLICATE message ids", () => {
+  it("the seeded tail is not double-counted by the replay that follows it", async () => {
+    // REGRESSION GUARD for the white-screen crash (MessageRepository performOp/link:
+    // "A message with the same id already exists in the parent tree"), which unmounts
+    // <ConversationRuntime> and blanks the whole page.
+    //
+    // This exercises the seeded-first-connection path, which NO other test covers: the
+    // rest pass no tailEvents, so seedTail no-ops. renderPump folds every physical
+    // connection "seeded from an EMPTY message list" so the replay rebuilds rather than
+    // doubles — but the `firstConn && seeded` branch exempts itself (a raw
+    // `this.messages = []` instead of setMessages([])) to avoid flashing the fast first
+    // paint away.
+    //
+    // NOTE: this path was a SUSPECT for the duplicate and is NOT the culprit — this test
+    // passes today. Keeping it as a guard: the exemption is genuinely subtle, it is the
+    // one place the "always fold from empty" invariant is deliberately broken, and it was
+    // previously untested. The actual source of the duplicate seen on CI is still
+    // unidentified; toRepositorySnapshot now dedupes so it cannot crash the thread.
+    const tail = [
+      { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "hello" },
+      { type: "TEXT_MESSAGE_END", messageId: "u1" },
+      { type: "RUN_FINISHED", threadId: "c1", runId: "r0" },
+    ];
+    // The full replay contains that SAME turn (the tail is a suffix of the log).
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r0" } },
+      ...tail.map((event) => ({ kind: "event", event })),
+      { kind: "synced" },
+    ];
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: "c1",
+      fetchImpl: sseFetch(frames, tail),
+    });
+
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsubscribe(); stop(); resolve(); };
+      const { unsubscribe } = agent.subscribe({
+        onMessagesChanged: () => {
+          clearTimeout(timer);
+          timer = setTimeout(done, 200);
+        },
+      });
+      setTimeout(done, 1500);
+    });
+
+    const ids = (agent.messages as Array<{ id?: string }>).map((m) => m.id).filter(Boolean);
+    const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+    expect(
+      dupes,
+      `duplicate message ids reach the repository and CRASH the thread: ${JSON.stringify(ids)}`,
+    ).toEqual([]);
+  });
+});

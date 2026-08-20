@@ -65,6 +65,18 @@ test.describe("sidebar / session components", () => {
     // Starring is a sidebar-only concern — the thread must be untouched.
     expect(after.userMessages, "starring must not change the transcript").toBe(before.userMessages);
     expect(after.assistantMessages, "starring must not change the transcript").toBe(before.assistantMessages);
+
+    // UNSTAR before leaving. A STARRED conversation is protected from deletion (the
+    // agent-host DELETE returns 409), so the cleanState fixture — which polls
+    // delete-until-empty — can NEVER remove it. It then survives into every later spec
+    // on this shard and breaks their absolute-count assertions. This is shard-order
+    // dependent, so it only bites when the sharder happens to place a count-sensitive
+    // spec (e.g. sessions.spec.ts, "Expected 1, Received 2") after this one — which is
+    // exactly how it surfaced: green for several runs, then red when CI reweighted.
+    await page.locator(sb.star).first().click();
+    await expect(page.locator(sb.item).first()).not.toHaveAttribute("data-starred", "true", {
+      timeout: 10_000,
+    });
   });
 
   test("SEARCH narrows the sidebar and restores the full list when cleared", async ({ chat, page }) => {
