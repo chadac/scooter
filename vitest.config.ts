@@ -26,6 +26,15 @@ export default defineConfig({
         },
       },
       {
+        // The BYOC controller — holds the bring-your-own-Claude container sockets so ANY
+        // agent-host replica can drive them (todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §L).
+        test: {
+          name: "byoc-controller",
+          include: ["services/byoc-controller/test/**/*.spec.ts"],
+          environment: "node",
+        },
+      },
+      {
         // The isolated Claude Agent SDK provider (zod v4, kept out of agent-host's
         // tree). Its pure units — the SDK→AG-UI adapter + sandbox MCP tool handlers
         // — are contract-tested here alongside co-located *.spec.ts.
