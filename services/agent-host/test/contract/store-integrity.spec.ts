@@ -74,6 +74,37 @@ describe("fileStore integrity surface", () => {
     }
   });
 
+  it("replaceEvents atomically rewrites the log AND re-seeds the checksum so appends chain from the new content", async () => {
+    const root = mkdtempSync(join(tmpdir(), "store-integ-"));
+    try {
+      const store = createFileConversationStore(root);
+      // Write a divergent local log, then reconcile it to a different (mirror) log.
+      for (const e of events) await store.appendEvent("conv-1", e);
+      const mirrorLog: AguiEvent[] = [
+        { type: "RUN_STARTED", threadId: "t", runId: "r" },
+        { type: "TEXT_MESSAGE_START", messageId: "m1", role: "user" },
+        { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "hello" },
+        { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: " world" }, // the mirror's real tail
+      ];
+      await store.replaceEvents!("conv-1", mirrorLog);
+
+      // The on-disk log is EXACTLY the mirror's now.
+      const after: AguiEvent[] = [];
+      for await (const e of store.readEvents("conv-1")) after.push(e);
+      expect(after).toEqual(mirrorLog);
+
+      // And the checksum was re-seeded: the next append's prevChecksum == the chain through mirrorLog.
+      let expectedPrev = "";
+      for await (const c of store.readEventsWithChecksum!("conv-1")) expectedPrev = c.checksum;
+      const fired: ChecksummedEvent[] = [];
+      store.onAppend!((_id, c) => fired.push(c));
+      await store.appendEvent("conv-1", { type: "TEXT_MESSAGE_END", messageId: "m1" });
+      expect(fired[0].prevChecksum).toBe(expectedPrev); // chained from the rewritten log, not the old one
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("readEventsTail returns ONLY the last N runs (fast window, parses just the tail)", async () => {
     const root = mkdtempSync(join(tmpdir(), "store-integ-"));
     try {
