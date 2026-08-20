@@ -1253,6 +1253,109 @@ describe("bridge liveness watchdog (livenessProbeMs)", () => {
   });
 });
 
+describe("bridge auto-retry on transient agent death (exponential backoff)", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, opts: { livenessProbeMs?: number; deathRetryMax?: number } = {}) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      firstActivityTimeoutMs: 0,
+      livenessProbeMs: opts.livenessProbeMs ?? 30,
+      deathRetryMax: opts.deathRetryMax ?? 5,
+      deathRetryBaseMs: 5, // tiny backoff for the test
+      deathRetryCapMs: 20,
+    });
+  };
+  const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+
+  it("RETRIES after the agent process dies, then SUCCEEDS when it heals (RUN_RETRYING then a clean finish)", async () => {
+    const agent = createFakeAcpAgent();
+    // First run: emit a chunk (alive), gate so prompt hangs, then die → watchdog fires agent_process_died.
+    agent.setScript([{ emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "start" } } }]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "do it" });
+
+    await tick(15);
+    agent.die();               // process crash
+    await tick(60);            // liveness probe (30ms) observes it → RUN_ERROR(agent_process_died) + retryable
+    // Before the retry re-runs, heal the agent + give it a finishing script so the retry completes.
+    agent.heal();
+    agent.releaseGate();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    await tick(80);            // backoff (5ms·2ⁿ) + the retry run
+
+    expect(events.some((e) => e.type === "RUN_RETRYING")).toBe(true);   // the UI-facing retry signal
+    const retrying = events.find((e) => e.type === "RUN_RETRYING") as { attempt: number; max: number };
+    expect(retrying.attempt).toBe(1);
+    expect(retrying.max).toBe(5);
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBeGreaterThanOrEqual(2); // original + retry
+    expect(events.some((e) => e.type === "RUN_FINISHED")).toBe(true);   // the retry succeeded
+    await bridge.stop();
+  });
+
+  it("does NOT drop prompts queued BEHIND the failing batch — they run after the retry resolves", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "a" } } }]);
+    agent.gate(); // hold run 1 in flight so prompt 2 queues behind it
+    const bridge = mkBridge(agent);
+    collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "first" });
+    await tick(10);
+    void bridge.prompt({ threadId: "t1", text: "second (queued behind)" }); // queued while run 1 is in flight
+
+    agent.die();
+    await tick(50); // run 1 dies → retryable
+    // Heal + let everything finish; the retry of "first" AND the queued "second" must both run.
+    agent.heal();
+    agent.releaseGate();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    await tick(100);
+
+    // The second prompt was NOT lost to the death — it entered the fake's prompt() (started).
+    expect(agent.startedCount()).toBeGreaterThanOrEqual(2);
+    await bridge.stop();
+  });
+
+  it("GIVES UP after deathRetryMax and lets the terminal RUN_ERROR stand (no infinite loop)", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ emit: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } } }]);
+    agent.gate();
+    const bridge = mkBridge(agent, { deathRetryMax: 2 });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "keeps dying" });
+    agent.die(); // stays dead across all retries (never healed)
+    await tick(250); // original + 2 retries, each with its own probe + backoff
+
+    const retryings = events.filter((e) => e.type === "RUN_RETRYING");
+    expect(retryings.length).toBe(2); // exactly deathRetryMax retries, then stop
+    const errs = events.filter((e) => e.type === "RUN_ERROR") as { code?: string }[];
+    expect(errs.length).toBeGreaterThanOrEqual(1);
+    expect(errs.at(-1)!.code).toBe("agent_process_died"); // the last terminal is the death error
+    agent.releaseGate();
+    await bridge.stop();
+  });
+
+  it("does NOT retry a genuine model RUN_ERROR ('agent reported an error') — that's a real answer", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "error" } }]); // the model itself reported an error
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "trigger a model error" });
+    await tick(40);
+
+    expect(events.some((e) => e.type === "RUN_RETRYING")).toBe(false); // NOT retried
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(1); // ran exactly once
+    await bridge.stop();
+  });
+});
+
 describe("clarifyRunError (context-overflow → clear message)", () => {
   it("rewrites known context-overflow errors to a start-a-new-chat nudge", () => {
     for (const raw of [
