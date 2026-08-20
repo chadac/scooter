@@ -11,7 +11,7 @@
  * The stack (agent-host fake mode + UI) is booted by playwright.config webServer.
  */
 
-import { test as base, expect, type Page, type Locator } from "@playwright/test";
+import { test as base, expect, type Page, type Locator, type APIRequestContext } from "@playwright/test";
 
 export const sel = {
   errorBox: ".aui-message-error-root",
@@ -124,6 +124,71 @@ export class Chat {
       .poll(async () => this.assistantMessages().count(), { timeout })
       .toBeGreaterThan(before);
   }
+
+  /** Send a message WITHOUT waiting for the idle Send button — for queueing behind an in-flight run
+   *  (the composer accepts input mid-run; the message becomes a QUEUED item). `send()` deliberately
+   *  waits for Send to be visible (idle), which would block here; this fills + submits immediately. */
+  async sendWhileRunning(text: string) {
+    const input = this.input();
+    await input.click();
+    await input.fill(text);
+    await input.press("Enter");
+    // VERIFY the send actually landed. Against the fake agent the composer is instantly ready, so a
+    // fill+Enter always took. Against a REAL model the send button can still be disabled (or the
+    // editor not yet mounted) and the keystroke is silently DROPPED — the input keeps the text and
+    // the turn never happens, which reads downstream as "the model never replied". Retry until the
+    // composer is empty (submitted) rather than assuming.
+    for (let i = 0; i < 20; i++) {
+      const left = await input.inputValue().catch(() => "");
+      if (left.trim() === "") return; // submitted
+      await this.page.waitForTimeout(500);
+      await input.click().catch(() => {});
+      await input.press("Enter").catch(() => {});
+    }
+    throw new Error(`composer never accepted the message (still holding text): ${text.slice(0, 60)}`);
+  }
+
+  /** Start a long in-flight run (the fake agent runs a real `sleep <sec>` in the sandbox) and wait
+   *  until the UI shows the working state — so a subsequent sendWhileRunning() genuinely queues. */
+  async startLongRun(sec = 20) {
+    await this.send(`!sleep ${sec}`);
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+  }
+
+  /** The durable queued-message rows (QUEUE_UPDATED-driven + optimistic). */
+  queuedMessages(): Locator {
+    return this.page.locator('[data-testid="queued-message"]');
+  }
+  /** Wait until the run is genuinely OVER — not merely until the reply text appeared. `sendTurn`
+   *  returns when the assistant MESSAGE lands, but the run's terminal event trails it slightly, so a
+   *  "must be idle now" assertion made right after sendTurn races a still-finishing run. Poll the
+   *  run-status bar (the authoritative in-flight signal) instead. */
+  async waitForIdle(timeout = 45_000) {
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toHaveCount(0, { timeout });
+  }
+
+  /** Send a turn and wait for it to COMPLETE (reply landed AND the run ended), tolerating a hostile
+   *  stream. Unlike `sendTurn`, this waits on the assistant-message COUNT and then on genuine idle —
+   *  and unlike `waitForIdle` alone it can't return early just because the run hasn't started yet
+   *  (which made corruption tests "pass through" in ~1.7s having done nothing). */
+  async completeTurn(text: string, timeout = 60_000) {
+    const before = await this.assistantMessages().count();
+    await this.send(text);
+    // The run must actually BEGIN before we can meaningfully wait for it to end.
+    await expect(this.page.locator('[data-testid="run-status-bar"]'))
+      .toBeVisible({ timeout: 30_000 })
+      .catch(() => {}); // a very fast turn may finish before we look — the count poll below covers it
+    await expect
+      .poll(async () => this.assistantMessages().count(), { timeout })
+      .toBeGreaterThan(before);
+    await this.waitForIdle(timeout);
+  }
+
+  /** Open the right panel's Queue tab (so queued rows are visible to assert on). */
+  async openQueueTab() {
+    const tab = this.page.locator('[data-testid="right-panel-tab-queue"]');
+    if (await tab.isVisible().catch(() => false)) await tab.click();
+  }
 }
 
 type Fixtures = {
@@ -152,6 +217,28 @@ export const test = base.extend<Fixtures>({
   cleanState: [
     async ({ request, context, baseURL }, use) => {
       const base = baseURL ?? "http://localhost:5173";
+      // SAFETY (belt-and-braces). This fixture deletes EVERY conversation to give the shared local
+      // fake stack a clean slate. Run against a LIVE deployment that destroys real user data — which
+      // is exactly what happened once against odin before this guard existed.
+      //
+      // TWO independent gates, because one flag proved insufficient (the flag was added AFTER a run
+      // had already been launched without it):
+      //   1. RUN_LIVE_E2E=1 — the explicit "this is a live target" opt-out.
+      //   2. baseURL is not localhost — a structural check that cannot be forgotten. Any non-local
+      //      target hard-FAILS rather than silently skipping, so a spec that genuinely needs a wipe
+      //      can never quietly run it against a real deployment.
+      const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(base);
+      if (process.env.RUN_LIVE_E2E === "1") {
+        await use(); // live target: create-your-own-conversations specs need no wipe at all
+        return;
+      }
+      if (!isLocal) {
+        throw new Error(
+          `REFUSING to wipe conversations on a non-local target (${base}). The cleanState fixture ` +
+            `deletes EVERY conversation and must never touch a live deployment. Set RUN_LIVE_E2E=1 ` +
+            `for live runs (which skips the wipe entirely).`,
+        );
+      }
       // 1. Server: delete every known conversation, then POLL until the list is
       //    actually empty. The delete + sandbox-destroy is async server-side, so
       //    proceeding immediately races the next test's first /conversations
@@ -225,3 +312,160 @@ test.afterEach(async ({ page, consoleErrors }) => {
 });
 
 export { expect };
+
+/**
+ * A WHOLE-UI STATE SNAPSHOT — every surface that can independently go wrong, read in ONE pass.
+ *
+ * Why this exists: asserting one fact per test (does the queue row exist?) misses the failure mode
+ * that actually bites — CROSS-COMPONENT DIVERGENCE, where the thread says one thing, the queue
+ * another, the run-status bar a third, and the sidebar a fourth, all at the same instant. A
+ * single-fact test passes straight through that. Snapshotting every surface and asserting
+ * INVARIANTS BETWEEN them is what turns "the UI is unreliable" into a specific failing assertion.
+ */
+export interface UiSnapshot {
+  // thread
+  userMessages: number;
+  assistantMessages: number;
+  toolCards: number;
+  lastUserText: string;
+  // run state
+  running: boolean;          // the thinking indicator / run-status bar is up
+  composerSendable: boolean; // the Send button is offered (idle) — NOT the Stop button
+  composerStop: boolean;
+  runError: string | null;
+  authError: boolean;
+  // queue
+  queued: string[];          // queued row texts, in render order
+  queueBadge: string | null;
+  // approvals
+  interruptOpen: boolean;
+  interruptOptions: number;
+  approvalsBadge: string | null;
+  // sidebar / session
+  sessions: number;
+  activeTitle: string | null;
+  // right panel
+  panelVisible: boolean;
+  selectedTab: string | null;
+}
+
+/** Read every UI surface at one instant. Never throws — a missing element is a null/0/false, so a
+ *  snapshot is always comparable (that's the point: absence IS state). */
+export async function snapshot(page: Page): Promise<UiSnapshot> {
+  const count = (s: string) => page.locator(s).count();
+  const visible = (s: string) => page.locator(s).first().isVisible().catch(() => false);
+  const text = async (s: string): Promise<string | null> => {
+    const l = page.locator(s).first();
+    return (await l.count()) ? ((await l.innerText().catch(() => "")) || "").trim() : null;
+  };
+  const users = page.locator(sel.userMessage);
+  const nUsers = await users.count();
+  const selectedTab = await page
+    .locator('[data-testid^="right-panel-tab-"][aria-selected="true"]')
+    .first()
+    .getAttribute("data-testid")
+    .catch(() => null);
+  return {
+    userMessages: nUsers,
+    assistantMessages: await page.locator(sel.assistantMessage).count(),
+    toolCards: await count(sel.toolCall),
+    lastUserText: nUsers ? ((await users.nth(nUsers - 1).innerText().catch(() => "")) || "").trim() : "",
+    running: await visible('[data-testid="run-status-bar"]'),
+    // Target the COMPOSER's send button precisely (.aui-composer-send / aria-label "Send message").
+    // A loose getByRole(/send/i) also matches SIDEBAR row buttons named after the conversation title
+    // (e.g. "Delete baseline before simultaneous sends"), which produced a false "composer shows BOTH
+    // Send and Stop" whenever a message contained the word "send".
+    composerSendable: await visible('.aui-composer-send, [aria-label="Send message"]'),
+    composerStop: await visible('[data-testid="composer-stop"]'),
+    runError: await text('[data-testid="run-error-message"]'),
+    authError: await visible('[data-testid="stream-auth-error-bar"]'),
+    queued: await page.locator('[data-testid="queued-message-text"]').allInnerTexts()
+      .then((t) => t.map((s) => s.trim())).catch(() => []),
+    queueBadge: await text('[data-testid="right-panel-badge-queue"]'),
+    interruptOpen: await visible('[data-testid="interrupt-panel"]'),
+    interruptOptions: await count('[data-testid="interrupt-option"]'),
+    approvalsBadge: await text('[data-testid="right-panel-badge-approvals"]'),
+    sessions: await count('[data-testid="session-item"]'),
+    activeTitle: await text('[data-testid="session-title"]'),
+    panelVisible: await visible('[data-testid="right-panel"]'),
+    selectedTab,
+  };
+}
+
+/** The CROSS-COMPONENT INVARIANTS that must hold at EVERY instant, whatever the app is doing.
+ *  A violation here is exactly the "weird detached state" the user reports — two components
+ *  disagreeing about the same reality. Call it after every step of every test. */
+export function assertConsistent(s: UiSnapshot, when: string) {
+  // Send and Stop are the SAME control in two states — never both, never neither.
+  expect(s.composerSendable && s.composerStop, `${when}: composer shows BOTH Send and Stop`).toBe(false);
+  // The run indicator and the composer must agree on whether a run is in flight.
+  if (s.running) {
+    expect(s.composerSendable, `${when}: run-status says RUNNING but the composer offers Send`).toBe(false);
+  } else {
+    expect(s.composerStop, `${when}: no run in flight but the composer still shows Stop`).toBe(false);
+  }
+  // A terminal error and an in-flight run are mutually exclusive states.
+  if (s.runError) {
+    expect(s.running, `${when}: showing a terminal run error WHILE claiming to run`).toBe(false);
+  }
+  // Badges must match the rows they count (a stale badge is the classic divergence) — but ONLY when
+  // the Queue tab is actually SELECTED. The badge is always visible; the rows only mount when that
+  // tab is open, so comparing them on any other tab compares a real count against an unmounted list.
+  if (s.queueBadge && s.selectedTab === "right-panel-tab-queue") {
+    expect(Number(s.queueBadge.replace(/\D/g, "")), `${when}: queue badge != queued rows`).toBe(s.queued.length);
+  }
+  // An interrupt panel with no options is un-answerable — a dead-end state.
+  if (s.interruptOpen) {
+    expect(s.interruptOptions, `${when}: interrupt panel open with NO options (un-answerable)`).toBeGreaterThan(0);
+  }
+  // Every queued row must carry text; a blank row means the queue rendered without its content.
+  for (const q of s.queued) {
+    expect(q.length, `${when}: a queued row rendered EMPTY`).toBeGreaterThan(0);
+  }
+}
+
+/** Cross-check the DOM against the SERVER's own view — the only way to catch a UI that has silently
+ *  detached from reality (renders fine, but no longer reflects what the agent-host actually has). */
+export async function assertMatchesServer(
+  page: Page,
+  request: APIRequestContext,
+  baseURL: string | undefined,
+  when: string,
+) {
+  const base = baseURL ?? "http://localhost:5173";
+  const res = await request.get(`${base}/conversations`);
+  if (!res.ok()) return; // server not reachable for this stack — skip rather than fail spuriously
+  const convs = (await res.json()) as Array<{ id: string }>;
+  const s = await snapshot(page);
+  // The sidebar must list exactly the conversations the server knows about.
+  expect(s.sessions, `${when}: sidebar shows ${s.sessions} sessions, server has ${convs.length}`)
+    .toBe(convs.length);
+}
+
+/** Where step screenshots land. One directory per test run; each shot is prefixed with a monotonic
+ *  index so the sequence reads in order. */
+const SHOT_DIR = process.env.UI_SHOT_DIR ?? "test-results/ui-timeline";
+let shotSeq = 0;
+
+/** Capture the UI at this instant, named for the step. Screenshots make a NONDETERMINISTIC failure
+ *  interpretable: an invariant tells you two components disagreed, the image tells you what the user
+ *  would actually have been looking at. Enabled by default for live runs (UI_SHOTS=1); a failure to
+ *  capture must never fail the test. */
+export async function shot(page: Page, when: string): Promise<void> {
+  if (process.env.UI_SHOTS !== "1") return;
+  const safe = when.replace(/[^a-z0-9]+/gi, "-").slice(0, 60);
+  const idx = String(++shotSeq).padStart(3, "0");
+  await page
+    .screenshot({ path: `${SHOT_DIR}/${idx}-${safe}.png`, fullPage: false })
+    .catch(() => {}); /* never fail a test because a screenshot failed */
+}
+
+/** snapshot + assertConsistent + a screenshot, in one call — the standard "check everything at this
+ *  step" primitive. Captures the shot BEFORE asserting, so a failing step still leaves an image of
+ *  the exact state that failed. */
+export async function checkpoint(page: Page, when: string): Promise<UiSnapshot> {
+  const s = await snapshot(page);
+  await shot(page, when);
+  assertConsistent(s, when);
+  return s;
+}

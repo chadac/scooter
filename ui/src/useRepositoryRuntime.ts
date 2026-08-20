@@ -51,7 +51,17 @@ export interface RepositoryRuntimeOptions {
  * per-message reconcile is a no-op for messages whose ids didn't change.
  */
 export function useRepositoryRuntime(options: RepositoryRuntimeOptions) {
-  const { messageRepository, isRunning, onNew, adapters } = options;
+  const { messageRepository, onNew, adapters } = options;
+  // IMPORTANT: we pass isRunning=FALSE to the external-store runtime UNCONDITIONALLY. assistant-ui
+  // DISABLES composer submission while its runtime's isRunning is true — but scooter QUEUES a message
+  // sent mid-run (server-side priority queue; see RuntimeProvider.onNew). If we forwarded our real
+  // run state here, the composer would swallow every Enter/Send while the agent was working, so a
+  // message sent mid-run never reached the queue at all ("messages sent while working don't show up
+  // in the queue"). Our OWN run state (the Stop button + thinking indicator + the queued-message UI)
+  // comes from useConversationInterrupts, NOT this runtime — so telling the runtime "not running"
+  // only frees the composer to always submit; it never hides that a run is in flight. Caught by
+  // test/e2e/queue-durability.spec.ts.
+  const runtimeIsRunning = false;
   return useExternalStoreRuntime<ThreadMessage>(
     useMemo(
       () => ({
@@ -60,14 +70,14 @@ export function useRepositoryRuntime(options: RepositoryRuntimeOptions) {
         // requires it, but the repository path never invokes it).
         convertMessage: (m: ThreadMessage) => m,
         messageRepository,
-        isRunning,
+        isRunning: runtimeIsRunning,
         onNew,
         adapters: {
           threadList: adapters?.threadList,
           attachments: adapters?.attachments,
         },
       }),
-      [messageRepository, isRunning, onNew, adapters?.threadList, adapters?.attachments],
+      [messageRepository, runtimeIsRunning, onNew, adapters?.threadList, adapters?.attachments],
     ),
   );
 }

@@ -1,22 +1,20 @@
-result
-result-*
-node_modules/
-dist/
-.direnv/
-*.tsbuildinfo
 
+.direnv/
+dist/
+!.envrc
 # .envrc is shared dev config (direnv `use flake`) — track it even though a
 # global gitignore may exclude it.
-!.envrc
-
+node_modules/
 # playwright
-test-results/
-playwright-report/
 .playwright/
-
-# uv-nix generated artifacts
-services/*/flake.nix
+playwright-report/
+result
+result-*
 services/*/flake.lock
+services/*/flake.nix
 services/*/uv.lock
 services/*/.venv/
+test-results/
 services/conversation-router/conversation-router
+*.tsbuildinfo
+# uv-nix generated artifacts
