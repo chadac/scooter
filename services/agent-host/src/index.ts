@@ -1383,7 +1383,16 @@ export async function main(
       // for this conversation (the bridge snapshots it before the current turn).
       loadHistory: async () => {
         const events: AguiEvent[] = [];
-        for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
+        // Read the DURABLE history (the mirror when local is behind), NOT local-only. On a
+        // restart/rollout this pod's LOCAL emptyDir is wiped or a stale stub, so reading local here
+        // reinjected an EMPTY transcript → the model started from a blank slate + re-introduced
+        // itself. readEventsDurable yields the mirror's superset when local is short. (Falls back to
+        // plain readEvents when no mirror is configured — local IS durable then.) See the
+        // revive-reinjection bug.
+        const readHistory = mirroredStore
+          ? mirroredStore.readEventsDurable(conversationId as SessionId)
+          : store.readEvents(conversationId as SessionId);
+        for await (const e of readHistory) events.push(e);
         // If the conversation was COMPACTED, resume from [summary recap + events after
         // the latest marker] so the revived session's context is the compacted one
         // (real token reduction). No marker → full log, unchanged.
