@@ -190,13 +190,14 @@ test.describe("recovered conversation — sending a message revives it", () => {
       "the message sent to a suspended conversation must appear in the thread",
     ).toHaveCount(1, { timeout: 30_000 });
 
-    // And it must actually RUN: the fake agent echoes the message text back, so this
-    // asserts THIS turn completed — unlike /dummy agent/i, which the first turn's
-    // identical reply already satisfies.
-    await expect(
-      page.getByText(/ran echo: "wake up and answer me"/i).first(),
-      "the revived conversation must answer the message, not just display it",
-    ).toBeVisible({ timeout: 45_000 });
+    // And it must actually RUN. Assert on the assistant-message COUNT reaching 2 (one
+    // reply per turn) rather than on reply TEXT: the fake agent's echo comes from the
+    // sandbox `echo` OUTPUT and is streamed word-by-word, so a text match on the phrase
+    // is neither guaranteed to equal the sent message nor to land in one text node.
+    // An absolute count is safe here because this test owns a fresh conversation.
+    await expect
+      .poll(async () => chat.assistantMessages().count(), { timeout: 45_000 })
+      .toBeGreaterThanOrEqual(2);
   });
 
   test("the message sent to a suspended conversation does NOT get stuck in the Queue tab", async ({
@@ -341,8 +342,11 @@ test.describe("recovered conversation — approvals after a revive", () => {
       "the approval must appear on the revived conversation before we test reload durability",
     ).toBeVisible({ timeout: 30_000 });
 
-    await page.goto(`/?thread=${encodeURIComponent(id)}`);
-    await expect(chat.input()).toBeVisible({ timeout: 20_000 });
+    // Plain reload (the pattern aws-interrupt.spec.ts uses for exactly this
+    // assertion). A `?thread=` deep-link left the composer unmounted on CI — the
+    // conversation is already selected here, so there is nothing to deep-link to.
+    await page.reload();
+    await expect(chat.input()).toBeVisible({ timeout: 30_000 });
     // After a reload the Approvals tab is NOT auto-focused: RightPanel only steals
     // focus when the pending count RISES, and a replayed approval is already counted
     // on first render. So select the tab explicitly (as the other interrupt specs do)

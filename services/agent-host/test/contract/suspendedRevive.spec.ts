@@ -438,3 +438,59 @@ describe("pendingQueue survives a RESTART (not just an in-process revive)", () =
     }
   });
 });
+
+describe("in-flight replay is DEDUPED against the durable log", () => {
+  // runPrompt persists the user message BEFORE calling the agent, so a message that was
+  // IN FLIGHT when the suspend landed is already in the log. Replaying it blindly would
+  // show it (and answer it) twice and repeat any side effects the interrupted run had
+  // started. Dedupe lives in the agent-host, against the log — the authority that
+  // survives restarts and is the same thing the UI renders — rather than in each caller.
+
+  it("does NOT replay a message that is ALREADY in the log (no duplicate turn)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-dedupe-"));
+    try {
+      const { store, sessions, bridges } = harness(root);
+      const conv = await sessions.start("thread-dedupe-1");
+
+      // The interrupted run had already persisted this user message before dying.
+      await store.appendEvent(conv.id as SessionId, {
+        type: "TEXT_MESSAGE_CONTENT",
+        messageId: "u-inflight",
+        delta: "cut off mid-run",
+      } as AguiEvent);
+      await store.flush?.(conv.id);
+
+      bridges.get(conv.id)!.queued = [{ text: "cut off mid-run", priority: 0 }];
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+
+      expect(
+        bridges.get(conv.id)!.prompts.filter((p) => p === "cut off mid-run"),
+        "an already-logged message must NOT be re-run (it would duplicate the turn)",
+      ).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("STILL replays a message that never reached the log (the case that matters)", async () => {
+    // A message that never started has no log entry, so dedupe must not swallow it —
+    // that is precisely the silent-loss bug this whole feature exists to fix.
+    const root = mkdtempSync(join(tmpdir(), "susp-dedupe-2-"));
+    try {
+      const { sessions, bridges } = harness(root);
+      const conv = await sessions.start("thread-dedupe-2");
+      bridges.get(conv.id)!.queued = [{ text: "never started", priority: 0 }];
+
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+
+      expect(
+        bridges.get(conv.id)!.prompts.filter((p) => p === "never started"),
+        "a message that never ran MUST still be replayed",
+      ).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -779,8 +779,39 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // precisely so the user's already-sent message is not destroyed by the teardown.
       // Clear the field FIRST so a failure below can't replay the same message twice on
       // the next revive, and persist the cleared state before running them.
-      const pending = entry.pendingQueue ?? [];
+      let pending = entry.pendingQueue ?? [];
       if (pending.length > 0) {
+        // DEDUPE against the durable log before replaying. runPrompt persists the user
+        // message BEFORE calling the agent, so a message that was IN FLIGHT when the
+        // suspend landed is already in the log — replaying it blindly would show it (and
+        // answer it) twice, and repeat any side effects its interrupted run had started.
+        // The log is the authority here (it survives restarts and is the same thing the
+        // UI renders), which is why this lives in the agent-host rather than in each
+        // caller. Only messages NOT already logged are replayed; a message that never
+        // started is absent from the log and still runs, which is the case that matters.
+        try {
+          const tail = (await store.readEventsTail?.(id, 3)) ?? (await collectEvents(store.readEvents(id)));
+          const loggedUserTexts = new Set<string>();
+          for (const e of tail) {
+            const ev = e as { type?: string; delta?: string; role?: string };
+            if (ev.type === "TEXT_MESSAGE_CONTENT" && typeof ev.delta === "string") {
+              loggedUserTexts.add(ev.delta);
+            }
+          }
+          const before = pending.length;
+          pending = pending.filter((p) => !loggedUserTexts.has(p.text));
+          if (pending.length !== before) {
+            console.warn(
+              `[manager] revive(${id}): skipping ${before - pending.length} already-logged message(s) (in-flight replay dedupe)`,
+            );
+          }
+        } catch (err) {
+          // A read failure must not block the revive. Replaying is the safer default:
+          // a possible duplicate turn beats silently dropping the user's message.
+          console.error(`[manager] revive(${id}) replay dedupe read failed (replaying all):`, err);
+        }
+      }
+      if (pending.length > 0 || (entry.pendingQueue?.length ?? 0) > 0) {
         entry.pendingQueue = [];
         await saveMeta(entry);
         for (const item of pending) {
