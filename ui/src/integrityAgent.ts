@@ -240,6 +240,15 @@ export class IntegrityAgent extends AbstractAgent {
     return this.lastRunError;
   }
 
+  /** Set while the server is AUTO-RETRYING a transiently-failed run (agent process died / went
+   *  silent / ACP threw), from RUN_RETRYING events. Drives the "retrying (n/N)…" banner. Cleared the
+   *  moment the retry's RUN_STARTED lands (success) OR a terminal RUN_ERROR replaces it (exhausted).
+   *  null = not retrying. See the bridge pump's death-retry loop. */
+  private retrying: { attempt: number; max: number } | null = null;
+  getRunRetrying(): { attempt: number; max: number } | null {
+    return this.retrying;
+  }
+
   /** Set when the live stream is rejected with an AUTH failure (401/403) — an
    *  expired ingress/auth session in front of the agent-host. Distinct from a
    *  normal drop: retrying won't help until the user re-authenticates, so the UI
@@ -250,16 +259,29 @@ export class IntegrityAgent extends AbstractAgent {
     return this.streamAuthError;
   }
 
-  /** Update `lastRunError` from a single log event, ignoring out-of-band `ext-`
-   *  runs (a broker interrupt isn't a run failure). Returns true if it changed. */
+  /** Update `lastRunError` + the auto-retry state from a single log event, ignoring out-of-band
+   *  `ext-` runs (a broker interrupt isn't a run failure). Returns true if either changed. */
   private trackRunError(e: BaseEvent): boolean {
-    const ev = e as unknown as { type?: string; runId?: string; message?: string };
+    const ev = e as unknown as { type?: string; runId?: string; message?: string; attempt?: number; max?: number };
     const isExt = typeof ev.runId === "string" && ev.runId.startsWith("ext-");
     if (isExt) return false;
     let next = this.lastRunError;
-    if (ev.type === "RUN_STARTED") next = null; // a fresh run — clear the stale error
-    else if (ev.type === "RUN_ERROR") next = ev.message ?? "The run failed.";
-    if (next === this.lastRunError) return false;
+    const beforeRetry = this.retrying;
+    if (ev.type === "RUN_STARTED") {
+      next = null; // a fresh run — clear the stale error
+      this.retrying = null; // the retry (or a normal run) started — stop showing "retrying…"
+    } else if (ev.type === "RUN_RETRYING") {
+      // The server is about to re-drive a transiently-failed run. Show "retrying (n/N)…" — NOT the
+      // terminal error banner (that RUN_ERROR was the death; this supersedes it until we know the
+      // outcome). Don't clear lastRunError here: if all retries fail, the final RUN_ERROR stands.
+      this.retrying = { attempt: ev.attempt ?? 1, max: ev.max ?? 1 };
+    } else if (ev.type === "RUN_ERROR") {
+      next = ev.message ?? "The run failed.";
+      this.retrying = null; // a terminal error replaces the retrying state (exhausted or non-retryable)
+    }
+    const retryChanged =
+      (beforeRetry?.attempt !== this.retrying?.attempt) || (beforeRetry?.max !== this.retrying?.max);
+    if (next === this.lastRunError && !retryChanged) return false;
     this.lastRunError = next;
     return true;
   }

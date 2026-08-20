@@ -94,7 +94,7 @@ export function ContextFillBar() {
 /** The inline indicator + Stop / error, rendered in the conversation (above the
  *  composer). Returns null when idle with no error. */
 export function InlineRunStatus() {
-  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, streamAuthError } = useConversationInterrupts();
+  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, runRetrying, streamAuthError } = useConversationInterrupts();
 
   // Tick once a second WHILE running so the elapsed time advances — this is what
   // makes a long, silent tool call visibly "still working" instead of looking stuck.
@@ -119,6 +119,25 @@ export function InlineRunStatus() {
         <span aria-hidden className="mt-0.5 font-semibold">⚠</span>
         <span data-testid="stream-auth-error-message">
           Your session expired — reconnecting. If this persists, reload the page to sign in again.
+        </span>
+      </div>
+    );
+  }
+
+  // AUTO-RETRY in progress: the agent died/stalled transiently and the server is re-driving the run
+  // with backoff. Show a "retrying (n/N)…" banner instead of the terminal error — it supersedes the
+  // death RUN_ERROR until we know the outcome (a fresh RUN_STARTED clears it; exhaustion falls through
+  // to the error banner). Takes precedence over the error banner but sits below auth errors.
+  if (runRetrying) {
+    return (
+      <div
+        data-testid="run-retrying-bar"
+        role="status"
+        className="mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+      >
+        <span aria-hidden className="animate-spin">↻</span>
+        <span data-testid="run-retrying-message">
+          The agent stopped unexpectedly — retrying ({runRetrying.attempt}/{runRetrying.max})…
         </span>
       </div>
     );

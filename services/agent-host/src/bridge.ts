@@ -110,6 +110,11 @@ type AguiEventBase =
       cancelled?: boolean;
     }
   | { type: "RUN_ERROR"; message: string; code?: string }
+  // Emitted when a run failed TRANSIENTLY (agent process died / no-activity / ACP threw) and the pump
+  // is about to AUTO-RETRY the same batch after `delayMs`. `attempt`/`max` drive the UI's "retrying
+  // (n/N)…" banner. NOT persisted as a terminal — a following RUN_STARTED clears it (success) or, on
+  // exhaustion, the final RUN_ERROR replaces it. See the pump's retry loop.
+  | { type: "RUN_RETRYING"; threadId: ThreadId; attempt: number; max: number; delayMs: number; code?: string }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "TEXT_MESSAGE_END"; messageId: string }
@@ -439,6 +444,13 @@ export interface BridgeDeps {
    * Default 30_000; 0 disables.
    */
   livenessProbeMs?: number;
+  /** AUTO-RETRY a TRANSIENTLY-failed run (agent process death / no-activity / ACP throw): the pump
+   *  re-drives the same batch up to `deathRetryMax` times with `deathRetryBaseMs`·2ⁿ backoff (capped
+   *  at `deathRetryCapMs`), emitting RUN_RETRYING between tries, then gives up (the RUN_ERROR stands).
+   *  The rest of the queue is NEVER cleared. Defaults 5 / 500ms / 30_000ms; small values in tests. */
+  deathRetryMax?: number;
+  deathRetryBaseMs?: number;
+  deathRetryCapMs?: number;
 
   /** TRANSCRIPT RECORDER (test-harness). When enabled, the bridge records the RAW
    *  agent input (goose ACP frames / claude SDK messages) AND its own emitted
@@ -518,6 +530,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
   const livenessProbeMs = deps.livenessProbeMs ?? 30_000;
+  // AUTO-RETRY of a transiently-failed run (agent process death / no-activity / ACP throw). The pump
+  // re-drives the SAME batch up to RETRY_MAX times with exponential backoff (RETRY_BASE·2ⁿ, capped),
+  // then gives up (the last RUN_ERROR stands). Overridable for tests (small delays). See the pump.
+  const RETRY_MAX = deps.deathRetryMax ?? 5;
+  const RETRY_BASE_MS = deps.deathRetryBaseMs ?? 500;
+  const RETRY_CAP_MS = deps.deathRetryCapMs ?? 30_000;
+  // Set by stop(): abandon an in-progress backoff so a torn-down bridge doesn't keep retrying.
+  let closed = false;
   // Resolved on first start(); a ready client or the result of the factory.
   // ACP PROVIDER REGISTRY. Either the explicit multi-provider list (makeBridge) or a single
   // always-eligible provider wrapping the legacy `acpClient` shorthand (tests + single-provider
@@ -666,6 +686,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // run — by the watchdog OR the normal path — so the other path can't emit a
     // SECOND terminal (which would corrupt the @ag-ui stream).
     terminated?: boolean;
+    // Set true when the run ended with a TRANSIENT/RECOVERABLE failure that the pump
+    // should AUTO-RETRY: the agent PROCESS died (agent_process_died), started but went
+    // silent (no_activity_timeout, usually a transient credential/model blip), or the
+    // ACP call threw (init/session/stream failure). NOT set for a clean finish, a user
+    // cancel, or a genuine model-reported error ("agent reported an error") — those are
+    // real terminal states, not crashes to retry.
+    retryable?: boolean;
   }
 
   /** A tool_call_update's content is JUST a live terminal HANDLE
@@ -882,7 +909,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       : "The user sent several messages while you were working — handle them together as one request:\n\n" +
         texts.map((t, i) => `[Message ${i + 1}]\n${t}`).join("\n\n");
 
-  const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<RunId> => {
+  const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<{ runId: RunId; retryable: boolean }> => {
     const runId = nextId("run");
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0, terminalPending: new Set() };
     const startedAt = Date.now();
@@ -917,6 +944,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             "Try again; if it persists, check the agent-host logs.",
           code: "no_activity_timeout",
         });
+        st.retryable = true; // transient (credential/model blip) — the pump auto-retries with backoff
         // Unblock the wedged goose so the next prompt gets a fresh run.
         void self.cancel(runId).catch(() => {});
       }, firstActivityTimeoutMs);
@@ -950,6 +978,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
               "recurs, check the agent-host logs.",
             code: "agent_process_died",
           });
+          st.retryable = true; // process crash — the pump auto-retries the batch with backoff
           // Best-effort cleanup so the next prompt gets a fresh run.
           void self.cancel(runId).catch(() => {});
         }, livenessProbeMs);
@@ -1098,6 +1127,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           outcome = "error";
           const raw = err instanceof Error ? err.message : String(err);
           emit({ type: "RUN_ERROR", message: clarifyRunError(raw) });
+          st.retryable = true; // the ACP call threw (init/session/stream) — transient; pump retries
         }
       }
     } finally {
@@ -1118,7 +1148,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         /* ignore */
       }
     }
-    return runId;
+    return { runId, retryable: st.retryable === true };
   };
 
   // Force-interrupt: while a run is active, if the highest-priority QUEUED item is
@@ -1204,8 +1234,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         emitQueueSnapshot();
         clearInterruptTimer(); // the batch is now running, not waiting
         try {
-          const runId = await runPrompt(batch[0].input, batch.map((b) => b.input));
-          for (const b of batch) b.resolve(runId); // all coalesced items share the run
+          // AUTO-RETRY on transient death: the agent process can crash / go silent / fail to
+          // init mid-run (agent_process_died, no_activity_timeout, an ACP throw). Rather than
+          // strand the user's prompt on a dead-end error, re-drive THIS batch with exponential
+          // backoff. Crucially this only re-runs the failed batch — the REST OF THE QUEUE is
+          // untouched (items queued behind it survive and run after). A genuine model error
+          // ("agent reported an error") or a user cancel is NOT retryable → we stop immediately.
+          const inputs = batch.map((b) => b.input);
+          let res = await runPrompt(batch[0].input, inputs);
+          for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
+            const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
+            emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
+            await new Promise((r) => setTimeout(r, delayMs));
+            if (closed) break; // bridge stopped while backing off — abandon the retry
+            res = await runPrompt(batch[0].input, inputs);
+          }
+          for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
           for (const b of batch) b.reject(err);
         }
@@ -1389,6 +1433,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     recordRawInput,
 
     async stop() {
+      closed = true; // abandon any in-progress death-retry backoff
       clearInterruptTimer();
       // Close EVERY started provider client (there may be more than one after provider switches).
       const settled = await Promise.allSettled([...readySessions.values()]);

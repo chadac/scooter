@@ -384,6 +384,46 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  // --- auto-retry banner (RUN_RETRYING → getRunRetrying) ------------------------
+  it("getRunRetrying() reflects a RUN_RETRYING event (drives the 'retrying (n/N)…' banner)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "RUN_ERROR", message: "agent died", code: "agent_process_died" } },
+      { kind: "event", event: { type: "RUN_RETRYING", threadId: "c1", attempt: 2, max: 5, delayMs: 1000 } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunRetrying()).toEqual({ attempt: 2, max: 5 });
+    agent.dispose();
+  });
+
+  it("a RUN_STARTED after RUN_RETRYING CLEARS the retrying state (the retry succeeded)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_ERROR", message: "died", code: "agent_process_died" } },
+      { kind: "event", event: { type: "RUN_RETRYING", threadId: "c1", attempt: 1, max: 5, delayMs: 500 } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } }, // the retry began
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunRetrying()).toBeNull(); // cleared — no longer showing "retrying…"
+    agent.dispose();
+  });
+
+  it("a terminal RUN_ERROR after RUN_RETRYING clears retrying + surfaces the error (retries exhausted)", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_RETRYING", threadId: "c1", attempt: 5, max: 5, delayMs: 8000 } },
+      { kind: "event", event: { type: "RUN_ERROR", message: "The agent process exited unexpectedly mid-task.", code: "agent_process_died" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getRunRetrying()).toBeNull(); // no longer retrying
+    expect(agent.getRunError()).toMatch(/exited unexpectedly/); // the terminal error stands
+    agent.dispose();
+  });
+
   it("tracks the in-flight TOOL + run-start ts (so the UI can show what it's doing)", async () => {
     const frames = [
       { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1", ts: 1000 } },
