@@ -530,6 +530,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     emit({ type: "QUEUE_UPDATED", items });
   };
   let pumping = false;
+  // The batch the pump is CURRENTLY running. The pump splices items OUT of `queue`
+  // before running them, so an in-flight message is in NEITHER `queue` nor anywhere
+  // else — drainQueue() would miss it and the user's message would be lost on a
+  // mid-run suspend (exactly the reported case). Tracked here so drainQueue can
+  // preserve it too. Cleared when the batch settles.
+  let runningBatch: QueueItem[] = [];
   // The run currently receiving ACP updates (set during runPrompt()).
   let currentRun: RunState | undefined;
   // terminalId -> the command goose asked to run in it (from terminal/create).
@@ -1238,6 +1244,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const batch = [item, ...queue.filter((q) => q !== item && q.priority === item.priority)]
           .sort((a, b) => a.enqueuedAt - b.enqueuedAt);
         for (const b of batch) queue.splice(queue.indexOf(b), 1);
+        runningBatch = batch; // in-flight: not in `queue`, but must survive a suspend
         // The batch just left the queue to run — surface the shrunk queue (the
         // running batch will render as normal user messages via runPrompt's
         // persist). An empty queue emits items:[] so the UI clears its queued list.
@@ -1262,6 +1269,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
           for (const b of batch) b.reject(err);
+        } finally {
+          runningBatch = [];
         }
         // A new priority item may have queued during that run — re-evaluate its
         // preemption against the (next) run.
@@ -1443,8 +1452,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     recordRawInput,
 
     drainQueue() {
-      if (queue.length === 0) return [];
-      const abandoned = queue.splice(0, queue.length);
+      // Include the batch the pump is CURRENTLY running: it was spliced out of `queue`
+      // to run, so on a mid-run suspend it is in-flight and invisible to `queue` alone.
+      // Its run is about to be killed with the pod (runPrompt throws → the item rejects),
+      // so without capturing it here the user's message is destroyed — the very case
+      // this preservation exists for. Running items lead (they were picked first).
+      const inFlight = runningBatch;
+      runningBatch = [];
+      if (queue.length === 0 && inFlight.length === 0) return [];
+      const abandoned = [...inFlight, ...queue.splice(0, queue.length)];
       // The log's final word on the queue must be "empty" — see the interface doc.
       emitQueueSnapshot();
       const drained = abandoned.map((q) => ({ text: q.input.text, priority: q.priority }));

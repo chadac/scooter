@@ -1103,7 +1103,9 @@ describe("bridge run queue + cancel", () => {
     const bridge = mkBridge(agent);
     await bridge.start();
 
-    void bridge.prompt({ threadId: "t1", text: "running" });
+    // Catch on the RUNNING prompt too: drainQueue now also captures the in-flight
+    // batch (a mid-run suspend must not lose it), so this one rejects as well.
+    void bridge.prompt({ threadId: "t1", text: "running" }).catch(() => {});
     await tick();
 
     // This one is QUEUED behind the gated run when the suspend lands.
@@ -1126,6 +1128,28 @@ describe("bridge run queue + cancel", () => {
       settled,
       "a prompt queued when the bridge was torn down must settle, not leak forever",
     ).not.toBe("pending");
+  });
+
+  it("drainQueue() captures the IN-FLIGHT batch, not just what's still waiting", async () => {
+    // The mid-run suspend (what the e2e actually does: suspend while `!sleep 20` runs).
+    // The pump SPLICES a batch out of `queue` before running it, so an in-flight message
+    // is in NEITHER `queue` nor anywhere else. drainQueue() reading only `queue` returned
+    // [] and the user's message was destroyed — while its run, killed with the pod, threw
+    // and surfaced as "prompt failed: the conversation was suspended...".
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the FIRST prompt in flight — it is the running batch
+    const bridge = mkBridge(agent);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "in flight when suspended" }).catch(() => {});
+    await tick(); // let the pump pick it up (spliced out of `queue`, now running)
+
+    const drained = bridge.drainQueue();
+    expect(
+      drained.map((d) => d.text),
+      "a message the pump is RUNNING must be preserved by a mid-run suspend",
+    ).toContain("in flight when suspended");
   });
 
   it("stop() emits a CLEARING queue snapshot so a revived tab shows no phantom queue", async () => {
