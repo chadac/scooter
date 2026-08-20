@@ -142,6 +142,10 @@ test.describe("integrity stream corruption", () => {
   });
 
   test("corruption DURING a queued message must not lose the queued turn", async ({ chat, page, request, baseURL }) => {
+    // Real end-to-end work (a run draining behind a queued turn) needs more than the 60s suite
+    // default — the 90s polls below were otherwise silently capped by the TEST budget, so a slower
+    // CI runner failed the test while the poll still had time left on paper.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.send("!sleep 4");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });

@@ -97,6 +97,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
   });
 
   test("the queue DRAINS into the thread with counts conserved (nothing lost, nothing duplicated)", async ({ chat, page, request, baseURL }) => {
+    // A 60s wait inside the 60s suite default leaves ZERO headroom — the test dies at the same
+    // moment its own poll would have. Give this one a budget larger than the work it waits on.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.send("!sleep 3");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });

@@ -44,9 +44,15 @@ test.describe("extreme stream corruption", () => {
   });
 
   test("a DUPLICATED RUN_FINISHED must not double-drain the queue or wedge run-state", async ({ chat, page, request, baseURL }) => {
+    // This test does REAL work end-to-end (a baseline turn, a sleeping run, a queued turn draining
+    // behind it) so it needs more than the 60s suite default — its internal polls were already
+    // written for 90s, which the default silently capped, so on a slower CI runner the queue had not
+    // finished draining when the TEST (not the poll) timed out.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.completeTurn("baseline before terminal duplication");
-    await chat.send("!sleep 4");
+    // Keep the in-flight window just long enough to queue behind, without padding the runtime.
+    await chat.send("!sleep 3");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("queued behind a duplicated terminal");
     await chat.openQueueTab();
@@ -80,6 +86,9 @@ test.describe("extreme stream corruption", () => {
   });
 
   test("corruption WHILE AN INTERRUPT IS PENDING must keep the approval answerable", async ({ chat, page, request, baseURL }) => {
+    // A 60s wait inside the 60s suite default leaves ZERO headroom — the test dies at the same
+    // moment its own poll would have. Give this one a budget larger than the work it waits on.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.completeTurn("baseline before interrupt corruption");
     await chat.send("?pick a color");
@@ -102,6 +111,10 @@ test.describe("extreme stream corruption", () => {
   });
 
   test("a KILLED stream whose RECONNECT is then corrupted still converges on the server's truth", async ({ chat, page, request, baseURL }) => {
+    // Real end-to-end work (a run draining behind a queued turn) needs more than the 60s suite
+    // default — the 90s polls below were otherwise silently capped by the TEST budget, so a slower
+    // CI runner failed the test while the poll still had time left on paper.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.completeTurn("baseline before stacked faults");
     const before = await snapshot(page);

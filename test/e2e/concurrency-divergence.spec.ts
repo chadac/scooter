@@ -126,6 +126,10 @@ test.describe("two tabs on the same conversation", () => {
   });
 
   test("SIMULTANEOUS sends from both tabs lose neither message", async ({ chat, page, context }) => {
+    // Real end-to-end work (a run draining behind a queued turn) needs more than the 60s suite
+    // default — the 90s polls below were otherwise silently capped by the TEST budget, so a slower
+    // CI runner failed the test while the poll still had time left on paper.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.completeTurn("baseline before simultaneous sends");
     const url = page.url();
