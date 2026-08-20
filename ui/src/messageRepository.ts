@@ -46,10 +46,29 @@ export function toRepositorySnapshot(foldedMessages: readonly unknown[]): Reposi
   // fromAgUiMessages does the faithful conversion (text/tool-calls/reasoning/images)
   // — the same converter the old reset() path used, so message shape is unchanged.
   const messages = fromAgUiMessages(foldedMessages as never[]);
-  const items = messages.map((message, i) => ({
+  // DEDUPE BY ID. fromBranchableArray links each item into a parent tree, and linking
+  // the SAME id twice throws inside assistant-ui:
+  //   "MessageRepository(performOp/link): A message with the same id already exists
+  //    in the parent tree."
+  // That throw happens during render, so it takes down <ConversationRuntime> and the
+  // user gets a BLANK WHITE PAGE — the entire conversation is unreachable until the
+  // duplicate ages out of the fold. Observed on CI reloading a revived conversation
+  // (test/e2e/suspended-recovery.spec.ts). The server mints UUID ids, so a duplicate
+  // is a FOLD-side artifact, but wherever it comes from, dropping the repeat is
+  // strictly better than crashing the whole UI: the first occurrence renders and the
+  // conversation stays usable.
+  const seen = new Set<string>();
+  const unique = messages.filter((m) => {
+    const id = (m as { id?: string }).id;
+    if (!id) return true; // no id to collide on — keep it
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  const items = unique.map((message, i) => ({
     message,
-    parentId: i > 0 ? (messages[i - 1] as { id: string }).id : null,
+    parentId: i > 0 ? (unique[i - 1] as { id: string }).id : null,
   }));
-  const headId = messages.length ? (messages.at(-1) as { id: string }).id : null;
+  const headId = unique.length ? (unique.at(-1) as { id: string }).id : null;
   return ExportedMessageRepository.fromBranchableArray(items, { headId });
 }
