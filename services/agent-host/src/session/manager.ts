@@ -791,10 +791,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // started is absent from the log and still runs, which is the case that matters.
         try {
           const tail = (await store.readEventsTail?.(id, 3)) ?? (await collectEvents(store.readEvents(id)));
+          // Match ONLY user turns. TEXT_MESSAGE_CONTENT carries no role (only
+          // TEXT_MESSAGE_START does), and the ASSISTANT's reply is streamed as
+          // TEXT_MESSAGE_CONTENT too — so matching deltas blindly would let an
+          // assistant message that happens to quote the text suppress a legitimate
+          // replay (the fake agent literally echoes the user's words back). Track the
+          // messageIds opened with role:"user" and only collect deltas for those.
+          const userMsgIds = new Set<string>();
           const loggedUserTexts = new Set<string>();
           for (const e of tail) {
-            const ev = e as { type?: string; delta?: string; role?: string };
-            if (ev.type === "TEXT_MESSAGE_CONTENT" && typeof ev.delta === "string") {
+            const ev = e as { type?: string; delta?: string; role?: string; messageId?: string };
+            if (ev.type === "TEXT_MESSAGE_START" && ev.role === "user" && ev.messageId) {
+              userMsgIds.add(ev.messageId);
+            } else if (
+              ev.type === "TEXT_MESSAGE_CONTENT" &&
+              typeof ev.delta === "string" &&
+              ev.messageId !== undefined &&
+              userMsgIds.has(ev.messageId)
+            ) {
               loggedUserTexts.add(ev.delta);
             }
           }

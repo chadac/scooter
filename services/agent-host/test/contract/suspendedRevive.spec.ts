@@ -453,6 +453,13 @@ describe("in-flight replay is DEDUPED against the durable log", () => {
       const conv = await sessions.start("thread-dedupe-1");
 
       // The interrupted run had already persisted this user message before dying.
+      // Faithful shape: runPrompt writes START(role:"user") then CONTENT then END —
+      // the role rides the START, which is what the dedupe keys on.
+      await store.appendEvent(conv.id as SessionId, {
+        type: "TEXT_MESSAGE_START",
+        messageId: "u-inflight",
+        role: "user",
+      } as unknown as AguiEvent);
       await store.appendEvent(conv.id as SessionId, {
         type: "TEXT_MESSAGE_CONTENT",
         messageId: "u-inflight",
@@ -468,6 +475,42 @@ describe("in-flight replay is DEDUPED against the durable log", () => {
         bridges.get(conv.id)!.prompts.filter((p) => p === "cut off mid-run"),
         "an already-logged message must NOT be re-run (it would duplicate the turn)",
       ).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("an ASSISTANT message quoting the text does NOT suppress the replay", async () => {
+    // TEXT_MESSAGE_CONTENT carries no role — the assistant's reply is streamed as
+    // TEXT_MESSAGE_CONTENT too, and the fake agent literally echoes the user's words
+    // back. Matching deltas blindly would let that echo look like an already-logged
+    // user turn and silently swallow a message that never ran.
+    const root = mkdtempSync(join(tmpdir(), "susp-dedupe-3-"));
+    try {
+      const { store, sessions, bridges } = harness(root);
+      const conv = await sessions.start("thread-dedupe-3");
+
+      // An ASSISTANT turn (no role:user START) that contains the same text.
+      await store.appendEvent(conv.id as SessionId, {
+        type: "TEXT_MESSAGE_START",
+        messageId: "a-1",
+        role: "assistant",
+      } as unknown as AguiEvent);
+      await store.appendEvent(conv.id as SessionId, {
+        type: "TEXT_MESSAGE_CONTENT",
+        messageId: "a-1",
+        delta: "deploy the thing",
+      } as AguiEvent);
+      await store.flush?.(conv.id);
+
+      bridges.get(conv.id)!.queued = [{ text: "deploy the thing", priority: 0 }];
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+
+      expect(
+        bridges.get(conv.id)!.prompts.filter((p) => p === "deploy the thing"),
+        "only USER turns may dedupe a replay — an assistant echo must not swallow it",
+      ).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
