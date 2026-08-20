@@ -407,3 +407,34 @@ describe("queued messages survive suspend → revive", () => {
     }
   });
 });
+
+describe("pendingQueue survives a RESTART (not just an in-process revive)", () => {
+  it("listConversations carries pendingQueue through, so hydrate can replay it", async () => {
+    // The subtle half of the queue-preservation fix: suspend() persists pendingQueue
+    // into meta.json, but hydrate rebuilds the Entry from listConversations(), which
+    // reconstructs the meta FIELD BY FIELD. A field missing there is silently dropped,
+    // so the queued message survives an in-process suspend→revive (that reads the
+    // in-memory entry) yet is LOST across a restart / cross-replica hydrate — exactly
+    // the rollout case this feature exists for.
+    const root = mkdtempSync(join(tmpdir(), "susp-restart-"));
+    try {
+      // Process 1: queue a message, then suspend (persists pendingQueue).
+      const first = harness(root);
+      const conv = await first.sessions.start("thread-restart-1");
+      first.bridges.get(conv.id)!.queued = [{ text: "survive the restart", priority: 0 }];
+      await first.sessions.suspend(conv.id);
+
+      // Process 2: a FRESH manager over the same state dir (an agent-host restart).
+      const second = harness(root);
+      const metas = (await second.store.listConversations?.()) ?? [];
+      const meta = metas.find((m) => m.threadId === "thread-restart-1");
+      expect(meta, "the conversation must be listed after a restart").toBeDefined();
+      expect(
+        meta?.pendingQueue?.map((q) => q.text),
+        "pendingQueue must survive the meta round-trip, or the queued message is lost on restart",
+      ).toContain("survive the restart");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

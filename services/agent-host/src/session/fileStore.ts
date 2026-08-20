@@ -352,6 +352,12 @@ export function createFileConversationStore(root: string): ConversationStore {
           parentId: meta.parentId,
           userTitled: meta.userTitled,
           starred: meta.starred,
+          // Messages still queued when the conversation was suspended. Must be carried
+          // through: hydrate rebuilds the Entry from THIS object, so dropping it here
+          // loses the user's queued message across a restart / cross-replica hydrate —
+          // the rollout case suspend-preservation exists for (an in-process
+          // suspend→revive would still work, which is what makes the omission subtle).
+          pendingQueue: meta.pendingQueue,
         });
       }
       return out;

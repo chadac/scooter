@@ -178,8 +178,11 @@ test.describe("recovered conversation — sending a message revives it", () => {
     await suspend(request, base, id);
 
     // Send into the suspended conversation exactly like the composer does.
-    await chat.send("wake up and answer me");
-    await chat.waitForReply(/dummy agent/i);
+    // sendTurn (count-based), NOT send+waitForReply: this is a SECOND turn and the
+    // fake agent replies identically every time, so a text match is already satisfied
+    // by the first turn and would return before this run finished (fixtures.ts warns
+    // about exactly this). On a loaded CI runner that races an unfinished run.
+    await chat.sendTurn("wake up and answer me");
 
     await expect(
       chat.userMessages().filter({ hasText: /wake up and answer me/i }),
@@ -206,8 +209,7 @@ test.describe("recovered conversation — sending a message revives it", () => {
     const id = await currentConversationId(page, request, base);
     await suspend(request, base, id);
 
-    await chat.send("this must not get stuck");
-    await chat.waitForReply(/dummy agent/i);
+    await chat.sendTurn("this must not get stuck"); // count-based: see the note above
 
     await chat.openQueueTab();
     await expect(
@@ -246,12 +248,6 @@ test.describe("recovered conversation — sending a message revives it", () => {
       "the post-suspend send must actually run on the revived conversation",
     ).toBeVisible({ timeout: 45_000 });
 
-    await chat.openQueueTab();
-    await expect(
-      chat.queuedMessages(),
-      "a queue item stranded by the suspend must not linger as a phantom row",
-    ).toHaveCount(0, { timeout: 30_000 });
-
     // THE BUG THIS PINS: an item sitting in the bridge's in-memory queue when
     // suspend() tears the bridge down used to be dropped on the floor — stop() never
     // drained or re-queued it, and revive() built a BRAND-NEW bridge with an empty
@@ -265,6 +261,16 @@ test.describe("recovered conversation — sending a message revives it", () => {
       page.getByText(/queued before the suspend/i).first(),
       "a message queued when the conversation was suspended must NOT be silently lost",
     ).toBeVisible({ timeout: 45_000 });
+
+    // ONLY NOW assert the queue is empty. Checked AFTER the re-enqueued message has
+    // run: while it is legitimately queued/draining the count is transiently 1, so an
+    // earlier check would race the very behavior this test asserts. What must not
+    // survive is a PHANTOM row — one no pump will ever drain.
+    await chat.openQueueTab();
+    await expect(
+      chat.queuedMessages(),
+      "no phantom queued row may survive the suspend/revive",
+    ).toHaveCount(0, { timeout: 30_000 });
   });
 });
 
@@ -287,8 +293,7 @@ test.describe("recovered conversation — approvals after a revive", () => {
     await suspend(request, base, id);
 
     // Revive via a normal send (the real user path), THEN raise a fresh approval.
-    await chat.send("continue the plan");
-    await chat.waitForReply(/dummy agent/i);
+    await chat.sendTurn("continue the plan"); // count-based: see the note above
 
     const res = await requestAws(request, base, id, `awsreq-post-revive-${Date.now()}`);
     expect(res.status(), "the aws-request must be accepted on the revived conversation").toBe(202);
@@ -315,8 +320,7 @@ test.describe("recovered conversation — approvals after a revive", () => {
 
     const id = await currentConversationId(page, request, base);
     await suspend(request, base, id);
-    await chat.send("resume the infra task");
-    await chat.waitForReply(/dummy agent/i);
+    await chat.sendTurn("resume the infra task"); // count-based: see the note above
 
     const raised = await requestAws(request, base, id, `awsreq-durable-${Date.now()}`);
     expect(
