@@ -83,20 +83,18 @@ export class IntegrityAgent extends AbstractAgent {
   private readonly controllers = new Set<AbortController>();
   /** Stops the render-pump reconnect loop (see renderPump), called on dispose. */
   private stopPump?: () => void;
-  /** The interrupt(s) the current run is paused on, parsed from the log's
-   *  RUN_FINISHED(outcome=interrupt). Cleared when a new RUN_STARTED arrives (the
-   *  run resumed) or when the log is re-seeded. The base AbstractAgent applier does
-   *  NOT track interrupts (only the react-ag-ui runtime's own aggregator does, and
-   *  we bypass it), so the pump surfaces them here for RuntimeProvider to fold into
-   *  the trailing assistant message's status/metadata. */
-  private logInterrupts: PendingInterrupt[] = [];
-
-  /** EXTERNAL interrupts (e.g. a broker AWS approval) raised OUT OF BAND via
-   *  raiseInterrupt — they ride a RUN_FINISHED with runId "ext-<id>" that is NOT
-   *  tied to the goose run. A concurrent goose run's RUN_STARTED/RUN_FINISHED must
-   *  NOT clear these (that was the "AWS request vanishes on reload" bug); they are
-   *  settled only by a matching PERMISSION_RESOLVED. Keyed by interrupt id. */
-  private externalInterrupts = new Map<string, PendingInterrupt>();
+  /** ALL unanswered interrupts (approvals) the conversation is paused on, keyed by interrupt id —
+   *  goose tool-permission requests AND broker (ext-) approvals, treated UNIFORMLY. An interrupt is
+   *  ADDED when its RUN_FINISHED(outcome=interrupt) arrives and REMOVED only by a matching
+   *  PERMISSION_RESOLVED. Crucially, run boundaries (RUN_STARTED / a plain RUN_FINISHED) do NOT clear
+   *  it — an approval is a HUMAN decision that outlives the agent's runs. (The old split — a
+   *  run-scoped `logInterrupts` cleared on RUN_STARTED + a separate `externalInterrupts` map — dropped
+   *  goose approvals whenever a new run started, a second interrupt arrived, or answers came out of
+   *  order. See integrityAgent.interrupts.stress.test.ts.) Goose answers ALSO persist
+   *  PERMISSION_RESOLVED (bridge.ts), so this settles both kinds correctly on replay.
+   *  The base AbstractAgent applier does NOT track interrupts, so the pump surfaces this set for
+   *  RuntimeProvider to fold into the trailing assistant message's status/metadata. */
+  private pendingApprovals = new Map<string, PendingInterrupt>();
 
   /** True while a connection is REPLAYING the persisted log (before its `synced`
    *  marker). The render pump suppresses per-event thread updates during replay so
@@ -315,18 +313,16 @@ export class IntegrityAgent extends AbstractAgent {
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
-    if (this.externalInterrupts.size === 0) return this.logInterrupts;
-    return [...this.logInterrupts, ...this.externalInterrupts.values()];
+    return [...this.pendingApprovals.values()];
   }
 
-  /** Update pendingInterrupts from a single log event:
-   *   - RUN_STARTED clears the RUN-SCOPED set (a new turn began);
-   *   - RUN_FINISHED(interrupt) with runId "ext-*" ADDS an external interrupt
-   *     (survives concurrent runs); a normal RUN_FINISHED(interrupt) sets the
-   *     run-scoped set; a normal RUN_FINISHED without interrupt clears it;
-   *   - PERMISSION_RESOLVED settles an external interrupt by id.
-   *  External interrupts are cleared ONLY by PERMISSION_RESOLVED — never by run
-   *  boundaries — so a still-pending broker request replays after a reload. */
+  /** Update the unified pendingInterrupts map from a single log event:
+   *   - RUN_FINISHED(outcome=interrupt) ADDS each interrupt (goose OR ext-) by id;
+   *   - PERMISSION_RESOLVED removes the interrupt with that id;
+   *   - run boundaries (RUN_STARTED / a plain RUN_FINISHED) change NOTHING.
+   *  So an unanswered approval survives new runs, other interrupts, and out-of-order
+   *  answers — it disappears ONLY when explicitly resolved. Both kinds persist a
+   *  PERMISSION_RESOLVED (bridge.ts), so replay settles both. See the stress test. */
   private trackInterrupt(e: BaseEvent): void {
     const ev = e as unknown as {
       type?: string;
@@ -335,34 +331,29 @@ export class IntegrityAgent extends AbstractAgent {
       optionId?: string | null;
       outcome?: { type?: string; interrupts?: PendingInterrupt[] };
     };
-    const before = this.getPendingInterrupts().length;
+    const before = this.pendingSignature();
     if (ev.type === "PERMISSION_RESOLVED") {
-      if (ev.toolCallId && this.externalInterrupts.delete(ev.toolCallId)) {
-        // fall through to the change-nudge below
-      } else {
-        return;
-      }
-    } else if (ev.type === "RUN_STARTED") {
-      this.logInterrupts = [];
-    } else if (ev.type === "RUN_FINISHED") {
-      const interrupts =
-        ev.outcome?.type === "interrupt" && Array.isArray(ev.outcome.interrupts)
-          ? ev.outcome.interrupts
-          : [];
-      if (typeof ev.runId === "string" && ev.runId.startsWith("ext-")) {
-        // Out-of-band external interrupt: add (don't replace the run-scoped set).
-        for (const it of interrupts) this.externalInterrupts.set(it.id, it);
-      } else {
-        this.logInterrupts = interrupts;
-      }
+      if (!ev.toolCallId) return;
+      this.pendingApprovals.delete(ev.toolCallId);
+    } else if (ev.type === "RUN_FINISHED" && ev.outcome?.type === "interrupt" && Array.isArray(ev.outcome.interrupts)) {
+      // ADD each interrupt (goose or ext-) keyed by id. Do NOT clear anything already pending: a
+      // RUN_FINISHED for run A must not drop run B's still-open approval, and a normal RUN_FINISHED
+      // (no interrupt) is a no-op here — approvals are settled only by PERMISSION_RESOLVED.
+      for (const it of ev.outcome.interrupts) this.pendingApprovals.set(it.id, it);
     } else {
-      return;
+      return; // RUN_STARTED, plain RUN_FINISHED, and everything else: no interrupt-set change.
     }
-    // A RUN_FINISHED(interrupt) usually produces NO message change through the base
-    // applier (empty state => no AgentStateMessage), so the render subscribers
-    // wouldn't otherwise refresh to show the interrupt. Nudge them when the pending
-    // set actually changes so RuntimeProvider re-folds + surfaces (or clears) it.
-    if (before !== this.getPendingInterrupts().length) this.notifyMessages();
+    // A RUN_FINISHED(interrupt) usually produces NO message change through the base applier (empty
+    // state => no AgentStateMessage), so the render subscribers wouldn't otherwise refresh to show
+    // the interrupt. Nudge them when the pending SET changes (by content, not just count — an
+    // add+remove that nets the same size must still repaint) so RuntimeProvider surfaces/clears it.
+    if (before !== this.pendingSignature()) this.notifyMessages();
+  }
+
+  /** A stable signature of the pending-interrupt set (sorted ids), so a change-nudge fires on ANY
+   *  content change — not just a size change (which would miss an add+remove of equal count). */
+  private pendingSignature(): string {
+    return [...this.pendingApprovals.keys()].sort().join(",");
   }
 
   /** Fire onMessagesChanged on every subscriber with the current snapshot. Used to
@@ -598,13 +589,11 @@ export class IntegrityAgent extends AbstractAgent {
           this.setMessages([]);
         }
         firstConn = false;
-        // A fresh connection re-replays the whole log; recompute pending interrupts
-        // from scratch too. Run-scoped ones derive from the trailing RUN_FINISHED;
-        // external (broker) ones are rebuilt as their ext- RUN_FINISHED and any
-        // settling PERMISSION_RESOLVED replay in order — so a still-open request
-        // survives the reload, and a resolved one stays gone.
-        this.logInterrupts = [];
-        this.externalInterrupts.clear();
+        // A fresh connection re-replays the whole log; recompute pending interrupts from scratch.
+        // Each interrupt's RUN_FINISHED(interrupt) re-adds it and any settling PERMISSION_RESOLVED
+        // re-removes it, in log order — so a still-open approval (goose or broker) survives the reload
+        // and a resolved one stays gone.
+        this.pendingApprovals.clear();
         // Re-derived from the replayed log (a trailing RUN_ERROR re-sets it, an
         // intervening RUN_STARTED clears it) — reset so a reconnect doesn't keep a
         // stale error the newer history has moved past.
