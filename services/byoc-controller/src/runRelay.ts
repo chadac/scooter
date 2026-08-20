@@ -17,7 +17,12 @@
 import { randomUUID } from "node:crypto";
 
 import type { SessionRegistry } from "./sessionRegistry.js";
-import type { AcpPromptPayload, WireFrame } from "./remoteProtocol.js";
+import type { AcpPromptPayload, ExecResultPayload, WireFrame } from "./remoteProtocol.js";
+
+/** The user's decision on a permission request. */
+export type PermissionAnswer = { optionId: string } | { cancelled: true };
+
+export type AnswerResult = { ok: true } | { ok: false; reason: string };
 
 export interface RunRelayConfig {
   registry: SessionRegistry;
@@ -27,6 +32,11 @@ export interface RunRelay {
   /** Send a prompt and stream this run's frames back. Rejects (rather than hanging) if the
    *  container is not reachable. The stream ends on the run's `ack`. */
   prompt(sessionId: string, payload: AcpPromptPayload): AsyncIterable<WireFrame>;
+  /** Answer a permission the container is BLOCKED on (§L Q1). Stateless — mirrors the UI's
+   *  existing POST /conversations/:id/permission/:toolCallId. */
+  answerPermission(sessionId: string, permissionId: string, answer: PermissionAnswer): AnswerResult;
+  /** Return an exec/fs result the AGENT-HOST ran on its own ExecBackend (§L Q2). */
+  answerExec(sessionId: string, execId: string, payload: ExecResultPayload): AnswerResult;
   /** Feed a raw frame received from a container's socket. */
   onContainerFrame(sessionId: string, raw: string): void;
   /** The container's socket closed — terminate every run still waiting on it. */
@@ -46,6 +56,10 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
   // requestId -> the run awaiting frames. Keyed by the id we put ON THE WIRE, which is what makes
   // concurrent runs on one socket safe: a frame is delivered only to the run whose id it carries.
   const runs = new Map<string, PendingRun>();
+  // Requests the CONTAINER is blocked on, awaiting a reply from above: permission ids (§L Q1) and
+  // exec ids (§L Q2). Kept per-session so a disconnect can abandon them wholesale — a reconnecting
+  // container must never inherit the previous connection's pending work.
+  const awaiting = new Map<string, { sessionId: string; kind: "permission" | "exec" }>();
 
   const push = (run: PendingRun, frame: WireFrame): void => {
     if (run.done) return;
@@ -70,6 +84,33 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       run.waiter = undefined;
       w(null);
     }
+  };
+
+  /** Send a reply down to the container for a request it is blocked on. Rejects an unknown or
+   *  already-answered id rather than writing a second ack. */
+  const replyToContainer = (
+    sessionId: string,
+    id: string,
+    kind: "permission" | "exec",
+    frame: WireFrame,
+  ): AnswerResult => {
+    const entry = awaiting.get(id);
+    // Unknown covers three real cases, all of which must fail cleanly rather than throw: a late
+    // answer after a controller restart (the human-decision window has no timeout), a duplicate
+    // POST from two tabs, and an id from a connection that has since dropped.
+    if (!entry || entry.sessionId !== sessionId || entry.kind !== kind) {
+      return { ok: false, reason: `unknown ${kind} ${id}` };
+    }
+    const session = registry.resolveBySession(sessionId);
+    if (!session?.socket) return { ok: false, reason: "container not connected" };
+    // Delete BEFORE sending so a concurrent duplicate cannot also pass the check above.
+    awaiting.delete(id);
+    try {
+      session.socket.send(JSON.stringify(frame));
+    } catch (err) {
+      return { ok: false, reason: `send failed: ${String(err)}` };
+    }
+    return { ok: true };
   };
 
   return {
@@ -128,6 +169,12 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
         finish(frame.id, frame);
         return;
       }
+      // A permission_request / exec_* frame means the container is now BLOCKED waiting for us.
+      // Record it so the reply can be routed and so a duplicate reply can be rejected — a second
+      // ack would resolve an already-settled call and desync the protocol.
+      if (frame.id && (frame.type === "permission_request" || frame.type.startsWith("exec_") || frame.type.startsWith("fs_"))) {
+        awaiting.set(frame.id, { sessionId, kind: frame.type === "permission_request" ? "permission" : "exec" });
+      }
       // Notifications (session_update, terminal_created) carry the ACP session, not our request id,
       // so route them to the runs on this container. With one run in flight per ACP session this is
       // exact; concurrent runs are separated by their own ids at the ack.
@@ -136,7 +183,21 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       }
     },
 
+    answerPermission(sessionId, permissionId, answer) {
+      return replyToContainer(sessionId, permissionId, "permission", { ch: "acp", type: "ack", id: permissionId, payload: answer });
+    },
+
+    answerExec(sessionId, execId, payload) {
+      return replyToContainer(sessionId, execId, "exec", { ch: "exec", type: "exec_result", id: execId, payload });
+    },
+
     onContainerGone(sessionId) {
+      // Abandon everything this container was blocked on. Answering into a dead socket would throw,
+      // and leaving the ids around would let a RECONNECTED container receive replies to work the
+      // previous connection started.
+      for (const [id, entry] of [...awaiting]) {
+        if (entry.sessionId === sessionId) awaiting.delete(id);
+      }
       // Terminate every run on this container. Without this the agent-host waits forever on a
       // socket that will never answer — the exact hang this relay exists to make impossible.
       for (const [requestId, run] of [...runs]) {
