@@ -11,7 +11,7 @@
  * it likewise shows a "not configured" note when no identity store is wired.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FC } from "react";
 
 import { agentHostConfig } from "./config.js";
 import {
@@ -27,7 +27,7 @@ import {
   type RegistryModule,
 } from "./client.js";
 import { useSessions } from "./sessions.js";
-import { viewStore } from "./view.js";
+import { viewStore, useSettingsTab, SETTINGS_TABS, type SettingsTab } from "./view.js";
 
 const BLANK: ScheduledTaskInput = { title: "", prompt: "", cron: "", timezone: "UTC", enabled: true };
 
@@ -358,7 +358,9 @@ function ModulesSettingsSection() {
   );
 }
 
-export function SettingsPage() {
+/** Scheduled tasks — the cron-driven prompts. Extracted from the old single-page
+ *  Settings so it can live behind its own tab. Behaviour is unchanged. */
+function ScheduledTasksSection() {
   const [tasks, setTasks] = useState<ScheduledTaskView[]>([]);
   const [configured, setConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -376,7 +378,116 @@ export function SettingsPage() {
   }, [refresh]);
 
   return (
-    <div data-testid="settings-page" className="mx-auto flex h-full w-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-medium">Scheduled tasks</h2>
+          <p className="text-sm text-muted-foreground">
+            Run a prompt on a schedule — each run starts a fresh conversation.
+          </p>
+        </div>
+        {configured && !creating && (
+          <button
+            data-testid="task-new"
+            onClick={() => setCreating(true)}
+            className="rounded-md bg-foreground px-3 py-1.5 text-sm text-background"
+          >
+            + New task
+          </button>
+        )}
+      </div>
+
+      {!configured ? (
+        <p data-testid="scheduler-unavailable" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+          The scheduler service isn’t deployed, so scheduled tasks aren’t available here.
+        </p>
+      ) : (
+        <>
+          {creating && (
+            <TaskForm
+              initial={BLANK}
+              submitLabel="Create task"
+              onCancel={() => setCreating(false)}
+              onSubmit={async (input) => {
+                await createScheduledTask(agentHostConfig, input);
+                setCreating(false);
+                await refresh();
+              }}
+            />
+          )}
+
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : tasks.length === 0 ? (
+            <p data-testid="tasks-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+              No scheduled tasks yet. Create one, or ask Scooter to set one up for you.
+            </p>
+          ) : (
+            <ul data-testid="task-list" className="flex flex-col gap-2">
+              {tasks.map((t) => (
+                <TaskRow key={t.id} task={t} onChanged={refresh} />
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Bring Your Own Claude — the user runs a container holding THEIR Claude
+ *  subscription and scooter routes the brain to it. The settings UI for this ships
+ *  with the BYO feature itself (PR #275, still in review); this tab is the shell it
+ *  drops into, so the section can be added without restructuring the page again. */
+function ClaudeAgentSection() {
+  return (
+    <section data-testid="claude-agent-section" className="flex flex-col gap-3">
+      <div>
+        <h2 className="font-medium">Bring your own Claude</h2>
+        <p className="text-sm text-muted-foreground">
+          Run a container on your own machine holding your Claude subscription, and let Scooter
+          route the agent to it — your token never leaves your machine.
+        </p>
+      </div>
+      <p
+        data-testid="claude-agent-unavailable"
+        className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground"
+      >
+        This feature isn’t enabled on this deployment yet.
+      </p>
+    </section>
+  );
+}
+
+/** Admin Area — deployment-wide administration. Holds the user directory today. */
+function AdminAreaSection() {
+  return (
+    <div data-testid="admin-area" className="flex flex-col gap-6">
+      <UsersSection />
+    </div>
+  );
+}
+
+const TAB_BODIES: Record<SettingsTab, FC> = {
+  tasks: ScheduledTasksSection,
+  claude: ClaudeAgentSection,
+  modules: ModulesSettingsSection,
+  admin: AdminAreaSection,
+};
+
+/**
+ * The settings page: a left tab rail + the selected tab's body.
+ *
+ * Each tab is a real URL (/settings/<tab>) owned by view.ts, so a tab is
+ * bookmarkable, survives a refresh, and Back/Forward moves between tabs — rather
+ * than the previous single scrolling page reached only by a header toggle.
+ */
+export function SettingsPage() {
+  const tab = useSettingsTab();
+  const Body = TAB_BODIES[tab];
+
+  return (
+    <div data-testid="settings-page" className="mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden p-6">
       <div className="flex items-center gap-3">
         <button
           data-testid="settings-back"
@@ -388,64 +499,37 @@ export function SettingsPage() {
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-medium">Scheduled tasks</h2>
-            <p className="text-sm text-muted-foreground">
-              Run a prompt on a schedule — each run starts a fresh conversation.
-            </p>
-          </div>
-          {configured && !creating && (
-            <button
-              data-testid="task-new"
-              onClick={() => setCreating(true)}
-              className="rounded-md bg-foreground px-3 py-1.5 text-sm text-background"
-            >
-              + New task
-            </button>
-          )}
+      <div className="flex min-h-0 flex-1 gap-6">
+        {/* Left tab rail. role=tablist + aria-selected so the active tab is exposed to
+            assistive tech and assertable in tests. */}
+        <nav data-testid="settings-tabs" role="tablist" aria-orientation="vertical" className="flex w-56 shrink-0 flex-col gap-1">
+          {SETTINGS_TABS.map((t) => {
+            const active = t.id === tab;
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={active}
+                data-testid={`settings-tab-${t.id}`}
+                onClick={() => viewStore.setTab(t.id)}
+                className={`rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                  active ? "bg-accent font-medium" : "hover:bg-accent/50 text-muted-foreground"
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div
+          role="tabpanel"
+          data-testid={`settings-panel-${tab}`}
+          className="min-h-0 flex-1 overflow-y-auto pr-1"
+        >
+          <Body />
         </div>
-
-        {!configured ? (
-          <p data-testid="scheduler-unavailable" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-            The scheduler service isn’t deployed, so scheduled tasks aren’t available here.
-          </p>
-        ) : (
-          <>
-            {creating && (
-              <TaskForm
-                initial={BLANK}
-                submitLabel="Create task"
-                onCancel={() => setCreating(false)}
-                onSubmit={async (input) => {
-                  await createScheduledTask(agentHostConfig, input);
-                  setCreating(false);
-                  await refresh();
-                }}
-              />
-            )}
-
-            {loading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : tasks.length === 0 ? (
-              <p data-testid="tasks-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-                No scheduled tasks yet. Create one, or ask Scooter to set one up for you.
-              </p>
-            ) : (
-              <ul data-testid="task-list" className="flex flex-col gap-2">
-                {tasks.map((t) => (
-                  <TaskRow key={t.id} task={t} onChanged={refresh} />
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-      </section>
-
-      <UsersSection />
-
-      <ModulesSettingsSection />
+      </div>
     </div>
   );
 }
