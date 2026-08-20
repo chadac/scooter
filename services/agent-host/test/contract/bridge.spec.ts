@@ -1103,8 +1103,9 @@ describe("bridge run queue + cancel", () => {
     const bridge = mkBridge(agent);
     await bridge.start();
 
-    // Catch on the RUNNING prompt too: drainQueue now also captures the in-flight
-    // batch (a mid-run suspend must not lose it), so this one rejects as well.
+    // The RUNNING prompt is NOT rejected by drainQueue (its promise settles through
+    // the pump when its own run ends) — but the gated fake never finishes it here, so
+    // catch defensively rather than leak a pending promise into the next test.
     void bridge.prompt({ threadId: "t1", text: "running" }).catch(() => {});
     await tick();
 
@@ -1142,14 +1143,25 @@ describe("bridge run queue + cancel", () => {
     const bridge = mkBridge(agent);
     await bridge.start();
 
-    void bridge.prompt({ threadId: "t1", text: "in flight when suspended" }).catch(() => {});
+    const inFlight = bridge.prompt({ threadId: "t1", text: "in flight when suspended" });
     await tick(); // let the pump pick it up (spliced out of `queue`, now running)
+
+    let rejected = false;
+    void inFlight.catch(() => { rejected = true; });
 
     const drained = bridge.drainQueue();
     expect(
       drained.map((d) => d.text),
       "a message the pump is RUNNING must be preserved by a mid-run suspend",
     ).toContain("in flight when suspended");
+
+    await tick();
+    // ...but it must NOT be rejected here. An in-flight item is a run already
+    // executing; the pump settles it. Rejecting it too turned a NORMAL turn into a
+    // RUN_ERROR whenever a suspend landed just as a run was finishing (CI caught this
+    // as "prompt failed: the conversation was suspended before this queued message
+    // could run" on a plain first turn).
+    expect(rejected, "drainQueue must not reject an ALREADY-RUNNING prompt").toBe(false);
   });
 
   it("stop() emits a CLEARING queue snapshot so a revived tab shows no phantom queue", async () => {

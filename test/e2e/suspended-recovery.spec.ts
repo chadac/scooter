@@ -178,16 +178,25 @@ test.describe("recovered conversation — sending a message revives it", () => {
     await suspend(request, base, id);
 
     // Send into the suspended conversation exactly like the composer does.
-    // sendTurn (count-based), NOT send+waitForReply: this is a SECOND turn and the
-    // fake agent replies identically every time, so a text match is already satisfied
-    // by the first turn and would return before this run finished (fixtures.ts warns
-    // about exactly this). On a loaded CI runner that races an unfinished run.
-    await chat.sendTurn("wake up and answer me");
+    // NOTE: deliberately send + assert on THIS message's own text, not sendTurn.
+    // sendTurn polls for assistantMessages().count() to GROW past a pre-send
+    // baseline — but a suspend tears down and rebuilds the thread view, so the count
+    // can RESET to 0 and never exceed the baseline (CI: "Expected > 1, Received 0").
+    // Asserting on the unique message text is both race-free and count-independent.
+    await chat.send("wake up and answer me");
 
     await expect(
       chat.userMessages().filter({ hasText: /wake up and answer me/i }),
       "the message sent to a suspended conversation must appear in the thread",
     ).toHaveCount(1, { timeout: 30_000 });
+
+    // And it must actually RUN: the fake agent echoes the message text back, so this
+    // asserts THIS turn completed — unlike /dummy agent/i, which the first turn's
+    // identical reply already satisfies.
+    await expect(
+      page.getByText(/ran echo: "wake up and answer me"/i).first(),
+      "the revived conversation must answer the message, not just display it",
+    ).toBeVisible({ timeout: 45_000 });
   });
 
   test("the message sent to a suspended conversation does NOT get stuck in the Queue tab", async ({
@@ -209,7 +218,7 @@ test.describe("recovered conversation — sending a message revives it", () => {
     const id = await currentConversationId(page, request, base);
     await suspend(request, base, id);
 
-    await chat.sendTurn("this must not get stuck"); // count-based: see the note above
+    await chat.send("this must not get stuck"); // see the sendTurn note above
 
     await chat.openQueueTab();
     await expect(
@@ -293,7 +302,7 @@ test.describe("recovered conversation — approvals after a revive", () => {
     await suspend(request, base, id);
 
     // Revive via a normal send (the real user path), THEN raise a fresh approval.
-    await chat.sendTurn("continue the plan"); // count-based: see the note above
+    await chat.send("continue the plan"); // see the sendTurn note above
 
     const res = await requestAws(request, base, id, `awsreq-post-revive-${Date.now()}`);
     expect(res.status(), "the aws-request must be accepted on the revived conversation").toBe(202);
@@ -320,7 +329,7 @@ test.describe("recovered conversation — approvals after a revive", () => {
 
     const id = await currentConversationId(page, request, base);
     await suspend(request, base, id);
-    await chat.sendTurn("resume the infra task"); // count-based: see the note above
+    await chat.send("resume the infra task"); // see the sendTurn note above
 
     const raised = await requestAws(request, base, id, `awsreq-durable-${Date.now()}`);
     expect(

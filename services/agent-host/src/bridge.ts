@@ -1459,17 +1459,26 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // this preservation exists for. Running items lead (they were picked first).
       const inFlight = runningBatch;
       runningBatch = [];
-      if (queue.length === 0 && inFlight.length === 0) return [];
-      const abandoned = [...inFlight, ...queue.splice(0, queue.length)];
+      const waiting = queue.splice(0, queue.length);
+      if (waiting.length === 0 && inFlight.length === 0) return [];
       // The log's final word on the queue must be "empty" — see the interface doc.
       emitQueueSnapshot();
-      const drained = abandoned.map((q) => ({ text: q.input.text, priority: q.priority }));
-      for (const item of abandoned) {
+      // REJECT only the items that never STARTED. An in-flight item is a run that is
+      // already executing: its promise settles through the pump's own resolve/reject
+      // when runPrompt returns (or throws as the pod goes away). Rejecting it here
+      // too would turn a NORMAL turn into a RUN_ERROR — a suspend that lands just as
+      // a run is finishing (waitForReply returns on the reply TEXT, before the run
+      // terminates) would report "the conversation was suspended before this queued
+      // message could run" for a message that in fact ran and answered.
+      for (const item of waiting) {
         item.reject(
           new Error("the conversation was suspended before this queued message could run"),
         );
       }
-      return drained;
+      // Preserve BOTH for replay: the in-flight item may be cut short mid-run by the
+      // teardown, so its text is re-enqueued on revive (idempotent from the user's
+      // point of view — a turn that already completed simply re-asks).
+      return [...inFlight, ...waiting].map((q) => ({ text: q.input.text, priority: q.priority }));
     },
 
     async stop() {
