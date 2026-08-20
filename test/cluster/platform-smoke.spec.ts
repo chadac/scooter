@@ -75,4 +75,56 @@ maybe("multi-replica platform smoke", () => {
     expect(cr.status?.hostIP, "controller wrote a routing IP").toMatch(/^\d+\.\d+\.\d+\.\d+$/);
     expect(cr.status?.generation ?? 0).toBeGreaterThanOrEqual(1);
   });
+
+  // REGRESSION (odin 2026-08-20): GET /conversations was answered from ONE pod's IN-MEMORY session
+  // map, so on a multi-replica fleet the user saw only the conversations that pod happened to host —
+  // a different fraction each time the Service load-balanced elsewhere, which reads as
+  // "my conversations vanished". Per-pod counts observed: 0,2,2,4,4,4,7,7,8,8 while 20 CRs existed.
+  //
+  // This asserts the FRONT DOOR returns the UNION across the fleet. It only has teeth when the
+  // conversations actually land on DIFFERENT pods, which the CI job arranges with podCap=1 (see
+  // ci.yml / the platform-smoke deploy): each new conversation fills a pod and forces the next onto
+  // another. Repeated calls guard against a lucky load-balance passing a broken build.
+  it("GET /conversations returns EVERY conversation in the fleet, not one pod's slice", async () => {
+    const ids = [1, 2, 3].map((n) => `fanout-${Date.now()}-${n}`);
+
+    for (const threadId of ids) {
+      await cluster.curlInCluster(`${AGENT_HOST}/agui`, {
+        method: "POST",
+        headers: ["Content-Type: application/json", "Accept: text/event-stream"],
+        body: JSON.stringify({
+          threadId,
+          runId: "r1",
+          messages: [{ id: "m1", role: "user", content: "fanout" }],
+        }),
+        timeoutMs: 60_000,
+      });
+      // Wait for assignment so the controller has spread it before creating the next one.
+      await cluster.waitFor<ConversationCR>(
+        "Conversation", threadId, (c) => !!c.status?.hostIP, 90_000, NS,
+      );
+    }
+
+    // Sanity: the conversations really are spread across MORE THAN ONE pod, otherwise this test
+    // would pass even with the single-pod bug present (that is exactly why CI missed it).
+    const hosts = new Set<string>();
+    for (const threadId of ids) {
+      const cr = await cluster.waitFor<ConversationCR>(
+        "Conversation", threadId, (c) => !!c.status?.hostPod, 30_000, NS,
+      );
+      if (cr.status?.hostPod) hosts.add(cr.status.hostPod);
+    }
+    expect(hosts.size, "conversations must span >1 pod for this regression to be meaningful").toBeGreaterThan(1);
+
+    // The front door must list ALL of them, on EVERY call (not whichever pod answered).
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const listed = JSON.parse(
+        await cluster.curlInCluster(`${AGENT_HOST}/conversations`, { timeoutMs: 30_000 }),
+      ) as Array<{ id: string }>;
+      const got = new Set(listed.map((c) => c.id));
+      for (const id of ids) {
+        expect(got.has(id), `attempt ${attempt + 1}: /conversations omitted ${id} (single-pod view?)`).toBe(true);
+      }
+    }
+  });
 });

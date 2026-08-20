@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,7 +37,7 @@ import (
 
 type config struct {
 	namespace    string
-	upstreamPort int    // agent-host container port
+	upstreamPort int // agent-host container port
 	listenAddr   string
 	// The agent-host ClusterIP Service — fallback for non-scoped / unassigned / stale-IP
 	// requests (load-balances to any ready pod). Replaces the old DEFAULT_POD ordinal.
@@ -84,6 +85,19 @@ func main() {
 func newRouter(cfg config, cache *OwnershipCache) http.Handler {
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// FLEET-AGGREGATE routes must be answered from EVERY pod, not one. An agent-host serves the
+		// conversation list from its in-memory session map, which (with podCap=1) holds only the
+		// conversations that pod hosts — so proxying to a single pod returns a fraction of the
+		// user's conversations and they appear to vanish between refreshes. See aggregate.go.
+		if IsFleetAggregate(r.Method, r.URL.Path) {
+			ups := upstreamsFor(cfg, cache, fallback)
+			if isSSE(r) {
+				serveAggregatedSSE(w, r, ups)
+			} else {
+				serveAggregatedList(w, r, ups)
+			}
+			return
+		}
 		target := resolveTarget(cfg, cache, r, fallback)
 		// Retry ONLY when the primary target is an owner IP (not already the fallback) AND
 		// nothing has been written to the client yet (a dial error, pre-response). Streaming
@@ -202,7 +216,7 @@ func newDynamicClient() (dynamic.Interface, error) {
 	return dynamic.NewForConfig(cfg)
 }
 
-func metav1ListOptions() metav1.ListOptions   { return metav1.ListOptions{} }
+func metav1ListOptions() metav1.ListOptions { return metav1.ListOptions{} }
 func metav1WatchOptions(rv string) metav1.ListOptions {
 	return metav1.ListOptions{ResourceVersion: rv, Watch: true}
 }
@@ -224,4 +238,12 @@ func env(k, def string) string {
 	return def
 }
 func atoi(s string) int { n, _ := strconv.Atoi(s); return n }
+
+// isSSE reports whether the caller asked for an event stream (the /conversations/events variant of
+// a fleet-aggregate route) rather than the JSON list.
+func isSSE(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") ||
+		strings.HasSuffix(r.URL.Path, "/events")
+}
+
 func logf(f string, a ...interface{}) { log.Printf(f, a...) }

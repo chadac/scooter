@@ -418,6 +418,13 @@ jobs:
         run: |
           nix shell nixpkgs#kubectl -c bash -c '
             kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
+            # MULTI-REPLICA + SPREAD. The default topology (replicas=2, podCap=100) puts every test
+            # conversation on ONE pod, so any per-pod-view bug is invisible — which is exactly how the
+            # "GET /conversations returns one pod'"'"'s slice" bug reached production. Force podCap=1 so
+            # each conversation lands on a DIFFERENT pod, and give the fleet room to spread.
+            kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
+            kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
+            kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
             kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
             kubectl -n agent-sandbox rollout status deployment/conversation-router --timeout=180s
             kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
