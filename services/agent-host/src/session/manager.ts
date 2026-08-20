@@ -149,6 +149,11 @@ export interface ConversationStore {
    *  the chain. Computed deterministically from the persisted log order, so it
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
+  /** REPLACE a conversation's entire event log with `events` (atomic rewrite), resetting the rolling
+   *  integrity checksum. Used ONLY by content-based mirror reconciliation (hydrateFromMirror) when the
+   *  local log has DIVERGED from the durable mirror (a fork, not a prefix) — the mirror wins, so local
+   *  is rewritten to it. NOT a hot-path operation. Optional (in-memory test stores may skip it). */
+  replaceEvents?(id: SessionId, events: AguiEvent[]): Promise<void>;
   /** The RECENT tail only: the events from the last `runs` runs, read WITHOUT
    *  parsing the whole log (scan from the end for RUN_STARTED boundaries) — so a
    *  fast first-paint window on a long conversation stays cheap. Optional (an

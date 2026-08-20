@@ -20,6 +20,7 @@
  * Mirror errors are non-fatal — logged via onMirrorError; local persistence is intact.
  */
 
+import { chainNext, EMPTY_CHECKSUM } from "../agui/integrity.js";
 import type { AguiEvent } from "../bridge.js";
 import type { SessionId } from "../types.js";
 import type {
@@ -143,6 +144,10 @@ export function mirroredConversationStore(
     readEvents: (id) => local.readEvents(id),
     readEventsWithChecksum: local.readEventsWithChecksum
       ? (id) => local.readEventsWithChecksum!(id) : undefined,
+    // Rewrite passes through to LOCAL (reconciliation writes the healed log locally). The mirror is
+    // the source we're reconciling FROM, so we don't rewrite it here.
+    replaceEvents: local.replaceEvents
+      ? (id, events) => local.replaceEvents!(id, events) : undefined,
     readEventsTail: local.readEventsTail
       ? (id, runs) => local.readEventsTail!(id, runs) : undefined,
     readModule: local.readModule ? (id) => local.readModule!(id) : undefined,
@@ -181,9 +186,7 @@ export function mirroredConversationStore(
     // REVIVE-ON-ASSIGN (seamless rollout): copy ONE conversation's durable state from the
     // MIRROR into LOCAL, so a pod that never owned it can hydrate + revive it after a rollout
     // reassigned it here. Reads pass through to local (the hot authority), so a
-    // mirror-only conversation is invisible until this pulls it local. Idempotent: skips
-    // events already present locally (append is ordered per id). Best-effort on the
-    // low-frequency extras (meta is the load-bearing part). See
+    // mirror-only conversation is invisible until this pulls it local. See
     // todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md + manager.reviveFromMirror.
     async hydrateFromMirror(id: SessionId): Promise<boolean> {
       // 1) meta — without it the conversation isn't listable/hydratable locally.
@@ -192,16 +195,49 @@ export function mirroredConversationStore(
       if (!meta) return false; // the mirror doesn't have it either — genuinely unknown.
       await local.saveMeta?.(meta);
 
-      // 2) events — replay the mirror's log into local, skipping what local already has
-      // (idempotent re-pull). Count local first so a partial prior pull resumes.
-      let localCount = 0;
+      // 2) events — reconcile local ↔ mirror by CONTENT (integrity checksum chain), NOT by position.
+      // The old count-based splice assumed local was a strict PREFIX of the mirror; when a DIFFERENT
+      // pod processed + mirrored a run this pod never had, local FORKS from the mirror and a
+      // "keep local[0..localCount], append mirror after localCount" splice grafts two divergent
+      // branches (dropping the mirror's unique events). Instead: walk both in lockstep, find the
+      // longest COMMON PREFIX (matching rolling checksums), then:
+      //   - local is a prefix of the mirror  → append the mirror's tail (fast path, no rewrite);
+      //   - the logs DIVERGE at the fork      → the MIRROR wins (multi-writer source of truth):
+      //     rewrite local to the mirror's full log via replaceEvents (never splice across a fork).
+      const localEvents: AguiEvent[] = [];
       try {
-        for await (const _ of local.readEvents(id)) localCount++;
+        for await (const ev of local.readEvents(id)) localEvents.push(ev);
       } catch { /* local has none yet */ }
-      let i = 0;
-      for await (const ev of mirror.readEvents(id)) {
-        if (i++ < localCount) continue; // already local
-        await local.appendEvent(id, ev);
+      const mirrorEvents: AguiEvent[] = [];
+      for await (const ev of mirror.readEvents(id)) mirrorEvents.push(ev);
+
+      // Longest common prefix by rolling checksum (content identity, restart-stable).
+      let common = 0;
+      let chk = EMPTY_CHECKSUM;
+      const max = Math.min(localEvents.length, mirrorEvents.length);
+      while (common < max) {
+        const lc = chainNext(chk, localEvents[common]);
+        const mc = chainNext(chk, mirrorEvents[common]);
+        if (lc !== mc) break; // first divergence
+        chk = lc;
+        common++;
+      }
+
+      if (common === localEvents.length) {
+        // Local is a (possibly empty) PREFIX of the mirror — append only the missing tail. Idempotent.
+        for (let i = common; i < mirrorEvents.length; i++) await local.appendEvent(id, mirrorEvents[i]);
+      } else {
+        // Local DIVERGED (it has events after the common prefix that the mirror doesn't match). The
+        // mirror is authoritative → rewrite local to it. Prefer replaceEvents; if the store can't
+        // rewrite, log loudly (a divergent local we can't heal is a real integrity problem).
+        if (local.replaceEvents) {
+          await local.replaceEvents(id, mirrorEvents);
+        } else {
+          onErr(id, new Error(
+            `hydrateFromMirror: local diverged from mirror at event ${common} but the store has no ` +
+            `replaceEvents — cannot reconcile a fork; local left as-is (transcript may be incomplete)`,
+          ));
+        }
       }
 
       // 3) low-frequency extras (best-effort — a miss degrades, never blocks the revive):

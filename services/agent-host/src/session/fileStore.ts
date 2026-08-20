@@ -203,6 +203,27 @@ export function createFileConversationStore(root: string): ConversationStore {
       }
     },
 
+    // Atomically REWRITE the whole event log (content-based mirror reconciliation only — see the
+    // interface). Runs ON the per-id write chain so it can't interleave with concurrent appends, and
+    // re-seeds the rolling checksum from the new contents so subsequent appends chain correctly.
+    async replaceEvents(id, events) {
+      const prev = writeChains.get(id) ?? Promise.resolve();
+      const next = prev
+        .catch(() => {})
+        .then(async () => {
+          await ensureDir(id);
+          const body = events.map((e) => JSON.stringify(e)).join("\n") + (events.length ? "\n" : "");
+          await writeFileAtomic(logPath(id), body);
+          // Re-seed the rolling checksum from the rewritten log (mark seeded so seedChecksum trusts it).
+          let acc = EMPTY_CHECKSUM;
+          for (const e of events) acc = chainNext(acc, e);
+          checksums.set(id, acc);
+          seeded.add(id);
+        });
+      writeChains.set(id, next.catch(() => {}));
+      return next;
+    },
+
     async recordActivity(id, at) {
       await ensureDir(id);
       // Last-activity marker — small, overwritten; queryable by an external

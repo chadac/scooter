@@ -22,6 +22,7 @@ function memStore(overrides: Partial<ConversationStore> = {}): ConversationStore
     log,
     get appendCalls() { return appendCalls; },
     async appendEvent(_id: SessionId, e: AguiEvent) { appendCalls++; log.push(e); },
+    async replaceEvents(_id: SessionId, events: AguiEvent[]) { log.length = 0; log.push(...events); },
     async *readEvents() { for (const e of log) yield e; },
     gooseStatePath: (id: SessionId) => `/state/${id}`,
     async flush() {},
@@ -162,6 +163,70 @@ describe("mirroredConversationStore", () => {
       const mirror = memStore({ listConversations: async () => [] });
       const store = mirroredConversationStore(local, mirror);
       expect(await store.hydrateFromMirror(ID)).toBe(false);
+    });
+
+    // --- content-based reconciliation (PR2): local may DIVERGE from the mirror, not just lag ---
+
+    it("REWRITES local to the mirror when the logs DIVERGE at a fork (mirror wins — no splice corruption)", async () => {
+      // Common prefix [a,b], then FORK: local has a stale [x], the mirror the real [c,d]. The old
+      // count-based splice kept local[0..3] then appended mirror after index 3 → [a,b,x,?] corruption.
+      const local = memStore();
+      for (const d of ["a", "b", "x"]) await local.appendEvent(ID, ev(d));
+      const mlog = [ev("a"), ev("b"), ev("c"), ev("d")];
+      const mirror = memStore({
+        listConversations: async () => [meta(ID) as never],
+        async *readEvents() { for (const e of mlog) yield e; },
+      });
+      const store = mirroredConversationStore(local, mirror);
+
+      await store.hydrateFromMirror(ID);
+      // Local is now EXACTLY the mirror — the divergent "x" is gone, the mirror's [c,d] present.
+      expect(local.log.map((e) => (e as { delta: string }).delta)).toEqual(["a", "b", "c", "d"]);
+    });
+
+    it("keeps the mirror's UNIQUE fork events (the exact live-cluster bug: a Slack run only the mirror had)", async () => {
+      // Common prefix [a,b]; the mirror carries [m1,m2] a different pod processed that local never saw.
+      const local = memStore();
+      for (const d of ["a", "b"]) await local.appendEvent(ID, ev(d));
+      const mlog = [ev("a"), ev("b"), ev("m1"), ev("m2")];
+      const mirror = memStore({
+        listConversations: async () => [meta(ID) as never],
+        async *readEvents() { for (const e of mlog) yield e; },
+      });
+      const store = mirroredConversationStore(local, mirror);
+      await store.hydrateFromMirror(ID);
+      expect(local.log.map((e) => (e as { delta: string }).delta)).toEqual(["a", "b", "m1", "m2"]);
+    });
+
+    it("prefix case appends the tail WITHOUT rewriting (fast path, no replaceEvents call)", async () => {
+      const local = memStore();
+      await local.appendEvent(ID, ev("a"));
+      let replaced = false;
+      const base = memStore();
+      const local2 = { ...base, replaceEvents: async () => { replaced = true; } } as typeof base;
+      await local2.appendEvent(ID, ev("a"));
+      const mirror = memStore({
+        listConversations: async () => [meta(ID) as never],
+        async *readEvents() { for (const e of [ev("a"), ev("b"), ev("c")]) yield e; },
+      });
+      const store = mirroredConversationStore(local2, mirror);
+      await store.hydrateFromMirror(ID);
+      expect(local2.log.map((e) => (e as { delta: string }).delta)).toEqual(["a", "b", "c"]);
+      expect(replaced).toBe(false); // pure prefix → appended, not rewritten
+    });
+
+    it("surfaces an error (not silent) when local DIVERGES but the store cannot replaceEvents", async () => {
+      const base = memStore();
+      for (const d of ["a", "x"]) await base.appendEvent(ID, ev(d));
+      const local = { ...base, replaceEvents: undefined } as unknown as typeof base; // no rewrite capability
+      const onMirrorError = vi.fn();
+      const mirror = memStore({
+        listConversations: async () => [meta(ID) as never],
+        async *readEvents() { for (const e of [ev("a"), ev("b")]) yield e; },
+      });
+      const store = mirroredConversationStore(local, mirror, { onMirrorError });
+      await store.hydrateFromMirror(ID);
+      expect(onMirrorError).toHaveBeenCalled(); // a fork we can't heal is logged, not swallowed
     });
   });
 });
