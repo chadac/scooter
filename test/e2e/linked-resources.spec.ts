@@ -68,8 +68,14 @@ test.describe("linked resources panel", () => {
     });
     expect(threadId).toBeTruthy();
 
+    // Target THIS conversation's row via data-active, not `.first()`. The sidebar sorts
+    // newest-first, so a conversation created by another spec on the shared backend can take the
+    // top slot between the open() above and the assertion below — the icon then lands on a row
+    // this locator is not looking at, and the test fails on ordering rather than on the behaviour
+    // under test. The conversation under test is the selected one, so data-active pins it.
+    const row = page.locator('[data-testid="session-item"][data-active="true"]');
+    await expect(row, "this conversation's own sidebar row (the ACTIVE one)").toHaveCount(1, { timeout: 20_000 });
     // No provider icon on the row before any link.
-    const row = page.locator('[data-testid="session-item"]').first();
     await expect(row.locator('[data-testid="source-icon"]')).toHaveCount(0);
 
     // Push a GitHub link (as the webhooks service would).
