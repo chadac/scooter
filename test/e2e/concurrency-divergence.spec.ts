@@ -23,6 +23,27 @@ function sharedView(s: UiSnapshot) {
 }
 
 async function bothSettled(a: Page, b: Page, when: string): Promise<[UiSnapshot, UiSnapshot]> {
+  // ACTUALLY settle before snapshotting. This helper was named "settled" but only snapshotted,
+  // which is what fails CI on `SIMULTANEOUS sends from both tabs`: the test's earlier polls wait
+  // only for the USER messages to land in both tabs, so the assistant replies may still be
+  // streaming. Tab A then reads one reply behind tab B (assistantMessages 2 vs 3, toolCards 2 vs 3)
+  // and the "both tabs agree" comparison fails on a difference that resolves a moment later.
+  //
+  // Two conditions, in this order:
+  //   1. neither tab has a run in flight — the run-status bar is gone on BOTH;
+  //   2. the compared counts have STOPPED CHANGING and match.
+  // (1) alone is not enough: a tab can be idle because its stream has not delivered the last reply
+  // yet, not because there is nothing left to deliver.
+  for (const p of [a, b]) {
+    await expect(p.locator('[data-testid="run-status-bar"]'), `${when}: a run is still in flight`)
+      .toHaveCount(0, { timeout: 45_000 });
+  }
+  await expect
+    .poll(async () => {
+      const [x, y] = [await snapshot(a), await snapshot(b)];
+      return JSON.stringify(sharedView(x)) === JSON.stringify(sharedView(y));
+    }, { timeout: 45_000, message: `${when}: the two tabs never converged on the same view` })
+    .toBe(true);
   const sa = await snapshot(a);
   const sb = await snapshot(b);
   assertConsistent(sa, `${when} (page A)`);
