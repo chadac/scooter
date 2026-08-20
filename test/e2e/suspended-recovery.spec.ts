@@ -190,18 +190,24 @@ test.describe("recovered conversation — sending a message revives it", () => {
       "the message sent to a suspended conversation must appear in the thread",
     ).toHaveCount(1, { timeout: 30_000 });
 
-    // The message-delivered assertion above proves it reached the thread. Proving the
-    // turn RAN is left to the sibling tests that can do it unambiguously: the Queue-tab
-    // test asserts the queue DRAINS (only a completed run drains it), and the mid-run
-    // test asserts the reply text appears. Both cover the revive path.
+    // ...and it must actually RUN: a second assistant turn must exist.
     //
-    // Two assertions were tried here and BOTH failed on CI, for reasons worth recording:
+    // Selector note (two earlier attempts failed on CI, recorded so they aren't retried):
     //   - `ran echo: "<text>"` — that echo is the sandbox `echo` OUTPUT (not the sent
     //     text) and is streamed word-by-word, so it need not land in one text node.
-    //   - assistantMessages().count() >= 2 — returned 0 even though the user message
-    //     rendered, so the .aui-assistant-message-content / .aui-md selector does not
-    //     match what the thread mounts here after a revive.
-    // Rather than guess a third selector, this test asserts what it can prove.
+    //   - chat.assistantMessages() — returned 0 while the user message rendered fine.
+    //     Its selector is `.aui-assistant-message-content, .aui-md`, but the assistant
+    //     markup carries NO such class: thread.tsx renders the root with
+    //     data-slot="aui_assistant-message-root" (data-role="assistant"), and only the
+    //     USER side has a real `.aui-user-message-content` class. `.aui-md` matches only
+    //     when the reply renders markdown, which this turn need not.
+    // So anchor on the data-slot the component actually emits — checked in the markup,
+    // not guessed.
+    await expect
+      .poll(async () => page.locator('[data-slot="aui_assistant-message-root"]').count(), {
+        timeout: 45_000,
+      })
+      .toBeGreaterThanOrEqual(2);
   });
 
   test("the message sent to a suspended conversation does NOT get stuck in the Queue tab", async ({
