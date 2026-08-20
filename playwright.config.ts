@@ -32,7 +32,10 @@ export default defineConfig({
   retries: 0,
   use: {
     baseURL: process.env.BASE_URL ?? "http://localhost:5173",
-    trace: "on-first-retry",
+    // NOT "on-first-retry": retries are 0 by policy (above), so a first retry never happens and
+    // that setting would capture NOTHING on failure. retain-on-failure keeps the no-retry policy
+    // while still producing the trace that makes a hang diagnosable.
+    trace: "retain-on-failure",
     video: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -70,7 +73,12 @@ export default defineConfig({
           // Wait on the readiness ROUTE (GET /healthz -> 200), not a bare port bind,
           // so the server is actually serving before tests start.
           url: "http://localhost:8080/healthz",
-          reuseExistingServer: !process.env.CI,
+          // Reuse is opt-IN locally (E2E_REUSE_SERVER=1), not the default. A server left over from
+          // an earlier run keeps serving its OLD build, so a fresh run silently tests stale code:
+          // identical specs then yield different failure counts and any baseline/before-after
+          // comparison is worthless. That cost a long debugging detour once — default to a clean
+          // build and let the caller opt into reuse when iterating on test code alone.
+          reuseExistingServer: !process.env.CI && process.env.E2E_REUSE_SERVER === "1",
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -90,7 +98,12 @@ export default defineConfig({
           env: { AGENT_HOST_URL: "http://localhost:8080" },
           url: "http://localhost:5173",
           timeout: 120_000,
-          reuseExistingServer: !process.env.CI,
+          // Reuse is opt-IN locally (E2E_REUSE_SERVER=1), not the default. A server left over from
+          // an earlier run keeps serving its OLD build, so a fresh run silently tests stale code:
+          // identical specs then yield different failure counts and any baseline/before-after
+          // comparison is worthless. That cost a long debugging detour once — default to a clean
+          // build and let the caller opt into reuse when iterating on test code alone.
+          reuseExistingServer: !process.env.CI && process.env.E2E_REUSE_SERVER === "1",
         },
         // --- SSE-resilience-only stack (isolated on its own ports) ----------------
         {
@@ -100,7 +113,12 @@ export default defineConfig({
           command: "node test/e2e/support/faultProxy.mjs",
           env: { FAULT_PROXY_PORT: "8090", AGENT_HOST_PORT: "8080" },
           port: 8090,
-          reuseExistingServer: !process.env.CI,
+          // Reuse is opt-IN locally (E2E_REUSE_SERVER=1), not the default. A server left over from
+          // an earlier run keeps serving its OLD build, so a fresh run silently tests stale code:
+          // identical specs then yield different failure counts and any baseline/before-after
+          // comparison is worthless. That cost a long debugging detour once — default to a clean
+          // build and let the caller opt into reuse when iterating on test code alone.
+          reuseExistingServer: !process.env.CI && process.env.E2E_REUSE_SERVER === "1",
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -120,7 +138,12 @@ export default defineConfig({
           // Same cold-compile warm-up as the 5173 server — GET the page until it 200s.
           url: "http://localhost:5273",
           timeout: 120_000,
-          reuseExistingServer: !process.env.CI,
+          // Reuse is opt-IN locally (E2E_REUSE_SERVER=1), not the default. A server left over from
+          // an earlier run keeps serving its OLD build, so a fresh run silently tests stale code:
+          // identical specs then yield different failure counts and any baseline/before-after
+          // comparison is worthless. That cost a long debugging detour once — default to a clean
+          // build and let the caller opt into reuse when iterating on test code alone.
+          reuseExistingServer: !process.env.CI && process.env.E2E_REUSE_SERVER === "1",
         },
       ],
 });

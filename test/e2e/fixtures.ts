@@ -323,6 +323,9 @@ export { expect };
  * INVARIANTS BETWEEN them is what turns "the UI is unreliable" into a specific failing assertion.
  */
 export interface UiSnapshot {
+  /** Whether the CHAT view is mounted at all (composer present). False on the settings page, where
+   *  the chat-view invariants do not apply. */
+  chatMounted: boolean;
   // thread
   userMessages: number;
   assistantMessages: number;
@@ -360,12 +363,8 @@ export async function snapshot(page: Page): Promise<UiSnapshot> {
   };
   const users = page.locator(sel.userMessage);
   const nUsers = await users.count();
-  const selectedTab = await page
-    .locator('[data-testid^="right-panel-tab-"][aria-selected="true"]')
-    .first()
-    .getAttribute("data-testid")
-    .catch(() => null);
   return {
+    chatMounted: await visible(sel.composerInput),
     userMessages: nUsers,
     assistantMessages: await page.locator(sel.assistantMessage).count(),
     toolCards: await count(sel.toolCall),
@@ -379,16 +378,39 @@ export async function snapshot(page: Page): Promise<UiSnapshot> {
     composerStop: await visible('[data-testid="composer-stop"]'),
     runError: await text('[data-testid="run-error-message"]'),
     authError: await visible('[data-testid="stream-auth-error-bar"]'),
-    queued: await page.locator('[data-testid="queued-message-text"]').allInnerTexts()
-      .then((t) => t.map((s) => s.trim())).catch(() => []),
-    queueBadge: await text('[data-testid="right-panel-badge-queue"]'),
-    interruptOpen: await visible('[data-testid="interrupt-panel"]'),
-    interruptOptions: await count('[data-testid="interrupt-option"]'),
+    // ATOMIC TRIPLE (same reasoning as the interrupt pair above). assertConsistent cross-checks
+    // queueBadge against queued.length *and* against selectedTab; read separately, a message
+    // draining from the queue between the three queries yields a badge/rows mismatch that never
+    // existed on screen. One evaluate keeps them mutually consistent.
+    ...(await page.evaluate(() => {
+      const txt = (sel: string) => document.querySelector(sel)?.textContent?.trim() || null;
+      return {
+        queued: Array.from(document.querySelectorAll('[data-testid="queued-message-text"]'))
+          .map((e) => (e.textContent || "").trim()),
+        queueBadge: txt('[data-testid="right-panel-badge-queue"]'),
+        selectedTab:
+          document
+            .querySelector('[data-testid^="right-panel-tab-"][aria-selected="true"]')
+            ?.getAttribute("data-testid") ?? null,
+      };
+    })),
+    // ATOMIC PAIR. Read in ONE page.evaluate so the panel and its option count come from the SAME
+    // DOM state. As two sequential queries they can straddle a React re-render: an approval that
+    // resolves in between yields interruptOpen=true with interruptOptions=0 — a dead-end state the
+    // user never actually saw, which then trips the "un-answerable panel" invariant. The component
+    // itself cannot render empty (InterruptPanel returns null when nothing is pending), so any such
+    // reading is an artifact of non-atomic sampling, not a real UI state.
+    ...(await page.evaluate(() => {
+      const panel = document.querySelector('[data-testid="interrupt-panel"]');
+      return {
+        interruptOpen: !!panel,
+        interruptOptions: document.querySelectorAll('[data-testid="interrupt-option"]').length,
+      };
+    })),
     approvalsBadge: await text('[data-testid="right-panel-badge-approvals"]'),
     sessions: await count('[data-testid="session-item"]'),
     activeTitle: await text('[data-testid="session-title"]'),
     panelVisible: await visible('[data-testid="right-panel"]'),
-    selectedTab,
   };
 }
 
@@ -396,12 +418,21 @@ export async function snapshot(page: Page): Promise<UiSnapshot> {
  *  A violation here is exactly the "weird detached state" the user reports — two components
  *  disagreeing about the same reality. Call it after every step of every test. */
 export function assertConsistent(s: UiSnapshot, when: string) {
+  // SCOPE: these are CHAT-VIEW invariants (composer Send/Stop, run status, queue badges). On a
+  // non-chat view — e.g. the settings page — none of those components are mounted, so asserting
+  // them is meaningless rather than merely redundant. Detect that and check only what applies.
+  if (!s.chatMounted) return;
   // Send and Stop are the SAME control in two states — never both, never neither.
   expect(s.composerSendable && s.composerStop, `${when}: composer shows BOTH Send and Stop`).toBe(false);
-  // The run indicator and the composer must agree on whether a run is in flight.
-  if (s.running) {
-    expect(s.composerSendable, `${when}: run-status says RUNNING but the composer offers Send`).toBe(false);
-  } else {
+  // NOTE: "running => composer must NOT offer Send" is NOT an invariant here, though it is the
+  // obvious one to write. Scooter deliberately keeps the composer submittable DURING a run: a
+  // message sent mid-run is QUEUED (server-side priority queue), which is why
+  // useRepositoryRuntime passes isRunning=false to the external-store runtime unconditionally.
+  // assistant-ui would otherwise swallow the keystroke and the message would never reach the queue
+  // — the "messages sent while working don't show up" bug (#279). Asserting the opposite here
+  // contradicts the product and is what failed CI on main (concurrency-divergence.spec.ts:128).
+  // The real invariant is the one that still holds: an IDLE app must not present a Stop button.
+  if (!s.running) {
     expect(s.composerStop, `${when}: no run in flight but the composer still shows Stop`).toBe(false);
   }
   // A terminal error and an in-flight run are mutually exclusive states.
