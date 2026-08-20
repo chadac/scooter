@@ -19,3 +19,4 @@ services/*/flake.nix
 services/*/flake.lock
 services/*/uv.lock
 services/*/.venv/
+services/conversation-router/conversation-router

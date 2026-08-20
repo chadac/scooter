@@ -27,11 +27,41 @@ func ConvIDFromPath(path string) (string, bool) {
 	}
 	switch parts[0] {
 	case "conversations", "c":
+		// GUARD: /conversations/events is the FLEET-WIDE list stream, not a conversation whose id
+		// happens to be "events". Without this it parses as convID="events", finds no such owner,
+		// and silently falls back to one arbitrary pod — so the sidebar's live stream showed only
+		// that pod's slice of the conversations. Same class as the /conversations list bug.
+		if parts[0] == "conversations" && parts[1] == "events" {
+			return "", false
+		}
 		if parts[1] != "" {
 			return parts[1], true
 		}
 	}
 	return "", false
+}
+
+// IsFleetAggregate reports whether a request must be answered from the WHOLE FLEET rather than by
+// any single pod. These endpoints read an agent-host's IN-MEMORY conversation map (sessions.list()),
+// which on a multi-replica deployment holds only the conversations THAT pod currently hosts — with
+// podCap=1 the controller deliberately spreads them one-per-pod, so any single pod sees a small,
+// disjoint slice. Proxying such a request to one pod therefore returns a fraction of the user's
+// conversations (observed on odin: per-pod 0,2,2,4,4,4,7,7,8,8 while 20 CRs existed), and WHICH
+// fraction changes with load-balancing — conversations appear to vanish between refreshes.
+//
+// The router fans these out to every ready pod and merges the results (see aggregate.go).
+func IsFleetAggregate(method, path string) bool {
+	if method != "GET" {
+		return false
+	}
+	parts := splitPath(path)
+	if len(parts) == 1 && parts[0] == "conversations" {
+		return true // GET /conversations — the list
+	}
+	if len(parts) == 2 && parts[0] == "conversations" && parts[1] == "events" {
+		return true // GET /conversations/events — the live list stream
+	}
+	return false
 }
 
 // IsAguiPost reports whether this is the POST /agui route (id lives in the body).
