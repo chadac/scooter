@@ -1080,6 +1080,88 @@ describe("bridge run queue + cancel", () => {
     const fin = events.find((e) => e.type === "RUN_FINISHED") as { cancelled?: boolean } | undefined;
     expect(fin?.cancelled).toBe(true);
   });
+
+  // ---------------------------------------------------------------------------
+  // SUSPEND / REVIVE teardown of the queue. The reported bug: "the message I send
+  // disappears, appears in the queue tab, but never gets flushed."
+  //
+  // suspend() does `await entry.bridge?.stop(); entry.bridge = undefined` — the
+  // whole closure (and with it `queue`) is dropped. revive() then builds a BRAND-NEW
+  // bridge with a fresh empty queue, so nothing will ever drain the old items. The
+  // two observable consequences a client can be left with:
+  //   1. the queued prompt's promise never settles (a leaked await, forever), and
+  //   2. the LAST persisted QUEUE_UPDATED still lists the item, so a reattaching UI
+  //      re-derives a phantom queue entry that no pump will ever drain.
+  // ---------------------------------------------------------------------------
+
+  // KNOWN BUGS (red-first): both of the following FAIL today. They pin the exact
+  // teardown contract suspend/revive needs — see the block comment above.
+  it("stop() SETTLES queued prompts instead of abandoning their promises", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the first run so the second prompt queues behind it
+    const bridge = mkBridge(agent);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "running" });
+    await tick();
+
+    // This one is QUEUED behind the gated run when the suspend lands.
+    let settled: "resolved" | "rejected" | "pending" = "pending";
+    const queued = bridge
+      .prompt({ threadId: "t1", text: "queued at suspend" })
+      .then(() => { settled = "resolved"; })
+      .catch(() => { settled = "rejected"; });
+    await tick();
+
+    // Suspend tears the bridge down (manager.suspend: bridge.stop() then drop it).
+    await bridge.stop();
+    await tick();
+    await tick();
+
+    // A caller awaiting prompt() must not hang forever on a bridge that no longer
+    // exists — the queue item can never run, so its promise has to settle (reject).
+    await Promise.race([queued, tick().then(() => tick())]);
+    expect(
+      settled,
+      "a prompt queued when the bridge was torn down must settle, not leak forever",
+    ).not.toBe("pending");
+  });
+
+  it("stop() emits a CLEARING queue snapshot so a revived tab shows no phantom queue", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "running" });
+    await tick();
+    void bridge.prompt({ threadId: "t1", text: "phantom queued msg" });
+    await tick();
+
+    const snaps = () =>
+      events.filter((e) => e.type === "QUEUE_UPDATED") as Array<{
+        type: "QUEUE_UPDATED";
+        items: Array<{ id: string; text: string; priority: number }>;
+      }>;
+    // Precondition: the queued message IS in the latest snapshot.
+    expect(snaps().at(-1)!.items.map((i) => i.text)).toContain("phantom queued msg");
+
+    await bridge.stop();
+    await tick();
+
+    // The durable log's LAST word on the queue must be "empty". Otherwise a UI that
+    // reattaches after the revive folds the stale snapshot and renders a queued
+    // bubble that no pump will ever drain (it self-heals ONLY while the run is idle —
+    // once the revived conversation starts a run, the phantom reappears).
+    expect(
+      snaps().at(-1)!.items,
+      "a torn-down bridge must leave an EMPTY queue snapshot, not a stale one",
+    ).toEqual([]);
+  });
+
 });
 
 describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
