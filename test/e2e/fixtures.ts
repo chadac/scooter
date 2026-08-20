@@ -124,6 +124,33 @@ export class Chat {
       .poll(async () => this.assistantMessages().count(), { timeout })
       .toBeGreaterThan(before);
   }
+
+  /** Send a message WITHOUT waiting for the idle Send button — for queueing behind an in-flight run
+   *  (the composer accepts input mid-run; the message becomes a QUEUED item). `send()` deliberately
+   *  waits for Send to be visible (idle), which would block here; this fills + submits immediately. */
+  async sendWhileRunning(text: string) {
+    const input = this.input();
+    await input.click();
+    await input.fill(text);
+    await input.press("Enter");
+  }
+
+  /** Start a long in-flight run (the fake agent runs a real `sleep <sec>` in the sandbox) and wait
+   *  until the UI shows the working state — so a subsequent sendWhileRunning() genuinely queues. */
+  async startLongRun(sec = 20) {
+    await this.send(`!sleep ${sec}`);
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+  }
+
+  /** The durable queued-message rows (QUEUE_UPDATED-driven + optimistic). */
+  queuedMessages(): Locator {
+    return this.page.locator('[data-testid="queued-message"]');
+  }
+  /** Open the right panel's Queue tab (so queued rows are visible to assert on). */
+  async openQueueTab() {
+    const tab = this.page.locator('[data-testid="right-panel-tab-queue"]');
+    if (await tab.isVisible().catch(() => false)) await tab.click();
+  }
 }
 
 type Fixtures = {
