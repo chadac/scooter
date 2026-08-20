@@ -39,7 +39,20 @@ class SandboxSizeStore:
     """Persists the per-conversation size spec. Async (asyncpg/aiosqlite)."""
 
     def __init__(self, config: StoreConfig) -> None:
-        self._engine: AsyncEngine = create_async_engine(config.resolved_dsn(), echo=False)
+        # pool_pre_ping: emit a lightweight liveness check when a connection is checked out of the
+        # pool and RECYCLE it if the server (or an idle-timeout / proxy / failover) closed it
+        # underneath us — instead of handing out a dead connection and failing the request with
+        # asyncpg "connection is closed" on the next transaction. pool_recycle caps a connection's
+        # lifetime below common idle-timeout windows so stale ones retire proactively. Mirrors the
+        # webhooks engine (services/webhooks/webhooks/store.py), which added these after exactly
+        # that failure in production; without them a postgres restart / failover breaks this
+        # service until it is itself restarted.
+        self._engine: AsyncEngine = create_async_engine(
+            config.resolved_dsn(),
+            echo=False,
+            pool_pre_ping=True,
+            pool_recycle=1800,  # recycle connections older than 30 min
+        )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def init(self) -> None:

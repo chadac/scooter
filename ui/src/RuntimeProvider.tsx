@@ -171,6 +171,11 @@ export interface InterruptContextValue {
    *  the hydrate-silent-drop class) would go silent. Surfaced here so the UI can
    *  show a visible error banner. Cleared when the next run starts. */
   runError: string | null;
+  /** Non-null while the server is AUTO-RETRYING a transiently-failed run (agent process died / went
+   *  silent / ACP threw) — `{attempt, max}` drives a "Agent stopped unexpectedly — retrying (n/N)…"
+   *  banner instead of the terminal error. Cleared when the retry's run starts (success) or the final
+   *  RUN_ERROR lands (exhausted). See the bridge death-retry loop + integrityAgent.getRunRetrying. */
+  runRetrying: { attempt: number; max: number } | null;
   /** True when the live stream is being rejected with a 401/403 — an expired
    *  ingress/auth session in front of the agent-host. Surfaced so the UI can show
    *  a durable "session expired — reconnecting / sign in again" banner instead of
@@ -198,6 +203,7 @@ export const InterruptContext = createContext<InterruptContextValue>({
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
+  runRetrying: null,
   streamAuthError: false,
   queuedMessages: [],
   renderTick: 0,
@@ -375,6 +381,7 @@ function ConversationRuntime({
   const [contextTokens, setContextTokens] = useState<{ used: number; total: number } | null>(null);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
+  const [runRetrying, setRunRetrying] = useState<{ attempt: number; max: number } | null>(null);
   const [streamAuthError, setStreamAuthError] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<
     ReadonlyArray<{ id: string; text: string; priority: number }>
@@ -416,6 +423,7 @@ function ConversationRuntime({
       if (!active) setCancelState("idle"); // run idle → drop optimistic stopping/failed
       setInterrupts(agent.getPendingInterrupts());
       setRunError(agent.getRunError());
+      setRunRetrying(agent.getRunRetrying());
       setStreamAuthError(agent.getStreamAuthError());
       const serverQueue = agent.getQueuedMessages();
       setQueuedMessages(serverQueue);
@@ -566,11 +574,12 @@ function ConversationRuntime({
       cancel: doCancel,
       cancelState,
       runError,
+      runRetrying,
       streamAuthError,
       queuedMessages: renderedQueue,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, streamAuthError, renderedQueue, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, runRetrying, streamAuthError, renderedQueue, renderTick],
   );
 
   return (

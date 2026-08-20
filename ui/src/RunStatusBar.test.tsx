@@ -103,6 +103,19 @@ describe("RunStatusBar Stop feedback", () => {
     expect(html).toContain('aria-label="Scooter is working"');
     expect(html).not.toContain("run-error-bar");
   });
+
+  it("auto-retry: shows the 'retrying (n/N)…' banner", () => {
+    const html = render({ isRunning: false, runRetrying: { attempt: 2, max: 5 }, runError: "the agent died" });
+    expect(html).toContain('data-testid="run-retrying-bar"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain("retrying (2/5)");
+  });
+
+  it("the retrying banner SUPERSEDES the death error banner (don't show both / a dead-end error mid-retry)", () => {
+    const html = render({ isRunning: false, runRetrying: { attempt: 1, max: 5 }, runError: "the agent process exited" });
+    expect(html).toContain('data-testid="run-retrying-bar"');
+    expect(html).not.toContain('data-testid="run-error-bar"'); // the terminal error is hidden while retrying
+  });
 });
 
 describe("ContextFillBar", () => {

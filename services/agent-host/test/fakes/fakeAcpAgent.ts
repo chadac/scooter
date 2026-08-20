@@ -64,6 +64,9 @@ export interface FakeAcpAgent {
    *  false so the bridge's liveness watchdog observes a dead agent. Does NOT release
    *  a gated prompt (a real dead process leaves prompt() hanging until cancel). */
   die(): void;
+  /** Bring a died agent back alive (isAlive() → true) — so a test can assert the pump's
+   *  auto-retry SUCCEEDS on a later attempt after a transient death. */
+  heal(): void;
   /** Push a session update to the CURRENTLY-RUNNING prompt's onUpdate — for a
    *  test to deliver a tool_call_update result while the run is gated. */
   emit(u: SessionUpdate): void;
@@ -163,6 +166,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     die() {
       alive = false;
+    },
+    heal() {
+      alive = true;
     },
     emit(u: SessionUpdate) {
       liveUpdate?.(u);

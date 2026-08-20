@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -94,6 +95,32 @@ func (c *OwnershipCache) Run(ctx context.Context, dyn dynamic.Interface, namespa
 		w.Stop()
 		// Channel closed (watch expired) — loop re-lists + re-watches.
 	}
+}
+
+// Hosts returns every DISTINCT owner pod IP the cache currently knows about — i.e. the set of
+// agent-host pods that own at least one conversation. Used by the fleet-aggregate fan-out
+// (aggregate.go): a request that must see ALL conversations is sent to each of these and merged.
+//
+// Sourced from the Conversation CRs the cache already watches, so this needs no extra RBAC and no
+// pod listing. A pod hosting nothing contributes nothing to a conversation list anyway, so its
+// absence here is correct rather than a gap.
+func (c *OwnershipCache) Hosts() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	seen := make(map[string]struct{}, len(c.hosts))
+	out := make([]string, 0, len(c.hosts))
+	for _, ip := range c.hosts {
+		if ip == "" {
+			continue
+		}
+		if _, dup := seen[ip]; dup {
+			continue
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	sort.Strings(out) // deterministic order → stable merge + reproducible tests
+	return out
 }
 
 // hostFrom pulls (name, status.hostIP) from a Conversation object. The IP is the routing

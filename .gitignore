@@ -15,5 +15,6 @@ services/*/flake.nix
 services/*/uv.lock
 services/*/.venv/
 test-results/
+services/conversation-router/conversation-router
 *.tsbuildinfo
 # uv-nix generated artifacts
