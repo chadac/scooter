@@ -221,21 +221,22 @@ export function mirroredConversationStore(
 
     // Durable read for history-reinjection: yield whichever copy is LONGER (the mirror is the
     // multi-writer superset when local is empty/stale — the after-restart memory-loss root cause).
-    // Count both first (cheap vs. the token cost of an agent losing context), then stream the winner.
-    // If they tie or the mirror is behind, local wins (the hot authority). NOTE: this is a coarse
-    // length comparison — a truly DIVERGENT local (a fork, not a prefix) is reconciled by CONTENT in
-    // hydrateFromMirror (see PR2); here we only need "don't reinject from an empty/short local".
+    // If they tie or the mirror is behind, local wins (the hot authority). Reads EACH store at most
+    // ONCE (buffer both, yield the winner) — no re-read of the winning log, which matters for a large
+    // log over NFS. loadHistory buffers into an array anyway, so materializing here costs nothing
+    // extra. NOTE: coarse LENGTH comparison — a truly DIVERGENT local (a fork, not a prefix) is
+    // reconciled by CONTENT in hydrateFromMirror (see PR2); here we only need "don't reinject from an
+    // empty/short local".
     async *readEventsDurable(id: SessionId): AsyncIterable<AguiEvent> {
-      let localCount = 0;
+      const localEvents: AguiEvent[] = [];
       try {
-        for await (const _ of local.readEvents(id)) localCount++;
+        for await (const ev of local.readEvents(id)) localEvents.push(ev);
       } catch { /* local has none */ }
-      let mirrorCount = 0;
+      const mirrorEvents: AguiEvent[] = [];
       try {
-        for await (const _ of mirror.readEvents(id)) mirrorCount++;
-      } catch { /* mirror unreadable — fall back to local below */ }
-      const source = mirrorCount > localCount ? mirror : local;
-      yield* source.readEvents(id);
+        for await (const ev of mirror.readEvents(id)) mirrorEvents.push(ev);
+      } catch { /* mirror unreadable — fall back to local */ }
+      yield* mirrorEvents.length > localEvents.length ? mirrorEvents : localEvents;
     },
   };
 }
