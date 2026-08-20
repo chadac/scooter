@@ -164,4 +164,48 @@ describe("mirroredConversationStore", () => {
       expect(await store.hydrateFromMirror(ID)).toBe(false);
     });
   });
+
+  // The revive HISTORY-REINJECTION durable read (the after-restart memory-loss fix). loadHistory uses
+  // this so a fresh goose session gets the real transcript even when LOCAL is empty/stale.
+  describe("readEventsDurable (revive history-reinjection)", () => {
+    const deltas = async (it: AsyncIterable<AguiEvent>) => {
+      const out: string[] = [];
+      for await (const e of it) out.push((e as { delta: string }).delta);
+      return out;
+    };
+
+    it("reads the MIRROR when LOCAL is empty (restart wiped the emptyDir) — the memory-loss root cause", async () => {
+      const local = memStore(); // wiped: 0 events
+      const mirror = memStore();
+      for (const d of ["a", "b", "c"]) await mirror.appendEvent(ID, ev(d));
+      const store = mirroredConversationStore(local, mirror);
+      expect(await deltas(store.readEventsDurable(ID))).toEqual(["a", "b", "c"]); // NOT [] from local
+    });
+
+    it("reads the MIRROR when LOCAL is a short STALE stub (a different pod mirrored later runs)", async () => {
+      const local = memStore();
+      await local.appendEvent(ID, ev("a")); // 3KB-stub analog: 1 event
+      const mirror = memStore();
+      for (const d of ["a", "b", "c", "d"]) await mirror.appendEvent(ID, ev(d)); // full 4
+      const store = mirroredConversationStore(local, mirror);
+      expect(await deltas(store.readEventsDurable(ID))).toEqual(["a", "b", "c", "d"]);
+    });
+
+    it("reads LOCAL when it is the authority (mirror behind or equal — hot path unchanged)", async () => {
+      const local = memStore();
+      for (const d of ["a", "b", "c"]) await local.appendEvent(ID, ev(d));
+      const mirror = memStore();
+      for (const d of ["a", "b"]) await mirror.appendEvent(ID, ev(d)); // mirror lags (coalesce window)
+      const store = mirroredConversationStore(local, mirror);
+      expect(await deltas(store.readEventsDurable(ID))).toEqual(["a", "b", "c"]); // local wins
+    });
+
+    it("falls back to LOCAL when the mirror read throws (never worse than local-only)", async () => {
+      const local = memStore();
+      await local.appendEvent(ID, ev("a"));
+      const mirror = memStore({ async *readEvents() { throw new Error("mirror down"); } });
+      const store = mirroredConversationStore(local, mirror);
+      expect(await deltas(store.readEventsDurable(ID))).toEqual(["a"]);
+    });
+  });
 });

@@ -111,6 +111,12 @@ export function mirroredConversationStore(
   /** Pull one conversation's durable state MIRROR→LOCAL (revive-on-assign). Returns false
    *  if the mirror has no such conversation. See the method + ROLLOUT_DRAIN_AND_POD_IP.md. */
   hydrateFromMirror: (id: SessionId) => Promise<boolean>;
+  /** Read the DURABLE history for a conversation: the mirror's log when it is longer than local,
+   *  else local. Used by revive HISTORY-REINJECTION (loadHistory) so a fresh goose session gets the
+   *  real transcript even when this pod's LOCAL emptyDir was wiped (restart/rollout) or is a stale
+   *  stub (a different pod owned + mirrored later runs). Reading plain `readEvents` (local-only) there
+   *  made the model start from a BLANK slate after any restart. See the revive-reinjection bug. */
+  readEventsDurable: (id: SessionId) => AsyncIterable<AguiEvent>;
 } {
   const onErr = opts.onMirrorError ?? ((id, e) =>
     console.error(`[mirror] write failed for ${id} (local intact):`, e));
@@ -211,6 +217,25 @@ export function mirroredConversationStore(
         if (mod != null) await local.saveModule?.(id, mod);
       } catch { /* module optional */ }
       return true;
+    },
+
+    // Durable read for history-reinjection: yield whichever copy is LONGER (the mirror is the
+    // multi-writer superset when local is empty/stale — the after-restart memory-loss root cause).
+    // Count both first (cheap vs. the token cost of an agent losing context), then stream the winner.
+    // If they tie or the mirror is behind, local wins (the hot authority). NOTE: this is a coarse
+    // length comparison — a truly DIVERGENT local (a fork, not a prefix) is reconciled by CONTENT in
+    // hydrateFromMirror (see PR2); here we only need "don't reinject from an empty/short local".
+    async *readEventsDurable(id: SessionId): AsyncIterable<AguiEvent> {
+      let localCount = 0;
+      try {
+        for await (const _ of local.readEvents(id)) localCount++;
+      } catch { /* local has none */ }
+      let mirrorCount = 0;
+      try {
+        for await (const _ of mirror.readEvents(id)) mirrorCount++;
+      } catch { /* mirror unreadable — fall back to local below */ }
+      const source = mirrorCount > localCount ? mirror : local;
+      yield* source.readEvents(id);
     },
   };
 }
