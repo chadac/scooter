@@ -11,6 +11,15 @@
  *   - killAfter(n)    : close the connection after N frames (forces a reconnect)
  *   - authExpire      : respond 401 (an expired ingress/auth session in front)
  *
+ * CORRUPTION modes (the stream keeps flowing but LIES — the harshest class, because the UI
+ * keeps reading and must not be poisoned by what it reads):
+ *   - duplicate(eventType, n) : emit a matching frame N extra times (at-least-once redelivery)
+ *   - reorder(eventType)      : HOLD a matching frame and release it AFTER the next one (out-of-order)
+ *   - garbage(afterN)         : inject an unparseable `data:` frame after N frames
+ *   - truncate(afterN)        : emit a HALF frame (cut mid-JSON) after N frames
+ *   - corruptChecksum(afterN) : rewrite a frame's checksum so the integrity chain breaks
+ *   - bogusEvent(afterN)      : inject a well-formed frame with an UNKNOWN event type
+ *
  * Faults are set out-of-band by the test via `POST /__fault` (JSON body) and
  * apply to the NEXT integrity connection(s). `POST /__fault {mode:"none"}` clears.
  * Everything else (POST /agui, /conversations, /tail, …) passes straight through,
@@ -87,8 +96,68 @@ export function startFaultProxy({ port, targetHost, targetPort }) {
         let stalled = false;
         let killed = false;
 
+        /** Frames held back by `reorder`, released after the following frame. */
+        let held = null;
+
+        const rawWrite = (text) => { res.write(text); };
+
         const flushFrame = (frame) => {
           if (killed) return;
+
+          // --- CORRUPTION MODES: the stream keeps flowing but delivers wrong/!well-formed data ---
+          if (fault.mode === "duplicate") {
+            const t = frameEventType(frame);
+            if (t && t === fault.eventType) {
+              const extra = fault.n ?? 1;
+              if (fault.once !== false) fault = { mode: "none" };
+              // Deliver the frame, then re-deliver it N more times: at-least-once redelivery, which
+              // a fold that isn't idempotent turns into duplicated messages/tool cards.
+              rawWrite(frame + "\n\n");
+              for (let i = 0; i < extra; i++) rawWrite(frame + "\n\n");
+              forwarded += 1 + extra;
+              return;
+            }
+          }
+          if (fault.mode === "reorder") {
+            const t = frameEventType(frame);
+            if (held === null && t && t === fault.eventType) {
+              held = frame; // hold it; the NEXT frame goes first
+              return;
+            }
+            if (held !== null) {
+              rawWrite(frame + "\n\n");        // the later frame arrives FIRST
+              rawWrite(held + "\n\n");         // then the held one, out of order
+              held = null;
+              forwarded += 2;
+              if (fault.once !== false) fault = { mode: "none" };
+              return;
+            }
+          }
+          if (fault.mode === "garbage" && forwarded >= (fault.afterN ?? 1)) {
+            if (fault.once !== false) fault = { mode: "none" };
+            // An unparseable data: line mid-stream. The client MUST skip it, not die.
+            rawWrite("data: {this is not json at all,,,}\n\n");
+          }
+          if (fault.mode === "truncate" && forwarded >= (fault.afterN ?? 1)) {
+            if (fault.once !== false) fault = { mode: "none" };
+            // A frame cut mid-JSON with no terminator — a torn write on the wire.
+            rawWrite("data: {\"kind\":\"event\",\"event\":{\"type\":\"TEXT_MES");
+          }
+          if (fault.mode === "bogusEvent" && forwarded >= (fault.afterN ?? 1)) {
+            if (fault.once !== false) fault = { mode: "none" };
+            // Well-formed JSON, UNKNOWN event type — a newer server talking to an older client.
+            rawWrite('data: {"kind":"event","event":{"type":"TOTALLY_UNKNOWN_EVENT","weird":true}}\n\n');
+          }
+          if (fault.mode === "corruptChecksum" && forwarded >= (fault.afterN ?? 1)) {
+            if (fault.once !== false) fault = { mode: "none" };
+            // Break the integrity chain: same event, wrong checksum. The client's verification
+            // must notice and re-sync from the server rather than render a poisoned fold.
+            const bad = frame.replace(/"checksum":"[0-9a-f]+"/, '"checksum":"' + "d".repeat(64) + '"');
+            rawWrite(bad + "\n\n");
+            forwarded += 1;
+            return;
+          }
+
           if (fault.mode === "drop") {
             const t = frameEventType(frame);
             if (t && t === fault.eventType) {

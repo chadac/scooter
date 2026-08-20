@@ -32,7 +32,7 @@ test.describe("reload mid-run / mid-queue (pristine stack)", () => {
     await page.reload(); // reload mid-run — the persisted log must re-fold + the run finishes
     await expect.poll(async () => chat.assistantMessages().count(), { timeout: 45_000 }).toBeGreaterThan(before);
     // And the UI is not stuck "working" afterwards.
-    await expect(page.getByRole("button", { name: /send/i }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".aui-composer-send, [aria-label=\"Send message\"]").first()).toBeVisible({ timeout: 15_000 });
   });
 
   test("reload WHILE a message is queued → the queue persists and still drains", async ({ chat, page }) => {
@@ -85,7 +85,7 @@ test.describe("detached state recovery (fault-proxy stack)", () => {
     await chat.send("this finish gets dropped");
     // Recovery: the reply finalizes + the composer un-sticks (no permanent "working" state).
     await expect(chat.assistantMessages()).toHaveCount(2, { timeout: 30_000 });
-    await expect(page.getByRole("button", { name: /send/i }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".aui-composer-send, [aria-label=\"Send message\"]").first()).toBeVisible({ timeout: 15_000 });
   });
 
   test("connection KILLED mid-stream → the reconnect re-folds; the reply completes with no duplicate", async ({ chat, request }) => {

@@ -62,7 +62,7 @@ test.describe("long multi-turn conversation integrity", () => {
     for (let i = 1; i <= 4; i++) {
       await chat.sendTurn(`clean turn ${i}`);
       // Between turns the composer is idle: Send is available (NOT stuck showing Stop/working).
-      await expect(page.getByRole("button", { name: /send/i }).first()).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator(".aui-composer-send, [aria-label=\"Send message\"]").first()).toBeVisible({ timeout: 15_000 });
       await expect(page.locator('[data-testid="run-status-bar"]')).toHaveCount(0);
     }
   });

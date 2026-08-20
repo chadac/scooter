@@ -154,6 +154,23 @@ export class Chat {
     await expect(this.page.locator('[data-testid="run-status-bar"]')).toHaveCount(0, { timeout });
   }
 
+  /** Send a turn and wait for it to COMPLETE (reply landed AND the run ended), tolerating a hostile
+   *  stream. Unlike `sendTurn`, this waits on the assistant-message COUNT and then on genuine idle —
+   *  and unlike `waitForIdle` alone it can't return early just because the run hasn't started yet
+   *  (which made corruption tests "pass through" in ~1.7s having done nothing). */
+  async completeTurn(text: string, timeout = 60_000) {
+    const before = await this.assistantMessages().count();
+    await this.send(text);
+    // The run must actually BEGIN before we can meaningfully wait for it to end.
+    await expect(this.page.locator('[data-testid="run-status-bar"]'))
+      .toBeVisible({ timeout: 30_000 })
+      .catch(() => {}); // a very fast turn may finish before we look — the count poll below covers it
+    await expect
+      .poll(async () => this.assistantMessages().count(), { timeout })
+      .toBeGreaterThan(before);
+    await this.waitForIdle(timeout);
+  }
+
   /** Open the right panel's Queue tab (so queued rows are visible to assert on). */
   async openQueueTab() {
     const tab = this.page.locator('[data-testid="right-panel-tab-queue"]');
@@ -319,7 +336,11 @@ export async function snapshot(page: Page): Promise<UiSnapshot> {
     toolCards: await count(sel.toolCall),
     lastUserText: nUsers ? ((await users.nth(nUsers - 1).innerText().catch(() => "")) || "").trim() : "",
     running: await visible('[data-testid="run-status-bar"]'),
-    composerSendable: await page.getByRole("button", { name: /send/i }).first().isVisible().catch(() => false),
+    // Target the COMPOSER's send button precisely (.aui-composer-send / aria-label "Send message").
+    // A loose getByRole(/send/i) also matches SIDEBAR row buttons named after the conversation title
+    // (e.g. "Delete baseline before simultaneous sends"), which produced a false "composer shows BOTH
+    // Send and Stop" whenever a message contained the word "send".
+    composerSendable: await visible('.aui-composer-send, [aria-label="Send message"]'),
     composerStop: await visible('[data-testid="composer-stop"]'),
     runError: await text('[data-testid="run-error-message"]'),
     authError: await visible('[data-testid="stream-auth-error-bar"]'),

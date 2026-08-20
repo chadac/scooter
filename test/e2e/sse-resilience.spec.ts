@@ -56,7 +56,7 @@ test.describe("SSE resilience", () => {
     // reconnect re-folds the persisted log (which HAS RUN_FINISHED), so `running`
     // clears and Send returns — no "agent seems dead".
     await expect(chat.assistantMessages()).toHaveCount(2, { timeout: 30_000 });
-    const sendBtn = page.getByRole("button", { name: /send/i }).first();
+    const sendBtn = page.locator(".aui-composer-send, [aria-label=\"Send message\"]").first();
     await expect(sendBtn).toBeVisible({ timeout: 15_000 });
 
     // The real proof it's not "dead": a NEW message sends and gets its OWN reply.
@@ -81,7 +81,7 @@ test.describe("SSE resilience", () => {
     await expect(chat.userMessages()).toHaveCount(2, { timeout: 30_000 });
     await expect(chat.assistantMessages()).toHaveCount(2, { timeout: 30_000 });
     // Composer is usable again.
-    await expect(page.getByRole("button", { name: /send/i }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".aui-composer-send, [aria-label=\"Send message\"]").first()).toBeVisible({ timeout: 15_000 });
   });
 
   test("stalled stream — messages arrive late but correctly, no error box", async ({ chat, request }) => {
