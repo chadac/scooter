@@ -1086,16 +1086,16 @@ describe("bridge run queue + cancel", () => {
   // disappears, appears in the queue tab, but never gets flushed."
   //
   // suspend() does `await entry.bridge?.stop(); entry.bridge = undefined` — the
-  // whole closure (and with it `queue`) is dropped. revive() then builds a BRAND-NEW
-  // bridge with a fresh empty queue, so nothing will ever drain the old items. The
-  // two observable consequences a client can be left with:
-  //   1. the queued prompt's promise never settles (a leaked await, forever), and
-  //   2. the LAST persisted QUEUE_UPDATED still lists the item, so a reattaching UI
-  //      re-derives a phantom queue entry that no pump will ever drain.
+  // whole closure (and with it `queue`) is dropped, and revive() builds a BRAND-NEW
+  // bridge with a fresh empty queue. So the teardown itself must leave no wreckage:
+  //   1. the queued prompt's promise must SETTLE (it used to leak, hanging an
+  //      awaiting caller forever), and
+  //   2. the LAST persisted QUEUE_UPDATED must be EMPTY (a stale one made a
+  //      reattaching UI re-derive a phantom queue entry no pump would ever drain).
+  // Preserving the message itself is the MANAGER's job (suspend drains it onto the
+  // conversation meta, revive re-enqueues it) — see suspendedRevive.spec.ts.
   // ---------------------------------------------------------------------------
 
-  // KNOWN BUGS (red-first): both of the following FAIL today. They pin the exact
-  // teardown contract suspend/revive needs — see the block comment above.
   it("stop() SETTLES queued prompts instead of abandoning their promises", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([{ finish: { stopReason: "end_turn" } }]);
@@ -1136,9 +1136,12 @@ describe("bridge run queue + cancel", () => {
     const events = collect(bridge);
     await bridge.start();
 
-    void bridge.prompt({ threadId: "t1", text: "running" });
+    // Attach catch handlers: stop() now REJECTS abandoned queue items (that's the
+    // fix — the promise used to leak), so a bare `void` here would surface as an
+    // unhandled rejection in this test. Production callers all `await` prompt().
+    void bridge.prompt({ threadId: "t1", text: "running" }).catch(() => {});
     await tick();
-    void bridge.prompt({ threadId: "t1", text: "phantom queued msg" });
+    void bridge.prompt({ threadId: "t1", text: "phantom queued msg" }).catch(() => {});
     await tick();
 
     const snaps = () =>

@@ -216,9 +216,6 @@ test.describe("recovered conversation — sending a message revives it", () => {
     ).toHaveCount(0, { timeout: 30_000 });
   });
 
-  // KNOWN BUG (red-first, per CLAUDE.md "keep tests red-first"): this FAILS today.
-  // A message sitting in the bridge's in-memory queue when the conversation is
-  // suspended is destroyed — see the assertion at the end for the observed event log.
   test("a conversation suspended MID-RUN with a queued message recovers without a phantom queue", async ({
     chat,
     page,
@@ -255,16 +252,15 @@ test.describe("recovered conversation — sending a message revives it", () => {
       "a queue item stranded by the suspend must not linger as a phantom row",
     ).toHaveCount(0, { timeout: 30_000 });
 
-    // THE REAL BUG (currently FAILING — the queued message is silently destroyed):
-    // an item sitting in the bridge's in-memory queue when suspend() tears the bridge
-    // down is dropped on the floor. suspend() does `bridge.stop(); bridge = undefined`,
-    // and stop() never drains, rejects, or re-queues the pending items; revive() then
-    // builds a BRAND-NEW bridge with an empty queue. The observed event log is:
+    // THE BUG THIS PINS: an item sitting in the bridge's in-memory queue when
+    // suspend() tears the bridge down used to be dropped on the floor — stop() never
+    // drained or re-queued it, and revive() built a BRAND-NEW bridge with an empty
+    // queue. The observed event log was:
     //     QUEUE_UPDATED items=['queued before the suspend']
     //     QUEUE_UPDATED items=['after the suspend']      <- silently replaced
-    // The user's message never ran and never surfaced an error — exactly the reported
-    // "my message just sits somewhere hidden". It must either RUN after the revive or
-    // fail loudly; vanishing is not acceptable.
+    // The message never ran and never surfaced an error — exactly the reported "my
+    // message just sits somewhere hidden". suspend() now DRAINS the queue onto the
+    // conversation's persisted meta and revive() RE-ENQUEUES it, so it actually runs.
     await expect(
       page.getByText(/queued before the suspend/i).first(),
       "a message queued when the conversation was suspended must NOT be silently lost",

@@ -302,6 +302,16 @@ export interface SessionBridge {
    *  whether a run is active, how long it's been going, and the queued backlog. */
   queueState(): { running: boolean; currentRunMs: number; queued: number; maxQueuedPriority: number };
 
+  /** Remove every QUEUED (not-yet-running) item and return it, so the caller can
+   *  PERSIST it across a bridge teardown. Used by suspend: the run queue lives in
+   *  this bridge's closure and the bridge is dropped on suspend, so anything still
+   *  queued would otherwise be destroyed (the message the user sent silently never
+   *  runs). Each drained item's prompt() promise is REJECTED — it will not run on
+   *  THIS bridge; revive re-enqueues the persisted copies on the new one. Also
+   *  emits a clearing QUEUE_UPDATED so the durable log's last word is "empty"
+   *  (else a reattaching UI folds a phantom queued row nothing will drain). */
+  drainQueue(): Array<{ text: string; priority: number }>;
+
   /** True when a PRIORITY_INTERRUPT item is waiting on the queue — the signal for
    *  tool-call BACK-PRESSURE: a provider's pre-tool gate (SDK canUseTool / goose
    *  approve-mode request_permission) denies the NEXT tool while this is true, so
@@ -1432,9 +1442,35 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     recordRawInput,
 
+    drainQueue() {
+      if (queue.length === 0) return [];
+      const abandoned = queue.splice(0, queue.length);
+      // The log's final word on the queue must be "empty" — see the interface doc.
+      emitQueueSnapshot();
+      const drained = abandoned.map((q) => ({ text: q.input.text, priority: q.priority }));
+      for (const item of abandoned) {
+        item.reject(
+          new Error("the conversation was suspended before this queued message could run"),
+        );
+      }
+      return drained;
+    },
+
     async stop() {
       closed = true; // abandon any in-progress death-retry backoff
       clearInterruptTimer();
+      // DRAIN THE QUEUE. A suspend (or model switch / rollout) tears the bridge down
+      // via stop() and then DROPS it (manager.suspend: `entry.bridge = undefined`),
+      // and revive() builds a brand-new bridge with a fresh empty queue — so anything
+      // still queued here can never run on this bridge. Left alone that produced two
+      // bugs: the queued prompt() promises leaked (an awaiting caller hung forever),
+      // and the last persisted QUEUE_UPDATED still LISTED the items, so a reattaching
+      // UI folded a phantom queued row nothing would ever drain.
+      // manager.suspend() calls drainQueue() FIRST to persist the items (so revive
+      // re-runs them); this call is the belt-and-braces path for every OTHER stop()
+      // caller (model switch, end, shutdown) so a teardown never leaks or leaves a
+      // stale snapshot behind.
+      self.drainQueue();
       // Close EVERY started provider client (there may be more than one after provider switches).
       const settled = await Promise.allSettled([...readySessions.values()]);
       readySessions.clear();

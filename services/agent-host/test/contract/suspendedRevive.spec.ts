@@ -86,6 +86,13 @@ function makeFakeBridge(onEmit: (e: AguiEvent) => void) {
         outcome: { type: "interrupt", interrupts: [{ id, message, options: [{ id: "approve", label: "Approve" }] }] },
       } as unknown as AguiEvent);
     },
+    /** Test-settable stand-in for the real bridge's in-memory run queue. */
+    queued: [] as Array<{ text: string; priority: number }>,
+    drainQueue() {
+      const out = this.queued;
+      this.queued = [];
+      return out;
+    },
     answerPermission: () => true,
     onEvent(cb: (e: AguiEvent) => void) {
       listeners.push(cb);
@@ -296,6 +303,105 @@ describe("post-revive interrupt durability (reload survival)", () => {
         (e) => JSON.stringify(e).includes("awsreq-durable") && e.type === "RUN_FINISHED",
       );
       expect(raised.length, "the post-revive interrupt must be persisted exactly once").toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("broker-shaped AWS request against a recovered conversation", () => {
+  // The BROKER does not know the conversation UUID: its identity comes from the
+  // sandbox SA name `sandbox-{shortId}` (broker/core/auth.py _SA_PATTERN), so
+  // _notify_host POSTs /conversations/{SHORT_ID}/aws-request. The host must resolve
+  // that short hash back to the conversation — including after a suspend, when the
+  // entry may have been evicted from memory entirely.
+  const shortIdOf = (threadId: string): string => {
+    let h = 0;
+    for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) | 0;
+    return Math.abs(h).toString(36);
+  };
+
+  it("getByShortId still resolves a SUSPENDED conversation (the broker's only handle)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-shortid-"));
+    try {
+      const { sessions } = harness(root);
+      const conv = await sessions.start("thread-broker-1");
+      await sessions.suspend(conv.id);
+
+      const found = await sessions.getByShortId(shortIdOf("thread-broker-1"));
+      expect(
+        found?.id,
+        "the broker addresses the conversation ONLY by short id — a suspend must not orphan it",
+      ).toBe(conv.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("getByShortId resolves after a REVIVE too (the id-space must not shift)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-shortid-2-"));
+    try {
+      const { sessions } = harness(root);
+      const conv = await sessions.start("thread-broker-2");
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+
+      const found = await sessions.getByShortId(shortIdOf("thread-broker-2"));
+      expect(found?.id).toBe(conv.id);
+      expect(found?.status, "a revived conversation must present as running").toBe("running");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("queued messages survive suspend → revive", () => {
+  it("a message queued at suspend is PERSISTED and RE-RUN on revive (not destroyed)", async () => {
+    // The reported bug: the run queue lives in the bridge closure, which suspend()
+    // drops, and revive() builds a fresh empty one — so the user's already-sent
+    // message silently never ran and never errored. suspend() now drains the queue
+    // onto the entry (persisted), and revive() re-enqueues it.
+    const root = mkdtempSync(join(tmpdir(), "susp-queue-"));
+    try {
+      const { sessions, bridges } = harness(root);
+      const conv = await sessions.start("thread-queue-1");
+      const first = bridges.get(conv.id)!;
+      // Simulate a message sitting in the bridge queue when the suspend lands.
+      first.queued = [{ text: "queued before the suspend", priority: 0 }];
+
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+
+      const revivedBridge = bridges.get(conv.id)!;
+      expect(
+        revivedBridge.prompts,
+        "the message queued at suspend must RUN on the revived bridge",
+      ).toContain("queued before the suspend");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("re-enqueued messages are cleared, so a second revive does not replay them", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-queue-2-"));
+    try {
+      const { sessions, bridges } = harness(root);
+      const conv = await sessions.start("thread-queue-2");
+      bridges.get(conv.id)!.queued = [{ text: "run me once", priority: 0 }];
+
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+      expect(bridges.get(conv.id)!.prompts).toContain("run me once");
+
+      // Suspend + revive again with nothing newly queued — the old message must NOT
+      // be replayed (that would re-run work the user already got).
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+      const secondRevive = bridges.get(conv.id)!;
+      expect(
+        secondRevive.prompts.filter((p) => p === "run me once"),
+        "a re-enqueued message must not replay on every later revive",
+      ).toHaveLength(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

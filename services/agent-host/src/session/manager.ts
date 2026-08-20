@@ -94,6 +94,12 @@ export interface ConversationMeta {
    *  retention reaper) exempts it from auto-deletion. Hibernation is unaffected —
    *  a starred conversation still idle-suspends. */
   starred?: boolean;
+  /** Messages that were still QUEUED in the bridge when the conversation was
+   *  suspended. The run queue lives in the bridge closure, which suspend() drops —
+   *  so without persisting them here the user's already-sent message is destroyed
+   *  silently (it never runs and never errors). revive() re-enqueues these on the
+   *  rebuilt bridge and clears the field. */
+  pendingQueue?: Array<{ text: string; priority: number }>;
 }
 
 /** An external resource a conversation is linked to (a GitHub PR/issue, GitLab
@@ -429,6 +435,9 @@ interface Entry {
   parentId?: SessionId;
   userTitled?: boolean;
   starred?: boolean;
+  /** Messages still QUEUED in the bridge when this conversation was suspended, so
+   *  revive() can re-enqueue them (the bridge closure that held them is gone). */
+  pendingQueue?: Array<{ text: string; priority: number }>;
 }
 
 /** Drain an async iterable of events into an array (fallback for stores without
@@ -525,6 +534,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       parentId: m.parentId,
       userTitled: m.userTitled,
       starred: m.starred,
+      pendingQueue: m.pendingQueue,
     };
     entries.set(m.id, entry);
     return entry;
@@ -575,6 +585,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       parentId: e.parentId,
       userTitled: e.userTitled,
       starred: e.starred,
+      pendingQueue: e.pendingQueue,
     }) ?? Promise.resolve();
 
   const wireEventLog = (e: Entry) => {
@@ -763,6 +774,29 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           console.error(`[manager] onRevived hook failed for ${id}:`, err);
         }
       }
+      // RE-ENQUEUE anything that was still queued when this conversation was suspended.
+      // suspend() drained the bridge's in-memory queue onto the entry (and persisted it)
+      // precisely so the user's already-sent message is not destroyed by the teardown.
+      // Clear the field FIRST so a failure below can't replay the same message twice on
+      // the next revive, and persist the cleared state before running them.
+      const pending = entry.pendingQueue ?? [];
+      if (pending.length > 0) {
+        entry.pendingQueue = [];
+        await saveMeta(entry);
+        for (const item of pending) {
+          // Fire-and-forget with a catch: a queued message that fails to re-run must not
+          // fail the revive that just brought the pod back (the RUN_ERROR is persisted by
+          // the bridge/prompt path and surfaces in the conversation).
+          void entry.bridge
+            ?.prompt(
+              { threadId: entry.threadId, text: item.text },
+              item.priority ? { priority: item.priority } : undefined,
+            )
+            .catch((err) => {
+              console.error(`[manager] re-enqueued message failed for ${id}:`, err);
+            });
+        }
+      }
       // Back to alive: publish phase=Assigned so a suspended→resumed conversation reflects
       // in `kubectl get conversations`. Owner-fenced, fire-and-forget (see suspend()).
       if (ownershipGuard.canWrite(id)) void conversationRegistry.setPhase(id, "Assigned");
@@ -919,6 +953,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async suspend(id) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
+      // PRESERVE THE QUEUE. The run queue lives in the bridge's closure, which we are
+      // about to drop — anything still queued would be destroyed, so the message the
+      // user already sent would silently never run and never error (the reported
+      // "my message disappears / sits in the queue tab forever"). Drain it FIRST and
+      // persist it on the entry; revive() re-enqueues it on the rebuilt bridge.
+      // drainQueue also emits the clearing QUEUE_UPDATED, so the durable log's last
+      // word on the queue is "empty" and no phantom row survives.
+      // Optional-call: a bridge that predates drainQueue (or a partial test double)
+      // must not break suspend — losing the queue is bad, failing the suspend is worse
+      // (the pod would never come down and the idle sweep would retry forever).
+      const drained = entry.bridge?.drainQueue?.() ?? [];
+      if (drained.length > 0) {
+        entry.pendingQueue = [...(entry.pendingQueue ?? []), ...drained];
+        await saveMeta(entry); // durable BEFORE the teardown — a crash here must not lose it
+      }
       await entry.bridge?.stop();
       await provisioner.suspend(entry.sandbox);
       entry.bridge = undefined;
