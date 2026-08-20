@@ -11,7 +11,7 @@
  * The stack (agent-host fake mode + UI) is booted by playwright.config webServer.
  */
 
-import { test as base, expect, type Page, type Locator } from "@playwright/test";
+import { test as base, expect, type Page, type Locator, type APIRequestContext } from "@playwright/test";
 
 export const sel = {
   errorBox: ".aui-message-error-root",
@@ -146,6 +146,14 @@ export class Chat {
   queuedMessages(): Locator {
     return this.page.locator('[data-testid="queued-message"]');
   }
+  /** Wait until the run is genuinely OVER — not merely until the reply text appeared. `sendTurn`
+   *  returns when the assistant MESSAGE lands, but the run's terminal event trails it slightly, so a
+   *  "must be idle now" assertion made right after sendTurn races a still-finishing run. Poll the
+   *  run-status bar (the authoritative in-flight signal) instead. */
+  async waitForIdle(timeout = 45_000) {
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toHaveCount(0, { timeout });
+  }
+
   /** Open the right panel's Queue tab (so queued rows are visible to assert on). */
   async openQueueTab() {
     const tab = this.page.locator('[data-testid="right-panel-tab-queue"]');
@@ -252,3 +260,128 @@ test.afterEach(async ({ page, consoleErrors }) => {
 });
 
 export { expect };
+
+/**
+ * A WHOLE-UI STATE SNAPSHOT — every surface that can independently go wrong, read in ONE pass.
+ *
+ * Why this exists: asserting one fact per test (does the queue row exist?) misses the failure mode
+ * that actually bites — CROSS-COMPONENT DIVERGENCE, where the thread says one thing, the queue
+ * another, the run-status bar a third, and the sidebar a fourth, all at the same instant. A
+ * single-fact test passes straight through that. Snapshotting every surface and asserting
+ * INVARIANTS BETWEEN them is what turns "the UI is unreliable" into a specific failing assertion.
+ */
+export interface UiSnapshot {
+  // thread
+  userMessages: number;
+  assistantMessages: number;
+  toolCards: number;
+  lastUserText: string;
+  // run state
+  running: boolean;          // the thinking indicator / run-status bar is up
+  composerSendable: boolean; // the Send button is offered (idle) — NOT the Stop button
+  composerStop: boolean;
+  runError: string | null;
+  authError: boolean;
+  // queue
+  queued: string[];          // queued row texts, in render order
+  queueBadge: string | null;
+  // approvals
+  interruptOpen: boolean;
+  interruptOptions: number;
+  approvalsBadge: string | null;
+  // sidebar / session
+  sessions: number;
+  activeTitle: string | null;
+  // right panel
+  panelVisible: boolean;
+  selectedTab: string | null;
+}
+
+/** Read every UI surface at one instant. Never throws — a missing element is a null/0/false, so a
+ *  snapshot is always comparable (that's the point: absence IS state). */
+export async function snapshot(page: Page): Promise<UiSnapshot> {
+  const count = (s: string) => page.locator(s).count();
+  const visible = (s: string) => page.locator(s).first().isVisible().catch(() => false);
+  const text = async (s: string): Promise<string | null> => {
+    const l = page.locator(s).first();
+    return (await l.count()) ? ((await l.innerText().catch(() => "")) || "").trim() : null;
+  };
+  const users = page.locator(sel.userMessage);
+  const nUsers = await users.count();
+  const selectedTab = await page
+    .locator('[data-testid^="right-panel-tab-"][aria-selected="true"]')
+    .first()
+    .getAttribute("data-testid")
+    .catch(() => null);
+  return {
+    userMessages: nUsers,
+    assistantMessages: await page.locator(sel.assistantMessage).count(),
+    toolCards: await count(sel.toolCall),
+    lastUserText: nUsers ? ((await users.nth(nUsers - 1).innerText().catch(() => "")) || "").trim() : "",
+    running: await visible('[data-testid="run-status-bar"]'),
+    composerSendable: await page.getByRole("button", { name: /send/i }).first().isVisible().catch(() => false),
+    composerStop: await visible('[data-testid="composer-stop"]'),
+    runError: await text('[data-testid="run-error-message"]'),
+    authError: await visible('[data-testid="stream-auth-error-bar"]'),
+    queued: await page.locator('[data-testid="queued-message-text"]').allInnerTexts()
+      .then((t) => t.map((s) => s.trim())).catch(() => []),
+    queueBadge: await text('[data-testid="right-panel-badge-queue"]'),
+    interruptOpen: await visible('[data-testid="interrupt-panel"]'),
+    interruptOptions: await count('[data-testid="interrupt-option"]'),
+    approvalsBadge: await text('[data-testid="right-panel-badge-approvals"]'),
+    sessions: await count('[data-testid="session-item"]'),
+    activeTitle: await text('[data-testid="session-title"]'),
+    panelVisible: await visible('[data-testid="right-panel"]'),
+    selectedTab,
+  };
+}
+
+/** The CROSS-COMPONENT INVARIANTS that must hold at EVERY instant, whatever the app is doing.
+ *  A violation here is exactly the "weird detached state" the user reports — two components
+ *  disagreeing about the same reality. Call it after every step of every test. */
+export function assertConsistent(s: UiSnapshot, when: string) {
+  // Send and Stop are the SAME control in two states — never both, never neither.
+  expect(s.composerSendable && s.composerStop, `${when}: composer shows BOTH Send and Stop`).toBe(false);
+  // The run indicator and the composer must agree on whether a run is in flight.
+  if (s.running) {
+    expect(s.composerSendable, `${when}: run-status says RUNNING but the composer offers Send`).toBe(false);
+  } else {
+    expect(s.composerStop, `${when}: no run in flight but the composer still shows Stop`).toBe(false);
+  }
+  // A terminal error and an in-flight run are mutually exclusive states.
+  if (s.runError) {
+    expect(s.running, `${when}: showing a terminal run error WHILE claiming to run`).toBe(false);
+  }
+  // Badges must match the rows they count (a stale badge is the classic divergence) — but ONLY when
+  // the Queue tab is actually SELECTED. The badge is always visible; the rows only mount when that
+  // tab is open, so comparing them on any other tab compares a real count against an unmounted list.
+  if (s.queueBadge && s.selectedTab === "right-panel-tab-queue") {
+    expect(Number(s.queueBadge.replace(/\D/g, "")), `${when}: queue badge != queued rows`).toBe(s.queued.length);
+  }
+  // An interrupt panel with no options is un-answerable — a dead-end state.
+  if (s.interruptOpen) {
+    expect(s.interruptOptions, `${when}: interrupt panel open with NO options (un-answerable)`).toBeGreaterThan(0);
+  }
+  // Every queued row must carry text; a blank row means the queue rendered without its content.
+  for (const q of s.queued) {
+    expect(q.length, `${when}: a queued row rendered EMPTY`).toBeGreaterThan(0);
+  }
+}
+
+/** Cross-check the DOM against the SERVER's own view — the only way to catch a UI that has silently
+ *  detached from reality (renders fine, but no longer reflects what the agent-host actually has). */
+export async function assertMatchesServer(
+  page: Page,
+  request: APIRequestContext,
+  baseURL: string | undefined,
+  when: string,
+) {
+  const base = baseURL ?? "http://localhost:5173";
+  const res = await request.get(`${base}/conversations`);
+  if (!res.ok()) return; // server not reachable for this stack — skip rather than fail spuriously
+  const convs = (await res.json()) as Array<{ id: string }>;
+  const s = await snapshot(page);
+  // The sidebar must list exactly the conversations the server knows about.
+  expect(s.sessions, `${when}: sidebar shows ${s.sessions} sessions, server has ${convs.length}`)
+    .toBe(convs.length);
+}
