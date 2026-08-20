@@ -12,14 +12,13 @@
  * the exact pair of components that diverged.
  */
 
-import { test, expect, snapshot, assertConsistent, assertMatchesServer, type UiSnapshot } from "./fixtures.js";
+import { test, expect, snapshot, assertConsistent, assertMatchesServer, checkpoint, type UiSnapshot } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 
 /** Snapshot + assert every invariant, and hand back the snapshot for step-specific assertions. */
 async function step(page: Page, when: string): Promise<UiSnapshot> {
-  const s = await snapshot(page);
-  assertConsistent(s, when);
-  return s;
+  // checkpoint = snapshot + screenshot (when UI_SHOTS=1) + the cross-component invariants.
+  return checkpoint(page, when);
 }
 
 test.describe("whole-UI consistency through a normal turn", () => {

@@ -133,6 +133,19 @@ export class Chat {
     await input.click();
     await input.fill(text);
     await input.press("Enter");
+    // VERIFY the send actually landed. Against the fake agent the composer is instantly ready, so a
+    // fill+Enter always took. Against a REAL model the send button can still be disabled (or the
+    // editor not yet mounted) and the keystroke is silently DROPPED — the input keeps the text and
+    // the turn never happens, which reads downstream as "the model never replied". Retry until the
+    // composer is empty (submitted) rather than assuming.
+    for (let i = 0; i < 20; i++) {
+      const left = await input.inputValue().catch(() => "");
+      if (left.trim() === "") return; // submitted
+      await this.page.waitForTimeout(500);
+      await input.click().catch(() => {});
+      await input.press("Enter").catch(() => {});
+    }
+    throw new Error(`composer never accepted the message (still holding text): ${text.slice(0, 60)}`);
   }
 
   /** Start a long in-flight run (the fake agent runs a real `sleep <sec>` in the sandbox) and wait
@@ -204,6 +217,28 @@ export const test = base.extend<Fixtures>({
   cleanState: [
     async ({ request, context, baseURL }, use) => {
       const base = baseURL ?? "http://localhost:5173";
+      // SAFETY (belt-and-braces). This fixture deletes EVERY conversation to give the shared local
+      // fake stack a clean slate. Run against a LIVE deployment that destroys real user data — which
+      // is exactly what happened once against odin before this guard existed.
+      //
+      // TWO independent gates, because one flag proved insufficient (the flag was added AFTER a run
+      // had already been launched without it):
+      //   1. RUN_LIVE_E2E=1 — the explicit "this is a live target" opt-out.
+      //   2. baseURL is not localhost — a structural check that cannot be forgotten. Any non-local
+      //      target hard-FAILS rather than silently skipping, so a spec that genuinely needs a wipe
+      //      can never quietly run it against a real deployment.
+      const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(base);
+      if (process.env.RUN_LIVE_E2E === "1") {
+        await use(); // live target: create-your-own-conversations specs need no wipe at all
+        return;
+      }
+      if (!isLocal) {
+        throw new Error(
+          `REFUSING to wipe conversations on a non-local target (${base}). The cleanState fixture ` +
+            `deletes EVERY conversation and must never touch a live deployment. Set RUN_LIVE_E2E=1 ` +
+            `for live runs (which skips the wipe entirely).`,
+        );
+      }
       // 1. Server: delete every known conversation, then POLL until the list is
       //    actually empty. The delete + sandbox-destroy is async server-side, so
       //    proceeding immediately races the next test's first /conversations
@@ -405,4 +440,32 @@ export async function assertMatchesServer(
   // The sidebar must list exactly the conversations the server knows about.
   expect(s.sessions, `${when}: sidebar shows ${s.sessions} sessions, server has ${convs.length}`)
     .toBe(convs.length);
+}
+
+/** Where step screenshots land. One directory per test run; each shot is prefixed with a monotonic
+ *  index so the sequence reads in order. */
+const SHOT_DIR = process.env.UI_SHOT_DIR ?? "test-results/ui-timeline";
+let shotSeq = 0;
+
+/** Capture the UI at this instant, named for the step. Screenshots make a NONDETERMINISTIC failure
+ *  interpretable: an invariant tells you two components disagreed, the image tells you what the user
+ *  would actually have been looking at. Enabled by default for live runs (UI_SHOTS=1); a failure to
+ *  capture must never fail the test. */
+export async function shot(page: Page, when: string): Promise<void> {
+  if (process.env.UI_SHOTS !== "1") return;
+  const safe = when.replace(/[^a-z0-9]+/gi, "-").slice(0, 60);
+  const idx = String(++shotSeq).padStart(3, "0");
+  await page
+    .screenshot({ path: `${SHOT_DIR}/${idx}-${safe}.png`, fullPage: false })
+    .catch(() => {}); /* never fail a test because a screenshot failed */
+}
+
+/** snapshot + assertConsistent + a screenshot, in one call — the standard "check everything at this
+ *  step" primitive. Captures the shot BEFORE asserting, so a failing step still leaves an image of
+ *  the exact state that failed. */
+export async function checkpoint(page: Page, when: string): Promise<UiSnapshot> {
+  const s = await snapshot(page);
+  await shot(page, when);
+  assertConsistent(s, when);
+  return s;
 }
