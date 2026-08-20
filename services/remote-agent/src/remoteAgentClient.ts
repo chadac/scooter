@@ -12,6 +12,7 @@ import { WebSocket } from "ws";
 import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 
 import { REMOTE_PROTOCOL_VERSION, type WireFrame } from "./protocol.js";
+import { parsePermissionAnswer } from "./permissionAnswer.js";
 import { createTunnelExecBackend } from "./tunnelExec.js";
 
 export interface RemoteAgentClientDeps {
@@ -74,11 +75,11 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     sdk.onSessionUpdate((sessionId, update) => send({ ch: "acp", type: "session_update", payload: { sessionId, update } }));
     sdk.onTerminalCreated((terminalId, command, args) => send({ ch: "acp", type: "terminal_created", payload: { terminalId, command, args } }));
     // Permission requests: ask the cloud (which raises the UI interrupt), await the answer over id.
-    const permissionWaiters = new Map<string, (ans: { optionId?: string; cancelled?: boolean }) => void>();
+    const permissionWaiters = new Map<string, (ans: { optionId: string } | { cancelled: true }) => void>();
     sdk.onPermissionRequest((req) => {
       return new Promise((resolve) => {
         const id = req.toolCallId + ":" + Math.random().toString(36).slice(2);
-        permissionWaiters.set(id, (ans) => resolve(ans.cancelled ? { cancelled: true } : { optionId: ans.optionId ?? "" }));
+        permissionWaiters.set(id, resolve);
         send({ ch: "acp", type: "permission_request", id, payload: { request: req } });
       });
     });
@@ -156,7 +157,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
             const w = frame.id ? permissionWaiters.get(frame.id) : undefined;
             if (w && frame.id) {
               permissionWaiters.delete(frame.id);
-              w((frame.payload as { result?: { optionId?: string; cancelled?: boolean } }).result ?? {});
+              w(parsePermissionAnswer(frame.payload));
             }
             return;
           }
