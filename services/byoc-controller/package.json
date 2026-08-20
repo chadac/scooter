@@ -5,7 +5,9 @@
   "description": "Holds the bring-your-own-Claude container sockets; agent-hosts drive them over HTTP/SSE.",
   "type": "module",
   "main": "dist/index.js",
-  "bin": { "byoc-controller": "dist/index.js" },
+  "bin": {
+    "byoc-controller": "dist/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
