@@ -58,7 +58,7 @@ in
       Env = [
         "PORT=8080"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-        "STATE_PATH=/var/lib/agent-host/conversations"
+        "LOCAL_STATE_PATH=/var/lib/agent-host/conversations"
         "TMPDIR=/tmp"
       ];
       ExposedPorts = { "8080/tcp" = { }; };

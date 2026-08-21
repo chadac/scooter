@@ -111,7 +111,7 @@ const child = spawn("node", ["services/agent-host/dist/index.js"], {
     GOOSE_BIN: gooseBin,
     ...backendEnv,
     FAKE_SANDBOX: "1",
-    STATE_PATH: join(recordDir, "state"),
+    LOCAL_STATE_PATH: join(recordDir, "state"),
     TRANSCRIPT_RECORD_DIR: recordDir,
     // A local model's FIRST inference includes a slow cold load — give the
     // dead-on-arrival + liveness watchdogs plenty of room so recording doesn't

@@ -66,7 +66,7 @@ export default defineConfig({
           env: {
             PORT: "8080",
             GOOSE_BIN: "fake",
-            STATE_PATH: "/tmp/agent-host-e2e",
+            LOCAL_STATE_PATH: "/tmp/agent-host-e2e",
             GOOSE_MODEL: "model-default",
             AGENT_AVAILABLE_MODELS: "model-default,model-fast,model-smart",
           },

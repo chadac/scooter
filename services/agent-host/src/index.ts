@@ -87,14 +87,20 @@ export interface AgentHostConfig {
   port: number;
   namespace: string;
   sandboxImage: string;
-  /** Durable conversation state: the AG-UI event log (history/replay). On a PVC
-   *  so it survives agent-host restarts. */
-  statePath: string;
-  /** OPTIONAL RWX/NFS mirror root. When set, the conversation store becomes a
-   *  mirroredConversationStore: LOCAL (statePath) stays the hot-path authority and a
-   *  coalesced async copy of every write is shipped here so ANOTHER pod can revive the
-   *  conversation from the mirror (the multi-replica story). Unset = single local store
-   *  (today's behavior). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md. */
+  /** EPHEMERAL local cache of the AG-UI event log for the conversations THIS pod is
+   *  serving. Backed by an emptyDir in cluster — it does NOT survive a restart, despite
+   *  what the old name (STATE_PATH) and this comment used to claim. The durable record is
+   *  `mirrorStatePath`; the source of truth for a conversation's existence/ownership/
+   *  liveness is the Conversation CR. Nothing answering "which conversations exist?" may
+   *  depend on this path. See docs/CONVERSATION_STATE_MODEL.md. */
+  localStatePath: string;
+  /** The DURABLE conversation record (RWX/NFS PVC): history, transcripts, queue state.
+   *  Survives the pod, so ANOTHER pod can revive a conversation from it (the multi-replica
+   *  story). When set, the store becomes a mirroredConversationStore: local is the hot path
+   *  for reads/writes, and a coalesced async copy of every write is shipped here.
+   *  "MIRROR" is a legacy name — this is the persistent store, not a backup of one. Unset =
+   *  single local store (dev/single-replica). See mirroredStore.ts +
+   *  CONVERSATION_CRD_AND_HISTORY.md + docs/CONVERSATION_STATE_MODEL.md. */
   mirrorStatePath?: string;
   /** Ephemeral scratch for the agent process: goose's per-conversation cwd
    *  (sessions DB + .goosehints). The real work execs into the sandbox, so this
@@ -172,7 +178,15 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     port: Number(process.env.PORT ?? 8080),
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest",
-    statePath: process.env.STATE_PATH ?? defaultStatePath,
+    // LOCAL_STATE_PATH is an EPHEMERAL CACHE of the conversations this pod is serving —
+    // an emptyDir in cluster, wiped on every restart. It is NOT the durable record, and
+    // nothing that answers "which conversations exist?" may depend on it (see
+    // docs/CONVERSATION_STATE_MODEL.md: the Conversation CR is the source of truth).
+    // STATE_PATH is the old name, still honored so a pod whose manifest predates the
+    // rename keeps working across a rollout; drop it once no deployed manifest sets it.
+    localStatePath: process.env.LOCAL_STATE_PATH ?? process.env.STATE_PATH ?? defaultStatePath,
+    // The DURABLE conversation record (RWX PVC): history, transcripts, queue. Survives the
+    // pod. "MIRROR" is a legacy name — it is the persistent store, not a backup.
     mirrorStatePath: process.env.MIRROR_STATE_PATH || undefined,
     scratchPath: process.env.SCRATCH_PATH ?? defaultScratchPath,
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
@@ -432,7 +446,7 @@ export async function main(
   // (multi-replica). drainMirror is awaited by main()'s returned shutdown fn, so a
   // graceful stop ships the mirror's tail (near-RPO-0 on a planned rollout — pairs with
   // the SIGTERM drain #248). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md.
-  const localStore = createFileConversationStore(config.statePath);
+  const localStore = createFileConversationStore(config.localStatePath);
   const mirroredStore = config.mirrorStatePath
     ? mirroredConversationStore(localStore, createFileConversationStore(config.mirrorStatePath), {
         // A mirror-write failure is NON-fatal (local is intact) but must not vanish:
@@ -452,7 +466,7 @@ export async function main(
   // Image/media assets (uploaded images) live alongside the event log on the
   // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const assets = createPvcAssetStore({
-    root: config.statePath,
+    root: config.localStatePath,
     maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
   });
   const server = createAguiServer();
@@ -1346,7 +1360,7 @@ export async function main(
     // goose's per-conversation cwd is EPHEMERAL scratch (sessions DB +
     // .goosehints) — the agent's real file/terminal work execs into the sandbox
     // via the ExecBackend, not here. So it lives under scratchPath (an emptyDir),
-    // NOT the durable state PVC. (The durable event log stays on statePath.)
+    // NOT the local state cache. (The durable event log lives on mirrorStatePath.)
     const cwd = join(config.scratchPath, conversationId, "agent-cwd");
     mkdirSync(cwd, { recursive: true });
     // Inject the agent identity (Scooter) + skills as goose's .goosehints in its

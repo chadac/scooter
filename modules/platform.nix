@@ -808,7 +808,9 @@ in
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
                   # Durable: the AG-UI event log (history) on the per-pod PVC.
-                  { name = "STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
+                  # EPHEMERAL cache (emptyDir), not the durable record — see
+                  # docs/CONVERSATION_STATE_MODEL.md.
+                  { name = "LOCAL_STATE_PATH"; value = "/var/lib/agent-host/conversations"; }
                   # Ephemeral scratch (emptyDir): goose's per-conversation cwd +
                   # $HOME (sessions DB + .goosehints). The agent's real work execs
                   # into the SANDBOX, so none of this is durable — keeping it off
