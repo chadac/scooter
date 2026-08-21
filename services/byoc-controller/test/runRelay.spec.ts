@@ -75,6 +75,26 @@ describe("BYOC run relay", () => {
     registry.attach(sessionId, minted.token, container);
   });
 
+  it("forwards initialize/new_session AS THEMSELVES, not as an empty prompt", async () => {
+    // THE BUG THIS PINS. byocTransport POSTs every ACP request to /prompt (fine — each frame
+    // carries its own `type`), but the relay rebuilt the frame with a hardcoded type:"prompt".
+    // So the container saw `initialize` and `new_session` as prompts with no sessionId and no
+    // text — `prompt acp-session=undefined text=""` — the ACP handshake never completed, and no
+    // run could start. Every existing test here sends a prompt, so nothing caught it.
+    void relay.request(sessionId, "initialize", { params: { protocolVersion: 1 } });
+    expect(container.sent[0]).toMatchObject({ ch: "acp", type: "initialize" });
+    expect(container.sent[0].payload).toMatchObject({ params: { protocolVersion: 1 } });
+
+    void relay.request(sessionId, "new_session", { params: { cwd: "/w" } });
+    expect(container.sent[1]).toMatchObject({ ch: "acp", type: "new_session" });
+    expect(container.sent[1].payload).toMatchObject({ params: { cwd: "/w" } });
+  });
+
+  it("a cancel is forwarded as a cancel (not a prompt that would start a second run)", async () => {
+    void relay.request(sessionId, "cancel", { sessionId: "acp-1" });
+    expect(container.sent[0]).toMatchObject({ ch: "acp", type: "cancel" });
+  });
+
   it("a prompt reaches the container as an ACP prompt frame with a correlation id", async () => {
     void relay.prompt(sessionId, { sessionId: "acp-1", prompt: [{ type: "text", text: "hello" }] });
     expect(container.sent).toHaveLength(1);
