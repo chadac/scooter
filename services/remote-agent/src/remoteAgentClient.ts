@@ -123,11 +123,24 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           }
           case "new_session": {
             const r = await sdk.newSession((frame.payload as { params: never }).params);
+            log(`new_session -> acp session ${(r as { sessionId?: string }).sessionId ?? "?"}`);
             return ack(frame.id, r);
           }
           case "prompt": {
-            const p = frame.payload as { sessionId: string; prompt: never };
-            const r = await sdk.prompt({ sessionId: p.sessionId, prompt: p.prompt });
+            const p = frame.payload as { sessionId: string; prompt: Array<{ type?: string; text?: string }> };
+            // Prove WHICH agent served a turn. Without this there is no way to tell from the
+            // outside whether a reply came from THIS container or from the cloud-side provider —
+            // the cloud falls back silently when the container is offline, so an answer arriving
+            // is NOT evidence the container produced it.
+            const preview = (p.prompt ?? [])
+              .map((b) => (typeof b?.text === "string" ? b.text : ""))
+              .join(" ")
+              .replace(/\s+/g, " ")
+              .slice(0, 80);
+            log(`prompt acp-session=${p.sessionId} text="${preview}"`);
+            const started = Date.now();
+            const r = await sdk.prompt({ sessionId: p.sessionId, prompt: p.prompt as never });
+            log(`prompt DONE acp-session=${p.sessionId} stopReason=${(r as { stopReason?: string }).stopReason ?? "?"} in ${Date.now() - started}ms`);
             return ack(frame.id, r);
           }
           case "cancel": {
