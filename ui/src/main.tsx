@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import "./globals.css";
 import { App } from "./App.js";
+import { viewStore } from "./view.js";
 import { sessionStore } from "./sessions.js";
 import { loadConversations, loadConversationsResult, loadWhoami } from "./client.js";
 import { subscribeConversations } from "./conversationStream.js";
@@ -69,7 +70,12 @@ const threadParam = new URLSearchParams(globalThis.location?.search ?? "").get("
 if (threadParam) sessionStore.requestSelect(threadParam);
 
 // Reflect the selected conversation in the URL (replaceState — no history spam).
+// NOTE: this writes the CURRENT href back, so it must not run while the user is on a
+// /settings/<tab> path — replaceState there would rewrite the settings URL (and, worse,
+// pin the pathname if the conversation changes underneath). The thread param is still
+// updated when they return to chat, so the deep-link stays accurate.
 sessionStore.subscribe(() => {
+  if (viewStore.get() === "settings") return;
   const id = sessionStore.get().currentId;
   const url = new URL(globalThis.location.href);
   if (url.searchParams.get("thread") !== id) {
