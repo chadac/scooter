@@ -15,6 +15,7 @@ python3Packages.buildPythonApplication {
   dependencies = with python3Packages; [
     fastapi
     uvicorn
+    websockets  # WS server (FastAPI) + client (the claude-bridge proxy to the agent-host)
     httpx
     pydantic
     pydantic-settings

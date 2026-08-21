@@ -9,6 +9,7 @@
     "services/agent-host",
     "services/claude-sdk-provider",
     "services/marimo-mcp",
+    "services/remote-agent",
     "ui"
   ],
   "scripts": {

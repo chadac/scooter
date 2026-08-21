@@ -142,6 +142,13 @@
 
           agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp; };
 
+          # Bring-your-own-Claude container app: drives the user's LOCAL Claude via the SAME
+          # claudeSdkProvider, tunnels tool-exec to the cloud sandbox. Bakes the (unfree) claude CLI.
+          remoteAgent = pkgs.callPackage ./services/remote-agent {
+            inherit claudeSdkProvider;
+            claude-code = pkgs.claude-code;
+          };
+
           # agent-host OCI image.
           agentHostImageBuilder = import ./pkgs/agent-host-image {
             inherit pkgs lib n2c agentHost agent; # agent (goose) for its own layer
@@ -177,6 +184,12 @@
             inherit pkgs lib n2c scheduler;
           };
 
+          # Bring-your-own-Claude remote agent OCI image (ghcr). Bakes the UNFREE claude CLI (via
+          # remoteAgent), so like the claude image its .outPath needs allowUnfree.
+          remoteAgentImage = import ./pkgs/remote-agent-image {
+            inherit pkgs lib n2c remoteAgent;
+          };
+
           # Conversation CRD controller (Python): leader-elected reconcile loop that
           # assigns each Conversation CR a hostPod (agent-host replica) + reassigns on
           # pod death. Multi-replica agent-host, stage 3. See
@@ -186,6 +199,7 @@
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
           # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
+          byocController = pkgs.callPackage ./services/byoc-controller { };
 
           # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
@@ -200,6 +214,9 @@
           };
 
           # Conversation router OCI image.
+          byocControllerImage = import ./pkgs/byoc-controller-image {
+            inherit pkgs lib n2c byocController;
+          };
           conversationRouterImage = import ./pkgs/conversation-router-image {
             inherit pkgs lib n2c conversationRouter;
           };
@@ -332,6 +349,7 @@
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
+            byoc-controller = byocController;
             warm-store-controller = warmStoreController;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
@@ -353,11 +371,18 @@
             # nix build .#scheduler-image  ->  scheduler OCI image
             scheduler-image = schedulerImage.image;
 
+            # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
+            remote-agent = remoteAgent;
+            # nix build .#remote-agent-image  ->  BYO-Claude remote agent OCI image (ghcr; unfree claude)
+            remote-agent-image = remoteAgentImage.image;
+
             # nix build .#conversation-controller-image  ->  controller OCI image
             conversation-controller-image = conversationControllerImage.image;
 
             # nix build .#conversation-router-image  ->  router OCI image
             conversation-router-image = conversationRouterImage.image;
+            # nix build .#byoc-controller-image  ->  BYOC controller OCI image
+            byoc-controller-image = byocControllerImage.image;
 
             # nix build .#warm-store-controller-image  ->  warm-store controller OCI image
             warm-store-controller-image = warmStoreControllerImage.image;

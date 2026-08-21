@@ -1,0 +1,27 @@
+{
+  "name": "@kubenix-agent-manager/byoc-controller",
+  "version": "0.0.0",
+  "license": "MIT",
+  "description": "Holds the bring-your-own-Claude container sockets; agent-hosts drive them over HTTP/SSE.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "byoc-controller": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.6",
+    "@types/pg": "^8.11.10"
+  }
+}

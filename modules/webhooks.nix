@@ -202,7 +202,13 @@ in
                   { name = "DB_NAME"; value = "webhooks"; }
                   { name = "DB_USER"; value = "webhooks"; }
                   { name = "DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-webhooks"; key = "password"; }; }
-                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; };
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                  ++ lib.optional cfg.agent.remoteAgent.enable {
+                    # Bring-your-own-Claude: the SAME HS256 join secret the agent-host signs with,
+                    # so /claude-bridge/connect verifies the token before proxying to the agent-host.
+                    name = "REMOTE_AGENT_JOIN_SECRET";
+                    valueFrom.secretKeyRef = { name = cfg.agent.remoteAgent.joinSecret; key = "secret"; };
+                  };
                 # Provider signing secrets / tokens come from a Secret whose keys
                 # match the GITHUB_WEBHOOK_SECRET / SLACK_* env var names.
                 envFrom = lib.optionals (wcfg.secretName != "") [
@@ -255,11 +261,15 @@ in
           ingressClassName = lib.mkIf (wcfg.ingress.className != "") wcfg.ingress.className;
           rules = [{
             host = wcfg.ingress.host;
-            http.paths = [{
-              path = "/webhooks";
+            # /webhooks -> provider intake (signature-verified). /claude-bridge ->
+            # the BYO-Claude unauthed WS front door (join-token-verified in-app),
+            # which reverse-proxies to the agent-host's internal /remote-agent/connect.
+            # Both are deliberately UNAUTH at the ingress (each verifies in-app).
+            http.paths = map (path: {
+              inherit path;
               pathType = "Prefix";
               backend.service = { name = "agent-webhooks"; port.number = 8080; };
-            }];
+            }) [ "/webhooks" "/claude-bridge" ];
           }];
           tls = lib.optionals wcfg.ingress.tls [
             ({ hosts = [ wcfg.ingress.host ]; }

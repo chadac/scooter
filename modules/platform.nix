@@ -43,7 +43,7 @@ let
   hasModels = modelIds != [ ];
 in
 {
-  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ];
+  imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -322,6 +322,37 @@ in
             Wired to CLAUDE_CODE_OAUTH_TOKEN on the agent-host. Requires the claude CLI in
             the image (build .#agent-host-image-claude). Create the Secret out-of-band:
             kubectl create secret generic <name> --from-literal=token=$(claude setup-token).
+          '';
+        };
+      };
+      # BRING-YOUR-OWN-CLAUDE (Increment 2): users run a container with THEIR Claude subscription
+      # that dials in over a WS; scooter routes their human-triggered conversations to it.
+      remoteAgent = {
+        enable = mkEnableOption "bring-your-own-Claude remote agents (/remote-agent/connect + Settings UI)";
+        joinSecret = mkOption {
+          type = types.str;
+          default = "agent-remote-join-secret";
+          description = ''
+            Name of the Secret holding the HS256 signing key (key `secret`) the agent-host uses to
+            sign + verify owner-bound join tokens. ONE server-side key (not per-user). Wired to
+            REMOTE_AGENT_JOIN_SECRET when remoteAgent.enable = true. Create out-of-band:
+            kubectl create secret generic <name> --from-literal=secret=$(openssl rand -hex 32).
+          '';
+        };
+        image = mkOption {
+          type = types.str;
+          default = "ghcr.io/chadac/scooter-remote-agent:latest";
+          description = "The ghcr container image the Settings one-liner tells users to `docker run` (REMOTE_AGENT_IMAGE).";
+        };
+        bridgeUrl = mkOption {
+          type = types.str;
+          default = "";
+          example = "https://webhooks.example.com";
+          description = ''
+            Public base URL of the WEBHOOKS bridge the container dials (/claude-bridge/connect is
+            appended). Webhooks is the unauthed front door (no ALB/user-auth) that verifies the join
+            token + proxies to the agent-host. Empty ⇒ the Settings one-liner shows a placeholder
+            host. Set to the webhooks receiver's public host (agentSandbox.webhooks.ingress.host).
           '';
         };
       };
@@ -889,6 +920,21 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; }
+                ++ lib.optionals cfg.agent.remoteAgent.enable [
+                  # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
+                  # The HS256 signing key for owner-bound join tokens (one server-side secret).
+                  {
+                    name = "REMOTE_AGENT_JOIN_SECRET";
+                    valueFrom.secretKeyRef = { name = cfg.agent.remoteAgent.joinSecret; key = "secret"; };
+                  }
+                  # The ghcr image the Settings one-liner references.
+                  { name = "REMOTE_AGENT_IMAGE"; value = cfg.agent.remoteAgent.image; }
+                ]
+                ++ lib.optional (cfg.agent.remoteAgent.enable && cfg.agent.remoteAgent.bridgeUrl != "")
+                  # The WEBHOOKS bridge public URL the container dials (/claude-bridge/connect is
+                  # appended). Webhooks is the unauthed front door that verifies + proxies to the
+                  # agent-host — so the container isn't blocked by the ALB/user-auth on the UI host.
+                  { name = "REMOTE_AGENT_BRIDGE_URL"; value = cfg.agent.remoteAgent.bridgeUrl; }
                 ++ lib.optionals cfg.broker.aws.enable [
                   # AWS permissions broker: the agent-host mounts the account
                   # ConfigMap into each sandbox, and resolves approvals against the
