@@ -12,7 +12,7 @@
 #     needs it to run the slimmed container boot);
 #   - ship an empty, writable /etc/machine-id so first boot initializes it.
 #
-# `boot.isContainer` lives HERE (not in modules/sandbox-os) on purpose: it removes
+# `boot.isContainer` lives HERE (not in modules/sandbox/root) on purpose: it removes
 # the kernel/initrd that a nixosTest VM needs, so it's a packaging concern, not a
 # capability. The nixosTests import the shared config without it.
 #
@@ -27,11 +27,11 @@
   # nix-stubs' lib (mkLazyPackage / mkOverlay). Exposed to modules as the
   # `nixStubsLib` module arg so they can declare lazy tool shims (only the .drv is
   # baked; the built package lands in the writable store on first use). Optional so
-  # the nixosTests (which import modules/sandbox-os directly) can pass null.
+  # the nixosTests (which import modules/sandbox/root directly) can pass null.
 , nixStubsLib ? null
   # The uv-nix uv (patched for Nix): exposed to modules as the `uvNix` module arg so
   # web-services/marimo.nix can launch marimo under it (science deps import). Optional
-  # so nixosTests importing modules/sandbox-os directly can pass null (marimo falls
+  # so nixosTests importing modules/sandbox/root directly can pass null (marimo falls
   # back to a plain `marimo` there — see marimo.nix).
 , uvNix ? null
 }:
@@ -60,11 +60,11 @@ let
   nixpkgsSourceStr = builtins.unsafeDiscardStringContext (toString nixpkgsSource);
 
   nixos = pkgs.nixos ({ lib, ... }: {
-    imports = [ ../../modules/sandbox-os ] ++ extraModules;
+    imports = [ ../../../modules/sandbox/root ] ++ extraModules;
 
     # nix-stubs' mkLazyPackage, available to any module as `{ nixStubsLib, ... }:`
     # (e.g. carry-over.nix declares `aws` as a lazy shim). Null in nixosTests that
-    # import modules/sandbox-os without the packaging layer — the lazy-tools module
+    # import modules/sandbox/root without the packaging layer — the lazy-tools module
     # guards on it and falls back to a normal package there.
     _module.args.nixStubsLib = nixStubsLib;
     # The uv-nix uv, for web-services/marimo.nix. Null in nixosTests (marimo.nix
@@ -78,10 +78,10 @@ let
     # the plain read-only-store variant was retired). Without it /nix/store is the read-only
     # baked image layer, and the sandbox's core operations — the agent's `nix profile install`,
     # lazy-tool builds, and `scooter-rebuild` re-converge — silently can't write the store. This
-    # lives HERE (the image), NOT in modules/sandbox-os, because nixosTests import that bare
+    # lives HERE (the image), NOT in modules/sandbox/root, because nixosTests import that bare
     # (no baked store to overlay). The upper is a deployer-mounted volume at upperPath (the
     # provisioner's per-conversation `.scooter-rw` PVC, or a pooled warm volume).
-    # See modules/sandbox-os/overlay-store.nix + todo/docs/WARM_STORE_PVC_MANAGER.md.
+    # See modules/sandbox/root/overlay-store.nix + todo/docs/WARM_STORE_PVC_MANAGER.md.
     programs.overlayStore.enable = true;
 
     # The pinned nixpkgs the lazy stubs + registry resolve against. MUST be the
@@ -118,98 +118,14 @@ let
 
   toplevel = nixos.config.system.build.toplevel;
 
-  # The Nix path-registration for the WHOLE system closure. n2c ships the store
-  # *paths* but we need a REAL, registered, read-only Nix store baked in.
-  closure = pkgs.closureInfo { rootPaths = [ toplevel ]; };
-
-  # Files baked at the image root (outside the Nix store): the init symlink,
-  # writable machine-id, and the dirs systemd expects to exist at first boot.
-  # (Under dockerTools these last three were created in `extraCommands`; n2c has
-  # no such hook, so they live here in copyToRoot instead. They become tmpfs at
-  # runtime — we only need them to exist so the read-only image layer doesn't
-  # block first boot.)
-  rootExtras = pkgs.runCommand "sandbox-os-root" { } ''
-    mkdir -p $out/sbin $out/etc
-    ln -s ${toplevel}/init $out/sbin/init
-    # Empty + writable: first boot seeds it (systemd machine-id contract).
-    : > $out/etc/machine-id
-    # systemd writes to these at boot; ship them so the read-only layer is fine.
-    mkdir -p $out/var/log $out/run $out/tmp
-    chmod 1777 $out/tmp
-  '';
-
-  # The baked Nix DB + the FULL /nix/var/nix state layout, at the image root. We do
-  # NOT use n2c's `initializeNixDatabase`: that only bakes db/db.sqlite + gcroots/
-  # docker + .links, but the local-overlay store's read-only lower opens the store
-  # with `root=/`, which expects the COMPLETE state dir the real `nix-store
-  # --load-db` produces (db/{schema,reserved,big-lock}, profiles/, temproots/, …).
-  # With those missing, the in-pod converge failed "database does not exist, and
-  # cannot be created in read-only mode". So reproduce the exact hand-rolled recipe
-  # the dockerTools image used (proven against overlay-store.nix + the MWE): load the
-  # closure into a real DB (which lays down the full state layout) and create the
-  # optimiser's .links dir. See overlay-store.nix + NixOS/nix#11840.
-  nixDb = pkgs.runCommand "sandbox-os-nixdb" { } ''
-    export NIX_STATE_DIR=$out/nix/var/nix
-    mkdir -p $out/nix/var/nix $out/nix/store/.links
-    ${pkgs.buildPackages.nix}/bin/nix-store --load-db < ${closure}/registration
-  '';
-
-  # PID-1 wrapper: make /sys/fs/cgroup writable, THEN exec systemd.
-  #
-  # We run the sandbox NON-privileged under a cgroup-delegating runtime (crun) so it
-  # stays in its OWN private cgroup namespace and can't churn the host cgroup tree
-  # (the node-instability / host-logout bug a privileged container caused). But BOTH
-  # runc and crun mount /sys/fs/cgroup READ-ONLY for a non-privileged container, and
-  # systemd PID 1 needs to CREATE its cgroup subtree there — on a read-only cgroupfs it
-  # exits 255 immediately after "starting systemd...". A privileged container avoided
-  # this only because containerd mounts cgroupfs read-write for privileged pods. This
-  # wrapper replicates just that one effect without full privilege: with CAP_SYS_ADMIN
-  # (granted to the systemd sandbox — also needed by NixOS stage-2's specialfs mounts),
-  # `mount -o remount,rw /sys/fs/cgroup` succeeds. Best-effort: if the cgroupfs is
-  # already rw (e.g. a privileged rollback), the remount is a harmless no-op; we never
-  # fail the boot on it. Then exec the real NixOS stage-2 init as PID 1.
-  initWrapper = pkgs.writeScript "sandbox-init-wrapper" ''
-    #!${pkgs.busybox}/bin/sh
-    ${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>/dev/null || true
-    exec ${toplevel}/init "$@"
-  '';
+  # The systemd-PID-1 OCI packaging (baked Nix DB, /sbin/init, cgroup-remount init wrapper,
+  # container env) is the SHARED recipe — identical for the bootstrap image. See
+  # pkgs/sandbox/mk-sandbox-image.nix.
+  mkSandboxImage = import ../mk-sandbox-image.nix { inherit pkgs lib n2c; };
 in
 {
   inherit toplevel nixos;
 
   # nix build .#sandbox-os-image  ->  a nix2container image booting systemd PID 1.
-  image = n2c.buildImage {
-    inherit name tag;
-
-    # rootExtras ships /sbin/init, /etc/machine-id and the writable boot dirs; nixDb
-    # ships the baked Nix DB + full /nix/var/nix state layout. rootExtras's /sbin/init
-    # symlink references ${toplevel}, so the WHOLE NixOS system closure is pulled into
-    # the image without unpacking the system root at /. (We bake the DB ourselves via
-    # nixDb rather than n2c's initializeNixDatabase — see the nixDb comment for why.)
-    copyToRoot = [ rootExtras nixDb ];
-    maxLayers = 100;
-
-    config = {
-      # Boot systemd PID 1 via the init WRAPPER (remounts /sys/fs/cgroup rw so systemd
-      # can build its cgroup subtree under crun/non-privileged, then execs the NixOS
-      # stage-2 init). See initWrapper. (We also ship a /sbin/init -> stage-2 init
-      # symlink for convention; the entrypoint points at explicit store paths so
-      # nothing can be missing.)
-      Entrypoint = [ "${initWrapper}" ];
-      # systemd's container detection: set explicitly (Docker won't).
-      Env = [
-        "container=docker"
-        # PID 1's PATH — inherited by every kubelet `exec` (non-login `bash -c`,
-        # which sources no profile). Prepend the writable per-user nix profile bin
-        # (HOME is pinned to /workspace) + the setuid wrappers, so a tool from
-        # `nix profile install` is immediately runnable without a login shell.
-        # (sandbox-nix-profile-not-in-path bug: exec'd commands only got the minimal
-        # /run/current-system/sw/bin:/usr/bin:/bin.)
-        "PATH=/workspace/.nix-profile/bin:/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin"
-      ];
-      # systemd's clean-shutdown signal differs from k8s's default SIGTERM.
-      StopSignal = "SIGRTMIN+3";
-      WorkingDir = "/workspace";
-    };
-  };
+  image = mkSandboxImage { inherit toplevel name tag; };
 }

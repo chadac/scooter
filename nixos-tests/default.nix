@@ -12,11 +12,18 @@
 
 let
   # The NixOS module under test — imported by each test's node.
-  sandboxModule = ../modules/sandbox-os;
+  sandboxModule = ../modules/sandbox/root;
+  # The MINIMAL bootstrap config (Tier C — the barebones swap-only image).
+  bootstrapModule = ../modules/sandbox/bootstrap;
 
   runTest = path: import path { inherit pkgs lib sandboxModule; };
 in
 {
+  # The bootstrap switches to the real generation on boot (the directive path — prod).
+  bootstrap-firstboot = import ./bootstrap-firstboot.nix { inherit pkgs lib bootstrapModule; };
+  # config/custom (the agent-editable layer) end-to-end: author/override/no-op/bad-module.
+  bootstrap-config-custom = import ./bootstrap-config-custom.nix { inherit pkgs lib bootstrapModule; };
+
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   dev-env-lazy-stub = runTest ./lazy-stub.nix;
   dev-env-service = runTest ./service.nix;
