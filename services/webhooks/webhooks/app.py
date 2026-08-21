@@ -81,4 +81,13 @@ def main():
         host="0.0.0.0",
         port=8080,
         log_level="info",
+        # ws="websockets" EXPLICITLY. uvicorn's default is "auto", which probes for a WS
+        # implementation at startup — and under nix that probe failed even though `websockets`
+        # is a declared dependency, so the server logged
+        #   "No supported WebSocket library detected" / "Unsupported upgrade request"
+        # and answered /claude-bridge/connect with 404. The route was registered the whole time;
+        # uvicorn simply could not serve the upgrade. Naming the implementation removes the
+        # auto-detection from the equation and turns a silent 404 into an import error if the
+        # dependency is ever actually missing.
+        ws="websockets",
     )
