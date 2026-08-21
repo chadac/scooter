@@ -471,7 +471,7 @@ export async function main(
   // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
   // in. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
   const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
-  // The BYOC controller's IN-CLUSTER base URL (§L). Ownership resolution, every ACP frame, and the
+  // The BYOC controller's IN-CLUSTER base URL. Ownership resolution, every ACP frame, and the
   // setup one-liner's session mint all go through it, so this pod holds no container socket and any
   // replica can serve any conversation. Empty => no BYO path; every run takes the cloud floor.
   const byocControllerUrl = (process.env.BYOC_CONTROLLER_URL ?? "").trim();
@@ -481,11 +481,6 @@ export async function main(
   const remoteAgentDsn = webhooksResourceDsn();
   const remoteAgentStore =
     remoteAgentJoinSecret && remoteAgentDsn ? createPgRemoteAgentStore({ dsn: remoteAgentDsn }) : undefined;
-  // The BYOC controller's in-cluster base URL (§L). Ownership resolution and every ACP frame go
-  // through it, so this pod holds no container socket and any replica can serve any conversation.
-  // Empty => no BYO path; every run takes the cloud floor.
-  const byocControllerUrl = (process.env.BYOC_CONTROLLER_URL ?? "").trim();
-
   const remoteAgentRegistry = remoteAgentJoinSecret
     ? createRemoteAgentRegistry({
         // Fire-and-forget DB persistence on connect/disconnect (best-effort).
