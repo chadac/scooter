@@ -1422,6 +1422,14 @@ export async function main(
     const acpProviders: AcpProvider[] = remoteAgentRegistry
       ? [createRemotePersonalizedProvider({ registry: remoteAgentRegistry, exec }), floorProvider]
       : [floorProvider];
+    // If the registry is absent the BYO provider is not even a CANDIDATE — every run goes to the
+    // cloud floor and looks completely normal from the outside. Say so once per bridge, with the
+    // owner, so a "why did my container not serve this?" question is answerable from the log.
+    console.log(
+      `[acp-providers] conversation=${conversationId} owner=${owner ?? "-"} ` +
+        `candidates=[${acpProviders.map((p) => `${p.id}@${p.priority}`).join(", ")}] ` +
+        `byoRegistry=${remoteAgentRegistry ? "present" : "ABSENT (BYO disabled — cloud floor only)"}`,
+    );
 
     const bridge = createSessionBridge({
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },

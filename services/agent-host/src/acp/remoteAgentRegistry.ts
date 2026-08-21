@@ -103,7 +103,23 @@ export function createRemotePersonalizedProvider(deps: {
     kind: "claude",
     priority: deps.priority ?? 10,
     eligible(ctx: RunContext): boolean {
-      return ctx.owner !== undefined && isHumanTrigger(ctx.source) && deps.registry.has(ctx.owner);
+      // Log WHICH condition rejected. All three must hold, and when the provider is skipped the
+      // run falls silently to the cloud floor — the user gets an answer either way, so without
+      // this there is no way to tell a BYO run from a cloud run. (A live check confirmed the
+      // fallback is invisible: stopping the container still produced replies.)
+      const hasOwner = ctx.owner !== undefined;
+      const human = isHumanTrigger(ctx.source);
+      const registered = hasOwner && deps.registry.has(ctx.owner as string);
+      const ok = hasOwner && human && registered;
+      if (!ok) {
+        console.log(
+          `[remote-personalized] SKIP owner=${ctx.owner ?? "-"} source=${ctx.source ?? "(undefined=ui)"} ` +
+            `hasOwner=${hasOwner} humanTrigger=${human} registered=${registered} -> falling to the cloud floor`,
+        );
+      } else {
+        console.log(`[remote-personalized] SELECTED owner=${ctx.owner} source=${ctx.source ?? "(undefined=ui)"}`);
+      }
+      return ok;
     },
     createClient(ctx: RunContext): AcpClient {
       const conn = ctx.owner !== undefined ? deps.registry.get(ctx.owner) : undefined;
