@@ -7,10 +7,15 @@ agent-host rollout.
 
 ## Why this document exists
 
-A conversation's liveness is represented in **five** places. Two of them die with the pod, three
-are durable, and the code treats one of the ephemeral ones as authoritative. That inversion is not
-a bug in one function — it is a property of the design, and it has now produced at least four
-separately-diagnosed incidents that were all the same root cause.
+**The `Conversation` CR is the single source of truth.** It is durable, controller-reconciled, and
+already carries everything needed to reconstruct a conversation. Every other store is a cache of it,
+history hanging off it, or its body.
+
+That is the intended design. The implementation does not follow it: a conversation's liveness is
+represented in **five** places, two of which die with the pod, and the code treats one of the
+*ephemeral* ones as authoritative while **never reading the CR back at all**. That inversion is not
+a bug in one function — it is a property of the design as built, and it has now produced at least
+four separately-diagnosed incidents that were all the same root cause.
 
 The immediate trigger: sandboxes never auto-suspend in multi-replica. The sweep runs, is correctly
 configured, and reclaims nothing, silently, forever.
@@ -22,7 +27,7 @@ configured, and reclaims nothing, silently, forever.
 | 1 | `entries` (in-memory `Map`) | dies with the pod | every manager mutation | `sweepIdle`, `list`, `get`, nearly all of manager |
 | 2 | `STATE_PATH` file store | **dies with the pod** (`emptyDir`) | every manager mutation (`saveMeta`) | `hydrate()` |
 | 3 | `MIRROR_STATE_PATH` file store | durable (RWX PVC) | mirrored async from #2 | `hydrateFromMirror(id)` — **per-conversation only** |
-| 4 | `Conversation` CR | durable (etcd) | `register()` / `setPhase()`, fire-and-forget | the controller and router — **never read back by the host** |
+| 4 | `Conversation` CR | durable (etcd) | `register()` / `setPhase()`, fire-and-forget | the controller and router — **never read back by the host** ← *should be the source of truth* |
 | 5 | `Sandbox` CR + its pod | durable (etcd) | the provisioner | `provisioner.reconcile()` |
 
 Deployed values (`modules/platform.nix` → the agent-host Deployment):
@@ -70,7 +75,8 @@ so the sweep is a no-op. It logs *only when it suspends something*, so a total f
 indistinguishable from a quiet, healthy system. Enforced by: the sweep, which cannot see the leak.
 
 ### I3 — Local state is a cache, never the source of existence
-> Answering "which conversations exist?" must not depend on an ephemeral store.
+> Answering "which conversations exist?" must be answered by the `Conversation` CR, never by an
+> ephemeral store.
 
 **VIOLATED by construction.** `hydrate()`'s loop is `for (const m of metas)` over the local store.
 The cluster's answer (`live`, from `reconcile()`) is consulted only as `live.get(name)` — a lookup
@@ -112,8 +118,8 @@ Holds. `suspend()` drains the bridge queue to `pendingQueue` and persists **befo
 
 ## The pattern
 
-I1–I5 fail the same way: **the durable stores are never consulted to answer questions about
-existence, and the ephemeral one is.** Every incident below was diagnosed separately, and each was
+I1–I5b fail the same way: **the source of truth is never consulted.** The `Conversation` CR can
+answer every one of these questions and is asked none of them; the ephemeral store is asked instead. Every incident below was diagnosed separately, and each was
 this:
 
 - conversations vanish from the sidebar after redeploy → hydrate reads local, not the mirror
@@ -126,24 +132,68 @@ CR writes swallow errors by contract; hydrate falls back to "assume all suspende
 reclaim path can fail completely without emitting a single line is one where the next occurrence is
 also found by hand.
 
-## Proposed target model
+## The single source of truth: the `Conversation` CR
 
-**One authority per question**, with the durable stores answering existence:
+**The `Conversation` CR is the source of truth for a conversation's existence, ownership, and
+liveness. Every other store is derived from it, caches it, or is history hanging off it.** Where any
+store disagrees with the CR, the CR is right and the other store is stale.
 
-1. **Existence and liveness → the cluster.** `Sandbox` + `Conversation` CRs are already durable,
-   already reconciled by controllers, and survive every pod. Boot should *reconcile against them*
-   rather than replay local memory: enumerate running sandboxes, adopt any without a local record
-   (reconstructing the entry from the CR + mirror), and only then serve.
-   The test: *if every agent-host pod were deleted right now, what still knows `conv-1td457` is
-   running?* Today: the Sandbox CR, and nothing in the host.
-2. **History and transcript → the mirror** (rename to reflect that it is the persistent record).
-   Already durable; needs a listing read, not just a per-id read, so it can answer existence.
-3. **Local file store → an explicit cache** (`LOCAL_STATE_PATH`), rebuildable from 1+2, never the
-   source of truth for existence. Its `emptyDir` backing then becomes correct rather than a trap.
-4. **`entries` → an in-memory index** of what this pod actively serves. Unchanged in role; it just
-   stops being the reclaim path's only input.
-5. **`Conversation` CR → readable.** If the host depends on phase, the host must read phase.
-   Fire-and-forget writes are acceptable only for data nothing reconciles against.
+This is not a new component to build. It already exists, it is already durable in etcd, it is
+already reconciled by a controller, it already survives every pod, and — as shown below — it already
+carries everything needed to reconstruct a conversation. The defect is that **nothing reads it
+back**.
+
+A live CR today:
+
+```yaml
+spec:
+  owner: chadac
+  sandboxRef: conv-lkp9m
+status:
+  phase: Suspended
+  generation: 2
+```
+
+Plus `model` / `parentId` in spec and `hostPod` / `hostIP` in status when assigned. That is
+identity, backing sandbox, liveness, and assignment — sufficient to rebuild an `Entry` without
+consulting any ephemeral store.
+
+### What each store becomes, once the CR is authoritative
+
+| Store | Role under the target model |
+|-------|------------------------------|
+| `Conversation` CR | **SOURCE OF TRUTH.** Existence, owner, model, parentId, sandboxRef, phase, assignment. Read on boot; read when reconciling; written on every lifecycle transition. |
+| `Sandbox` CR + pod | The CR's *body*, referenced by `spec.sandboxRef`. Authoritative for whether the pod is currently running; never for whether the conversation exists. |
+| `MIRROR_STATE_PATH` | The durable **history** (event log, transcript, queue) hanging off a CR. Rename to reflect that it is the persistent record, not a backup. |
+| `LOCAL_STATE_PATH` (was `STATE_PATH`) | An explicit **cache** of the above for the conversations this pod serves. `emptyDir` is then correct rather than a trap: it is rebuildable by definition. |
+| `entries` | An **in-memory index** of what this pod is actively serving. Fine as-is; it simply stops being the only input to reclaim paths. |
+
+### The rule that follows
+
+> **Any question of the form "does this conversation exist / who owns it / is it alive?" is answered
+> by the CR — never by local state, and never by an in-memory map.**
+
+Restating the current violations against that single rule makes them one bug, not five:
+
+- **I1/I2/I3** — `hydrate()` loops over local metas and `sweepIdle`/`resumeInterrupted` loop over
+  `entries`. All three should be driven by *listing CRs*. A CR whose `sandboxRef` names a running
+  Sandbox with no local record is a conversation this pod must **adopt**, not ignore.
+- **I4** — `register()`/`setPhase()` are fire-and-forget into the source of truth. A write to the
+  authority that may silently fail, and is never read back, means the authority can drift with no
+  detection. These must be reconciled: read the CR, compare, converge.
+- **I5** — `suspend(id)` throws for anything not in `entries`. Under the target model a sandbox is
+  suspendable because *its CR says so*, not because this pod happens to remember it.
+
+### Direction of the fix (not a plan)
+
+Boot becomes: **list `Conversation` CRs → reconcile against running Sandboxes → adopt what this pod
+owns → hydrate history from the persistent store → serve.** Local state is populated *from* that,
+never consulted to produce it. The reclaim paths iterate the reconciled set rather than whatever
+happens to be in memory.
+
+The test for any future change: *if every agent-host pod were deleted right now, what still knows
+this conversation exists and is running?* The answer must be the CR, and the system must be able to
+recover from exactly that.
 
 ### Why not formal verification (yet)
 
