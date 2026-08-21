@@ -75,7 +75,12 @@ async function main() {
   const oauthToken = await ensureLogin();
 
   // The controller's HTTP base, derived from the ws URL (ws→http, strip the connect path).
-  const httpBase = args.url.replace(/^ws/, "http").replace(/\/[^/]*\/?$/, "");
+  // The controller's HTTP base. The connect URL is  ws://host/byoc/ws/<session-id>  and the
+  // registration/challenge routes live at  /byoc/devices  and  /byoc/challenge  — i.e. a sibling
+  // of `ws`, not of the session id. Stripping only the LAST segment yielded /byoc/ws/devices,
+  // which 404s: the container then fell back to the join token and never registered a device key
+  // at all, silently disabling §P. Strip the whole `/ws/<id>` tail instead.
+  const httpBase = args.url.replace(/^ws/, "http").replace(/\/ws\/[^/]*\/?$/, "");
 
   // REGISTER ONCE. Exchange the short-lived join token for a device key that authenticates
   // indefinitely. If registration fails we still connect with the join token — degraded (it
