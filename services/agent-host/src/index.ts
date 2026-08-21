@@ -503,10 +503,26 @@ export async function main(
           // (controllerUrl) and the container connects to the PUBLIC ingress (publicByocUrl).
           controllerUrl: byocControllerUrl,
           publicByocUrl: process.env.BYOC_PUBLIC_URL || undefined,
-          isConnected: remoteAgentStore
-            ? undefined
-            : (owner) => remoteAgentRegistry.has(owner),
-          isConnectedAsync: remoteAgentStore ? (owner) => remoteAgentStore.isOnline(owner) : undefined,
+          // The badge must read the CONTROLLER, which is the only component that knows whether a
+          // container is attached. It used to read a per-pod registry / a Postgres row that the
+          // old bridge wrote — neither is populated now, so the badge said "not connected" while
+          // the controller reported `"status":"connected"` and runs worked fine.
+          isConnectedAsync: async (owner: string) => {
+            if (!byocControllerUrl) return false;
+            try {
+              const res = await fetch(
+                `${byocControllerUrl.replace(/\/$/, "")}/byoc/status?owner=${encodeURIComponent(owner)}`,
+                { headers: { Accept: "application/json" } },
+              );
+              if (!res.ok) return false;
+              const body = (await res.json()) as { status?: string };
+              // Only "connected" — "minted" means the session exists but no container has dialled
+              // in, and showing that as connected would promise a BYO run that cannot happen.
+              return body.status === "connected";
+            } catch {
+              return false; // a controller blip degrades the BADGE, never a run
+            }
+          },
           image: process.env.REMOTE_AGENT_IMAGE || undefined,
         })
       : undefined;
