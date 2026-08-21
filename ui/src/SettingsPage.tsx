@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState, type FC } from "react";
 
 import { agentHostConfig } from "./config.js";
+import { loadDevices, deregisterDevice, formatLastSeen, type ByocDevice } from "./byocDevices.js";
 import {
   loadScheduledTasks,
   createScheduledTask,
@@ -444,6 +445,80 @@ function ScheduledTasksSection() {
 /** Connect-your-Claude-agent section (bring-your-own-Claude). Shows a copyable `docker run`
  *  one-liner (with a freshly-minted owner-bound join token) + a LIVE status badge that flips to
  *  "Connected" when the user's container registers. Hidden when BYO isn't enabled (routes 404). */
+/** Registered devices (§P) — the laptops allowed to serve this user's conversations.
+ *
+ *  A device is an Ed25519 PUBLIC key the container registered once with a join token; it then
+ *  authenticates by signing a server nonce, so it reconnects indefinitely without a fresh token.
+ *  Deregistering is a COMPLETE revocation: the key stops working immediately and that laptop
+ *  cannot re-register without a new (authenticated) join token. */
+function DeviceList() {
+  const [devices, setDevices] = useState<ByocDevice[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setDevices(await loadDevices());
+      setError(null);
+    } catch (e) {
+      // A real failure must not render as "no devices" — that would look like a silent
+      // deregistration of every laptop the user owns.
+      setError(e instanceof Error ? e.message : "Could not load devices");
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const remove = useCallback(
+    async (id: string) => {
+      setBusy(id);
+      try {
+        await deregisterDevice(id);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not deregister");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
+  );
+
+  // Nothing registered and nothing broken: stay quiet rather than showing an empty table on a
+  // deployment where device auth is not enabled at all.
+  if (!devices.length && !error) return null;
+
+  return (
+    <div data-testid="byoc-device-list" className="flex flex-col gap-2">
+      <h3 className="text-sm font-medium">Registered devices</h3>
+      {error && <p data-testid="byoc-device-error" className="text-sm text-red-600">{error}</p>}
+      {devices.map((d) => (
+        <div
+          key={d.id}
+          data-testid="byoc-device-row"
+          className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+        >
+          <span>
+            <span data-testid="byoc-device-label" className="font-medium">{d.label ?? "Unnamed device"}</span>
+            <span className="ml-2 text-muted-foreground">last seen {formatLastSeen(d.lastSeen)}</span>
+          </span>
+          <button
+            type="button"
+            data-testid="byoc-device-deregister"
+            disabled={busy === d.id}
+            onClick={() => void remove(d.id)}
+            className="rounded-md border px-2 py-1 text-xs hover:bg-muted/50 disabled:opacity-50"
+          >
+            {busy === d.id ? "Removing…" : "Deregister"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ClaudeAgentSection() {
   const [enabled, setEnabled] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -554,6 +629,7 @@ function ClaudeAgentSection() {
         </div>
       )}
       {error && <p data-testid="claude-agent-error" className="text-sm text-red-600">{error}</p>}
+      <DeviceList />
     </section>
   );
 }
