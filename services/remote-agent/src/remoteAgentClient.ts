@@ -13,13 +13,17 @@ import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 
 import { REMOTE_PROTOCOL_VERSION, type WireFrame } from "./protocol.js";
 import { parsePermissionAnswer } from "./permissionAnswer.js";
+import { nextReconnectDelay } from "./reconnect.js";
+import { loadDeviceIdentity, signChallenge } from "./deviceKey.js";
 import { createTunnelExecBackend } from "./tunnelExec.js";
 
 export interface RemoteAgentClientDeps {
   /** wss URL (…/remote-agent/connect). */
   url: string;
-  /** Owner-bound join token (from the UI one-liner). */
+  /** Owner-bound join token (from the UI one-liner). Used ONCE, to register this device. */
   joinToken: string;
+  /** Fetch a fresh challenge nonce from the controller (§P). Absent => token-only mode. */
+  challengeNonce?: () => Promise<string>;
   /** The user's Claude subscription OAuth token (from ~/.claude — stays local). */
   oauthToken: string;
   /** Model for the SDK query(). Defaults to a sensible current model. */
@@ -41,6 +45,7 @@ export interface RemoteAgentClient {
 export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentClient {
   const log = deps.log ?? ((m: string) => console.log(`[remote-agent] ${m}`));
   let stopped = false;
+  let attempt = 0;
   let ws: WebSocket | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => (resolveClosed = r));
@@ -85,9 +90,34 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     });
 
     ws.on("open", () => {
-      log(`connected → ${deps.url}; authenticating`);
-      // The cloud's connect handler expects the FIRST message to be the hello (protocol + token).
-      ws!.send(JSON.stringify({ protocolVersion: REMOTE_PROTOCOL_VERSION, joinToken: deps.joinToken }));
+      void (async () => {
+        attempt = 0; // a successful connect resets the backoff window
+        // DEVICE KEY FIRST (§P). Once registered, the container authenticates by signing a
+        // server-issued nonce and NEVER needs the join token again — which is what lets a laptop
+        // reconnect after sleeping. The bearer token is a 10-minute credential; relying on it for
+        // reconnects is why the shipped container died 4004 forever after the first expiry.
+        const identity = await loadDeviceIdentity();
+        if (identity && deps.challengeNonce) {
+          const nonce = await deps.challengeNonce().catch(() => undefined);
+          if (nonce) {
+            log(`connected → ${deps.url}; authenticating as device ${identity.deviceId}`);
+            ws!.send(
+              JSON.stringify({
+                protocolVersion: REMOTE_PROTOCOL_VERSION,
+                deviceId: identity.deviceId,
+                nonce,
+                signature: signChallenge(identity.privateKeyPem, nonce),
+              }),
+            );
+            return;
+          }
+          // Could not fetch a challenge (controller mid-rollout). Fall through to the join token if
+          // we still have one; otherwise the connect fails and the backoff retries.
+          log(`could not fetch a challenge; falling back to the join token`);
+        }
+        log(`connected → ${deps.url}; authenticating`);
+        ws!.send(JSON.stringify({ protocolVersion: REMOTE_PROTOCOL_VERSION, joinToken: deps.joinToken }));
+      })();
     });
 
     ws.on("message", (data) => {
@@ -153,7 +183,11 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
             return ack(frame.id, {});
           }
           case "ack": {
-            // A permission answer (the cloud replied to our permission_request id).
+            // A permission answer (the cloud replied to our permission_request id). The payload is
+            // FLAT from the BYOC controller ({optionId}) but was nested ({result:{optionId}}) on the
+            // old webhooks bridge; parsePermissionAnswer accepts both and fails CLOSED on anything
+            // else. The previous `?? {}` turned an unrecognised answer into an empty selection,
+            // which the SDK would act on — a tool call running without an approval.
             const w = frame.id ? permissionWaiters.get(frame.id) : undefined;
             if (w && frame.id) {
               permissionWaiters.delete(frame.id);
@@ -169,14 +203,26 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
 
     ws.on("close", (code) => {
       log(`disconnected (code ${code})`);
+      // FAIL EVERY PARKED PERMISSION. `permissionWaiters` lives inside connect(), so a disconnect
+      // used to abandon its promises: the local SDK would wait forever on an approval that can
+      // never arrive, wedging the agent until the container was restarted by hand. Cancelling is
+      // the safe resolution — the tool call is refused, not silently allowed.
+      for (const [id, waiter] of [...permissionWaiters]) {
+        permissionWaiters.delete(id);
+        waiter({ cancelled: true });
+      }
       void sdk.close().catch(() => {});
       if (stopped) {
         resolveClosed();
         return;
       }
-      // Reconnect after a short backoff (the join token may expire; a durable credential is a
-      // follow-up — for now re-run the container to re-mint).
-      setTimeout(() => void connect(), 3000);
+      // Exponential backoff WITH JITTER (see reconnect.ts). The old fixed 3s meant every container
+      // in the fleet retried on the same tick after a rollout, a synchronised herd against the
+      // single-replica controller.
+      attempt += 1;
+      const delay = nextReconnectDelay(attempt);
+      log(`reconnecting in ${delay}ms (attempt ${attempt})`);
+      setTimeout(() => void connect(), delay);
     });
     ws.on("error", (e) => log(`ws error: ${(e as Error).message}`));
   };
