@@ -18,7 +18,13 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { createSessionRegistry } from "./sessionRegistry.js";
 import { createRunRelay } from "./runRelay.js";
 import { createServer } from "./server.js";
-import { createPgSessionStore, createMemorySessionStore } from "./sessionStore.js";
+import { createDeviceAuth } from "./deviceAuth.js";
+import {
+  createPgSessionStore,
+  createMemorySessionStore,
+  createPgDeviceStore,
+  createMemoryDeviceStore,
+} from "./sessionStore.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const SECRET = process.env.BYOC_JOIN_SECRET ?? "";
@@ -46,7 +52,13 @@ if (!DSN) console.warn("[byoc] no DATABASE_URL — owner->session mapping will N
 
 const registry = createSessionRegistry({ store, secret: SECRET });
 const relay = createRunRelay({ registry });
-const api = createServer({ registry, relay, secret: SECRET });
+// Device identities (§P) — what lets a laptop reconnect after sleeping without a fresh
+// 10-minute join token. Without this the controller answers /byoc/devices with
+// "device auth not enabled", which is exactly what a live registration attempt hit.
+const deviceStore = DSN ? createPgDeviceStore({ dsn: DSN }) : createMemoryDeviceStore();
+const devices = createDeviceAuth({ store: deviceStore, secret: SECRET });
+
+const api = createServer({ registry, relay, secret: SECRET, devices });
 
 const readBody = async (req: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
@@ -168,6 +180,7 @@ const shutdown = () => {
   console.log("[byoc] shutting down");
   http.close();
   void store.close();
+  void deviceStore.close();
   process.exit(0);
 };
 process.on("SIGTERM", shutdown);
