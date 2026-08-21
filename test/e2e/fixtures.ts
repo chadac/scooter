@@ -246,10 +246,45 @@ export const test = base.extend<Fixtures>({
       for (let i = 0; i < 50; i++) {
         const res = await request.get(`${base}/conversations`);
         if (!res.ok()) break;
-        const convs = (await res.json()) as Array<{ id: string }>;
+        const convs = (await res.json()) as Array<{ id: string; starred?: boolean }>;
         if (convs.length === 0) break;
-        await Promise.all(convs.map((c) => request.delete(`${base}/conversations/${c.id}`)));
+        await Promise.all(
+          convs.map(async (c) => {
+            // UNSTAR FIRST. DELETE returns 409 on a starred conversation ("unstar before
+            // deleting"), so a test that stars one and then fails before unstarring leaves a row
+            // this loop can NEVER remove: it spins 50 times, gives up, and every later test
+            // inherits the leftover — which is exactly how sessions.spec.ts came to fail 8/10
+            // with "Expected 1, Received 2" and titles bleeding across tests.
+            if (c.starred) {
+              await request
+                .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
+                .catch(() => undefined);
+            }
+            return request.delete(`${base}/conversations/${c.id}`);
+          }),
+        );
         await new Promise((r) => setTimeout(r, 100));
+        // FAIL LOUD on the last iteration rather than shrugging. This loop used to exhaust its 50
+        // attempts and continue silently, so an UNDELETABLE conversation (e.g. a starred one —
+        // DELETE 409s) leaked into every later test and surfaced as unrelated assertion failures
+        // ("Expected 1, Received 2", titles from another test) with no hint of the real cause.
+        // A fixture that cannot establish its precondition must say so, not hand the next test a
+        // dirty slate.
+        if (i === 49) {
+          const left = (await (await request.get(`${base}/conversations`)).json()) as Array<{
+            id: string;
+            starred?: boolean;
+            title?: string;
+          }>;
+          if (left.length) {
+            throw new Error(
+              `cleanState could not empty the server after 50 attempts. Still present: ` +
+                left.map((c) => `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}`).join(", ") +
+                `. State persists at STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
+                `restarts until that directory is cleared.`,
+            );
+          }
+        }
       }
       // Let the server settle after the destroys (bridge stop + sandbox teardown)
       // so the next test's first prompt starts a clean, unstalled conversation.
