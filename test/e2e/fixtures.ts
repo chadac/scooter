@@ -246,9 +246,23 @@ export const test = base.extend<Fixtures>({
       for (let i = 0; i < 50; i++) {
         const res = await request.get(`${base}/conversations`);
         if (!res.ok()) break;
-        const convs = (await res.json()) as Array<{ id: string }>;
+        const convs = (await res.json()) as Array<{ id: string; starred?: boolean }>;
         if (convs.length === 0) break;
-        await Promise.all(convs.map((c) => request.delete(`${base}/conversations/${c.id}`)));
+        await Promise.all(
+          convs.map(async (c) => {
+            // UNSTAR FIRST. DELETE returns 409 on a starred conversation ("unstar before
+            // deleting"), so a test that stars one and then fails before unstarring leaves a row
+            // this loop can NEVER remove: it spins 50 times, gives up, and every later test
+            // inherits the leftover — which is exactly how sessions.spec.ts came to fail 8/10
+            // with "Expected 1, Received 2" and titles bleeding across tests.
+            if (c.starred) {
+              await request
+                .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
+                .catch(() => undefined);
+            }
+            return request.delete(`${base}/conversations/${c.id}`);
+          }),
+        );
         await new Promise((r) => setTimeout(r, 100));
       }
       // Let the server settle after the destroys (bridge stop + sandbox teardown)
