@@ -1,6 +1,7 @@
 # Conversation state: stores, invariants, and the authority inversion
 
-**Status:** analysis + proposal. No code changes implied by this document alone.
+**Status:** analysis + proposal. The rename in "The naming inversion" is implemented; everything
+under "The single source of truth" is proposed, not built.
 **Written:** 2026-08-21, after a production leak on `scooter.odin.lan` where 21 conversation
 sandboxes (42 requested cores on a 24-core node) were never reclaimed, deadlocking every
 agent-host rollout.
@@ -25,7 +26,7 @@ configured, and reclaims nothing, silently, forever.
 | # | Store | Durability | Written by | Read by |
 |---|-------|-----------|-----------|---------|
 | 1 | `entries` (in-memory `Map`) | dies with the pod | every manager mutation | `sweepIdle`, `list`, `get`, nearly all of manager |
-| 2 | `STATE_PATH` file store | **dies with the pod** (`emptyDir`) | every manager mutation (`saveMeta`) | `hydrate()` |
+| 2 | `LOCAL_STATE_PATH` file store (was `STATE_PATH`) | **dies with the pod** (`emptyDir`) | every manager mutation (`saveMeta`) | `hydrate()` |
 | 3 | `MIRROR_STATE_PATH` file store | durable (RWX PVC) | mirrored async from #2 | `hydrateFromMirror(id)` — **per-conversation only** |
 | 4 | `Conversation` CR | durable (etcd) | `register()` / `setPhase()`, fire-and-forget | the controller and router — **never read back by the host** ← *should be the source of truth* |
 | 5 | `Sandbox` CR + its pod | durable (etcd) | the provisioner | `provisioner.reconcile()` |
@@ -33,7 +34,7 @@ configured, and reclaims nothing, silently, forever.
 Deployed values (`modules/platform.nix` → the agent-host Deployment):
 
 ```
-STATE_PATH        = /var/lib/agent-host/conversations     volume "state"          -> emptyDir
+LOCAL_STATE_PATH  = /var/lib/agent-host/conversations     volume "state"          -> emptyDir
 MIRROR_STATE_PATH = /var/lib/agent-history/conversations  volume "history-mirror" -> PVC
 ```
 
@@ -50,10 +51,12 @@ consults it for existence.
 is not cosmetic here: with `STATE_PATH`, `hydrate()` reading local state looks correct; as
 `LOCAL_STATE_PATH`, the same line reads as obviously wrong.
 
-Proposed: `STATE_PATH` → `LOCAL_STATE_PATH` (ephemeral working set of conversations this pod is
-actively serving), `MIRROR_STATE_PATH` → the persistent conversation record. `entries` is fine as
-an in-memory index of what this pod serves — the defect is not that the cache exists, it is that a
-cache is the reclaim path's only input.
+**DONE** (this branch): `STATE_PATH` → `LOCAL_STATE_PATH`, the ephemeral working set of
+conversations this pod is actively serving. The old name is still read as a fallback so a pod whose
+manifest predates the rollout keeps working; drop it once no deployed manifest sets it.
+`MIRROR_STATE_PATH` keeps its name for now but is documented as what it is — the persistent
+conversation record, not a backup. `entries` is fine as an in-memory index of what this pod serves:
+the defect is not that the cache exists, it is that a cache is the reclaim path's only input.
 
 ## Invariants
 
