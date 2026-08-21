@@ -42,6 +42,33 @@ export interface RemoteAgentClient {
   stop(): void;
 }
 
+/**
+ * The WS URL to dial, carrying whatever credential this container has.
+ *
+ * A REGISTERED device signs a fresh server nonce (§P) — that is what survives a laptop sleeping
+ * past the join token's ten-minute life. A first-time container falls back to the join token. Both
+ * travel as query params because the controller authorizes the UPGRADE itself, before any message
+ * exists.
+ */
+export async function buildConnectUrl(deps: RemoteAgentClientDeps): Promise<string> {
+  const url = new URL(deps.url);
+  const identity = await loadDeviceIdentity();
+  if (identity && deps.challengeNonce) {
+    try {
+      const nonce = await deps.challengeNonce();
+      url.searchParams.set("deviceId", identity.deviceId);
+      url.searchParams.set("nonce", nonce);
+      url.searchParams.set("signature", signChallenge(identity.privateKeyPem, nonce));
+      return url.toString();
+    } catch {
+      // Controller mid-rollout or no challenge endpoint: fall back to the join token for this
+      // attempt; the jittered backoff retries.
+    }
+  }
+  if (deps.joinToken) url.searchParams.set("token", deps.joinToken);
+  return url.toString();
+}
+
 export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentClient {
   const log = deps.log ?? ((m: string) => console.log(`[remote-agent] ${m}`));
   let stopped = false;
@@ -52,7 +79,12 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
 
   const connect = async () => {
     if (stopped) return;
-    ws = new WebSocket(deps.url);
+    // The controller authorizes at the UPGRADE, before any application message can be sent, so
+    // credentials must ride on the URL. An earlier cut sent them in the hello FRAME: the controller
+    // read query params, the container sent a message, and device auth silently NEVER ENGAGED —
+    // every reconnect quietly fell back to the join token and died once it expired.
+    const connectUrl = await buildConnectUrl(deps);
+    ws = new WebSocket(connectUrl);
     const frameCbs = new Set<(f: WireFrame) => void>();
     const send = (f: WireFrame) => {
       if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(f));
@@ -92,30 +124,8 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     ws.on("open", () => {
       void (async () => {
         attempt = 0; // a successful connect resets the backoff window
-        // DEVICE KEY FIRST (§P). Once registered, the container authenticates by signing a
-        // server-issued nonce and NEVER needs the join token again — which is what lets a laptop
-        // reconnect after sleeping. The bearer token is a 10-minute credential; relying on it for
-        // reconnects is why the shipped container died 4004 forever after the first expiry.
-        const identity = await loadDeviceIdentity();
-        if (identity && deps.challengeNonce) {
-          const nonce = await deps.challengeNonce().catch(() => undefined);
-          if (nonce) {
-            log(`connected → ${deps.url}; authenticating as device ${identity.deviceId}`);
-            ws!.send(
-              JSON.stringify({
-                protocolVersion: REMOTE_PROTOCOL_VERSION,
-                deviceId: identity.deviceId,
-                nonce,
-                signature: signChallenge(identity.privateKeyPem, nonce),
-              }),
-            );
-            return;
-          }
-          // Could not fetch a challenge (controller mid-rollout). Fall through to the join token if
-          // we still have one; otherwise the connect fails and the backoff retries.
-          log(`could not fetch a challenge; falling back to the join token`);
-        }
-        log(`connected → ${deps.url}; authenticating`);
+        // Auth already happened at the UPGRADE (see buildConnectUrl). The hello now only
+        // negotiates the protocol version, so a mismatch fails clean rather than mid-conversation.
         ws!.send(JSON.stringify({ protocolVersion: REMOTE_PROTOCOL_VERSION, joinToken: deps.joinToken }));
       })();
     });
