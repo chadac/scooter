@@ -33,6 +33,23 @@ describe("byoc device list", () => {
     await expect(loadDevices({ fetchImpl })).resolves.toEqual([]);
   });
 
+  it("an HTML fallback (200 + index.html) reads as 'not available', not a parser error", async () => {
+    // A deployment without the BYOC controller has no /byoc/* route, so the SPA catch-all serves
+    // index.html with a 200. res.ok is true and res.json() throws the PARSER's message, which
+    // surfaced verbatim in Settings: `Unexpected token '<', "<!doctype "... is not valid JSON`.
+    const fetchImpl = vi.fn(
+      async () => new Response("<!doctype html><html></html>", { status: 200, headers: { "Content-Type": "text/html" } }),
+    ) as unknown as typeof fetch;
+    await expect(loadDevices({ fetchImpl })).resolves.toEqual([]);
+  });
+
+  it("a body that LIES about being JSON also degrades quietly", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response("<!doctype html>", { status: 200, headers: { "Content-Type": "application/json" } }),
+    ) as unknown as typeof fetch;
+    await expect(loadDevices({ fetchImpl })).resolves.toEqual([]);
+  });
+
   it("a real server error DOES throw (the user should know the list is stale)", async () => {
     const fetchImpl = vi.fn(async () => json({ error: "boom" }, 500)) as unknown as typeof fetch;
     await expect(loadDevices({ fetchImpl })).rejects.toThrow(/500/);

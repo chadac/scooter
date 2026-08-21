@@ -32,7 +32,18 @@ export async function loadDevices(config: ByocDevicesConfig = {}): Promise<ByocD
   // rather than an error the user can act on, so the section simply stays empty.
   if (res.status === 404 || res.status === 401) return [];
   if (!res.ok) throw new Error(`Failed to load devices (${res.status})`);
-  return (await res.json()) as ByocDevice[];
+  // A deployment WITHOUT the BYOC controller has no /byoc/* route, so the SPA's catch-all serves
+  // index.html with a 200 — res.ok is true and res.json() then throws the parser's own message
+  // ("Unexpected token '<', \"<!doctype \"..."), which surfaced VERBATIM in the settings UI.
+  // Treat a non-JSON body as "device auth not available here", the same as a 404.
+  const ctype = res.headers.get("content-type") ?? "";
+  if (!ctype.includes("application/json")) return [];
+  try {
+    return (await res.json()) as ByocDevice[];
+  } catch {
+    // Content-Type claimed JSON but the body was not. Still not something the user can act on.
+    return [];
+  }
 }
 
 /** Revoke a device. The laptop's key stops working immediately. */
