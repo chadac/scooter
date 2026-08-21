@@ -20,7 +20,6 @@ import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
-import { createRemoteAgentConnectHandler } from "./acp/remoteAgentConnect.js";
 import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
@@ -472,6 +471,10 @@ export async function main(
   // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
   // in. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
   const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
+  // The BYOC controller's IN-CLUSTER base URL (§L). Ownership resolution, every ACP frame, and the
+  // setup one-liner's session mint all go through it, so this pod holds no container socket and any
+  // replica can serve any conversation. Empty => no BYO path; every run takes the cloud floor.
+  const byocControllerUrl = (process.env.BYOC_CONTROLLER_URL ?? "").trim();
   // DURABLE binding on the shared Postgres (same DSN as the identity store): persist an owner's
   // online/offline so the "Connected" badge is correct across replicas + survives a restart (the
   // in-memory registry lives on one replica). Absent DSN → in-memory only (badge = local live conn).
@@ -485,13 +488,10 @@ export async function main(
         onOffline: remoteAgentStore ? (owner) => void remoteAgentStore.markOffline(owner) : undefined,
       })
     : undefined;
-  if (remoteAgentRegistry && remoteAgentJoinSecret) {
-    server.onUpgrade(
-      "/remote-agent/connect",
-      createRemoteAgentConnectHandler({ registry: remoteAgentRegistry, joinSecret: remoteAgentJoinSecret }),
-    );
-    console.log("[agent-host] bring-your-own-Claude: /remote-agent/connect enabled");
-  }
+  // (The /remote-agent/connect WS upgrade was the PER-POD socket endpoint: a container's socket
+  // terminated on whichever replica it happened to reach, so only that pod could drive it — BYO
+  // worked at replicas=1 and silently fell to the cloud floor otherwise. Containers now connect to
+  // the BYOC CONTROLLER, which owns every socket, so any replica can serve any conversation.)
   // The Settings "Connect your Claude agent" backing (mint one-liner + connected badge). Only when
   // BYO is enabled; the management route 404s otherwise so the UI hides the section. The badge reads
   // the DURABLE store (cross-replica) when available, else the local live registry.
@@ -499,9 +499,10 @@ export async function main(
     remoteAgentRegistry && remoteAgentJoinSecret
       ? createRemoteAgentUi({
           joinSecret: remoteAgentJoinSecret,
-          // The container dials the WEBHOOKS bridge (unauthed front door), not the agent-host —
-          // REMOTE_AGENT_BRIDGE_URL is the webhooks public base URL.
-          bridgeUrl: process.env.REMOTE_AGENT_BRIDGE_URL || undefined,
+          // The container dials the BYOC CONTROLLER (§L). The session is minted in-cluster
+          // (controllerUrl) and the container connects to the PUBLIC ingress (publicByocUrl).
+          controllerUrl: byocControllerUrl,
+          publicByocUrl: process.env.BYOC_PUBLIC_URL || undefined,
           isConnected: remoteAgentStore
             ? undefined
             : (owner) => remoteAgentRegistry.has(owner),

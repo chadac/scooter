@@ -135,7 +135,8 @@ export interface ManagementDeps {
    *  isn't enabled (REMOTE_AGENT_JOIN_SECRET unset), so the UI hides the section. */
   remoteAgent?: {
     /** Mint a fresh short-lived join token for `owner` + the full `docker run …` one-liner. */
-    mint(owner: string): { token: string; dockerCommand: string; wsUrl: string };
+    /** Async: the session is minted on the CONTROLLER before the URL can be built (§L). */
+    mint(owner: string): Promise<{ token: string; dockerCommand: string; wsUrl: string }>;
     /** Is this owner's remote agent connected right now? Durable (DB, cross-replica) when a DB is
      *  wired, else the local live registry — hence async. */
     isConnected(owner: string): Promise<boolean>;
@@ -256,10 +257,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // Owner-scoped: a caller manages ONLY their own agent (ctx.user.id). Absent deps.remoteAgent
   // (BYO not enabled) → 404 so the UI hides the section. Anonymous → 401 (an agent must bind to a
   // real user for routing + fencing).
-  r.post("/remote-agent/join-token", (ctx) => {
+  r.post("/remote-agent/join-token", async (ctx) => {
     if (!deps.remoteAgent) return { status: 404, json: { error: "remote agents not enabled" } };
     if (ctx.user.anonymous) return { status: 401, json: { error: "sign in to connect a Claude agent" } };
-    const { token, dockerCommand, wsUrl } = deps.remoteAgent.mint(ctx.user.id);
+    const { token, dockerCommand, wsUrl } = await deps.remoteAgent.mint(ctx.user.id);
     // Return the raw token + the ready-to-copy one-liner (token baked in) + the wss URL.
     return { json: { token, dockerCommand, wsUrl } };
   });

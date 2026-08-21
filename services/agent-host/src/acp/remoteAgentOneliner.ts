@@ -9,15 +9,17 @@ import { mintJoinToken } from "../auth/remoteAgentToken.js";
 /** The published container image (ghcr). Overridable for a private registry / a pinned tag. */
 const DEFAULT_IMAGE = "ghcr.io/chadac/scooter-remote-agent:latest";
 
-/** The wss connect URL the CONTAINER dials. This is the WEBHOOKS bridge (/claude-bridge/connect),
- *  NOT the agent-host — webhooks has no user-facing auth (the ALB/user-auth that fronts the UI
- *  would otherwise block the container), verifies the join token, and proxies to the agent-host's
- *  internal /remote-agent/connect. `bridgeUrl` is the webhooks public base URL
- *  (REMOTE_AGENT_BRIDGE_URL). http→ws, https→wss; a bare host defaults to wss. */
-export function connectWsUrl(bridgeUrl: string | undefined): string {
-  const base = (bridgeUrl ?? "").trim().replace(/\/$/, "");
-  const path = "/claude-bridge/connect";
-  if (!base) return `wss://<your-webhooks-host>${path}`;
+/** The ws(s) URL the CONTAINER dials, for ONE minted session (§L).
+ *
+ *  This replaced a STATIC bridge URL (`wss://<host>/claude-bridge/connect`, identical for every
+ *  user). The controller path is per-owner — the session id is how it routes a prompt to the right
+ *  container — so the URL can only be built AFTER minting. `publicByocUrl` is the public base of
+ *  the BYOC ingress; http→ws, https→wss, and a bare host defaults to wss so a copy-paste never
+ *  silently downgrades to plaintext. */
+export function connectWsUrl(publicByocUrl: string | undefined, sessionId: string): string {
+  const base = (publicByocUrl ?? "").trim().replace(/\/$/, "");
+  const path = `/byoc/ws/${encodeURIComponent(sessionId)}`;
+  if (!base) return `wss://<your-byoc-host>${path}`;
   if (base.startsWith("https://")) return base.replace(/^https:\/\//, "wss://") + path;
   if (base.startsWith("http://")) return base.replace(/^http:\/\//, "ws://") + path;
   return `wss://${base}${path}`;
@@ -40,9 +42,12 @@ export function dockerCommand(wsUrl: string, token: string, image = DEFAULT_IMAG
 
 export interface RemoteAgentUiDeps {
   joinSecret: string;
-  /** The WEBHOOKS bridge public base URL (REMOTE_AGENT_BRIDGE_URL) the container dials —
-   *  /claude-bridge/connect is appended. The bridge (unauthed) verifies + proxies to the agent-host. */
-  bridgeUrl?: string;
+  /** The BYOC controller's IN-CLUSTER base URL — where the session is minted. */
+  controllerUrl: string;
+  /** The controller's PUBLIC base URL — what the container dials from the user's laptop. */
+  publicByocUrl?: string;
+  /** Injectable for tests. */
+  fetchImpl?: typeof fetch;
   /** Synchronous connected check (in-memory live registry). Use this OR isConnectedAsync. */
   isConnected?: (owner: string) => boolean;
   /** Async connected check (the durable Postgres badge, cross-replica). Preferred when a DB is
@@ -55,9 +60,24 @@ export interface RemoteAgentUiDeps {
 
 /** The `remoteAgent` dep the management API's Settings routes consume. */
 export function createRemoteAgentUi(deps: RemoteAgentUiDeps) {
-  const wsUrl = connectWsUrl(deps.bridgeUrl);
+  const doFetch = deps.fetchImpl ?? fetch;
   return {
-    mint(owner: string) {
+    /** Mint a session on the CONTROLLER, then build the one-liner around it. Async because the
+     *  session is per-owner and only the controller can create one — a static URL cannot route. */
+    async mint(owner: string) {
+      const res = await doFetch(`${deps.controllerUrl.replace(/\/$/, "")}/byoc/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-auth-request-user": owner },
+      }).catch((err: unknown) => {
+        throw new Error(`could not mint a BYOC session: ${String(err)}`);
+      });
+      if (!res.ok) {
+        // FAIL LOUD. Handing back a one-liner that cannot connect is worse than an error: the user
+        // runs it, it retries forever, and nothing says why.
+        throw new Error(`could not mint a BYOC session (${res.status})`);
+      }
+      const { sessionId } = (await res.json()) as { sessionId: string };
+      const wsUrl = connectWsUrl(deps.publicByocUrl, sessionId);
       const token = mintJoinToken(owner, deps.joinSecret, { ttlSeconds: deps.ttlSeconds ?? 900 });
       return { token, wsUrl, dockerCommand: dockerCommand(wsUrl, token, deps.image) };
     },

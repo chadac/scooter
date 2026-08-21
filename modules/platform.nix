@@ -355,10 +355,14 @@ in
           default = "";
           example = "https://webhooks.example.com";
           description = ''
-            Public base URL of the WEBHOOKS bridge the container dials (/claude-bridge/connect is
-            appended). Webhooks is the unauthed front door (no ALB/user-auth) that verifies the join
-            token + proxies to the agent-host. Empty ⇒ the Settings one-liner shows a placeholder
-            host. Set to the webhooks receiver's public host (agentSandbox.webhooks.ingress.host).
+            PUBLIC base URL of the BYOC controller's ingress — what the user's container dials
+            (`/byoc/ws/<session-id>` is appended per owner). Deliberately not the UI host: the
+            container has no browser session, so it needs the unauthenticated /byoc ingress, and
+            the join token is the gate. Empty ⇒ the Settings one-liner shows a placeholder host.
+            Set to agentSandbox.byoc.ingress.host.
+
+            (This replaced the retired webhooks /claude-bridge front door, which terminated the
+            container's socket on ONE agent-host replica — see modules/byoc.nix.)
           '';
         };
       };
@@ -937,10 +941,14 @@ in
                   { name = "REMOTE_AGENT_IMAGE"; value = cfg.agent.remoteAgent.image; }
                 ]
                 ++ lib.optional (cfg.agent.remoteAgent.enable && cfg.agent.remoteAgent.bridgeUrl != "")
-                  # The WEBHOOKS bridge public URL the container dials (/claude-bridge/connect is
-                  # appended). Webhooks is the unauthed front door that verifies + proxies to the
-                  # agent-host — so the container isn't blocked by the ALB/user-auth on the UI host.
-                  { name = "REMOTE_AGENT_BRIDGE_URL"; value = cfg.agent.remoteAgent.bridgeUrl; }
+                  # The BYOC controller's PUBLIC base — what the container dials from the user's
+                  # laptop (/byoc/ws/<session-id> is appended per owner).
+                  { name = "BYOC_PUBLIC_URL"; value = cfg.agent.remoteAgent.bridgeUrl; }
+                ++ lib.optional cfg.byoc.enable
+                  # The controller's IN-CLUSTER base — where the agent-host mints sessions, resolves
+                  # ownership, and sends every ACP frame. Without this there is NO BYO path and every
+                  # run takes the cloud floor.
+                  { name = "BYOC_CONTROLLER_URL"; value = "http://byoc-controller.${cfg.namespace}.svc.cluster.local:8080"; }
                 ++ lib.optionals cfg.broker.aws.enable [
                   # AWS permissions broker: the agent-host mounts the account
                   # ConfigMap into each sandbox, and resolves approvals against the
