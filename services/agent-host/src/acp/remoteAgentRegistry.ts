@@ -8,6 +8,7 @@ import type { AcpClient } from "./client.js";
 import type { ExecBackend } from "../types.js";
 import type { AcpProvider, RunContext } from "./provider.js";
 import { createRemoteAcpClient } from "./remoteAcpClient.js";
+import { createByocTransport } from "./byocTransport.js";
 import type { RemoteTransport } from "./remoteProtocol.js";
 
 /**
@@ -92,43 +93,80 @@ export function createRemoteAgentRegistry(hooks: RemoteAgentRegistryHooks = {}):
  * via the passed ExecBackend).
  */
 export function createRemotePersonalizedProvider(deps: {
-  registry: RemoteAgentRegistry;
+  /** The BYOC controller's in-cluster base URL. Ownership is resolved HERE, not from a per-pod map:
+   *  the controller holds every container socket, so ANY replica can drive ANY container (§L). The
+   *  old per-pod `registry` could only answer for sockets THIS pod happened to hold, so on a
+   *  multi-replica fleet a run scheduled elsewhere fell silently to the cloud floor. */
+  controllerUrl: string;
   /** The CLOUD sandbox ExecBackend for this conversation — the agent's tools tunnel here. */
   exec: ExecBackend;
   /** Priority above the cloud floor. Default 10. */
   priority?: number;
+  /** Injectable for tests. */
+  fetchImpl?: typeof fetch;
 }): AcpProvider {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const base = deps.controllerUrl.replace(/\/$/, "");
+  // owner -> sessionId, learned during eligible() and consumed by createClient() in the SAME run.
+  // Not a durable cache: a stale entry would point a run at a container that has since dropped, and
+  // the controller is the only authority on who is connected right now.
+  const resolved = new Map<string, string>();
   return {
     id: "remote-personalized",
     kind: "claude",
     priority: deps.priority ?? 10,
-    eligible(ctx: RunContext): boolean {
-      // Log WHICH condition rejected. All three must hold, and when the provider is skipped the
-      // run falls silently to the cloud floor — the user gets an answer either way, so without
-      // this there is no way to tell a BYO run from a cloud run. (A live check confirmed the
-      // fallback is invisible: stopping the container still produced replies.)
+    async eligible(ctx: RunContext): Promise<boolean> {
       const hasOwner = ctx.owner !== undefined;
       const human = isHumanTrigger(ctx.source);
-      const registered = hasOwner && deps.registry.has(ctx.owner as string);
-      const ok = hasOwner && human && registered;
-      if (!ok) {
+      if (!hasOwner || !human) {
         console.log(
           `[remote-personalized] SKIP owner=${ctx.owner ?? "-"} source=${ctx.source ?? "(undefined=ui)"} ` +
-            `hasOwner=${hasOwner} humanTrigger=${human} registered=${registered} -> falling to the cloud floor`,
+            `hasOwner=${hasOwner} humanTrigger=${human} -> falling to the cloud floor`,
         );
-      } else {
-        console.log(`[remote-personalized] SELECTED owner=${ctx.owner} source=${ctx.source ?? "(undefined=ui)"}`);
+        return false;
       }
-      return ok;
+      const owner = ctx.owner as string;
+      try {
+        const res = await doFetch(`${base}/byoc/status?owner=${encodeURIComponent(owner)}`, {
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) {
+          console.log(`[remote-personalized] SKIP owner=${owner} controller status ${res.status}`);
+          return false;
+        }
+        const body = (await res.json()) as { sessionId?: string; status?: string };
+        // "connected" is the ONLY state that can serve a run: "minted" means the session exists but
+        // the container has not dialled in, so routing a prompt there would hang.
+        if (body.status !== "connected" || !body.sessionId) {
+          console.log(
+            `[remote-personalized] SKIP owner=${owner} controller says ${body.status ?? "?"} ` +
+              `-> falling to the cloud floor`,
+          );
+          return false;
+        }
+        resolved.set(owner, body.sessionId);
+        console.log(`[remote-personalized] SELECTED owner=${owner} session=${body.sessionId}`);
+        return true;
+      } catch (err) {
+        // A controller outage must cost the user their personal model for this run, NOT the run.
+        console.log(`[remote-personalized] SKIP owner=${owner} controller unreachable (${String(err)})`);
+        return false;
+      }
     },
+
     createClient(ctx: RunContext): AcpClient {
-      const conn = ctx.owner !== undefined ? deps.registry.get(ctx.owner) : undefined;
-      if (!conn) {
-        // eligible() gates this, but guard so a race (agent dropped between resolve + create)
+      const sessionId = ctx.owner !== undefined ? resolved.get(ctx.owner) : undefined;
+      if (!sessionId) {
+        // eligible() gates this, but guard so a race (container dropped between resolve + create)
         // fails LOUD — the bridge surfaces a RUN_ERROR rather than a silent hang.
         throw new Error(`no live remote agent for owner ${ctx.owner ?? "-"}`);
       }
-      return createRemoteAcpClient({ transport: conn.transport, exec: deps.exec });
+      // The pod holds NO socket. Every frame is an HTTP call to the controller, which owns the one
+      // duplex WS to the container — so any replica can drive it and a rollout cannot strand a run.
+      return createRemoteAcpClient({
+        transport: createByocTransport({ baseUrl: base, sessionId, fetchImpl: deps.fetchImpl }),
+        exec: deps.exec,
+      });
     },
   };
 }

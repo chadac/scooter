@@ -1374,7 +1374,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Resolve the provider for a run + set acpClient/acpSessionId to its ready client. Throws if no
   // provider is eligible (a registry must include an always-eligible floor).
   const resolveForRun = async (ctx: RunContext): Promise<void> => {
-    const provider = pickAcpProvider(acpProviders, ctx);
+    const provider = await pickAcpProvider(acpProviders, ctx);
     if (!provider) {
       throw new Error(
         `no ACP provider eligible (source=${ctx.source ?? "-"}, owner=${ctx.owner ?? "-"})`,

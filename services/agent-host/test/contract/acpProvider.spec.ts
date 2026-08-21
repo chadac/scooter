@@ -35,35 +35,35 @@ const ctx = (over: Partial<RunContext> = {}): RunContext => ({
 const floor = provider("bedrock-goose", 0, () => true);
 
 describe("pickAcpProvider", () => {
-  it("picks the highest-priority eligible provider", () => {
+  it("picks the highest-priority eligible provider", async () => {
     const remote = provider("remote-personalized", 10, () => true);
-    expect(pickAcpProvider([floor, remote], ctx())?.id).toBe("remote-personalized");
+    expect((await pickAcpProvider([floor, remote], ctx()))?.id).toBe("remote-personalized");
   });
 
-  it("falls to the always-eligible floor when the higher-priority provider is INELIGIBLE", () => {
+  it("falls to the always-eligible floor when the higher-priority provider is INELIGIBLE", async () => {
     // The guardrail shape: remote is only eligible for human sources; a scheduled run drops to floor.
     const remote = provider("remote-personalized", 10, (c) => c.source !== "scheduler");
-    expect(pickAcpProvider([floor, remote], ctx({ source: "ui" }))?.id).toBe("remote-personalized");
-    expect(pickAcpProvider([floor, remote], ctx({ source: "scheduler" }))?.id).toBe("bedrock-goose");
+    expect((await pickAcpProvider([floor, remote], ctx({ source: "ui" })))?.id).toBe("remote-personalized");
+    expect((await pickAcpProvider([floor, remote], ctx({ source: "scheduler" })))?.id).toBe("bedrock-goose");
   });
 
-  it("returns undefined when NO provider is eligible (misconfigured registry fails loud)", () => {
+  it("returns undefined when NO provider is eligible (misconfigured registry fails loud)", async () => {
     const none = provider("x", 5, () => false);
-    expect(pickAcpProvider([none], ctx())).toBeUndefined();
+    expect(await pickAcpProvider([none], ctx())).toBeUndefined();
   });
 
-  it("is deterministic — tie-break by id at equal priority", () => {
+  it("is deterministic — tie-break by id at equal priority", async () => {
     const a = provider("aaa", 5, () => true);
     const b = provider("bbb", 5, () => true);
-    expect(pickAcpProvider([b, a], ctx())?.id).toBe("aaa");
-    expect(pickAcpProvider([a, b], ctx())?.id).toBe("aaa");
+    expect((await pickAcpProvider([b, a], ctx()))?.id).toBe("aaa");
+    expect((await pickAcpProvider([a, b], ctx()))?.id).toBe("aaa");
   });
 
-  it("selection is PER-CONTEXT — the same registry picks differently as source changes", () => {
+  it("selection is PER-CONTEXT — the same registry picks differently as source changes", async () => {
     const remote = provider("remote-personalized", 10, (c) => c.source === "ui" || c.source === "slack");
     const reg = [floor, remote];
-    expect(pickAcpProvider(reg, ctx({ source: "slack" }))?.id).toBe("remote-personalized");
-    expect(pickAcpProvider(reg, ctx({ source: "scheduler" }))?.id).toBe("bedrock-goose");
-    expect(pickAcpProvider(reg, ctx({ source: undefined }))?.id).toBe("bedrock-goose");
+    expect((await pickAcpProvider(reg, ctx({ source: "slack" })))?.id).toBe("remote-personalized");
+    expect((await pickAcpProvider(reg, ctx({ source: "scheduler" })))?.id).toBe("bedrock-goose");
+    expect((await pickAcpProvider(reg, ctx({ source: undefined })))?.id).toBe("bedrock-goose");
   });
 });

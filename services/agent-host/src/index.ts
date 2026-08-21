@@ -481,6 +481,11 @@ export async function main(
   const remoteAgentDsn = webhooksResourceDsn();
   const remoteAgentStore =
     remoteAgentJoinSecret && remoteAgentDsn ? createPgRemoteAgentStore({ dsn: remoteAgentDsn }) : undefined;
+  // The BYOC controller's in-cluster base URL (§L). Ownership resolution and every ACP frame go
+  // through it, so this pod holds no container socket and any replica can serve any conversation.
+  // Empty => no BYO path; every run takes the cloud floor.
+  const byocControllerUrl = (process.env.BYOC_CONTROLLER_URL ?? "").trim();
+
   const remoteAgentRegistry = remoteAgentJoinSecret
     ? createRemoteAgentRegistry({
         // Fire-and-forget DB persistence on connect/disconnect (best-effort).
@@ -1436,8 +1441,12 @@ export async function main(
       eligible: () => true,
       createClient: floorAcpClientFactory,
     };
-    const acpProviders: AcpProvider[] = remoteAgentRegistry
-      ? [createRemotePersonalizedProvider({ registry: remoteAgentRegistry, exec }), floorProvider]
+    // BYO is a candidate only when a CONTROLLER is configured. Ownership is resolved there, not
+    // from a per-pod map: the controller holds every container socket, so any replica can drive any
+    // container. Without BYOC_CONTROLLER_URL there is no BYO path at all and every run takes the
+    // cloud floor.
+    const acpProviders: AcpProvider[] = byocControllerUrl
+      ? [createRemotePersonalizedProvider({ controllerUrl: byocControllerUrl, exec }), floorProvider]
       : [floorProvider];
     // If the registry is absent the BYO provider is not even a CANDIDATE — every run goes to the
     // cloud floor and looks completely normal from the outside. Say so once per bridge, with the
@@ -1445,7 +1454,7 @@ export async function main(
     console.log(
       `[acp-providers] conversation=${conversationId} owner=${owner ?? "-"} ` +
         `candidates=[${acpProviders.map((p) => `${p.id}@${p.priority}`).join(", ")}] ` +
-        `byoRegistry=${remoteAgentRegistry ? "present" : "ABSENT (BYO disabled — cloud floor only)"}`,
+        `byocController=${byocControllerUrl || "ABSENT (BYO disabled — cloud floor only)"}`,
     );
 
     const bridge = createSessionBridge({
