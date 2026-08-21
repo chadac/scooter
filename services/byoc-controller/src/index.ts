@@ -139,9 +139,23 @@ http.on("upgrade", (req, socket, head) => {
   // through every proxy, and this path is unauthenticated at the ingress by design (§L Q3). The
   // token is short-lived and single-purpose, and the check below is the real gate.
   const token = url.searchParams.get("token") ?? "";
-  const authorized = api.authorizeUpgrade(sessionId, token);
+  // TWO ways in (§P). A REGISTERED container signs a server-issued nonce and needs no token — that
+  // is what survives a laptop sleeping past the join token's 10-minute life. A first-time container
+  // still presents the join token. Credentials ride the URL because authorization happens at the
+  // UPGRADE, before any application message exists.
+  const deviceId = url.searchParams.get("deviceId");
+  const nonce = url.searchParams.get("nonce");
+  const signature = url.searchParams.get("signature");
+  void (async () => {
+  const authorized =
+    deviceId && nonce && signature
+      ? await api.authorizeDevice(deviceId, nonce, signature)
+      : api.authorizeUpgrade(sessionId, token);
   if (!authorized.ok) {
-    console.warn(`[byoc] upgrade rejected for session ${sessionId}: ${authorized.reason}`);
+    console.warn(
+      `[byoc] upgrade rejected for session ${sessionId} ` +
+        `(${deviceId ? `device ${deviceId}` : "join token"}): ${authorized.reason}`,
+    );
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
@@ -155,7 +169,11 @@ http.on("upgrade", (req, socket, head) => {
       send: (data: string) => ws.send(data),
       close: () => ws.close(),
     };
-    const attached = registry.attach(sessionId, token, containerSocket);
+    // A device-authenticated container has NO join token to re-verify — attaching by the owner the
+    // signature already proved is the whole point of §P. First-time containers use the token path.
+    const attached = deviceId
+      ? registry.attachAuthenticated(sessionId, authorized.owner, containerSocket)
+      : registry.attach(sessionId, token, containerSocket);
     if (!attached.ok) {
       ws.close();
       return;
@@ -172,6 +190,7 @@ http.on("upgrade", (req, socket, head) => {
     });
     ws.on("error", (e) => console.warn(`[byoc] socket error session=${sessionId}: ${e.message}`));
   });
+  })();
 });
 
 http.listen(PORT, () => console.log(`[byoc] listening on :${PORT}`));

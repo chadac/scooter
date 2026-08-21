@@ -58,6 +58,9 @@ export interface SessionRegistryConfig {
 export interface SessionRegistry {
   mint(owner: string): Promise<{ sessionId: string; token: string }>;
   attach(sessionId: string, token: string, socket: ContainerSocket): AttachResult;
+  /** Attach when the caller is ALREADY authenticated (a device signature, §P) and so has no join
+   *  token to re-verify. `owner` MUST come from a verified source — this trusts it. */
+  attachAuthenticated(sessionId: string, owner: string, socket: ContainerSocket): AttachResult;
   detach(sessionId: string): void;
   /** Detach ONLY if `socket` is still the current one (a late close from a superseded connection). */
   detachIfCurrent(sessionId: string, socket: ContainerSocket): void;
@@ -105,6 +108,19 @@ export function createSessionRegistry(config: SessionRegistryConfig): SessionReg
       // user's prompts.
       if (verified.claims.owner !== s.owner) return { ok: false, reason: "owner mismatch" };
       // A reconnect supersedes the old socket; close it so the container does not keep two live.
+      if (s.socket && s.socket !== socket) s.socket.close();
+      s.socket = socket;
+      void store.setStatus(s.owner, "online").catch(() => {});
+      return { ok: true };
+    },
+
+    attachAuthenticated(sessionId, owner, socket) {
+      const s = sessions.get(sessionId);
+      if (!s) return { ok: false, reason: "unknown session" };
+      // Still check the owner matches: device auth proves WHO the caller is, not that this session
+      // is theirs. Skipping it would let a valid device attach to anyone's session — the same
+      // cross-owner hole the token path guards against.
+      if (s.owner !== owner) return { ok: false, reason: "owner mismatch" };
       if (s.socket && s.socket !== socket) s.socket.close();
       s.socket = socket;
       void store.setStatus(s.owner, "online").catch(() => {});

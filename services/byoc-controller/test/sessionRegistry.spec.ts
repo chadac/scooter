@@ -131,6 +131,23 @@ describe("BYOC session registry", () => {
     expect(reg.resolveByOwner("alice")?.socket).toBe(second);
   });
 
+  it("attachAuthenticated binds a socket WITHOUT a join token (the device-auth path, §P)", async () => {
+    const { sessionId } = await reg.mint("alice");
+    const sock = fakeSocket();
+    expect(reg.attachAuthenticated(sessionId, "alice", sock).ok).toBe(true);
+    expect(reg.resolveByOwner("alice")?.socket).toBe(sock);
+  });
+
+  it("attachAuthenticated REJECTS an owner who does not own the session (cross-owner)", async () => {
+    const { sessionId } = await reg.mint("alice");
+    expect(reg.attachAuthenticated(sessionId, "mallory", fakeSocket()).ok).toBe(false);
+    expect(reg.resolveByOwner("alice")?.socket).toBeUndefined();
+  });
+
+  it("attachAuthenticated REJECTS an unknown session", () => {
+    expect(reg.attachAuthenticated("no-such-session", "alice", fakeSocket()).ok).toBe(false);
+  });
+
   it("resolveByOwner returns null for an owner with no session", () => {
     expect(reg.resolveByOwner("nobody")).toBeNull();
   });
