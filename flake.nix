@@ -214,6 +214,9 @@
           };
 
           # Conversation router OCI image.
+          byocControllerImage = import ./pkgs/byoc-controller-image {
+            inherit pkgs lib n2c byocController;
+          };
           conversationRouterImage = import ./pkgs/conversation-router-image {
             inherit pkgs lib n2c conversationRouter;
           };
@@ -378,6 +381,8 @@
 
             # nix build .#conversation-router-image  ->  router OCI image
             conversation-router-image = conversationRouterImage.image;
+            # nix build .#byoc-controller-image  ->  BYOC controller OCI image
+            byoc-controller-image = byocControllerImage.image;
 
             # nix build .#warm-store-controller-image  ->  warm-store controller OCI image
             warm-store-controller-image = warmStoreControllerImage.image;
