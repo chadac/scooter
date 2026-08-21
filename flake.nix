@@ -199,6 +199,7 @@
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
           # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
+          byocController = pkgs.callPackage ./services/byoc-controller { };
 
           # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
@@ -345,6 +346,7 @@
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
+            byoc-controller = byocController;
             warm-store-controller = warmStoreController;
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
