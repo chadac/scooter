@@ -30,6 +30,7 @@ const NS = process.env.PLATFORM_NS ?? "agent-sandbox";
 const AGENT_HOST = `http://agent-host.${NS}.svc.cluster.local:8080`;
 
 type ConversationCR = {
+  spec?: { sandboxRef?: string };
   status?: { phase?: string; hostPod?: string; hostIP?: string; generation?: number };
 };
 
@@ -85,6 +86,63 @@ maybe("multi-replica platform smoke", () => {
   // conversations actually land on DIFFERENT pods, which the CI job arranges with podCap=1 (see
   // ci.yml / the platform-smoke deploy): each new conversation fills a pod and forces the next onto
   // another. Repeated calls guard against a lucky load-balance passing a broken build.
+  it("a SHORT-ID-addressed request routes to the OWNER, not a random pod", async () => {
+    // The broker addresses its AWS approval-notify by the sandbox SHORT-ID
+    // (POST /conversations/<shortId>/aws-request, from req.conversation_id), never the thread
+    // UUID. The router's ownership cache used to be keyed ONLY by the CR name (the UUID), so that
+    // lookup missed, resolveTarget fell back to the ClusterIP Service, and the raise landed on a
+    // NON-OWNER — where getByShortId() misses and the interrupt is silently dropped. The user saw
+    // a run start and finish with no Approve button.
+    //
+    // Unit tests cover the cache in isolation; only a MULTI-REPLICA cluster proves the request
+    // actually reaches the owner, because with one pod the fallback IS the owner and the bug is
+    // invisible. That is exactly how this shipped.
+    const threadId = `shortid-${Date.now()}`;
+    await cluster.curlInCluster(`${AGENT_HOST}/agui`, {
+      method: "POST",
+      headers: ["Content-Type: application/json", "Accept: text/event-stream"],
+      body: JSON.stringify({
+        threadId,
+        runId: "r1",
+        messages: [{ id: "m1", role: "user", content: "short-id routing" }],
+      }),
+      timeoutMs: 60_000,
+    });
+
+    // Wait for assignment so the CR carries both ids and a routing address.
+    const cr = await cluster.waitFor<ConversationCR>(
+      "Conversation",
+      threadId,
+      (c) => !!c.status?.hostIP && !!c.spec?.sandboxRef,
+      90_000,
+      NS,
+    );
+    const shortId = (cr.spec?.sandboxRef ?? "").replace(/^conv-/, "");
+    expect(shortId, "the CR must carry a sandboxRef to derive a short-id from").toMatch(/\S/);
+
+    // THE ASSERTION. Addressed by SHORT-ID through the front door, the request must reach the pod
+    // that actually hosts the conversation. A 404 here is the bug: the router sent it to a
+    // non-owner, which does not know this conversation.
+    //
+    // Repeated, because the failure was a COIN FLIP per request (fallback round-robin) — a single
+    // attempt passes ~1/N of the time by luck even when routing is broken.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const out = await cluster.curlInCluster(
+        `${AGENT_HOST}/conversations/${shortId}/aws-request`,
+        {
+          method: "POST",
+          headers: ["Content-Type: application/json"],
+          body: JSON.stringify({ requestId: `probe-${attempt}`, tool: "probe", scope: "read" }),
+          timeoutMs: 30_000,
+        },
+      );
+      expect(
+        out,
+        `attempt ${attempt + 1}: short-id ${shortId} did not reach its owner (routed to a non-owner?)`,
+      ).not.toMatch(/not found|unknown conversation/i);
+    }
+  });
+
   it("GET /conversations returns EVERY conversation in the fleet, not one pod's slice", async () => {
     const ids = [1, 2, 3].map((n) => `fanout-${Date.now()}-${n}`);
 
