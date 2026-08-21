@@ -28,6 +28,7 @@
 import type { SessionRegistry } from "./sessionRegistry.js";
 import type { RunRelay, PermissionAnswer } from "./runRelay.js";
 import { verifyJoinToken } from "./joinToken.js";
+import type { DeviceAuth, DeviceSummary } from "./deviceAuth.js";
 import type { WireFrame } from "./remoteProtocol.js";
 
 export interface ByocRequest {
@@ -49,17 +50,25 @@ export interface ByocServerConfig {
   registry: SessionRegistry;
   relay: RunRelay;
   secret: string;
+  /** Device-key auth (§P). Optional so a deployment can run token-only during rollout. */
+  devices?: DeviceAuth;
 }
 
 export interface ByocServer {
   handle(req: ByocRequest): Promise<ByocResponse>;
-  /** Gate the WS upgrade on /byoc/ws/:id. The unauthenticated entry point. */
+  /** Gate the WS upgrade on /byoc/ws/:id with a JOIN TOKEN (first connect / no device yet). */
   authorizeUpgrade(sessionId: string, token: string): { ok: true; owner: string } | { ok: false; reason: string };
+  /** Gate a reconnect with a DEVICE SIGNATURE (§P) — no join token, valid indefinitely. */
+  authorizeDevice(
+    deviceId: string,
+    nonce: string,
+    signature: string,
+  ): Promise<{ ok: true; owner: string } | { ok: false; reason: string }>;
   close(): void;
 }
 
 export function createServer(config: ByocServerConfig): ByocServer {
-  const { registry, relay, secret } = config;
+  const { registry, relay, secret, devices } = config;
 
   return {
     async handle(req) {
@@ -75,6 +84,44 @@ export function createServer(config: ByocServerConfig): ByocServer {
         }
         const minted = await registry.mint(req.user.id);
         return { status: 200, json: minted };
+      }
+
+      // --- Device auth (§P) ---
+      // POST /byoc/devices — REGISTER. On the unauthenticated ingress on purpose: the container
+      // has no browser session, and the short-lived join token is the gate.
+      if (req.method === "POST" && parts.length === 2 && parts[1] === "devices") {
+        if (!devices) return { status: 404, json: { error: "device auth not enabled" } };
+        const body = req.body as { joinToken?: string; publicKey?: string; label?: string };
+        if (!body?.joinToken || !body?.publicKey) {
+          return { status: 400, json: { error: "joinToken and publicKey required" } };
+        }
+        const res = await devices.register(body.joinToken, body.publicKey, body.label);
+        return res.ok
+          ? { status: 200, json: { deviceId: res.deviceId } }
+          : { status: 401, json: { error: res.reason } };
+      }
+
+      // GET /byoc/challenge — a single-use nonce for a container to sign. Unauthenticated: a nonce
+      // is useless without the matching private key, and issuing one leaks nothing.
+      if (req.method === "GET" && parts.length === 2 && parts[1] === "challenge") {
+        if (!devices) return { status: 404, json: { error: "device auth not enabled" } };
+        return { status: 200, json: devices.challenge() };
+      }
+
+      // GET /byoc/devices — the settings list. AUTHED: a device list is per-user.
+      if (req.method === "GET" && parts.length === 2 && parts[1] === "devices") {
+        if (!devices) return { status: 404, json: { error: "device auth not enabled" } };
+        if (!req.user?.id) return { status: 401, json: { error: "authentication required" } };
+        const list: DeviceSummary[] = await devices.listDevices(req.user.id);
+        return { status: 200, json: list };
+      }
+
+      // DELETE /byoc/devices/:id — deregister. AUTHED, and scoped to the caller's own devices.
+      if (req.method === "DELETE" && parts.length === 3 && parts[1] === "devices") {
+        if (!devices) return { status: 404, json: { error: "device auth not enabled" } };
+        if (!req.user?.id) return { status: 401, json: { error: "authentication required" } };
+        await devices.deregister(req.user.id, parts[2]);
+        return { status: 204 };
       }
 
       // GET /byoc/status?owner=…
@@ -137,6 +184,12 @@ export function createServer(config: ByocServerConfig): ByocServer {
       // caller holding a valid token of their own must not attach to someone else's session.
       if (verified.claims.owner !== session.owner) return { ok: false, reason: "owner mismatch" };
       return { ok: true, owner: session.owner };
+    },
+
+    async authorizeDevice(deviceId, nonce, signature) {
+      if (!devices) return { ok: false, reason: "device auth not enabled" };
+      const res = await devices.verify(deviceId, nonce, signature);
+      return res.ok ? { ok: true, owner: res.owner } : { ok: false, reason: res.reason };
     },
 
     close() {

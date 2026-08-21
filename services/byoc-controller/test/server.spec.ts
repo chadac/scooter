@@ -21,6 +21,9 @@ import { createSessionRegistry, type SessionRegistry, type SessionStore } from "
 import { createRunRelay, type RunRelay } from "../src/runRelay.js";
 import { createServer, type ByocServer } from "../src/server.js";
 import { mintJoinToken } from "../src/joinToken.js";
+import { createDeviceAuth } from "../src/deviceAuth.js";
+import { createMemoryDeviceStore } from "../src/sessionStore.js";
+import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 
 const SECRET = "test-secret";
 
@@ -38,11 +41,13 @@ describe("BYOC controller HTTP surface", () => {
   let registry: SessionRegistry;
   let relay: RunRelay;
   let server: ByocServer;
+  let devices: ReturnType<typeof createDeviceAuth>;
 
   beforeEach(() => {
     registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
     relay = createRunRelay({ registry });
-    server = createServer({ registry, relay, secret: SECRET });
+    devices = createDeviceAuth({ store: createMemoryDeviceStore(), secret: SECRET });
+    server = createServer({ registry, relay, secret: SECRET, devices });
   });
   afterEach(() => server.close());
 
@@ -132,5 +137,104 @@ describe("BYOC controller HTTP surface", () => {
   it("an unknown route is 404 (no accidental catch-all on an unauthenticated surface)", async () => {
     expect((await req("GET", "/byoc/../secrets")).status).toBe(404);
     expect((await req("POST", "/admin")).status).toBe(404);
+  });
+
+  // --- Device auth over HTTP (§P) ---------------------------------------------------------
+
+  function laptop() {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    return {
+      pem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+      sign: (n: string) => cryptoSign(null, Buffer.from(n), privateKey).toString("base64"),
+    };
+  }
+
+  it("POST /byoc/devices registers a laptop with a join token", async () => {
+    const dev = laptop();
+    const res = await req("POST", "/byoc/devices", {
+      body: { joinToken: mintJoinToken("alice", SECRET), publicKey: dev.pem, label: "laptop" },
+    });
+    expect(res.status).toBe(200);
+    expect((res.json as { deviceId: string }).deviceId).toMatch(/\S/);
+  });
+
+  it("POST /byoc/devices REJECTS a bad join token (this route is on the unauthenticated ingress)", async () => {
+    const dev = laptop();
+    const res = await req("POST", "/byoc/devices", {
+      body: { joinToken: mintJoinToken("alice", "wrong"), publicKey: dev.pem },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("GET /byoc/challenge issues a nonce a container can sign", async () => {
+    const res = await req("GET", "/byoc/challenge");
+    expect(res.status).toBe(200);
+    expect((res.json as { nonce: string }).nonce).toMatch(/\S/);
+  });
+
+  it("a registered device authenticates with a signed nonce — no join token needed", async () => {
+    const dev = laptop();
+    const reg = await req("POST", "/byoc/devices", {
+      body: { joinToken: mintJoinToken("alice", SECRET), publicKey: dev.pem },
+    });
+    const deviceId = (reg.json as { deviceId: string }).deviceId;
+    const { nonce } = (await req("GET", "/byoc/challenge")).json as { nonce: string };
+    const auth = await server.authorizeDevice(deviceId, nonce, dev.sign(nonce));
+    expect(auth.ok).toBe(true);
+    expect(auth.ok && auth.owner).toBe("alice");
+  });
+
+  it("GET /byoc/devices lists the AUTHENTICATED caller's devices only", async () => {
+    const a = laptop(), b = laptop();
+    await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("alice", SECRET), publicKey: a.pem, label: "alice-laptop" } });
+    await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("bob", SECRET), publicKey: b.pem, label: "bob-laptop" } });
+    const res = await req("GET", "/byoc/devices", { owner: "alice" });
+    const list = res.json as Array<{ label: string }>;
+    expect(list).toHaveLength(1);
+    expect(list[0].label).toBe("alice-laptop");
+  });
+
+  it("GET /byoc/devices REFUSES an anonymous caller (device lists are per-user)", async () => {
+    expect((await req("GET", "/byoc/devices")).status).toBe(401);
+  });
+
+  it("DELETE /byoc/devices/:id deregisters — and the key stops working", async () => {
+    const dev = laptop();
+    const reg = await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("alice", SECRET), publicKey: dev.pem } });
+    const deviceId = (reg.json as { deviceId: string }).deviceId;
+    expect((await req("DELETE", `/byoc/devices/${deviceId}`, { owner: "alice" })).status).toBe(204);
+    const { nonce } = (await req("GET", "/byoc/challenge")).json as { nonce: string };
+    expect((await server.authorizeDevice(deviceId, nonce, dev.sign(nonce))).ok).toBe(false);
+  });
+
+  it("DELETE /byoc/devices/:id REFUSES an ANONYMOUS caller (401, and the device survives)", async () => {
+    // This route sits on the same server as the unauthenticated ingress paths. Without an identity
+    // check, anyone who learns a device id could revoke a stranger's laptop — a trivial DoS.
+    const dev = laptop();
+    const reg = await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("alice", SECRET), publicKey: dev.pem } });
+    const deviceId = (reg.json as { deviceId: string }).deviceId;
+    expect((await req("DELETE", `/byoc/devices/${deviceId}`)).status).toBe(401);
+    const { nonce } = (await req("GET", "/byoc/challenge")).json as { nonce: string };
+    expect((await server.authorizeDevice(deviceId, nonce, dev.sign(nonce))).ok).toBe(true);
+  });
+
+  it("GET /byoc/devices returns EMPTY for an owner with no devices (not someone else's)", async () => {
+    // Guards against the list being scoped to anything other than the CALLER — a hardcoded or
+    // mis-threaded owner would leak one user's device inventory to another.
+    const a = laptop();
+    await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("alice", SECRET), publicKey: a.pem, label: "alice-laptop" } });
+    const res = await req("GET", "/byoc/devices", { owner: "carol" });
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual([]);
+  });
+
+  it("DELETE /byoc/devices/:id REFUSES to remove ANOTHER owner's device", async () => {
+    const dev = laptop();
+    const reg = await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("alice", SECRET), publicKey: dev.pem } });
+    const deviceId = (reg.json as { deviceId: string }).deviceId;
+    await req("DELETE", `/byoc/devices/${deviceId}`, { owner: "mallory" });
+    // Still alice's, still working.
+    const { nonce } = (await req("GET", "/byoc/challenge")).json as { nonce: string };
+    expect((await server.authorizeDevice(deviceId, nonce, dev.sign(nonce))).ok).toBe(true);
   });
 });
