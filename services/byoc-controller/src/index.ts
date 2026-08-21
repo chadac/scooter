@@ -22,7 +22,16 @@ import { createPgSessionStore, createMemorySessionStore } from "./sessionStore.j
 
 const PORT = Number(process.env.PORT ?? 8080);
 const SECRET = process.env.BYOC_JOIN_SECRET ?? "";
-const DSN = process.env.DATABASE_URL ?? "";
+// Assemble the DSN from parts, the way webhooks/broker/scheduler do: the platform's postgres-init
+// provisions a db + role and writes only a `password` secret, never a full DSN. DATABASE_URL is
+// still honoured so a local run can point at anything.
+const DSN =
+  process.env.DATABASE_URL ??
+  (process.env.DB_HOST
+    ? `postgresql://${process.env.DB_USER ?? "byoc"}:${encodeURIComponent(process.env.DB_PASSWORD ?? "")}` +
+      `@${process.env.DB_HOST}:${process.env.DB_PORT ?? "5432"}/${process.env.DB_NAME ?? "byoc"}` +
+      (process.env.DB_SSLMODE ? `?sslmode=${process.env.DB_SSLMODE}` : "")
+    : "");
 
 if (!SECRET) {
   console.error("[byoc] BYOC_JOIN_SECRET is required — refusing to start without a signing key");

@@ -114,11 +114,18 @@ in
                       name = "BYOC_JOIN_SECRET";
                       valueFrom.secretKeyRef = { name = bcfg.joinSecretName; key = "secret"; };
                     }
+                    # Durable owner->session mapping + the device registry (§L Q4 / §P). The
+                    # platform's postgres-init provisions a `byoc` db + role and writes ONLY a
+                    # `password` key (no assembled DSN) — so the parts come in separately and the
+                    # app builds the DSN, matching webhooks/broker/scheduler. Asking for a `dsn`
+                    # key here is what left the pod in CreateContainerConfigError.
+                    { name = "DB_HOST"; value = cfg.postgres.host; }
+                    { name = "DB_PORT"; value = toString cfg.postgres.port; }
+                    { name = "DB_NAME"; value = "byoc"; }
+                    { name = "DB_USER"; value = "byoc"; }
                     {
-                      # The durable owner->session mapping (§L Q4). Absent => in-memory, and the
-                      # controller warns at startup that the mapping will not survive a restart.
-                      name = "DATABASE_URL";
-                      valueFrom.secretKeyRef = { name = "agent-pg-byoc"; key = "dsn"; };
+                      name = "DB_PASSWORD";
+                      valueFrom.secretKeyRef = { name = "agent-pg-byoc"; key = "password"; };
                     }
                   ];
                   readinessProbe.httpGet = { path = "/healthz"; port = "http"; };
