@@ -43,6 +43,9 @@ let
   hasModels = modelIds != [ ];
 in
 {
+  # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
+  # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
+  # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
   imports = [ kubenix.modules.k8s ./postgres.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ];
 
   options.agentSandbox = with lib; {
@@ -234,6 +237,9 @@ in
         RWO state PVC) or openfga (its own store).
       '';
     };
+    # INTERNAL. Set by modules/testing.nix, never by a deploy config. It exists as an option only
+    # because the production env-var block below has to read it; the guard in that module is what
+    # keeps a real deploy from turning it on. See modules/testing.nix for why this inverted.
     fakeAgent = mkOption {
       type = types.bool;
       default = false;

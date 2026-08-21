@@ -266,25 +266,31 @@
           # kubenix. `mkPlatform` takes the full `agentSandbox` config for a render, so
           # each flavor declares its own images AND agent config — the e2e flavor is a
           # dummy agent with test hooks; the ghcr flavor is a real production deploy.
-          mkPlatform = agentSandbox: kubenix.evalModules.${system} {
+          # `extraModules` is how a TEST render opts into test-only overrides (modules/testing.nix).
+          # A deploy render passes none, so it cannot enable a dummy agent or an unauthenticated
+          # test webhook even by setting a stray boolean — the options only exist with the module.
+          mkPlatformWith = extraModules: agentSandbox: kubenix.evalModules.${system} {
             module = { kubenix, ... }: {
-              imports = [ ./modules/platform.nix ];
+              imports = [ ./modules/platform.nix ] ++ extraModules;
               kubenix.project = "agent-sandbox";
               kubernetes.version = "1.31";
               inherit agentSandbox;
             };
           };
+          mkPlatform = mkPlatformWith [ ];
+          mkTestPlatform = mkPlatformWith [ ./modules/testing.nix ];
 
           # E2E/cluster-test render (`nix build .#platform-manifests`): the DUMMY agent +
           # test providers, and images SIDE-LOADED into k3s so it uses bare local names
           # (registryPrefix "" overrides the module's ghcr default). This is NOT a deploy
           # manifest — it's the config the Tier-2 cluster + Tier-3 e2e suites apply.
-          platform = mkPlatform {
+          platform = mkTestPlatform {
             registryPrefix = "";
             agentHostImage = "agent-host:latest";
             sandboxImage = "agent-sandbox-os:latest";
             agent.skills = scooterSkills; # ship the ./skills/*.md set
-            fakeAgent = true; # dummy agent for cluster e2e (no model needed)
+            # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
+            testing.enable = true;
             # The cross-pod history mirror is a ReadWriteMany PVC; k3d's default
             # local-path provisioner has NO RWX, so it never binds and agent-host stays
             # Pending. A single-node cluster e2e doesn't need cross-pod revival anyway —
@@ -298,7 +304,7 @@
             webhooks = {
               enable = true;
               image = "agent-webhooks:latest";
-              testWebhook = true; # /webhooks/test for the spawn e2e
+              # testWebhook comes from modules/testing.nix — not repeated here.
             };
           };
 
