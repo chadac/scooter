@@ -302,6 +302,16 @@ export interface SessionBridge {
    *  whether a run is active, how long it's been going, and the queued backlog. */
   queueState(): { running: boolean; currentRunMs: number; queued: number; maxQueuedPriority: number };
 
+  /** Remove every QUEUED (not-yet-running) item and return it, so the caller can
+   *  PERSIST it across a bridge teardown. Used by suspend: the run queue lives in
+   *  this bridge's closure and the bridge is dropped on suspend, so anything still
+   *  queued would otherwise be destroyed (the message the user sent silently never
+   *  runs). Each drained item's prompt() promise is REJECTED — it will not run on
+   *  THIS bridge; revive re-enqueues the persisted copies on the new one. Also
+   *  emits a clearing QUEUE_UPDATED so the durable log's last word is "empty"
+   *  (else a reattaching UI folds a phantom queued row nothing will drain). */
+  drainQueue(): Array<{ text: string; priority: number }>;
+
   /** True when a PRIORITY_INTERRUPT item is waiting on the queue — the signal for
    *  tool-call BACK-PRESSURE: a provider's pre-tool gate (SDK canUseTool / goose
    *  approve-mode request_permission) denies the NEXT tool while this is true, so
@@ -520,6 +530,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     emit({ type: "QUEUE_UPDATED", items });
   };
   let pumping = false;
+  // The batch the pump is CURRENTLY running. The pump splices items OUT of `queue`
+  // before running them, so an in-flight message is in NEITHER `queue` nor anywhere
+  // else — drainQueue() would miss it and the user's message would be lost on a
+  // mid-run suspend (exactly the reported case). Tracked here so drainQueue can
+  // preserve it too. Cleared when the batch settles.
+  let runningBatch: QueueItem[] = [];
   // The run currently receiving ACP updates (set during runPrompt()).
   let currentRun: RunState | undefined;
   // terminalId -> the command goose asked to run in it (from terminal/create).
@@ -1228,6 +1244,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const batch = [item, ...queue.filter((q) => q !== item && q.priority === item.priority)]
           .sort((a, b) => a.enqueuedAt - b.enqueuedAt);
         for (const b of batch) queue.splice(queue.indexOf(b), 1);
+        runningBatch = batch; // in-flight: not in `queue`, but must survive a suspend
         // The batch just left the queue to run — surface the shrunk queue (the
         // running batch will render as normal user messages via runPrompt's
         // persist). An empty queue emits items:[] so the UI clears its queued list.
@@ -1252,6 +1269,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
           for (const b of batch) b.reject(err);
+        } finally {
+          runningBatch = [];
         }
         // A new priority item may have queued during that run — re-evaluate its
         // preemption against the (next) run.
@@ -1432,9 +1451,51 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     recordRawInput,
 
+    drainQueue() {
+      // Include the batch the pump is CURRENTLY running: it was spliced out of `queue`
+      // to run, so on a mid-run suspend it is in-flight and invisible to `queue` alone.
+      // Its run is about to be killed with the pod (runPrompt throws → the item rejects),
+      // so without capturing it here the user's message is destroyed — the very case
+      // this preservation exists for. Running items lead (they were picked first).
+      const inFlight = runningBatch;
+      runningBatch = [];
+      const waiting = queue.splice(0, queue.length);
+      if (waiting.length === 0 && inFlight.length === 0) return [];
+      // The log's final word on the queue must be "empty" — see the interface doc.
+      emitQueueSnapshot();
+      // REJECT only the items that never STARTED. An in-flight item is a run that is
+      // already executing: its promise settles through the pump's own resolve/reject
+      // when runPrompt returns (or throws as the pod goes away). Rejecting it here
+      // too would turn a NORMAL turn into a RUN_ERROR — a suspend that lands just as
+      // a run is finishing (waitForReply returns on the reply TEXT, before the run
+      // terminates) would report "the conversation was suspended before this queued
+      // message could run" for a message that in fact ran and answered.
+      for (const item of waiting) {
+        item.reject(
+          new Error("the conversation was suspended before this queued message could run"),
+        );
+      }
+      // Preserve BOTH for replay: the in-flight item may be cut short mid-run by the
+      // teardown, so its text is re-enqueued on revive (idempotent from the user's
+      // point of view — a turn that already completed simply re-asks).
+      return [...inFlight, ...waiting].map((q) => ({ text: q.input.text, priority: q.priority }));
+    },
+
     async stop() {
       closed = true; // abandon any in-progress death-retry backoff
       clearInterruptTimer();
+      // DRAIN THE QUEUE. A suspend (or model switch / rollout) tears the bridge down
+      // via stop() and then DROPS it (manager.suspend: `entry.bridge = undefined`),
+      // and revive() builds a brand-new bridge with a fresh empty queue — so anything
+      // still queued here can never run on this bridge. Left alone that produced two
+      // bugs: the queued prompt() promises leaked (an awaiting caller hung forever),
+      // and the last persisted QUEUE_UPDATED still LISTED the items, so a reattaching
+      // UI folded a phantom queued row nothing would ever drain.
+      // manager.suspend() calls drainQueue() FIRST to persist the items (so revive
+      // re-runs them); this call is the belt-and-braces path for every OTHER stop()
+      // caller (model switch, end, shutdown) so a teardown never leaks or leaves a
+      // stale snapshot behind.
+      self.drainQueue();
       // Close EVERY started provider client (there may be more than one after provider switches).
       const settled = await Promise.allSettled([...readySessions.values()]);
       readySessions.clear();

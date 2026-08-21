@@ -82,6 +82,13 @@ class BrokerSettings(BaseSettings):
     # Notify the agent-host when a request is created so it raises the approval
     # interrupt. Empty = no notify (local/dev).
     aws_agent_host_url: str = ""
+    # Retry budget for that notify. The request is already stored PENDING before we
+    # notify, so a lost notify is recoverable (revive re-queries /aws/pending) — but
+    # it costs the user a visible approval window until then, so retry the transient
+    # cases (5xx / 503-not-yet-revivable / connect errors) a few times.
+    aws_notify_attempts: int = 3
+    # Base backoff between notify attempts (seconds); doubles each retry.
+    aws_notify_backoff: float = 0.5
 
     # --- Agent-host callback (auto-linking) ---------------------------------
     # The agent-host base URL the broker calls to associate a created PR/MR/issue
