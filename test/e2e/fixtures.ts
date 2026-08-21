@@ -264,6 +264,27 @@ export const test = base.extend<Fixtures>({
           }),
         );
         await new Promise((r) => setTimeout(r, 100));
+        // FAIL LOUD on the last iteration rather than shrugging. This loop used to exhaust its 50
+        // attempts and continue silently, so an UNDELETABLE conversation (e.g. a starred one —
+        // DELETE 409s) leaked into every later test and surfaced as unrelated assertion failures
+        // ("Expected 1, Received 2", titles from another test) with no hint of the real cause.
+        // A fixture that cannot establish its precondition must say so, not hand the next test a
+        // dirty slate.
+        if (i === 49) {
+          const left = (await (await request.get(`${base}/conversations`)).json()) as Array<{
+            id: string;
+            starred?: boolean;
+            title?: string;
+          }>;
+          if (left.length) {
+            throw new Error(
+              `cleanState could not empty the server after 50 attempts. Still present: ` +
+                left.map((c) => `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}`).join(", ") +
+                `. State persists at STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
+                `restarts until that directory is cleared.`,
+            );
+          }
+        }
       }
       // Let the server settle after the destroys (bridge stop + sandbox teardown)
       // so the next test's first prompt starts a clean, unstalled conversation.
