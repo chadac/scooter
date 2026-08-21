@@ -14,7 +14,20 @@
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
+// The audience this controller MINTS with.
 const AUDIENCE = "byoc";
+
+// Audiences it ACCEPTS. `remote-agent` is here because the agent-host still mints with it (that is
+// the only mint endpoint a signed-in user can reach) while the webhooks bridge and this controller
+// coexist. Rejecting it made registration impossible: a live attempt returned
+// `{"error":"join token rejected: wrong audience"}` even with a perfectly valid, freshly-minted
+// token.
+//
+// This is a DELIBERATE, TEMPORARY widening, not an abandonment of the guard. The check still
+// rejects every OTHER audience, so a token minted for some unrelated purpose cannot be replayed at
+// /byoc/ws/:id — the one endpoint exposed unauthenticated (§L Q3). Drop "remote-agent" from this
+// list once the agent-host mints `byoc` directly and the bridge is retired.
+const ACCEPTED_AUDIENCES: ReadonlySet<string> = new Set([AUDIENCE, "remote-agent"]);
 
 export interface JoinClaims {
   /** The Scooter user the agent is bound to (routing + fencing key). */
@@ -78,7 +91,7 @@ export function verifyJoinToken(token: string, secret: string, now: number = Mat
   } catch {
     return { ok: false, reason: "bad claims" };
   }
-  if (claims.aud !== AUDIENCE) return { ok: false, reason: "wrong audience" };
+  if (!ACCEPTED_AUDIENCES.has(claims.aud)) return { ok: false, reason: "wrong audience" };
   if (typeof claims.owner !== "string" || !claims.owner) return { ok: false, reason: "no owner" };
   if (typeof claims.exp !== "number" || claims.exp <= now) return { ok: false, reason: "expired" };
   return { ok: true, claims };

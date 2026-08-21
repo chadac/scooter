@@ -23,9 +23,23 @@ import { createServer, type ByocServer } from "../src/server.js";
 import { mintJoinToken } from "../src/joinToken.js";
 import { createDeviceAuth } from "../src/deviceAuth.js";
 import { createMemoryDeviceStore } from "../src/sessionStore.js";
-import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
+import { generateKeyPairSync, sign as cryptoSign, createHmac } from "node:crypto";
 
 const SECRET = "test-secret";
+
+/** Mint a token with an arbitrary audience, SIGNED correctly — so a rejection can only come from
+ *  the audience check. (The previous version of this test tampered with the claims and left the
+ *  signature stale, so it passed for the wrong reason and never exercised the guard.) */
+function signWithAudience(owner: string, secret: string, aud: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const claims = Buffer.from(
+    JSON.stringify({ owner, iat: now, exp: now + 600, nonce: "test-nonce", aud }),
+  ).toString("base64url");
+  const sig = createHmac("sha256", secret).update(`${header}.${claims}`).digest("base64url");
+  return `${header}.${claims}.${sig}`;
+}
+
 
 function fakeStore(): SessionStore {
   const rows = new Map<string, { sessionId: string; status: "online" | "offline" }>();
@@ -110,15 +124,23 @@ describe("BYOC controller HTTP surface", () => {
     expect(server.authorizeUpgrade(mint.sessionId, mintJoinToken("alice", SECRET, { ttlSeconds: -1 })).ok).toBe(false);
   });
 
-  it("the WS upgrade REJECTS a token minted for the OLD remote-agent audience", async () => {
-    // The retired webhooks bridge minted `aud: "remote-agent"`. Since /byoc/ is unauthenticated,
-    // accepting it would make every old token a valid key to the new controller.
+  it("the WS upgrade ACCEPTS the agent-host's `remote-agent` audience (transitional)", async () => {
+    // The agent-host still mints `aud: "remote-agent"` — it is the only mint endpoint a signed-in
+    // user can reach while the webhooks bridge and this controller coexist. Rejecting it made
+    // registration IMPOSSIBLE against the deployed controller:
+    //   {"error":"join token rejected: wrong audience"}
+    // Remove this once the agent-host mints `byoc` directly and the bridge is retired.
     const mint = (await req("POST", "/byoc/sessions", { owner: "alice" })).json as { sessionId: string };
-    const legacy = mintJoinToken("alice", SECRET).split(".");
-    const claims = JSON.parse(Buffer.from(legacy[1], "base64url").toString());
-    claims.aud = "remote-agent";
-    const tampered = `${legacy[0]}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.${legacy[2]}`;
-    expect(server.authorizeUpgrade(mint.sessionId, tampered).ok).toBe(false);
+    const legacy = signWithAudience("alice", SECRET, "remote-agent");
+    expect(server.authorizeUpgrade(mint.sessionId, legacy).ok).toBe(true);
+  });
+
+  it("the WS upgrade REJECTS an UNRELATED audience — the replay guard still holds", async () => {
+    // The guard is narrowed, not abandoned: a token minted for some other purpose must not be
+    // replayable at /byoc/ws/:id, the one endpoint exposed unauthenticated (§L Q3).
+    const mint = (await req("POST", "/byoc/sessions", { owner: "alice" })).json as { sessionId: string };
+    const other = signWithAudience("alice", SECRET, "some-other-service");
+    expect(server.authorizeUpgrade(mint.sessionId, other).ok).toBe(false);
   });
 
   it("POST /byoc/:id/prompt for an offline container is 503, not a hang", async () => {
