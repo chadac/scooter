@@ -217,7 +217,14 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
       if (opts.body !== undefined) args.push("-d", opts.body);
       args.push(url);
 
-      const podName = `curltest-${Math.abs(hashStr(url + (opts.body ?? "")))}`;
+      // UNIQUE PER CALL. Naming the pod by a hash of url+body meant repeated identical requests
+      // (e.g. the platform smoke's 5-attempt list loop) reused ONE pod name — `kubectl run --rm -i`
+      // then races the previous pod's teardown and can return the earlier attempt's output
+      // concatenated with the new one, which surfaces as
+      //   SyntaxError: Unexpected non-whitespace character after JSON at position N (line 2)
+      // i.e. two JSON documents in one string. A counter + timestamp makes every call its own pod.
+      curlSeq += 1;
+      const podName = `curltest-${Date.now().toString(36)}-${curlSeq}`;
       // Run a throwaway curl pod; --restart=Never + --rm so it cleans up.
       const out = await kubectl([
         "run", podName,
@@ -233,11 +240,8 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
   };
 }
 
-function hashStr(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h;
-}
+let curlSeq = 0;
+
 
 import { execFile } from "node:child_process";
 
