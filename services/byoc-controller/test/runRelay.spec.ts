@@ -232,3 +232,76 @@ describe("caller frame-id round-trip", () => {
     expect(f2[0].id).toBe("B");
   });
 });
+
+// --- CONCURRENT conversations on one container: route by ACP session ------------------------
+
+describe("concurrent runs on one container session", () => {
+  let registry: SessionRegistry;
+  let relay: RunRelay;
+  let container: ReturnType<typeof fakeContainer>;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    relay = createRunRelay({ registry });
+    const minted = await registry.mint("alice");
+    sessionId = minted.sessionId;
+    container = fakeContainer();
+    container.bind((raw) => relay.onContainerFrame(sessionId, raw));
+    registry.attach(sessionId, minted.token, { send: container.send.bind(container), close: () => {} });
+  });
+
+  it("CROSS-TALK: each conversation's stream receives ONLY its own session_updates", async () => {
+    // Two conversations of one owner share the container session; each prompt names its own
+    // ACP session. The relay used to broadcast every notification to every in-flight run —
+    // conversation A's transcript interleaved B's output.
+    const sA = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [{ type: "text", text: "a" }] } as never), 3);
+    const sB = collect(relay.prompt(sessionId, { sessionId: "acp-B", prompt: [{ type: "text", text: "b" }] } as never), 3);
+
+    container.push({ ch: "acp", type: "session_update", payload: { sessionId: "acp-A", update: { kind: "textA" } } });
+    container.push({ ch: "acp", type: "session_update", payload: { sessionId: "acp-B", update: { kind: "textB" } } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: { stopReason: "end_turn" } } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(1), payload: { result: { stopReason: "end_turn" } } });
+
+    const [a, b] = await Promise.all([sA, sB]);
+    const kinds = (fs: Array<{ type?: string; payload?: unknown }>) =>
+      fs.filter((f) => f.type === "session_update").map((f) => (f.payload as { update: { kind: string } }).update.kind);
+    expect(kinds(a)).toEqual(["textA"]);
+    expect(kinds(b)).toEqual(["textB"]);
+  });
+
+  it("EXEC frames with a sid route ONLY to the matching run (no double tool execution)", async () => {
+    const sA = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [] } as never), 2);
+    const sB = collect(relay.prompt(sessionId, { sessionId: "acp-B", prompt: [] } as never), 2);
+
+    container.push({ ch: "exec", type: "exec_request", id: "x1", sid: "acp-B", payload: { command: "ls" } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: {} } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(1), payload: { result: {} } });
+
+    const [a, b] = await Promise.all([sA, sB]);
+    expect(a.some((f) => f.type === "exec_request"), "A must NOT see B's tool call").toBe(false);
+    expect(b.some((f) => f.type === "exec_request")).toBe(true);
+  });
+
+  it("a LEGACY exec frame (no sid) with a SINGLE run in flight still routes exactly", async () => {
+    const sA = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [] } as never), 2);
+    container.push({ ch: "exec", type: "exec_request", id: "x1", payload: { command: "ls" } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: {} } });
+    const a = await sA;
+    expect(a.some((f) => f.type === "exec_request")).toBe(true);
+  });
+
+  it("permission_request routes by the session inside its payload (present since day one)", async () => {
+    const sA = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [] } as never), 2);
+    const sB = collect(relay.prompt(sessionId, { sessionId: "acp-B", prompt: [] } as never), 2);
+    container.push({
+      ch: "acp", type: "permission_request", id: "p1",
+      payload: { request: { sessionId: "acp-A", toolCallId: "t1", title: "Run ls?", options: [] } },
+    });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: {} } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(1), payload: { result: {} } });
+    const [a, b] = await Promise.all([sA, sB]);
+    expect(a.some((f) => f.type === "permission_request")).toBe(true);
+    expect(b.some((f) => f.type === "permission_request"), "B must not see A's approval prompt").toBe(false);
+  });
+});
