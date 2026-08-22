@@ -415,6 +415,122 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
+      // HEAL A DEAD WARM-STORE CLAIM before flipping the mode. The warm pool GCs old-version
+      // volumes, but a SUSPENDED sandbox's spec still references its claim by name — so a
+      // resume after that GC recreates a pod pointing at a PVC that no longer exists: Pending
+      // forever, no error anywhere, the conversation simply never wakes (observed live:
+      // conv-toeurt, 98 minutes Pending on warm-store-…-c302957-…). The volume is a CACHE of
+      // /nix/store (the workspace PVC holds the real work) and its contents are already gone,
+      // so re-binding loses nothing that still exists: claim a fresh current-version pool
+      // volume, or create a plain upper when the pool has none. BEST-EFFORT throughout — any
+      // heal-path failure falls through to the plain mode flip (a degraded revive beats a
+      // blocked one), and a non-404 probe error is NOT treated as missing.
+      try {
+        const nsName = ref.namespace || ns;
+        const sb = (await custom.getNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
+        })) as { spec?: { podTemplate?: { spec?: { volumes?: Array<{ name: string; persistentVolumeClaim?: { claimName?: string } }> } } } };
+        const volumes = sb.spec?.podTemplate?.spec?.volumes ?? [];
+        const rw = volumes.find(
+          (v) => v.name === "scooter-rw" && v.persistentVolumeClaim?.claimName?.startsWith("warm-store-"),
+        );
+        if (rw?.persistentVolumeClaim?.claimName) {
+          const claim = rw.persistentVolumeClaim.claimName;
+          // EXISTENCE IS NOT OWNERSHIP. Return-on-suspend puts a cleanly-suspended sandbox's
+          // volume back in the pool (`ready`, claimed-by cleared), where any create() can
+          // CAS-claim it — while THIS spec still names it. RWO does not stop a same-node
+          // double-mount, and two overlay uppers on one disk is store corruption. So the probe
+          // reads the LABELS, not just presence:
+          //   claimed-by == this sandbox        -> genuinely ours, proceed untouched
+          //   pool-state == ready (unclaimed)   -> CAS re-claim the SAME volume (installs back)
+          //   claimed by anyone else / other    -> LOST: re-bind, never mount a contested volume
+          //   404                                -> LOST (the GC case)
+          // Transient probe errors keep the old fail-open behaviour (undefined = don't heal).
+          const probe = await core
+            .readNamespacedPersistentVolumeClaim({ name: claim, namespace: nsName })
+            .then((pvc: { metadata?: { labels?: Record<string, string> } }) => {
+              const labels = pvc.metadata?.labels ?? {};
+              if (labels[CLAIMED_BY_LABEL] === ref.name) return "ours" as const;
+              if (labels[POOL_STATE_LABEL] === "ready" && !labels[CLAIMED_BY_LABEL]) {
+                return "reclaimable" as const;
+              }
+              return "lost" as const; // someone else's claim, or warming/retiring — never mount it
+            })
+            .catch((e: { code?: number }) => (e?.code === 404 ? ("lost" as const) : ("unknown" as const)));
+
+          let reclaimWon = false;
+          if (probe === "reclaimable") {
+            // Win our own volume back: the same JSON-patch CAS the pool claim uses (`test`
+            // pool-state == ready is the atomic gate). Winning keeps the claimName — the
+            // sandbox's installs come back with it. Losing (422/409: another creator got it
+            // between our read and now) falls through to the LOST path below.
+            const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+            reclaimWon = await core
+              .patchNamespacedPersistentVolumeClaim(
+                {
+                  name: claim,
+                  namespace: nsName,
+                  body: [
+                    { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
+                    { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
+                    { op: "add", path: ptr(CLAIMED_BY_LABEL), value: ref.name },
+                  ] as object,
+                },
+                setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
+              )
+              .then(() => true)
+              .catch(() => false);
+            // eslint-disable-next-line no-console
+            console.log(
+              reclaimWon
+                ? `[k8sProvisioner] resume(${ref.name}): re-claimed own returned warm volume ${claim}`
+                : `[k8sProvisioner] resume(${ref.name}): lost the re-claim race on ${claim} — re-binding fresh`,
+            );
+          }
+
+          if (probe === "lost" || (probe === "reclaimable" && !reclaimWon)) {
+            let fresh = await claimWarmStorePvc(ref.name);
+            if (!fresh) {
+              // Pool cold/empty: create a plain upper (same shape the vct would have made).
+              // 409 = a prior heal attempt already created it — reuse it.
+              fresh = `scooter-rw-${ref.name}`;
+              await core
+                .createNamespacedPersistentVolumeClaim({
+                  namespace: nsName,
+                  body: {
+                    metadata: { name: fresh },
+                    spec: {
+                      accessModes: ["ReadWriteOnce"],
+                      resources: { requests: { storage: opts.overlayStorage ?? "20Gi" } },
+                    },
+                  },
+                })
+                .catch((e: { code?: number }) => {
+                  if (e?.code !== 409) throw e;
+                });
+            }
+            // Merge-patch replaces the volumes array wholesale, so send the full array with
+            // the one claimName swapped.
+            const healed = volumes.map((v) =>
+              v === rw ? { ...v, persistentVolumeClaim: { claimName: fresh! } } : v,
+            );
+            await custom.patchNamespacedCustomObject(
+              {
+                group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
+                body: { spec: { podTemplate: { spec: { volumes: healed } } } },
+              },
+              setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+            );
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[k8sProvisioner] resume(${ref.name}): warm-store claim ${claim} no longer exists — re-bound to ${fresh} (store cache reset)`,
+            );
+          }
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[k8sProvisioner] resume(${ref.name}): warm-store heal check failed (resuming anyway):`, e);
+      }
       await setOperatingMode(ref, "Running");
       return ref;
     },
