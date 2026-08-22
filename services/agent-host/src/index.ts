@@ -20,7 +20,6 @@ import { createAguiServer } from "./agui/server.js";
 import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
-import { createRemoteAgentConnectHandler } from "./acp/remoteAgentConnect.js";
 import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
@@ -472,6 +471,10 @@ export async function main(
   // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
   // in. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
   const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
+  // The BYOC controller's IN-CLUSTER base URL. Ownership resolution, every ACP frame, and the
+  // setup one-liner's session mint all go through it, so this pod holds no container socket and any
+  // replica can serve any conversation. Empty => no BYO path; every run takes the cloud floor.
+  const byocControllerUrl = (process.env.BYOC_CONTROLLER_URL ?? "").trim();
   // DURABLE binding on the shared Postgres (same DSN as the identity store): persist an owner's
   // online/offline so the "Connected" badge is correct across replicas + survives a restart (the
   // in-memory registry lives on one replica). Absent DSN → in-memory only (badge = local live conn).
@@ -485,13 +488,10 @@ export async function main(
         onOffline: remoteAgentStore ? (owner) => void remoteAgentStore.markOffline(owner) : undefined,
       })
     : undefined;
-  if (remoteAgentRegistry && remoteAgentJoinSecret) {
-    server.onUpgrade(
-      "/remote-agent/connect",
-      createRemoteAgentConnectHandler({ registry: remoteAgentRegistry, joinSecret: remoteAgentJoinSecret }),
-    );
-    console.log("[agent-host] bring-your-own-Claude: /remote-agent/connect enabled");
-  }
+  // (The /remote-agent/connect WS upgrade was the PER-POD socket endpoint: a container's socket
+  // terminated on whichever replica it happened to reach, so only that pod could drive it — BYO
+  // worked at replicas=1 and silently fell to the cloud floor otherwise. Containers now connect to
+  // the BYOC CONTROLLER, which owns every socket, so any replica can serve any conversation.)
   // The Settings "Connect your Claude agent" backing (mint one-liner + connected badge). Only when
   // BYO is enabled; the management route 404s otherwise so the UI hides the section. The badge reads
   // the DURABLE store (cross-replica) when available, else the local live registry.
@@ -499,13 +499,30 @@ export async function main(
     remoteAgentRegistry && remoteAgentJoinSecret
       ? createRemoteAgentUi({
           joinSecret: remoteAgentJoinSecret,
-          // The container dials the WEBHOOKS bridge (unauthed front door), not the agent-host —
-          // REMOTE_AGENT_BRIDGE_URL is the webhooks public base URL.
-          bridgeUrl: process.env.REMOTE_AGENT_BRIDGE_URL || undefined,
-          isConnected: remoteAgentStore
-            ? undefined
-            : (owner) => remoteAgentRegistry.has(owner),
-          isConnectedAsync: remoteAgentStore ? (owner) => remoteAgentStore.isOnline(owner) : undefined,
+          // The container dials the BYOC CONTROLLER (§L). The session is minted in-cluster
+          // (controllerUrl) and the container connects to the PUBLIC ingress (publicByocUrl).
+          controllerUrl: byocControllerUrl,
+          publicByocUrl: process.env.BYOC_PUBLIC_URL || undefined,
+          // The badge must read the CONTROLLER, which is the only component that knows whether a
+          // container is attached. It used to read a per-pod registry / a Postgres row that the
+          // old bridge wrote — neither is populated now, so the badge said "not connected" while
+          // the controller reported `"status":"connected"` and runs worked fine.
+          isConnectedAsync: async (owner: string) => {
+            if (!byocControllerUrl) return false;
+            try {
+              const res = await fetch(
+                `${byocControllerUrl.replace(/\/$/, "")}/byoc/status?owner=${encodeURIComponent(owner)}`,
+                { headers: { Accept: "application/json" } },
+              );
+              if (!res.ok) return false;
+              const body = (await res.json()) as { status?: string };
+              // Only "connected" — "minted" means the session exists but no container has dialled
+              // in, and showing that as connected would promise a BYO run that cannot happen.
+              return body.status === "connected";
+            } catch {
+              return false; // a controller blip degrades the BADGE, never a run
+            }
+          },
           image: process.env.REMOTE_AGENT_IMAGE || undefined,
         })
       : undefined;
@@ -1419,8 +1436,12 @@ export async function main(
       eligible: () => true,
       createClient: floorAcpClientFactory,
     };
-    const acpProviders: AcpProvider[] = remoteAgentRegistry
-      ? [createRemotePersonalizedProvider({ registry: remoteAgentRegistry, exec }), floorProvider]
+    // BYO is a candidate only when a CONTROLLER is configured. Ownership is resolved there, not
+    // from a per-pod map: the controller holds every container socket, so any replica can drive any
+    // container. Without BYOC_CONTROLLER_URL there is no BYO path at all and every run takes the
+    // cloud floor.
+    const acpProviders: AcpProvider[] = byocControllerUrl
+      ? [createRemotePersonalizedProvider({ controllerUrl: byocControllerUrl, exec }), floorProvider]
       : [floorProvider];
     // If the registry is absent the BYO provider is not even a CANDIDATE — every run goes to the
     // cloud floor and looks completely normal from the outside. Say so once per bridge, with the
@@ -1428,7 +1449,7 @@ export async function main(
     console.log(
       `[acp-providers] conversation=${conversationId} owner=${owner ?? "-"} ` +
         `candidates=[${acpProviders.map((p) => `${p.id}@${p.priority}`).join(", ")}] ` +
-        `byoRegistry=${remoteAgentRegistry ? "present" : "ABSENT (BYO disabled — cloud floor only)"}`,
+        `byocController=${byocControllerUrl || "ABSENT (BYO disabled — cloud floor only)"}`,
     );
 
     const bridge = createSessionBridge({

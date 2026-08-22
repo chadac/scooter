@@ -147,14 +147,26 @@ export function createServer(config: ByocServerConfig): ByocServer {
           return { status: 404, json: { error: "unknown session" } };
         }
 
+        // Every ACP REQUEST the agent-host makes — initialize, new_session, prompt, cancel,
+        // kill_terminals — comes through here. They are NOT all prompts: routing them all to a
+        // "prompt" verb was fine on the wire (the frame carries its own `type`), but only if the
+        // relay forwards the WHOLE frame. It used to forward `payload` under a hardcoded
+        // type:"prompt", so an initialize/new_session arrived at the container as a prompt with
+        // no sessionId and no text — `prompt acp-session=undefined text=""` — and the ACP
+        // handshake never completed, so no run could start.
         if (req.method === "POST" && verb === "prompt" && parts.length === 3) {
           const session = registry.resolveBySession(sessionId);
           // 503, never a hang: the agent-host transport turns a non-OK into a CLOSED transport,
           // which the bridge surfaces as RUN_ERROR ("your Claude is offline") instead of leaving
           // the user watching a spinner on a run that can never finish.
           if (!session?.online) return { status: 503, json: { error: "container not connected" } };
-          const frame = req.body as { payload?: unknown };
-          return { status: 200, stream: relay.prompt(sessionId, (frame?.payload ?? {}) as never) };
+          // Forward the frame's own type + payload, so initialize/new_session/cancel reach the
+          // container as themselves rather than as an empty prompt.
+          const frame = req.body as { type?: string; payload?: unknown };
+          return {
+            status: 200,
+            stream: relay.request(sessionId, frame?.type ?? "prompt", (frame?.payload ?? {}) as never),
+          };
         }
 
         if (req.method === "POST" && verb === "permission" && parts.length === 4) {

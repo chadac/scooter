@@ -32,6 +32,11 @@ export interface RunRelay {
   /** Send a prompt and stream this run's frames back. Rejects (rather than hanging) if the
    *  container is not reachable. The stream ends on the run's `ack`. */
   prompt(sessionId: string, payload: AcpPromptPayload): AsyncIterable<WireFrame>;
+  /** Send ANY ACP request (initialize / new_session / prompt / cancel / kill_terminals) and stream
+   *  the reply. `prompt` is the special case; the others are how the handshake completes at all.
+   *  Forwarding everything as type:"prompt" made initialize/new_session arrive at the container as
+   *  an EMPTY prompt, so the ACP session was never established and no run could start. */
+  request(sessionId: string, type: string, payload: unknown): AsyncIterable<WireFrame>;
   /** Answer a permission the container is BLOCKED on (§L Q1). Stateless — mirrors the UI's
    *  existing POST /conversations/:id/permission/:toolCallId. */
   answerPermission(sessionId: string, permissionId: string, answer: PermissionAnswer): AnswerResult;
@@ -115,6 +120,10 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
   return {
     prompt(sessionId, payload) {
+      return this.request(sessionId, "prompt", payload);
+    },
+
+    request(sessionId, type, payload) {
       // Resolve + validate BEFORE returning the iterable so a dead session fails fast. The check is
       // against the live SOCKET, never the durable row: a stale "online" would send this prompt
       // into a socket nobody is listening on and the run would never terminate.
@@ -128,7 +137,7 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
       if (!failure && session?.socket) {
         runs.set(requestId, run);
-        const frame: WireFrame<AcpPromptPayload> = { ch: "acp", type: "prompt", id: requestId, payload };
+        const frame: WireFrame = { ch: "acp", type, id: requestId, payload };
         try {
           session.socket.send(JSON.stringify(frame));
         } catch (err) {

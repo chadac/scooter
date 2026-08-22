@@ -89,6 +89,27 @@ test.describe("settings page tabs", () => {
     await expect(chat.input()).toBeVisible({ timeout: 20_000 });
   });
 
+  test("the Bring Your Own Claude tab always renders something actionable", async ({ page }) => {
+    // This stack runs WITH BYO enabled, so the ENABLED path is what renders here. The disabled
+    // path (a red panel + kubenix sample) is unit-tested; asserting it here would test a state
+    // this deployment cannot produce — my first cut did exactly that and failed for the wrong
+    // reason.
+    //
+    // What matters at this level either way: the tab is NEVER BLANK. It used to `return null`
+    // when BYO was off, which reads as a broken page rather than "off by config".
+    await page.goto("/settings/claude");
+    await expect(page.locator('[data-testid="settings-panel-claude"]')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-testid="claude-agent-section"]')).toBeVisible();
+
+    const text = (await page.locator('[data-testid="settings-panel-claude"]').innerText()).trim();
+    expect(text.length, "the claude tab must never render blank").toBeGreaterThan(40);
+
+    // And it must not leak a raw parser error where the device list goes — /byoc/* does not exist
+    // on this stack, so the SPA catch-all returns index.html and res.json() used to throw
+    // `Unexpected token '<', "<!doctype "...` straight into the UI.
+    expect(text, "a JSON parser error must never reach the user").not.toMatch(/Unexpected token|not valid JSON/i);
+  });
+
   test("the Admin Area tab contains the Users directory", async ({ page }) => {
     await page.goto("/settings/admin");
     await expect(page.locator('[data-testid="admin-area"]')).toBeVisible({ timeout: 20_000 });

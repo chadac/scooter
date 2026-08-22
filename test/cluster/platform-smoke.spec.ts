@@ -57,8 +57,25 @@ maybe("multi-replica platform smoke", () => {
       }),
       timeoutMs: 60_000,
     });
-    // The stream should at least have begun (RUN_STARTED) — the CR is registered on start().
-    expect(body).toContain("RUN_STARTED");
+    // The run must have REACHED THE AGENT and produced a stream. Deliberately NOT
+    // `toContain("RUN_STARTED")`: `curlInCluster` shells out to `kubectl run -i`, which cannot
+    // attach to the throwaway pod's stdout until that pod is scheduled and running — a gap of a
+    // couple of seconds. For a buffered response that is invisible (one chunk, delivered whole),
+    // but /agui is SSE: the bridge emits RUN_STARTED immediately and "before any awaiting"
+    // (bridge.ts), while later events trickle out over the following seconds. So the FIRST frame
+    // is precisely the one that can fall into the attach gap, and this assertion failed while the
+    // run itself was perfectly healthy — the captured body held the tool calls, the text, and
+    // RUN_FINISHED, with only the opening frame missing.
+    //
+    // Asserting on a TERMINAL event is race-free in the right direction: it cannot be observed
+    // unless the run actually started, so this still proves the front-door → router → agent-host
+    // path works, and it is not sensitive to when the attach lands.
+    expect(body, "the front door produced no AG-UI stream at all").toMatch(
+      /RUN_FINISHED|RUN_ERROR/,
+    );
+    // A RUN_ERROR means the path routed but the run failed — worth failing loudly and distinctly
+    // rather than letting the CR assertions below report a confusing downstream symptom.
+    expect(body, "the run reached the agent but errored").toContain("RUN_FINISHED");
 
     // The controller must ASSIGN it: status.hostPod (owner name) AND status.hostIP (routing
     // address) both populated. Poll the CR until the reconcile lands (interval ~5s).

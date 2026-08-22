@@ -150,7 +150,29 @@ let
     ++ (if managerUrlSet then [ ] else [ "ingress-disabled: AGENT_MANAGER_URL empty (should derive from host)" ])
     ++ (if noChatIngress then [ ] else [ "ingress-disabled: a chat Ingress was rendered anyway (competing router)" ]);
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems;
+  # TEST-ONLY ISOLATION (modules/testing.nix). A production render must NEVER carry test
+  # affordances. These used to be booleans on the production modules, so `fakeAgent = true` in a
+  # deploy config would have silently swapped the real agent for a dummy that answers every prompt
+  # with canned text — and nothing would have objected. They now live in a module a deploy never
+  # imports, and this asserts the separation actually holds in the RENDERED manifest rather than
+  # trusting the option plumbing.
+  prodPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { ... }: { imports = [ ./kubenix-config.nix ]; };
+  };
+  prodRes = prodPlatform.config.kubernetes.resources;
+  prodHostEnv =
+    let ctrs = builtins.attrValues (prodRes.deployments.agent-host.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  hasEnv = name: builtins.any (e: e.name == name) prodHostEnv;
+  # The example config sets fakeAgent directly (it predates the module); what matters here is that
+  # the TESTING MODULE's own artifacts never appear without importing it.
+  testProblems =
+    (if !(prodRes.configMaps ? agent-testing-marker) then [ ]
+     else [ "production render carries the agent-testing-marker ConfigMap (testing.nix leaked in)" ])
+    ++ (if !(prodPlatform.options.agentSandbox ? testing) then [ ]
+        else [ "agentSandbox.testing option exists WITHOUT importing modules/testing.nix (a deploy could set it)" ]);
+
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired; models wired\n"

@@ -10,7 +10,6 @@ import { describe, it, expect } from "vitest";
 
 import {
   createRemoteAgentRegistry,
-  createRemotePersonalizedProvider,
   isHumanTrigger,
   HUMAN_TRIGGER_SOURCES,
   type AgentConnection,
@@ -126,42 +125,9 @@ describe("remote agent registry", () => {
   });
 });
 
-describe("remote-personalized provider eligibility", () => {
-  const setup = () => {
-    const registry = createRemoteAgentRegistry();
-    const provider = createRemotePersonalizedProvider({ registry, exec: fakeExec });
-    return { registry, provider };
-  };
-
-  it("eligible when the owner has a live agent AND the trigger is human", () => {
-    const { registry, provider } = setup();
-    registry.register(conn("alice"));
-    expect(provider.eligible(ctx({ owner: "alice", source: "slack" }))).toBe(true);
-    expect(provider.eligible(ctx({ owner: "alice", source: undefined }))).toBe(true); // interactive
-    expect(provider.priority).toBeGreaterThan(0); // above the cloud floor
-  });
-
-  it("INELIGIBLE for a scheduled trigger (the compliance guardrail) — falls to the cloud floor", () => {
-    const { registry, provider } = setup();
-    registry.register(conn("alice"));
-    expect(provider.eligible(ctx({ owner: "alice", source: "scheduler" }))).toBe(false);
-  });
-
-  it("INELIGIBLE when the owner has NO registered agent (offline) — even for a human trigger", () => {
-    const { provider } = setup();
-    expect(provider.eligible(ctx({ owner: "alice", source: "ui" }))).toBe(false);
-  });
-
-  it("FENCE: user B's conversation is never served by user A's agent", () => {
-    const { registry, provider } = setup();
-    registry.register(conn("alice"));
-    // A run owned by bob (with a human trigger) is NOT eligible — bob has no agent; alice's is fenced off.
-    expect(provider.eligible(ctx({ owner: "bob", source: "ui" }))).toBe(false);
-  });
-
-  it("INELIGIBLE for an unowned/anonymous conversation", () => {
-    const { registry, provider } = setup();
-    registry.register(conn("alice"));
-    expect(provider.eligible(ctx({ owner: undefined, source: "ui" }))).toBe(false);
-  });
-});
+// The `remote-personalized` provider's eligibility now resolves through the BYOC CONTROLLER, not
+// this per-pod registry — see remotePersonalizedController.spec.ts. A per-pod map cannot answer
+// "does this owner have a container?" on a multi-replica fleet: a run scheduled on a pod that does
+// not hold the socket logged `SKIP registered=false` and fell silently to the cloud floor, which
+// was reproduced live at 5 replicas. The registry itself (register/get/has/replace) is still
+// covered above; only the provider moved.

@@ -47,7 +47,11 @@ export interface AcpProvider {
   readonly priority: number;
   /** May this provider serve THIS run? Pure + synchronous (no I/O) — it's called on every run.
    *  The floor provider returns true unconditionally so the resolver always terminates. */
-  eligible(ctx: RunContext): boolean;
+  /** May this provider serve the run? ASYNC-CAPABLE: the BYOC provider resolves ownership through
+   *  the controller (a network call), because a per-pod in-memory map cannot answer "who owns this
+   *  owner's container" on a multi-replica fleet — that was the bug. Sync providers may still
+   *  return a plain boolean. */
+  eligible(ctx: RunContext): boolean | Promise<boolean>;
   /** Build the AcpClient for a run this provider serves. The bridge calls this at most once per
    *  conversation (it caches + lifecycle-manages the result per provider), so it need not memoize. */
   createClient(ctx: RunContext): Promise<AcpClient> | AcpClient;
@@ -57,10 +61,23 @@ export interface AcpProvider {
  *  tie-break by id (stable across runs). Returns undefined ONLY if NO provider is eligible —
  *  callers must include an always-eligible floor (bedrock/goose) so this never happens in prod;
  *  it's `undefined`-typed so a misconfigured registry fails loud rather than silently mis-routing. */
-export function pickAcpProvider(providers: readonly AcpProvider[], ctx: RunContext): AcpProvider | undefined {
+export async function pickAcpProvider(
+  providers: readonly AcpProvider[],
+  ctx: RunContext,
+): Promise<AcpProvider | undefined> {
   let best: AcpProvider | undefined;
   for (const p of providers) {
-    if (!p.eligible(ctx)) continue;
+    // Awaited because eligibility can require a NETWORK call (the BYOC provider asks the
+    // controller who owns this owner's container). A provider that throws must not take the run
+    // down with it — the floor has to stay reachable — so a rejection reads as "not eligible".
+    let ok = false;
+    try {
+      ok = await p.eligible(ctx);
+    } catch (err) {
+      console.warn(`[acp-providers] ${p.id}.eligible threw (${String(err)}) — treating as not eligible`);
+      ok = false;
+    }
+    if (!ok) continue;
     if (best === undefined || p.priority > best.priority || (p.priority === best.priority && p.id < best.id)) {
       best = p;
     }
