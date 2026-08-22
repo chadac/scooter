@@ -159,7 +159,32 @@ export function mirroredConversationStore(
     readModule: local.readModule ? (id) => local.readModule!(id) : undefined,
     listJobs: local.listJobs ? (id) => local.listJobs!(id) : undefined,
     listLinks: local.listLinks ? (id) => local.listLinks!(id) : undefined,
-    listConversations: local.listConversations ? () => local.listConversations!() : undefined,
+    // LIST FROM THE DURABLE STORE, not the local cache. LOCAL_STATE_PATH is an emptyDir: after a
+    // rollout it is EMPTY, so delegating here made every replica report zero conversations while
+    // the mirror held the full history (measured on odin: 59 durable vs 0 local, all five replicas
+    // serving []). The user's sidebar went blank even though nothing was lost. The local store is
+    // a cache and must never be what answers "which conversations exist?".
+    //
+    // UNION rather than mirror-only: the mirror is async + coalesced, so a just-created
+    // conversation can be local-only for a moment and would otherwise flicker out of the list.
+    // Local wins on conflict — it is the hot path and its meta (title, activity) is the freshest.
+    listConversations:
+      local.listConversations || mirror.listConversations
+        ? async () => {
+            const [localMetas, mirrorMetas] = await Promise.all([
+              Promise.resolve(local.listConversations?.() ?? []).catch(() => []),
+              // A mirror read failure must not blank the list; fall back to whatever local has.
+              Promise.resolve(mirror.listConversations?.() ?? []).catch((err) => {
+                console.error("[mirror] listConversations failed (serving local only):", err);
+                return [];
+              }),
+            ]);
+            const byId = new Map<string, (typeof mirrorMetas)[number]>();
+            for (const m of mirrorMetas) byId.set(m.id as string, m);
+            for (const m of localMetas) byId.set(m.id as string, m); // local wins
+            return [...byId.values()];
+          }
+        : undefined,
     gooseStatePath: (id) => local.gooseStatePath(id),
 
     // --- subscriptions: LOCAL (the live stream the UI verifies is the local append) ---

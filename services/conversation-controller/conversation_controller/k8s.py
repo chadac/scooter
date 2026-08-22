@@ -167,7 +167,8 @@ class ControllerK8s:
             name = cr["metadata"]["name"]
             created = cr["metadata"].get("creationTimestamp")
             age = (now - _parse_ts(created)).total_seconds() if created else 0.0
-            out.append(SandboxRef(name=name, age_seconds=age))
+            mode = (cr.get("spec") or {}).get("operatingMode")
+            out.append(SandboxRef(name=name, age_seconds=age, operating_mode=mode))
         return out
 
     def delete_sandbox_tree(self, sandbox_name: str) -> None:
