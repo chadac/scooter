@@ -593,25 +593,15 @@ function ClaudeAgentSection() {
           <pre
             data-testid="claude-agent-enable-sample"
             className="overflow-x-auto rounded bg-muted/50 p-3 text-xs leading-relaxed"
-          >{`agentSandbox.agent.remoteAgent = {
-  enable = true;
-  # PUBLIC base of the BYOC ingress — what the container dials from the
-  # user's laptop. Unauthenticated by design (a container has no browser
-  # session); the join token, then its device key, is the gate.
-  bridgeUrl = "https://byoc.example.com";
-};
-
-# The controller that holds the container sockets, so ANY agent-host
-# replica can drive ANY container.
-agentSandbox.byoc = {
-  enable = true;
-  ingress = { enable = true; host = "byoc.example.com"; };
-};`}</pre>
+          >{`agentSandbox.byoc.enable = true;`}</pre>
           <p className="text-xs text-muted-foreground">
-            <span className="font-mono">deploy.sh</span> generates the HS256 signing keys
-            (<span className="font-mono">agent-remote-join-secret</span> and{" "}
-            <span className="font-mono">agent-byoc-join</span>, which must hold the SAME bytes)
-            automatically if missing. See{" "}
+            One knob: this deploys the BYOC controller, exposes{" "}
+            <span className="font-mono">/byoc</span> on your existing ingress host (a separate,
+            deliberately unauthenticated Ingress — the join token, then the device key, is the
+            gate), and turns on this Settings page. Use{" "}
+            <span className="font-mono">byoc.ingress.host</span> for a dedicated hostname.{" "}
+            <span className="font-mono">deploy.sh</span> generates the signing secret
+            (<span className="font-mono">agent-remote-join-secret</span>) if missing. See{" "}
             <span className="font-mono">docs/BYO_CLAUDE_REMOTE_AGENT.md</span>.
           </p>
         </div>

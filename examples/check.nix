@@ -19,7 +19,9 @@ let
   expect = {
     # agent-host is a Deployment (random pods; routing by pod IP + surge rollout).
     # warm-store-controller is enabled in the example → its Deployment must render.
-    deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" "warm-store-controller" ];
+    # byoc-controller renders from the ONE-KNOB enable (byoc.enable = true, nothing else) —
+    # pinning that the ingress/remote-agent/bridge-URL derivation actually composes.
+    deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" "warm-store-controller" "byoc-controller" ];
     services = [ "agent-host" "agent-host-pods" "agent-broker" "agent-webhooks" "ui" ];
     # deploy-config-files: the deployTools.configFiles ConfigMap (enabled below).
     configMaps = [ "agent-skills" "deploy-config-files" ];

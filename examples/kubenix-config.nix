@@ -105,6 +105,13 @@
     # Conversation UI (nginx serving assistant-ui + proxying the agent-host API).
     ui.enable = true;
 
+    # Bring-your-own-Claude: ONE knob. This deploys the BYOC controller, exposes /byoc on the
+    # UI's ingress host (a separate, deliberately UNAUTHENTICATED Ingress object — the container
+    # has no browser session; the join token, then its device key, is the gate), enables the
+    # agent-host's remote-agent routes + Settings UI, and derives the public URL the container
+    # dials. Override byoc.ingress.host for a dedicated hostname.
+    byoc.enable = true;
+
     # Public ingress — a generic networking.k8s.io/v1 Ingress; bring your own
     # controller via className + annotations. The agent-host trusts an identity
     # header the ingress sets, so your AUTH + header-setting config goes in
