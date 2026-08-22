@@ -334,7 +334,18 @@ in
       # BRING-YOUR-OWN-CLAUDE (Increment 2): users run a container with THEIR Claude subscription
       # that dials in over a WS; scooter routes their human-triggered conversations to it.
       remoteAgent = {
-        enable = mkEnableOption "bring-your-own-Claude remote agents (/remote-agent/connect + Settings UI)";
+        enable = mkOption {
+          type = types.bool;
+          default = cfg.byoc.enable;
+          defaultText = literalExpression "config.agentSandbox.byoc.enable";
+          description = ''
+            Bring-your-own-Claude remote agents (the Settings UI + agent-host mint/status routes).
+            Defaults to `byoc.enable`: the controller and the host-side routes are two halves of
+            ONE feature — enabling the controller without these leaves a Settings page that 404s,
+            and enabling these without the controller leaves a one-liner that dials nothing. One
+            knob (`agentSandbox.byoc.enable = true`) turns on a working whole.
+          '';
+        };
         joinSecret = mkOption {
           type = types.str;
           default = "agent-remote-join-secret";
@@ -352,17 +363,20 @@ in
         };
         bridgeUrl = mkOption {
           type = types.str;
-          default = "";
-          example = "https://webhooks.example.com";
+          default =
+            let bi = cfg.byoc.ingress; in
+            if cfg.byoc.enable && bi.enable && bi.host != ""
+            then "${if bi.tls then "https" else "http"}://${bi.host}"
+            else "";
+          defaultText = literalExpression ''"https://''${byoc.ingress.host}" when the BYOC ingress is enabled'';
+          example = "https://byoc.example.com";
           description = ''
             PUBLIC base URL of the BYOC controller's ingress — what the user's container dials
-            (`/byoc/ws/<session-id>` is appended per owner). Deliberately not the UI host: the
-            container has no browser session, so it needs the unauthenticated /byoc ingress, and
-            the join token is the gate. Empty ⇒ the Settings one-liner shows a placeholder host.
-            Set to agentSandbox.byoc.ingress.host.
-
-            (This replaced the retired webhooks /claude-bridge front door, which terminated the
-            container's socket on ONE agent-host replica — see modules/byoc.nix.)
+            (`/byoc/ws/<session-id>` is appended per owner). DERIVED from
+            `byoc.ingress.{host,tls}` by default — the module already knows this URL, so asking
+            deployers to restate it was a copy-paste invariant waiting to drift. Override only
+            when the public URL is not the ingress host (an external LB/CDN in front). Empty ⇒
+            the Settings one-liner shows a placeholder host.
           '';
         };
       };

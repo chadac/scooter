@@ -38,23 +38,38 @@ in
     };
     joinSecretName = mkOption {
       type = types.str;
-      default = "agent-byoc-join";
+      default = cfg.agent.remoteAgent.joinSecret;
+      defaultText = literalExpression "config.agentSandbox.agent.remoteAgent.joinSecret";
       description = ''
-        Secret holding key `secret` — the HMAC key for join tokens. The agent-host mints with the
-        SAME key, so both must reference this secret.
+        Secret holding key `secret` — the HMAC key for join tokens. The agent-host MINTS with the
+        same key the controller VERIFIES with, so by default this is literally the same Secret as
+        `agent.remoteAgent.joinSecret` — one name, one key, no way for the bytes to diverge.
+        (Two separately-named secrets "that must hold the same bytes" was the previous shape, and
+        it is exactly the kind of invariant a default should enforce rather than a comment.)
       '';
     };
     ingress = {
       enable = mkOption {
         type = types.bool;
-        default = false;
-        description = "Expose /byoc/ via a standard Ingress so a user's container can dial in.";
+        default = true;
+        description = ''
+          Expose /byoc/ via a standard Ingress so a user's container can dial in. Default ON when
+          the controller is enabled — a BYOC controller nothing can reach is not a configuration
+          anyone wants; opt out for exotic topologies (own gateway, mesh).
+        '';
       };
       host = mkOption {
         type = types.str;
-        default = "";
+        default = cfg.ingress.host;
+        defaultText = literalExpression "config.agentSandbox.ingress.host";
         example = "scooter.example.com";
-        description = "Public hostname for the BYOC connect path (/byoc).";
+        description = ''
+          Public hostname for the BYOC connect path (/byoc). Defaults to the UI's own ingress
+          host: this is a SEPARATE Ingress object carrying only the /byoc path with NO auth
+          annotations, so sharing the hostname does not weaken the authed UI ingress — per-path
+          annotation scoping is exactly what standard controllers do. Override for a dedicated
+          hostname (e.g. byoc.example.com).
+        '';
       };
       className = mkOption {
         type = types.str;
