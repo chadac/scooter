@@ -90,36 +90,57 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(f));
     };
 
-    // The SDK-backed brain, driving the LOCAL Claude with the user's token; its tools tunnel to the
-    // cloud sandbox via the exec backend. createSdkAcpClient is async (spawns the claude subprocess
-    // lazily on first use), so await it before wiring handlers.
-    const exec = createTunnelExecBackend({
-      send,
-      onFrame: (cb) => {
-        frameCbs.add(cb);
-        return () => frameCbs.delete(cb);
-      },
-    });
-    const sdk = await createSdkAcpClient({
-      oauthToken: deps.oauthToken,
-      model: deps.model ?? "claude-sonnet-4-5",
-      exec: exec as never, // structurally identical ExecBackend
-      systemPrompt: deps.systemPrompt ?? "You are Scooter, a helpful agent.",
-      claudeCodePath: deps.claudeCodePath,
-    });
-
-    // Route the SDK's notifications UP the wire.
-    sdk.onSessionUpdate((sessionId, update) => send({ ch: "acp", type: "session_update", payload: { sessionId, update } }));
-    sdk.onTerminalCreated((terminalId, command, args) => send({ ch: "acp", type: "terminal_created", payload: { terminalId, command, args } }));
-    // Permission requests: ask the cloud (which raises the UI interrupt), await the answer over id.
+    // Permission answers route by unique frame id, so ONE shared waiter map serves every
+    // per-session client below.
     const permissionWaiters = new Map<string, (ans: { optionId: string } | { cancelled: true }) => void>();
-    sdk.onPermissionRequest((req) => {
-      return new Promise((resolve) => {
-        const id = req.toolCallId + ":" + Math.random().toString(36).slice(2);
-        permissionWaiters.set(id, resolve);
-        send({ ch: "acp", type: "permission_request", id, payload: { request: req } });
+
+    /** Build one SDK-backed brain. ONE PER ACP SESSION (i.e. per conversation): each client's
+     *  outbound frames are STAMPED with its session id (`sid`), which is the only attribution
+     *  exec frames have — their payloads carry no session, unlike session_update's. The relay
+     *  routes by that stamp, which is what makes CONCURRENT conversations on one container
+     *  safe: with a single shared client, exec requests were broadcast to every in-flight run
+     *  and two conversations would each execute the other's tool calls in the wrong sandbox.
+     *  The stamp is a mutable box because the session id only exists AFTER newSession returns;
+     *  nothing tool-shaped flows before that. */
+    const buildClient = async () => {
+      const stamp: { sid?: string } = {};
+      const stampedSend = (f: WireFrame) => send(stamp.sid ? { ...f, sid: stamp.sid } : f);
+      const exec = createTunnelExecBackend({
+        send: stampedSend,
+        onFrame: (cb) => {
+          frameCbs.add(cb);
+          return () => frameCbs.delete(cb);
+        },
       });
-    });
+      const sdk = await createSdkAcpClient({
+        oauthToken: deps.oauthToken,
+        model: deps.model ?? "claude-sonnet-4-5",
+        exec: exec as never, // structurally identical ExecBackend
+        systemPrompt: deps.systemPrompt ?? "You are Scooter, a helpful agent.",
+        claudeCodePath: deps.claudeCodePath,
+      });
+      // Route the SDK's notifications UP the wire, stamped. session_update carries its session
+      // in the payload too (that has been true since day one — the relay uses it as a fallback
+      // for old containers); the stamp makes every frame uniform.
+      sdk.onSessionUpdate((sessionId, update) =>
+        send({ ch: "acp", type: "session_update", sid: sessionId, payload: { sessionId, update } }));
+      sdk.onTerminalCreated((terminalId, command, args) => stampedSend({ ch: "acp", type: "terminal_created", payload: { terminalId, command, args } }));
+      sdk.onPermissionRequest((req) => {
+        return new Promise<{ optionId: string } | { cancelled: true }>((resolve) => {
+          const id = req.toolCallId + ":" + Math.random().toString(36).slice(2);
+          permissionWaiters.set(id, resolve);
+          send({ ch: "acp", type: "permission_request", id, sid: req.sessionId, payload: { request: req } });
+        });
+      });
+      return { sdk, stamp };
+    };
+
+    // The PRIMARY client answers `initialize` (which precedes any session) and serves legacy
+    // dispatches; every `new_session` gets its OWN client so concurrent conversations have
+    // isolated brains and attributable tool calls.
+    const primary = await buildClient();
+    const sdk = primary.sdk;
+    const clients = new Map<string, { sdk: typeof primary.sdk; stamp: { sid?: string } }>();
 
     ws.on("open", () => {
       void (async () => {
@@ -163,8 +184,16 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
             return ack(frame.id, r);
           }
           case "new_session": {
-            const r = await sdk.newSession((frame.payload as { params: never }).params);
-            log(`new_session -> acp session ${(r as { sessionId?: string }).sessionId ?? "?"}`);
+            // ONE CLIENT PER SESSION (see buildClient): the returned session id becomes both the
+            // routing key for later prompts and the sid stamped on this client's tool frames.
+            const client = await buildClient();
+            const r = await client.sdk.newSession((frame.payload as { params: never }).params);
+            const sid = (r as { sessionId?: string }).sessionId;
+            if (sid) {
+              client.stamp.sid = sid;
+              clients.set(sid, client);
+            }
+            log(`new_session -> acp session ${sid ?? "?"}`);
             return ack(frame.id, r);
           }
           case "prompt": {
@@ -180,16 +209,22 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
               .slice(0, 80);
             log(`prompt acp-session=${p.sessionId} text="${preview}"`);
             const started = Date.now();
-            const r = await sdk.prompt({ sessionId: p.sessionId, prompt: p.prompt as never });
+            // Route to the session's OWN client; the primary serves a session id we never issued
+            // (a cloud side older than per-session clients).
+            const owner = clients.get(p.sessionId)?.sdk ?? sdk;
+            const r = await owner.prompt({ sessionId: p.sessionId, prompt: p.prompt as never });
             log(`prompt DONE acp-session=${p.sessionId} stopReason=${(r as { stopReason?: string }).stopReason ?? "?"} in ${Date.now() - started}ms`);
             return ack(frame.id, r);
           }
           case "cancel": {
-            await sdk.cancel((frame.payload as { sessionId: string }).sessionId);
+            const sid = (frame.payload as { sessionId: string }).sessionId;
+            await (clients.get(sid)?.sdk ?? sdk).cancel(sid);
             return ack(frame.id, {});
           }
           case "kill_terminals": {
-            await sdk.killActiveTerminals();
+            // The cloud does not say WHICH session's terminals — kill across every client, same
+            // blast radius the single-client world had.
+            await Promise.all([sdk, ...[...clients.values()].map((c) => c.sdk)].map((c) => c.killActiveTerminals().catch(() => {})));
             return ack(frame.id, {});
           }
           case "ack": {
@@ -233,6 +268,8 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
         waiter({ cancelled: true });
       }
       void sdk.close().catch(() => {});
+      for (const c of clients.values()) void c.sdk.close().catch(() => {});
+      clients.clear();
       if (stopped) {
         resolveClosed();
         return;

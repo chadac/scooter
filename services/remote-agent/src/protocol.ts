@@ -16,6 +16,12 @@ export interface WireFrame<P = unknown> {
   ch: Channel;
   type: string;
   id?: string;
+  /** The ACP session this frame belongs to, stamped by the CONTAINER on frames it originates
+   *  (exec requests especially — their payloads carry no session, unlike session_update's).
+   *  The relay routes container->cloud frames to the matching in-flight run by this, which is
+   *  what makes CONCURRENT conversations on one container safe: without it, exec requests were
+   *  broadcast to every run and two conversations would each execute the other's tool calls. */
+  sid?: string;
   payload: P;
 }
 

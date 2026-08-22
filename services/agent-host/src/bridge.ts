@@ -1316,7 +1316,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       debug("[bridge] readyProvider(%s): newSession -> %s", provider.id, sid);
       // Subscribe ONCE per client and route updates to the current run (handleUpdate keys on
       // currentRun; only the in-flight run's provider emits at a time).
-      client.onSessionUpdate((_sid, u) => {
+      client.onSessionUpdate((sid, u) => {
+        // FILTER BY SESSION. For goose this is always our own sid. For a BYO remote agent, all
+        // of an owner's conversations share ONE wire; the relay routes by session, but this is
+        // the defense-in-depth: an update for a session we are not driving must never be
+        // applied to our run — that interleaves another conversation's transcript into ours.
+        // An update with NO sid (older stacks) keeps the old behaviour.
+        if (sid && acpSessionId && sid !== acpSessionId) return;
         if (currentRun) handleUpdate(currentRun, u);
       });
       // goose's shell tool carries the COMMAND in terminal/create, not the tool_call rawInput —

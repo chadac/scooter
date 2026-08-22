@@ -56,6 +56,9 @@ export interface RunRelay {
 /** One in-flight run: a queue of frames plus whoever is waiting to read the next one. */
 interface PendingRun {
   sessionId: string;
+  /** The ACP session this run drives (from the prompt/cancel payload); undefined for the
+   *  handshake calls, which produce no notifications. */
+  acpSessionId?: string;
   /** The caller's frame id — every frame yielded back up whose id is the RELAY's requestId is
    *  rewritten to this, so the caller's by-id correlation resolves. */
   callerId?: string;
@@ -73,6 +76,8 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
   // exec ids (§L Q2). Kept per-session so a disconnect can abandon them wholesale — a reconnecting
   // container must never inherit the previous connection's pending work.
   const awaiting = new Map<string, { sessionId: string; kind: "permission" | "exec" }>();
+  // Container sessions we have already warned about unattributable frames for (once each).
+  const warnedLegacy = new Set<string>();
 
   const push = (run: PendingRun, frame: WireFrame): void => {
     if (run.done) return;
@@ -144,7 +149,11 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       // into a socket nobody is listening on and the run would never terminate.
       const session = registry.resolveBySession(sessionId);
       const requestId = randomUUID();
-      const run: PendingRun = { sessionId, queue: [], done: false, callerId };
+      // The ACP session this run drives, when the request names one (prompt/cancel do; the
+      // handshake calls do not). This is the routing key that makes CONCURRENT conversations
+      // on one container safe — notifications and tool calls deliver to THEIR run only.
+      const acpSessionId = (payload as { sessionId?: string } | undefined)?.sessionId;
+      const run: PendingRun = { sessionId, queue: [], done: false, callerId, acpSessionId };
 
       let failure: string | undefined;
       if (!session) failure = `unknown session ${sessionId}`;
@@ -199,12 +208,37 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       if (frame.id && (frame.type === "permission_request" || frame.type.startsWith("exec_") || frame.type.startsWith("fs_"))) {
         awaiting.set(frame.id, { sessionId, kind: frame.type === "permission_request" ? "permission" : "exec" });
       }
-      // Notifications (session_update, terminal_created) carry the ACP session, not our request id,
-      // so route them to the runs on this container. With one run in flight per ACP session this is
-      // exact; concurrent runs are separated by their own ids at the ack.
-      for (const [, run] of runs) {
-        if (run.sessionId === sessionId) push(run, frame);
+      // Route notifications + tool-call frames to THE run they belong to. The key, in order of
+      // trust: the frame-level sid (stamped by a current container — the only attribution exec
+      // frames have), the notification payload's sessionId (session_update has carried it since
+      // day one), or a permission_request's request.sessionId. Broadcasting instead — the old
+      // behaviour — interleaved conversation A's transcript with B's and had BOTH cloud sides
+      // execute the same tool call.
+      const payload = frame.payload as
+        | { sessionId?: string; request?: { sessionId?: string } }
+        | undefined;
+      const key = frame.sid ?? payload?.sessionId ?? payload?.request?.sessionId;
+      const candidates = [...runs.values()].filter((r) => r.sessionId === sessionId);
+      if (key) {
+        const matched = candidates.filter((r) => r.acpSessionId === key);
+        // A keyed frame with no matching run (a late chunk after its ack) is dropped — pushing
+        // it anywhere else would put it in the WRONG conversation.
+        for (const run of matched) push(run, frame);
+        return;
       }
+      // LEGACY / unkeyed frame (an old container's exec request, terminal_created). With exactly
+      // one run in flight this is exact — the pre-concurrency world. With more it is ambiguous;
+      // keep the old broadcast (both conversations already share one legacy container's brain)
+      // and say so, once per container session, so the fix is a container-image upgrade away.
+      if (candidates.length > 1 && !warnedLegacy.has(sessionId)) {
+        warnedLegacy.add(sessionId);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[byoc] session ${sessionId}: unkeyed ${frame.type} with ${candidates.length} concurrent runs — ` +
+            `an old container image cannot attribute tool calls; upgrade it for safe concurrency`,
+        );
+      }
+      for (const run of candidates) push(run, frame);
     },
 
     answerPermission(sessionId, permissionId, answer) {
