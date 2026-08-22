@@ -355,3 +355,23 @@ def test_running_sandbox_is_not_repaired():
     results = reconcile_once(k8s, cap=10)
     assert ("live", "noop") in results
     assert not any(p[1].get("phase") == "Suspended" for p in k8s.patches)
+
+
+def test_sandbox_list_failure_must_not_abort_assignment():
+    # THE k3d SMOKE REGRESSION: the fake-sandbox stack has no Sandbox CRD, so
+    # list_sandboxes() throws — and an unguarded call at the top of reconcile_once killed
+    # every tick before ANY assignment (all three smoke tests timed out on waitFor
+    # hostPod/hostIP). Same design rule the reaper already documents: sandbox listing is
+    # AUXILIARY (it powers the drift repair); assignment must proceed without it. No
+    # sandbox info = no evidence = no drift repairs this tick, and that is all.
+    class ExplodingSandboxes(FakeK8s):
+        def list_sandboxes(self):
+            raise RuntimeError("the server could not find the requested resource (CRD absent)")
+
+    k8s = ExplodingSandboxes(
+        pods=[Pod("a", True, ip="10.0.0.1")],
+        convs=[_cr("newborn")],  # unassigned — needs the controller
+    )
+    results = reconcile_once(k8s, cap=10)
+    assert ("newborn", "assign") in results  # assignment still happened
+    assert not any(kind == "mark-suspended" for _, kind in results)

@@ -56,7 +56,15 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     ready_names = {p.name for p in pods if p.ready}
     # One Sandbox list per tick: the DRIFT rule needs each conversation's backing
     # operatingMode (the Sandbox is the truth for alive/suspended — see MarkSuspended).
-    sandbox_modes = {sb.name: sb.operating_mode for sb in k8s.list_sandboxes()}
+    # BEST-EFFORT, same rule the reaper documents: sandbox listing is auxiliary and must
+    # NOT abort assignment. In a fake-sandbox stack (the k3d smoke, local dev) the Sandbox
+    # CRD does not exist and this call 404s — an unguarded throw here killed every tick
+    # before any assignment. No sandbox info = no evidence = no drift repairs this tick.
+    try:
+        sandbox_modes = {sb.name: sb.operating_mode for sb in k8s.list_sandboxes()}
+    except Exception:  # noqa: BLE001
+        logger.warning("list_sandboxes failed — skipping drift repair this tick", exc_info=True)
+        sandbox_modes = {}
     convs = [_state(cr, sandbox_modes) for cr in k8s.list_conversations()]
 
     # Seed load from conversations currently assigned to a still-ready pod (those stay).
