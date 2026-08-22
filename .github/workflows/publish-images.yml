@@ -52,6 +52,11 @@ jobs:
           - { image: agent-webhooks, attr: webhooks-image }
           # claude variant bakes the unfree claude-code CLI → allowUnfree + --impure.
           - { image: agent-host-claude, attr: agent-host-image-claude, unfree: true }
+          # The BYO-Claude container users `docker run` from the Settings one-liner. This is
+          # the ONLY image end users pull directly (everything else lands in-cluster), and it
+          # was built by the flake but never in this matrix — so the one-liner handed out an
+          # image ref that 404'd ("denied") on every laptop. unfree: bakes the claude CLI.
+          - { image: remote-agent, attr: remote-agent-image, unfree: true }
           # sandbox-os is nix2container too now (initializeNixDatabase bakes the
           # read-only store's Nix DB + .links) — no docker-archive tarball case.
           # One image — the writable overlay store is always on.
