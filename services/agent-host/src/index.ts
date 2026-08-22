@@ -588,6 +588,10 @@ export async function main(
     // from the mirror. Only when a mirror is configured. See ROLLOUT_DRAIN_AND_POD_IP.md.
     hydrateFromMirror: mirroredStore ? (id) => mirroredStore.hydrateFromMirror(id) : undefined,
     conversationRegistry,
+    // CR-DRIVEN HYDRATION (multi-replica): with selfPod set, hydrate() adopts every Conversation
+    // the controller assigned to THIS pod instead of replaying the ephemeral local store. Unset
+    // single-replica, where there are no CRs. See docs/CONVERSATION_STATE_MODEL.md.
+    selfPod: podName,
     bridgeFactory: ({ conversationId, sandbox, model, owner }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
@@ -894,9 +898,42 @@ export async function main(
         })
       : undefined;
 
-  // Restore persisted conversations so the session list survives a restart
-  // (GET /conversations returns them; the UI sidebar repopulates on refresh).
-  await sessions.hydrate();
+  // Restore conversations so the session list survives a restart. Multi-replica hydrates from
+  // the Conversation CRs (the source of truth); single-replica from the local store.
+  //
+  // A CR-list failure THROWS, and startup does not proceed past it: a pod that cannot read the
+  // source of truth must not serve on a stale view (decision Q4). Retry with backoff first, so a
+  // transient apiserver blip does not turn into a crashloop — this mirrors what hydrate()'s own
+  // reconcile() already does internally. If it still fails we rethrow: the process exits, the pod
+  // never becomes ready, and k8s restarts it, which is the correct outcome for a pod that cannot
+  // learn what it owns. NOTE this gates STARTUP only — once hydrated, a later list failure must
+  // never yank an already-serving pod out of rotation.
+  {
+    const RETRIES = 5;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await sessions.hydrate();
+        break;
+      } catch (err) {
+        if (attempt === RETRIES - 1) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[agent-host] hydrate FAILED after ${RETRIES} attempts — cannot read the conversation ` +
+              `source of truth, refusing to serve on a stale view:`,
+            err,
+          );
+          throw err;
+        }
+        const delay = 250 * 2 ** attempt;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[agent-host] hydrate attempt ${attempt + 1}/${RETRIES} failed (retrying in ${delay}ms):`,
+          (err as Error)?.message ?? err,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
 
   // Forward every conversation's AG-UI events to subscribed UI connections.
   // (SessionManager already persists them to the store via its own wiring.)
