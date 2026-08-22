@@ -14,7 +14,12 @@
 
 import { KubeConfig, CustomObjectsApi, setHeaderOptions, PatchStrategy } from "@kubernetes/client-node";
 
-import type { ConversationRegistry, ConversationSpec, ConversationPhase } from "./conversationRegistry.js";
+import type {
+  ConversationRegistry,
+  ConversationSpec,
+  ConversationPhase,
+  ConversationRecord,
+} from "./conversationRegistry.js";
 
 const GROUP = "scooter.chadac.dev";
 const VERSION = "v1alpha1";
@@ -80,6 +85,58 @@ export function createK8sConversationRegistry(
           console.error(`[conversationRegistry] failed to set phase=${phase} on ${id}:`, e);
         });
     },
+
+    async list(): Promise<ConversationRecord[]> {
+      // THROWS on failure, unlike the write methods. The CR list is the source of truth for
+      // "which conversations exist?"; a caller that gets [] because the apiserver was briefly
+      // unreachable would conclude this pod owns nothing and serve blind. Boot retries with
+      // backoff and fails readiness instead (decision Q4, docs/CONVERSATION_STATE_MODEL.md).
+      const resp = await custom.listNamespacedCustomObject({
+        group: GROUP,
+        version: VERSION,
+        namespace,
+        plural: PLURAL,
+      });
+      const items = (resp as { items?: unknown[] })?.items ?? [];
+      return items.map((o) => toRecord(o)).filter((r): r is ConversationRecord => r !== undefined);
+    },
+
+    async get(id: string): Promise<ConversationRecord | undefined> {
+      try {
+        const obj = await custom.getNamespacedCustomObject({
+          group: GROUP,
+          version: VERSION,
+          namespace,
+          plural: PLURAL,
+          name: id,
+        });
+        return toRecord(obj);
+      } catch (e) {
+        // Absent is `undefined`, not an error — the caller asked whether it exists.
+        if ((e as { code?: number })?.code === 404) return undefined;
+        throw e;
+      }
+    },
+  };
+}
+
+/** Map a raw CR to the host's view. Returns undefined for an object with no usable name. */
+function toRecord(o: unknown): ConversationRecord | undefined {
+  const cr = o as {
+    metadata?: { name?: string };
+    spec?: ConversationSpec;
+    status?: { phase?: ConversationPhase; hostPod?: string; hostIP?: string; generation?: number };
+  };
+  const id = cr?.metadata?.name;
+  if (!id) return undefined;
+  return {
+    id,
+    spec: cr.spec ?? {},
+    // status is absent entirely on a CR the controller has not reconciled yet.
+    phase: cr.status?.phase,
+    hostPod: cr.status?.hostPod,
+    hostIP: cr.status?.hostIP,
+    generation: cr.status?.generation,
   };
 }
 
