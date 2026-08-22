@@ -39,6 +39,11 @@ class ConversationState:
     # False when the CR carries NO status.phase yet (status: null) — the shell must still
     # materialize Pending for such a CR even though `phase` defaulted to "Pending".
     phase_present: bool = True
+    # The backing Sandbox's spec.operatingMode ("Running" | "Suspended"), or None when the
+    # Sandbox does not exist (never created yet, or already reaped). The Sandbox is the TRUTH
+    # for alive/suspended — see the drift rule in reconcile() and
+    # todo/docs/CONVERSATION_PHASE_DRIFT_RECONCILE.md.
+    sandbox_mode: str | None = None
 
 
 # --- Actions the shell will apply -----------------------------------------
@@ -73,7 +78,26 @@ class Detach:
     reason: str
 
 
-Action = NoOp | Assign | LeavePending | Detach
+@dataclass(frozen=True)
+class MarkSuspended:
+    """The CR's phase has DRIFTED from its Sandbox: the sandbox is operatingMode=Suspended but
+    the phase still says Assigned/Pending. Force phase → Suspended and release placement.
+
+    Why drift happens (all observed live): the host's setPhase("Suspended") is OWNER-fenced, so
+    any suspend not driven by the CR's assigned owner never publishes — another pod's idle sweep
+    (multi-pod hydrate means every pod sweeps), agent-sandbox's own idle timer on a conversation
+    that never had a live owner, or an owner that died between suspending the sandbox and
+    writing the phase. The controller then counts the phantom as demand FOREVER (phase != 
+    Suspended), so the fleet never scales down.
+
+    The Sandbox is the source of truth for alive/suspended. Convergent last-writer-wins: a real
+    revive patches the sandbox Running FIRST, then writes Assigned — if a stale read stomps that
+    Assigned, the next interaction re-publishes it and the sweep reclaims the sandbox either
+    way."""
+    reason: str
+
+
+Action = NoOp | Assign | LeavePending | Detach | MarkSuspended
 
 
 def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
@@ -115,6 +139,15 @@ def reconcile(
     # hostIP: <dead pod>}; the router keys on hostIP and would dial that dead address forever.
     # Repair it — a Detach clears BOTH — so hostIP is never non-empty while hostPod is empty
     # (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md).
+    # DRIFT REPAIR: the Sandbox says Suspended but the phase does not. Fires only on an
+    # EXISTING suspended Sandbox — an ABSENT one (sandbox_mode None) is deliberately ignored:
+    # start() registers the CR before the provisioner creates the Sandbox, so absence can mean
+    # "being born", and stomping a newborn to Suspended would break it. Absence is not evidence.
+    if conv.phase != "Suspended" and conv.sandbox_mode == "Suspended":
+        return MarkSuspended(
+            reason=f"phase={conv.phase} but sandbox is Suspended — reconciling phase to the sandbox"
+        )
+
     if conv.phase == "Suspended":
         if conv.host_pod is not None or conv.host_ip is not None:
             return Detach(reason="suspended — release placement (clear hostPod + hostIP)")
@@ -214,6 +247,9 @@ class SandboxRef:
 
     name: str            # metadata.name (e.g. conv-<id>)
     age_seconds: float   # now - metadata.creationTimestamp
+    # spec.operatingMode ("Running" | "Suspended"); None for callers that don't need it (the
+    # reaper decision ignores it — it keys on referenced-ness and age).
+    operating_mode: str | None = None
 
 
 def find_orphans(

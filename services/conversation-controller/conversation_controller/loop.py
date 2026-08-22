@@ -15,6 +15,7 @@ from .reconcile import (
     NoOp,
     LeavePending,
     Detach,
+    MarkSuspended,
     reconcile,
     find_orphans,
     desired_replicas,
@@ -24,12 +25,16 @@ from .reconcile import (
 logger = logging.getLogger("conversation-controller")
 
 
-def _state(cr: dict) -> ConversationState:
+def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> ConversationState:
     st = cr.get("status") or {}
     spec = cr.get("spec") or {}
+    ref = spec.get("sandboxRef")
     return ConversationState(
         name=cr["metadata"]["name"],
         host_pod=st.get("hostPod"),
+        # None when the Sandbox doesn't exist (or the ref is unset) — the drift rule treats
+        # absence as no-evidence, never as suspension (the creation race).
+        sandbox_mode=(sandbox_modes or {}).get(ref) if ref else None,
         phase=st.get("phase", "Pending"),
         # Whether the CR actually carries a phase (vs. the "Pending" default above). A
         # status-less CR (status: null / no phase) needs its phase MATERIALIZED even when it
@@ -49,7 +54,18 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     conversations spreads across pods instead of all landing on the least-loaded one."""
     pods = k8s.list_host_pods()
     ready_names = {p.name for p in pods if p.ready}
-    convs = [_state(cr) for cr in k8s.list_conversations()]
+    # One Sandbox list per tick: the DRIFT rule needs each conversation's backing
+    # operatingMode (the Sandbox is the truth for alive/suspended — see MarkSuspended).
+    # BEST-EFFORT, same rule the reaper documents: sandbox listing is auxiliary and must
+    # NOT abort assignment. In a fake-sandbox stack (the k3d smoke, local dev) the Sandbox
+    # CRD does not exist and this call 404s — an unguarded throw here killed every tick
+    # before any assignment. No sandbox info = no evidence = no drift repairs this tick.
+    try:
+        sandbox_modes = {sb.name: sb.operating_mode for sb in k8s.list_sandboxes()}
+    except Exception:  # noqa: BLE001
+        logger.warning("list_sandboxes failed — skipping drift repair this tick", exc_info=True)
+        sandbox_modes = {}
+    convs = [_state(cr, sandbox_modes) for cr in k8s.list_conversations()]
 
     # Seed load from conversations currently assigned to a still-ready pod (those stay).
     load: dict[str, int] = {}
@@ -83,6 +99,18 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             k8s.patch_status(c.name, {"hostPod": None, "hostIP": None})
             hosts[c.name] = None
             results.append((c.name, "detach"))
+            continue
+        if isinstance(action, MarkSuspended):
+            # PHASE DRIFT: the sandbox is Suspended but the phase still says Assigned/Pending
+            # (an owner-fenced setPhase that never fired, or an owner that died mid-suspend).
+            # Reconcile the phase to the sandbox truth and release placement in ONE patch, so
+            # the phantom stops counting as autoscale demand and the router stops routing to a
+            # pod that no longer hosts it. Logged loudly — every silent operatingMode/phase
+            # divergence so far has cost a debugging session.
+            logger.warning("phase drift repaired: %s — %s", c.name, action.reason)
+            k8s.patch_status(c.name, {"phase": "Suspended", "hostPod": None, "hostIP": None})
+            hosts[c.name] = None
+            results.append((c.name, "mark-suspended"))
             continue
         if isinstance(action, LeavePending):
             # Write Pending unless it's ALREADY a materialized Pending with no host — i.e.

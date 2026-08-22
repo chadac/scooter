@@ -150,9 +150,10 @@ def test_no_sandboxes_no_orphans():
     assert find_orphans([], referenced=set(), grace_seconds=600) == []
 
 
-def conv(host=None, phase="Pending", gen=0, host_ip=None) -> ConversationState:
+def conv(host=None, phase="Pending", gen=0, host_ip=None, sandbox_mode=None) -> ConversationState:
     return ConversationState(
-        name="c1", host_pod=host, phase=phase, generation=gen, host_ip=host_ip
+        name="c1", host_pod=host, phase=phase, generation=gen, host_ip=host_ip,
+        sandbox_mode=sandbox_mode,
     )
 
 
@@ -266,3 +267,74 @@ def test_subagent_re_pins_when_parent_moved():
     assert isinstance(a, Assign)
     assert a.host_pod == "b"
     assert a.generation == 2
+
+
+# --- phase ⇄ sandbox drift reconcile (todo/docs/CONVERSATION_PHASE_DRIFT_RECONCILE.md) ---
+#
+# THE DRIFT, observed live twice (2026-08-12 and 2026-08-22): a CR sits at phase=Assigned while
+# its backing Sandbox is operatingMode=Suspended. The host's setPhase("Suspended") is
+# owner-fenced, so any suspend not driven by the CR's owner (another pod's sweep, agent-sandbox's
+# own idle timer, an owner that died mid-suspend) never publishes — and the controller then keeps
+# the phantom in the autoscale demand forever ("14 conversations Assigned, node full, nothing
+# running"). The Sandbox is the truth for alive/suspended; the controller reconciles phase to it.
+
+from conversation_controller.reconcile import MarkSuspended
+
+
+def test_assigned_but_sandbox_suspended_is_marked_suspended():
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, sandbox_mode="Suspended"),
+        [Pod("a", True)], {"a": 1}, cap=10,
+    )
+    assert isinstance(a, MarkSuspended)
+
+
+def test_pending_but_sandbox_suspended_is_marked_suspended():
+    # The 2026-08-12 case: a raw-API conversation never got a real owner, its sandbox
+    # idle-suspended on its own, and the CR sat at Pending forever.
+    a = reconcile(
+        conv(phase="Pending", sandbox_mode="Suspended"),
+        [Pod("a", True)], {}, cap=10,
+    )
+    assert isinstance(a, MarkSuspended)
+
+
+def test_assigned_with_running_sandbox_is_untouched():
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, sandbox_mode="Running"),
+        [Pod("a", True)], {"a": 1}, cap=10,
+    )
+    assert isinstance(a, NoOp)
+
+
+def test_absent_sandbox_is_NOT_marked_suspended():
+    # CREATION RACE guard: start() registers the CR before the provisioner creates the
+    # Sandbox. A tick landing in that window sees sandbox=absent on a genuinely-live new
+    # conversation; stomping it to Suspended would break the conversation as it is being
+    # born. Absence is NOT evidence of suspension — only an existing Suspended sandbox is.
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, sandbox_mode=None),
+        [Pod("a", True)], {"a": 1}, cap=10,
+    )
+    assert isinstance(a, NoOp)
+
+
+def test_already_suspended_keeps_the_detach_path():
+    # phase=Suspended + sandbox Suspended is the CONSISTENT state — the existing Detach/NoOp
+    # logic owns it; the drift rule must not fire.
+    a = reconcile(
+        conv(host="a", phase="Suspended", gen=1, sandbox_mode="Suspended"),
+        [Pod("a", True)], {"a": 1}, cap=10,
+    )
+    assert isinstance(a, Detach)
+
+
+def test_mark_suspended_takes_a_phantom_out_of_demand():
+    # The user-visible consequence: after the controller applies MarkSuspended, the
+    # conversation stops counting toward the autoscale demand, so the fleet can shrink.
+    phantom = conv(host="a", phase="Assigned", gen=1, sandbox_mode="Suspended")
+    assert demand_of([phantom]) == 1  # counted while drifted — the bug
+    healed = ConversationState(
+        name="c1", host_pod=None, phase="Suspended", generation=1
+    )
+    assert demand_of([healed]) == 0
