@@ -58,6 +58,24 @@ describe("controller entrypoint wiring", () => {
     expect(SRC).toMatch(/attachAuthenticated/);
   });
 
+  it("CONFIRMS an attach to the container (the `connected` frame)", () => {
+    // Absent => the client's "registered as owner … — ready" waits for a frame that never
+    // comes: a fully-authenticated container looks, from the laptop, like a hung auth.
+    expect(SRC).toMatch(/"connected"/);
+  });
+
+  it("closes a rejected attach WITH a code + reason, never bare", () => {
+    // A bare ws.close() reaches the client as the opaque `disconnected (code 1005)` and it
+    // retries forever with nothing in either log saying why.
+    expect(SRC).toMatch(/ws\.close\(4\d{3}/);
+  });
+
+  it("wires the relay to the session ACTUALLY attached, not the URL's", () => {
+    // A device re-attach can land on a different session than the (stale) URL id; routing
+    // frames by the URL id would feed a dead session.
+    expect(SRC).toMatch(/liveSessionId/);
+  });
+
   it("refuses to start without a signing key", () => {
     // A controller with no BYOC_JOIN_SECRET would accept unsigned junk; exiting loudly is the
     // only safe behaviour.

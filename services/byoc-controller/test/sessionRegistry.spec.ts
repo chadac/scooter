@@ -138,14 +138,43 @@ describe("BYOC session registry", () => {
     expect(reg.resolveByOwner("alice")?.socket).toBe(sock);
   });
 
-  it("attachAuthenticated REJECTS an owner who does not own the session (cross-owner)", async () => {
+  it("attachAuthenticated NEVER attaches to another owner's session (cross-owner)", async () => {
+    // mallory's device signature proves mallory — dialing alice's session URL must not put
+    // mallory's container where alice's prompts go. Under attach-by-owner semantics mallory
+    // lands on MALLORY's session (created for them); alice's stays socketless.
     const { sessionId } = await reg.mint("alice");
-    expect(reg.attachAuthenticated(sessionId, "mallory", fakeSocket()).ok).toBe(false);
+    const r = reg.attachAuthenticated(sessionId, "mallory", fakeSocket());
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.sessionId).not.toBe(sessionId);
     expect(reg.resolveByOwner("alice")?.socket).toBeUndefined();
   });
 
-  it("attachAuthenticated REJECTS an unknown session", () => {
-    expect(reg.attachAuthenticated("no-such-session", "alice", fakeSocket()).ok).toBe(false);
+  it("a STALE session URL re-attaches to the owner's CURRENT session (the 1005-loop fix)", async () => {
+    // THE BUG, observed live: the laptop container reconnects with the session id baked into
+    // its --url. A re-mint (or controller restart) invalidates that id, attachAuthenticated
+    // said "unknown session", index.ts ws.close()d with NO code, and the container looped
+    // `disconnected (code 1005)` -> reconnect FOREVER — the §N retry-forever failure that
+    // device keys exist to end. The signature proves the OWNER; the URL id is a stale hint.
+    const old = await reg.mint("alice");
+    const current = await reg.mint("alice"); // supersedes: old.sessionId is now unknown
+    const sock = fakeSocket();
+    const r = reg.attachAuthenticated(old.sessionId, "alice", sock);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.sessionId).toBe(current.sessionId);
+    expect(reg.resolveByOwner("alice")?.socket).toBe(sock);
+  });
+
+  it("an owner with NO session at all gets one CREATED on device attach (restart recovery)", async () => {
+    // Sessions are in-memory; a controller restart empties them. A registered laptop dialing
+    // in afterwards must not need a human to re-mint — that is the entire point of §P.
+    const sock = fakeSocket();
+    const r = reg.attachAuthenticated("long-dead-session", "alice", sock);
+    expect(r.ok).toBe(true);
+    const resolved = reg.resolveByOwner("alice");
+    expect(resolved?.socket).toBe(sock);
+    expect(resolved?.online).toBe(true);
+    // ...and the mapping is DURABLE, so /byoc/status (what agent-hosts resolve by) agrees.
+    expect(store.rows.get("alice")?.sessionId).toBe(r.ok ? r.sessionId : "?");
   });
 
   it("resolveByOwner returns null for an owner with no session", () => {
