@@ -64,6 +64,36 @@ export interface Cluster {
     url: string,
     opts?: { method?: string; body?: string; headers?: string[]; timeoutMs?: number },
   ): Promise<string>;
+
+  /** curlInCluster + a TOLERANT parse for JSON endpoints. `kubectl run -i` output can carry
+   *  stray lines after the payload (an attach/teardown warning, an event line) even with
+   *  unique per-call pod names — observed live as
+   *    SyntaxError: Unexpected non-whitespace character after JSON at position N (line 2)
+   *  where line 1 was the complete, valid response. Parsing the LEADING JSON value makes a
+   *  JSON assertion immune to appended junk without hiding a genuinely bad payload. */
+  curlJson<T = unknown>(
+    url: string,
+    opts?: { method?: string; body?: string; headers?: string[]; timeoutMs?: number },
+  ): Promise<T>;
+}
+
+/** Parse the leading JSON value of `raw`, tolerating appended non-JSON lines. Tries the whole
+ *  string first (the common case), then progressively shorter line-prefixes. Throws the
+ *  ORIGINAL error when no prefix parses — a truly malformed payload must still fail loudly. */
+export function parseLeadingJson<T = unknown>(raw: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    const lines = raw.split("\n");
+    for (let end = lines.length - 1; end >= 1; end--) {
+      try {
+        return JSON.parse(lines.slice(0, end).join("\n")) as T;
+      } catch {
+        /* keep shrinking */
+      }
+    }
+    throw err;
+  }
 }
 
 export interface ClusterFixtureOptions {
@@ -132,7 +162,7 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
     return running.metadata.name;
   };
 
-  return {
+  const cluster: Cluster = {
     provider: provider(),
 
     async apply(manifest: object) {
@@ -237,7 +267,12 @@ export async function withCluster(opts: ClusterFixtureOptions = {}): Promise<Clu
       // strip the trailing "pod ... deleted" line kubectl appends
       return out.replace(/pod "[^"]+" deleted.*$/s, "").trim();
     },
+
+    async curlJson(url, opts = {}) {
+      return parseLeadingJson(await cluster.curlInCluster(url, opts));
+    },
   };
+  return cluster;
 }
 
 let curlSeq = 0;

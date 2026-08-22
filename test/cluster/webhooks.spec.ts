@@ -45,7 +45,7 @@ maybe("webhooks spawn-from-event", () => {
     expect(resp.result).toContain(marker);
 
     // The spawned conversation is visible in the agent-host management API.
-    const listed = JSON.parse(await cluster.curlInCluster(`${AGENT_HOST}/conversations`));
+    const listed = await cluster.curlJson(`${AGENT_HOST}/conversations`);
     const ids = (listed as Array<{ id: string }>).map((c) => c.id);
     expect(ids).toContain(resp.conversation_id);
   });

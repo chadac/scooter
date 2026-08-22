@@ -193,9 +193,11 @@ maybe("multi-replica platform smoke", () => {
 
     // The front door must list ALL of them, on EVERY call (not whichever pod answered).
     for (let attempt = 0; attempt < 5; attempt++) {
-      const listed = JSON.parse(
-        await cluster.curlInCluster(`${AGENT_HOST}/conversations`, { timeoutMs: 30_000 }),
-      ) as Array<{ id: string }>;
+      // curlJson, not JSON.parse(curlInCluster(...)): the curl pod's output can carry a stray
+      // line after the payload, which failed this exact assertion with valid data on line 1.
+      const listed = await cluster.curlJson<Array<{ id: string }>>(
+        `${AGENT_HOST}/conversations`, { timeoutMs: 30_000 },
+      );
       const got = new Set(listed.map((c) => c.id));
       for (const id of ids) {
         expect(got.has(id), `attempt ${attempt + 1}: /conversations omitted ${id} (single-pod view?)`).toBe(true);
