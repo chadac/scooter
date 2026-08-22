@@ -13,7 +13,7 @@ import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 
 import { REMOTE_PROTOCOL_VERSION, type WireFrame } from "./protocol.js";
 import { parsePermissionAnswer } from "./permissionAnswer.js";
-import { nextReconnectDelay } from "./reconnect.js";
+import { nextReconnectDelay, closeDisposition } from "./reconnect.js";
 import { loadDeviceIdentity, signChallenge } from "./deviceKey.js";
 import { createTunnelExecBackend } from "./tunnelExec.js";
 
@@ -211,8 +211,19 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       }
     };
 
-    ws.on("close", (code) => {
-      log(`disconnected (code ${code})`);
+    // Set when the UPGRADE itself was rejected (non-101): the socket never opened, so the
+    // close event that follows terminate() carries a meaningless 1006 — this flag makes that
+    // close use the AUTH disposition (slow retry) instead of the fast network-blip schedule.
+    let upgradeAuthRejected = false;
+    ws.on("close", (code, reasonBuf) => {
+      // Interpret the close CODE — the controller uses application codes for conditions a
+      // container must react to differently than a network blip. The observed failure: token
+      // auth rejected, a generic "disconnected (code 1005)", and a fast retry loop forever —
+      // the machine looked fine while permanently unauthenticated.
+      const disposition = upgradeAuthRejected
+        ? closeDisposition(4001, "rejected at the WebSocket upgrade (HTTP 401)", attempt + 1)
+        : closeDisposition(code, reasonBuf?.toString() ?? "", attempt + 1);
+      if (!upgradeAuthRejected) log(disposition.message ?? `disconnected (code ${code})`);
       // FAIL EVERY PARKED PERMISSION. `permissionWaiters` lives inside connect(), so a disconnect
       // used to abandon its promises: the local SDK would wait forever on an approval that can
       // never arrive, wedging the agent until the container was restarted by hand. Cancelling is
@@ -230,9 +241,25 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       // in the fleet retried on the same tick after a rollout, a synchronised herd against the
       // single-replica controller.
       attempt += 1;
-      const delay = nextReconnectDelay(attempt);
+      const delay = disposition.delayMs;
       log(`reconnecting in ${delay}ms (attempt ${attempt})`);
       setTimeout(() => void connect(), delay);
+    });
+    // A NON-101 upgrade response (an older controller rejects with a raw 401 before any WS
+    // exists). Without this handler the ws lib emits a generic error and the fast retry loop —
+    // the same silent-auth-failure shape as an uncoded close.
+    ws.on("unexpected-response", (_req, res) => {
+      if (res.statusCode === 401) {
+        upgradeAuthRejected = true;
+        log(
+          "AUTHENTICATION FAILED: the server rejected this container's credentials at the upgrade " +
+            "(HTTP 401). This will not fix itself — get a fresh docker command from the Settings page.",
+        );
+      } else {
+        log(`unexpected server response ${res.statusCode ?? "?"} during connect`);
+      }
+      // terminate() fires the close handler, which schedules the retry (slow, via the flag).
+      ws?.terminate();
     });
     ws.on("error", (e) => log(`ws error: ${(e as Error).message}`));
   };

@@ -156,8 +156,17 @@ http.on("upgrade", (req, socket, head) => {
       `[byoc] upgrade rejected for session ${sessionId} ` +
         `(${deviceId ? `device ${deviceId}` : "join token"}): ${authorized.reason}`,
     );
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
+    // Record the failure so the SETTINGS UI can show it (via /byoc/status). Owner is
+    // best-effort: a device id maps through the store; an invalid token's claims are decoded
+    // UNVERIFIED — fine for a diagnostic label, never for authorization.
+    void api.noteAuthFailure({ deviceId, token, reason: authorized.reason });
+    // Reject by COMPLETING the upgrade and closing with a code + reason: a raw 401 socket
+    // write reaches the ws client as a generic error with no explanation, and the container
+    // fast-loops in silence. Through a real close frame, the reason lands in its log and it
+    // backs off to the slow auth-retry cadence.
+    wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+      ws.close(4001, `auth rejected: ${authorized.reason}`);
+    });
     return;
   }
 
@@ -167,7 +176,7 @@ http.on("upgrade", (req, socket, head) => {
     // superseded-close guard would silently do nothing.
     const containerSocket = {
       send: (data: string) => ws.send(data),
-      close: () => ws.close(),
+      close: (code?: number, reason?: string) => (code ? ws.close(code, reason) : ws.close()),
     };
     // A device-authenticated container has NO join token to re-verify — attaching by the OWNER the
     // signature already proved is the whole point of §P 

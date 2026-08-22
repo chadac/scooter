@@ -521,20 +521,31 @@ export async function main(
           // container is attached. It used to read a per-pod registry / a Postgres row that the
           // old bridge wrote — neither is populated now, so the badge said "not connected" while
           // the controller reported `"status":"connected"` and runs worked fine.
-          isConnectedAsync: async (owner: string) => {
-            if (!byocControllerUrl) return false;
+          statusAsync: async (owner: string) => {
+            const offline = { connected: false, lastAuthFailure: null };
+            if (!byocControllerUrl) return offline;
             try {
               const res = await fetch(
                 `${byocControllerUrl.replace(/\/$/, "")}/byoc/status?owner=${encodeURIComponent(owner)}`,
                 { headers: { Accept: "application/json" } },
               );
-              if (!res.ok) return false;
-              const body = (await res.json()) as { status?: string };
-              // Only "connected" — "minted" means the session exists but no container has dialled
-              // in, and showing that as connected would promise a BYO run that cannot happen.
-              return body.status === "connected";
+              if (!res.ok) return offline;
+              const body = (await res.json()) as {
+                status?: string;
+                lastAuthFailure?: { reason: string; at: string } | null;
+              };
+              return {
+                // Only "connected" — "minted" means the session exists but no container has
+                // dialled in, and showing that as connected would promise a BYO run that
+                // cannot happen.
+                connected: body.status === "connected",
+                // The controller's record of the owner's most recent REJECTED attempt — what
+                // lets the Settings page say "your container failed to authenticate: <why>"
+                // instead of a silent disconnected.
+                lastAuthFailure: body.lastAuthFailure ?? null,
+              };
             } catch {
-              return false; // a controller blip degrades the BADGE, never a run
+              return offline; // a controller blip degrades the BADGE, never a run
             }
           },
           image: process.env.REMOTE_AGENT_IMAGE || undefined,

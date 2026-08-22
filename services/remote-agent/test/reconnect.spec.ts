@@ -72,3 +72,37 @@ describe("container reconnect backoff", () => {
     expect(nextReconnectDelay(-5, () => 0.5)).toBeGreaterThan(0);
   });
 });
+
+// --- closeDisposition: the close-code policy ------------------------------------------------
+
+import {
+  closeDisposition,
+  CLOSE_AUTH_REJECTED,
+  CLOSE_SUPERSEDED,
+  AUTH_RETRY_MS,
+  SUPERSEDED_RETRY_MS,
+} from "../src/reconnect.js";
+
+describe("closeDisposition", () => {
+  it("AUTH REJECTION is loud and slow — the observed silent-fast-loop failure", () => {
+    // The live bug: token auth failed, the container logged a generic 1005, retried every
+    // second forever, and the machine looked "totally fine" while permanently unauthenticated.
+    const d = closeDisposition(CLOSE_AUTH_REJECTED, "join token expired", 1);
+    expect(d.message).toMatch(/AUTHENTICATION FAILED/);
+    expect(d.message).toMatch(/join token expired/);
+    expect(d.message).toMatch(/Settings/); // actionable: where the human gets a fresh command
+    expect(d.delayMs).toBe(AUTH_RETRY_MS); // no fast hammering on a failure retries can't fix
+  });
+
+  it("SUPERSEDED backs off so two containers for one owner cannot ping-pong", () => {
+    const d = closeDisposition(CLOSE_SUPERSEDED, "", 1);
+    expect(d.message).toMatch(/superseded/i);
+    expect(d.delayMs).toBe(SUPERSEDED_RETRY_MS);
+  });
+
+  it("any other close keeps the jittered fast-reconnect behaviour", () => {
+    const d = closeDisposition(1005, "", 3, () => 1);
+    expect(d.message).toBeNull();
+    expect(d.delayMs).toBe(nextReconnectDelay(3, () => 1));
+  });
+});

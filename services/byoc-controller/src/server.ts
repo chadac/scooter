@@ -64,11 +64,32 @@ export interface ByocServer {
     nonce: string,
     signature: string,
   ): Promise<{ ok: true; owner: string } | { ok: false; reason: string }>;
+  /** Record a REJECTED connection attempt so the Settings UI can show it (via /byoc/status).
+   *  The observed failure mode: a container's token auth failed and NOTHING said so on either
+   *  end — the container fast-looped in silence and the UI showed a clean "disconnected".
+   *  Owner attribution is best-effort: a device id maps through the store; an invalid token's
+   *  claims are decoded UNVERIFIED — acceptable for a diagnostic label, never for authz. */
+  noteAuthFailure(info: { deviceId?: string | null; token?: string; reason: string }): Promise<void>;
   close(): void;
+}
+
+/** Decode a JWT's claims WITHOUT verifying — diagnostics only (see noteAuthFailure). */
+function decodeClaimsUnverified(token: string): { owner?: string } | null {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    return JSON.parse(Buffer.from(payload, "base64url").toString()) as { owner?: string };
+  } catch {
+    return null;
+  }
 }
 
 export function createServer(config: ByocServerConfig): ByocServer {
   const { registry, relay, secret, devices } = config;
+  // owner -> the most recent rejected connection attempt. In-memory on purpose: this is a
+  // diagnostic surface (like the socket itself), not durable state; a controller restart
+  // clearing it is fine — the container will either connect or fail again within minutes.
+  const authFailures = new Map<string, { reason: string; at: string }>();
 
   return {
     async handle(req) {
@@ -129,13 +150,21 @@ export function createServer(config: ByocServerConfig): ByocServer {
         const owner = new URLSearchParams(query).get("owner") ?? req.user?.id;
         if (!owner) return { status: 400, json: { error: "owner required" } };
         const session = registry.resolveByOwner(owner);
-        if (!session) return { status: 200, json: { status: "disconnected" } };
+        if (!session) {
+          return { status: 200, json: { status: "disconnected", lastAuthFailure: authFailures.get(owner) ?? null } };
+        }
         // THREE states, not two: "minted" (session exists, container has not dialled in yet) is
         // distinct from "disconnected" (nothing minted). The UI needs the difference to say
         // "waiting for your container" rather than "not set up".
         return {
           status: 200,
-          json: { sessionId: session.sessionId, status: session.online ? "connected" : "minted" },
+          json: {
+            sessionId: session.sessionId,
+            status: session.online ? "connected" : "minted",
+            // The most recent REJECTED attempt, so "connected: false" can say WHY instead of
+            // looking identical to "the user never started a container".
+            lastAuthFailure: authFailures.get(owner) ?? null,
+          },
         };
       }
 
@@ -196,6 +225,14 @@ export function createServer(config: ByocServerConfig): ByocServer {
       // caller holding a valid token of their own must not attach to someone else's session.
       if (verified.claims.owner !== session.owner) return { ok: false, reason: "owner mismatch" };
       return { ok: true, owner: session.owner };
+    },
+
+    async noteAuthFailure(info) {
+      const owner = info.deviceId
+        ? await devices?.ownerOf(info.deviceId)
+        : decodeClaimsUnverified(info.token ?? "")?.owner;
+      if (!owner) return; // unattributable — the warn log still has the raw event
+      authFailures.set(owner, { reason: info.reason, at: new Date().toISOString() });
     },
 
     async authorizeDevice(deviceId, nonce, signature) {

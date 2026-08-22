@@ -38,3 +38,58 @@ export function nextReconnectDelay(attempt: number, rand: () => number = Math.ra
   const jittered = window * (0.5 + 0.5 * Math.min(Math.max(rand(), 0), 1));
   return Math.max(1, Math.round(jittered));
 }
+
+// --- Close-code interpretation (why did the cloud hang up?) ---------------------------------
+//
+// The controller closes with an APPLICATION code + reason for conditions the container should
+// react to differently than "the network blipped". Ignoring the code was a live failure mode:
+// a container whose join token was rejected logged a generic `disconnected (code 1005)` and
+// retried on the fast schedule forever — the machine looked "totally fine" while it was
+// permanently unauthenticated, and nothing on either end said so.
+
+/** The controller REJECTED this connection's credentials (bad/expired/mismatched token). */
+export const CLOSE_AUTH_REJECTED = 4001;
+/** Another container for the same owner connected; this one was superseded (last-writer-wins). */
+export const CLOSE_SUPERSEDED = 4002;
+
+/** Retry cadence for a REJECTED authentication. Slow on purpose: an auth failure does not fix
+ *  itself by retrying — a human has to fetch a fresh command — but a slow retry still recovers
+ *  unattended once the server side is fixed (a re-registered device, a restored controller). */
+export const AUTH_RETRY_MS = 5 * 60_000;
+/** Retry cadence after being superseded: slow enough that two containers for one owner do not
+ *  ping-pong each other every second, fast enough to take over when the other one stops. */
+export const SUPERSEDED_RETRY_MS = 60_000;
+
+export interface CloseDisposition {
+  /** What the container should tell its human — specific, actionable, or null for the generic
+   *  "disconnected (code N)" line. */
+  message: string | null;
+  delayMs: number;
+}
+
+/** Decide the log line + retry delay for a server close. Pure, so the policy is testable. */
+export function closeDisposition(
+  code: number,
+  reason: string,
+  attempt: number,
+  rand: () => number = Math.random,
+): CloseDisposition {
+  if (code === CLOSE_AUTH_REJECTED) {
+    return {
+      message:
+        `AUTHENTICATION FAILED: ${reason || "the server rejected this container's credentials"}. ` +
+        `Retrying every ${AUTH_RETRY_MS / 60000} min, but this will not fix itself — ` +
+        `get a fresh docker command from the Settings page.`,
+      delayMs: AUTH_RETRY_MS,
+    };
+  }
+  if (code === CLOSE_SUPERSEDED) {
+    return {
+      message:
+        `superseded: ${reason || "another container connected for this account"} — ` +
+        `this one is standing by (stop one of them to avoid confusion).`,
+      delayMs: SUPERSEDED_RETRY_MS,
+    };
+  }
+  return { message: null, delayMs: nextReconnectDelay(attempt, rand) };
+}

@@ -137,6 +137,8 @@ export interface ManagementDeps {
     /** Mint a fresh short-lived join token for `owner` + the full `docker run …` one-liner. */
     /** Async: the session is minted on the CONTROLLER before the URL can be built (§L). */
     mint(owner: string): Promise<{ token: string; dockerCommand: string; wsUrl: string }>;
+    /** Connected + the owner's most recent REJECTED connection attempt (for the Settings UI). */
+    status(owner: string): Promise<{ connected: boolean; lastAuthFailure: { reason: string; at: string } | null }>;
     /** Is this owner's remote agent connected right now? Durable (DB, cross-replica) when a DB is
      *  wired, else the local live registry — hence async. */
     isConnected(owner: string): Promise<boolean>;
@@ -289,8 +291,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   r.get("/remote-agent/status", async (ctx) => {
     if (!deps.remoteAgent) return { status: 404, json: { error: "remote agents not enabled" } };
-    const connected = ctx.user.anonymous ? false : await deps.remoteAgent.isConnected(ctx.user.id);
-    return { json: { connected, owner: ctx.user.anonymous ? null : ctx.user.id } };
+    if (ctx.user.anonymous) return { json: { connected: false, owner: null, lastAuthFailure: null } };
+    // status() carries the owner's most recent REJECTED connection attempt alongside the
+    // boolean — a failed container previously looked identical to one never started, on both
+    // ends (the container fast-looped in silence; the UI showed a clean "disconnected").
+    const st = await deps.remoteAgent.status(ctx.user.id);
+    return { json: { connected: st.connected, owner: ctx.user.id, lastAuthFailure: st.lastAuthFailure } };
   });
 
   // Reverse identity lookup: the Scooter user id for an email. The webhooks service

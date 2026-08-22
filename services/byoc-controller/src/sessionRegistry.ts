@@ -25,8 +25,16 @@ import { mintJoinToken, verifyJoinToken } from "./joinToken.js";
 /** The minimum a socket must do for the registry to hold it (the real one is a ws.WebSocket). */
 export interface ContainerSocket {
   send(data: string): void;
-  close(): void;
+  /** Close, optionally with an application code + reason so the CONTAINER can log why and
+   *  pick the right retry cadence (see remote-agent reconnect.ts closeDisposition). A bare
+   *  close surfaces client-side as the opaque `disconnected (code 1005)`. */
+  close(code?: number, reason?: string): void;
 }
+
+/** Application close code: another container for the same owner connected (last-writer-wins).
+ *  Without a code, two containers for one owner superseded each other every second in an
+ *  opaque 1005 ping-pong, each logging nothing about WHY. */
+export const CLOSE_SUPERSEDED = 4002;
 
 /** The durable half — `remote_agents` extended with a `session_id` column (§L Q4). */
 export interface SessionStore {
@@ -115,7 +123,9 @@ export function createSessionRegistry(config: SessionRegistryConfig): SessionReg
       // user's prompts.
       if (verified.claims.owner !== s.owner) return { ok: false, reason: "owner mismatch" };
       // A reconnect supersedes the old socket; close it so the container does not keep two live.
-      if (s.socket && s.socket !== socket) s.socket.close();
+      if (s.socket && s.socket !== socket) {
+        s.socket.close(CLOSE_SUPERSEDED, "another container connected for this owner");
+      }
       s.socket = socket;
       void store.setStatus(s.owner, "online").catch(() => {});
       return { ok: true, sessionId };
@@ -137,7 +147,9 @@ export function createSessionRegistry(config: SessionRegistryConfig): SessionReg
         void store.put(owner, sessionId).catch(() => {});
       }
       const s = sessions.get(sessionId)!;
-      if (s.socket && s.socket !== socket) s.socket.close();
+      if (s.socket && s.socket !== socket) {
+        s.socket.close(CLOSE_SUPERSEDED, "another container connected for this owner");
+      }
       s.socket = socket;
       void store.setStatus(owner, "online").catch(() => {});
       if (sessionId !== urlSessionId) {

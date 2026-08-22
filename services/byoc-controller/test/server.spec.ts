@@ -260,3 +260,52 @@ describe("BYOC controller HTTP surface", () => {
     expect((await server.authorizeDevice(deviceId, nonce, dev.sign(nonce))).ok).toBe(true);
   });
 });
+
+// --- auth-failure surfacing (the "machine was totally fine with it" fix) --------------------
+
+describe("auth failures are visible in /byoc/status", () => {
+  let server: ByocServer;
+  let devices: ReturnType<typeof createDeviceAuth>;
+  beforeEach(() => {
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    devices = createDeviceAuth({ store: createMemoryDeviceStore(), secret: SECRET });
+    server = createServer({ registry, relay: createRunRelay({ registry }), secret: SECRET, devices });
+  });
+  afterEach(() => server.close());
+  const fakeDevice = () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    return {
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+      sign: (nonce: string) => cryptoSign(null, Buffer.from(nonce), privateKey).toString("base64"),
+    };
+  };
+
+  it("a token rejection shows up on the OWNER's status — decoded unverified, diagnostics only", async () => {
+    // The live shape: an EXPIRED join token still carries readable claims. Attribution uses
+    // them so the Settings page can say "a container failed to authenticate: token expired"
+    // instead of a clean "disconnected" indistinguishable from never-started.
+    const expired = mintJoinToken("alice", SECRET, { ttlSeconds: -1 });
+    await server.noteAuthFailure({ token: expired, reason: "token expired" });
+
+    const res = await server.handle({ method: "GET", path: "/byoc/status?owner=alice", user: { id: "alice" } } as never);
+    const body = res.json as { lastAuthFailure?: { reason: string; at: string } | null };
+    expect(body.lastAuthFailure?.reason).toBe("token expired");
+    expect(body.lastAuthFailure?.at).toMatch(/T/); // ISO timestamp
+  });
+
+  it("a device rejection attributes through the device store", async () => {
+    const dev = fakeDevice();
+    const reg = await devices.register(mintJoinToken("bob", SECRET), dev.publicKeyPem, "laptop");
+    const deviceId = reg.ok ? reg.deviceId : "";
+    await server.noteAuthFailure({ deviceId, reason: "stale nonce" });
+
+    const res = await server.handle({ method: "GET", path: "/byoc/status?owner=bob", user: { id: "bob" } } as never);
+    expect((res.json as { lastAuthFailure?: { reason: string } | null }).lastAuthFailure?.reason).toBe("stale nonce");
+  });
+
+  it("an unattributable failure is dropped, never misfiled on another owner", async () => {
+    await server.noteAuthFailure({ token: "garbage", reason: "malformed token" });
+    const res = await server.handle({ method: "GET", path: "/byoc/status?owner=alice", user: { id: "alice" } } as never);
+    expect((res.json as { lastAuthFailure?: unknown }).lastAuthFailure ?? null).toBeNull();
+  });
+});
