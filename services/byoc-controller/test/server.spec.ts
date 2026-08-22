@@ -309,3 +309,50 @@ describe("auth failures are visible in /byoc/status", () => {
     expect((res.json as { lastAuthFailure?: unknown }).lastAuthFailure ?? null).toBeNull();
   });
 });
+
+// --- the FULL hop: POST /byoc/:id/prompt round-trips the caller's frame id ------------------
+//
+// The aeonai bug shipped because each side was tested against its own fake: the relay tests
+// asserted the relay's minted id, the agent-host tests used a fake transport, and the id
+// contract across the REAL hop had no coverage. This drives the actual route with the actual
+// registry + relay and a fake container, exactly the report's repro:
+// POST with id "MYID-123" -> the ack that streams back must carry "MYID-123".
+
+describe("prompt route round-trips the caller's frame id", () => {
+  it("the streamed ack carries the id the caller POSTed", async () => {
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    const relay = createRunRelay({ registry });
+    const server = createServer({ registry, relay, secret: SECRET });
+    const { sessionId, token } = await registry.mint("alice");
+
+    // A container that echoes an ack for whatever id it is sent (a faithful client).
+    const sent: Array<{ id?: string }> = [];
+    registry.attach(sessionId, token, {
+      send: (raw: string) => {
+        const f = JSON.parse(raw) as { id?: string };
+        sent.push(f);
+        // ack back asynchronously with the id the CONTAINER saw
+        setTimeout(() => relay.onContainerFrame(sessionId, JSON.stringify({ ch: "acp", type: "ack", id: f.id, payload: { result: { protocolVersion: 1 } } })), 0);
+      },
+      close: () => {},
+    });
+
+    const res = await server.handle({
+      method: "POST",
+      path: `/byoc/${sessionId}/prompt`,
+      body: { ch: "acp", type: "initialize", id: "MYID-123", payload: { params: { protocolVersion: 1 } } },
+      user: { id: "alice" },
+    } as never);
+
+    expect(res.status).toBe(200);
+    const frames: Array<{ id?: string; type?: string }> = [];
+    for await (const f of (res as { stream: AsyncIterable<{ id?: string; type?: string }> }).stream) {
+      frames.push(f);
+      if (frames.length > 5) break;
+    }
+    expect(frames).toHaveLength(1);
+    expect(frames[0].type).toBe("ack");
+    expect(frames[0].id, "the caller must get ITS id back or its by-id correlation hangs forever").toBe("MYID-123");
+    server.close();
+  });
+});

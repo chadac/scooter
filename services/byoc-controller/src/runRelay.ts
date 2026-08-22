@@ -31,12 +31,17 @@ export interface RunRelayConfig {
 export interface RunRelay {
   /** Send a prompt and stream this run's frames back. Rejects (rather than hanging) if the
    *  container is not reachable. The stream ends on the run's `ack`. */
-  prompt(sessionId: string, payload: AcpPromptPayload): AsyncIterable<WireFrame>;
+  prompt(sessionId: string, payload: AcpPromptPayload, callerId?: string): AsyncIterable<WireFrame>;
   /** Send ANY ACP request (initialize / new_session / prompt / cancel / kill_terminals) and stream
    *  the reply. `prompt` is the special case; the others are how the handshake completes at all.
    *  Forwarding everything as type:"prompt" made initialize/new_session arrive at the container as
    *  an EMPTY prompt, so the ACP session was never established and no run could start. */
-  request(sessionId: string, type: string, payload: unknown): AsyncIterable<WireFrame>;
+  /** `callerId` is the CALLER'S frame id, round-tripped onto every frame yielded back up.
+   *  The agent-host's remoteAcpClient correlates request→ack BY FRAME ID; the relay minting
+   *  its own id and yielding the container's ack unmapped left the caller waiting on an id
+   *  that never arrived — every real BYOC run hung at `initialize` and died
+   *  no_activity_timeout (curl probes, which don't correlate, looked healthy). */
+  request(sessionId: string, type: string, payload: unknown, callerId?: string): AsyncIterable<WireFrame>;
   /** Answer a permission the container is BLOCKED on (§L Q1). Stateless — mirrors the UI's
    *  existing POST /conversations/:id/permission/:toolCallId. */
   answerPermission(sessionId: string, permissionId: string, answer: PermissionAnswer): AnswerResult;
@@ -51,6 +56,9 @@ export interface RunRelay {
 /** One in-flight run: a queue of frames plus whoever is waiting to read the next one. */
 interface PendingRun {
   sessionId: string;
+  /** The caller's frame id — every frame yielded back up whose id is the RELAY's requestId is
+   *  rewritten to this, so the caller's by-id correlation resolves. */
+  callerId?: string;
   queue: WireFrame[];
   waiter?: (frame: WireFrame | null) => void;
   done: boolean;
@@ -68,6 +76,13 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
   const push = (run: PendingRun, frame: WireFrame): void => {
     if (run.done) return;
+    // ROUND-TRIP the caller's id: the ack coming up carries the relay's requestId (what the
+    // container was sent); the caller correlates by the id IT sent. Rewrite at the delivery
+    // boundary so every ack resolves the caller's pending request. Notifications (no id, or a
+    // container-minted id like permission_request) pass through untouched.
+    if (run.callerId && frame.type === "ack") {
+      frame = { ...frame, id: run.callerId };
+    }
     if (run.waiter) {
       const w = run.waiter;
       run.waiter = undefined;
@@ -119,17 +134,17 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
   };
 
   return {
-    prompt(sessionId, payload) {
-      return this.request(sessionId, "prompt", payload);
+    prompt(sessionId, payload, callerId) {
+      return this.request(sessionId, "prompt", payload, callerId);
     },
 
-    request(sessionId, type, payload) {
+    request(sessionId, type, payload, callerId) {
       // Resolve + validate BEFORE returning the iterable so a dead session fails fast. The check is
       // against the live SOCKET, never the durable row: a stale "online" would send this prompt
       // into a socket nobody is listening on and the run would never terminate.
       const session = registry.resolveBySession(sessionId);
       const requestId = randomUUID();
-      const run: PendingRun = { sessionId, queue: [], done: false };
+      const run: PendingRun = { sessionId, queue: [], done: false, callerId };
 
       let failure: string | undefined;
       if (!session) failure = `unknown session ${sessionId}`;
