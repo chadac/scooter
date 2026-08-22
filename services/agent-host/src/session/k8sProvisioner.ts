@@ -436,11 +436,59 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         );
         if (rw?.persistentVolumeClaim?.claimName) {
           const claim = rw.persistentVolumeClaim.claimName;
-          const missing = await core
+          // EXISTENCE IS NOT OWNERSHIP. Return-on-suspend puts a cleanly-suspended sandbox's
+          // volume back in the pool (`ready`, claimed-by cleared), where any create() can
+          // CAS-claim it — while THIS spec still names it. RWO does not stop a same-node
+          // double-mount, and two overlay uppers on one disk is store corruption. So the probe
+          // reads the LABELS, not just presence:
+          //   claimed-by == this sandbox        -> genuinely ours, proceed untouched
+          //   pool-state == ready (unclaimed)   -> CAS re-claim the SAME volume (installs back)
+          //   claimed by anyone else / other    -> LOST: re-bind, never mount a contested volume
+          //   404                                -> LOST (the GC case)
+          // Transient probe errors keep the old fail-open behaviour (undefined = don't heal).
+          const probe = await core
             .readNamespacedPersistentVolumeClaim({ name: claim, namespace: nsName })
-            .then(() => false)
-            .catch((e: { code?: number }) => e?.code === 404); // only a definite 404 is "missing"
-          if (missing) {
+            .then((pvc: { metadata?: { labels?: Record<string, string> } }) => {
+              const labels = pvc.metadata?.labels ?? {};
+              if (labels[CLAIMED_BY_LABEL] === ref.name) return "ours" as const;
+              if (labels[POOL_STATE_LABEL] === "ready" && !labels[CLAIMED_BY_LABEL]) {
+                return "reclaimable" as const;
+              }
+              return "lost" as const; // someone else's claim, or warming/retiring — never mount it
+            })
+            .catch((e: { code?: number }) => (e?.code === 404 ? ("lost" as const) : ("unknown" as const)));
+
+          let reclaimWon = false;
+          if (probe === "reclaimable") {
+            // Win our own volume back: the same JSON-patch CAS the pool claim uses (`test`
+            // pool-state == ready is the atomic gate). Winning keeps the claimName — the
+            // sandbox's installs come back with it. Losing (422/409: another creator got it
+            // between our read and now) falls through to the LOST path below.
+            const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+            reclaimWon = await core
+              .patchNamespacedPersistentVolumeClaim(
+                {
+                  name: claim,
+                  namespace: nsName,
+                  body: [
+                    { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
+                    { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
+                    { op: "add", path: ptr(CLAIMED_BY_LABEL), value: ref.name },
+                  ] as object,
+                },
+                setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
+              )
+              .then(() => true)
+              .catch(() => false);
+            // eslint-disable-next-line no-console
+            console.log(
+              reclaimWon
+                ? `[k8sProvisioner] resume(${ref.name}): re-claimed own returned warm volume ${claim}`
+                : `[k8sProvisioner] resume(${ref.name}): lost the re-claim race on ${claim} — re-binding fresh`,
+            );
+          }
+
+          if (probe === "lost" || (probe === "reclaimable" && !reclaimWon)) {
             let fresh = await claimWarmStorePvc(ref.name);
             if (!fresh) {
               // Pool cold/empty: create a plain upper (same shape the vct would have made).

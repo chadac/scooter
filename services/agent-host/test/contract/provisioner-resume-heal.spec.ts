@@ -27,6 +27,8 @@ function fakeKc(opts: {
   volumes?: Vol[];                 // the Sandbox spec's podTemplate volumes
   pvcExists?: boolean;             // does the referenced warm-store PVC still exist?
   pvcReadError?: number;           // non-404 error code for the PVC read probe
+  pvcLabels?: Record<string, string>; // labels on the referenced PVC (ownership check)
+  casFailsFor?: string;            // CAS patches on THIS pvc name lose the race (422)
   poolReady?: string[];            // ready current-tag pool PVC names
   sandboxGetError?: number;        // fail the Sandbox read itself
 }) {
@@ -45,13 +47,18 @@ function fakeKc(opts: {
     readNamespacedPersistentVolumeClaim: async () => {
       if (opts.pvcReadError) throw Object.assign(new Error("api"), { code: opts.pvcReadError });
       if (!opts.pvcExists) throw Object.assign(new Error("not found"), { code: 404 });
-      return {};
+      return { metadata: { labels: opts.pvcLabels ?? {} } };
     },
     listNamespacedPersistentVolumeClaim: async () => ({
       items: (opts.poolReady ?? []).map((name) => ({ metadata: { name, labels: {} } })),
     }),
-    patchNamespacedPersistentVolumeClaim: async (params: { name: string }) => {
+    patchNamespacedPersistentVolumeClaim: async (params: { name: string; body?: unknown }) => {
       pvcPatches.push(params.name); // the CAS claim / last-used stamp
+      // A JSON-patch body with a `test` op models the CAS; casFailsFor makes the CAS on
+      // that ONE pvc lose (a fresh-pool claim on a different pvc still wins).
+      if (opts.casFailsFor === params.name && Array.isArray(params.body)) {
+        throw Object.assign(new Error("test failed"), { code: 422 });
+      }
       return {};
     },
     createNamespacedPersistentVolumeClaim: async (params: { body: { metadata: { name: string } } }) => {
@@ -113,15 +120,68 @@ describe("k8sProvisioner.resume — warm-store heal", () => {
     expect(JSON.stringify(vp[0])).toContain(pvcCreates[0]);
   });
 
-  it("a HEALTHY claim is left alone — just the mode flip, no probe side effects", async () => {
+  it("a HEALTHY claim (exists AND claimed by THIS sandbox) is left alone", async () => {
     const { kc, sandboxPatches, pvcCreates } = fakeKc({
       volumes: [WARM("warm-store-scooter-git-9312b26-live")],
       pvcExists: true,
+      pvcLabels: { "scooter.io/pool-state": "claimed", "scooter.io/claimed-by": "conv-ok" },
     });
     await provisioner(kc).resume({ name: "conv-ok", namespace: "ns" });
     expect(volumePatches(sandboxPatches)).toHaveLength(0);
     expect(pvcCreates).toHaveLength(0);
     expect(modePatches(sandboxPatches)).toHaveLength(1);
+  });
+
+  it("THE OWNERSHIP GUARANTEE: a PVC claimed by ANOTHER sandbox is NEVER mounted — re-bind", async () => {
+    // Return-on-suspend makes this the NORMAL path, not an edge: a cleanly-suspended
+    // sandbox's PVC goes back to the pool (`ready`, claimed-by cleared) and another
+    // sandbox can CAS-claim it. The suspended spec still NAMES it, and RWO does not stop
+    // a same-node double-mount — two overlay uppers on one disk is store corruption.
+    // Existence is not ownership: resume must verify claimed-by == self.
+    const { kc, sandboxPatches } = fakeKc({
+      volumes: [WARM("warm-store-scooter-git-9312b26-p1")],
+      pvcExists: true,
+      pvcLabels: { "scooter.io/pool-state": "claimed", "scooter.io/claimed-by": "conv-somebody-else" },
+      poolReady: ["warm-store-scooter-git-9312b26-fresh"],
+    });
+    await provisioner(kc).resume({ name: "conv-toeurt", namespace: "ns" });
+
+    const vp = volumePatches(sandboxPatches);
+    expect(vp, "must re-bind away from the contested volume").toHaveLength(1);
+    expect(JSON.stringify(vp[0])).toContain("warm-store-scooter-git-9312b26-fresh");
+    expect(JSON.stringify(vp[0])).not.toContain("-p1");
+    expect(modePatches(sandboxPatches)).toHaveLength(1);
+  });
+
+  it("a RETURNED-but-unclaimed PVC is CAS re-claimed IN PLACE — the sandbox gets its own store back", async () => {
+    // The self-enriching pool returned this volume on suspend and nobody took it: the best
+    // outcome is to win it back (same claimName, installs intact) rather than grab a fresh one.
+    const { kc, sandboxPatches, pvcPatches } = fakeKc({
+      volumes: [WARM("warm-store-scooter-git-9312b26-p1")],
+      pvcExists: true,
+      pvcLabels: { "scooter.io/pool-state": "ready" },
+    });
+    await provisioner(kc).resume({ name: "conv-toeurt", namespace: "ns" });
+
+    expect(pvcPatches).toContain("warm-store-scooter-git-9312b26-p1"); // the CAS ran on IT
+    expect(volumePatches(sandboxPatches), "same claimName — no re-point needed").toHaveLength(0);
+    expect(modePatches(sandboxPatches)).toHaveLength(1);
+  });
+
+  it("losing the re-claim CAS race falls through to a fresh re-bind (never a shared mount)", async () => {
+    // Between the label read and the CAS, another creator claimed it. The 422 is the race
+    // telling us we lost — take a different volume.
+    const { kc, sandboxPatches } = fakeKc({
+      volumes: [WARM("warm-store-scooter-git-9312b26-p1")],
+      pvcExists: true,
+      pvcLabels: { "scooter.io/pool-state": "ready" },
+      casFailsFor: "warm-store-scooter-git-9312b26-p1",
+      poolReady: ["warm-store-scooter-git-9312b26-fresh"],
+    });
+    await provisioner(kc).resume({ name: "conv-toeurt", namespace: "ns" });
+    const vp = volumePatches(sandboxPatches);
+    expect(vp).toHaveLength(1);
+    expect(JSON.stringify(vp[0])).toContain("-fresh");
   });
 
   it("a sandbox with NO warm-store volume (fresh-vct shape) is untouched", async () => {
