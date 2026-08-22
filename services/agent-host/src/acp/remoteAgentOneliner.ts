@@ -7,7 +7,8 @@
 import { mintJoinToken } from "../auth/remoteAgentToken.js";
 
 /** The published container image (ghcr). Overridable for a private registry / a pinned tag. */
-const DEFAULT_IMAGE = "ghcr.io/chadac/scooter-remote-agent:latest";
+// ghcr.io/<owner>/scooter/<image> — the path scheme publish-images.yml actually pushes.
+const DEFAULT_IMAGE = "ghcr.io/chadac/scooter/remote-agent:latest";
 
 /** The ws(s) URL the CONTAINER dials, for ONE minted session (§L).
  *

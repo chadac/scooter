@@ -358,7 +358,10 @@ in
         };
         image = mkOption {
           type = types.str;
-          default = "ghcr.io/chadac/scooter-remote-agent:latest";
+          # ghcr.io/<owner>/scooter/<image> is the path scheme publish-images.yml pushes;
+          # the old ghcr.io/chadac/scooter-remote-agent ref matched nothing that workflow
+          # could ever produce, so the Settings one-liner failed `docker pull` for everyone.
+          default = "ghcr.io/chadac/scooter/remote-agent:latest";
           description = "The ghcr container image the Settings one-liner tells users to `docker run` (REMOTE_AGENT_IMAGE).";
         };
         bridgeUrl = mkOption {
