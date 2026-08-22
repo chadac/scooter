@@ -415,6 +415,74 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
+      // HEAL A DEAD WARM-STORE CLAIM before flipping the mode. The warm pool GCs old-version
+      // volumes, but a SUSPENDED sandbox's spec still references its claim by name — so a
+      // resume after that GC recreates a pod pointing at a PVC that no longer exists: Pending
+      // forever, no error anywhere, the conversation simply never wakes (observed live:
+      // conv-toeurt, 98 minutes Pending on warm-store-…-c302957-…). The volume is a CACHE of
+      // /nix/store (the workspace PVC holds the real work) and its contents are already gone,
+      // so re-binding loses nothing that still exists: claim a fresh current-version pool
+      // volume, or create a plain upper when the pool has none. BEST-EFFORT throughout — any
+      // heal-path failure falls through to the plain mode flip (a degraded revive beats a
+      // blocked one), and a non-404 probe error is NOT treated as missing.
+      try {
+        const nsName = ref.namespace || ns;
+        const sb = (await custom.getNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
+        })) as { spec?: { podTemplate?: { spec?: { volumes?: Array<{ name: string; persistentVolumeClaim?: { claimName?: string } }> } } } };
+        const volumes = sb.spec?.podTemplate?.spec?.volumes ?? [];
+        const rw = volumes.find(
+          (v) => v.name === "scooter-rw" && v.persistentVolumeClaim?.claimName?.startsWith("warm-store-"),
+        );
+        if (rw?.persistentVolumeClaim?.claimName) {
+          const claim = rw.persistentVolumeClaim.claimName;
+          const missing = await core
+            .readNamespacedPersistentVolumeClaim({ name: claim, namespace: nsName })
+            .then(() => false)
+            .catch((e: { code?: number }) => e?.code === 404); // only a definite 404 is "missing"
+          if (missing) {
+            let fresh = await claimWarmStorePvc(ref.name);
+            if (!fresh) {
+              // Pool cold/empty: create a plain upper (same shape the vct would have made).
+              // 409 = a prior heal attempt already created it — reuse it.
+              fresh = `scooter-rw-${ref.name}`;
+              await core
+                .createNamespacedPersistentVolumeClaim({
+                  namespace: nsName,
+                  body: {
+                    metadata: { name: fresh },
+                    spec: {
+                      accessModes: ["ReadWriteOnce"],
+                      resources: { requests: { storage: opts.overlayStorage ?? "20Gi" } },
+                    },
+                  },
+                })
+                .catch((e: { code?: number }) => {
+                  if (e?.code !== 409) throw e;
+                });
+            }
+            // Merge-patch replaces the volumes array wholesale, so send the full array with
+            // the one claimName swapped.
+            const healed = volumes.map((v) =>
+              v === rw ? { ...v, persistentVolumeClaim: { claimName: fresh! } } : v,
+            );
+            await custom.patchNamespacedCustomObject(
+              {
+                group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
+                body: { spec: { podTemplate: { spec: { volumes: healed } } } },
+              },
+              setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+            );
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[k8sProvisioner] resume(${ref.name}): warm-store claim ${claim} no longer exists — re-bound to ${fresh} (store cache reset)`,
+            );
+          }
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[k8sProvisioner] resume(${ref.name}): warm-store heal check failed (resuming anyway):`, e);
+      }
       await setOperatingMode(ref, "Running");
       return ref;
     },
