@@ -296,6 +296,15 @@ jobs:
               - 'services/conversation-router/**'
               - 'test/cluster/platform-smoke.spec.ts'
               - 'flake.nix'
+              # The agent-host side of the SAME multi-replica contract: it writes the
+              # Conversation CRs the controller assigns and the router forwards to, and
+              # hydrate() adopts them on boot. Without these, a change to conversation
+              # ownership/liveness skipped the only job that exercises it on a real
+              # cluster — which is how a hydrate that adopted nothing shipped green.
+              - 'services/agent-host/src/session/conversationRegistry.ts'
+              - 'services/agent-host/src/session/k8sConversationRegistry.ts'
+              - 'services/agent-host/src/session/ownershipGuard.ts'
+              - 'services/agent-host/src/session/manager.ts'
 
   # Tier-2 image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
   # Docker; no root, runs on the standard runner). Covers what the nixosTest VMs
