@@ -408,6 +408,11 @@ export interface SessionManagerDeps {
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
   conversationRegistry?: ConversationRegistry;
+  /** This pod's name (POD_NAME). Multi-replica only. When set together with a registry that can
+   *  list(), hydrate() becomes CR-DRIVEN: it adopts every Conversation the CONTROLLER assigned to
+   *  this pod (`status.hostPod === selfPod`), instead of replaying the ephemeral local store.
+   *  Omitted single-replica, where there are no CRs and the local store is the only source. */
+  selfPod?: string;
   /** Optional: how to build a bridge per conversation. Omitted in unit tests
    *  that only assert lifecycle/provisioning. */
   bridgeFactory?: BridgeFactory;
@@ -1128,6 +1133,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async hydrate() {
       const metas = (await store.listConversations?.()) ?? [];
 
+      // THE SOURCE OF TRUTH. `metas` above is the LOCAL cache (LOCAL_STATE_PATH — an emptyDir in
+      // cluster, so empty on every boot). The authoritative answer to "which conversations does
+      // this pod serve?" is the Conversation CR, which is durable and controller-assigned.
+      // Driving hydration off the cache is what left 21 running Sandboxes unknown to every host:
+      // no entry means sweepIdle()/resumeInterrupted() (both iterating `entries`) never see them.
+      // See docs/CONVERSATION_STATE_MODEL.md.
+      //
+      // list() THROWS on failure by contract, and we let it propagate: a pod that cannot read the
+      // truth must not serve on a stale view (decision Q4). index.ts retries with backoff and
+      // fails startup readiness rather than serving blind. Single-replica uses noopRegistry, whose
+      // list() is [] — so this is a no-op there and the local path below is unchanged.
+      const crs = deps.selfPod ? await conversationRegistry.list() : [];
+      // Adopt ONLY what the controller assigned to us. An UNASSIGNED CR (hostPod unset, or naming
+      // a pod that no longer exists) is deliberately left alone: the controller is the single
+      // assigner and self-claiming would race its load accounting (decision Q1).
+      const mine = crs.filter((c) => c.hostPod && c.hostPod === deps.selfPod);
+      const metaById = new Map(metas.map((m) => [m.id, m] as const));
+
       // Reconcile against the cluster: which conv-* Sandboxes actually exist, and
       // is each one's pod still running? A restart loses the in-memory map but the
       // pods may NOT have been suspended — without this we'd assume-suspend them
@@ -1190,6 +1213,46 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (entry.status === "suspended" && ownershipGuard.canWrite(entry.id)) {
           void conversationRegistry.setPhase(entry.id, "Suspended");
         }
+      }
+
+      // ADOPT the conversations the CR says are ours but the local cache never had. This is the
+      // path that was missing entirely: previously the loop above was the ONLY one, keyed by local
+      // metas, so a wiped emptyDir meant nothing was hydrated however much the cluster knew.
+      for (const c of mine) {
+        if (entries.has(c.id)) continue; // already live or hydrated from the local cache
+        // Prefer the DURABLE history if this conversation has any: hydrateFromMirror pulls its
+        // meta + event log into local so the transcript is intact. If it has none (or no mirror is
+        // configured) we still adopt from the CR alone — an entry with no history is enough to be
+        // listed, suspended, and reclaimed, which is what closes the leak (I5: suspend() throws
+        // for anything not in `entries`, so an unknown sandbox was previously unreachable).
+        let meta = metaById.get(c.id);
+        if (!meta && deps.hydrateFromMirror) {
+          const pulled = await deps.hydrateFromMirror(c.id).catch(() => false);
+          if (pulled) {
+            meta = ((await store.listConversations?.()) ?? []).find((m) => m.id === c.id);
+          }
+        }
+        const synthesized: ConversationMeta = meta ?? {
+          id: c.id,
+          threadId: c.id,
+          title: "",
+          createdAt: nowMs(),
+          lastActivityAt: nowMs(),
+          // NB: no `status` here — that lives on Entry, not the persisted meta. hydrateEntry()
+          // derives it from whether reconcile() reports the Sandbox pod actually running.
+          model: c.spec.model,
+          owner: c.spec.owner,
+          parentId: c.spec.parentId,
+        };
+        // The CR's spec is authoritative for these — a local meta can be stale (e.g. the owner was
+        // set after this pod last wrote its cache).
+        if (c.spec.owner) synthesized.owner = c.spec.owner;
+        if (c.spec.model) synthesized.model = c.spec.model;
+        // Is the Sandbox actually up? `reconcile()` already told us; key by the CR's sandboxRef
+        // when it has one (authoritative) and fall back to the derived name.
+        const sandboxName = c.spec.sandboxRef ?? `conv-${shortId(synthesized.threadId)}`;
+        const entry = hydrateEntry(synthesized, live.get(sandboxName));
+        entries.set(c.id, entry);
       }
     },
 
