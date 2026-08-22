@@ -191,10 +191,13 @@ export function createServer(config: ByocServerConfig): ByocServer {
           if (!session?.online) return { status: 503, json: { error: "container not connected" } };
           // Forward the frame's own type + payload, so initialize/new_session/cancel reach the
           // container as themselves rather than as an empty prompt.
-          const frame = req.body as { type?: string; payload?: unknown };
+          const frame = req.body as { type?: string; id?: string; payload?: unknown };
           return {
             status: 200,
-            stream: relay.request(sessionId, frame?.type ?? "prompt", (frame?.payload ?? {}) as never),
+            // Pass the CALLER'S frame id through — the agent-host correlates the ack by it.
+            // Dropping it here (and re-minting in the relay) hung every real run at
+            // `initialize` while curl probes looked healthy.
+            stream: relay.request(sessionId, frame?.type ?? "prompt", (frame?.payload ?? {}) as never, frame?.id),
           };
         }
 

@@ -178,3 +178,57 @@ describe("BYOC run relay", () => {
     expect((eb[0].payload as { result: { stopReason: string } }).result.stopReason).toBe("b-done");
   });
 });
+
+// --- the caller's frame id must ROUND-TRIP (aeonai bug: handshake hangs) --------------------
+
+describe("caller frame-id round-trip", () => {
+  let registry: SessionRegistry;
+  let relay: RunRelay;
+  let container: ReturnType<typeof fakeContainer>;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    relay = createRunRelay({ registry });
+    const minted = await registry.mint("alice");
+    sessionId = minted.sessionId;
+    container = fakeContainer();
+    container.bind((raw) => relay.onContainerFrame(sessionId, raw));
+    registry.attach(sessionId, minted.token, { send: container.send.bind(container), close: () => {} });
+  });
+
+  it("THE HANG: the ack the caller receives carries the CALLER'S id, not a relay-minted one", async () => {
+    // The agent-host's remoteAcpClient correlates request→ack BY FRAME ID: it sends
+    // `initialize` with id A and awaits pending.get(A). The relay minted randomUUID(),
+    // discarded A, and yielded the container's ack (carrying the new id) straight up — so
+    // pending.get(A) never resolved, initialize() hung forever, and EVERY real BYOC run died
+    // no_activity_timeout while curl probes (which don't correlate) looked healthy.
+    const stream = relay.request(sessionId, "initialize", { params: { protocolVersion: 1 } }, "CALLER-ID-A");
+    const collected = collect(stream);
+    // The container acks with whatever id it was SENT (it echoes faithfully)...
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: { protocolVersion: 1 } } });
+    const frames = await collected;
+    // ...and what reaches the CALLER must be its own id.
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe("CALLER-ID-A");
+  });
+
+  it("a caller WITHOUT an id still works (relay mints one; nothing correlates on it upstream)", async () => {
+    const stream = relay.request(sessionId, "initialize", {});
+    const collected = collect(stream);
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: {} });
+    const frames = await collected;
+    expect(frames).toHaveLength(1);
+  });
+
+  it("two CONCURRENT requests with caller ids each get their own ack back", async () => {
+    // The map-back must be per-run, not global: interleaved acks must not swap ids.
+    const s1 = collect(relay.request(sessionId, "initialize", {}, "A"));
+    const s2 = collect(relay.request(sessionId, "new_session", {}, "B"));
+    container.push({ ch: "acp", type: "ack", id: container.idOf(1), payload: { result: { sessionId: "sdk-1" } } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: { protocolVersion: 1 } } });
+    const [f1, f2] = await Promise.all([s1, s2]);
+    expect(f1[0].id).toBe("A");
+    expect(f2[0].id).toBe("B");
+  });
+});
