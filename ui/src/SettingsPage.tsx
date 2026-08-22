@@ -522,6 +522,7 @@ function DeviceList() {
 function ClaudeAgentSection() {
   const [enabled, setEnabled] = useState(true);
   const [connected, setConnected] = useState(false);
+  const [authFailure, setAuthFailure] = useState<{ reason: string; at: string } | null>(null);
   const [command, setCommand] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -535,6 +536,7 @@ function ClaudeAgentSection() {
       if (!alive) return;
       setEnabled(s.enabled);
       setConnected(s.connected);
+      setAuthFailure(s.lastAuthFailure);
       setLoading(false);
     };
     void tick();
@@ -629,6 +631,17 @@ function ClaudeAgentSection() {
           <span data-testid="claude-agent-disconnected" className="text-muted-foreground">Not connected</span>
         )}
       </div>
+
+      {/* A rejected connection is a different state than "no container": say WHY, loudly.
+          Previously a container with a bad/expired token fast-looped in silence while this
+          page showed a clean "Not connected" — invisible on both ends. */}
+      {!connected && authFailure ? (
+        <p data-testid="claude-agent-auth-failure" className="text-sm text-red-700 dark:text-red-400">
+          A container failed to authenticate at {new Date(authFailure.at).toLocaleString()}:{" "}
+          <span className="font-mono">{authFailure.reason}</span>. Generate a fresh command below and
+          restart it.
+        </p>
+      ) : null}
 
       {!command ? (
         <button

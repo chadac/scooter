@@ -82,6 +82,9 @@ export interface DeviceAuth {
   verify(deviceId: string, nonce: string, signatureB64: string): Promise<VerifyResult>;
   deregister(owner: string, deviceId: string): Promise<void>;
   listDevices(owner: string): Promise<DeviceSummary[]>;
+  /** The owner a device id belongs to (undefined if unknown). DIAGNOSTIC ONLY — labelling an
+   *  auth-failure event for the Settings UI; never an authorization input. */
+  ownerOf(deviceId: string): Promise<string | undefined>;
 }
 
 export function createDeviceAuth(config: DeviceAuthConfig): DeviceAuth {
@@ -184,6 +187,11 @@ export function createDeviceAuth(config: DeviceAuthConfig): DeviceAuth {
       return rows
         .map((r) => ({ id: r.id, label: r.label, lastSeen: r.lastSeen }))
         .sort((a, b) => b.lastSeen - a.lastSeen);
+    },
+
+    async ownerOf(deviceId) {
+      const d = await store.getById(deviceId).catch(() => undefined);
+      return d?.owner;
     },
   };
 }

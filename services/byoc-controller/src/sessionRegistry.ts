@@ -25,8 +25,16 @@ import { mintJoinToken, verifyJoinToken } from "./joinToken.js";
 /** The minimum a socket must do for the registry to hold it (the real one is a ws.WebSocket). */
 export interface ContainerSocket {
   send(data: string): void;
-  close(): void;
+  /** Close, optionally with an application code + reason so the CONTAINER can log why and
+   *  pick the right retry cadence (see remote-agent reconnect.ts closeDisposition). A bare
+   *  close surfaces client-side as the opaque `disconnected (code 1005)`. */
+  close(code?: number, reason?: string): void;
 }
+
+/** Application close code: another container for the same owner connected (last-writer-wins).
+ *  Without a code, two containers for one owner superseded each other every second in an
+ *  opaque 1005 ping-pong, each logging nothing about WHY. */
+export const CLOSE_SUPERSEDED = 4002;
 
 /** The durable half — `remote_agents` extended with a `session_id` column (§L Q4). */
 export interface SessionStore {
@@ -45,7 +53,7 @@ export interface ResolvedSession {
   online: boolean;
 }
 
-export type AttachResult = { ok: true } | { ok: false; reason: string };
+export type AttachResult = { ok: true; sessionId: string } | { ok: false; reason: string };
 
 export interface SessionRegistryConfig {
   store: SessionStore;
@@ -60,7 +68,14 @@ export interface SessionRegistry {
   attach(sessionId: string, token: string, socket: ContainerSocket): AttachResult;
   /** Attach when the caller is ALREADY authenticated (a device signature, §P) and so has no join
    *  token to re-verify. `owner` MUST come from a verified source — this trusts it. */
-  attachAuthenticated(sessionId: string, owner: string, socket: ContainerSocket): AttachResult;
+  /** Attach a DEVICE-AUTHENTICATED container (§P). The signature already proved `owner`;
+   *  `urlSessionId` is only the id baked into the container's --url, which goes STALE the moment
+   *  the owner re-mints or the controller restarts (sessions are in-memory). So this attaches BY
+   *  OWNER: the owner's current session when one exists, else a fresh one (persisted, so
+   *  /byoc/status agrees). Rejecting on a stale id was the §N retry-forever failure in new
+   *  clothes — the container looped `disconnected (code 1005)` until a human re-minted, which is
+   *  precisely what device keys exist to end. Returns the sessionId actually attached. */
+  attachAuthenticated(urlSessionId: string, owner: string, socket: ContainerSocket): AttachResult;
   detach(sessionId: string): void;
   /** Detach ONLY if `socket` is still the current one (a late close from a superseded connection). */
   detachIfCurrent(sessionId: string, socket: ContainerSocket): void;
@@ -108,23 +123,42 @@ export function createSessionRegistry(config: SessionRegistryConfig): SessionReg
       // user's prompts.
       if (verified.claims.owner !== s.owner) return { ok: false, reason: "owner mismatch" };
       // A reconnect supersedes the old socket; close it so the container does not keep two live.
-      if (s.socket && s.socket !== socket) s.socket.close();
+      if (s.socket && s.socket !== socket) {
+        s.socket.close(CLOSE_SUPERSEDED, "another container connected for this owner");
+      }
       s.socket = socket;
       void store.setStatus(s.owner, "online").catch(() => {});
-      return { ok: true };
+      return { ok: true, sessionId };
     },
 
-    attachAuthenticated(sessionId, owner, socket) {
-      const s = sessions.get(sessionId);
-      if (!s) return { ok: false, reason: "unknown session" };
-      // Still check the owner matches: device auth proves WHO the caller is, not that this session
-      // is theirs. Skipping it would let a valid device attach to anyone's session — the same
-      // cross-owner hole the token path guards against.
-      if (s.owner !== owner) return { ok: false, reason: "owner mismatch" };
-      if (s.socket && s.socket !== socket) s.socket.close();
+    attachAuthenticated(urlSessionId, owner, socket) {
+      // ATTACH BY OWNER, not by the URL id (see the interface doc). The signature proved the
+      // owner; the URL id is at best the owner's current session and at worst a stale one from
+      // before a re-mint / controller restart. Never resolve the URL id to ANOTHER owner's
+      // session — that would be the cross-owner hole the token path guards against.
+      let sessionId = byOwner.get(owner);
+      if (!sessionId) {
+        // Restart recovery: a registered laptop dialling in after the in-memory table emptied
+        // must not need a human to re-mint. Create + persist, so /byoc/status (what agent-hosts
+        // resolve by) reflects the session this socket actually serves.
+        sessionId = randomUUID();
+        sessions.set(sessionId, { owner });
+        byOwner.set(owner, sessionId);
+        void store.put(owner, sessionId).catch(() => {});
+      }
+      const s = sessions.get(sessionId)!;
+      if (s.socket && s.socket !== socket) {
+        s.socket.close(CLOSE_SUPERSEDED, "another container connected for this owner");
+      }
       s.socket = socket;
-      void store.setStatus(s.owner, "online").catch(() => {});
-      return { ok: true };
+      void store.setStatus(owner, "online").catch(() => {});
+      if (sessionId !== urlSessionId) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[byoc] device re-attach: owner=${owner} url session ${urlSessionId} is stale — attached to ${sessionId}`,
+        );
+      }
+      return { ok: true, sessionId };
     },
 
     detach(sessionId) {

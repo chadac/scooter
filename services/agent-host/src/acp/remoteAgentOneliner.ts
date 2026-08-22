@@ -41,6 +41,11 @@ export function dockerCommand(wsUrl: string, token: string, image = DEFAULT_IMAG
   ].join(" \\\n");
 }
 
+export interface RemoteAgentStatus {
+  connected: boolean;
+  lastAuthFailure: { reason: string; at: string } | null;
+}
+
 export interface RemoteAgentUiDeps {
   joinSecret: string;
   /** The BYOC controller's IN-CLUSTER base URL — where the session is minted. */
@@ -54,6 +59,10 @@ export interface RemoteAgentUiDeps {
   /** Async connected check (the durable Postgres badge, cross-replica). Preferred when a DB is
    *  wired; falls back to isConnected otherwise. */
   isConnectedAsync?: (owner: string) => Promise<boolean>;
+  /** Full status detail from the controller — connected + the owner's most recent REJECTED
+   *  connection attempt, so the Settings page can say WHY a container is not connected
+   *  instead of a clean "disconnected" identical to never-started. */
+  statusAsync?: (owner: string) => Promise<RemoteAgentStatus>;
   image?: string;
   /** Join-token TTL (seconds). Long enough to copy + start the container. */
   ttlSeconds?: number;
@@ -84,6 +93,12 @@ export function createRemoteAgentUi(deps: RemoteAgentUiDeps) {
     },
     /** Is the owner's agent connected? Prefers the durable (async) check; falls back to the
      *  sync live-registry check; false if neither is wired. */
+    /** Status detail for the Settings page; degrades to the boolean check when the detailed
+     *  probe is not wired (tests, legacy composition). */
+    async status(owner: string): Promise<RemoteAgentStatus> {
+      if (deps.statusAsync) return deps.statusAsync(owner);
+      return { connected: await this.isConnected(owner), lastAuthFailure: null };
+    },
     async isConnected(owner: string): Promise<boolean> {
       if (deps.isConnectedAsync) return deps.isConnectedAsync(owner);
       if (deps.isConnected) return deps.isConnected(owner);

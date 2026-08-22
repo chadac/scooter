@@ -156,8 +156,17 @@ http.on("upgrade", (req, socket, head) => {
       `[byoc] upgrade rejected for session ${sessionId} ` +
         `(${deviceId ? `device ${deviceId}` : "join token"}): ${authorized.reason}`,
     );
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
+    // Record the failure so the SETTINGS UI can show it (via /byoc/status). Owner is
+    // best-effort: a device id maps through the store; an invalid token's claims are decoded
+    // UNVERIFIED — fine for a diagnostic label, never for authorization.
+    void api.noteAuthFailure({ deviceId, token, reason: authorized.reason });
+    // Reject by COMPLETING the upgrade and closing with a code + reason: a raw 401 socket
+    // write reaches the ws client as a generic error with no explanation, and the container
+    // fast-loops in silence. Through a real close frame, the reason lands in its log and it
+    // backs off to the slow auth-retry cadence.
+    wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+      ws.close(4001, `auth rejected: ${authorized.reason}`);
+    });
     return;
   }
 
@@ -167,28 +176,43 @@ http.on("upgrade", (req, socket, head) => {
     // superseded-close guard would silently do nothing.
     const containerSocket = {
       send: (data: string) => ws.send(data),
-      close: () => ws.close(),
+      close: (code?: number, reason?: string) => (code ? ws.close(code, reason) : ws.close()),
     };
-    // A device-authenticated container has NO join token to re-verify — attaching by the owner the
-    // signature already proved is the whole point of §P. First-time containers use the token path.
+    // A device-authenticated container has NO join token to re-verify — attaching by the OWNER the
+    // signature already proved is the whole point of §P 
+    // (a stale URL session id re-attaches to the owner's current session; see the registry).
+    // First-time containers use the token path.
     const attached = deviceId
       ? registry.attachAuthenticated(sessionId, authorized.owner, containerSocket)
       : registry.attach(sessionId, token, containerSocket);
     if (!attached.ok) {
-      ws.close();
+      // Close with a CODE + REASON. A bare close() surfaces client-side as the opaque
+      // `disconnected (code 1005)` — the container retried forever with nothing in either log
+      // saying why. 4001 = this application's "attach rejected"; the reason names the cause.
+      // eslint-disable-next-line no-console
+      console.warn(`[byoc] attach rejected: session=${sessionId} owner=${authorized.owner}: ${attached.reason}`);
+      ws.close(4001, `attach rejected: ${attached.reason}`);
       return;
     }
-    console.log(`[byoc] container attached: session=${sessionId} owner=${authorized.owner}`);
+    // The session ACTUALLY attached — for a device re-attach this can differ from the URL's id.
+    // Every relay wire-up below must use it, or frames route to a dead session.
+    const liveSessionId = attached.sessionId;
+    console.log(`[byoc] container attached: session=${liveSessionId} owner=${authorized.owner}`);
+    // CONFIRM the attach to the container. The client waits for exactly this frame to log
+    // "registered as owner … — ready"; without it a fully-authenticated container looks, from
+    // the laptop, like it never finished authenticating (observed live: the only evidence of a
+    // healthy attach was on the SERVER, and the user read the silent client as an auth failure).
+    ws.send(JSON.stringify({ type: "connected", payload: { owner: authorized.owner, sessionId: liveSessionId } }));
 
-    ws.on("message", (data) => relay.onContainerFrame(sessionId, data.toString()));
+    ws.on("message", (data) => relay.onContainerFrame(liveSessionId, data.toString()));
     ws.on("close", () => {
-      console.log(`[byoc] container gone: session=${sessionId}`);
+      console.log(`[byoc] container gone: session=${liveSessionId}`);
       // Order matters: end the in-flight runs FIRST (so their streams terminate with an error ack
       // rather than hanging), then release the socket.
-      relay.onContainerGone(sessionId);
-      registry.detachIfCurrent(sessionId, containerSocket);
+      relay.onContainerGone(liveSessionId);
+      registry.detachIfCurrent(liveSessionId, containerSocket);
     });
-    ws.on("error", (e) => console.warn(`[byoc] socket error session=${sessionId}: ${e.message}`));
+    ws.on("error", (e) => console.warn(`[byoc] socket error session=${liveSessionId}: ${e.message}`));
   });
   })();
 });

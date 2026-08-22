@@ -705,6 +705,10 @@ export interface RemoteAgentStatus {
   enabled: boolean;
   /** Is the caller's Claude agent connected right now? */
   connected: boolean;
+  /** The owner's most recent REJECTED connection attempt, if any — what lets the page say WHY
+   *  a container is not connected instead of a silent "Not connected" indistinguishable from
+   *  never having started one. */
+  lastAuthFailure: { reason: string; at: string } | null;
 }
 
 /** Poll whether the caller has a connected Claude agent. 404 → BYO not enabled (hide the section). */
@@ -713,13 +717,16 @@ export async function loadRemoteAgentStatus(config: AgentHostConfig): Promise<Re
     const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/remote-agent/status`, {
       headers: authHeaders(config),
     });
-    if (res.status === 404) return { enabled: false, connected: false };
-    if (!res.ok) return { enabled: true, connected: false };
-    const body = (await res.json()) as { connected?: boolean };
-    return { enabled: true, connected: !!body.connected };
+    if (res.status === 404) return { enabled: false, connected: false, lastAuthFailure: null };
+    if (!res.ok) return { enabled: true, connected: false, lastAuthFailure: null };
+    const body = (await res.json()) as {
+      connected?: boolean;
+      lastAuthFailure?: { reason: string; at: string } | null;
+    };
+    return { enabled: true, connected: !!body.connected, lastAuthFailure: body.lastAuthFailure ?? null };
   } catch (e) {
     console.warn("[client] loadRemoteAgentStatus failed:", e);
-    return { enabled: true, connected: false };
+    return { enabled: true, connected: false, lastAuthFailure: null };
   }
 }
 
