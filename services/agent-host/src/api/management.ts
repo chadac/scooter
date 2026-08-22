@@ -260,9 +260,31 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.post("/remote-agent/join-token", async (ctx) => {
     if (!deps.remoteAgent) return { status: 404, json: { error: "remote agents not enabled" } };
     if (ctx.user.anonymous) return { status: 401, json: { error: "sign in to connect a Claude agent" } };
-    const { token, dockerCommand, wsUrl } = await deps.remoteAgent.mint(ctx.user.id);
-    // Return the raw token + the ready-to-copy one-liner (token baked in) + the wss URL.
-    return { json: { token, dockerCommand, wsUrl } };
+    // mint() round-trips the BYOC controller (POST /byoc/sessions). An unreachable controller
+    // is an EXPECTED, diagnosable condition — the deployment is missing/unhealthy (the observed
+    // case: the agent-pg-byoc Secret absent, so its pod never started) — not an internal error.
+    // Without this catch the throw fell to the agui server's outer handler, which answers with
+    // a RAW stringified error and no content-type: the Settings UI (expecting JSON) showed a
+    // parser artifact, and "the controller is down" surfaced as an anonymous 500.
+    try {
+      const { token, dockerCommand, wsUrl } = await deps.remoteAgent.mint(ctx.user.id);
+      // Return the raw token + the ready-to-copy one-liner (token baked in) + the wss URL.
+      return { json: { token, dockerCommand, wsUrl } };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[remote-agent] join-token mint failed for ${ctx.user.id}:`, err);
+      // 503 (dependency unavailable), naming the dependency — and deliberately NOT echoing
+      // err.message: this response gets logged/screenshotted, and an error path must never
+      // carry token material or internals. The full error is in the host log above.
+      return {
+        status: 503,
+        json: {
+          error:
+            "The BYOC controller is unreachable — the join token could not be issued. " +
+            "Check that the byoc-controller Deployment is running (and its database secret exists), then retry.",
+        },
+      };
+    }
   });
 
   r.get("/remote-agent/status", async (ctx) => {
