@@ -595,10 +595,9 @@ function ClaudeAgentSection() {
             className="overflow-x-auto rounded bg-muted/50 p-3 text-xs leading-relaxed"
           >{`agentSandbox.byoc.enable = true;`}</pre>
           <p className="text-xs text-muted-foreground">
-            One knob: this deploys the BYOC controller, exposes{" "}
-            <span className="font-mono">/byoc</span> on your existing ingress host (a separate,
-            deliberately unauthenticated Ingress — the join token, then the device key, is the
-            gate), and turns on this Settings page. Use{" "}
+            This enables BYOC: the controller, the{" "}
+            <span className="font-mono">/byoc</span> connect path on your existing ingress host,
+            and this Settings page. Use{" "}
             <span className="font-mono">byoc.ingress.host</span> for a dedicated hostname.{" "}
             <span className="font-mono">deploy.sh</span> generates the signing secret
             (<span className="font-mono">agent-remote-join-secret</span>) if missing. See{" "}
