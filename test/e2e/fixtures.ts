@@ -280,7 +280,7 @@ export const test = base.extend<Fixtures>({
             throw new Error(
               `cleanState could not empty the server after 50 attempts. Still present: ` +
                 left.map((c) => `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}`).join(", ") +
-                `. State persists at STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
+                `. State persists at LOCAL_STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
                 `restarts until that directory is cleared.`,
             );
           }
