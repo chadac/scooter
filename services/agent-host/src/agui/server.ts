@@ -488,8 +488,21 @@ export function createAguiServer(): AguiServer {
       return new Promise((resolve) => {
         server = createServer((req, res) => {
           handle(req, res).catch((err) => {
-            if (!res.headersSent) res.writeHead(500);
-            res.end(String(err));
+            // LAST-RESORT catch — a route that throws instead of returning an error result.
+            // Log the real error here; the RESPONSE gets a generic JSON envelope, never
+            // `String(err)`: raw error strings have no content-type (JSON-expecting clients
+            // render parser artifacts instead of a message) and can carry internals into
+            // something that gets screenshotted and pasted into issues. Routes with an
+            // expected failure mode should catch it themselves and answer specifically
+            // (see /remote-agent/join-token) — landing here is a bug worth the log line.
+            // eslint-disable-next-line no-console
+            console.error(`[agui] unhandled route error ${req.method} ${req.url}:`, err);
+            if (!res.headersSent) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "internal error" }));
+            } else {
+              res.end(); // headers gone (e.g. mid-SSE) — just close; the log has the cause
+            }
           });
         });
         // WebSocket upgrades for proxied services (marimo kernel, xterm PTY,
