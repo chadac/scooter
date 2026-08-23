@@ -29,45 +29,8 @@ export interface TunnelService {
   drain?(): Promise<void>;
 }
 
-/** MCP protocol versions our server's SDK accepts, newest first. The tunnel joins two
- *  INDEPENDENTLY-VERSIONED MCP implementations — the user's `claude` CLI and this
- *  agent-host's SDK — so unlike the in-cluster paths (same SDK on both ends) their versions
- *  can and do diverge. Observed live: the CLI offered 2026-07-28, our transport answered
- *  `400 Bad Request: Unsupported protocol version`, and the SDK gave up with no tools. The
- *  spec expects negotiation, so we negotiate. */
-const SUPPORTED_MCP_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
-
 /** Rewrite an `initialize` whose protocolVersion our server cannot accept. Everything else —
  *  including every tool call — passes through BYTE FOR BYTE. */
-const META_VERSION_KEY = "io.modelcontextprotocol/protocolVersion";
-
-function negotiateInitialize(body: Buffer): Buffer {
-  if (!body.length) return body;
-  let msg: {
-    method?: string;
-    params?: { protocolVersion?: string; _meta?: Record<string, unknown> };
-  };
-  try {
-    msg = JSON.parse(body.toString()) as typeof msg;
-  } catch {
-    return body; // not JSON (or a batch we do not parse) — never touch it
-  }
-  // TWO handshake shapes, both observed: the classic `initialize` with
-  // params.protocolVersion, and the newer capability probe (`server/discover`) that carries
-  // the version in params._meta under a NAMESPACED key. A first cut handled only the former
-  // and silently never fired — the live body is what settled it.
-  const classic = typeof msg.params?.protocolVersion === "string" ? msg.params.protocolVersion : undefined;
-  const meta = msg.params?._meta?.[META_VERSION_KEY];
-  const metaVersion = typeof meta === "string" ? meta : undefined;
-  const want = classic ?? metaVersion;
-  if (!want || SUPPORTED_MCP_VERSIONS.includes(want)) return body;
-  if (classic) msg.params!.protocolVersion = SUPPORTED_MCP_VERSIONS[0];
-  if (metaVersion) msg.params!._meta![META_VERSION_KEY] = SUPPORTED_MCP_VERSIONS[0];
-  // eslint-disable-next-line no-console
-  console.log(`[tunnel] negotiated MCP protocol ${want} -> ${SUPPORTED_MCP_VERSIONS[0]} (${msg.method})`);
-  return Buffer.from(JSON.stringify(msg));
-}
-
 /** One in-flight stream: the request being assembled until `end` arrives. */
 interface Pending {
   url: string;
@@ -94,22 +57,16 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       const res = await doFetch(p.url, {
         method: p.method,
         headers: p.headers,
-        body: p.body.length ? negotiateInitialize(Buffer.concat(p.body)).toString() : undefined,
+        body: p.body.length ? Buffer.concat(p.body).toString() : undefined,
       });
       // eslint-disable-next-line no-console
       console.log(`[tunnel] fetch DONE stream=${id} status=${res.status} hasBody=${!!res.body}`);
-      if (res.status >= 400) {
-        // The MCP endpoint REJECTED the tunnelled request. Log what it said and what we sent —
-        // a 400 here is invisible to the container (it just sees a failed tool call), and this
-        // is the difference between guessing at headers and reading the answer.
-        const clone = res.clone?.();
-        const text = clone ? await clone.text().catch(() => "<unreadable>") : "<no clone>";
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[tunnel] REJECTED stream=${id} status=${res.status} body=${text.slice(0, 300)} ` +
-            `sentHeaders=${JSON.stringify(p.headers)} sentBody=${Buffer.concat(p.body).toString().slice(0, 200)}`,
-        );
-      }
+      // NB: do NOT read (or clone-and-read) the body here to log it. undici's clone shares the
+      // underlying stream, so consuming the clone leaves the original yielding nothing — the
+      // response reached the container EMPTY. A 4xx is not an error to swallow either: the CLI
+      // probes optional methods (server/discover) and RELIES on receiving the rejection so it
+      // can fall back to the standard initialize handshake. Eating that response is what left
+      // the SDK with no server at all.
       const headers: Record<string, string> = {};
       res.headers?.forEach?.((v, k) => (headers[k] = v));
       let head = { status: res.status, headers };

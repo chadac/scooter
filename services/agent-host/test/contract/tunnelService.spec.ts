@@ -117,47 +117,39 @@ describe("agent-host tunnel service", () => {
   });
 });
 
-// --- protocol-version negotiation (the live 400) ---------------------------------------------
+// --- error responses must reach the container INTACT ------------------------------------------
 
-describe("MCP protocol version negotiation", () => {
-  it("downgrades an initialize the server cannot accept, instead of failing the tool call", async () => {
-    // THE LIVE FAILURE: the container's `claude` CLI negotiates MCP protocol 2026-07-28; the
-    // agent-host's MCP SDK tops out at 2025-11-25 (even on latest) and the transport answers
-    //   400 Bad Request: Unsupported protocol version: 2026-07-28
-    // The in-cluster paths never hit this because both ends ship the SAME SDK — only the
-    // tunnel joins two independently-versioned MCP implementations. The spec expects
-    // negotiation, so the tunnel negotiates: an initialize naming a version the server does
-    // not support is rewritten to the newest one it does.
-    const sent: string[] = [];
-    const fetchImpl = (async (_u: string, init?: RequestInit) => {
-      sent.push(String(init?.body ?? ""));
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof fetch;
+describe("4xx responses are relayed, not swallowed", () => {
+  it("a 400 reaches the container WITH its body — the CLI needs it to fall back", async () => {
+    // THE LIVE FAILURE, and it was self-inflicted: the CLI probes optional methods
+    // (`server/discover`) and RELIES on the rejection so it can fall back to the standard
+    // `initialize` handshake. A diagnostic that did `res.clone().text()` to log the error
+    // consumed undici's shared stream, so the original yielded NOTHING and the container got an
+    // empty response. The CLI never fell back, ended up with no server, and the model told the
+    // user the tool does not exist. (The first "fix" — rewriting the client's negotiated
+    // protocol version — was treating that symptom, and lying to both ends to do it.)
     const out = collector();
+    const errorBody = JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Unsupported protocol version" }, id: null });
+    const fetchImpl = (async () => new Response(errorBody, { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
     const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
 
-    // THE REAL SHAPE, captured live: the CLI probes with `server/discover` and carries the
-    // version in params._meta under a NAMESPACED key — not `initialize` + params.protocolVersion,
-    // which is what a first cut assumed (and why the rewrite silently never fired).
-    const body = JSON.stringify({
-      jsonrpc: "2.0", id: "server-discover-probe-1", method: "server/discover",
-      params: { _meta: {
-        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-        "io.modelcontextprotocol/clientInfo": { name: "claude", version: "1" },
-      } },
-    });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s1", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
-    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s1", payload: { data: Buffer.from(body).toString("base64") } });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
     await svc.drain?.();
 
-    const forwarded = JSON.parse(sent[0]) as { params: { _meta: Record<string, unknown> } };
-    const got = forwarded.params._meta["io.modelcontextprotocol/protocolVersion"];
-    expect(got, "an unsupported version must be negotiated down").not.toBe("2026-07-28");
-    expect(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]).toContain(got);
+    const chunks = out.sent.filter((f) => f.type === "chunk");
+    const body = chunks.map((f) => Buffer.from((f.payload as { data: string }).data, "base64").toString()).join("");
+    expect(body, "the error body must survive the relay").toBe(errorBody);
+    const first = chunks[0]?.payload as { status?: number };
+    expect(first.status, "the status must be relayed too").toBe(400);
+    // A rejected request is a NORMAL protocol outcome, not a stream failure.
+    const close = out.sent.find((f) => f.type === "close");
+    expect((close?.payload as { error?: string }).error).toBeUndefined();
   });
 
-  it("leaves a SUPPORTED version untouched", async () => {
+  it("relays the request BYTE FOR BYTE — the tunnel never rewrites protocol payloads", async () => {
+    // Rewriting a client's negotiated version behind its back makes each end believe it is
+    // speaking a protocol the other is not. The tunnel is a pipe.
     const sent: string[] = [];
     const fetchImpl = (async (_u: string, init?: RequestInit) => {
       sent.push(String(init?.body ?? ""));
@@ -165,29 +157,14 @@ describe("MCP protocol version negotiation", () => {
     }) as unknown as typeof fetch;
     const out = collector();
     const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
-    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
-    // (the classic initialize shape still passes through untouched when supported)
+    const probe = JSON.stringify({
+      jsonrpc: "2.0", id: "server-discover-probe-1", method: "server/discover",
+      params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } },
+    });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s2", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
-    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s2", payload: { data: Buffer.from(body).toString("base64") } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s2", payload: { data: Buffer.from(probe).toString("base64") } });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s2", payload: {} });
     await svc.drain?.();
-    expect((JSON.parse(sent[0]) as { params: { protocolVersion: string } }).params.protocolVersion).toBe("2025-06-18");
-  });
-
-  it("passes a NON-initialize body through byte-for-byte", async () => {
-    // Only initialize is rewritten; rewriting anything else would corrupt tool calls.
-    const sent: string[] = [];
-    const fetchImpl = (async (_u: string, init?: RequestInit) => {
-      sent.push(String(init?.body ?? ""));
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof fetch;
-    const out = collector();
-    const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
-    const body = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_models", arguments: {} } });
-    await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s3", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
-    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s3", payload: { data: Buffer.from(body).toString("base64") } });
-    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s3", payload: {} });
-    await svc.drain?.();
-    expect(sent[0]).toBe(body);
+    expect(sent[0]).toBe(probe);
   });
 });
