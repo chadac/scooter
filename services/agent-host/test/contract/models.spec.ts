@@ -138,6 +138,20 @@ describe("model catalog: provider dimension", () => {
     expect(defaultFor(catalog, undefined)).toBe("us.anthropic.claude-sonnet-4-6");
   });
 
+  it("defaultFor: a provider GROUP's own flagged default wins over the global default", () => {
+    // The kubenix surface is provider-first — each group marks its own default. byoc's group
+    // flagged claude-opus-4-x even though the global default is a goose model and another byoc
+    // model sorts first.
+    const c = catalogFromEnv({
+      AGENT_MODELS_JSON: JSON.stringify([
+        { id: "us.anthropic.claude-sonnet-4-6", default: true, providers: ["goose"], defaultFor: ["goose"] },
+        { id: "claude-sonnet-4-5", providers: ["byoc"] },
+        { id: "claude-opus-4-8", providers: ["byoc"], defaultFor: ["byoc"] },
+      ]),
+    } as never);
+    expect(defaultFor(c, "byoc")).toBe("claude-opus-4-8");
+  });
+
   it("defaultFor: a provider with nothing tagged still gets the untagged models", () => {
     const c = catalogFromEnv({
       AGENT_MODELS_JSON: JSON.stringify([{ id: "m1", default: true }]),

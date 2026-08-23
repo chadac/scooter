@@ -18,28 +18,47 @@ let
   # same origin); otherwise it targets the agent-host API directly.
   ingressBackend = if cfg.ui.enable then "ui" else "agent-host";
 
-  # --- Model catalog: fold the availableModels attrset (+ the deprecated
-  # agent.model) into the rich list the agent-host reads as AGENT_MODELS_JSON.
-  enabledModels = lib.filterAttrs (_: m: m.enable) cfg.agent.availableModels;
-  # An explicit default = true wins; else the deprecated agent.model; else the
-  # first enabled model.
-  explicitDefault = lib.findFirst (id: enabledModels.${id}.default) null (lib.attrNames enabledModels);
+  # --- Model catalog: fold availableModels (PROVIDER-FIRST: provider -> model id -> opts) into
+  # the rich list the agent-host reads as AGENT_MODELS_JSON. Model ids are provider-specific
+  # namespaces (Bedrock ids via "goose"; API ids via "claude-code"/"byoc"), so the provider is
+  # the natural OUTER key: a model offered by two providers is listed under both, and each
+  # provider group marks its own default.
+  providerNames = lib.attrNames cfg.agent.availableModels;
+  # id -> the providers offering it.
+  providersOf = id: lib.filter (p: cfg.agent.availableModels.${p} ? ${id}) providerNames;
+  # provider -> its default model id (the entry flagged default, else the group's first).
+  providerDefault = p:
+    let ids = lib.attrNames cfg.agent.availableModels.${p};
+        flagged = lib.findFirst (id: cfg.agent.availableModels.${p}.${id}.default) null ids;
+    in if flagged != null then flagged else if ids != [ ] then lib.head ids else null;
+  providerDefaults = lib.filterAttrs (_: v: v != null)
+    (lib.genAttrs providerNames providerDefault);
+  providerModelIds = lib.unique
+    (lib.concatMap (p: lib.attrNames cfg.agent.availableModels.${p}) providerNames);
+  # The GLOBAL default (provider-less contexts): the goose group's — the cloud floor is what a
+  # provider-less context runs — else the deprecated agent.model, else the first model anywhere.
   defaultModelId =
-    if explicitDefault != null then explicitDefault
+    if providerDefaults ? goose then providerDefaults.goose
     else if cfg.agent.model != null then cfg.agent.model
-    else if enabledModels != { } then lib.head (lib.attrNames enabledModels)
+    else if providerModelIds != [ ] then lib.head providerModelIds
     else null;
-  # The offered set: the enabled attrset ids, plus the deprecated agent.model if it
-  # isn't already present (back-compat).
   modelIds = lib.unique (
-    (lib.attrNames enabledModels)
-    ++ lib.optional (cfg.agent.model != null && !(enabledModels ? ${cfg.agent.model})) cfg.agent.model
+    providerModelIds
+    ++ lib.optional (cfg.agent.model != null && !(lib.elem cfg.agent.model providerModelIds)) cfg.agent.model
   );
+  # A model's hint: the first provider group defining one.
+  hintOf = id:
+    let hints = lib.filter (h: h != "")
+      (map (p: cfg.agent.availableModels.${p}.${id}.hint or "") (providersOf id));
+    in if hints != [ ] then lib.head hints else "";
   modelsJson = builtins.toJSON (map (id: {
     inherit id;
-    hint = enabledModels.${id}.hint or "";
+    hint = hintOf id;
     default = id == defaultModelId;
-    providers = enabledModels.${id}.providers or [ ];
+    # A model from the deprecated flat `agent.model` has no tags = every provider.
+    providers = providersOf id;
+    # The providers this model is THE default for — the runtime's per-provider default.
+    defaultFor = lib.filter (p: providerDefaults.${p} == id) (lib.attrNames providerDefaults);
   }) modelIds);
   hasModels = modelIds != [ ];
 in
@@ -274,31 +293,14 @@ in
           Bedrock, the cross-region inference-profile id.
         '';
       };
+
       availableModels = mkOption {
-        type = types.attrsOf (types.submodule ({ name, ... }: {
+        type = types.attrsOf (types.attrsOf (types.submodule {
           options = {
-            enable = mkOption {
-              type = types.bool;
-              default = true;
-              description = "Offer this model for selection.";
-            };
             default = mkOption {
               type = types.bool;
               default = false;
-              description = "Mark this as the default model (exactly one should be true).";
-            };
-            providers = mkOption {
-              type = types.listOf types.str;
-              default = [ ];
-              example = literalExpression ''[ "byoc" "claude-code" ]'';
-              description = ''
-                Which providers OFFER this model. Model ids are provider-specific
-                namespaces — "goose" runs Bedrock ids (us.anthropic.…),
-                "claude-code" (the in-cluster subscription SDK) and "byoc" (the
-                user's own container) run API ids (claude-sonnet-4-5). A run only
-                receives a model its provider can serve; empty = offered on every
-                provider (the pre-provider behaviour).
-              '';
+              description = "This provider's default model (at most one per provider; else the group's first entry).";
             };
             hint = mkOption {
               type = types.str;
@@ -315,23 +317,28 @@ in
         default = { };
         example = literalExpression ''
           {
-            "us.anthropic.claude-sonnet-4-6" = { default = true; hint = "Fast + cheap — simple edits/CI fixes."; };
-            "us.anthropic.claude-opus-4-8" = { hint = "Slow + powerful — architecture, hard debugging."; };
+            goose = {
+              "us.anthropic.claude-sonnet-4-6" = { default = true; hint = "Fast + cheap."; };
+              "us.anthropic.claude-opus-4-8" = { hint = "Slow + powerful."; };
+            };
+            byoc."claude-sonnet-4-5" = { default = true; hint = "The user's own subscription."; };
+            claude-code."claude-sonnet-4-5" = { default = true; };
           }
         '';
         description = ''
-          The models a conversation may run on, each with an optional `hint`
-          (surfaced by the list_models MCP tool so the agent can pick well), a
-          `default` flag (exactly one), and an optional `providers` list naming
-          which providers offer it. Model ids are PROVIDER-SPECIFIC namespaces:
-          Bedrock ids (us.anthropic.…) belong to `providers = [ "goose" ]`, API
-          ids (claude-sonnet-4-5) to `"claude-code"` (the in-cluster subscription
-          SDK) and/or `"byoc"` (the user's own container). A run only ever gets a
-          model its provider can serve — the conversation's choice when offered,
-          else that provider's default. Empty providers = offered everywhere.
-          The agent switches its own model via switch_model; the UI/management
-          API can also override per-conversation. Rendered to the agent-host as
-          AGENT_MODELS_JSON. Empty = only the default.
+          The model catalog, PROVIDER-FIRST: provider -> model id -> options.
+          Model ids are provider-specific namespaces — "goose" runs Bedrock ids
+          (us.anthropic.…) while "claude-code" (the in-cluster subscription SDK)
+          and "byoc" (the user's own container) run API ids (claude-sonnet-4-5) —
+          so the provider is the outer key: a model two providers offer is simply
+          listed under both, and each provider group marks its own `default`. A
+          run only ever receives a model its provider serves — the conversation's
+          choice when that provider offers it, else that provider's default. The
+          global default (provider-less contexts, e.g. the deprecated GOOSE_MODEL)
+          comes from the "goose" group, falling back to the deprecated
+          `agent.model`. The agent switches its own model via switch_model; the
+          UI/management API can also override per-conversation. Rendered to the
+          agent-host as AGENT_MODELS_JSON.
         '';
       };
       region = mkOption {

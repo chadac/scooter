@@ -30,16 +30,22 @@
     agent = {
       name = "Scooter"; # the agent's user-facing identity
       provider = "aws_bedrock";
-      # The models a conversation may run on. `default` marks the fallback; `hint`
-      # guides the agent's own model choice (surfaced by the list_models MCP tool).
+      # The model catalog, PROVIDER-FIRST: provider -> model id -> options. Model ids are
+      # provider-specific namespaces (Bedrock ids under "goose"; API ids under "claude-code" /
+      # "byoc"), so the provider is the outer key and each group marks its own `default`.
+      # `hint` guides the agent's own model choice (surfaced by the list_models MCP tool).
       availableModels = {
-        "us.anthropic.claude-sonnet-4-6" = {
-          default = true;
-          hint = "Fast + cheap. Use for simple edits, config/CI fixes, straightforward PRs.";
+        goose = {
+          "us.anthropic.claude-sonnet-4-6" = {
+            default = true;
+            hint = "Fast + cheap. Use for simple edits, config/CI fixes, straightforward PRs.";
+          };
+          "us.anthropic.claude-opus-4-8" = {
+            hint = "Slow + powerful. Escalate for architecture, novel implementations, hard debugging.";
+          };
         };
-        "us.anthropic.claude-opus-4-8" = {
-          hint = "Slow + powerful. Escalate for architecture, novel implementations, hard debugging.";
-        };
+        # The user's own container runs API ids, never Bedrock ids.
+        byoc."claude-sonnet-4-5" = { default = true; hint = "The user's own subscription."; };
       };
       region = "us-east-1";
 

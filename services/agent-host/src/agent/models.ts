@@ -23,6 +23,9 @@ export interface ModelInfo {
    *  provider and vice versa — so a run must only be handed models its provider can serve.
    *  Empty = offered on every provider (the pre-provider-dimension behaviour). */
   providers: string[];
+  /** The providers this model is THE default for (each provider group in the kubenix
+   *  catalog marks its own default). */
+  defaultFor: string[];
 }
 
 export interface ModelCatalog {
@@ -40,7 +43,7 @@ export function catalogFromEnv(env: NodeJS.ProcessEnv = process.env): ModelCatal
   if (json && json.trim()) {
     try {
       const parsed = JSON.parse(json) as Array<{
-        id?: unknown; hint?: unknown; default?: unknown; providers?: unknown;
+        id?: unknown; hint?: unknown; default?: unknown; providers?: unknown; defaultFor?: unknown;
       }>;
       const models: ModelInfo[] = [];
       for (const m of Array.isArray(parsed) ? parsed : []) {
@@ -50,6 +53,7 @@ export function catalogFromEnv(env: NodeJS.ProcessEnv = process.env): ModelCatal
           hint: typeof m.hint === "string" ? m.hint : "",
           default: m.default === true,
           providers: Array.isArray(m.providers) ? m.providers.filter((x): x is string => typeof x === "string") : [],
+          defaultFor: Array.isArray(m.defaultFor) ? m.defaultFor.filter((x): x is string => typeof x === "string") : [],
         });
       }
       return withDefault(models);
@@ -64,7 +68,7 @@ export function catalogFromEnv(env: NodeJS.ProcessEnv = process.env): ModelCatal
     .map((s) => s.trim())
     .filter(Boolean);
   if (legacyDefault && !ids.includes(legacyDefault)) ids.unshift(legacyDefault);
-  const models: ModelInfo[] = ids.map((id) => ({ id, hint: "", default: id === legacyDefault, providers: [] }));
+  const models: ModelInfo[] = ids.map((id) => ({ id, hint: "", default: id === legacyDefault, providers: [], defaultFor: [] }));
   return withDefault(models, legacyDefault);
 }
 
@@ -109,9 +113,14 @@ export function modelAllowedFor(catalog: ModelCatalog, id: string, tag: string |
   return m.providers.includes(tag);
 }
 
-/** The model a run on provider `tag` should use absent a valid choice: the global default when
- *  that provider offers it, else the first model the provider does offer. */
+/** The model a run on provider `tag` should use absent a valid choice: the model that
+ *  provider's catalog group marked default, else the global default when the provider offers
+ *  it, else the first model the provider does offer. */
 export function defaultFor(catalog: ModelCatalog, tag: string | undefined): string | undefined {
+  if (tag) {
+    const flagged = catalog.models.find((m) => m.defaultFor.includes(tag));
+    if (flagged) return flagged.id;
+  }
   if (catalog.defaultId && modelAllowedFor(catalog, catalog.defaultId, tag)) return catalog.defaultId;
   return catalog.models.find((m) => modelAllowedFor(catalog, m.id, tag))?.id;
 }
