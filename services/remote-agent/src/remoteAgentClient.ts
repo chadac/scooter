@@ -209,16 +209,27 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
               .slice(0, 80);
             log(`prompt acp-session=${p.sessionId} text="${preview}"`);
             const started = Date.now();
-            // Route to the session's OWN client; the primary serves a session id we never issued
-            // (a cloud side older than per-session clients).
-            const owner = clients.get(p.sessionId)?.sdk ?? sdk;
+            // STRICT: a session id this instance never issued means the container RESTARTED
+            // since the cloud established it (per-session clients die with the process). The
+            // old fallback served such prompts from the blank primary client — no history, no
+            // error, an agent "with no context" (observed live: the session predated the
+            // container's own start time, zero new_session calls in its log). Refusing loudly
+            // lets the cloud drop its cached session, re-establish on THIS instance, and
+            // re-seed the transcript.
+            const owner = clients.get(p.sessionId)?.sdk;
+            if (!owner) {
+              log(`prompt for unknown acp-session=${p.sessionId} — refusing (container restarted since it was created)`);
+              return ack(frame.id, undefined, `unknown session ${p.sessionId} (container restarted)`);
+            }
             const r = await owner.prompt({ sessionId: p.sessionId, prompt: p.prompt as never });
             log(`prompt DONE acp-session=${p.sessionId} stopReason=${(r as { stopReason?: string }).stopReason ?? "?"} in ${Date.now() - started}ms`);
             return ack(frame.id, r);
           }
           case "cancel": {
+            // Cancelling a session this instance never issued is a NO-OP success: whatever ran
+            // there died with the previous container, which is the outcome a cancel wants.
             const sid = (frame.payload as { sessionId: string }).sessionId;
-            await (clients.get(sid)?.sdk ?? sdk).cancel(sid);
+            await clients.get(sid)?.sdk.cancel(sid);
             return ack(frame.id, {});
           }
           case "kill_terminals": {
