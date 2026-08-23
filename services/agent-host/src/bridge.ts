@@ -491,16 +491,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
    *  independent providers (goose mints its own, the SDK its own, a fake both), so two
    *  providers can coincide on an id; provider+session is the true session identity. */
   let currentProviderId = "";
+  /** The established session THIS run resolved to — carries its own historySeeded flag. */
+  let currentReady: { historySeeded: boolean } | undefined;
   let started = false;
-  // Revive history reinjection, PER ACP SESSION. This was a bridge-scoped one-shot flag,
-  // which assumed one session per bridge lifetime — true for goose, false everywhere BYO
+  // Revive history reinjection, PER ESTABLISHED SESSION. This was a bridge-scoped one-shot
+  // flag, which assumed one session per bridge lifetime — true for goose, false everywhere BYO
   // lives: a mid-conversation provider switch, a container restart, or a container that has
   // never seen this conversation each create a NEW session on the same bridge, and the flag
   // being spent left that session's brain BLANK (the reported "restoring a BYOC conversation
-  // doesn't restore it"). The unit that needs seeding is the SESSION: any session's first
-  // prompt in this conversation carries the transcript; a session that saw it never gets it
-  // twice.
-  const injectedSessions = new Set<string>();
+  // doesn't restore it"). The seeded state lives ON each readySessions entry (object identity),
+  // not in a provider:sessionId keyed set: a re-established session after a container restart
+  // can mint a COLLIDING session id, and a keyed set would then skip the seeding exactly when
+  // it matters most.
   // Serialize runs: a bridge has ONE goose session + ONE RunState. A second
   // prompt arriving while a run is in flight (e.g. the webhook POSTs /agui while
   // the agent is mid-run) must QUEUE, not clobber currentRun — otherwise the
@@ -586,7 +588,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // One READY (initialize+newSession+hooks-wired) client per provider id, plus the client serving
   // the CURRENT run. `acpClient`/`acpSessionId` track the ACTIVE run's client so the run loop,
   // cancel(), and the liveness probe operate on it (unchanged shape; now sourced per-run).
-  const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string }>>();
+  const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean }>>();
   let acpClient: AcpClient | undefined;
 
   // Permission/option requests awaiting a user answer. Two kinds:
@@ -1071,9 +1073,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // what lets a BYO container that has never seen the conversation resume it, fed over the
       // same wire as everything else. Strictly prior turns (thisTurnIds excluded).
       let historyPreamble = "";
-      const sessionKey = `${currentProviderId}:${acpSessionId ?? ""}`;
-      if (deps.loadHistory && acpSessionId && !injectedSessions.has(sessionKey)) {
-        injectedSessions.add(sessionKey);
+      if (deps.loadHistory && currentReady && !currentReady.historySeeded) {
+        currentReady.historySeeded = true;
         try {
           const events = await deps.loadHistory();
           historyPreamble = buildHistoryPreamble(
@@ -1165,6 +1166,17 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           const raw = err instanceof Error ? err.message : String(err);
           emit({ type: "RUN_ERROR", message: clarifyRunError(raw) });
           st.retryable = true; // the ACP call threw (init/session/stream) — transient; pump retries
+          // A DEAD REMOTE SESSION (the BYO container restarted; its per-session clients are
+          // gone) is not transient for the CACHED session — every retry through it fails
+          // identically, and before the container refused unknown sessions it silently served
+          // them from a blank client (the "agent has no context" amnesia). Drop this
+          // provider's cached ready-session so the pump's next attempt re-initializes on the
+          // CURRENT container instance — and, because that mints a new session key, the
+          // history reinjection fires again.
+          if (/unknown session/i.test(raw) && currentProviderId) {
+            debug("[bridge] remote session invalid (%s) — dropping cached session for %s", raw, currentProviderId);
+            readySessions.delete(currentProviderId);
+          }
         }
       }
     } finally {
@@ -1320,7 +1332,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Lazily ready ONE client per provider: initialize → newSession → wire the update/terminal/
   // permission hooks ONCE (the same lifecycle the old single-client start() ran). Cached by
   // provider id; a failed init drops the cache entry so the next run retries.
-  const readyProvider = (provider: AcpProvider): Promise<{ client: AcpClient; acpSessionId: string }> => {
+  const readyProvider = (provider: AcpProvider): Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean }> => {
     let ready = readySessions.get(provider.id);
     if (ready) return ready;
     ready = (async () => {
@@ -1391,7 +1403,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         }
         return optionId ? { optionId } : { cancelled: true as const };
       });
-      return { client, acpSessionId: sid };
+      return { client, acpSessionId: sid, historySeeded: false };
     })();
     readySessions.set(provider.id, ready);
     ready.catch(() => readySessions.delete(provider.id));
@@ -1411,6 +1423,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     acpClient = ready.client;
     acpSessionId = ready.acpSessionId;
     currentProviderId = provider.id;
+    currentReady = ready;
   };
 
   const self: SessionBridge = {
