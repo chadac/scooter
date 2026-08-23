@@ -87,7 +87,7 @@ export interface FsWritePayload {
 // server-push server would otherwise force a redesign. `open` starts a stream, `chunk` flows
 // BOTH ways, `close` ends it — always with a reason on failure, because a tunnel that goes
 // quiet leaves the agent with tools that HANG.
-export type TunnelType = "open" | "chunk" | "close";
+export type TunnelType = "open" | "chunk" | "end" | "close";
 
 /** container -> cloud: start a stream to a named target. */
 export interface TunnelOpenPayload {
@@ -98,6 +98,11 @@ export interface TunnelOpenPayload {
   path: string;
   headers: Record<string, string>;
 }
+
+/** container -> cloud: the REQUEST body is complete (the response may still stream back).
+ *  A distinct type rather than a flag on close: `close` ends the whole stream, and conflating
+ *  "I finished sending" with "we are done" would cut off every response. */
+export type TunnelEndPayload = Record<string, never>;
 
 /** Either direction: a body chunk, base64 for binary safety. */
 export interface TunnelChunkPayload {

@@ -15,9 +15,11 @@
  *
  * STREAMING, NOT BUFFERING: MCP StreamableHTTP streams responses, so chunks are written to the
  * HTTP response as they arrive rather than accumulated.
- *
- * Design stage: SIGNATURES ONLY.
  */
+
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import type { AddressInfo } from "node:net";
 
 import type { WireFrame } from "./protocol.js";
 
@@ -39,29 +41,119 @@ export interface McpProxy {
   close(): Promise<void>;
 }
 
-/**
- * Start a local proxy for one named target. Resolves once it is listening (so the URL is
- * usable immediately).
- *
- * Design stage: SIGNATURE ONLY.
- */
-export async function startMcpProxy(target: string, deps: McpProxyDeps): Promise<McpProxy> {
-  void target;
-  void deps;
-  throw new Error("not implemented (design stage)");
+/** One in-flight request: the HTTP response it must be written back to. */
+interface Stream {
+  res: ServerResponse;
+  headersSent: boolean;
 }
 
-/**
- * Start one proxy per offered server and return the SDK-ready mcpServers list (names kept,
- * urls replaced with the local ones).
- *
- * Design stage: SIGNATURE ONLY.
- */
+const readBody = (req: IncomingMessage): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    const parts: Buffer[] = [];
+    req.on("data", (c: Buffer) => parts.push(c));
+    req.on("end", () => resolve(Buffer.concat(parts)));
+    req.on("error", reject);
+  });
+
+export async function startMcpProxy(target: string, deps: McpProxyDeps): Promise<McpProxy> {
+  const streams = new Map<string, Stream>();
+
+  /** Write the cloud's status/headers once, on whichever frame carries them first. */
+  const ensureHead = (s: Stream, payload: { status?: number; headers?: Record<string, string> }) => {
+    if (s.headersSent) return;
+    s.headersSent = true;
+    s.res.writeHead(payload.status ?? 200, payload.headers ?? { "content-type": "application/json" });
+  };
+
+  const unsubscribe = deps.onFrame((frame) => {
+    if (frame.ch !== "tunnel" || !frame.id) return;
+    const s = streams.get(frame.id);
+    if (!s) return;
+    const payload = (frame.payload ?? {}) as {
+      data?: string;
+      error?: string;
+      status?: number;
+      headers?: Record<string, string>;
+    };
+    if (frame.type === "chunk") {
+      ensureHead(s, payload);
+      if (payload.data) s.res.write(Buffer.from(payload.data, "base64"));
+      return;
+    }
+    if (frame.type === "close") {
+      streams.delete(frame.id);
+      if (payload.error) {
+        // FAIL LOUD. A dropped tunnel must surface as a tool ERROR the agent can react to,
+        // never an unanswered call it waits on forever.
+        if (!s.headersSent) {
+          s.headersSent = true;
+          s.res.writeHead(502, { "content-type": "text/plain" });
+        }
+        s.res.end(payload.error);
+        return;
+      }
+      ensureHead(s, payload);
+      s.res.end();
+    }
+  });
+
+  const server: Server = createServer((req, res) => {
+    void (async () => {
+      const id = randomUUID();
+      streams.set(id, { res, headersSent: false });
+      // If the SDK gives up first, stop tracking (its socket is gone).
+      res.on("close", () => streams.delete(id));
+      const body = await readBody(req).catch(() => Buffer.alloc(0));
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (typeof v === "string") headers[k] = v;
+      }
+      const sid = deps.sessionId;
+      deps.send({
+        ch: "tunnel",
+        type: "open",
+        id,
+        ...(sid ? { sid } : {}),
+        payload: { target, method: req.method ?? "GET", path: req.url ?? "/", headers },
+      });
+      if (body.length) {
+        deps.send({ ch: "tunnel", type: "chunk", id, payload: { data: body.toString("base64") } });
+      }
+      // Signal the REQUEST is complete. Not `close` — that would end the whole stream before
+      // the response could come back; the cloud replies with chunks and its own close.
+      deps.send({ ch: "tunnel", type: "end", id, payload: {} });
+    })();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+
+  return {
+    target,
+    url: `http://127.0.0.1:${port}/`,
+    async close() {
+      unsubscribe();
+      // Fail anything in flight rather than leaving the SDK pending on a dead proxy.
+      for (const [id, s] of streams) {
+        streams.delete(id);
+        if (!s.headersSent) s.res.writeHead(502, { "content-type": "text/plain" });
+        s.res.end("mcp tunnel closed");
+      }
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 export async function startMcpProxies(
   offered: Array<{ name: string; url?: string }>,
   deps: McpProxyDeps,
 ): Promise<{ servers: Array<{ type: "http"; name: string; url: string; headers: string[] }>; close: () => Promise<void> }> {
-  void offered;
-  void deps;
-  throw new Error("not implemented (design stage)");
+  const proxies = await Promise.all(offered.map((o) => startMcpProxy(o.name, deps)));
+  return {
+    // The SDK gets ordinary local URLs; the NAME is what travels over the wire.
+    servers: proxies.map((p) => ({ type: "http" as const, name: p.target, url: p.url, headers: [] })),
+    close: async () => {
+      await Promise.all(proxies.map((p) => p.close().catch(() => undefined)));
+    },
+  };
 }
