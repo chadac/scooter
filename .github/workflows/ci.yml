@@ -403,14 +403,20 @@ jobs:
           nix shell nixpkgs#k3d -c k3d cluster create scooter-example \
             --agents 0 --wait --timeout 180s
 
-      # The example renders its OWN CRDs (Conversation) — apply those for real first, so their
-      # instances validate against a registered schema rather than failing as an unknown kind.
-      - name: install the rendered CRDs
+      # A dry-run validates against CURRENT cluster state, so anything the manifests' own
+      # resources depend on must exist for real first:
+      #   - the NAMESPACE every namespaced resource targets (the render creates it, but in a
+      #     single dry-run pass it does not exist yet -> "namespaces not found" for all 50+);
+      #   - the CRDs whose instances are in the same file (else they fail as unknown kinds).
+      # These two applies are the only non-dry-run writes; everything else stays a dry-run.
+      - name: install the rendered namespace + CRDs
         run: |
           set -euo pipefail
           nix shell nixpkgs#yq-go nixpkgs#kubectl -c bash -c '
-            yq eval-all "select(.kind == \"CustomResourceDefinition\")" example.yaml > crds.yaml
-            if [ -s crds.yaml ]; then kubectl apply --server-side -f crds.yaml; fi
+            yq eval-all "select(.kind == \"Namespace\" or .kind == \"CustomResourceDefinition\")" \
+              example.yaml > prereqs.yaml
+            if [ -s prereqs.yaml ]; then kubectl apply --server-side -f prereqs.yaml; fi
+            kubectl get ns
           '
 
       - name: validate against the apiserver (server-side dry-run)
