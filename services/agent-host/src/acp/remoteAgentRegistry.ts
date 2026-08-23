@@ -10,7 +10,7 @@ import type { AcpProvider, RunContext } from "./provider.js";
 import { createRemoteAcpClient } from "./remoteAcpClient.js";
 import { createByocTransport } from "./byocTransport.js";
 import { offeredTunnelServers } from "./tunnelTargets.js";
-import { createTunnelService } from "./tunnelService.js";
+import { startTunnelClient } from "./tunnelClient.js";
 import type { RemoteTransport } from "./remoteProtocol.js";
 
 /**
@@ -177,21 +177,33 @@ export function createRemotePersonalizedProvider(deps: {
       // The pod holds NO socket. Every frame is an HTTP call to the controller, which owns the one
       // duplex WS to the container — so any replica can drive it and a rollout cannot strand a run.
       const transport = createByocTransport({ baseUrl: base, sessionId, fetchImpl: deps.fetchImpl });
-      return createRemoteAcpClient({
-        transport,
-        exec: deps.exec,
-        // Serve the container's MCP streams. The conversation is passed SERVER-SIDE: it scopes
-        // every target this container can resolve, and is never read from its frames.
-        conversationId: ctx.conversationId,
-        tunnel: deps.mcpUrlFor
-          ? createTunnelService({
-              mcpUrlFor: deps.mcpUrlFor,
-              fetchImpl: deps.fetchImpl,
-              // Responses go back down the SAME transport the container opened the stream on.
-              send: (frame) => transport.send(frame),
-            })
-          : undefined,
-      });
+      // MCP over the tunnel needs an INBOUND channel: this transport is HTTP/SSE per prompt, so
+      // a stream the CONTAINER opens has no way back here. Hold the controller's dedicated
+      // inbound stream open for as long as this client lives. Only when scooter-env is actually
+      // offered — no offer means no streams to serve.
+      const tunnelClient = deps.mcpUrlFor
+        ? startTunnelClient({
+            // The controller root, NOT the per-session base — startTunnelClient builds its own
+            // /byoc/:id/tunnel path (deriving it by stripping the session off `base` would
+            // break the moment that shape changes).
+            baseUrl: deps.controllerUrl,
+            sessionId,
+            // SERVER-SIDE scope for every target this container can resolve; never read from
+            // a container-supplied frame.
+            conversationId: ctx.conversationId ?? "",
+            mcpUrlFor: deps.mcpUrlFor,
+            fetchImpl: deps.fetchImpl,
+          })
+        : undefined;
+      const client = createRemoteAcpClient({ transport, exec: deps.exec });
+      // Tear the inbound stream down with the client, or a dead session keeps a reader (and
+      // its reconnect loop) alive forever.
+      const origClose = client.close?.bind(client);
+      client.close = async () => {
+        tunnelClient?.close();
+        await origClose?.();
+      };
+      return client;
     },
   };
 }

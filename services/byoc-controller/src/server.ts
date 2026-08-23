@@ -90,6 +90,44 @@ export function createServer(config: ByocServerConfig): ByocServer {
   // diagnostic surface (like the socket itself), not durable state; a controller restart
   // clearing it is fine — the container will either connect or fail again within minutes.
   const authFailures = new Map<string, { reason: string; at: string }>();
+  // sessionId -> the waiting readers of that session's inbound tunnel stream. One subscription
+  // to the relay feeds them all, so a reconnecting agent-host does not stack listeners.
+  const tunnelReaders = new Map<string, Set<(f: WireFrame | null) => void>>();
+  const tunnelQueues = new Map<string, WireFrame[]>();
+  relay.onTunnelFrame((sessionId, frame) => {
+    const waiting = tunnelReaders.get(sessionId);
+    const waiter = waiting && waiting.size ? [...waiting][0] : undefined;
+    if (waiter) {
+      waiting!.delete(waiter);
+      waiter(frame);
+      return;
+    }
+    // No reader attached yet (the agent-host is mid-reconnect): queue rather than drop, or the
+    // container's MCP call hangs waiting for a response nobody will produce.
+    const q = tunnelQueues.get(sessionId) ?? [];
+    q.push(frame);
+    tunnelQueues.set(sessionId, q);
+  });
+
+  /** One session's inbound tunnel frames, as an async iterable the shell serves as SSE. */
+  const tunnelStream = (sessionId: string): AsyncIterable<WireFrame> => ({
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        const q = tunnelQueues.get(sessionId);
+        if (q && q.length) {
+          yield q.shift()!;
+          continue;
+        }
+        const frame = await new Promise<WireFrame | null>((resolve) => {
+          const set = tunnelReaders.get(sessionId) ?? new Set();
+          set.add(resolve);
+          tunnelReaders.set(sessionId, set);
+        });
+        if (frame === null) return;
+        yield frame;
+      }
+    },
+  });
 
   return {
     async handle(req) {
@@ -168,6 +206,21 @@ export function createServer(config: ByocServerConfig): ByocServer {
         };
       }
 
+      // GET /byoc/:id/tunnel — the agent-host's INBOUND stream for container-initiated frames
+      // (MCP over the wire). The agent-host otherwise reaches this controller over HTTP/SSE PER
+      // PROMPT, so it has no channel for a stream the CONTAINER opens: exec frames only work
+      // because they arrive during a prompt, and tunnel frames are deliberately kept out of run
+      // streams (a run's stream is the conversation's transcript). This is that channel — one
+      // long-lived SSE per session, replies go back via POST /byoc/:id/tunnel/:streamId.
+      if (req.method === "GET" && parts.length === 3 && parts[2] === "tunnel") {
+        const sessionId = parts[1];
+        if (!registry.resolveBySession(sessionId)) {
+          // A dead stream would leave the agent-host waiting on frames that can never arrive.
+          return { status: 404, json: { error: "unknown session" } };
+        }
+        return { status: 200, stream: tunnelStream(sessionId) };
+      }
+
       // Everything below is /byoc/:id/<verb>[/:subid].
       if (parts.length >= 3) {
         const sessionId = parts[1];
@@ -207,6 +260,14 @@ export function createServer(config: ByocServerConfig): ByocServer {
           return res.ok ? { status: 204 } : { status: 409, json: { error: res.reason } };
         }
 
+        // POST /byoc/:id/tunnel/:streamId — the agent-host's REPLY into a container-opened
+        // tunnel stream (a response chunk, or the close that ends it).
+        if (req.method === "POST" && verb === "tunnel" && parts.length === 4) {
+          const streamId = parts[3];
+          const r = relay.answerTunnel(sessionId, streamId, req.body as WireFrame);
+          if (!r.ok) return { status: 409, json: { error: r.reason } };
+          return { status: 200, json: { ok: true } };
+        }
         if (req.method === "POST" && verb === "exec" && parts.length === 4) {
           const payload = (req.body as { payload?: unknown })?.payload ?? req.body;
           const res = relay.answerExec(sessionId, parts[3], (payload ?? {}) as never);

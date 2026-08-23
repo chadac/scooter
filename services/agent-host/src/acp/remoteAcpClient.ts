@@ -25,12 +25,6 @@ import {
 } from "./remoteProtocol.js";
 
 export interface RemoteAcpClientDeps {
-  /** Serves TUNNEL streams (MCP over the wire). Absent = tunnel frames are ignored, which is
-   *  correct for any path that does not offer tunnelled MCP servers. */
-  tunnel?: { onFrame(conversationId: string, frame: WireFrame): Promise<void> };
-  /** The conversation this client drives — the SERVER-SIDE scope for tunnel targets. Never
-   *  taken from a container-supplied frame. */
-  conversationId?: string;
   /** The duplex frame transport to the container (a WS in prod, a fake pair in tests). */
   transport: RemoteTransport;
   /** The CLOUD sandbox ExecBackend — services the agent's tool calls tunneled over Channel B, so
@@ -118,10 +112,9 @@ export function createRemoteAcpClient(deps: RemoteAcpClientDeps): AcpClient {
     }
     // Channel B: the agent's tool calls, served on the CLOUD ExecBackend.
     if (frame.ch === "exec" && frame.id) void serveExec(frame);
-    // TUNNEL (MCP over the wire): the container opened a stream to a named target. Serving it
-    // HERE keeps it off the ACP path entirely — it is not a run, produces no transcript, and
-    // must never terminate one.
-    if (frame.ch === "tunnel" && frame.id) void deps.tunnel?.onFrame(deps.conversationId ?? "", frame);
+    // TUNNEL frames never arrive here: this transport is HTTP/SSE PER PROMPT, and a stream the
+    // container opens has no prompt to ride. They come in on the controller's dedicated
+    // inbound stream instead (tunnelClient.ts) — the gap the live test found.
   });
 
   // Permission answers go back on the ACP channel (they answer a permission_request `id`).

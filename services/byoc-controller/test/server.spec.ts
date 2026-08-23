@@ -356,3 +356,78 @@ describe("prompt route round-trips the caller's frame id", () => {
     server.close();
   });
 });
+
+// --- the INBOUND tunnel stream (GET /byoc/:id/tunnel) ----------------------------------------
+//
+// The gap the live test found: the agent-host reaches the controller over HTTP/SSE PER PROMPT,
+// so it has no inbound channel for frames a CONTAINER initiates. Exec works only because those
+// frames arrive during a prompt. A tunnel stream opens whenever the SDK calls MCP, and tunnel
+// frames are deliberately kept OUT of run streams (a run's stream is the transcript) — which
+// left them with nowhere to go. This is that channel.
+
+describe("GET /byoc/:id/tunnel — the agent-host's inbound stream", () => {
+  it("streams CONTAINER-initiated tunnel frames to the agent-host", async () => {
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    const relay = createRunRelay({ registry });
+    const server = createServer({ registry, relay, secret: SECRET });
+    const { sessionId, token } = await registry.mint("alice");
+    registry.attach(sessionId, token, { send: () => {}, close: () => {} });
+
+    const res = await server.handle({
+      method: "GET", path: `/byoc/${sessionId}/tunnel`, user: { id: "alice" },
+    } as never);
+    expect(res.status).toBe(200);
+
+    const frames: Array<{ type?: string; id?: string }> = [];
+    const reader = (async () => {
+      for await (const f of (res as { stream: AsyncIterable<{ type?: string; id?: string }> }).stream) {
+        frames.push(f);
+        if (frames.length >= 1) break;
+      }
+    })();
+
+    // The container opens an MCP stream.
+    relay.onContainerFrame(sessionId, JSON.stringify({
+      ch: "tunnel", type: "open", id: "s1", payload: { target: "scooter-env" },
+    }));
+    await reader;
+
+    expect(frames[0]?.type).toBe("open");
+    expect(frames[0]?.id).toBe("s1");
+    server.close();
+  });
+
+  it("does NOT deliver another session's frames", async () => {
+    // Same isolation the run path has: a subscriber for session A must never see B's traffic.
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    const relay = createRunRelay({ registry });
+    const server = createServer({ registry, relay, secret: SECRET });
+    const a = await registry.mint("alice");
+    registry.attach(a.sessionId, a.token, { send: () => {}, close: () => {} });
+    const b = await registry.mint("bob");
+    registry.attach(b.sessionId, b.token, { send: () => {}, close: () => {} });
+
+    const res = await server.handle({ method: "GET", path: `/byoc/${a.sessionId}/tunnel`, user: { id: "alice" } } as never);
+    const seen: unknown[] = [];
+    const reader = (async () => {
+      for await (const f of (res as { stream: AsyncIterable<unknown> }).stream) {
+        seen.push(f);
+        break;
+      }
+    })();
+    // B's frame must not wake A's stream; A's own frame must.
+    relay.onContainerFrame(b.sessionId, JSON.stringify({ ch: "tunnel", type: "open", id: "b1", payload: {} }));
+    relay.onContainerFrame(a.sessionId, JSON.stringify({ ch: "tunnel", type: "open", id: "a1", payload: {} }));
+    await reader;
+    expect((seen[0] as { id?: string }).id).toBe("a1");
+    server.close();
+  });
+
+  it("404s for an unknown session rather than opening a dead stream", async () => {
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    const server = createServer({ registry, relay: createRunRelay({ registry }), secret: SECRET });
+    const res = await server.handle({ method: "GET", path: "/byoc/nope/tunnel", user: { id: "alice" } } as never);
+    expect(res.status).toBe(404);
+    server.close();
+  });
+});
