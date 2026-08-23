@@ -1361,9 +1361,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             ? deps.model
             : defaultFor(deps.modelCatalog, provider.modelTag)
           : deps.model;
+      // A provider that cannot reach the bridge's default MCP endpoint supplies its own set —
+      // the BYO container gets tunnel NAMES it proxies locally, since the default is a
+      // loopback URL only in-cluster agents can reach.
+      const mcpServers = provider.mcpServersFor?.(sessionId) ?? deps.config.mcpServers;
       const { sessionId: sid } = await client.newSession({
         cwd: deps.config.cwd,
-        mcpServers: deps.config.mcpServers,
+        mcpServers,
         model,
       });
       debug("[bridge] readyProvider(%s): newSession -> %s", provider.id, sid);

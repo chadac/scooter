@@ -9,6 +9,8 @@ import type { ExecBackend } from "../types.js";
 import type { AcpProvider, RunContext } from "./provider.js";
 import { createRemoteAcpClient } from "./remoteAcpClient.js";
 import { createByocTransport } from "./byocTransport.js";
+import { offeredTunnelServers } from "./tunnelTargets.js";
+import { createTunnelService } from "./tunnelService.js";
 import type { RemoteTransport } from "./remoteProtocol.js";
 
 /**
@@ -98,6 +100,10 @@ export function createRemotePersonalizedProvider(deps: {
    *  old per-pod `registry` could only answer for sockets THIS pod happened to hold, so on a
    *  multi-replica fleet a run scheduled elsewhere fell silently to the cloud floor. */
   controllerUrl: string;
+  /** The in-process MCP endpoint's URL for a conversation (mcpEndpoint.urlFor). Drives the
+   *  tunnel OFFER: absent = no scooter-env is offered and the container starts no proxy,
+   *  rather than one that dead-ends on every call. */
+  mcpUrlFor?: (conversationId: string) => string;
   /** The CLOUD sandbox ExecBackend for this conversation — the agent's tools tunnel here. */
   exec: ExecBackend;
   /** Priority above the cloud floor. Default 10. */
@@ -116,6 +122,10 @@ export function createRemotePersonalizedProvider(deps: {
     // Catalog models offered on the user's own container tag themselves "byoc" — these are
     // API-style ids (claude-sonnet-4-5), never Bedrock ids.
     modelTag: "byoc",
+    // MCP over the tunnel: offer NAMES the container proxies locally. The bridge's default is
+    // the agent-host's own loopback URL, which a laptop cannot reach — that is why a BYO agent
+    // had no scooter-env at all.
+    mcpServersFor: (conversationId: string) => offeredTunnelServers(conversationId, { mcpUrlFor: deps.mcpUrlFor }),
     kind: "claude",
     priority: deps.priority ?? 10,
     async eligible(ctx: RunContext): Promise<boolean> {
@@ -166,9 +176,21 @@ export function createRemotePersonalizedProvider(deps: {
       }
       // The pod holds NO socket. Every frame is an HTTP call to the controller, which owns the one
       // duplex WS to the container — so any replica can drive it and a rollout cannot strand a run.
+      const transport = createByocTransport({ baseUrl: base, sessionId, fetchImpl: deps.fetchImpl });
       return createRemoteAcpClient({
-        transport: createByocTransport({ baseUrl: base, sessionId, fetchImpl: deps.fetchImpl }),
+        transport,
         exec: deps.exec,
+        // Serve the container's MCP streams. The conversation is passed SERVER-SIDE: it scopes
+        // every target this container can resolve, and is never read from its frames.
+        conversationId: ctx.conversationId,
+        tunnel: deps.mcpUrlFor
+          ? createTunnelService({
+              mcpUrlFor: deps.mcpUrlFor,
+              fetchImpl: deps.fetchImpl,
+              // Responses go back down the SAME transport the container opened the stream on.
+              send: (frame) => transport.send(frame),
+            })
+          : undefined,
       });
     },
   };

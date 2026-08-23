@@ -305,3 +305,61 @@ describe("concurrent runs on one container session", () => {
     expect(b.some((f) => f.type === "permission_request"), "B must not see A's approval prompt").toBe(false);
   });
 });
+
+// --- Channel C: TUNNEL forwarding (MCP over the wire) ---------------------------------------
+
+describe("tunnel frame forwarding", () => {
+  let registry: SessionRegistry;
+  let relay: RunRelay;
+  let container: ReturnType<typeof fakeContainer>;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    relay = createRunRelay({ registry });
+    const minted = await registry.mint("alice");
+    sessionId = minted.sessionId;
+    container = fakeContainer();
+    container.bind((raw) => relay.onContainerFrame(sessionId, raw));
+    registry.attach(sessionId, minted.token, { send: container.send.bind(container), close: () => {} });
+  });
+
+  it("forwards a cloud tunnel frame DOWN to the container", async () => {
+    const r = relay.answerTunnel(sessionId, "s1", {
+      ch: "tunnel", type: "chunk", id: "s1", payload: { data: "aGk=" },
+    });
+    expect(r.ok).toBe(true);
+    expect(container.sent.at(-1)).toMatchObject({ ch: "tunnel", type: "chunk", id: "s1" });
+  });
+
+  it("a tunnel stream is NOT a run — it never terminates one", async () => {
+    // The critical separation: tunnel frames share the socket with ACP runs. If a tunnel close
+    // were routed through the run bookkeeping it would end the user's actual turn.
+    const stream = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [] } as never), 2);
+    relay.answerTunnel(sessionId, "s1", { ch: "tunnel", type: "close", id: "s1", payload: {} });
+    // The run is still live: only its own ack ends it.
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: {} } });
+    const frames = await stream;
+    expect(frames.some((f) => f.ch === "tunnel"), "a tunnel frame must not leak into a run's stream").toBe(false);
+    expect(frames.at(-1)?.type).toBe("ack");
+  });
+
+  it("an OFFLINE container fails the send instead of silently dropping it", async () => {
+    registry.detach(sessionId);
+    const r = relay.answerTunnel(sessionId, "s1", { ch: "tunnel", type: "chunk", id: "s1", payload: {} });
+    expect(r.ok).toBe(false);
+  });
+
+  it("container->cloud tunnel frames are exposed to the agent-host, not routed as run output", async () => {
+    // The agent-host subscribes to these to serve MCP; they must NOT be pushed into a run's
+    // SSE stream (that stream is the conversation's transcript).
+    const seen: Array<{ id?: string; type: string }> = [];
+    relay.onTunnelFrame?.((sid, frame) => { if (sid === sessionId) seen.push({ id: frame.id, type: frame.type }); });
+    const stream = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [] } as never), 2);
+    container.push({ ch: "tunnel", type: "open", id: "t1", sid: "acp-A", payload: { target: "scooter-env" } });
+    container.push({ ch: "acp", type: "ack", id: container.idOf(0), payload: { result: {} } });
+    const frames = await stream;
+    expect(seen.map((s) => s.type)).toContain("open");
+    expect(frames.some((f) => f.ch === "tunnel")).toBe(false);
+  });
+});

@@ -16,6 +16,7 @@ import { parsePermissionAnswer } from "./permissionAnswer.js";
 import { nextReconnectDelay, closeDisposition } from "./reconnect.js";
 import { loadDeviceIdentity, signChallenge } from "./deviceKey.js";
 import { createTunnelExecBackend } from "./tunnelExec.js";
+import { startMcpProxies } from "./mcpProxy.js";
 
 export interface RemoteAgentClientDeps {
   /** wss URL (…/remote-agent/connect). */
@@ -102,7 +103,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
      *  and two conversations would each execute the other's tool calls in the wrong sandbox.
      *  The stamp is a mutable box because the session id only exists AFTER newSession returns;
      *  nothing tool-shaped flows before that. */
-    const buildClient = async (model?: string) => {
+    const buildClient = async (model?: string, mcpServers?: Array<{ name?: string }>) => {
       const stamp: { sid?: string } = {};
       const stampedSend = (f: WireFrame) => send(stamp.sid ? { ...f, sid: stamp.sid } : f);
       const exec = createTunnelExecBackend({
@@ -112,8 +113,25 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           return () => frameCbs.delete(cb);
         },
       });
+      // MCP OVER THE TUNNEL. scooter-env (and any future server) lives on the AGENT-HOST's
+      // loopback, which this laptop cannot reach — so start a local proxy per offered server
+      // and hand the SDK ordinary http://127.0.0.1:<port>/ URLs. Without this a BYO agent has
+      // sandbox tools only: no background jobs, model switch, scheduler, or resize.
+      const offered = (mcpServers ?? []).filter((m): m is { name: string } => typeof m?.name === "string");
+      const mcp = offered.length
+        ? await startMcpProxies(offered, {
+            send: stampedSend,
+            onFrame: (cb) => {
+              frameCbs.add(cb);
+              return () => frameCbs.delete(cb);
+            },
+            sessionId: undefined, // set below once newSession returns (stamp.sid)
+          })
+        : undefined;
+      if (mcp) log(`MCP: ${mcp.servers.map((s) => s.name).join(", ")} proxied over the tunnel`);
       const sdk = await createSdkAcpClient({
         oauthToken: deps.oauthToken,
+        mcpServers: mcp?.servers.map((m) => ({ name: m.name, url: m.url })),
         // Per-session model, sent by the cloud in new_session (the bridge resolves it against
         // the catalog's "byoc"-tagged models, so a Bedrock id never reaches us). Fallbacks:
         // the container's --model flag, then a sane default.
@@ -135,7 +153,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           send({ ch: "acp", type: "permission_request", id, sid: req.sessionId, payload: { request: req } });
         });
       });
-      return { sdk, stamp };
+      return { sdk, stamp, closeMcp: mcp?.close };
     };
 
     // The PRIMARY client answers `initialize` (which precedes any session) and serves legacy
@@ -143,7 +161,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     // isolated brains and attributable tool calls.
     const primary = await buildClient();
     const sdk = primary.sdk;
-    const clients = new Map<string, { sdk: typeof primary.sdk; stamp: { sid?: string } }>();
+    const clients = new Map<string, { sdk: typeof primary.sdk; stamp: { sid?: string }; closeMcp?: () => Promise<void> }>();
 
     ws.on("open", () => {
       void (async () => {
@@ -189,7 +207,8 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           case "new_session": {
             // ONE CLIENT PER SESSION (see buildClient): the returned session id becomes both the
             // routing key for later prompts and the sid stamped on this client's tool frames.
-            const client = await buildClient((frame.payload as { params?: { model?: string } })?.params?.model);
+            const params = (frame.payload as { params?: { model?: string; mcpServers?: Array<{ name?: string }> } })?.params;
+            const client = await buildClient(params?.model, params?.mcpServers);
             const r = await client.sdk.newSession((frame.payload as { params: never }).params);
             const sid = (r as { sessionId?: string }).sessionId;
             if (sid) {
@@ -282,7 +301,12 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
         waiter({ cancelled: true });
       }
       void sdk.close().catch(() => {});
-      for (const c of clients.values()) void c.sdk.close().catch(() => {});
+      for (const c of clients.values()) {
+        void c.sdk.close().catch(() => {});
+        // Tear down the session's MCP proxies with it — a stale proxy pointing at a dead
+        // session would hang the SDK instead of failing it.
+        void c.closeMcp?.().catch(() => {});
+      }
       clients.clear();
       if (stopped) {
         resolveClosed();
