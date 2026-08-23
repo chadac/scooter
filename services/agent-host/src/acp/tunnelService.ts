@@ -50,11 +50,15 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
   /** Run the resolved request and stream its response back. */
   const run = async (id: string, p: Pending): Promise<void> => {
     try {
+      // eslint-disable-next-line no-console
+      console.log(`[tunnel] fetch START stream=${id} ${p.method} ${p.url} bodyBytes=${Buffer.concat(p.body).length}`);
       const res = await doFetch(p.url, {
         method: p.method,
         headers: p.headers,
         body: p.body.length ? Buffer.concat(p.body).toString() : undefined,
       });
+      // eslint-disable-next-line no-console
+      console.log(`[tunnel] fetch DONE stream=${id} status=${res.status} hasBody=${!!res.body}`);
       const headers: Record<string, string> = {};
       res.headers?.forEach?.((v, k) => (headers[k] = v));
       let head = { status: res.status, headers };
@@ -78,6 +82,8 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       }
       deps.send({ ch: "tunnel", type: "close", id, payload: {} });
     } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[tunnel] fetch FAILED stream=${id}: ${String(err)}`);
       closeWithError(id, err instanceof Error ? err.message : String(err));
     } finally {
       pending.delete(id);
