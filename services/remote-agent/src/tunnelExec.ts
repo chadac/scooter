@@ -9,31 +9,19 @@ import { randomUUID } from "node:crypto";
 
 import type { WireFrame } from "./protocol.js";
 
-/** Structurally matches @scooter/claude-sdk-provider's ExecBackend (kept local to avoid a build
- *  dep on its internal types; the SDK client only calls these methods). */
-export interface ExecRequest {
-  command: string;
-  args: string[];
-  cwd?: string;
-  env?: Record<string, string>;
-}
-export interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-export interface TerminalHandle {
-  onOutput(cb: (chunk: string) => void): void;
-  waitForExit(): Promise<{ exitCode: number }>;
-  kill(): Promise<void>;
-  id: string;
-}
-export interface ExecBackend {
-  run(req: ExecRequest, signal?: AbortSignal): Promise<ExecResult>;
-  spawn(req: ExecRequest): TerminalHandle;
-  readTextFile(path: string): Promise<string>;
-  writeTextFile(path: string, content: string): Promise<void>;
-}
+// THE REAL CONTRACT, imported — not a local copy. This file used to keep its own structural
+// duplicate "to avoid a build dep" (a dep this package already has for createSdkAcpClient),
+// and the copy DRIFTED: the provider's TerminalHandle grew release(), the copy didn't, an
+// `as never` cast at the wiring site silenced the mismatch, and the first real BYOC tool call
+// died `handle.release is not a function`. A shared type makes that drift a compile error.
+import type {
+  ExecBackend,
+  ExecRequest,
+  ExecResult,
+  TerminalHandle,
+} from "@scooter/claude-sdk-provider";
+
+export type { ExecBackend, ExecRequest, ExecResult, TerminalHandle };
 
 export interface TunnelExecDeps {
   /** Send a Channel-B frame to the cloud. */
@@ -82,9 +70,17 @@ export function createTunnelExecBackend(deps: TunnelExecDeps): ExecBackend {
       });
       return {
         id,
-        onOutput: (cb) => outCbs.add(cb),
+        onOutput: (cb) => {
+          outCbs.add(cb);
+        },
         waitForExit: () => done,
         kill: async () => {},
+        // One-shot adapter: the remote run has no held resource; releasing just drops the
+        // output listeners. Required by the contract — the bash tool calls it after every
+        // command (spawn -> waitForExit -> release).
+        release: async () => {
+          outCbs.clear();
+        },
       };
     },
     async readTextFile(path) {
