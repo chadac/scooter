@@ -38,19 +38,13 @@ jobs:
       - name: generate the option reference from the modules
         run: |
           nix build .#options-doc -o options-result
-          mkdir -p docs/reference
-          {
-            echo "# Configuration options"
-            echo
-            echo "Every \`agentSandbox.*\` option, generated from the kubenix modules"
-            echo "(\`nix build .#options-doc\`) — this page cannot drift from the code."
-            echo
-            cat options-result
-          } > docs/reference/options.md
+          SCOOTER_OPTIONS_JSON=options-result/share/doc/nixos/options.json \
+            python3 docs/gen_options.py
+          echo "generated $(ls docs/reference/options/*.md | wc -l) option pages"
 
       - name: build the site
         run: |
-          pip install mkdocs-material
+          pip install mkdocs-material mkdocs-awesome-pages-plugin
           mkdocs build --strict
 
       - uses: actions/upload-pages-artifact@v3

@@ -156,13 +156,10 @@ check-npm-hashes:
 ci: check-flake check-manifests check-lockfiles check-npm-hashes lint test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
-# Build + serve the docs site locally (mkdocs + the GENERATED kubenix option reference).
+# Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).
 docs:
     nix build .#options-doc -o /tmp/scooter-options-doc
-    mkdir -p docs/reference
-    { echo "# Configuration options"; echo; \
-      echo "Every \`agentSandbox.*\` option, generated from the kubenix modules"; \
-      echo "(\`nix build .#options-doc\`) — this page cannot drift from the code."; echo; \
-      cat /tmp/scooter-options-doc; } > docs/reference/options.md
-    nix shell --impure --expr 'with import <nixpkgs> {}; python3.withPackages (p: [ p.mkdocs p.mkdocs-material ])' \
+    SCOOTER_OPTIONS_JSON=/tmp/scooter-options-doc/share/doc/nixos/options.json \
+      python3 docs/gen_options.py
+    nix shell --impure --expr 'with import <nixpkgs> {}; python3.withPackages (p: [ p.mkdocs p.mkdocs-material p.mkdocs-awesome-pages-plugin ])' \
       --command mkdocs serve

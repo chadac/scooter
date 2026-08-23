@@ -19,6 +19,7 @@ services/conversation-router/conversation-router
 *.tsbuildinfo
 # uv-nix generated artifacts
 
-# mkdocs: the generated option reference + built site (never committed; CI + `just docs`)
-docs/reference/options.md
+# mkdocs: the GENERATED option reference (one page per namespace, built by
+# docs/gen_options.py from `nix build .#options-doc`) + the built site. Never committed.
+docs/reference/options/
 site/
