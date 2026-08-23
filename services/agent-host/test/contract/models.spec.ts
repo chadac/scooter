@@ -94,3 +94,54 @@ describe("model catalog", () => {
     expect(isOffered(cat, "gpt-4")).toBe(false);
   });
 });
+
+// --- the PROVIDER dimension ------------------------------------------------------------------
+//
+// Model ids are PROVIDER-SPECIFIC namespaces: Bedrock ids (us.anthropic.claude-…) mean nothing
+// to a subscription-backed provider (claude-sonnet-4-5 style), and vice versa. A flat catalog
+// let a conversation pick a model its run's provider cannot serve — and the BYO container just
+// ignored the choice entirely. Each model may declare which providers offer it; empty = all
+// (back-compat, the pre-provider world).
+
+import { modelAllowedFor, defaultFor } from "../../src/agent/models.js";
+
+describe("model catalog: provider dimension", () => {
+  const catalog = catalogFromEnv({
+    AGENT_MODELS_JSON: JSON.stringify([
+      { id: "us.anthropic.claude-sonnet-4-6", default: true, providers: ["goose", "claude-code"] },
+      { id: "us.anthropic.claude-opus-4-8", providers: ["goose"] },
+      { id: "claude-sonnet-4-5", providers: ["byoc"] },
+      { id: "everywhere-model" }, // no providers = offered on every provider
+    ]),
+  } as never);
+
+  it("parses providers from AGENT_MODELS_JSON (absent = [])", () => {
+    expect(catalog.models.find((m) => m.id === "claude-sonnet-4-5")?.providers).toEqual(["byoc"]);
+    expect(catalog.models.find((m) => m.id === "everywhere-model")?.providers).toEqual([]);
+  });
+
+  it("modelAllowedFor: tagged models bind to their providers; untagged allow all", () => {
+    expect(modelAllowedFor(catalog, "us.anthropic.claude-opus-4-8", "goose")).toBe(true);
+    expect(modelAllowedFor(catalog, "us.anthropic.claude-opus-4-8", "byoc")).toBe(false);
+    expect(modelAllowedFor(catalog, "everywhere-model", "byoc")).toBe(true);
+    expect(modelAllowedFor(catalog, "not-in-catalog", "byoc")).toBe(false);
+  });
+
+  it("a run with NO provider tag (legacy provider) allows any catalog model", () => {
+    expect(modelAllowedFor(catalog, "claude-sonnet-4-5", undefined)).toBe(true);
+  });
+
+  it("defaultFor: the global default when the provider offers it, else the provider's first", () => {
+    expect(defaultFor(catalog, "goose")).toBe("us.anthropic.claude-sonnet-4-6");
+    // byoc does not offer the global default -> its first offered model.
+    expect(defaultFor(catalog, "byoc")).toBe("claude-sonnet-4-5");
+    expect(defaultFor(catalog, undefined)).toBe("us.anthropic.claude-sonnet-4-6");
+  });
+
+  it("defaultFor: a provider with nothing tagged still gets the untagged models", () => {
+    const c = catalogFromEnv({
+      AGENT_MODELS_JSON: JSON.stringify([{ id: "m1", default: true }]),
+    } as never);
+    expect(defaultFor(c, "byoc")).toBe("m1");
+  });
+});

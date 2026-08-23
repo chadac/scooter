@@ -39,6 +39,7 @@ let
     inherit id;
     hint = enabledModels.${id}.hint or "";
     default = id == defaultModelId;
+    providers = enabledModels.${id}.providers or [ ];
   }) modelIds);
   hasModels = modelIds != [ ];
 in
@@ -286,6 +287,19 @@ in
               default = false;
               description = "Mark this as the default model (exactly one should be true).";
             };
+            providers = mkOption {
+              type = types.listOf types.str;
+              default = [ ];
+              example = literalExpression ''[ "byoc" "claude-code" ]'';
+              description = ''
+                Which providers OFFER this model. Model ids are provider-specific
+                namespaces — "goose" runs Bedrock ids (us.anthropic.…),
+                "claude-code" (the in-cluster subscription SDK) and "byoc" (the
+                user's own container) run API ids (claude-sonnet-4-5). A run only
+                receives a model its provider can serve; empty = offered on every
+                provider (the pre-provider behaviour).
+              '';
+            };
             hint = mkOption {
               type = types.str;
               default = "";
@@ -307,10 +321,17 @@ in
         '';
         description = ''
           The models a conversation may run on, each with an optional `hint`
-          (surfaced by the list_models MCP tool so the agent can pick well) and a
-          `default` flag (exactly one). The agent switches its own model via
-          switch_model; the UI/management API can also override per-conversation.
-          Rendered to the agent-host as AGENT_MODELS_JSON. Empty = only the default.
+          (surfaced by the list_models MCP tool so the agent can pick well), a
+          `default` flag (exactly one), and an optional `providers` list naming
+          which providers offer it. Model ids are PROVIDER-SPECIFIC namespaces:
+          Bedrock ids (us.anthropic.…) belong to `providers = [ "goose" ]`, API
+          ids (claude-sonnet-4-5) to `"claude-code"` (the in-cluster subscription
+          SDK) and/or `"byoc"` (the user's own container). A run only ever gets a
+          model its provider can serve — the conversation's choice when offered,
+          else that provider's default. Empty providers = offered everywhere.
+          The agent switches its own model via switch_model; the UI/management
+          API can also override per-conversation. Rendered to the agent-host as
+          AGENT_MODELS_JSON. Empty = only the default.
         '';
       };
       region = mkOption {

@@ -38,6 +38,11 @@ export interface RunContext {
  *  Providers are pure declarations of capability + a factory; the resolver + BridgeAcpManager own
  *  selection + lifecycle. */
 export interface AcpProvider {
+  /** The MODEL-NAMESPACE this provider serves — matched against each catalog model's
+   *  `providers` tags ("goose" = Bedrock ids via goose, "claude-code" = the in-cluster
+   *  subscription SDK, "byoc" = the user's own container). Absent = the pre-dimension
+   *  behaviour: any catalog model is offered. */
+  modelTag?: string;
   /** Stable id for logging/metrics + as the BridgeAcpManager cache key (one client per provider
    *  per conversation). e.g. "bedrock-goose" | "sdk-claude" | "remote-personalized". */
   readonly id: string;

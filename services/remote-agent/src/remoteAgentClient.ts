@@ -102,7 +102,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
      *  and two conversations would each execute the other's tool calls in the wrong sandbox.
      *  The stamp is a mutable box because the session id only exists AFTER newSession returns;
      *  nothing tool-shaped flows before that. */
-    const buildClient = async () => {
+    const buildClient = async (model?: string) => {
       const stamp: { sid?: string } = {};
       const stampedSend = (f: WireFrame) => send(stamp.sid ? { ...f, sid: stamp.sid } : f);
       const exec = createTunnelExecBackend({
@@ -114,7 +114,10 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       });
       const sdk = await createSdkAcpClient({
         oauthToken: deps.oauthToken,
-        model: deps.model ?? "claude-sonnet-4-5",
+        // Per-session model, sent by the cloud in new_session (the bridge resolves it against
+        // the catalog's "byoc"-tagged models, so a Bedrock id never reaches us). Fallbacks:
+        // the container's --model flag, then a sane default.
+        model: model ?? deps.model ?? "claude-sonnet-4-5",
         exec, // the provider's OWN ExecBackend type — a contract drift is now a compile error
         systemPrompt: deps.systemPrompt ?? "You are Scooter, a helpful agent.",
         claudeCodePath: deps.claudeCodePath,
@@ -186,7 +189,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           case "new_session": {
             // ONE CLIENT PER SESSION (see buildClient): the returned session id becomes both the
             // routing key for later prompts and the sid stamped on this client's tool frames.
-            const client = await buildClient();
+            const client = await buildClient((frame.payload as { params?: { model?: string } })?.params?.model);
             const r = await client.sdk.newSession((frame.payload as { params: never }).params);
             const sid = (r as { sessionId?: string }).sessionId;
             if (sid) {
