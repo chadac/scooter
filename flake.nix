@@ -352,9 +352,12 @@
             # pkgs/sandbox-image was retired).
             default = sandboxOsImage.image;
 
-            # `nix build .#options-doc` -> the agentSandbox.* option reference as CommonMark,
+            # `nix build .#options-doc` -> the agentSandbox.* option reference as JSON,
             # rendered FROM the module system (nixosOptionsDoc), so the published reference can
-            # never drift from the code. The docs workflow copies it into the mkdocs site.
+            # never drift from the code. JSON rather than CommonMark on purpose: the docs build
+            # splits it into one page PER NAMESPACE (so mkdocs search scores each separately
+            # instead of returning one 4k-line document) and feeds the client-side filter table.
+            # See docs/gen_options.py.
             options-doc =
               (pkgs.nixosOptionsDoc {
                 options = { agentSandbox = (mkPlatform { }).options.agentSandbox; };
@@ -370,7 +373,7 @@
                          else d)
                     opt.declarations;
                 };
-              }).optionsCommonMark;
+              }).optionsJSON;
 
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;

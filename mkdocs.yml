@@ -26,6 +26,20 @@ theme:
     - content.code.copy
     - search.suggest
 
+plugins:
+  - search
+  # Generates the option reference at build time from options.json (see docs/gen_options.py):
+  # one page per agentSandbox namespace + a filterable index. Nothing generated is committed.
+  # The option pages are GENERATED before the build (docs/gen_options.py, run by `just docs`
+  # and the Docs workflow) and listed via their directory's .pages file — mkdocs' own nav
+  # cannot glob, and hand-listing generated pages in mkdocs.yml would rot.
+  - awesome-pages
+
+extra_css:
+  - assets/options.css
+extra_javascript:
+  - assets/options.js
+
 markdown_extensions:
   - admonition
   - pymdownx.superfences
@@ -44,7 +58,7 @@ nav:
       - Models: features/models.md
       - Integrations: features/integrations.md
   - Reference:
-      - Configuration options: reference/options.md
+      - reference/options/index.md
   - Internals:
       - Conversation state model: CONVERSATION_STATE_MODEL.md
       - Multimodal images: MULTIMODAL_IMAGES.md

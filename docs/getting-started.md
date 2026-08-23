@@ -48,7 +48,7 @@ kubectl apply -f result
 ```
 
 The full set of options — every `agentSandbox.*` knob with types, defaults, and
-examples — is in the [configuration reference](reference/options.md), generated
+examples — is in the [configuration reference](reference/options/index.md), generated
 directly from the modules so it cannot drift from the code.
 
 !!! note "Example configuration"

@@ -28,7 +28,7 @@ agentSandbox.byoc.enable = true;
 
 One option: the controller, its (deliberately unauthenticated) `/byoc` connect path on your
 existing ingress host, and the Settings UI. See the
-[configuration reference](../reference/options.md) for the knobs.
+[configuration reference](../reference/options/index.md) for the knobs.
 
 ## Security model
 
