@@ -18,6 +18,14 @@ export interface ModelInfo {
   hint: string;
   /** The default model — used when a conversation hasn't picked one. Exactly one. */
   default: boolean;
+  /** Which PROVIDERS offer this model ("goose", "claude-code", "byoc"). Model ids are
+   *  provider-specific namespaces — a Bedrock id means nothing to a subscription-backed
+   *  provider and vice versa — so a run must only be handed models its provider can serve.
+   *  Empty = offered on every provider (the pre-provider-dimension behaviour). */
+  providers: string[];
+  /** The providers this model is THE default for (each provider group in the kubenix
+   *  catalog marks its own default). */
+  defaultFor: string[];
 }
 
 export interface ModelCatalog {
@@ -34,7 +42,9 @@ export function catalogFromEnv(env: NodeJS.ProcessEnv = process.env): ModelCatal
   const json = env.AGENT_MODELS_JSON;
   if (json && json.trim()) {
     try {
-      const parsed = JSON.parse(json) as Array<{ id?: unknown; hint?: unknown; default?: unknown }>;
+      const parsed = JSON.parse(json) as Array<{
+        id?: unknown; hint?: unknown; default?: unknown; providers?: unknown; defaultFor?: unknown;
+      }>;
       const models: ModelInfo[] = [];
       for (const m of Array.isArray(parsed) ? parsed : []) {
         if (typeof m?.id !== "string" || !m.id) continue;
@@ -42,6 +52,8 @@ export function catalogFromEnv(env: NodeJS.ProcessEnv = process.env): ModelCatal
           id: m.id,
           hint: typeof m.hint === "string" ? m.hint : "",
           default: m.default === true,
+          providers: Array.isArray(m.providers) ? m.providers.filter((x): x is string => typeof x === "string") : [],
+          defaultFor: Array.isArray(m.defaultFor) ? m.defaultFor.filter((x): x is string => typeof x === "string") : [],
         });
       }
       return withDefault(models);
@@ -56,7 +68,7 @@ export function catalogFromEnv(env: NodeJS.ProcessEnv = process.env): ModelCatal
     .map((s) => s.trim())
     .filter(Boolean);
   if (legacyDefault && !ids.includes(legacyDefault)) ids.unshift(legacyDefault);
-  const models: ModelInfo[] = ids.map((id) => ({ id, hint: "", default: id === legacyDefault }));
+  const models: ModelInfo[] = ids.map((id) => ({ id, hint: "", default: id === legacyDefault, providers: [], defaultFor: [] }));
   return withDefault(models, legacyDefault);
 }
 
@@ -89,4 +101,26 @@ export function resolveModel(requested: string | undefined, cat: ModelCatalog): 
 /** Is `id` an offered model? (switch_model validates with this.) */
 export function isOffered(cat: ModelCatalog, id: string): boolean {
   return cat.models.some((m) => m.id === id);
+}
+
+
+/** May a run on the provider tagged `tag` use model `id`? Untagged models are universal; an
+ *  untagged RUN (a provider predating the dimension) accepts any catalog model. */
+export function modelAllowedFor(catalog: ModelCatalog, id: string, tag: string | undefined): boolean {
+  const m = catalog.models.find((x) => x.id === id);
+  if (!m) return false;
+  if (!tag || m.providers.length === 0) return true;
+  return m.providers.includes(tag);
+}
+
+/** The model a run on provider `tag` should use absent a valid choice: the model that
+ *  provider's catalog group marked default, else the global default when the provider offers
+ *  it, else the first model the provider does offer. */
+export function defaultFor(catalog: ModelCatalog, tag: string | undefined): string | undefined {
+  if (tag) {
+    const flagged = catalog.models.find((m) => m.defaultFor.includes(tag));
+    if (flagged) return flagged.id;
+  }
+  if (catalog.defaultId && modelAllowedFor(catalog, catalog.defaultId, tag)) return catalog.defaultId;
+  return catalog.models.find((m) => modelAllowedFor(catalog, m.id, tag))?.id;
 }

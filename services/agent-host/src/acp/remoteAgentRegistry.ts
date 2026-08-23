@@ -113,6 +113,9 @@ export function createRemotePersonalizedProvider(deps: {
   const resolved = new Map<string, string>();
   return {
     id: "remote-personalized",
+    // Catalog models offered on the user's own container tag themselves "byoc" — these are
+    // API-style ids (claude-sonnet-4-5), never Bedrock ids.
+    modelTag: "byoc",
     kind: "claude",
     priority: deps.priority ?? 10,
     async eligible(ctx: RunContext): Promise<boolean> {

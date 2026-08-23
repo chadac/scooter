@@ -29,6 +29,7 @@ import type { Recorder } from "./transcript/recorder.js";
 import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
+import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
 
 /** Where binary Slack attachments are materialized inside the sandbox. Kept in sync
  *  with the webhooks handler (services/webhooks) which notes these paths in the
@@ -365,6 +366,14 @@ export interface SessionBridge {
 export interface BridgeDeps {
   config: SessionConfig;
   exec: ExecBackend;
+  /** The conversation's chosen model (per-conversation override; undefined = deployment
+   *  default). Combined with `modelCatalog` + each provider's `modelTag` to pick the model a
+   *  RUN actually gets: the choice when the run's provider offers it, else that provider's
+   *  default — never a model id from the wrong provider's namespace. */
+  model?: string;
+  /** The deployment's model catalog (GET /models). Needed for the per-provider resolution
+   *  above; absent = every provider gets the conversation model as-is (legacy). */
+  modelCatalog?: ModelCatalog;
   /**
    * The ACP client, or an async factory that creates one on first start().
    * Tests inject a ready in-process fake; production passes a factory that
@@ -1342,9 +1351,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
       });
+      // The model THIS provider's session runs: the conversation's choice when this provider
+      // offers it, else the provider's own default. Sending the raw choice regardless handed a
+      // Bedrock id to the BYO container (which ignored it entirely) — the provider dimension
+      // makes the substitution explicit instead of silent nonsense.
+      const model =
+        deps.modelCatalog
+          ? deps.model && modelAllowedFor(deps.modelCatalog, deps.model, provider.modelTag)
+            ? deps.model
+            : defaultFor(deps.modelCatalog, provider.modelTag)
+          : deps.model;
       const { sessionId: sid } = await client.newSession({
         cwd: deps.config.cwd,
         mcpServers: deps.config.mcpServers,
+        model,
       });
       debug("[bridge] readyProvider(%s): newSession -> %s", provider.id, sid);
       // Subscribe ONCE per client and route updates to the current run (handleUpdate keys on

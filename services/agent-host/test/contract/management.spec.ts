@@ -466,7 +466,10 @@ describe("management API", () => {
     });
     const { status, json } = await call(api, "GET", "/models");
     expect(status).toBe(200);
-    expect(json).toEqual({ default: "opus", available: ["opus", "sonnet"], hints: { sonnet: "fast/cheap" } });
+    expect(json).toEqual({
+      default: "opus", available: ["opus", "sonnet"], hints: { sonnet: "fast/cheap" },
+      providers: {}, // id -> provider tags offering it; {} when the deployment doesn't tag
+    });
   });
 
   it("GET /models defaults hints to {} when unset", async () => {
@@ -475,7 +478,7 @@ describe("management API", () => {
       models: { default: "opus", available: ["opus"] },
     });
     const { json } = await call(api, "GET", "/models");
-    expect(json).toEqual({ default: "opus", available: ["opus"], hints: {} });
+    expect(json).toEqual({ default: "opus", available: ["opus"], hints: {}, providers: {} });
   });
 
   it("POST /conversations honors an offered model", async () => {

@@ -42,6 +42,11 @@ export interface ClientCapabilities {
 export interface NewSessionParams {
   cwd: string;
   mcpServers?: unknown[];
+  /** The model this session should run — resolved per PROVIDER by the bridge (a Bedrock id is
+   *  nonsense to a subscription-backed provider and vice versa; see agent/models.ts
+   *  modelAllowedFor/defaultFor). Providers that fix their model elsewhere may ignore it; the
+   *  BYO container honors it per session. */
+  model?: string;
 }
 
 export interface PromptParams {

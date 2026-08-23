@@ -1134,6 +1134,9 @@ export async function main(
         hints: Object.fromEntries(
           config.modelCatalog.models.filter((m) => m.hint).map((m) => [m.id, m.hint]),
         ),
+        providers: Object.fromEntries(
+          config.modelCatalog.models.map((m) => [m.id, m.providers]),
+        ),
       },
       resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
@@ -1495,6 +1498,9 @@ export async function main(
       id: usingClaude ? "sdk-claude" : "bedrock-goose",
       kind: usingClaude ? "claude" : "goose",
       priority: 0,
+      // The model-namespace this provider serves (catalog models tag themselves with these):
+      // goose = Bedrock ids; the in-cluster subscription SDK = API ids under "claude-code".
+      modelTag: usingClaude ? "claude-code" : "goose",
       eligible: () => true,
       createClient: floorAcpClientFactory,
     };
@@ -1525,6 +1531,10 @@ export async function main(
       provider: usingClaude ? "claude" : "goose",
       owner,
       acpProviders,
+      // Per-provider model resolution (see BridgeDeps): the conversation's choice when the
+      // run's provider offers it, else that provider's own default from the catalog.
+      model,
+      modelCatalog: cfg.modelCatalog,
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
         // Attribute cost to the conversation OWNER (id + email). Resolve async
         // (email may need the identity store) but don't block the run — the metric
