@@ -105,6 +105,10 @@ export function startTunnelClient(deps: TunnelClientDeps): TunnelClient {
     }
   };
 
+  // Say so, once, per session. A silent tunnel client is indistinguishable from one that never
+  // started — which is exactly what made the first live failure hard to place.
+  // eslint-disable-next-line no-console
+  console.log(`[tunnel] following inbound stream for session=${deps.sessionId} conversation=${deps.conversationId}`);
   void follow();
 
   return {

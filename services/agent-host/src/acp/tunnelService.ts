@@ -93,6 +93,8 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       };
 
       if (frame.type === "open") {
+        // eslint-disable-next-line no-console
+        console.log(`[tunnel] open stream=${id} target=${JSON.stringify(payload.target)} conversation=${conversationId}`);
         const resolution = resolveTunnelTarget(payload.target ?? "", conversationId, deps);
         if (!resolution.ok) {
           // Loud on both ends: the container logs the reason, and so do we.

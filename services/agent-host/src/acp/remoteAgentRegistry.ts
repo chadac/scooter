@@ -181,6 +181,10 @@ export function createRemotePersonalizedProvider(deps: {
       // a stream the CONTAINER opens has no way back here. Hold the controller's dedicated
       // inbound stream open for as long as this client lives. Only when scooter-env is actually
       // offered — no offer means no streams to serve.
+      if (!deps.mcpUrlFor) {
+        // eslint-disable-next-line no-console
+        console.log(`[tunnel] NOT started for ${sessionId}: no MCP endpoint configured — the BYO agent gets sandbox tools only`);
+      }
       const tunnelClient = deps.mcpUrlFor
         ? startTunnelClient({
             // The controller root, NOT the per-session base — startTunnelClient builds its own
