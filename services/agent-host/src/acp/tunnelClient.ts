@@ -52,10 +52,19 @@ export function startTunnelClient(deps: TunnelClientDeps): TunnelClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(frame),
-      }).catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn(`[tunnel] reply for ${frame.id} failed: ${String(err)}`);
-      });
+      })
+        .then((res) => {
+          // A non-OK reply is a DROPPED response the container is still waiting on — surface it
+          // rather than letting the tool call hang until the SDK gives up.
+          if (!res.ok) {
+            // eslint-disable-next-line no-console
+            console.warn(`[tunnel] reply ${frame.type} for ${frame.id} rejected: HTTP ${res.status}`);
+          }
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[tunnel] reply ${frame.type} for ${frame.id} failed: ${String(err)}`);
+        });
     },
   });
 
