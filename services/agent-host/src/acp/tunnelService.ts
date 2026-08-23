@@ -75,9 +75,15 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         // STREAM, don't buffer: MCP StreamableHTTP responses arrive incrementally and the
         // agent should see them the same way.
         const reader = (body as ReadableStream<Uint8Array>).getReader();
+        let loggedFirst = false;
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
+          if (!loggedFirst) {
+            loggedFirst = true;
+            // eslint-disable-next-line no-console
+            console.log(`[tunnel] first chunk stream=${id} bytes=${value.length} preview=${Buffer.from(value).toString().slice(0, 120)}`);
+          }
           deps.send({
             ch: "tunnel", type: "chunk", id,
             payload: { data: Buffer.from(value).toString("base64"), ...head },
@@ -88,6 +94,8 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         const text = await res.text();
         deps.send({ ch: "tunnel", type: "chunk", id, payload: { data: Buffer.from(text).toString("base64"), ...head } });
       }
+      // eslint-disable-next-line no-console
+      console.log(`[tunnel] close stream=${id} (response complete)`);
       deps.send({ ch: "tunnel", type: "close", id, payload: {} });
     } catch (err) {
       // eslint-disable-next-line no-console
