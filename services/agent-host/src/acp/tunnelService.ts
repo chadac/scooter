@@ -59,6 +59,18 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       });
       // eslint-disable-next-line no-console
       console.log(`[tunnel] fetch DONE stream=${id} status=${res.status} hasBody=${!!res.body}`);
+      if (res.status >= 400) {
+        // The MCP endpoint REJECTED the tunnelled request. Log what it said and what we sent —
+        // a 400 here is invisible to the container (it just sees a failed tool call), and this
+        // is the difference between guessing at headers and reading the answer.
+        const clone = res.clone?.();
+        const text = clone ? await clone.text().catch(() => "<unreadable>") : "<no clone>";
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[tunnel] REJECTED stream=${id} status=${res.status} body=${text.slice(0, 300)} ` +
+            `sentHeaders=${JSON.stringify(p.headers)} sentBody=${Buffer.concat(p.body).toString().slice(0, 200)}`,
+        );
+      }
       const headers: Record<string, string> = {};
       res.headers?.forEach?.((v, k) => (headers[k] = v));
       let head = { status: res.status, headers };
