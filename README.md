@@ -1,5 +1,10 @@
 # Scooter
 
+[![CI](https://github.com/chadac/scooter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chadac/scooter/actions/workflows/ci.yml)
+[![Publish images](https://github.com/chadac/scooter/actions/workflows/publish-images.yml/badge.svg?branch=main)](https://github.com/chadac/scooter/actions/workflows/publish-images.yml)
+[![Docs](https://github.com/chadac/scooter/actions/workflows/docs.yml/badge.svg?branch=main)](https://chadac.github.io/scooter/)
+[![Container images](https://img.shields.io/badge/ghcr.io-chadac%2Fscooter-blue?logo=docker&logoColor=white)](https://github.com/chadac?tab=packages&repo_name=scooter)
+
 A Nix-powered agent platform layered over the Kubernetes
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) controller.
 
@@ -9,10 +14,15 @@ Scooter adds the **brain** (an off-the-shelf ACP agent — [Goose](https://githu
 The agent drives the sandbox through the agent-sandbox API and the Kubernetes exec
 API; nothing runs as an in-pod agent.
 
-> **Status:** implemented and running. The agent-host, broker, webhooks, scheduler,
-> web-service proxy, suspend/resume, and the provider tools all work; the Tier 1
-> contract suite is green. There's a working UI. It deploys to a real cluster (see
-> [`deploy/`](deploy/)). Some Nix image / kubenix pieces are still being polished.
+> **Status:** implemented and running in production-shaped deployments. Multi-replica
+> agent-hosts with controller-assigned conversations, suspend/resume with history
+> restore, bring-your-own-Claude (device-key auth, concurrent conversations), a
+> provider-aware model catalog, webhooks/scheduler/broker integrations, and a working
+> UI. Enable BYOC with one option: `agentSandbox.byoc.enable = true`.
+>
+> **Docs:** <https://chadac.github.io/scooter/> — including the full
+> [configuration reference](https://chadac.github.io/scooter/reference/options/),
+> generated from the kubenix modules.
 
 ## Idea
 

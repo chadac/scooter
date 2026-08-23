@@ -352,6 +352,26 @@
             # pkgs/sandbox-image was retired).
             default = sandboxOsImage.image;
 
+            # `nix build .#options-doc` -> the agentSandbox.* option reference as CommonMark,
+            # rendered FROM the module system (nixosOptionsDoc), so the published reference can
+            # never drift from the code. The docs workflow copies it into the mkdocs site.
+            options-doc =
+              (pkgs.nixosOptionsDoc {
+                options = { agentSandbox = (mkPlatform { }).options.agentSandbox; };
+                warningsAreErrors = false;
+                # Repo-relative declaration links instead of /nix/store paths.
+                transformOptions = opt: opt // {
+                  declarations = map
+                    (d:
+                      let str = toString d;
+                          m = builtins.match ".*/(modules/.*)" str;
+                      in if m != null
+                         then { name = builtins.head m; url = "https://github.com/chadac/scooter/blob/main/${builtins.head m}"; }
+                         else d)
+                    opt.declarations;
+                };
+              }).optionsCommonMark;
+
             inherit agentHost ui broker webhooks scheduler;
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
