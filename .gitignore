@@ -18,3 +18,7 @@ test-results/
 services/conversation-router/conversation-router
 *.tsbuildinfo
 # uv-nix generated artifacts
+
+# mkdocs: the generated option reference + built site (never committed; CI + `just docs`)
+docs/reference/options.md
+site/

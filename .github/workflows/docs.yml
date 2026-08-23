@@ -1,0 +1,68 @@
+name: Docs (GitHub Pages)
+
+# Build the mkdocs site with the GENERATED kubenix option reference and publish to Pages.
+# The reference (`nix build .#options-doc`) is rendered from the module system on every build,
+# so the published options can never drift from the code. One-time repo setup: Settings →
+# Pages → Source = "GitHub Actions".
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "modules/**"          # the option reference derives from these
+      - "flake.nix"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: generate the option reference from the modules
+        run: |
+          nix build .#options-doc -o options-result
+          mkdir -p docs/reference
+          {
+            echo "# Configuration options"
+            echo
+            echo "Every \`agentSandbox.*\` option, generated from the kubenix modules"
+            echo "(\`nix build .#options-doc\`) — this page cannot drift from the code."
+            echo
+            cat options-result
+          } > docs/reference/options.md
+
+      - name: build the site
+        run: |
+          pip install mkdocs-material
+          mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

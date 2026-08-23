@@ -1,0 +1,50 @@
+# Scooter documentation site (GitHub Pages).
+#
+# `just docs` serves it locally; .github/workflows/docs.yml builds + deploys on main. The
+# kubenix option reference (reference/options.md) is GENERATED from the module system
+# (`nix build .#options-doc`) at build time — never committed, never hand-edited.
+site_name: Scooter
+site_description: A Nix-powered agent platform on Kubernetes
+site_url: https://chadac.github.io/scooter/
+repo_url: https://github.com/chadac/scooter
+repo_name: chadac/scooter
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      toggle: { icon: material/brightness-7, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      toggle: { icon: material/brightness-4, name: Light mode }
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Features:
+      - Overview: features/index.md
+      - Conversations & sandboxes: features/conversations.md
+      - Bring your own Claude: features/byoc.md
+      - Models: features/models.md
+      - Integrations: features/integrations.md
+  - Reference:
+      - Configuration options: reference/options.md
+  - Internals:
+      - Conversation state model: CONVERSATION_STATE_MODEL.md
+      - Multimodal images: MULTIMODAL_IMAGES.md
