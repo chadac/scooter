@@ -67,3 +67,48 @@ That distinguishes "the proxy never answers" from "it answers but the handshake 
 ## Related
 
 Same shape as the id-correlation hang (#304) and the `release()` contract drift (#307): each component correct against its own fake, the JOINT unexercised. The tunnel has unit tests on every piece and a wiring spec on the offer, but nothing drives a real MCP client through the whole chain — which is exactly the test this bug argues for.
+
+
+---
+
+## Update: the transport is proven; the remaining fault is client-side
+
+Three real bugs were found and fixed along the way (all in this branch):
+
+1. **SSE head never flushed** — Node buffers the response head until the first write, and the
+   inbound tunnel stream is quiet until an MCP call happens, so undici aborted on its headers
+   timeout. The agent-host could never hold the stream open.
+2. **A burst of frames stranded `end`** — the controller's reader consumed a frame directly and
+   re-registered only on its next loop iteration, so `open` was delivered and `end` was lost.
+   Fixed by queue-then-wake.
+3. **A diagnostic ate the response** — logging a rejected request with `res.clone().text()`
+   consumed undici's shared stream, so the container received an EMPTY body. The CLI probes
+   optional methods (`server/discover`) and RELIES on receiving the rejection to fall back to
+   `initialize`; with the response eaten it never fell back.
+
+(Also reverted: a "fix" that rewrote the client's negotiated protocol version inside the
+tunnel. That lies to both ends and only appeared to help because it masked #3. A tunnel is a
+pipe — it does not edit the protocol flowing through it.)
+
+**Current state, from the structured trace (`agentSandbox.byoc.traceTunnel = true`):**
+
+```
+server/discover -> 400  (probe rejected, relayed correctly with its body)
+initialize      -> 200  {"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":…
+```
+
+The handshake COMPLETES. Then nothing: `tools/list` is never sent. Only `server/discover` and
+`initialize` ever cross the tunnel.
+
+**Ruled out for that last step:**
+- missing `Mcp-Session-Id` — our server runs stateless (`sessionIdGenerator: undefined`) and
+  issues none, on the direct path too, which works
+- the server closing the SSE after initialize — verified with `curl -N`: the DIRECT endpoint
+  closes it identically, so the tunnel matches
+- transport-level corruption — the traced bytes match what the endpoint returns
+
+**Next step (do NOT continue the deploy loop):** reproduce locally. Point a real MCP client at
+`mcpProxy` with a fake cloud that serves canned initialize/tools-list responses, and compare
+its behaviour against the same client pointed straight at a real endpoint. Seconds per
+iteration instead of minutes, and the difference becomes a permanent regression test rather
+than a one-off log read.
