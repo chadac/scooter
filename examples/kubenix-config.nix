@@ -147,6 +147,42 @@
       goldenExpr = "nixpkgs#awscli2 nixpkgs#nodejs";
     };
 
+    # Fleet sizing + lifecycle. `replicas` is the agent-host floor (the conversation
+    # controller autoscales above it to fit live demand); `statelessReplicas` sizes the
+    # stateless services (router/UI). An idle conversation suspends after idleSuspendMs —
+    # its sandbox pod goes away, the Sandbox object and volumes remain, and the next prompt
+    # revives it with its transcript. retentionMaxAgeMs = 0 disables destructive auto-reaping
+    # (starred conversations are exempt from it regardless).
+    replicas = 2;
+    statelessReplicas = 2;
+    idleSuspendMs = 30 * 60 * 1000;
+    retentionMaxAgeMs = 0;
+
+    # Scheduled runs: cron-style tasks that prompt a conversation on a timer. The relay key
+    # authenticates the scheduler's calls into the agent-host (create it out-of-band; empty
+    # here would disable the relay). Scheduled runs deliberately never consume a user's
+    # personal BYO subscription — they take the platform's floor model.
+    scheduler = {
+      enable = true;
+      tickSeconds = 30;
+      relayKey = "change-me-or-provide-via-secret";
+    };
+
+    # OpenTelemetry metrics + per-model cost attribution. OFF by default (an OTLP endpoint is
+    # a deployment choice); enabled here so the render check exercises the env wiring. Prices
+    # are per MILLION tokens and feed the cost metric — keep them in sync with your provider.
+    observability.otel = {
+      enable = true;
+      environment = "example";
+      env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://otel-collector.observability:4317";
+      pricing."us.anthropic.claude-sonnet-4-6" = {
+        inputPerMillion = 3.0;
+        outputPerMillion = 15.0;
+        cachedReadPerMillion = 0.3;
+        cachedWritePerMillion = 3.75;
+      };
+    };
+
     # Webhooks receiver (GitHub/Slack/…): its own host + NO auth (providers sign
     # their requests). Generic ingress under agentSandbox.webhooks.ingress.
     webhooks.ingress = {

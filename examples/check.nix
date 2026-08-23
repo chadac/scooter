@@ -174,8 +174,54 @@ let
     ++ (if !(prodPlatform.options.agentSandbox ? testing) then [ ]
         else [ "agentSandbox.testing option exists WITHOUT importing modules/testing.nix (a deploy could set it)" ]);
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems;
+  # The SCHEDULER (enabled in the example) must render its Deployment and carry the relay key
+  # + tick — a scheduled run is otherwise silently never delivered.
+  schedEnv =
+    let ctrs = builtins.attrValues (res.deployments.agent-scheduler.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  schedProblems =
+    (if res.deployments ? agent-scheduler then [ ]
+     else [ "deployments.agent-scheduler (scheduler.enable = true rendered nothing)" ])
+    ++ (if builtins.any (e: e.name == "SCHEDULER_TICK_SECONDS" || e.name == "TICK_SECONDS") schedEnv
+        then [ ] else [ "scheduler.env tick (scheduler cannot know its cadence)" ]);
+
+  # OBSERVABILITY (enabled in the example): the agent-host must be told metrics are on AND
+  # receive the OTLP endpoint from otel.env — a half-wired exporter reports nothing while
+  # looking configured.
+  otelProblems =
+    (if builtins.any (e: e.name == "OTEL_METRICS_ENABLED") hostEnv then [ ]
+     else [ "host.env.OTEL_METRICS_ENABLED (observability.otel.enable = true not wired)" ])
+    ++ (if builtins.any (e: e.name == "OTEL_EXPORTER_OTLP_ENDPOINT") hostEnv then [ ]
+        else [ "host.env.OTEL_EXPORTER_OTLP_ENDPOINT (otel.env not passed through)" ]);
+
+  # COVERAGE GUARD. examples/kubenix-config.nix is the maintained "every feature enabled"
+  # reference AND the fixture these assertions run against — so a NEW top-level namespace that
+  # the example never sets means the example (and the docs that point at it) silently fell
+  # behind. Listed exceptions are namespaces a reference config legitimately leaves at its
+  # default; everything else must appear.
+  allNamespaces = builtins.attrNames (platform.options.agentSandbox or { });
+  exampleText = builtins.readFile ./kubenix-config.nix;
+  # Left at defaults on purpose: `core` is not a namespace (bare agentSandbox.* options are
+  # covered elsewhere in the example), the conversation controller is ON by default, postgres
+  # is provisioned implicitly by the features that need it, and legacyStateMigration is a
+  # one-shot upgrade path rather than a feature to showcase.
+  # Image/identity/runtime knobs are deployment-specific plumbing a reference config should
+  # NOT hardcode (they default off registryPrefix, which the example does set); the
+  # conversation controller is ON by default; postgres is provisioned implicitly by the
+  # features that need it; legacyStateMigration is a one-shot upgrade path, not a feature.
+  coverageExempt = [
+    "conversationController" "postgres" "legacyStateMigration"
+    "sandboxRuntimeClass" "sandboxViaBroker" "serviceAccountRoleArn"
+    "agentHostImage" "sandboxImage" "uiImage"
+  ];
+  uncovered = builtins.filter
+    (n: !(builtins.elem n coverageExempt)
+        && builtins.match ".*[^a-zA-Z]${n}[^a-zA-Z].*" exampleText == null)
+    allNamespaces;
+  coverageProblems = map (n: "example never sets agentSandbox.${n} (add it, or add to coverageExempt with a reason)") uncovered;
+
+  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog wired; configFiles wired; broker config-rollout wired; models wired\n"
+then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

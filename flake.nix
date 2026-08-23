@@ -436,6 +436,21 @@
             # image — it's still just a YAML writeText.
             platform-manifests-ghcr = platformGhcr.config.kubernetes.resultYAML;
 
+            # `nix build .#example-manifests` -> the YAML the EXAMPLE config renders. The
+            # example is the maintained "every feature enabled" reference the docs point at,
+            # so CI applies THIS (server-side dry-run, real API validation) rather than only
+            # asserting it evaluates: a config that renders but is invalid Kubernetes — a bad
+            # field, a malformed probe, a resource the apiserver rejects — is exactly what a
+            # copy-pasting deployer would hit first.
+            example-manifests =
+              (kubenix.evalModules.${system} {
+                module = { kubenix, ... }: {
+                  imports = [ ./modules/platform.nix ./examples/kubenix-config.nix ];
+                  kubenix.project = "agent-sandbox";
+                  kubernetes.version = "1.31";
+                };
+              }).config.kubernetes.resultYAML;
+
             # nix build .#ghcr-image-refs  ->  JSON { <name> = "ghcr.io/…:<content-tag>" }
             # The content-tagged ghcr refs for every published image, computed from
             # the derivation outPath at EVAL time (no build). Identical to what the

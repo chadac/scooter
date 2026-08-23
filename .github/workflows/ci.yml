@@ -262,6 +262,7 @@ jobs:
     outputs:
       run: ${{ steps.filter.outputs.image }}
       platform: ${{ steps.filter.outputs.platform }}
+      example: ${{ steps.filter.outputs.example }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -289,6 +290,10 @@ jobs:
             # runs the k3d platform smoke (platform comes up + a conversation routes). Kept a
             # SEPARATE filter output so the platform smoke can run without the sandbox-image
             # specs and vice-versa. See ROLLOUT_DRAIN_AND_POD_IP.md.
+            example:
+              - 'examples/**'
+              - 'modules/**'
+              - 'flake.nix'
             platform:
               - 'modules/platform.nix'
               - 'modules/conversation-controller.nix'
@@ -368,6 +373,71 @@ jobs:
       - name: tear down k3d
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+  # Tier-2 EXAMPLE VALIDATION on a real k3d apiserver. `just check-manifests` proves the
+  # example EVALUATES and wires its features; this proves the YAML it produces is VALID
+  # KUBERNETES — server-side dry-run runs the real admission/schema validation, catching a bad
+  # field, a malformed probe, or a resource the apiserver rejects. The example is the config
+  # the docs tell people to copy, so "it renders" is not a strong enough guarantee.
+  #
+  # Dry-run, not a deploy: no images are built or pulled (minutes saved), and nothing has to
+  # come up — this is a validity check, and the full platform-smoke job below covers runtime.
+  example-manifests:
+    name: Tier-2 example manifests (k3d dry-run)
+    needs: cluster-changes
+    if: needs.cluster-changes.outputs.example == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: render the example
+        run: nix build .#example-manifests -o example.yaml
+
+      - name: create k3d cluster
+        run: |
+          nix shell nixpkgs#k3d -c k3d cluster create scooter-example \
+            --agents 0 --wait --timeout 180s
+
+      # The example renders its OWN CRDs (Conversation) — apply those for real first, so their
+      # instances validate against a registered schema rather than failing as an unknown kind.
+      - name: install the rendered CRDs
+        run: |
+          set -euo pipefail
+          nix shell nixpkgs#yq-go nixpkgs#kubectl -c bash -c '
+            yq eval-all "select(.kind == \"CustomResourceDefinition\")" example.yaml > crds.yaml
+            if [ -s crds.yaml ]; then kubectl apply --server-side -f crds.yaml; fi
+          '
+
+      - name: validate against the apiserver (server-side dry-run)
+        run: |
+          set -euo pipefail
+          # --server-side runs the apiserver's REAL schema + admission validation, unlike a
+          # client-side dry-run which only checks local structure. A fresh k3d has no
+          # competing field managers, so conflicts here are genuine problems.
+          nix shell nixpkgs#kubectl -c kubectl apply --server-side -f example.yaml \
+            --dry-run=server 2>&1 | tee dry-run.log
+          count=$(grep -c 'serverside-applied' dry-run.log || true)
+          echo "== validated ${count} resources =="
+          # A render that produced nothing would otherwise "pass" silently.
+          if [ "${count}" -lt 20 ]; then
+            echo "::error::only ${count} resources validated — the example render looks empty/broken"
+            exit 1
+          fi
+
+      - name: dump on failure
+        if: failure()
+        run: |
+          nix shell nixpkgs#kubectl -c kubectl get crds -o name || true
+          tail -50 dry-run.log || true
+
+      - name: delete cluster
+        if: always()
+        run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-example || true
 
   # Tier-2 PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
   # (agent-host Deployment + conversation-controller + conversation-router, fake agent) and
