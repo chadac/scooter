@@ -47,6 +47,13 @@ export interface RunRelay {
   answerPermission(sessionId: string, permissionId: string, answer: PermissionAnswer): AnswerResult;
   /** Return an exec/fs result the AGENT-HOST ran on its own ExecBackend (§L Q2). */
   answerExec(sessionId: string, execId: string, payload: ExecResultPayload): AnswerResult;
+  /** Forward a TUNNEL frame from the agent-host down to the container — a response chunk or a
+   *  close for a stream the container opened (MCP over the wire; see remoteProtocol.ts Channel
+   *  C). Unlike prompt(), a tunnel stream is NOT a run: it has no ack and never terminates one,
+   *  so it must never be routed through the run bookkeeping.
+   *
+   *  Design stage: SIGNATURE ONLY. */
+  answerTunnel(sessionId: string, streamId: string, frame: WireFrame): AnswerResult;
   /** Feed a raw frame received from a container's socket. */
   onContainerFrame(sessionId: string, raw: string): void;
   /** The container's socket closed — terminate every run still waiting on it. */
@@ -243,6 +250,13 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
     answerPermission(sessionId, permissionId, answer) {
       return replyToContainer(sessionId, permissionId, "permission", { ch: "acp", type: "ack", id: permissionId, payload: answer });
+    },
+
+    answerTunnel(sessionId, streamId, frame) {
+      void sessionId;
+      void streamId;
+      void frame;
+      throw new Error("not implemented (design stage)");
     },
 
     answerExec(sessionId, execId, payload) {
