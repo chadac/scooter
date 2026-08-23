@@ -487,11 +487,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const sessionId = nextId("sess");
   const listeners = new Set<(event: AguiEvent) => void>();
   let acpSessionId: string | undefined;
+  /** The provider serving the CURRENT run — part of the reinjection key: session ids come from
+   *  independent providers (goose mints its own, the SDK its own, a fake both), so two
+   *  providers can coincide on an id; provider+session is the true session identity. */
+  let currentProviderId = "";
   let started = false;
-  // Revive history reinjection: this bridge is re-created per revive (a fresh
-  // closure ⇒ fresh ACP session), so a bridge-scoped one-shot flag fires exactly
-  // once — on the first prompt after (re)start — and naturally resets next revive.
-  let historyInjected = false;
+  // Revive history reinjection, PER ACP SESSION. This was a bridge-scoped one-shot flag,
+  // which assumed one session per bridge lifetime — true for goose, false everywhere BYO
+  // lives: a mid-conversation provider switch, a container restart, or a container that has
+  // never seen this conversation each create a NEW session on the same bridge, and the flag
+  // being spent left that session's brain BLANK (the reported "restoring a BYOC conversation
+  // doesn't restore it"). The unit that needs seeding is the SESSION: any session's first
+  // prompt in this conversation carries the transcript; a session that saw it never gets it
+  // twice.
+  const injectedSessions = new Set<string>();
   // Serialize runs: a bridge has ONE goose session + ONE RunState. A second
   // prompt arriving while a run is in flight (e.g. the webhook POSTs /agui while
   // the agent is mid-run) must QUEUE, not clobber currentRun — otherwise the
@@ -1004,19 +1013,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       armLiveness();
     }
 
-    // REVIVE reinjection: on this bridge's FIRST prompt, snapshot the persisted
-    // log (the PRIOR turns) BEFORE we append the current user turn below, so the
-    // transcript never includes — and can't duplicate — the message we're about
-    // to send. A fresh conversation's log is empty here → preamble "" → no-op.
-    let historyPreamble = "";
-    if (!historyInjected && deps.loadHistory) {
-      historyInjected = true;
-      try {
-        historyPreamble = buildHistoryPreamble(await deps.loadHistory());
-      } catch (err) {
-        debug("[bridge] loadHistory failed (continuing without reinjection): %s", err);
-      }
-    }
+    // Message ids persisted for THIS turn — the reinjection below reads the log AFTER the
+    // session is resolved (it cannot know which session runs until then), which is after the
+    // current turn is persisted; excluding these ids keeps the preamble strictly PRIOR turns,
+    // so the message being sent is never folded into its own history.
+    const thisTurnIds = new Set<string>();
 
     // Persist the user's prompt(s) as messages so the conversation history is
     // complete — switching to / reviving a conversation must replay the user
@@ -1031,10 +1032,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // NOT a role:user turn — the human didn't type it. The agent still receives the
       // (decorated) text below. A normal human message persists as user text.
       if (b.source) {
-        persist({ type: "SYSTEM_MESSAGE", messageId: nextId("sys"), source: b.source, text: b.text });
+        const sysId = nextId("sys");
+        thisTurnIds.add(sysId);
+        persist({ type: "SYSTEM_MESSAGE", messageId: sysId, source: b.source, text: b.text });
         continue;
       }
       const userMsgId = nextId("user");
+      thisTurnIds.add(userMsgId);
       persist({ type: "TEXT_MESSAGE_START", messageId: userMsgId, role: "user" });
       persist({ type: "TEXT_MESSAGE_CONTENT", messageId: userMsgId, delta: b.text });
       persist({ type: "TEXT_MESSAGE_END", messageId: userMsgId });
@@ -1062,6 +1066,23 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // identical). Increment 2's remote provider makes this vary by source (human vs scheduled).
       await resolveForRun(runContextFor(input));
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
+      // PER-SESSION reinjection (see injectedSessions above): if the session THIS run resolved
+      // to has never been seeded with this conversation's transcript, seed it now — that is
+      // what lets a BYO container that has never seen the conversation resume it, fed over the
+      // same wire as everything else. Strictly prior turns (thisTurnIds excluded).
+      let historyPreamble = "";
+      const sessionKey = `${currentProviderId}:${acpSessionId ?? ""}`;
+      if (deps.loadHistory && acpSessionId && !injectedSessions.has(sessionKey)) {
+        injectedSessions.add(sessionKey);
+        try {
+          const events = await deps.loadHistory();
+          historyPreamble = buildHistoryPreamble(
+            events.filter((e) => !thisTurnIds.has((e as { messageId?: string }).messageId ?? "")),
+          );
+        } catch (err) {
+          debug("[bridge] loadHistory failed (continuing without reinjection): %s", err);
+        }
+      }
       // Prepend the history preamble as a separate text block on the first prompt
       // of a revived session (empty → omitted). The user text is the COMBINED batch
       // (a burst of queued messages sent as one turn), so the agent reads them all
@@ -1389,6 +1410,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     const ready = await readyProvider(provider);
     acpClient = ready.client;
     acpSessionId = ready.acpSessionId;
+    currentProviderId = provider.id;
   };
 
   const self: SessionBridge = {
