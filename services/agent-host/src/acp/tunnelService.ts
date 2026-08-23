@@ -115,13 +115,19 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       }
 
       const p = pending.get(id);
-      if (!p) return; // a chunk for a stream we refused/finished — nothing to do
+      if (!p) {
+        // eslint-disable-next-line no-console
+        console.log(`[tunnel] ${frame.type} for UNKNOWN stream=${id} (refused/finished?)`);
+        return;
+      }
 
       if (frame.type === "chunk") {
         if (payload.data) p.body.push(Buffer.from(payload.data, "base64"));
         return;
       }
       if (frame.type === "end") {
+        // eslint-disable-next-line no-console
+        console.log(`[tunnel] end stream=${id} -> calling ${p.url}`);
         const task = run(id, p);
         inflight.add(task);
         void task.finally(() => inflight.delete(task));

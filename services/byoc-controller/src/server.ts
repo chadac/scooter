@@ -94,19 +94,22 @@ export function createServer(config: ByocServerConfig): ByocServer {
   // to the relay feeds them all, so a reconnecting agent-host does not stack listeners.
   const tunnelReaders = new Map<string, Set<(f: WireFrame | null) => void>>();
   const tunnelQueues = new Map<string, WireFrame[]>();
+  // ALWAYS QUEUE, then wake a reader. The previous shape handed a frame directly to the waiting
+  // reader and deleted it — but a reader only re-registers on its NEXT loop iteration, so every
+  // frame arriving in that window (a microtask later) went to the queue while the just-woken
+  // reader was already past its queue check. The container sends open/chunk/end back to back,
+  // so `open` was delivered and `end` was stranded: the agent-host never fired the request and
+  // every BYO tool call timed out. Queue-then-wake has no such window.
   relay.onTunnelFrame((sessionId, frame) => {
+    const q = tunnelQueues.get(sessionId) ?? [];
+    q.push(frame);
+    tunnelQueues.set(sessionId, q);
     const waiting = tunnelReaders.get(sessionId);
     const waiter = waiting && waiting.size ? [...waiting][0] : undefined;
     if (waiter) {
       waiting!.delete(waiter);
-      waiter(frame);
-      return;
+      waiter(undefined as never); // wake it; it drains the queue itself
     }
-    // No reader attached yet (the agent-host is mid-reconnect): queue rather than drop, or the
-    // container's MCP call hangs waiting for a response nobody will produce.
-    const q = tunnelQueues.get(sessionId) ?? [];
-    q.push(frame);
-    tunnelQueues.set(sessionId, q);
   });
 
   /** One session's inbound tunnel frames, as an async iterable the shell serves as SSE. */
@@ -118,13 +121,14 @@ export function createServer(config: ByocServerConfig): ByocServer {
           yield q.shift()!;
           continue;
         }
-        const frame = await new Promise<WireFrame | null>((resolve) => {
+        // Wait to be woken, then loop back to drain the queue (never consume the frame here —
+        // that is what created the lost-frame window).
+        const woken = await new Promise<WireFrame | null | undefined>((resolve) => {
           const set = tunnelReaders.get(sessionId) ?? new Set();
           set.add(resolve);
           tunnelReaders.set(sessionId, set);
         });
-        if (frame === null) return;
-        yield frame;
+        if (woken === null) return;
       }
     },
   });

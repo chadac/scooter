@@ -423,6 +423,36 @@ describe("GET /byoc/:id/tunnel — the agent-host's inbound stream", () => {
     server.close();
   });
 
+  it("delivers BACK-TO-BACK frames — the open/chunk/end burst a real MCP call sends", async () => {
+    // THE LOST-FRAME BUG: the reader used to consume a frame directly and re-register only on
+    // its next loop iteration, so anything arriving in that window was queued while the woken
+    // reader had already passed its queue check. The container sends open/chunk/end back to
+    // back, so `open` arrived and `end` was stranded — the agent-host never fired the request
+    // and every BYO tool call timed out with the model reporting the tool does not exist.
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    const relay = createRunRelay({ registry });
+    const server = createServer({ registry, relay, secret: SECRET });
+    const { sessionId, token } = await registry.mint("alice");
+    registry.attach(sessionId, token, { send: () => {}, close: () => {} });
+
+    const res = await server.handle({ method: "GET", path: `/byoc/${sessionId}/tunnel`, user: { id: "alice" } } as never);
+    const got: string[] = [];
+    const reader = (async () => {
+      for await (const f of (res as { stream: AsyncIterable<{ type?: string }> }).stream) {
+        got.push(f.type ?? "?");
+        if (got.length >= 3) break;
+      }
+    })();
+
+    // Exactly what mcpProxy sends for one request, with no awaits between.
+    for (const type of ["open", "chunk", "end"]) {
+      relay.onContainerFrame(sessionId, JSON.stringify({ ch: "tunnel", type, id: "s1", payload: {} }));
+    }
+    await reader;
+    expect(got).toEqual(["open", "chunk", "end"]);
+    server.close();
+  });
+
   it("404s for an unknown session rather than opening a dead stream", async () => {
     const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
     const server = createServer({ registry, relay: createRunRelay({ registry }), secret: SECRET });
