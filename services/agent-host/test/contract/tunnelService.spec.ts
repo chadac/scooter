@@ -116,3 +116,71 @@ describe("agent-host tunnel service", () => {
     expect(bodies[0]).toBe('{"m":1}');
   });
 });
+
+// --- protocol-version negotiation (the live 400) ---------------------------------------------
+
+describe("MCP protocol version negotiation", () => {
+  it("downgrades an initialize the server cannot accept, instead of failing the tool call", async () => {
+    // THE LIVE FAILURE: the container's `claude` CLI negotiates MCP protocol 2026-07-28; the
+    // agent-host's MCP SDK tops out at 2025-11-25 (even on latest) and the transport answers
+    //   400 Bad Request: Unsupported protocol version: 2026-07-28
+    // The in-cluster paths never hit this because both ends ship the SAME SDK — only the
+    // tunnel joins two independently-versioned MCP implementations. The spec expects
+    // negotiation, so the tunnel negotiates: an initialize naming a version the server does
+    // not support is rewritten to the newest one it does.
+    const sent: string[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      sent.push(String(init?.body ?? ""));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = collector();
+    const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
+
+    const body = JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "claude", version: "1" } },
+    });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s1", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s1", payload: { data: Buffer.from(body).toString("base64") } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    await svc.drain?.();
+
+    const forwarded = JSON.parse(sent[0]) as { params: { protocolVersion: string } };
+    expect(forwarded.params.protocolVersion, "an unsupported version must be negotiated down")
+      .not.toBe("2026-07-28");
+    expect(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]).toContain(forwarded.params.protocolVersion);
+  });
+
+  it("leaves a SUPPORTED version untouched", async () => {
+    const sent: string[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      sent.push(String(init?.body ?? ""));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = collector();
+    const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s2", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s2", payload: { data: Buffer.from(body).toString("base64") } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s2", payload: {} });
+    await svc.drain?.();
+    expect((JSON.parse(sent[0]) as { params: { protocolVersion: string } }).params.protocolVersion).toBe("2025-06-18");
+  });
+
+  it("passes a NON-initialize body through byte-for-byte", async () => {
+    // Only initialize is rewritten; rewriting anything else would corrupt tool calls.
+    const sent: string[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      sent.push(String(init?.body ?? ""));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = collector();
+    const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_models", arguments: {} } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s3", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s3", payload: { data: Buffer.from(body).toString("base64") } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s3", payload: {} });
+    await svc.drain?.();
+    expect(sent[0]).toBe(body);
+  });
+});

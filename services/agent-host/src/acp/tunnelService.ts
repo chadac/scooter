@@ -29,6 +29,33 @@ export interface TunnelService {
   drain?(): Promise<void>;
 }
 
+/** MCP protocol versions our server's SDK accepts, newest first. The tunnel joins two
+ *  INDEPENDENTLY-VERSIONED MCP implementations — the user's `claude` CLI and this
+ *  agent-host's SDK — so unlike the in-cluster paths (same SDK on both ends) their versions
+ *  can and do diverge. Observed live: the CLI offered 2026-07-28, our transport answered
+ *  `400 Bad Request: Unsupported protocol version`, and the SDK gave up with no tools. The
+ *  spec expects negotiation, so we negotiate. */
+const SUPPORTED_MCP_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
+
+/** Rewrite an `initialize` whose protocolVersion our server cannot accept. Everything else —
+ *  including every tool call — passes through BYTE FOR BYTE. */
+function negotiateInitialize(body: Buffer): Buffer {
+  if (!body.length) return body;
+  let msg: { method?: string; params?: { protocolVersion?: string } };
+  try {
+    msg = JSON.parse(body.toString()) as typeof msg;
+  } catch {
+    return body; // not JSON (or a batch we do not parse) — never touch it
+  }
+  if (msg?.method !== "initialize") return body;
+  const want = msg.params?.protocolVersion;
+  if (!want || SUPPORTED_MCP_VERSIONS.includes(want)) return body;
+  msg.params!.protocolVersion = SUPPORTED_MCP_VERSIONS[0];
+  // eslint-disable-next-line no-console
+  console.log(`[tunnel] negotiated MCP protocol ${want} -> ${SUPPORTED_MCP_VERSIONS[0]}`);
+  return Buffer.from(JSON.stringify(msg));
+}
+
 /** One in-flight stream: the request being assembled until `end` arrives. */
 interface Pending {
   url: string;
@@ -55,7 +82,7 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       const res = await doFetch(p.url, {
         method: p.method,
         headers: p.headers,
-        body: p.body.length ? Buffer.concat(p.body).toString() : undefined,
+        body: p.body.length ? negotiateInitialize(Buffer.concat(p.body)).toString() : undefined,
       });
       // eslint-disable-next-line no-console
       console.log(`[tunnel] fetch DONE stream=${id} status=${res.status} hasBody=${!!res.body}`);
