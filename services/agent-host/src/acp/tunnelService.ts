@@ -39,20 +39,32 @@ const SUPPORTED_MCP_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-
 
 /** Rewrite an `initialize` whose protocolVersion our server cannot accept. Everything else —
  *  including every tool call — passes through BYTE FOR BYTE. */
+const META_VERSION_KEY = "io.modelcontextprotocol/protocolVersion";
+
 function negotiateInitialize(body: Buffer): Buffer {
   if (!body.length) return body;
-  let msg: { method?: string; params?: { protocolVersion?: string } };
+  let msg: {
+    method?: string;
+    params?: { protocolVersion?: string; _meta?: Record<string, unknown> };
+  };
   try {
     msg = JSON.parse(body.toString()) as typeof msg;
   } catch {
     return body; // not JSON (or a batch we do not parse) — never touch it
   }
-  if (msg?.method !== "initialize") return body;
-  const want = msg.params?.protocolVersion;
+  // TWO handshake shapes, both observed: the classic `initialize` with
+  // params.protocolVersion, and the newer capability probe (`server/discover`) that carries
+  // the version in params._meta under a NAMESPACED key. A first cut handled only the former
+  // and silently never fired — the live body is what settled it.
+  const classic = typeof msg.params?.protocolVersion === "string" ? msg.params.protocolVersion : undefined;
+  const meta = msg.params?._meta?.[META_VERSION_KEY];
+  const metaVersion = typeof meta === "string" ? meta : undefined;
+  const want = classic ?? metaVersion;
   if (!want || SUPPORTED_MCP_VERSIONS.includes(want)) return body;
-  msg.params!.protocolVersion = SUPPORTED_MCP_VERSIONS[0];
+  if (classic) msg.params!.protocolVersion = SUPPORTED_MCP_VERSIONS[0];
+  if (metaVersion) msg.params!._meta![META_VERSION_KEY] = SUPPORTED_MCP_VERSIONS[0];
   // eslint-disable-next-line no-console
-  console.log(`[tunnel] negotiated MCP protocol ${want} -> ${SUPPORTED_MCP_VERSIONS[0]}`);
+  console.log(`[tunnel] negotiated MCP protocol ${want} -> ${SUPPORTED_MCP_VERSIONS[0]} (${msg.method})`);
   return Buffer.from(JSON.stringify(msg));
 }
 

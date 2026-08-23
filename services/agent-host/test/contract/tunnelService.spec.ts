@@ -136,19 +136,25 @@ describe("MCP protocol version negotiation", () => {
     const out = collector();
     const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
 
+    // THE REAL SHAPE, captured live: the CLI probes with `server/discover` and carries the
+    // version in params._meta under a NAMESPACED key — not `initialize` + params.protocolVersion,
+    // which is what a first cut assumed (and why the rewrite silently never fired).
     const body = JSON.stringify({
-      jsonrpc: "2.0", id: 1, method: "initialize",
-      params: { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "claude", version: "1" } },
+      jsonrpc: "2.0", id: "server-discover-probe-1", method: "server/discover",
+      params: { _meta: {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": { name: "claude", version: "1" },
+      } },
     });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s1", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s1", payload: { data: Buffer.from(body).toString("base64") } });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
     await svc.drain?.();
 
-    const forwarded = JSON.parse(sent[0]) as { params: { protocolVersion: string } };
-    expect(forwarded.params.protocolVersion, "an unsupported version must be negotiated down")
-      .not.toBe("2026-07-28");
-    expect(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]).toContain(forwarded.params.protocolVersion);
+    const forwarded = JSON.parse(sent[0]) as { params: { _meta: Record<string, unknown> } };
+    const got = forwarded.params._meta["io.modelcontextprotocol/protocolVersion"];
+    expect(got, "an unsupported version must be negotiated down").not.toBe("2026-07-28");
+    expect(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]).toContain(got);
   });
 
   it("leaves a SUPPORTED version untouched", async () => {
@@ -160,6 +166,7 @@ describe("MCP protocol version negotiation", () => {
     const out = collector();
     const svc = createTunnelService({ send: out.send, ...deps(fetchImpl) });
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+    // (the classic initialize shape still passes through untouched when supported)
     await svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s2", payload: { target: "scooter-env", method: "POST", path: "/mcp", headers: {} } });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s2", payload: { data: Buffer.from(body).toString("base64") } });
     await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s2", payload: {} });
