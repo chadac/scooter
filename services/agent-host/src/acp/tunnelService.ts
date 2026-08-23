@@ -39,6 +39,38 @@ interface Pending {
   body: Buffer[];
 }
 
+/** One structured trace line per tunnel event.
+ *
+ * WHY STRUCTURED. Debugging this feature took eight deploy cycles of adding one console.log at
+ * whichever boundary was suspected next — each iteration a build + rollout, each answering
+ * exactly one question. A tunnel carries a CONVERSATION between two processes; you cannot
+ * understand it from a single boundary. Every event now emits the same key=value shape,
+ * correlated by stream, so one run shows the whole exchange: which JSON-RPC method, which
+ * direction, how many bytes, what status.
+ *
+ * Off by default (TUNNEL_TRACE=1) — it is per-frame and would drown a normal log. The proper
+ * home for this is OTel spans (the metrics exporter is already wired); this is the cheap
+ * version that makes the next bug readable today. */
+const TRACE = process.env.TUNNEL_TRACE === "1";
+function trace(event: string, fields: Record<string, unknown>): void {
+  if (!TRACE) return;
+  const pairs = Object.entries(fields)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}=${typeof v === "string" && /[ "]/.test(v) ? JSON.stringify(v) : String(v)}`);
+  // eslint-disable-next-line no-console
+  console.log(`[tunnel.trace] ${event} ${pairs.join(" ")}`);
+}
+
+/** The JSON-RPC method + id in a body, for correlation. Never throws on a non-JSON body. */
+function rpcOf(body: Buffer): { method?: string; rpcId?: string | number } {
+  try {
+    const m = JSON.parse(body.toString()) as { method?: string; id?: string | number };
+    return { method: m?.method, rpcId: m?.id };
+  } catch {
+    return {};
+  }
+}
+
 export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
   const doFetch = deps.fetchImpl ?? fetch;
   const pending = new Map<string, Pending>();
@@ -52,37 +84,35 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
   /** Run the resolved request and stream its response back. */
   const run = async (id: string, p: Pending): Promise<void> => {
     try {
-      // eslint-disable-next-line no-console
-      console.log(`[tunnel] fetch START stream=${id} ${p.method} ${p.url} bodyBytes=${Buffer.concat(p.body).length}`);
       const res = await doFetch(p.url, {
         method: p.method,
         headers: p.headers,
         body: p.body.length ? Buffer.concat(p.body).toString() : undefined,
       });
-      // eslint-disable-next-line no-console
-      console.log(`[tunnel] fetch DONE stream=${id} status=${res.status} hasBody=${!!res.body}`);
       // NB: do NOT read (or clone-and-read) the body here to log it. undici's clone shares the
       // underlying stream, so consuming the clone leaves the original yielding nothing — the
       // response reached the container EMPTY. A 4xx is not an error to swallow either: the CLI
       // probes optional methods (server/discover) and RELIES on receiving the rejection so it
       // can fall back to the standard initialize handshake. Eating that response is what left
       // the SDK with no server at all.
+      trace("response", { stream: id, status: res.status, hasBody: !!res.body });
       const headers: Record<string, string> = {};
       res.headers?.forEach?.((v, k) => (headers[k] = v));
       let head = { status: res.status, headers };
+      let total = 0;
       const body = res.body;
       if (body && typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
         // STREAM, don't buffer: MCP StreamableHTTP responses arrive incrementally and the
         // agent should see them the same way.
         const reader = (body as ReadableStream<Uint8Array>).getReader();
-        let loggedFirst = false;
+        let first = true;
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (!loggedFirst) {
-            loggedFirst = true;
-            // eslint-disable-next-line no-console
-            console.log(`[tunnel] first chunk stream=${id} bytes=${value.length} preview=${Buffer.from(value).toString().slice(0, 120)}`);
+          total += value.length;
+          if (first) {
+            first = false;
+            trace("body", { stream: id, bytes: value.length, preview: Buffer.from(value).toString().slice(0, 200) });
           }
           deps.send({
             ch: "tunnel", type: "chunk", id,
@@ -94,10 +124,11 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         const text = await res.text();
         deps.send({ ch: "tunnel", type: "chunk", id, payload: { data: Buffer.from(text).toString("base64"), ...head } });
       }
-      // eslint-disable-next-line no-console
-      console.log(`[tunnel] close stream=${id} (response complete)`);
+      trace("close", { stream: id, totalBytes: total });
       deps.send({ ch: "tunnel", type: "close", id, payload: {} });
     } catch (err) {
+      // eslint-disable-next-line no-console
+      trace("failed", { stream: id, error: String(err) });
       // eslint-disable-next-line no-console
       console.warn(`[tunnel] fetch FAILED stream=${id}: ${String(err)}`);
       closeWithError(id, err instanceof Error ? err.message : String(err));
@@ -115,8 +146,7 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       };
 
       if (frame.type === "open") {
-        // eslint-disable-next-line no-console
-        console.log(`[tunnel] open stream=${id} target=${JSON.stringify(payload.target)} conversation=${conversationId}`);
+        trace("open", { stream: id, conv: conversationId, target: payload.target, method: payload.method });
         const resolution = resolveTunnelTarget(payload.target ?? "", conversationId, deps);
         if (!resolution.ok) {
           // Loud on both ends: the container logs the reason, and so do we.
@@ -138,8 +168,6 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
 
       const p = pending.get(id);
       if (!p) {
-        // eslint-disable-next-line no-console
-        console.log(`[tunnel] ${frame.type} for UNKNOWN stream=${id} (refused/finished?)`);
         return;
       }
 
@@ -148,8 +176,7 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         return;
       }
       if (frame.type === "end") {
-        // eslint-disable-next-line no-console
-        console.log(`[tunnel] end stream=${id} -> calling ${p.url}`);
+        trace("request", { stream: id, url: p.url, bytes: Buffer.concat(p.body).length, ...rpcOf(Buffer.concat(p.body)) });
         const task = run(id, p);
         inflight.add(task);
         void task.finally(() => inflight.delete(task));
