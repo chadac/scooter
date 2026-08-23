@@ -115,7 +115,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       const sdk = await createSdkAcpClient({
         oauthToken: deps.oauthToken,
         model: deps.model ?? "claude-sonnet-4-5",
-        exec: exec as never, // structurally identical ExecBackend
+        exec, // the provider's OWN ExecBackend type — a contract drift is now a compile error
         systemPrompt: deps.systemPrompt ?? "You are Scooter, a helpful agent.",
         claudeCodePath: deps.claudeCodePath,
       });
