@@ -100,6 +100,15 @@ const http = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
+        // FLUSH THE HEAD IMMEDIATELY. Node buffers the response head until the first write, so
+        // a stream that stays quiet (the INBOUND tunnel stream is quiet until the container
+        // makes an MCP call — possibly minutes) never sends headers at all. Node's fetch
+        // (undici) aborts on its headers timeout, which surfaced as
+        // `[tunnel] inbound stream dropped (reconnecting): TypeError: fetch failed` in a loop:
+        // the agent-host could never hold the stream open, so container-initiated MCP calls
+        // were never served and every BYO tool call timed out. An SSE comment is the standard
+        // way to open the stream without emitting a frame.
+        res.write(": open\n\n");
         // Stop pumping if the agent-host goes away mid-run (pod evicted, rollout), or the relay
         // would write into a dead response for the rest of the run.
         let clientGone = false;
