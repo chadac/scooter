@@ -875,6 +875,14 @@ in
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ]
+                ++ lib.optional cfg.byoc.traceTunnel
+                  # Per-frame tracing of the BYOC MCP tunnel (method, direction, bytes,
+                  # status, correlated by stream). Off by default — it is per-frame and
+                  # would drown a normal log — but the whole exchange in one run is the
+                  # difference between reading a bug and guessing at it.
+                  { name = "TUNNEL_TRACE"; value = "1"; }
+                ++ [
+                ]
                 ++ lib.optional (cfg.sandboxRuntimeClass != null)
                   # RuntimeClass for the sandbox pod (e.g. crun) — a cgroup-delegating
                   # runtime so the sandbox's systemd PID 1 runs NON-privileged in its

@@ -50,6 +50,11 @@ export interface SdkAcpClientDeps {
    *  claude-code agent can DESCRIBE those capabilities (from its skills) but has no
    *  tools to actually use them. */
   mcpEndpointUrl?: string;
+  /** ADDITIONAL named MCP servers, each already reachable at its own URL. The in-cluster paths
+   *  pass mcpEndpointUrl (one server on loopback); a BYO container passes this instead — one
+   *  local proxy per server, tunnelled to the cloud — because a conversation can offer MANY
+   *  servers and their URLs are per-container, not a single fixed endpoint. */
+  mcpServers?: Array<{ name: string; url: string }>;
   /** Agent identity + skills, as the SDK systemPrompt (was goose .goosehints). */
   systemPrompt: string;
   /** Extra env for the claude subprocess (e.g. IS_SANDBOX if ever needed). */
@@ -162,6 +167,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     mcpServers: {
       sandbox: server,
       ...(deps.mcpEndpointUrl ? { "scooter-env": { type: "http", url: deps.mcpEndpointUrl } } : {}),
+      // Named servers (the BYOC tunnel supplies these; N per conversation).
+      ...Object.fromEntries((deps.mcpServers ?? []).map((m) => [m.name, { type: "http", url: m.url }])),
     },
     toolAliases,
     disallowedTools,

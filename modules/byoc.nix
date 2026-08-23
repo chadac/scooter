@@ -36,6 +36,17 @@ in
       defaultText = literalExpression ''"''${registryPrefix}byoc-controller:latest"'';
       description = "OCI ref of the BYOC controller image.";
     };
+    traceTunnel = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Emit a per-frame trace of the MCP tunnel (`[tunnel.trace] …`): the JSON-RPC method,
+        direction, byte counts and HTTP status of every stream, correlated by stream id.
+        Off by default — per-frame logging is loud — but it shows the WHOLE exchange between
+        the container's agent and the platform's MCP server in a single run, which is what
+        debugging a two-process protocol actually requires.
+      '';
+    };
     joinSecretName = mkOption {
       type = types.str;
       default = cfg.agent.remoteAgent.joinSecret;

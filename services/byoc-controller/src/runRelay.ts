@@ -47,6 +47,15 @@ export interface RunRelay {
   answerPermission(sessionId: string, permissionId: string, answer: PermissionAnswer): AnswerResult;
   /** Return an exec/fs result the AGENT-HOST ran on its own ExecBackend (§L Q2). */
   answerExec(sessionId: string, execId: string, payload: ExecResultPayload): AnswerResult;
+  /** Forward a TUNNEL frame from the agent-host down to the container — a response chunk or a
+   *  close for a stream the container opened (MCP over the wire; see remoteProtocol.ts Channel
+   *  C). Unlike prompt(), a tunnel stream is NOT a run: it has no ack and never terminates one,
+   *  so it is never routed through the run bookkeeping. */
+  answerTunnel(sessionId: string, streamId: string, frame: WireFrame): AnswerResult;
+  /** Subscribe to CONTAINER->cloud tunnel frames (the agent-host serves them). These are
+   *  deliberately kept OUT of run streams: a run's stream is the conversation's transcript,
+   *  and MCP traffic is not part of it. Returns unsubscribe. */
+  onTunnelFrame(cb: (sessionId: string, frame: WireFrame) => void): () => void;
   /** Feed a raw frame received from a container's socket. */
   onContainerFrame(sessionId: string, raw: string): void;
   /** The container's socket closed — terminate every run still waiting on it. */
@@ -78,6 +87,8 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
   const awaiting = new Map<string, { sessionId: string; kind: "permission" | "exec" }>();
   // Container sessions we have already warned about unattributable frames for (once each).
   const warnedLegacy = new Set<string>();
+  // Subscribers for CONTAINER->cloud tunnel frames (the agent-host's MCP service).
+  const tunnelCbs = new Set<(sessionId: string, frame: WireFrame) => void>();
 
   const push = (run: PendingRun, frame: WireFrame): void => {
     if (run.done) return;
@@ -196,6 +207,13 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       } catch {
         return; // a malformed frame is dropped, never allowed to kill the socket
       }
+      // TUNNEL frames are their own channel: hand them to subscribers and STOP. Pushing them
+      // into runs would put MCP traffic in the conversation's transcript, and a tunnel close
+      // would look like run output.
+      if (frame.ch === "tunnel") {
+        for (const cb of [...tunnelCbs]) cb(sessionId, frame);
+        return;
+      }
       if (frame.type === "ack" && frame.id) {
         // The ack terminates its run — whether it carries a result or an error. Both are "the run
         // is over"; only a HANG would be a bug.
@@ -243,6 +261,26 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
     answerPermission(sessionId, permissionId, answer) {
       return replyToContainer(sessionId, permissionId, "permission", { ch: "acp", type: "ack", id: permissionId, payload: answer });
+    },
+
+    answerTunnel(sessionId, streamId, frame) {
+      const session = registry.resolveBySession(sessionId);
+      if (!session?.socket) {
+        // Fail rather than drop: the agent-host turns this into a close-with-error, so the
+        // container's SDK sees a failing tool call instead of a hanging one.
+        return { ok: false, reason: `container not connected (session ${sessionId})` };
+      }
+      try {
+        session.socket.send(JSON.stringify(frame));
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: `send failed: ${String(err)}` };
+      }
+    },
+
+    onTunnelFrame(cb) {
+      tunnelCbs.add(cb);
+      return () => tunnelCbs.delete(cb);
     },
 
     answerExec(sessionId, execId, payload) {

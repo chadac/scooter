@@ -112,6 +112,9 @@ export function createRemoteAcpClient(deps: RemoteAcpClientDeps): AcpClient {
     }
     // Channel B: the agent's tool calls, served on the CLOUD ExecBackend.
     if (frame.ch === "exec" && frame.id) void serveExec(frame);
+    // TUNNEL frames never arrive here: this transport is HTTP/SSE PER PROMPT, and a stream the
+    // container opens has no prompt to ride. They come in on the controller's dedicated
+    // inbound stream instead (tunnelClient.ts) — the gap the live test found.
   });
 
   // Permission answers go back on the ACP channel (they answer a permission_request `id`).

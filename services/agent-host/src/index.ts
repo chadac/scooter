@@ -1509,7 +1509,16 @@ export async function main(
     // container. Without BYOC_CONTROLLER_URL there is no BYO path at all and every run takes the
     // cloud floor.
     const acpProviders: AcpProvider[] = byocControllerUrl
-      ? [createRemotePersonalizedProvider({ controllerUrl: byocControllerUrl, exec }), floorProvider]
+      ? [
+          createRemotePersonalizedProvider({
+            controllerUrl: byocControllerUrl,
+            exec,
+            // The BYO container reaches scooter-env over the TUNNEL, not this URL directly —
+            // it is the loopback address the agent-host itself serves.
+            mcpUrlFor: mcpEndpoint ? (conv: string) => mcpEndpoint.urlFor(conv) : undefined,
+          }),
+          floorProvider,
+        ]
       : [floorProvider];
     // If the registry is absent the BYO provider is not even a CANDIDATE — every run goes to the
     // cloud floor and looks completely normal from the outside. Say so once per bridge, with the

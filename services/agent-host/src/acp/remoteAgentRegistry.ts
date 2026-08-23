@@ -9,6 +9,8 @@ import type { ExecBackend } from "../types.js";
 import type { AcpProvider, RunContext } from "./provider.js";
 import { createRemoteAcpClient } from "./remoteAcpClient.js";
 import { createByocTransport } from "./byocTransport.js";
+import { offeredTunnelServers } from "./tunnelTargets.js";
+import { startTunnelClient } from "./tunnelClient.js";
 import type { RemoteTransport } from "./remoteProtocol.js";
 
 /**
@@ -98,6 +100,10 @@ export function createRemotePersonalizedProvider(deps: {
    *  old per-pod `registry` could only answer for sockets THIS pod happened to hold, so on a
    *  multi-replica fleet a run scheduled elsewhere fell silently to the cloud floor. */
   controllerUrl: string;
+  /** The in-process MCP endpoint's URL for a conversation (mcpEndpoint.urlFor). Drives the
+   *  tunnel OFFER: absent = no scooter-env is offered and the container starts no proxy,
+   *  rather than one that dead-ends on every call. */
+  mcpUrlFor?: (conversationId: string) => string;
   /** The CLOUD sandbox ExecBackend for this conversation — the agent's tools tunnel here. */
   exec: ExecBackend;
   /** Priority above the cloud floor. Default 10. */
@@ -116,6 +122,10 @@ export function createRemotePersonalizedProvider(deps: {
     // Catalog models offered on the user's own container tag themselves "byoc" — these are
     // API-style ids (claude-sonnet-4-5), never Bedrock ids.
     modelTag: "byoc",
+    // MCP over the tunnel: offer NAMES the container proxies locally. The bridge's default is
+    // the agent-host's own loopback URL, which a laptop cannot reach — that is why a BYO agent
+    // had no scooter-env at all.
+    mcpServersFor: (conversationId: string) => offeredTunnelServers(conversationId, { mcpUrlFor: deps.mcpUrlFor }),
     kind: "claude",
     priority: deps.priority ?? 10,
     async eligible(ctx: RunContext): Promise<boolean> {
@@ -166,10 +176,38 @@ export function createRemotePersonalizedProvider(deps: {
       }
       // The pod holds NO socket. Every frame is an HTTP call to the controller, which owns the one
       // duplex WS to the container — so any replica can drive it and a rollout cannot strand a run.
-      return createRemoteAcpClient({
-        transport: createByocTransport({ baseUrl: base, sessionId, fetchImpl: deps.fetchImpl }),
-        exec: deps.exec,
-      });
+      const transport = createByocTransport({ baseUrl: base, sessionId, fetchImpl: deps.fetchImpl });
+      // MCP over the tunnel needs an INBOUND channel: this transport is HTTP/SSE per prompt, so
+      // a stream the CONTAINER opens has no way back here. Hold the controller's dedicated
+      // inbound stream open for as long as this client lives. Only when scooter-env is actually
+      // offered — no offer means no streams to serve.
+      if (!deps.mcpUrlFor) {
+        // eslint-disable-next-line no-console
+        console.log(`[tunnel] NOT started for ${sessionId}: no MCP endpoint configured — the BYO agent gets sandbox tools only`);
+      }
+      const tunnelClient = deps.mcpUrlFor
+        ? startTunnelClient({
+            // The controller root, NOT the per-session base — startTunnelClient builds its own
+            // /byoc/:id/tunnel path (deriving it by stripping the session off `base` would
+            // break the moment that shape changes).
+            baseUrl: deps.controllerUrl,
+            sessionId,
+            // SERVER-SIDE scope for every target this container can resolve; never read from
+            // a container-supplied frame.
+            conversationId: ctx.conversationId ?? "",
+            mcpUrlFor: deps.mcpUrlFor,
+            fetchImpl: deps.fetchImpl,
+          })
+        : undefined;
+      const client = createRemoteAcpClient({ transport, exec: deps.exec });
+      // Tear the inbound stream down with the client, or a dead session keeps a reader (and
+      // its reconnect loop) alive forever.
+      const origClose = client.close?.bind(client);
+      client.close = async () => {
+        tunnelClient?.close();
+        await origClose?.();
+      };
+      return client;
     },
   };
 }

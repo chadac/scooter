@@ -54,7 +54,7 @@ export interface PermissionRequest {
  *  mismatch so an old container fails clean against a new cloud (and vice-versa). */
 export const REMOTE_PROTOCOL_VERSION = 1;
 
-export type Channel = "acp" | "exec";
+export type Channel = "acp" | "exec" | "tunnel";
 
 /** Every wire frame. `id` present on request/reply pairs; absent on one-way notifications
  *  (session_update, terminal_created, exec_chunk). */
@@ -173,4 +173,55 @@ export interface RemoteTransport {
 export interface RemoteConnectHello {
   protocolVersion: number;
   joinToken: string;
+}
+
+// --- Channel C: TUNNEL (MCP over the wire, BYOC only) ---------------------------------------
+//
+// WHY. The container's SDK reaches MCP servers by URL, but `scooter-env` lives at
+// http://127.0.0.1:8080/mcp on the AGENT-HOST POD's loopback — goose and the in-cluster SDK
+// reach it because they run in that pod; a laptop cannot, by any route. So a BYO agent had no
+// scooter-env at all: no background jobs, model switch, scheduler, or resize.
+//
+// SHAPE. A named-target stream mux, NOT a raw TCP tunnel. `target` is a NAME the agent-host
+// resolves server-side ("scooter-env" today; "sandbox:<name>" reserved for sandbox-declared
+// servers). Raw host:port forwarding was rejected deliberately: it would open cluster network
+// reachability from a user's machine, give up per-stream attribution, and still need port
+// allocation + URL rewriting on the laptop.
+//
+// N SERVERS PER CONVERSATION. The container runs one local HTTP proxy per offered server and
+// hands its SDK ordinary http://127.0.0.1:<port>/ URLs. Adding a server later is a resolution
+// entry, not a protocol change.
+//
+// BIDIRECTIONAL STREAMS from day one: MCP StreamableHTTP streams responses, and a stateful or
+// server-push server would otherwise force a redesign. `open` starts a stream, `chunk` flows
+// BOTH ways, `close` ends it — always with a reason on failure, because a tunnel that goes
+// quiet leaves the agent with tools that HANG.
+export type TunnelType = "open" | "chunk" | "end" | "close";
+
+/** container -> cloud: start a stream to a named target. */
+export interface TunnelOpenPayload {
+  /** The server NAME, resolved server-side. Never a host:port. */
+  target: string;
+  method: string;
+  /** Path + query as the local proxy received it (e.g. "/" or "/messages?x=1"). */
+  path: string;
+  headers: Record<string, string>;
+}
+
+/** container -> cloud: the REQUEST body is complete (the response may still stream back).
+ *  A distinct type rather than a flag on close: `close` ends the whole stream, and conflating
+ *  "I finished sending" with "we are done" would cut off every response. */
+export type TunnelEndPayload = Record<string, never>;
+
+/** Either direction: a body chunk, base64 for binary safety. */
+export interface TunnelChunkPayload {
+  data: string;
+}
+
+/** Either direction: the stream is over. `error` set => it failed (never a silent stop). */
+export interface TunnelClosePayload {
+  error?: string;
+  /** cloud -> container, on the FIRST frame of a response. */
+  status?: number;
+  headers?: Record<string, string>;
 }
