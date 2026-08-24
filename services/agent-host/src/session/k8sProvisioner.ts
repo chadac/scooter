@@ -218,6 +218,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       for (const pvc of ready.items ?? []) {
         const name = pvc.metadata?.name;
         if (!name) continue;
+        // Skip PVCs being deleted (deletionTimestamp set) — defense in depth; the controller
+        // relabels to discarding before delete, but a PVC can still appear in pool-state=ready
+        // briefly while the delete is in flight. Never claim a doomed PVC.
+        if (pvc.metadata?.deletionTimestamp) continue;
         try {
           // CAS: test pool-state==ready (fails 422 if another claimer already flipped it),
           // then replace it + stamp claimed-by (all LABELS). last-used is an ANNOTATION (its

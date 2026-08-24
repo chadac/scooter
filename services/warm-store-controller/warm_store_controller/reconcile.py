@@ -6,7 +6,7 @@ Pool model (see todo/docs/WARM_STORE_PVC_MANAGER.md):
 - A pool PVC is a writable overlay UPPER (`upper/`+`work/`+`state/`) on an RWO PVC,
   KEYED by the sandbox image content tag it was warmed against (`warm-store` label).
   A PVC is ONLY claimable by a sandbox whose image tag matches — the no-fixup guarantee.
-- pool-state ∈ {warming, ready, claimed, retiring}.
+- pool-state ∈ {warming, ready, claimed, retiring, discarding}.
 - The CONTROLLER owns top-up (warm Jobs) / GC / return-on-suspend / leak-recovery.
   The agent-host PROVISIONER does the claim (claimName swap) out-of-band; the controller
   only observes the resulting `claimed-by` label + the owning Sandbox.
@@ -32,7 +32,7 @@ class PoolPvc:
 
     name: str
     image_tag: str            # label scooter.io/warm-store — the version key (overlay lower identity)
-    state: str                # label scooter.io/pool-state: warming|ready|claimed|retiring
+    state: str                # label scooter.io/pool-state: warming|ready|claimed|retiring|discarding
     claimed_by: str | None = None   # label scooter.io/claimed-by (conv id) when claimed
     last_used: str | None = None    # annotation scooter.io/last-used (rfc3339) for LRU
     bound_to_pod: bool = False       # is a live pod currently mounting it? (RWO single-attach)
@@ -126,6 +126,10 @@ def reconcile(
                     if p.image_tag == cfg.current_image_tag:
                         surviving_ready.append(p)
                 else:
+                    # Relabel to discarding BEFORE delete (so concurrent claimers' CAS fails on
+                    # pool-state=ready, not on a doomed PVC that still says "ready" while being
+                    # deleted). This prevents the race where a PVC is claimed after delete starts.
+                    actions.append(Relabel(pvc=p.name, state="discarding"))
                     actions.append(DeletePvc(pvc=p.name, reason="unclean-return"))
             elif sbox is None:
                 # Leak recovery: the owning Sandbox is gone and no pod holds it → return.
@@ -160,6 +164,12 @@ def reconcile(
             continue
 
         # `retiring` PVCs: in-flight teardown; no action here.
+
+        if p.state == "discarding":
+            # GC leaked discarding PVCs (a controller crash between relabel→delete leaves one).
+            # Always safe to collect — a discarding PVC is terminal (never claimed again).
+            actions.append(DeletePvc(pvc=p.name, reason="gc-discarding"))
+            continue
 
     # LRU-evict current-tag `ready` PVCs past max_total (coldest last_used first).
     if len(surviving_ready) > cfg.max_total:

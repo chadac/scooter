@@ -196,3 +196,59 @@ def test_active_claimed_pvc_is_noop():
     # No warm (min_ready=0), no delete, no relabel for the active PVC.
     assert not any(isinstance(a, (DeletePvc,)) and getattr(a, "pvc", None) == "p1" for a in actions)
     assert not any(isinstance(a, Relabel) and a.pvc == "p1" for a in actions)
+
+
+# --- PVC deletion race fix: discarding state -------------------------------
+
+def test_unclean_return_relabels_discarding_before_delete():
+    """An unclean unmount must relabel to 'discarding' BEFORE deleting, so the
+    existing CAS naturally excludes it from claims (a claimer's labelSelector
+    filters pool-state=ready). Mutation-check: remove the Relabel -> this fails."""
+    pvcs = [PoolPvc(name="p1", image_tag=TAG, state="claimed", claimed_by="conv-a", bound_to_pod=False)]
+    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, clean_unmount=False)]
+    actions = reconcile(pvcs=pvcs, sandboxes=sboxes, cfg=cfg(min_ready=0))
+    
+    # Must emit BOTH a Relabel(discarding) AND a DeletePvc, in that order.
+    relabels = [a for a in actions if isinstance(a, Relabel) and a.pvc == "p1"]
+    deletes = [a for a in actions if isinstance(a, DeletePvc) and a.pvc == "p1"]
+    
+    assert len(relabels) == 1, "must relabel to discarding"
+    assert relabels[0].state == "discarding", "must relabel to 'discarding' state"
+    assert len(deletes) == 1, "must also delete the PVC"
+    
+    # The Relabel must come BEFORE the DeletePvc in the action list.
+    relabel_idx = actions.index(relabels[0])
+    delete_idx = actions.index(deletes[0])
+    assert relabel_idx < delete_idx, "Relabel(discarding) must come before DeletePvc"
+
+
+def test_discarding_pvc_not_counted_as_ready():
+    """A PVC in 'discarding' state must NOT satisfy min_ready (it's being torn down).
+    The claimer's labelSelector already filters pool-state=ready, so a discarding PVC
+    is invisible to selection with no claimer change needed."""
+    pvcs = [PoolPvc(name="p-disc", image_tag=TAG, state="discarding")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
+    
+    # The discarding PVC doesn't count → must warm a new one to reach min_ready=1.
+    warms = [a for a in actions if isinstance(a, WarmNew)]
+    assert len(warms) == 1, "discarding PVC must not satisfy min_ready"
+
+
+def test_leaked_discarding_pvc_is_garbage_collected():
+    """A leaked 'discarding' PVC (controller crash between relabel and delete) must
+    eventually be collected — a leaked PVC is reclaimable, a stuck conversation is not."""
+    pvcs = [PoolPvc(name="p-leaked", image_tag=TAG, state="discarding")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=0))
+    
+    # The leaked discarding PVC should be deleted.
+    deletes = [a for a in actions if isinstance(a, DeletePvc) and a.pvc == "p-leaked"]
+    assert len(deletes) == 1, "leaked discarding PVC must be garbage-collected"
+
+
+def test_discarding_pvc_for_retired_tag_is_deleted():
+    """A discarding PVC for a retired tag should be deleted (no point keeping it)."""
+    pvcs = [PoolPvc(name="p-old-disc", image_tag=OLD, state="discarding")]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=0))
+    
+    deletes = [a for a in actions if isinstance(a, DeletePvc) and a.pvc == "p-old-disc"]
+    assert len(deletes) == 1, "discarding PVC for retired tag must be deleted"
