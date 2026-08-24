@@ -1,15 +1,16 @@
-# CLAUDE.md — kubenix-agent-manager
+# AGENTS.md — Scooter
 
-Guidance for working in this repo. (The `docs/` design docs are kept locally under
-the gitignored `todo/docs/`, not in the repo — some `see docs/…` comment pointers in
-the code refer to that local copy.)
+Guidance for working in this repo. (The full design docs — e.g. `DESIGN.md`,
+`TESTING.md`, `DEV_ENVIRONMENT_DESIGN.md` — are kept locally, outside the repo;
+some `see docs/…` pointers in the code refer to that local copy. The committed
+`docs/` tree is the user-facing mkdocs site.)
 
 ## What this is
 
 A Nix-powered agent platform layered over the Kubernetes
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) controller.
 agent-sandbox provides the execution **body** (pods, warm pools,
-suspend/resume); this repo adds the **brain** (an off-the-shelf ACP agent — Goose
+suspend/resume); Scooter adds the **brain** (an off-the-shelf ACP agent — Goose
 — run *outside* the sandbox) and a **conversation UI** (AG-UI + assistant-ui).
 The agent drives the sandbox via the agent-sandbox API; nothing is an in-pod
 agent. See `docs/DESIGN.md` for the full architecture and the reasoning behind
@@ -17,14 +18,12 @@ the agent-outside inversion, the two-PVC persistence model, and broker auth.
 
 ## Status
 
-This is built via a staged PoC process: Research → Design → Tests →
-**Implementation**. The agent-host TypeScript is being implemented seam-by-seam
-and **Tier 1 contract tests are green (12/12)**. Done so far: ACP↔AG-UI bridge,
-ExecBackend (K8s exec API), SessionManager, real ACP client (spawns `goose
-acp`), K8s SandboxProvisioner, AG-UI SSE server, file-backed ConversationStore,
-and index.ts wiring. Still to do: the UI, the local cluster fixture
-(`test/support/cluster-up.sh`, k3s), and turning Tier 2/3 green. Nix image +
-kubenix modules are still partly sketched. See `docs/DESIGN.md`.
+This project is **implemented and running in production-shaped deployments**.
+Multi-replica agent-hosts with controller-assigned conversations, suspend/resume
+with history restore, bring-your-own-Claude (device-key auth, concurrent
+conversations), a provider-aware model catalog, webhooks/scheduler/broker
+integrations, and a working UI are all live. Development continues via iterative
+improvements and new features.
 
 ## ALWAYS run the tests
 
@@ -35,7 +34,7 @@ them green (bridge → exec → session → provisioner → UI).
 ```bash
 just test-quick     # Tier 1 contract tests — fast, no cluster. Run constantly.
 just test           # FULL suite: Tier 1 + Tier 2 (cluster) + Tier 3 (E2E).
-just ci             # What CI runs: flake check + typecheck + Tier 1.
+just ci             # What CI runs: flake + manifest/lockfile/hash checks + lint + Tier 1.
 ```
 
 Per-tier:
@@ -84,19 +83,23 @@ Rules of thumb:
 
 | Path | What |
 |------|------|
-| `flake.nix` | sandbox image, agent-host, ui, agent (goose) |
-| `services/agent-host/` | TS: ACP⇄AG-UI bridge, session manager, SDK exec backend |
+| `flake.nix` | Nix entry: sandbox image, agent-host, ui, broker, webhooks, scheduler, agent (goose), platform manifests |
+| `services/agent-host/` | TS: ACP⇄AG-UI bridge, session manager, K8s-exec backend, web-service proxy, MCP agent tools, auth |
+| `services/broker/` | Python/FastAPI credential broker + provider modules (GitHub, GitLab, Jira, Slack, AWS, Datadog) |
+| `services/webhooks/`, `services/scheduler/` | Python/FastAPI: spawn conversations from provider threads / fire cron-scheduled tasks |
+| `services/claude-sdk-provider/` | Claude Agent SDK provider (an alternative brain to goose) |
 | `pkgs/sandbox-os/` | the NixOS systemd-PID-1 dev sandbox image (exec via K8s API) |
-| `pkgs/broker-tools/` | broker CLIs (agent-broker / git-credential-broker / scooter-aws*), prebuilt into the sandbox |
-| `modules/` | kubenix: per-conversation Sandbox, agent-host, warm pool |
+| `pkgs/broker-tools/` | broker CLIs (`agent-broker` / `git-credential-broker` / `scooter-aws*`), prebuilt into the sandbox |
+| `modules/` | kubenix: per-conversation cold `Sandbox` (SA + 2 PVCs), agent-host, broker, webhooks, scheduler, warm pool |
 | `ui/` | assistant-ui frontend + AG-UI client library |
-| `test/` | Tier 2 cluster + Tier 3 e2e + fixtures/fakes |
+| `skills/` | Markdown agent skills (`scooter-intro`, `scooter-env`, `agent-tools`, `scooter-aws`, …) |
+| `test/`, `nixos-tests/` | Tier 2 cluster + Tier 3 e2e fixtures/fakes; NixOS VM tests for the sandbox image |
 | `services/agent-host/test/` | Tier 1 contract tests |
-| `docs/` | `DESIGN.md`, `TESTING.md` |
+| `docs/` | user-facing mkdocs site; the full `DESIGN.md`/`TESTING.md` are kept locally, outside the repo |
 
 ## Reference
 
 - Upstream agent-sandbox source was inspected at commit `52d1f97` (CRDs,
   controller suspend/PVC behavior, runtime contract, client SDKs).
-- Sibling repo `../openhands-nix` is the source of the skills, broker, and
-  webhooks patterns being re-targeted here.
+- The skills, broker, and webhooks patterns were originally adapted from the
+  sibling `openhands-nix` project.

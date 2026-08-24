@@ -62,20 +62,35 @@ class Store:
             await s.refresh(row)
         return row
 
-    async def list_tasks(self) -> list[TaskRow]:
-        async with self._session() as s:
-            return list((await s.scalars(select(TaskRow).order_by(TaskRow.created_at.desc()))).all())
+    # Every read/write below takes `owner` and filters on it. The API layer passes the
+    # authenticated identity, so one user can never see or mutate another's task — the
+    # scoping the agent-host and MCP tools have always DOCUMENTED but the server did not
+    # enforce (it honored x-auth-user on create only). `None` is the unowned/anonymous
+    # bucket, a real scope rather than a wildcard, so it must match owner == "" exactly.
 
-    async def get_task(self, task_id: str) -> TaskRow | None:
-        async with self._session() as s:
-            return await s.get(TaskRow, task_id)
+    @staticmethod
+    def _owner_eq(owner: str | None):
+        """The owner predicate. Anonymous (None) maps to the "" bucket write_task uses."""
+        return TaskRow.owner == (owner or "")
 
-    async def patch_task(self, task_id: str, **fields) -> TaskRow | None:
-        """Update the given fields. If cron/timezone/enabled change, recompute
-        next_run_at (validate first)."""
+    async def list_tasks(self, owner: str | None) -> list[TaskRow]:
+        async with self._session() as s:
+            q = select(TaskRow).where(self._owner_eq(owner)).order_by(TaskRow.created_at.desc())
+            return list((await s.scalars(q)).all())
+
+    async def get_task(self, task_id: str, owner: str | None) -> TaskRow | None:
         async with self._session() as s:
             row = await s.get(TaskRow, task_id)
-            if row is None:
+            # Another owner's task is reported as absent, not forbidden — a 403 would
+            # confirm the id exists.
+            return row if row is not None and row.owner == (owner or "") else None
+
+    async def patch_task(self, task_id: str, owner: str | None, **fields) -> TaskRow | None:
+        """Update the given fields. If cron/timezone/enabled change, recompute
+        next_run_at (validate first). Another owner's task → None (treated as 404)."""
+        async with self._session() as s:
+            row = await s.get(TaskRow, task_id)
+            if row is None or row.owner != (owner or ""):
                 return None
             for k, v in fields.items():
                 if v is not None:
@@ -90,10 +105,10 @@ class Store:
             await s.refresh(row)
             return row
 
-    async def delete_task(self, task_id: str) -> bool:
+    async def delete_task(self, task_id: str, owner: str | None) -> bool:
         async with self._session() as s:
             row = await s.get(TaskRow, task_id)
-            if row is None:
+            if row is None or row.owner != (owner or ""):
                 return False
             await s.delete(row)
             await s.commit()
@@ -169,9 +184,17 @@ class Store:
             )
             await s.commit()
 
-    async def list_runs(self, task_id: str, limit: int = 50) -> list[RunRow]:
+    async def list_runs(self, task_id: str, owner: str | None, limit: int = 50) -> list[RunRow]:
+        """Runs for a task the caller owns. Scoped by JOINing the parent task rather than
+        denormalizing owner onto RunRow, so the task stays the single authority on it."""
         async with self._session() as s:
-            stmt = select(RunRow).where(RunRow.task_id == task_id).order_by(RunRow.fired_at.desc()).limit(limit)
+            stmt = (
+                select(RunRow)
+                .join(TaskRow, TaskRow.id == RunRow.task_id)
+                .where(RunRow.task_id == task_id, self._owner_eq(owner))
+                .order_by(RunRow.fired_at.desc())
+                .limit(limit)
+            )
             return list((await s.scalars(stmt)).all())
 
     async def prune_old_runs(self, *, retention_days: int, now: datetime) -> int:
