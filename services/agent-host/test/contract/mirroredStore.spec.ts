@@ -356,14 +356,14 @@ describe("mirroredConversationStore", () => {
   });
 
   describe("listJobs (durable read — mirror is authoritative, unioned with local)", () => {
-    const job = (id: string, status: string) => ({ id, status } as never);
+    const job = (jobId: string, status: string) => ({ jobId, status } as never);
 
     it("reads from MIRROR when LOCAL is empty (rollout wiped the emptyDir)", async () => {
       const local = memStore({ listJobs: async () => [] }); // wiped
       const mirror = memStore({ listJobs: async () => [job("j1", "done"), job("j2", "running")] });
       const store = mirroredConversationStore(local, mirror);
       const jobs = await store.listJobs!(ID);
-      expect(jobs.map((j) => j.id)).toEqual(["j1", "j2"]);
+      expect(jobs.map((j) => j.jobId)).toEqual(["j1", "j2"]);
     });
 
     it("union: a job only in LOCAL (just added) is returned", async () => {
@@ -371,7 +371,7 @@ describe("mirroredConversationStore", () => {
       const mirror = memStore({ listJobs: async () => [job("j-old", "done")] });
       const store = mirroredConversationStore(local, mirror);
       const jobs = await store.listJobs!(ID);
-      expect(jobs.map((j) => j.id)).toEqual(expect.arrayContaining(["j-fresh", "j-old"]));
+      expect(jobs.map((j) => j.jobId)).toEqual(expect.arrayContaining(["j-fresh", "j-old"]));
     });
 
     it("dedupe: the same job id in both stores appears once, local wins (fresher status)", async () => {
@@ -388,6 +388,6 @@ describe("mirroredConversationStore", () => {
       const mirror = memStore({ listJobs: async () => { throw new Error("mirror down"); } });
       const store = mirroredConversationStore(local, mirror);
       const jobs = await store.listJobs!(ID);
-      expect(jobs.map((j) => j.id)).toEqual(["j-safe"]);
+      expect(jobs.map((j) => j.jobId)).toEqual(["j-safe"]);
     });
   });

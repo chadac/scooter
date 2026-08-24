@@ -163,8 +163,8 @@ export function mirroredConversationStore(
       local.readModule || mirror.readModule
         ? async (id) => {
             const [mirrorMod, localMod] = await Promise.all([
-              Promise.resolve(mirror.readModule?.(id)).catch(() => undefined),
-              Promise.resolve(local.readModule?.(id)).catch(() => undefined),
+              Promise.resolve(mirror.readModule?.(id) ?? null).catch(() => null),
+              Promise.resolve(local.readModule?.(id) ?? null).catch(() => null),
             ]);
             return localMod ?? mirrorMod; // local wins (fresher), mirror is fallback
           }
@@ -180,8 +180,8 @@ export function mirroredConversationStore(
             ]);
             // Dedupe by job id. Local wins (fresher status).
             const byId = new Map<string, JobRecord>();
-            for (const job of mirrorJobs) byId.set(job.id, job);
-            for (const job of localJobs) byId.set(job.id, job); // local wins
+            for (const job of mirrorJobs) byId.set(job.jobId, job);
+            for (const job of localJobs) byId.set(job.jobId, job); // local wins
             return [...byId.values()];
           }
         : undefined,
