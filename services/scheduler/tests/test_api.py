@@ -15,8 +15,8 @@ async def client(monkeypatch):
     store = Store("sqlite+aiosqlite:///:memory:")
     await store.init()
     appmod.app.state.store = store
-    # run_now passes app.state.metrics to _fire, so the fixture must set it. The
-    # lifespan normally does; these tests drive the app without it.
+    
+    # Initialize metrics (disabled/no-op for tests)
     appmod.app.state.metrics = create_metrics(enabled=False)
 
     async def fake_spawn(prompt, *, title, owner, client=None):
