@@ -131,9 +131,11 @@ class Store:
         async with self._session() as s:
             rows = list((await s.scalars(stmt)).all())
             for row in rows:
-                # Store the lag (now - old next_run_at) as a transient attribute for metrics
+                # Store the lag (now - old next_run_at) as a transient attribute for metrics.
+                # SQLite returns naive-UTC datetimes; normalize to aware-UTC before subtracting.
                 if row.next_run_at:
-                    row._claim_lag_ms = (now - row.next_run_at).total_seconds() * 1000  # type: ignore
+                    next_run_aware = row.next_run_at if row.next_run_at.tzinfo else row.next_run_at.replace(tzinfo=timezone.utc)
+                    row._claim_lag_ms = (now - next_run_aware).total_seconds() * 1000  # type: ignore
                 # Advance BEFORE releasing the lock — this is what closes the double-fire
                 # window. next_run is computed from `now` (not the stale next_run_at) so a
                 # missed window fires once then advances forward (no backfill storm).

@@ -39,6 +39,11 @@ async def _fire(store: Store, task, metrics: MetricsSink) -> None:
     next_run_at was advanced atomically by claim_due (the double-fire guard), so
     _fire must NOT reschedule — it only spawns + records the run."""
     start_ms = time.perf_counter() * 1000
+    
+    # Record claim lag if available (claim_due attaches it as a transient attribute)
+    if hasattr(task, "_claim_lag_ms"):
+        metrics.claim_lag(lag_ms=task._claim_lag_ms)
+    
     run_id = await store.start_run(task.id)
     conv = await spawn_conversation(task.prompt, title=task.title, owner=task.owner)
     await store.finish_run(
