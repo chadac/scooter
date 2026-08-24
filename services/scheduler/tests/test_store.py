@@ -89,7 +89,7 @@ async def test_claim_due_advances_next_run_atomically(store):
     # And the row's next_run_at was moved forward (to the next cron minute).
     # SQLite returns naive-UTC datetimes; normalize to aware-UTC for the comparison
     # (the value is correct UTC either way — see the create-computes-next_run note).
-    row = await store.get_task(t.id)
+    row = await store.get_task(t.id, "a")
     next_at = row.next_run_at if row.next_run_at.tzinfo else row.next_run_at.replace(tzinfo=timezone.utc)
     assert next_at > now
     assert row.last_run_at is not None
@@ -99,10 +99,10 @@ async def test_claim_due_advances_next_run_atomically(store):
 async def test_patch_recomputes_next_run(store):
     t = await store.create_task(title="x", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="a", enabled=True)
     # disabling clears next_run_at
-    p = await store.patch_task(t.id, enabled=False)
+    p = await store.patch_task(t.id, "a", enabled=False)
     assert p.next_run_at is None
     # re-enabling recomputes it
-    p = await store.patch_task(t.id, enabled=True)
+    p = await store.patch_task(t.id, "a", enabled=True)
     assert p.next_run_at is not None
 
 
@@ -111,7 +111,7 @@ async def test_run_lifecycle(store):
     t = await store.create_task(title="x", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="a", enabled=True)
     run_id = await store.start_run(t.id)
     await store.finish_run(run_id, conversation_id="conv-1", status="spawned", error=None)
-    runs = await store.list_runs(t.id)
+    runs = await store.list_runs(t.id, "a")
     assert len(runs) == 1
     assert runs[0].conversation_id == "conv-1"
     assert runs[0].status == "spawned"
@@ -121,5 +121,5 @@ async def test_run_lifecycle(store):
 async def test_delete_cascades_runs(store):
     t = await store.create_task(title="x", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="a", enabled=True)
     await store.start_run(t.id)
-    assert await store.delete_task(t.id) is True
-    assert await store.get_task(t.id) is None
+    assert await store.delete_task(t.id, "a") is True
+    assert await store.get_task(t.id, "a") is None
