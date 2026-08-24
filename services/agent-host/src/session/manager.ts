@@ -193,6 +193,16 @@ export interface ConversationStore {
   addLink?(id: SessionId, link: ConversationLink): Promise<void>;
   /** The conversation's external resource links (for the UI panel). Optional. */
   listLinks?(id: SessionId): Promise<ConversationLink[]>;
+  /** Reverse lookup: find the conversation that owns a given URL (e.g. a PR/MR/issue).
+   *  Enables routing webhook events (CI failures, PR comments) back to the conversation
+   *  that owns the linked resource. Returns the FIRST matching conversationId, or null
+   *  if no conversation links to that URL. When `owner` is provided, only returns
+   *  conversations owned by that user (scoped lookup for multi-tenant safety). URL
+   *  normalization handles trailing slashes and API vs HTML forms. Optional. */
+  findConversationByLink?(url: string, owner?: string): Promise<SessionId | null>;
+  /** Like findConversationByLink, but returns ALL conversations that link to the URL
+   *  (for the case where multiple conversations reference the same PR/issue). Optional. */
+  findAllConversationsByLink?(url: string, owner?: string): Promise<SessionId[]>;
   /** Persist the agent-authored module.nix — the DURABLE source of truth for the
    *  conversation's self-modified environment (survives suspend/resume + restart).
    *  The agent-host syncs it into the per-conversation ConfigMap on modify + on

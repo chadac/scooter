@@ -307,6 +307,40 @@ async def get_conversation_statuses(conversation_ids: list[str]) -> dict[str, st
     return out
 
 
+async def find_conversations_by_url(url: str, owner: str | None = None) -> list[str]:
+    """Reverse lookup: find all conversations that link to a given URL.
+    
+    Used for webhook routing — find the conversation(s) that own a PR/MR/issue
+    so check failures and comments can be routed back to the right conversation.
+    
+    Args:
+        url: The resource URL (e.g. https://github.com/owner/repo/pull/42)
+        owner: Optional owner email for scoped lookup (multi-tenant safety)
+    
+    Returns:
+        List of conversation IDs that link to the URL (empty if none found)
+    """
+    import urllib.parse
+    params = {"url": url}
+    if owner:
+        params["owner"] = owner
+    query_string = urllib.parse.urlencode(params)
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{settings.agent_manager_url}/links/by-url?{query_string}",
+                headers=_auth_headers(),
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("conversationIds", [])
+        except Exception:
+            logger.exception("find_conversations_by_url failed for %s", url)
+            return []
+
+
 async def resolve_sandbox_to_conversation(sandbox_or_conv_id: str) -> str | None:
     """conversation_id == threadId, so it resolves to itself."""
     return sandbox_or_conv_id

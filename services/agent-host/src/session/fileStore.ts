@@ -39,6 +39,41 @@ function isENOENT(e: unknown): boolean {
   return (e as { code?: string })?.code === "ENOENT";
 }
 
+/** Normalize a URL for link lookup: lowercase domain, strip trailing slash, convert
+ *  API URLs to HTML URLs where possible. This makes different URL forms (with/without
+ *  trailing slash, api.github.com vs github.com) resolve to the same conversation. */
+function normalizeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    // Lowercase the hostname (domain is case-insensitive)
+    u.hostname = u.hostname.toLowerCase();
+    // Strip trailing slash from path
+    u.pathname = u.pathname.replace(/\/$/, "");
+    
+    // GitHub API -> HTML URL normalization
+    // https://api.github.com/repos/owner/repo/pulls/123 -> https://github.com/owner/repo/pull/123
+    if (u.hostname === "api.github.com" && u.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)/)) {
+      const match = u.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)/);
+      if (match) {
+        return `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`;
+      }
+    }
+    // https://api.github.com/repos/owner/repo/issues/123 -> https://github.com/owner/repo/issues/123
+    if (u.hostname === "api.github.com" && u.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)/)) {
+      const match = u.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+      if (match) {
+        return `https://github.com/${match[1]}/${match[2]}/issues/${match[3]}`;
+      }
+    }
+    
+    // Return the normalized URL (lowercase domain, no trailing slash)
+    return u.toString();
+  } catch {
+    // Invalid URL - return as-is (will likely not match anything)
+    return url;
+  }
+}
+
 export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
@@ -365,6 +400,49 @@ export function createFileConversationStore(root: string): ConversationStore {
 
     gooseStatePath(id) {
       return join(root, id, "goose");
+    },
+
+    async findConversationByLink(url: string, owner?: string): Promise<SessionId | null> {
+      const normalized = normalizeUrl(url);
+      const conversations = await this.listConversations!();
+      
+      for (const conv of conversations) {
+        // If owner is specified, skip conversations not owned by that user
+        if (owner && conv.owner !== owner) continue;
+        
+        const links = await this.listLinks!(conv.id);
+        for (const link of links) {
+          if (link.url && normalizeUrl(link.url) === normalized) {
+            return conv.id;
+          }
+        }
+      }
+      
+      return null;
+    },
+
+    async findAllConversationsByLink(url: string, owner?: string): Promise<SessionId[]> {
+      const normalized = normalizeUrl(url);
+      const conversations = await this.listConversations!();
+      const results: SessionId[] = [];
+      
+      for (const conv of conversations) {
+        // If owner is specified, skip conversations not owned by that user
+        if (owner && conv.owner !== owner) continue;
+        
+        const links = await this.listLinks!(conv.id);
+        for (const link of links) {
+          if (link.url && normalizeUrl(link.url) === normalized) {
+            // Only add each conversation once, even if it has multiple matching links
+            if (!results.includes(conv.id)) {
+              results.push(conv.id);
+            }
+            break; // Move to next conversation
+          }
+        }
+      }
+      
+      return results;
     },
   };
 }

@@ -17,7 +17,14 @@ from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
-from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
+from ..agent_host_client import (
+    conversation_url,
+    create_conversation,
+    find_conversations_by_url,
+    get_conversation_status,
+    push_link,
+    send_message,
+)
 from ..identity_resolve import resolve_owner
 from ..responses.github import post_github_comment
 
@@ -125,6 +132,10 @@ async def handle_github_webhook(
         await _handle_issue_event(payload)
     elif event_type == "pull_request":
         await _handle_pr_event(payload)
+    elif event_type == "check_suite":
+        await _handle_check_suite(payload)
+    elif event_type == "check_run":
+        await _handle_check_run(payload)
     else:
         logger.debug("Ignoring GitHub event type: %s", event_type)
 
@@ -354,3 +365,171 @@ async def _clear_pending(res_type: str, res_id: str) -> None:
     if is_pending(existing):
         await db.clear_conversation("github", res_type, res_id)
     await db.get_and_clear_pending_messages("github", res_type, res_id)
+
+
+# Agent app identities for loop prevention
+AGENT_APP_IDENTITIES = ["app/scooter", "scooter[bot]"]
+
+
+def _is_agent_event(actor: str) -> bool:
+    """Check if an event was authored by the agent's own GitHub App.
+    
+    Loop prevention: the agent pushes -> CI runs -> agent is notified -> agent pushes -> loop.
+    Ignore events from the agent's own app identity to break the loop.
+    """
+    actor_lower = actor.lower()
+    return any(identity.lower() in actor_lower for identity in AGENT_APP_IDENTITIES)
+
+
+async def _handle_check_suite(payload: dict):
+    """Handle check_suite event (CI completed).
+    
+    Routes CI results back to conversations that own the linked PR.
+    Notifies on failure (always) and success (only if conversation is awake).
+    """
+    action = payload.get("action", "")
+    if action != "completed":
+        return  # Only notify on completion, not queued/in_progress
+
+    check_suite = payload.get("check_suite", {})
+    conclusion = check_suite.get("conclusion", "")  # success, failure, cancelled, etc.
+    head_sha = check_suite.get("head_sha", "")
+    
+    # Loop prevention: ignore events from the agent's own app
+    app_info = check_suite.get("app", {})
+    app_slug = app_info.get("slug", "")
+    if app_slug and _is_agent_event(app_slug):
+        logger.debug("Ignoring check_suite from agent app: %s", app_slug)
+        return
+
+    # Find the PR(s) this check suite is for
+    pull_requests = check_suite.get("pull_requests", [])
+    if not pull_requests:
+        return  # No PR associated, nothing to route
+
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+    
+    for pr_data in pull_requests:
+        pr_number = pr_data.get("number")
+        if not pr_number:
+            continue
+        
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+        
+        # Find all conversations that link to this PR
+        conversation_ids = await find_conversations_by_url(pr_url)
+        
+        if not conversation_ids:
+            logger.debug("No conversations found for PR %s", pr_url)
+            continue
+        
+        # Decide whether to notify based on conclusion and conversation status
+        should_notify_all = conclusion in ["failure", "cancelled", "timed_out", "action_required"]
+        
+        for conv_id in conversation_ids:
+            # For success, only notify if conversation is awake (Q1)
+            if conclusion == "success":
+                status = await get_conversation_status(conv_id)
+                if status != "running":
+                    logger.debug("Skipping success notification for suspended conversation %s", conv_id)
+                    continue
+            elif not should_notify_all:
+                # Skip other conclusions (neutral, skipped, stale)
+                continue
+            
+            # Build the notification message
+            check_suite_url = check_suite.get("html_url", "")
+            head_branch = check_suite.get("head_branch", "unknown")
+            
+            if conclusion == "success":
+                message = (
+                    f"✅ **CI passed on PR #{pr_number}** (branch: {head_branch})\n\n"
+                    f"All checks completed successfully.\n"
+                    f"View details: {check_suite_url}"
+                )
+            else:
+                message = (
+                    f"❌ **CI failed on PR #{pr_number}** (branch: {head_branch})\n\n"
+                    f"Check suite conclusion: `{conclusion}`\n"
+                    f"Commit: `{head_sha[:7]}`\n\n"
+                    f"**Next steps:**\n"
+                    f"1. View the failed checks: {check_suite_url}\n"
+                    f"2. Fix the issues\n"
+                    f"3. Push your changes\n"
+                    f"4. Confirm the checks pass"
+                )
+            
+            # Send as a system message (source="webhook")
+            ok = await send_message(conv_id, message, source="webhook")
+            if ok:
+                logger.info("Notified conversation %s of check_suite %s for PR #%s",
+                          conv_id, conclusion, pr_number)
+            else:
+                logger.warning("Failed to notify conversation %s of check_suite for PR #%s",
+                             conv_id, pr_number)
+
+
+async def _handle_check_run(payload: dict):
+    """Handle check_run event (individual CI check completed).
+    
+    Similar to check_suite, but for individual check runs within a suite.
+    """
+    action = payload.get("action", "")
+    if action != "completed":
+        return  # Only notify on completion
+
+    check_run = payload.get("check_run", {})
+    conclusion = check_run.get("conclusion", "")  # success, failure, etc.
+    name = check_run.get("name", "")
+    details_url = check_run.get("details_url", "")
+    
+    # Loop prevention: ignore events from the agent's own app
+    app_info = check_run.get("app", {})
+    app_slug = app_info.get("slug", "")
+    if app_slug and _is_agent_event(app_slug):
+        logger.debug("Ignoring check_run from agent app: %s", app_slug)
+        return
+
+    # Find the PR(s) this check run is for
+    pull_requests = check_run.get("pull_requests", [])
+    if not pull_requests:
+        return  # No PR associated
+
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+    
+    for pr_data in pull_requests:
+        pr_number = pr_data.get("number")
+        if not pr_number:
+            continue
+        
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+        
+        # Find all conversations that link to this PR
+        conversation_ids = await find_conversations_by_url(pr_url)
+        
+        if not conversation_ids:
+            continue
+        
+        # Only notify on failures (individual check runs can be noisy on success)
+        if conclusion not in ["failure", "cancelled", "timed_out", "action_required"]:
+            continue
+        
+        for conv_id in conversation_ids:
+            message = (
+                f"❌ **Check failed on PR #{pr_number}**: `{name}`\n\n"
+                f"Conclusion: `{conclusion}`\n"
+                f"View details: {details_url}\n\n"
+                f"Fix the issue and push your changes."
+            )
+            
+            ok = await send_message(conv_id, message, source="webhook")
+            if ok:
+                logger.info("Notified conversation %s of check_run failure '%s' for PR #%s",
+                          conv_id, name, pr_number)
+            else:
+                logger.warning("Failed to notify conversation %s of check_run for PR #%s",
+                             conv_id, pr_number)
