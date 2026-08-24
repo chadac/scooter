@@ -88,7 +88,10 @@ describe("WebServiceRegistry", () => {
   });
 
   it("start runs `scooter-service start <name>` (persists autostart) and invalidates the cache", async () => {
-    const execute = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const execute = vi.fn(async (cmd: { command: string; args?: string[] }) => {
+      if (cmd.command === "readlink") return { stdout: "/nix/store/abc-web-services.json", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
     const download = vi.fn(async () => MANIFEST);
     const reg = make(fakeExec({ execute, download }));
     await reg.list("conv-1"); // populate cache (download #1)
@@ -101,19 +104,30 @@ describe("WebServiceRegistry", () => {
   });
 
   it("start throws when the unit fails", async () => {
-    const reg = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "", stderr: "boom", exitCode: 1 })) }));
+    const execute = vi.fn(async (cmd: { command: string; args?: string[] }) => {
+      if (cmd.command === "readlink") return { stdout: "/nix/store/abc-web-services.json", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "boom", exitCode: 1 };
+    });
+    const reg = make(fakeExec({ execute, download: vi.fn(async () => MANIFEST) }));
     await expect(reg.start("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 
   it("stop runs `scooter-service stop <name>` (clears autostart)", async () => {
-    const execute = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const execute = vi.fn(async (cmd: { command: string; args?: string[] }) => {
+      if (cmd.command === "readlink") return { stdout: "/nix/store/abc-web-services.json", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
     const reg = make(fakeExec({ execute, download: vi.fn(async () => MANIFEST) }));
     await reg.stop("conv-1", "marimo");
     expect(execute).toHaveBeenCalledWith({ command: "scooter-service", args: ["stop", "marimo"] });
   });
 
   it("stop throws when the unit fails", async () => {
-    const reg = make(fakeExec({ execute: vi.fn(async () => ({ stdout: "", stderr: "nope", exitCode: 1 })) }));
+    const execute = vi.fn(async (cmd: { command: string; args?: string[] }) => {
+      if (cmd.command === "readlink") return { stdout: "/nix/store/abc-web-services.json", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "nope", exitCode: 1 };
+    });
+    const reg = make(fakeExec({ execute, download: vi.fn(async () => MANIFEST) }));
     await expect(reg.stop("conv-1", "marimo")).rejects.toThrow(/failed/);
   });
 

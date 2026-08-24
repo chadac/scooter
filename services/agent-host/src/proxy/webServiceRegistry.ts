@@ -2,8 +2,10 @@
  * WebServiceRegistry — reads a conversation's declared web services from the
  * in-pod discovery manifest (/run/scooter/web-services.json, rendered by the
  * `webServices` NixOS option) via the exec API, and drives their systemd
- * units (is-active / start). Descriptors are cached per conversation; the cache is
- * invalidated on suspend/resume and after a start.
+ * units (is-active / start). Descriptors are cached per conversation with a
+ * revalidation TTL: the manifest is a symlink to a content-addressed Nix store
+ * path (the target changes iff content changes), so `readlink` is a cheap version
+ * token. Cache is invalidated on suspend/resume and after a start.
  *
  * Kept separate from webServiceProxy.ts so the proxy stays pure/unit-testable
  * against a fake registry; this module owns the exec/k8s coupling.
@@ -14,6 +16,13 @@ import type { WebServiceDescriptor, WebServiceRegistry } from "./webServiceProxy
 
 /** The manifest file the `webServices` option renders inside the pod. */
 export const MANIFEST_PATH = "/run/scooter/web-services.json";
+
+/**
+ * Revalidation TTL: how often to check if the manifest symlink target changed.
+ * A readlink is one cheap exec (~10-20ms); a full download is ~50-100ms + parse.
+ * 10s bounds staleness (C2) while keeping steady-state cost low (C5).
+ */
+const REVALIDATE_MS = 10_000;
 
 /** Minimal exec surface we need (a subset of SandboxApiClient). */
 export interface ExecLike {
@@ -51,30 +60,117 @@ export function parseManifest(json: string): WebServiceDescriptor[] {
   }
 }
 
+/** A cache entry: descriptors + the symlink target (version token) + last check time. */
+interface CacheEntry {
+  descriptors: WebServiceDescriptor[];
+  /** The Nix store path the manifest symlink points to (content-addressed, changes iff content changes). */
+  token: string;
+  /** When we last checked/revalidated (Date.now()). */
+  checkedAt: number;
+}
+
 export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServiceRegistry {
-  // conversationId -> descriptors (cached). undefined = not yet loaded.
-  const cache = new Map<string, WebServiceDescriptor[]>();
+  // conversationId -> cache entry. undefined = not yet loaded.
+  const cache = new Map<string, CacheEntry>();
+
+  /**
+   * Read the symlink target (the Nix store path) as a version token.
+   * Returns null on failure (pod unreachable, readlink failed, etc.).
+   */
+  async function getToken(exec: ExecLike): Promise<string | null> {
+    try {
+      const r = await exec.execute({ command: "readlink", args: [MANIFEST_PATH] });
+      if (r.exitCode === 0 && r.stdout.trim()) return r.stdout.trim();
+    } catch {
+      // readlink failed (pod suspended, exec timeout, etc.)
+    }
+    return null;
+  }
+
+  /**
+   * Download and parse the manifest, returning descriptors + token.
+   * Returns null on failure (pod unreachable, download failed, etc.).
+   */
+  async function downloadManifest(exec: ExecLike): Promise<{ descriptors: WebServiceDescriptor[]; token: string } | null> {
+    try {
+      const [content, token] = await Promise.all([
+        exec.download(MANIFEST_PATH),
+        getToken(exec),
+      ]);
+      if (!token) return null; // readlink failed even though download worked (unusual, but possible)
+      const descriptors = parseManifest(content);
+      return { descriptors, token };
+    } catch {
+      return null; // pod asleep / creating / manifest missing
+    }
+  }
 
   async function load(conversationId: string): Promise<WebServiceDescriptor[]> {
-    const cached = cache.get(conversationId);
-    // Only a NON-EMPTY cached list is authoritative. An empty [] almost always means
-    // "couldn't read the manifest yet" — the pod was still ContainerCreating when a
-    // prior call ran (download() threw → []), or it was asleep. Caching that empty
-    // result made the Sandbox tab show "no services" forever, even once the pod was
-    // ready (the bug). So we DON'T cache empties: an empty result is retried on the
-    // next call, and only a successful non-empty read is memoized.
-    if (cached && cached.length > 0) return cached;
+    const entry = cache.get(conversationId);
+    const now = Date.now();
+
+    // No entry: full download (cold start)
+    if (!entry) {
+      const ref = deps.sandboxFor(conversationId);
+      if (!ref) return [];
+      try {
+        const exec = await deps.connect(ref);
+        const result = await downloadManifest(exec);
+        if (!result) return []; // download failed → return [] but DON'T cache (retry next time)
+        const { descriptors, token } = result;
+        // Only cache NON-EMPTY results (C4: empties never authoritative).
+        // An empty [] almost always means "couldn't read the manifest yet" — the pod was
+        // still ContainerCreating when download() threw, or it was asleep. Caching that
+        // empty result made the Sandbox tab show "no services" forever, even once the
+        // pod was ready (the bug). So we DON'T cache empties: an empty result is retried
+        // on the next call, and only a successful non-empty read is memoized.
+        if (descriptors.length > 0) {
+          cache.set(conversationId, { descriptors, token, checkedAt: now });
+        }
+        return descriptors;
+      } catch {
+        return []; // pod unreachable → retry next time
+      }
+    }
+
+    // Within TTL: return cached (C5: cheap steady state)
+    if (now - entry.checkedAt < REVALIDATE_MS) {
+      return entry.descriptors;
+    }
+
+    // Past TTL: revalidate via readlink (C1: freshness, C2: bounded staleness)
     const ref = deps.sandboxFor(conversationId);
-    if (!ref) return [];
-    let descriptors: WebServiceDescriptor[] = [];
+    if (!ref) return entry.descriptors; // no sandbox → keep cached (C4: failure doesn't clobber)
     try {
       const exec = await deps.connect(ref);
-      descriptors = parseManifest(await exec.download(MANIFEST_PATH));
+      const token = await getToken(exec);
+      
+      if (!token) {
+        // Readlink failed (pod suspended, exec timeout, etc.) → KEEP cached (C4: failure visible but not destructive)
+        return entry.descriptors;
+      }
+
+      if (token === entry.token) {
+        // Token unchanged: bump checkedAt, return cached (C5: one cheap readlink, no download)
+        entry.checkedAt = now;
+        return entry.descriptors;
+      }
+
+      // Token changed: re-download (C1: freshness, C3: removal honored)
+      const result = await downloadManifest(exec);
+      if (!result) {
+        // Download failed after token changed (unusual) → KEEP old cached (C4)
+        return entry.descriptors;
+      }
+
+      const { descriptors, token: newToken } = result;
+      // Replace cache entry (C3: removal honored — old services disappear)
+      cache.set(conversationId, { descriptors, token: newToken, checkedAt: now });
+      return descriptors;
     } catch {
-      descriptors = []; // pod asleep / creating / manifest missing — retry next time
+      // Connect/exec failed → KEEP cached (C4: failure doesn't clobber)
+      return entry.descriptors;
     }
-    if (descriptors.length > 0) cache.set(conversationId, descriptors);
-    return descriptors;
   }
 
   async function unit(conversationId: string, name: string): Promise<string | null> {
@@ -118,7 +214,7 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
         throw new Error(`scooter-service start ${name} failed (${r.exitCode}): ${r.stderr.trim()}`);
       }
       // A start may reveal a freshly-enabled service; drop the cache so a re-list
-      // re-reads the manifest.
+      // re-reads the manifest (C6: invalidation fires).
       cache.delete(conversationId);
     },
     async stop(conversationId, name) {
