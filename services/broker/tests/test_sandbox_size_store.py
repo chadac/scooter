@@ -12,7 +12,7 @@ from broker.sandbox.store import SandboxSizeStore
 
 @pytest.fixture
 async def store():
-    s = SandboxSizeStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
+    s = SandboxSizeStore(StoreConfig(store_backend="sqlite", dsn="sqlite+aiosqlite:///:memory:"))
     await s.init()
     return s
 

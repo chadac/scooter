@@ -60,7 +60,7 @@ class FakeAuthorizer:
 
 
 async def _service(tmp_path, authorizer):
-    cfg = StoreConfig()
+    cfg = StoreConfig(store_backend="sqlite")
     cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'b.db'}"
     store = PermissionStore(cfg)
     await store.init()

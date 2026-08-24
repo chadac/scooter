@@ -64,7 +64,7 @@ def _identity(cid: str):
 def _app(tmp_path):
     """A minimal FastAPI app mounting only the AWS transport, with a directly-
     built service (FakeIam + SQLite)."""
-    store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"))
+    store = PermissionStore(StoreConfig(store_backend="sqlite", dsn=f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"))
     service = PermissionService(
         store=store, iam=FakeIam(), account_registry=REGISTRY,
         config=ServiceConfig(broker_principal_arn="arn:...:broker"),
@@ -173,7 +173,7 @@ def test_can_approve_route_reflects_the_openfga_check(tmp_path):
     # seed_approver_tuples() grants the tuple. So seed the authorizer the way the
     # real seeder does: `user:alice@x` (NOT bare — that was the prefix-mismatch bug).
     authz = _FakeAuthorizer({("user:alice@x", "approver", "aws_account:dev")})
-    store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'ca.db'}"))
+    store = PermissionStore(StoreConfig(store_backend="sqlite", dsn=f"sqlite+aiosqlite:///{tmp_path / 'ca.db'}"))
     service = PermissionService(
         store=store, iam=FakeIam(), account_registry=REGISTRY,
         config=ServiceConfig(broker_principal_arn="arn:...:broker"), authorizer=authz,
@@ -212,7 +212,7 @@ def test_can_approve_route_reflects_the_openfga_check(tmp_path):
 
 def test_approve_requires_approver_identity(tmp_path):
     """approve/deny are gated on is_approver — a sandbox identity gets 403."""
-    store = PermissionStore(StoreConfig(dsn=f"sqlite+aiosqlite:///{tmp_path / 'b.db'}"))
+    store = PermissionStore(StoreConfig(store_backend="sqlite", dsn=f"sqlite+aiosqlite:///{tmp_path / 'b.db'}"))
     service = PermissionService(store=store, iam=FakeIam(), account_registry=REGISTRY,
                                 config=ServiceConfig(broker_principal_arn="arn:...:broker"))
     transport = AwsPermissions()
