@@ -58,6 +58,22 @@ done < <(grep -oE '\{ image: [a-z-]+, attr: [a-z-]+' .github/workflows/publish-i
 # render (platform-manifests-ghcr) falls back to that component's module default — `:latest`.
 # A manifest that advertises pinned images while shipping four components unpinned is worse
 # than one that never claimed to pin: no reproducibility, and a pod roll every deploy.
+# Every published image must also be in the MANIFEST job, or its per-arch tags are pushed and
+# never joined — the shared tag would keep pointing at whatever was there before, so aarch64
+# users silently keep getting an x86 image.
+echo "published images missing from the multi-arch manifest job:"
+mapfile -t manifested < <(
+  awk '/^  manifest:/,0' .github/workflows/publish-images.yml \
+    | grep -oE '\{ image: [a-z-]+' | sed 's/{ image: //' | sort -u
+)
+missing_manifest=0
+for img in "${published[@]}"; do
+  printf '%s\n' "${manifested[@]}" | grep -qx "$img" || {
+    echo "  - $img (add it to the manifest job's matrix)"; missing_manifest=1; fail=1
+  }
+done
+[ "$missing_manifest" = 0 ] && echo "  (none)"
+
 echo "published images missing a ghcrImages content-tag ref:"
 missing_ref=0
 refs_json=$(nix build .#ghcr-image-refs --no-link --print-out-paths 2>/dev/null)
