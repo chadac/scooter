@@ -57,6 +57,15 @@ jobs:
           # was built by the flake but never in this matrix — so the one-liner handed out an
           # image ref that 404'd ("denied") on every laptop. unfree: bakes the claude CLI.
           - { image: remote-agent, attr: remote-agent-image, unfree: true }
+          # The CONTROLLERS. Each is referenced by a module default
+          # (${registryPrefix}<name>), so a ghcr-based deploy pulls them by these exact names
+          # — but none was ever in this matrix, so all four had ZERO published tags and any
+          # deploy not using a local registry hit ImagePullBackOff. Same gap as the
+          # remote-agent image, four more times.
+          - { image: byoc-controller, attr: byoc-controller-image }
+          - { image: conversation-controller, attr: conversation-controller-image }
+          - { image: conversation-router, attr: conversation-router-image }
+          - { image: warm-store-controller, attr: warm-store-controller-image }
           # sandbox-os is nix2container too now (initializeNixDatabase bakes the
           # read-only store's Nix DB + .links) — no docker-archive tarball case.
           # One image — the writable overlay store is always on.

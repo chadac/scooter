@@ -153,7 +153,13 @@ check-npm-hashes:
     exit "$fail"
 
 # Everything CI runs.
-ci: check-flake check-manifests check-lockfiles check-npm-hashes lint test-unit
+# Every image a MODULE tells a deploy to pull must be published, and every published image
+# must be size-benchmarked. Four controllers shipped with ZERO ghcr tags — an ImagePullBackOff
+# for any ghcr-based deploy — because nothing compared those lists.
+check-image-coverage:
+    @scripts/check-image-coverage.sh
+
+ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).

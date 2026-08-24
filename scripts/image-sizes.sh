@@ -23,19 +23,36 @@ set -euo pipefail
 #   closure = the build output is a nix2container recipe; size = `nix path-info -S`.
 # (All images are n2c now; the `tarball` kind was retired with sandbox-os's n2c
 # conversion — kept as a recognized value so an explicit entry wouldn't error.)
+# EVERY shipped image. Keep in sync with .github/workflows/publish-images.yml's matrix —
+# ci.yml's image-coverage check fails when they diverge, because an image measured but never
+# published (or vice versa) is exactly how four controllers ended up with zero ghcr tags.
 declare -A KIND=(
   [sandbox-os-image]=closure
   [agent-host-image]=closure
   [broker-image]=closure
   [webhooks-image]=closure
   [ui-image]=closure
+  [scheduler-image]=closure
+  [byoc-controller-image]=closure
+  [conversation-controller-image]=closure
+  [conversation-router-image]=closure
+  [warm-store-controller-image]=closure
+  # Published but not module-referenced: the claude-baked agent-host variant, and the
+  # remote-agent image users `docker run` on their own machines (the one image whose size
+  # people actually feel, on a laptop download).
+  [agent-host-image-claude]=closure
+  [remote-agent-image]=closure
 )
 
 # Default to all images (stable order); allow a subset via argv.
 if [ "$#" -gt 0 ]; then
   IMAGES=("$@")
 else
-  IMAGES=(sandbox-os-image agent-host-image broker-image webhooks-image ui-image)
+  IMAGES=(
+    sandbox-os-image agent-host-image broker-image webhooks-image ui-image scheduler-image
+    byoc-controller-image conversation-controller-image conversation-router-image
+    warm-store-controller-image agent-host-image-claude remote-agent-image
+  )
 fi
 
 measure_one() {
