@@ -37,7 +37,7 @@ def deploy_config(settings: BrokerSettings) -> DeployConfig:
         broker_audience=settings.token_audience,
         overlay_store=settings.sandbox_overlay_store,
         overlay_storage=settings.sandbox_overlay_storage,
-        systemd_image=settings.systemd_image,
+        systemd_image=settings.sandbox_systemd_image,
         aws_accounts_configmap=settings.sandbox_aws_accounts_configmap or None,
         config_files_configmap=settings.sandbox_config_files_configmap or None,
         extra_token_audiences=_csv(settings.sandbox_token_audiences),
