@@ -119,6 +119,7 @@ export class IntegrityAgent extends AbstractAgent {
    *  idle-watchdog forces a reconnect if `running` is true but this hasn't moved
    *  for idleReconnectMs (a dropped terminal event left the UI stuck "busy"). */
   private lastActivityAt = Date.now();
+  private livenessHealed = false; // F2: one-shot liveness reconnect tracker
 
   // The tool call currently in flight during the active run (its name, e.g. "bash"),
   // and the ts of the last RUN_STARTED — so the UI can show WHAT it's doing and for
@@ -508,6 +509,10 @@ export class IntegrityAgent extends AbstractAgent {
           // F1: Reset lastActivityAt on ANY frame (including heartbeats `: ping\n\n`),
           // not just data: lines — heartbeats prove the connection is alive.
           this.lastActivityAt = Date.now();
+          // F2: LIVE frames (not replay) arriving → reset the liveness one-shot so a
+          // NEW silence can trigger. Replay frames (during reconnect resync) don't
+          // count as "alive" — they're historical; only post-synced live frames do.
+          if (!this.replaying) this.livenessHealed = false;
           const line = raw.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
           let frame: IntegrityFrame;
@@ -765,14 +770,21 @@ export class IntegrityAgent extends AbstractAgent {
         const runStuck = this.running;
         const interruptStuck = interruptKey !== null && interruptKey !== healedInterruptKey;
         // F2: LIVENESS check fires even when idle (running===false, no interrupts).
-        // Heartbeats arrive every ~25s; if NO frame (event OR heartbeat) for >60s
-        // (>2 missed pings), the connection is dead — reconnect. This is SEPARATE
-        // from the runStuck/interruptStuck checks (which solve different problems:
-        // a LIVE stream that dropped a terminal event).
-        const livenessWindowMs = Math.max(idleMs * 2.4, 60_000); // ~60s, >2 missed pings
-        const connectionDead = silentMs >= livenessWindowMs;
+        // Heartbeats arrive every ~25s (configurable via idleMs); if NO frame
+        // (event OR heartbeat) for >2× the expected interval, the connection is
+        // dead — reconnect ONCE. This is SEPARATE from the runStuck/interruptStuck
+        // checks (which solve different problems: a LIVE stream that dropped a
+        // terminal event). One-shot: if we already reconnected for silence and the
+        // stream is STILL silent (e.g. a legitimately pending approval with no
+        // heartbeats), don't churn reconnects.
+        const livenessWindowMs = idleMs * 2.4; // 2.4× interval = >2 missed pings
+        const connectionDead = silentMs >= livenessWindowMs && !this.livenessHealed;
         if (!runStuck && !interruptStuck && !connectionDead) return;
         if (interruptStuck) healedInterruptKey = interruptKey;
+        // Any reconnect (runStuck/interruptStuck/connectionDead) resets the liveness
+        // one-shot: we just reconnected, so the connection is fresh — don't fire
+        // liveness again until activity resumes and silence recurs.
+        this.livenessHealed = true;
         // Stuck or dead: nudge the loop to reconnect + re-fold from the log.
         this.lastActivityAt = Date.now(); // avoid re-firing while the reconnect runs
         watchdogForced = true; // reconnect promptly (no drop-backoff delay)

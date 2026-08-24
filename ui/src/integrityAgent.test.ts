@@ -1000,7 +1000,9 @@ describe("IntegrityAgent", () => {
     const stop = agent.renderPump();
 
     // Wait long enough for the heartbeats to stop + the liveness window to expire.
-    await new Promise((r) => setTimeout(r, 350));
+    // Heartbeats run for 3×25ms = 75ms, then stop. Liveness window = 100×2.4 = 240ms.
+    // So reconnect should happen at ~75+240 = 315ms. Wait 450ms to be safe.
+    await new Promise((r) => setTimeout(r, 450));
 
     // EXACTLY ONE reconnect (conn 1 stalled → conn 2), not a storm.
     expect(conn).toBe(2);
@@ -1207,6 +1209,26 @@ describe("IntegrityAgent", () => {
     // reconnect-and-refold when the tab becomes visible so the user sees current
     // state, not stale pre-background state. This test will FAIL until F3 is
     // implemented.
+
+    // Mock document for Node test environment
+    const listeners = new Map<string, Set<EventListener>>();
+    const mockDocument = {
+      visibilityState: "hidden",
+      addEventListener(type: string, listener: EventListener) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(listener);
+      },
+      removeEventListener(type: string, listener: EventListener) {
+        listeners.get(type)?.delete(listener);
+      },
+      dispatchEvent(event: Event) {
+        listeners.get(event.type)?.forEach((l) => l(event));
+        return true;
+      },
+    };
+    const origDoc = (globalThis as any).document;
+    (globalThis as any).document = mockDocument;
+
     let conn = 0;
     const stalledLog = [
       { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
@@ -1250,9 +1272,8 @@ describe("IntegrityAgent", () => {
 
     // Simulate the tab becoming visible (fire visibilitychange).
     // The agent MUST listen for this and force a reconnect.
-    const event = new Event("visibilitychange");
-    Object.defineProperty(document, "visibilityState", { value: "visible", writable: true, configurable: true });
-    document.dispatchEvent(event);
+    mockDocument.visibilityState = "visible";
+    mockDocument.dispatchEvent(new Event("visibilitychange"));
 
     // Wait for the forced reconnect to complete.
     await new Promise((r) => setTimeout(r, 200));
@@ -1263,6 +1284,7 @@ describe("IntegrityAgent", () => {
 
     stop();
     agent.dispose();
+    (globalThis as any).document = origDoc;
   });
 
   it("STREAM AUTH ERROR: a 401 on the stream surfaces getStreamAuthError() (not a silent retry loop), then self-clears on recovery", async () => {
