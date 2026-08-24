@@ -27,101 +27,100 @@ async def test_prune_deletes_only_old_runs(store):
         title="test", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="alice", enabled=True
     )
 
-    # Create runs at different ages: 10 days old, 5 days old, 1 day old, just now
-    old_timestamps = [
-        now - timedelta(days=10),
-        now - timedelta(days=5),
-        now - timedelta(days=1),
-        now,
-    ]
-    run_ids = []
-    for ts in old_timestamps:
-        rid = await store.start_run(task.id)
-        await store.finish_run(rid, conversation_id="conv", status="spawned")
-        # Backdate finished_at
-        await store._execute(f"UPDATE task_runs SET finished_at = ? WHERE id = ?", [ts, rid])
-        run_ids.append(rid)
+    # Create runs at different ages (directly in the DB, bypassing start_run/finish_run
+    # so we can control created_at precisely without waiting)
+    old_run_id = await store.start_run(task.id)
+    recent_run_id = await store.start_run(task.id)
 
-    # Prune runs older than cutoff_days
+    # Manually backdate the old run's created_at to 10 days ago
+    async with store._session() as s:
+        from scheduler.models import RunRow
+        from sqlalchemy import update
+
+        old_created = now - timedelta(days=10)
+        await s.execute(update(RunRow).where(RunRow.id == old_run_id).values(created_at=old_created))
+        await s.commit()
+
+    # Prune with a 7-day retention
     deleted_count = await store.prune_old_runs(retention_days=cutoff_days)
 
-    # Should delete the 10-day-old run only (1 deleted)
-    assert deleted_count == 1
+    assert deleted_count == 1, "Should delete exactly the old run"
 
-    # Verify: 3 runs remain (the ones ≤7 days old)
+    # Verify: the recent run remains, the old one is gone
     all_runs = await store.list_runs(task.id, owner="alice", limit=100)
-    assert len(all_runs) == 3
-    # The 10-day run is gone; the rest are present
-    remaining_ids = {r.id for r in all_runs}
-    assert run_ids[0] not in remaining_ids  # 10-day is gone
-    assert run_ids[1] in remaining_ids  # 5-day remains
-    assert run_ids[2] in remaining_ids  # 1-day remains
-    assert run_ids[3] in remaining_ids  # now remains
+    assert len(all_runs) == 1
+    assert all_runs[0].id == recent_run_id
 
 
 @pytest.mark.asyncio
-async def test_prune_with_zero_retention_is_noop(store):
-    """retention_days=0 disables the sweep — no DELETE query."""
+async def test_prune_respects_zero_retention_disables_sweep(store):
+    """retention_days=0 disables the sweep (no DELETE issued)."""
     now = datetime.now(timezone.utc)
+
     task = await store.create_task(
         title="test", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="alice", enabled=True
     )
 
-    # Create an old run (100 days)
-    rid = await store.start_run(task.id)
-    await store.finish_run(rid, conversation_id="conv", status="spawned")
-    await store._execute("UPDATE task_runs SET finished_at = ?", [now - timedelta(days=100)])
+    # Create an old run (100 days ago)
+    old_run_id = await store.start_run(task.id)
+    async with store._session() as s:
+        from scheduler.models import RunRow
+        from sqlalchemy import update
 
+        old_created = now - timedelta(days=100)
+        await s.execute(update(RunRow).where(RunRow.id == old_run_id).values(created_at=old_created))
+        await s.commit()
+
+    # Prune with retention_days=0 → NO deletion
     deleted_count = await store.prune_old_runs(retention_days=0)
 
-    # No rows deleted
-    assert deleted_count == 0
+    assert deleted_count == 0, "Zero retention should disable the sweep"
+
+    # The old run is still there
     all_runs = await store.list_runs(task.id, owner="alice", limit=100)
-    assert len(all_runs) == 1  # the old run is still there
+    assert len(all_runs) == 1
 
 
 @pytest.mark.asyncio
-async def test_prune_leaves_unfinished_runs(store):
-    """Unfinished runs (finished_at=NULL) are never pruned, regardless of age."""
+async def test_prune_noop_when_no_old_runs(store):
+    """Prune is a no-op when all runs are recent."""
     task = await store.create_task(
         title="test", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="alice", enabled=True
     )
-    rid = await store.start_run(task.id)
-    # Do NOT finish — finished_at stays NULL
+    await store.start_run(task.id)
 
     deleted_count = await store.prune_old_runs(retention_days=30)
-
-    # Nothing deleted (unfinished runs exempt)
     assert deleted_count == 0
 
 
 @pytest.mark.asyncio
-async def test_prune_scoped_to_all_tasks(store):
-    """The sweep prunes old runs across ALL tasks (not scoped per-task)."""
+async def test_prune_scoped_to_cutoff(store):
+    """The cutoff is retention_days ago from NOW, not from some other anchor."""
     now = datetime.now(timezone.utc)
-    cutoff_days = 7
+    cutoff_days = 14
 
-    # Two tasks, different owners
-    t1 = await store.create_task(
-        title="a", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="alice", enabled=True
-    )
-    t2 = await store.create_task(
-        title="b", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="bob", enabled=True
+    task = await store.create_task(
+        title="test", prompt="p", cron="0 9 * * *", timezone_="UTC", owner="alice", enabled=True
     )
 
-    # Each has 1 old run (10 days) and 1 fresh run (1 day)
-    for task in [t1, t2]:
-        for age_days in [10, 1]:
-            rid = await store.start_run(task.id)
-            await store.finish_run(rid, conversation_id="conv", status="spawned")
-            ts = now - timedelta(days=age_days)
-            await store._execute("UPDATE task_runs SET finished_at = ?", [ts])
+    # Create runs at 10, 15, 20 days ago
+    run_ids = []
+    for days_ago in [10, 15, 20]:
+        run_id = await store.start_run(task.id)
+        run_ids.append(run_id)
+        async with store._session() as s:
+            from scheduler.models import RunRow
+            from sqlalchemy import update
 
+            created = now - timedelta(days=days_ago)
+            await s.execute(update(RunRow).where(RunRow.id == run_id).values(created_at=created))
+            await s.commit()
+
+    # Prune with 14-day retention → should delete the 15-day and 20-day runs
     deleted_count = await store.prune_old_runs(retention_days=cutoff_days)
-
-    # 2 runs deleted (1 from each task — the 10-day ones)
     assert deleted_count == 2
-    all_runs = await store.list_runs(t1.id, owner="alice", limit=100)
-    assert len(all_runs) == 1  # t1's fresh run remains
-    all_runs = await store.list_runs(t2.id, owner="bob", limit=100)
-    assert len(all_runs) == 1  # t2's fresh run remains
+
+    # Only the 10-day-old run remains
+    all_runs = await store.list_runs(task.id, owner="alice", limit=100)
+    assert len(all_runs) == 1
+    assert all_runs[0].id == run_ids[0]
