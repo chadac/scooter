@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   publish:
-    name: publish ${{ matrix.image }} (${{ matrix.arch.nix }})
+    name: publish ${{ matrix.image.name }} (${{ matrix.arch.nix }})
     # NATIVE runners per arch. Emulation was rejected: these are full Nix closures (sandbox-os
     # is an entire NixOS system), and building them under QEMU is slow enough to dominate CI.
     # ubuntu-24.04-arm is free for public repos.
@@ -52,35 +52,39 @@ jobs:
         arch:
           - { nix: x86_64-linux, runner: ubuntu-latest, docker: amd64 }
           - { nix: aarch64-linux, runner: ubuntu-24.04-arm, docker: arm64 }
-        include:
+        # `image` MUST be a real axis, not an `include:` list. An `include:` entry whose keys
+        # match no existing combination is APPENDED as its own job instead of multiplied across
+        # `arch` — which produced 2 arch-only + 12 image-only jobs, so no (arch, image) pair was
+        # ever built and every manifest join then failed on missing source tags.
+        image:
           # Every image is nix2container: pushed with `<attr>.copyTo`. Image NAMES
           # follow the canonical agent-* convention deploy.sh + the kubenix module
           # already use.
-          - { image: agent-host, attr: agent-host-image }
-          - { image: agent-sandbox-ui, attr: ui-image }
-          - { image: agent-broker, attr: broker-image }
-          - { image: agent-scheduler, attr: scheduler-image }
-          - { image: agent-webhooks, attr: webhooks-image }
+          - { name: agent-host, attr: agent-host-image, unfree: false }
+          - { name: agent-sandbox-ui, attr: ui-image, unfree: false }
+          - { name: agent-broker, attr: broker-image, unfree: false }
+          - { name: agent-scheduler, attr: scheduler-image, unfree: false }
+          - { name: agent-webhooks, attr: webhooks-image, unfree: false }
           # claude variant bakes the unfree claude-code CLI → allowUnfree + --impure.
-          - { image: agent-host-claude, attr: agent-host-image-claude, unfree: true }
+          - { name: agent-host-claude, attr: agent-host-image-claude, unfree: true }
           # The BYO-Claude container users `docker run` from the Settings one-liner. This is
           # the ONLY image end users pull directly (everything else lands in-cluster), and it
           # was built by the flake but never in this matrix — so the one-liner handed out an
           # image ref that 404'd ("denied") on every laptop. unfree: bakes the claude CLI.
-          - { image: remote-agent, attr: remote-agent-image, unfree: true }
+          - { name: remote-agent, attr: remote-agent-image, unfree: true }
           # The CONTROLLERS. Each is referenced by a module default
           # (${registryPrefix}<name>), so a ghcr-based deploy pulls them by these exact names
           # — but none was ever in this matrix, so all four had ZERO published tags and any
           # deploy not using a local registry hit ImagePullBackOff. Same gap as the
           # remote-agent image, four more times.
-          - { image: byoc-controller, attr: byoc-controller-image }
-          - { image: conversation-controller, attr: conversation-controller-image }
-          - { image: conversation-router, attr: conversation-router-image }
-          - { image: warm-store-controller, attr: warm-store-controller-image }
+          - { name: byoc-controller, attr: byoc-controller-image, unfree: false }
+          - { name: conversation-controller, attr: conversation-controller-image, unfree: false }
+          - { name: conversation-router, attr: conversation-router-image, unfree: false }
+          - { name: warm-store-controller, attr: warm-store-controller-image, unfree: false }
           # sandbox-os is nix2container too now (initializeNixDatabase bakes the
           # read-only store's Nix DB + .links) — no docker-archive tarball case.
           # One image — the writable overlay store is always on.
-          - { image: agent-sandbox-os, attr: sandbox-os-image }
+          - { name: agent-sandbox-os, attr: sandbox-os-image, unfree: false }
     steps:
       - uses: actions/checkout@v5
 
@@ -108,18 +112,18 @@ jobs:
       - name: compute content tag + check registry
         id: tag
         env:
-          NIXPKGS_ALLOW_UNFREE: ${{ matrix.unfree && '1' || '' }}
+          NIXPKGS_ALLOW_UNFREE: ${{ matrix.image.unfree && '1' || '' }}
         run: |
           set -euo pipefail
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          repo="ghcr.io/${owner}/scooter/${{ matrix.image }}"
+          repo="ghcr.io/${owner}/scooter/${{ matrix.image.name }}"
           impure=""; [ -n "${NIXPKGS_ALLOW_UNFREE:-}" ] && impure="--impure"
           # The SHARED tag is the x86_64 content hash — the exact string ghcrImages embeds in
           # the kubenix defaults, so it must not vary by arch. Each arch pushes to
           # <tag>-<arch>; the `manifest` job joins those into the shared tag as a manifest
           # list. (Per-arch derivations hash differently, so an arch-local tag would name
           # something that was never pushed under the ref deploys actually use.)
-          out=$(nix eval $impure --raw ".#packages.x86_64-linux.${{ matrix.attr }}.outPath")
+          out=$(nix eval $impure --raw ".#packages.x86_64-linux.${{ matrix.image.attr }}.outPath")
           tag=$(basename "$out" | cut -d- -f1 | cut -c1-12)
           archtag="${tag}-${{ matrix.arch.docker }}"
           echo "repo=${repo}"       >> "$GITHUB_OUTPUT"
@@ -137,12 +141,12 @@ jobs:
       - name: build + push (nix2container)
         if: steps.tag.outputs.exists == 'false'
         env:
-          NIXPKGS_ALLOW_UNFREE: ${{ matrix.unfree && '1' || '' }}
+          NIXPKGS_ALLOW_UNFREE: ${{ matrix.image.unfree && '1' || '' }}
         run: |
           set -euo pipefail
           impure=""; [ -n "${NIXPKGS_ALLOW_UNFREE:-}" ] && impure="--impure"
           # `.#<attr>` on THIS runner builds this runner's arch natively.
-          nix run $impure ".#${{ matrix.attr }}.copyTo" -- "docker://${{ steps.tag.outputs.repo }}:${{ steps.tag.outputs.archtag }}"
+          nix run $impure ".#${{ matrix.image.attr }}.copyTo" -- "docker://${{ steps.tag.outputs.repo }}:${{ steps.tag.outputs.archtag }}"
 
 
   # Join each image's per-arch tags into ONE multi-arch tag, then move `latest` to it. A
