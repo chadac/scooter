@@ -62,10 +62,18 @@ measure_one() {
     return 1
   fi
   echo "==> building .#$attr ($kind)" >&2
+  # The claude-baked images (agent-host-image-claude, remote-agent-image) contain the unfree
+  # `claude` CLI, so they need NIXPKGS_ALLOW_UNFREE + --impure — exactly what
+  # publish-images.yml already does per matrix entry. Without it the benchmark fails on
+  # those two while every other image builds fine.
+  local impure=()
+  case "$attr" in
+    *-claude|remote-agent-image) export NIXPKGS_ALLOW_UNFREE=1; impure=(--impure) ;;
+  esac
   # `nix build --print-out-paths` prints the store path on stdout and build logs on
   # stderr, so capturing stdout gives exactly the out path (logs flow to our stderr).
   local out
-  out=$(nix build ".#$attr" --no-link --print-out-paths --print-build-logs)
+  out=$(nix build "${impure[@]}" ".#$attr" --no-link --print-out-paths --print-build-logs)
 
   local bytes
   case "$kind" in
@@ -85,7 +93,13 @@ measure_one() {
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 for attr in "${IMAGES[@]}"; do
-  measure_one "$attr" >> "$tmp"
+  # SKIP, don't fail, an image the flake being measured does not have. The BASELINE run uses
+  # this script against origin/main's flake, which legitimately predates any newly-added image
+  # (all four controllers, on this very PR) — aborting there would fail the benchmark for the
+  # exact change that adds an image. A missing image simply has no baseline to compare against.
+  if ! measure_one "$attr" >> "$tmp"; then
+    echo "image-sizes: skipping '$attr' (not in this flake — new image?)" >&2
+  fi
 done
 
 jq -s 'sort_by(.name)' "$tmp"
