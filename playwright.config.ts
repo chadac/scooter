@@ -67,6 +67,12 @@ export default defineConfig({
             PORT: "8080",
             GOOSE_BIN: "fake",
             LOCAL_STATE_PATH: "/tmp/agent-host-e2e",
+            // Run PRODUCTION's two-store topology. mirroredConversationStore is only
+            // constructed when MIRROR_STATE_PATH is set (index.ts:189, :442) — without it
+            // the e2e stack ran a single-store shape production NEVER runs, so every
+            // local-vs-mirror divergence was structurally untestable here. That is exactly
+            // how `listLinks` reading the wiped emptyDir reached production.
+            MIRROR_STATE_PATH: "/tmp/agent-host-e2e-mirror",
             GOOSE_MODEL: "model-default",
             AGENT_AVAILABLE_MODELS: "model-default,model-fast,model-smart",
           },

@@ -13,7 +13,7 @@
     "ui"
   ],
   "scripts": {
-    "test": "vitest run --project agent-host --project claude-sdk-provider --project marimo-mcp",
+    "test": "vitest run --project agent-host --project claude-sdk-provider --project marimo-mcp --project ui --project remote-agent --project byoc-controller",
     "test:cluster": "vitest run --project cluster",
     "pretest:e2e": "npm -w services/claude-sdk-provider run build && npm -w services/marimo-mcp run build && npm --prefix services/agent-host run build",
     "test:e2e": "playwright test"
