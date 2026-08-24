@@ -37,7 +37,7 @@ def deploy_config(settings: BrokerSettings) -> DeployConfig:
         broker_audience=settings.token_audience,
         overlay_store=settings.sandbox_overlay_store,
         overlay_storage=settings.sandbox_overlay_storage,
-        systemd_image=settings.sandbox_systemd_image,
+        systemd_image=settings.systemd_image,
         aws_accounts_configmap=settings.sandbox_aws_accounts_configmap or None,
         config_files_configmap=settings.sandbox_config_files_configmap or None,
         extra_token_audiences=_csv(settings.sandbox_token_audiences),
@@ -59,8 +59,9 @@ def default_resources(settings: BrokerSettings) -> SandboxResources | None:
 
 def size_store_config(settings: BrokerSettings) -> StoreConfig:
     """The size store shares the AWS DB components (same shared Postgres, `broker`
-    DB). An explicit sandbox_db_dsn (SQLite dev default) wins when no db_password."""
+    DB). Explicit backend from settings."""
     return StoreConfig(
+        store_backend=settings.store_backend,
         dsn=settings.sandbox_db_dsn,
         db_host=settings.aws_db_host,
         db_port=settings.aws_db_port,

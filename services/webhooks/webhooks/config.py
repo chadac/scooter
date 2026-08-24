@@ -1,6 +1,8 @@
 """Webhooks service configuration."""
 
 import hmac
+import logging
+from typing import Literal
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -8,15 +10,18 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 _bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger("webhooks.config")
 
 
 class DatabaseSettings(BaseSettings):
-    """Conversation-mapping store. SQLite by default (dev). For a durable
-    Postgres store, either set DSN directly (postgresql+asyncpg://...) OR provide
-    DB_PASSWORD (+ optionally DB_HOST/DB_USER/DB_NAME/DB_PORT) and the DSN is
-    assembled — so the password can come from a k8s secretKeyRef without baking a
-    full connection string (with the password) into the manifest."""
+    """Conversation-mapping store. Explicit backend selection: postgres (production,
+    fail loudly if password empty/missing) or sqlite (must be chosen deliberately).
+    No silent fallback."""
 
+    # Backend choice: postgres (production) or sqlite (deliberate dev/test only).
+    # Default postgres. postgres + empty/missing password -> FAIL LOUDLY at startup.
+    store_backend: Literal["postgres", "sqlite"] = "postgres"
+    
     dsn: str = "sqlite+aiosqlite:////tmp/webhooks.db"
     db_host: str = "local"  # also informational, for logging
     db_port: int = 5432
@@ -29,17 +34,31 @@ class DatabaseSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _assemble_dsn(self) -> "DatabaseSettings":
-        # If a password is provided and DSN wasn't explicitly set to Postgres,
-        # build the asyncpg DSN from the components. (A DSN that already names a
-        # driver wins — explicit override.)
-        if self.db_password and not self.dsn.startswith("postgresql"):
-            dsn = (
-                f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
-                f"@{self.db_host}:{self.db_port}/{self.db_name}"
-            )
-            if self.db_sslmode:
-                dsn += f"?ssl={self.db_sslmode}"
-            self.dsn = dsn
+        if self.store_backend == "postgres":
+            # Postgres selected: password MUST be present. Empty/missing -> FAIL LOUDLY.
+            if not self.db_password:
+                raise ValueError(
+                    "store_backend=postgres requires DB_PASSWORD to be set (non-empty). "
+                    "An empty password would silently fall back to SQLite. Set DB_PASSWORD "
+                    "or choose store_backend=sqlite explicitly for dev."
+                )
+            # Build the Postgres DSN from components (unless already explicit).
+            if not self.dsn.startswith("postgresql"):
+                dsn = (
+                    f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+                    f"@{self.db_host}:{self.db_port}/{self.db_name}"
+                )
+                if self.db_sslmode:
+                    dsn += f"?ssl={self.db_sslmode}"
+                self.dsn = dsn
+        # else store_backend == "sqlite": keep the dsn as-is (default or explicit).
+        
+        # Log the resolved backend (password redacted). This is the visibility gap —
+        # without a log line, a silent fallback is invisible.
+        backend = "postgres" if self.dsn.startswith("postgresql") else "sqlite"
+        dsn_safe = self.dsn.replace(self.db_password, "***") if self.db_password else self.dsn
+        logger.info("store backend: %s (dsn: %s)", backend, dsn_safe)
+        
         return self
 
 
