@@ -5,6 +5,7 @@ import pytest
 import pytest_asyncio
 
 import scheduler.app as appmod
+from scheduler.metrics import create_metrics
 from scheduler.store import Store
 
 
@@ -14,6 +15,8 @@ async def client(monkeypatch):
     store = Store("sqlite+aiosqlite:///:memory:")
     await store.init()
     appmod.app.state.store = store
+    # Initialize metrics (disabled for tests)
+    appmod.app.state.metrics = create_metrics(enabled=False)
 
     async def fake_spawn(prompt, *, title, owner, client=None):
         return "conv-fake"
