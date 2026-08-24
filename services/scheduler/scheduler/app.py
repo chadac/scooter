@@ -116,24 +116,26 @@ async def create_task(body: TaskCreate, owner: str = Depends(_owner)) -> Task:
     return Task.of(row)
 
 
+# Every route below scopes to `owner` — the authenticated x-auth-user identity. A task
+# belonging to someone else is reported 404, never 403: a 403 would confirm the id exists.
 @app.get("/tasks", response_model=list[Task], dependencies=[Depends(require_relay_key)])
-async def list_tasks() -> list[Task]:
-    return [Task.of(r) for r in await app.state.store.list_tasks()]
+async def list_tasks(owner: str = Depends(_owner)) -> list[Task]:
+    return [Task.of(r) for r in await app.state.store.list_tasks(owner)]
 
 
 @app.get("/tasks/{task_id}", response_model=Task, dependencies=[Depends(require_relay_key)])
-async def get_task(task_id: str) -> Task:
-    row = await app.state.store.get_task(task_id)
+async def get_task(task_id: str, owner: str = Depends(_owner)) -> Task:
+    row = await app.state.store.get_task(task_id, owner)
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
     return Task.of(row)
 
 
 @app.patch("/tasks/{task_id}", response_model=Task, dependencies=[Depends(require_relay_key)])
-async def patch_task(task_id: str, body: TaskPatch) -> Task:
+async def patch_task(task_id: str, body: TaskPatch, owner: str = Depends(_owner)) -> Task:
     try:
         row = await app.state.store.patch_task(
-            task_id, title=body.title, prompt=body.prompt, cron=body.cron,
+            task_id, owner, title=body.title, prompt=body.prompt, cron=body.cron,
             timezone=body.timezone, enabled=body.enabled,
         )
     except InvalidSchedule as e:
@@ -144,25 +146,34 @@ async def patch_task(task_id: str, body: TaskPatch) -> Task:
 
 
 @app.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(require_relay_key)])
-async def delete_task(task_id: str) -> None:
-    if not await app.state.store.delete_task(task_id):
+async def delete_task(task_id: str, owner: str = Depends(_owner)) -> None:
+    if not await app.state.store.delete_task(task_id, owner):
         raise HTTPException(status_code=404, detail="task not found")
 
 
 @app.get("/tasks/{task_id}/runs", response_model=list[Run], dependencies=[Depends(require_relay_key)])
-async def list_runs(task_id: str) -> list[Run]:
-    return [Run.of(r) for r in await app.state.store.list_runs(task_id)]
+async def list_runs(task_id: str, owner: str = Depends(_owner)) -> list[Run]:
+    # Check the task first so an unowned id 404s like every other route. Returning a bare
+    # [] would be indistinguishable from "your task, no runs yet" and still leaks nothing
+    # — but it would answer a question the caller has no right to ask.
+    if await app.state.store.get_task(task_id, owner) is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return [Run.of(r) for r in await app.state.store.list_runs(task_id, owner)]
 
 
 @app.post("/tasks/{task_id}/run", response_model=Run, dependencies=[Depends(require_relay_key)])
-async def run_now(task_id: str) -> Run:
+async def run_now(task_id: str, owner: str = Depends(_owner)) -> Run:
     """Fire a task immediately (ad-hoc; also the smoke test). Does NOT change the
-    cron schedule's next_run_at beyond the normal advance."""
-    row = await app.state.store.get_task(task_id)
+    cron schedule's next_run_at beyond the normal advance.
+
+    Ownership matters most here: firing spawns a conversation as the task's OWNER, so an
+    unscoped run-now let any caller execute someone else's prompt under their identity.
+    """
+    row = await app.state.store.get_task(task_id, owner)
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
     await _fire(app.state.store, row)
-    runs = await app.state.store.list_runs(task_id, limit=1)
+    runs = await app.state.store.list_runs(task_id, owner, limit=1)
     return Run.of(runs[0])
 
 
