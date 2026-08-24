@@ -8,6 +8,8 @@ import os
 
 os.environ["SANDBOX_LIFECYCLE_ENABLED"] = "true"
 os.environ["SANDBOX_CONTROL_SERVICE_ACCOUNTS"] = "system:serviceaccount:agent-manager:agent-host"
+os.environ["SANDBOX_SIZES_JSON"] = '{"tiny": {"cpu": "250m", "memory": "256Mi"}, "small": {"cpu": "1", "memory": "2Gi"}, "medium": {"cpu": "2", "memory": "4Gi"}, "large": {"cpu": "4", "memory": "16Gi"}}'
+os.environ["SANDBOX_DEFAULT_SIZE_NAME"] = "medium"
 
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -146,3 +148,44 @@ def test_ensure_applies_the_stored_size():
     client.post("/sandbox/c1/ensure", json={})
     # create() got the rendered size block, not None.
     assert k8s.created[2] == {"limits": {"memory": "16Gi"}}
+
+
+# --- named size presets -----------------------------------------------------
+
+
+def test_get_sandbox_sizes_returns_presets():
+    client, _, _ = _client(_control())
+    resp = client.get("/sandbox-sizes")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["default"] == "medium"
+    assert "tiny" in body["sizes"]
+    assert body["sizes"]["medium"] == {"cpu": "2", "memory": "4Gi"}
+    assert body["sizes"]["large"] == {"cpu": "4", "memory": "16Gi"}
+
+
+def test_put_size_accepts_preset_name():
+    client, _, store = _client(_control())
+    resp = client.put("/sandbox/c1/size", json={"size": "large"})
+    assert resp.status_code == 200
+    # The broker resolves the preset to {requests: ..., limits: ...} with matching values.
+    spec = store.sizes["c1"]
+    assert spec.requests == {"cpu": "4", "memory": "16Gi"}
+    assert spec.limits == {"cpu": "4", "memory": "16Gi"}
+
+
+def test_put_size_rejects_unknown_preset():
+    client, _, _ = _client(_control())
+    resp = client.put("/sandbox/c1/size", json={"size": "xlarge"})
+    assert resp.status_code == 400
+    assert "Unknown size preset" in resp.json()["detail"]
+    assert "xlarge" in resp.json()["detail"]
+
+
+def test_owning_sandbox_can_set_preset():
+    client, _, store = _client(_sandbox("c1"))
+    resp = client.put("/sandbox/c1/size", json={"size": "tiny"})
+    assert resp.status_code == 200
+    spec = store.sizes["c1"]
+    assert spec.requests == {"cpu": "250m", "memory": "256Mi"}
+    assert spec.limits == {"cpu": "250m", "memory": "256Mi"}

@@ -29,7 +29,7 @@ import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
 
-from .config import default_resources
+from .config import default_resources, sandbox_sizes, preset_to_resources
 from .k8s import SandboxK8s
 from .resources import InvalidResource, SandboxResources, render_resources, resolve_resources, validate_resources
 from .store import SandboxSizeStore
@@ -109,13 +109,43 @@ def create_sandbox_router(k8s: SandboxK8s, store: SandboxSizeStore) -> APIRouter
         ready = k8s.ready_pod(f"conv-{conv}")
         return {"name": ready.name, "namespace": ready.namespace, "podIP": ready.pod_ip, "running": ready.running}
 
+    @router.get("/sandbox-sizes")
+    async def get_sandbox_sizes(identity: Identity = Depends(authenticate)):
+        """List the available named sandbox size presets (name -> {cpu, memory}),
+        plus the default preset name. The agent and UI use this to discover what
+        sizes are available and populate the dropdown."""
+        sizes = sandbox_sizes(settings)
+        default_name = settings.sandbox_default_size_name.strip() or None
+        return {"sizes": sizes, "default": default_name}
+
     @router.put("/sandbox/{conv}/size")
     async def put_size(conv: str = Path(...), body: dict = Body(...), identity: Identity = Depends(authenticate)):
         _require_control_or_owner(identity, conv)
-        try:
-            spec = validate_resources(SandboxResources.from_dict(body))
-        except InvalidResource as e:
-            raise HTTPException(status_code=400, detail=f"{e} ({e.field})") from e
+        # Accept EITHER a preset name ({"size": "large"}) OR raw resources
+        # ({requests: {...}, limits: {...}}). A preset name is resolved to its
+        # resources; raw resources are validated as-is. Both paths store the same
+        # SandboxResources shape.
+        preset_name = body.get("size")
+        if preset_name:
+            # Preset-name path: resolve name -> {cpu, memory} -> SandboxResources.
+            sizes = sandbox_sizes(settings)
+            if preset_name not in sizes:
+                available = ", ".join(sizes.keys()) if sizes else "(no presets configured)"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'Unknown size preset "{preset_name}". Available: {available}',
+                )
+            try:
+                spec = preset_to_resources(sizes[preset_name])
+            except InvalidResource as e:
+                # A bad preset is a deployment misconfiguration — surface it.
+                raise HTTPException(status_code=500, detail=f"Preset {preset_name} is invalid: {e}") from e
+        else:
+            # Raw-resources path: validate the provided {requests, limits}.
+            try:
+                spec = validate_resources(SandboxResources.from_dict(body))
+            except InvalidResource as e:
+                raise HTTPException(status_code=400, detail=f"{e} ({e.field})") from e
         await store.set(conv, spec)
         return {"size": spec.to_dict()}
 
