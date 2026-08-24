@@ -33,6 +33,11 @@ in
       default = 30;
       description = "How often the scheduler loop checks for due tasks.";
     };
+    runRetentionDays = mkOption {
+      type = types.int;
+      default = 90;
+      description = "TTL for task_runs in days; 0 disables the sweep (no DELETE).";
+    };
     relayKey = mkOption {
       type = types.str;
       default = "";
@@ -84,9 +89,16 @@ in
                 env = [
                   { name = "AGENT_HOST_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "TICK_SECONDS"; value = toString scfg.tickSeconds; }
+                  { name = "RUN_RETENTION_DAYS"; value = toString scfg.runRetentionDays; }
                   { name = "SA_TOKEN_PATH"; value = "/var/run/secrets/agent-host/token"; }
                   { name = "LOG_LEVEL"; value = scfg.logLevel; }
                 ] ++ lib.optional (scfg.relayKey != "") { name = "RELAY_KEY"; value = scfg.relayKey; }
+                ++ lib.optionals cfg.observability.otel.enable ([
+                  # OTel metrics ON. The OTLP endpoint/headers come from the standard
+                  # OTEL_EXPORTER_OTLP_* env (the SDK reads them).
+                  { name = "OTEL_METRICS_ENABLED"; value = "1"; }
+                  { name = "OTEL_SERVICE_NAME"; value = "agent-scheduler"; }
+                ] ++ lib.mapAttrsToList (k: v: { name = k; value = v; }) cfg.observability.otel.env)
                 # Durable Postgres — the shared platform DB (always on). DSN is
                 # assembled app-side from these parts; the password is the scheduler's
                 # OWN auto-generated role secret (agent-pg-scheduler), created by the

@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     # --- scheduler loop -----------------------------------------------------
     tick_seconds: int = 30  # how often the loop checks for due tasks
 
+    # --- run history retention ----------------------------------------------
+    # Delete task_runs older than this many days. 0 = disabled (no retention sweep).
+    run_retention_days: int = 90
+
+    # --- observability ------------------------------------------------------
+    # OpenTelemetry metrics (OTLP export). Off by default; set OTEL_METRICS_ENABLED=1
+    # to enable. Endpoint/headers come from standard OTEL_EXPORTER_OTLP_* env vars.
+    otel_metrics_enabled: bool = False
+
     # --- logging ------------------------------------------------------------
     # Root log level (LOG_LEVEL env). INFO shows task fires + spawns; DEBUG is
     # verbose. Without this the root logger defaults to WARNING and info/debug
