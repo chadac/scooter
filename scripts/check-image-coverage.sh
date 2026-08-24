@@ -20,9 +20,11 @@ mapfile -t referenced < <(
     | sed 's/${cfg.registryPrefix}//' | sort -u
 )
 # What CI publishes to ghcr.
+# The publish job's `image:` axis (`{ name: …, attr: … }`) is what actually builds+pushes.
+# The manifest job keeps its own `{ image: … }` include list; the rule below cross-checks them.
 mapfile -t published < <(
-  grep -oE '\{ image: [a-z-]+' .github/workflows/publish-images.yml \
-    | sed 's/{ image: //' | sort -u
+  grep -oE '\{ name: [a-z-]+' .github/workflows/publish-images.yml \
+    | sed 's/{ name: //' | sort -u
 )
 # What the size benchmark measures (flake attrs, so map to image names via the matrix).
 # The KIND map's keys are flake ATTRS (agent-host-image, agent-host-image-claude), so compare
@@ -50,8 +52,8 @@ while read -r img attr; do
   printf '%s\n' "${benchmarked[@]}" | grep -qx "$attr" || {
     echo "  - $img (attr $attr not in scripts/image-sizes.sh KIND map)"; missing_bench=1; fail=1
   }
-done < <(grep -oE '\{ image: [a-z-]+, attr: [a-z-]+' .github/workflows/publish-images.yml \
-          | sed 's/{ image: //;s/, attr:/ /')
+done < <(grep -oE '\{ name: [a-z-]+, attr: [a-z-]+' .github/workflows/publish-images.yml \
+          | sed 's/{ name: //;s/, attr:/ /')
 [ "$missing_bench" = 0 ] && echo "  (none)"
 
 # Every published image must ALSO have a content-tagged ref in ghcrImages, or the production
