@@ -53,12 +53,12 @@ def test_sqlite_backend_no_password_needed():
     assert db.dsn.startswith("sqlite")
 
 
-def test_default_is_postgres(monkeypatch):
-    """The default store_backend is postgres (not sqlite)."""
+def test_default_is_sqlite(monkeypatch):
+    """The default store_backend is sqlite (safe for dev/build/test). Production sets STORE_BACKEND=postgres."""
     # Clear the STORE_BACKEND env var that conftest sets
     monkeypatch.delenv("STORE_BACKEND", raising=False)
-    db = DatabaseSettings(db_password="test")
-    assert db.store_backend == "postgres"
+    db = DatabaseSettings()
+    assert db.store_backend == "sqlite"
 
 
 def test_explicit_postgres_dsn_wins_over_components():

@@ -19,9 +19,9 @@ logger = logging.getLogger("scheduler.config")
 
 class Settings(BaseSettings):
     # --- store (explicit backend selection) --------------------------------
-    # Backend choice: postgres (production) or sqlite (deliberate dev/test only).
-    # Default postgres. postgres + empty/missing password -> FAIL LOUDLY at startup.
-    store_backend: Literal["postgres", "sqlite"] = "postgres"
+    # Backend choice: postgres (production) or sqlite (dev/test).
+    # Default sqlite (safe for dev/build/test). Production sets STORE_BACKEND=postgres.
+    store_backend: Literal["postgres", "sqlite"] = "sqlite"
     
     dsn: str = "sqlite+aiosqlite:////tmp/scheduler.db"
     db_host: str = "local"

@@ -105,17 +105,17 @@ def test_sqlite_backend_no_password_needed(monkeypatch):
     assert s.dsn.startswith("sqlite+aiosqlite://")
 
 
-def test_default_is_postgres(monkeypatch):
-    """The default store_backend is postgres (not sqlite)."""
+def test_default_is_sqlite(monkeypatch):
+    """The default store_backend is sqlite (safe for dev/build/test). Production sets STORE_BACKEND=postgres."""
     from scheduler.config import Settings
     
     # Clear the STORE_BACKEND env var that conftest sets
     monkeypatch.delenv("STORE_BACKEND", raising=False)
     
-    # Create a Settings object without specifying store_backend, but WITH a password.
-    # The default should be postgres.
-    s = Settings(db_password="test")
-    assert s.store_backend == "postgres"
+    # Create a Settings object without specifying store_backend.
+    # The default should be sqlite.
+    s = Settings()
+    assert s.store_backend == "sqlite"
 
 
 def test_startup_logs_backend(monkeypatch, caplog):

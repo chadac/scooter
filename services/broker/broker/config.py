@@ -85,8 +85,9 @@ class BrokerSettings(BaseSettings):
     aws_db_password: str = ""
     aws_db_name: str = "broker"
     # Backend choice for all broker stores (AWS/sandbox/registry): postgres (production)
-    # or sqlite (deliberate dev/test only). Default postgres.
-    store_backend: str = "postgres"
+    # or sqlite (dev/test). Default sqlite (safe for dev/build/test). Production can
+    # set STORE_BACKEND=postgres if needed (currently broker runs ephemeral, no prod DB).
+    store_backend: str = "sqlite"
     # SA usernames allowed to APPROVE/DENY (the agent-host relays the user's pick
     # after validating it in-conversation). CSV of
     # system:serviceaccount:{ns}:{name}. Default: the agent-host.

@@ -1,12 +1,13 @@
 """Webhooks service configuration."""
 
 import hmac
+import os
 import logging
 from typing import Literal
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -18,9 +19,12 @@ class DatabaseSettings(BaseSettings):
     fail loudly if password empty/missing) or sqlite (must be chosen deliberately).
     No silent fallback."""
 
-    # Backend choice: postgres (production) or sqlite (deliberate dev/test only).
-    # Default postgres. postgres + empty/missing password -> FAIL LOUDLY at startup.
-    store_backend: Literal["postgres", "sqlite"] = "postgres"
+    # Backend choice: postgres (production) or sqlite (dev/test).
+    # Default sqlite (safe for dev/build/test). Production sets STORE_BACKEND=postgres.
+    store_backend: Literal["postgres", "sqlite"] = Field(
+        default_factory=lambda: os.getenv("STORE_BACKEND", "sqlite"),
+        description="Backend choice: postgres (production) or sqlite (dev/test)"
+    )
     
     dsn: str = "sqlite+aiosqlite:////tmp/webhooks.db"
     db_host: str = "local"  # also informational, for logging
