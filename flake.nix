@@ -98,6 +98,15 @@
         scheduler = ghcrImageRef "agent-scheduler" pubImages.scheduler-image;
         webhooks = ghcrImageRef "agent-webhooks" pubImages.webhooks-image;
         sandboxOs = ghcrImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
+        # The CONTROLLERS. Absent here, the production render left them on their module
+        # defaults — i.e. `:latest` — while every other image was pinned to a content tag.
+        # That defeats the point of content tagging (same content -> same tag -> no needless
+        # pod roll) and makes a "pinned" deploy manifest silently unreproducible for four of
+        # its components.
+        byocController = ghcrImageRef "byoc-controller" pubImages.byoc-controller-image;
+        conversationController = ghcrImageRef "conversation-controller" pubImages.conversation-controller-image;
+        conversationRouter = ghcrImageRef "conversation-router" pubImages.conversation-router-image;
+        warmStoreController = ghcrImageRef "warm-store-controller" pubImages.warm-store-controller-image;
       };
       ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
     in
@@ -335,6 +344,14 @@
               image = ghcrImages.webhooks;
               # NO testWebhook — the /webhooks/test spawn endpoint is e2e-only.
             };
+            # The CONTROLLERS, pinned like everything else. Without these four the render
+            # fell back to their module defaults (`:latest`), so a manifest that advertises
+            # content-pinned images silently shipped four of its components unpinned — no
+            # reproducibility, and a pod roll on every deploy whether or not they changed.
+            conversationController.image = ghcrImages.conversationController;
+            conversationController.routerImage = ghcrImages.conversationRouter;
+            warmStore.image = ghcrImages.warmStoreController;
+            byoc.image = ghcrImages.byocController;
           };
 
           # Tier-1-style config-correctness tests for the dev-environment sandbox:

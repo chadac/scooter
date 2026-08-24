@@ -54,4 +54,27 @@ done < <(grep -oE '\{ image: [a-z-]+, attr: [a-z-]+' .github/workflows/publish-i
           | sed 's/{ image: //;s/, attr:/ /')
 [ "$missing_bench" = 0 ] && echo "  (none)"
 
+# Every published image must ALSO have a content-tagged ref in ghcrImages, or the production
+# render (platform-manifests-ghcr) falls back to that component's module default — `:latest`.
+# A manifest that advertises pinned images while shipping four components unpinned is worse
+# than one that never claimed to pin: no reproducibility, and a pod roll every deploy.
+echo "published images missing a ghcrImages content-tag ref:"
+missing_ref=0
+refs_json=$(nix build .#ghcr-image-refs --no-link --print-out-paths 2>/dev/null)
+if [ -n "$refs_json" ] && [ -f "$refs_json" ]; then
+  for img in "${published[@]}"; do
+    # agent-host-claude and remote-agent are deliberately outside ghcrImages: the claude
+    # variant is split out for the unfree eval (ghcrImageClaude), and remote-agent is run by
+    # USERS on their laptops, never referenced by a cluster manifest.
+    case "$img" in agent-host-claude|remote-agent) continue ;; esac
+    grep -q "/${img}:" "$refs_json" || {
+      echo "  - $img (add it to ghcrImages in flake.nix, else the ghcr render uses :latest)"
+      missing_ref=1; fail=1
+    }
+  done
+  [ "$missing_ref" = 0 ] && echo "  (none)"
+else
+  echo "  (skipped — could not build .#ghcr-image-refs)"
+fi
+
 exit "$fail"
