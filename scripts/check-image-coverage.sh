@@ -9,7 +9,7 @@
 # tags, ImagePullBackOff for anyone not using a local registry. The remote-agent image had the
 # same gap earlier. Nothing failed, because nothing compared the two lists.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 
 fail=0
 note() { echo "  - $1"; fail=1; }
