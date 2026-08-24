@@ -2,7 +2,7 @@
  * Join tokens for bring-your-own-Claude remote agents — a minimal HS256 JWT signed by an
  * agent-host secret (no external dep; node:crypto HMAC). The UI mints a short-lived, owner-bound
  * token; the /remote-agent/connect WS upgrade verifies it offline and extracts the owner. See
- * todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §4.
+ * todo/done/BYO_CLAUDE_REMOTE_AGENT.md §4.
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";

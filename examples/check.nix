@@ -58,7 +58,7 @@ let
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
 
-  # Rollout-drain topology invariants (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — the fields a
+  # Rollout-drain topology invariants (todo/done/ROLLOUT_DRAIN_AND_POD_IP.md) — the fields a
   # seamless rollout depends on. A regression here (reverting to a StatefulSet, dropping the
   # surge strategy, re-adding a per-pod PVC, or losing the routing IP field) silently
   # reintroduces the capacity gap / breaks routing, so pin them at render time.

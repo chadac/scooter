@@ -14,7 +14,7 @@
  *
  * `id` correlates a request to its reply. The token + the Anthropic inference call live ENTIRELY in
  * the container; the cloud only ever sees these frames (ACP messages + tool exec) — the compliance
- * invariant. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * invariant. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 // WIRE TYPES, declared HERE rather than imported.

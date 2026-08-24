@@ -6,7 +6,7 @@
  * `claude setup-token` on their own machine (real browser does the hCaptcha OAuth) and pastes the
  * resulting `sk-ant-oat01-…` token into our /login page; we persist it here. The SDK consumes it as
  * CLAUDE_CODE_OAUTH_TOKEN (createSdkAcpClient sets it in the claude subprocess env). Token never
- * touches scooter. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §H.
+ * touches scooter. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md §H.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";

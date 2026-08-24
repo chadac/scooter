@@ -1,6 +1,6 @@
 /**
  * Tier 1 contract — subagents at the SessionManager level (RED-FIRST; see
- * todo/docs/SUBAGENTS.md).
+ * todo/done/SUBAGENTS.md).
  *
  * A subagent is a full conversation that SHARES the parent's sandbox pod
  * (SandboxRef) and carries a `parentId`. So spawnChild:

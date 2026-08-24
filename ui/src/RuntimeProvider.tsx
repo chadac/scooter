@@ -98,7 +98,7 @@ export interface SplicedSystemMessage {
  * (bespoke), so we splice a synthetic `sys:`-prefixed assistant message right AFTER
  * the real message with id === afterMessageId (null → before all).
  *
- * KNOWN BUG (see todo/docs/AGENT_TRANSCRIPT_HARNESS.md): a system message anchored
+ * KNOWN BUG (see todo/done/AGENT_TRANSCRIPT_HARNESS.md): a system message anchored
  * to an assistant message that ALSO has tool calls nested into it renders ABOVE
  * those tool cards — because we splice after the message OBJECT but the message's
  * own tool parts render as part of it. The UI-layer replay test captures this.

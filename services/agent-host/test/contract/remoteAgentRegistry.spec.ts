@@ -3,7 +3,7 @@
  *
  * Locks the BYO routing rules: a run is served by a remote agent ONLY when its OWNER has a live
  * agent AND the trigger is human (the compliance guardrail); cross-owner fencing; offline falls
- * through; latest-wins registration. See remoteAgentRegistry.ts + todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * through; latest-wins registration. See remoteAgentRegistry.ts + todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { describe, it, expect } from "vitest";

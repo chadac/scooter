@@ -12,7 +12,7 @@
 # PVCs mid-copy), verify, then set the flag back off (and later delete the old PVCs). It is
 # idempotent (cp -an = no-clobber), so a re-run only copies what's missing.
 #
-# See todo/docs/LEGACY_CONVERSATION_MIGRATION.md.
+# See todo/done/LEGACY_CONVERSATION_MIGRATION.md.
 
 { config, lib, ... }:
 

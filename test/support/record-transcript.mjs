@@ -3,7 +3,7 @@
  * live agent-host) with the transcript recorder ON, then save the NDJSON as a
  * fixture. Records the RAW agent input + AG-UI output so tests replay real behavior.
  *
- * See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. CI never runs this — it replays the
+ * See todo/done/AGENT_TRANSCRIPT_HARNESS.md. CI never runs this — it replays the
  * committed fixtures. Run it only to (re)capture when the SDK/goose drifts.
  *
  * Usage:
@@ -30,7 +30,7 @@
  * Boots agent-host in FAKE_SANDBOX mode (tool calls run as local subprocesses, no
  * cluster). The platform MCP endpoint (spawn_subagent/check_subagent) IS wired even
  * in FAKE_SANDBOX, so subagent scenarios CAN record locally — provided the model
- * actually tool-calls (use bedrock). See todo/docs/AGENT_TRANSCRIPT_HARNESS.md.
+ * actually tool-calls (use bedrock). See todo/done/AGENT_TRANSCRIPT_HARNESS.md.
  */
 
 import { spawn } from "node:child_process";

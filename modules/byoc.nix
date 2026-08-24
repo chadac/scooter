@@ -1,7 +1,7 @@
 # BYOC controller — Deployment + Service + (optional) UNAUTHENTICATED Ingress.
 #
 # Holds the bring-your-own-Claude container sockets so ANY agent-host replica can drive ANY
-# container (todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §L). The user's container dials
+# container (todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L). The user's container dials
 # wss://<host>/byoc/ws/<session-id>; agent-hosts reach the controller in-cluster over plain HTTP.
 #
 # THE INGRESS IS DELIBERATELY UNAUTHENTICATED (§L Q3), for the same reason webhooks' is: the

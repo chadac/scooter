@@ -40,7 +40,7 @@ export interface IntegrityAgentConfig extends AgentHostConfig {
    *  log re-derives the correct state (healing a DROPPED live RUN_FINISHED /
    *  PERMISSION_RESOLVED that left the UI stuck "busy" — the "agent seems dead"
    *  class). Default 25s; small values in tests. 0 disables. See
-   *  todo/docs/SSE_RESILIENCE.md. */
+   *  todo/done/SSE_RESILIENCE.md. */
   idleReconnectMs?: number;
 }
 

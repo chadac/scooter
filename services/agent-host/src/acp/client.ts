@@ -127,11 +127,11 @@ export interface AcpClientDeps {
    *  waiting (a finished subagent's result) so we REJECT the next tool — goose ends
    *  the turn, the parent idles, and the queued item injects. Omit to keep goose in
    *  auto mode (no per-tool gate; no back-pressure). See
-   *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
+   *  todo/done/SUBAGENT_BACKPRESSURE.md. */
   shouldYield?: () => boolean;
   /** TRANSCRIPT RECORDER (test-harness): when set, called with each RAW ACP
    *  session/update frame goose sends — the ground truth for the fake ACP agent.
-   *  Omit to disable (zero overhead). See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+   *  Omit to disable (zero overhead). See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
   recordRaw?: (update: SessionUpdate) => void;
 }
 

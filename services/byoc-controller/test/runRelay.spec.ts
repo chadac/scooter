@@ -1,5 +1,5 @@
 /**
- * Tier 1 contract — the BYOC run path (increment 2 of todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §M).
+ * Tier 1 contract — the BYOC run path (increment 2 of todo/done/BYO_CLAUDE_REMOTE_AGENT.md §M).
  *
  *   agent-host --POST /byoc/:session/prompt--> controller --WS--> container
  *   agent-host <----------- SSE (ACP frames) --controller <--WS-- container

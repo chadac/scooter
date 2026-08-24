@@ -5,7 +5,7 @@
  * correlated `ack`; the agent's notifications (session_update/terminal_created/permission_request)
  * come UP and dispatch to the bridge's callbacks. The agent's TOOL calls (Channel B) are served
  * HERE against the CLOUD ExecBackend — so tools run in the cloud sandbox while the model runs on
- * the laptop. See remoteProtocol.ts + todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * the laptop. See remoteProtocol.ts + todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { randomUUID } from "node:crypto";

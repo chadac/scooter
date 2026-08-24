@@ -1,8 +1,10 @@
 # CLAUDE.md — kubenix-agent-manager
 
-Guidance for working in this repo. (The `docs/` design docs are kept locally under
-the gitignored `todo/docs/`, not in the repo — some `see docs/…` comment pointers in
-the code refer to that local copy.)
+Guidance for working in this repo. (Working design docs are kept locally under the
+gitignored `todo/`, sorted by status into `todo/draft|done|rejected|reference/` —
+see `todo/README.md`. Some `see docs/…` comment pointers in the code refer to that
+local copy. The tracked `docs/` directory is the PUBLISHED mkdocs site — never put
+working notes there.)
 
 ## What this is
 

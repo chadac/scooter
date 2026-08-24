@@ -22,7 +22,7 @@ SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
 
-# Pool PVC labels (see todo/docs/WARM_STORE_PVC_MANAGER.md).
+# Pool PVC labels (see todo/done/WARM_STORE_PVC_MANAGER.md).
 LBL_WARM_STORE = "scooter.io/warm-store"   # image content tag (the version key)
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed

@@ -4,7 +4,7 @@
  * Proves the Increment-1 seam end-to-end (not just the pure resolver): a bridge configured with
  * TWO providers routes each run to the provider whose eligible() matches that run's `source`. This
  * is exactly the seam the human-trigger guardrail (Increment 2) uses — remote for ui/slack/…,
- * bedrock for scheduler. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * bedrock for scheduler. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { describe, it, expect } from "vitest";

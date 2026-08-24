@@ -1,5 +1,5 @@
 /**
- * Tier 1 contract — the BYOC session registry (increment 1 of todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §M).
+ * Tier 1 contract — the BYOC session registry (increment 1 of todo/done/BYO_CLAUDE_REMOTE_AGENT.md §M).
  *
  * The registry is the whole point of the §L redesign: agent-hosts resolve a container by OWNER, not
  * by "which pod happens to hold the socket". So the contract under test is:

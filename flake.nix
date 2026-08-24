@@ -202,7 +202,7 @@
           # Conversation CRD controller (Python): leader-elected reconcile loop that
           # assigns each Conversation CR a hostPod (agent-host replica) + reassigns on
           # pod death. Multi-replica agent-host, stage 3. See
-          # todo/docs/CONVERSATION_CRD_PR1.md.
+          # todo/done/CONVERSATION_CRD_PR1.md.
           conversationController = pkgs.callPackage ./services/conversation-controller { };
 
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
@@ -214,7 +214,7 @@
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
           # (top-up warm Jobs, GC retired tags, return-on-suspend, leak recovery). Runs
           # alongside the upstream agent-sandbox controller. See
-          # todo/docs/WARM_STORE_PVC_MANAGER.md.
+          # todo/done/WARM_STORE_PVC_MANAGER.md.
           warmStoreController = pkgs.callPackage ./services/warm-store-controller { };
 
           # Conversation controller OCI image.

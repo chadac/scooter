@@ -139,7 +139,7 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         results.append((c.name, "assign"))
         logger.info("assigned %s -> %s @ %s (gen %d)", c.name, action.host_pod, action.host_ip, action.generation)
         # Push the new host to revive the conversation from the mirror BEFORE user traffic
-        # arrives (seamless rollout — see todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md). notify_revive
+        # arrives (seamless rollout — see todo/done/ROLLOUT_DRAIN_AND_POD_IP.md). notify_revive
         # is FIRE-AND-FORGET (spawns a daemon thread) so a stale/unroutable hostIP can never
         # block the reconcile pass — the host also revives lazily on first request. The
         # try/except is a belt-and-suspenders guard on the thread SPAWN itself. Skipped when
@@ -204,7 +204,7 @@ def reap_orphans(k8s, grace_seconds: float) -> list[str]:
     must be deleted too. Leader-gated by the caller. Returns the reaped sandbox names.
 
     DESTRUCTIVE — logs every reap. Best-effort per sandbox: a failed delete is logged and the
-    pass continues (retries next tick). See todo/docs/ORPHANED_SANDBOX_REAPER.md."""
+    pass continues (retries next tick). See todo/done/ORPHANED_SANDBOX_REAPER.md."""
     referenced: set[str] = {
         ref
         for cr in k8s.list_conversations()

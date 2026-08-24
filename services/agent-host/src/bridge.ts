@@ -319,7 +319,7 @@ export interface SessionBridge {
    *  the run quiesces to a boundary and the queued priority item (e.g. a subagent
    *  result) can inject instead of waiting for the whole run. A normal queued
    *  prompt does NOT trigger this (it waits its turn). See
-   *  todo/docs/SUBAGENT_BACKPRESSURE.md. */
+   *  todo/done/SUBAGENT_BACKPRESSURE.md. */
   shouldYieldToQueue(): boolean;
 
   /** TRANSCRIPT RECORDER: record one RAW agent-input frame (goose ACP update /
@@ -475,7 +475,7 @@ export interface BridgeDeps {
    *  agent input (goose ACP frames / claude SDK messages) AND its own emitted
    *  AG-UI events, correlated by runId, so tests can REPLAY real behavior instead
    *  of hand-authored fakes. Off by default (no-op recorder). `provider` labels
-   *  which agent produced the input. See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+   *  which agent produced the input. See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
   recorder?: Recorder;
   provider?: "goose" | "claude";
 }

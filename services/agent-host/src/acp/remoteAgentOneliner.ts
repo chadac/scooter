@@ -1,7 +1,7 @@
 /**
  * Builds the Settings "Connect your Claude agent" payload: an owner-bound join token + the
  * ready-to-copy `docker run` one-liner (token + wss URL baked in). Separated for testability.
- * See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §H/§I.
+ * See todo/done/BYO_CLAUDE_REMOTE_AGENT.md §H/§I.
  */
 
 import { mintJoinToken } from "../auth/remoteAgentToken.js";

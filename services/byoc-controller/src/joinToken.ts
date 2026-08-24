@@ -3,7 +3,7 @@
  * (no external dep; node:crypto HMAC). The UI mints a short-lived, owner-bound token; the
  * /byoc/ws/:id WS upgrade verifies it offline and extracts the owner.
  *
- * Moved from the agent-host (`auth/remoteAgentToken.ts`) per todo/docs/BYO_CLAUDE_REMOTE_AGENT.md
+ * Moved from the agent-host (`auth/remoteAgentToken.ts`) per todo/done/BYO_CLAUDE_REMOTE_AGENT.md
  * §L: the controller owns the container socket now, so it owns the token that gates it.
  *
  * AUDIENCE IS DELIBERATELY DIFFERENT from the old "remote-agent". The BYOC connect path is the one

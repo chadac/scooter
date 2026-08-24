@@ -3,7 +3,7 @@
  * gated by a browser-minted hCaptcha attestation — see claudeCreds.ts). Instead the page instructs
  * the user to run `claude setup-token` on their OWN machine and paste the resulting `sk-ant-oat01-…`
  * token; we persist it to the volume. The SDK then consumes it as CLAUDE_CODE_OAUTH_TOKEN. The token
- * stays on the user's machine — it never reaches scooter. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §H.
+ * stays on the user's machine — it never reaches scooter. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md §H.
  */
 
 import { createServer, type Server } from "node:http";

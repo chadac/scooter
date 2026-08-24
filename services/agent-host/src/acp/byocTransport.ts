@@ -2,7 +2,7 @@
  * The BYOC transport — a RemoteTransport that speaks HTTP/SSE to the BYOC controller instead of
  * holding a WebSocket to the user's container.
  *
- * This is the swap that deletes a whole bug class (todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §L).
+ * This is the swap that deletes a whole bug class (todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L).
  * Before, each agent-host pod held the container socket in its own memory, so only the pod the
  * container happened to reach could drive that brain: a user with conversations spread across
  * replicas would find half of them dead. Same shape as the conversation-list bug in #284 — asking
