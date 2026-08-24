@@ -112,7 +112,7 @@ async def test_tick_with_no_due_tasks_still_increments_ticks_total(store, metric
         title="later", prompt="p", cron="* * * * *", timezone_="UTC", owner="a", enabled=True
     )
     # Manually set next_run_at to future
-    t = await store.list_tasks()
+    t = await store.list_tasks("a")
     await store.reschedule(t[0].id, last_run_at=now, next_run_at=future)
 
     # Simulate a tick with no due tasks
@@ -171,7 +171,7 @@ async def test_retention_sweep_deletes_old_runs(store):
     assert deleted == 1
     
     # Verify: old run gone, recent run remains
-    runs = await store.list_runs(t.id)
+    runs = await store.list_runs(t.id, "a")
     assert len(runs) == 1
     assert runs[0].id == recent_run_id
 
@@ -201,6 +201,6 @@ async def test_retention_sweep_disabled_when_zero(store):
     assert deleted == 0
     
     # Verify: the ancient run is STILL there
-    runs = await store.list_runs(t.id)
+    runs = await store.list_runs(t.id, "a")
     assert len(runs) == 1
     assert runs[0].id == run_id

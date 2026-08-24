@@ -47,13 +47,13 @@ async def test_prune_deletes_only_old_runs(store):
         await s.commit()
 
     # Run the prune with 7-day retention
-    deleted_count = await store.prune_old_runs(retention_days=cutoff_days)
+    deleted_count = await store.prune_old_runs(retention_days=cutoff_days, now=now)
 
     # Should have deleted 1 row (the 10-day-old one)
     assert deleted_count == 1
 
     # Verify the old run is gone and recent one remains
-    all_runs = await store.list_runs(task.id, limit=100)
+    all_runs = await store.list_runs(task.id, "alice", limit=100)
     run_ids = {r.id for r in all_runs}
     assert old_run not in run_ids
     assert recent_run in run_ids
@@ -81,11 +81,11 @@ async def test_prune_with_zero_retention_does_nothing(store):
         await s.commit()
 
     # Prune with retention_days=0 should delete NOTHING
-    deleted_count = await store.prune_old_runs(retention_days=0)
+    deleted_count = await store.prune_old_runs(retention_days=0, now=now)
     assert deleted_count == 0
 
     # The old run should still exist
-    all_runs = await store.list_runs(task.id, limit=100)
+    all_runs = await store.list_runs(task.id, "alice", limit=100)
     assert len(all_runs) == 1
     assert all_runs[0].id == old_run
 
@@ -93,7 +93,7 @@ async def test_prune_with_zero_retention_does_nothing(store):
 @pytest.mark.asyncio
 async def test_prune_with_no_old_runs(store):
     """The sweep on a fresh DB (no old runs) returns 0 and doesn't break."""
-    deleted_count = await store.prune_old_runs(retention_days=30)
+    deleted_count = await store.prune_old_runs(retention_days=30, now=datetime.now(timezone.utc))
     assert deleted_count == 0
 
 
@@ -121,8 +121,8 @@ async def test_prune_boundary_condition(store):
         await s.commit()
 
     # Should NOT delete the boundary case (only OLDER than cutoff)
-    deleted_count = await store.prune_old_runs(retention_days=cutoff_days)
+    deleted_count = await store.prune_old_runs(retention_days=cutoff_days, now=now)
     assert deleted_count == 0
 
-    all_runs = await store.list_runs(task.id, limit=100)
+    all_runs = await store.list_runs(task.id, "alice", limit=100)
     assert len(all_runs) == 1
