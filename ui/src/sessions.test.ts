@@ -446,3 +446,74 @@ describe("nestSubagents (sidebar hierarchy)", () => {
     expect(rows.map((r) => r.depth)).toEqual([0, 0]);
   });
 });
+
+describe("linked resources merge (sources/links preservation)", () => {
+  const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
+
+  it("preserves sources/links when a frame omits sources/links fields (phase-1 emit)", () => {
+    // A conversation with links already known.
+    sessionStore.mergeFromServer([{
+      id: "linked",
+      title: "PR review",
+      sources: ["github"],
+      links: [{ source: "github", resourceType: "pull_request", url: "https://github.com/o/r/pull/5", title: "#5" }],
+    }]);
+    expect(byId("linked")?.sources).toEqual(["github"]);
+    expect(byId("linked")?.links?.length).toBe(1);
+
+    // Phase-1 upsert: sources and links fields ABSENT (omitted). The fix: phase-1
+    // no longer sends sources:[] (which would wipe existing sources since [] is NOT
+    // nullish). Instead it omits the fields entirely, so the UI's ?? preserves them.
+    sessionStore.mergeFromServer([{
+      id: "linked",
+      title: "PR review",
+      // sources field ABSENT (not sent in phase 1 after the fix)
+      // links field ABSENT (not sent in phase 1)
+    }]);
+
+    // FIX: sources and links are preserved via the ?? fallback to existing values.
+    expect(byId("linked")?.sources).toEqual(["github"]);
+    expect(byId("linked")?.links?.length).toBe(1);
+  });
+
+  it("clears sources/links when BOTH are sent as empty (authoritative removal)", () => {
+    sessionStore.mergeFromServer([{
+      id: "was-linked",
+      title: "Unlinked",
+      sources: ["slack"],
+      links: [{ source: "slack", resourceType: "thread", url: "https://x.slack.com/C/p123", title: "#general" }],
+    }]);
+    expect(byId("was-linked")?.sources).toEqual(["slack"]);
+
+    // Authoritative removal: BOTH fields present and empty (phase 2 after links deleted).
+    sessionStore.mergeFromServer([{
+      id: "was-linked",
+      title: "Unlinked",
+      sources: [],
+      links: [],
+    }]);
+
+    // Removal still works — both cleared.
+    expect(byId("was-linked")?.sources).toEqual([]);
+    expect(byId("was-linked")?.links).toEqual([]);
+  });
+
+  it("preserves links when sources is absent but links is sent (asymmetric phase-2)", () => {
+    sessionStore.mergeFromServer([{
+      id: "asym",
+      sources: ["jira"],
+      links: [{ source: "jira", resourceType: "issue", url: "https://x.atlassian.net/browse/T-1", title: "T-1" }],
+    }]);
+
+    // Hypothetical frame: links present, sources absent (the mirror of phase 1).
+    sessionStore.mergeFromServer([{
+      id: "asym",
+      // sources field ABSENT
+      links: [{ source: "jira", resourceType: "issue", url: "https://x.atlassian.net/browse/T-1", title: "T-1" }],
+    }]);
+
+    // Both preserved (sources via ??, links explicitly sent).
+    expect(byId("asym")?.sources).toEqual(["jira"]);
+    expect(byId("asym")?.links?.length).toBe(1);
+  });
+});

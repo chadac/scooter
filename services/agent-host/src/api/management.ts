@@ -371,15 +371,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // `links` is a COMPACT summary (source/type/title/url — no structured ref) for the
   // list. Shared by the list route and the push stream.
   const withSources = async (c: Conversation, now: number) => {
-    const links = (await store.listLinks?.(c.id)) ?? [];
-    const sources = [...new Set(links.map((l) => l.source))].sort();
-    const linkSummary = links.map((l) => ({
-      source: l.source,
-      resourceType: l.resourceType,
-      url: l.url,
-      title: l.title,
-    }));
-    return { ...view(c, now), sources, links: linkSummary };
+    try {
+      const links = (await store.listLinks?.(c.id)) ?? [];
+      const sources = [...new Set(links.map((l) => l.source))].sort();
+      const linkSummary = links.map((l) => ({
+        source: l.source,
+        resourceType: l.resourceType,
+        url: l.url,
+        title: l.title,
+      }));
+      return { ...view(c, now), sources, links: linkSummary };
+    } catch (err) {
+      // F3: On listLinks failure, return the view WITHOUT sources/links fields
+      // (leave them absent) so the UI preserves what it already has via `??`.
+      return view(c, now);
+    }
   };
 
   r.get("/conversations", async (ctx) => {
@@ -419,17 +425,19 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Then push each lifecycle change (new conversation / title change) that
     // passes the filter as an upsert. Enrichment (sources) happens here, not in
     // the emitter, so the manager stays cheap. Emit the frame SYNCHRONOUSLY (a
-    // base view with empty sources) so the change is on the wire immediately;
-    // then, if the store has links, patch `sources` and re-emit. A brand-new
-    // conversation almost never has links yet, so the first frame is usually the
-    // only one — but the two-phase emit means a webhook-linked conversation still
-    // gets its provider icon without waiting on the next poll/snapshot.
+    // base view WITHOUT sources/links) so the change is on the wire immediately;
+    // then emit the enriched frame (phase 2) unconditionally — even when empty,
+    // so removals propagate. A brand-new conversation almost never has links yet,
+    // so phase 2 is usually empty — but the two-phase emit means a webhook-linked
+    // conversation still gets its provider icon without waiting on the next poll.
     const unsub = sessions.onConversationChange((c) => {
       if (!visible(c)) return;
       const now = Date.now();
-      send({ kind: "upsert", conversation: { ...view(c, now), sources: [] as string[] } });
+      // F1: Omit sources from phase-1 (don't send [] — let UI preserve existing via ??).
+      send({ kind: "upsert", conversation: view(c, now) });
+      // F2: Always emit phase 2, even when empty (no `if (sources.length)` gate).
       void withSources(c, now).then((conversation) => {
-        if (conversation.sources.length) send({ kind: "upsert", conversation });
+        send({ kind: "upsert", conversation });
       });
     });
 

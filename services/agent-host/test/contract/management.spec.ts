@@ -1261,4 +1261,98 @@ describe("management API", () => {
       expect(r.status).not.toBe(404);
     });
   });
+
+  describe("SSE conversation change: two-phase emit (sources enrichment)", () => {
+    // The bug: phase-1 sends `sources: []` explicitly, which overwrites existing
+    // sources in the UI ([] is NOT nullish). The fix: OMIT sources from phase 1,
+    // and ALWAYS emit phase 2 (even when empty).
+
+    it("phase-1 frame does NOT contain a sources key (omitted, not [])", async () => {
+      const sessions = fakeSessions();
+      let announce: ((c: Conversation) => void) | undefined;
+      (sessions.onConversationChange as ReturnType<typeof vi.fn>).mockImplementation(
+        (cb: (c: Conversation) => void) => { announce = cb; return () => {}; },
+      );
+      const api = createManagementApi({
+        sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      });
+
+      const s = await callStream(api, "/conversations/events");
+      expect(s.status).toBe(200);
+
+      // Announce a conversation change — triggers the two-phase emit.
+      announce?.(conv({ id: "new", threadId: "new", title: "Task" }));
+
+      // Find the phase-1 upsert frame (the synchronous one).
+      const phase1 = s.frames.find(
+        (f: any) => f.kind === "upsert" && f.conversation?.id === "new",
+      ) as any;
+      expect(phase1).toBeDefined();
+
+      // CRITICAL: the phase-1 frame must NOT have a `sources` key at all (not even []).
+      // If it sends `sources: []`, the UI's `??` coalesce won't catch it ([] is truthy)
+      // and existing sources get wiped.
+      expect(phase1.conversation).not.toHaveProperty("sources");
+    });
+
+    it("phase-2 frame is emitted even when the conversation has zero links", async () => {
+      const sessions = fakeSessions();
+      let announce: ((c: Conversation) => void) | undefined;
+      (sessions.onConversationChange as ReturnType<typeof vi.fn>).mockImplementation(
+        (cb: (c: Conversation) => void) => { announce = cb; return () => {}; },
+      );
+      // Store with NO links for the conversation.
+      const store = fakeStore([]);
+      const api = createManagementApi({ sessions, store, server: stubServer, answerPermission: async () => {} });
+
+      const s = await callStream(api, "/conversations/events");
+
+      announce?.(conv({ id: "no-links", threadId: "no-links" }));
+
+      // Wait a tick for the async withSources to resolve.
+      await new Promise((r) => setImmediate(r));
+
+      // Phase 2 must have fired (sources: [], links: [] — authoritative empty state).
+      // Before the fix, phase 2 was gated on `if (sources.length)`, so zero-link
+      // conversations never emitted it and stayed in the inconsistent phase-1 state.
+      const phase2Frames = s.frames.filter(
+        (f: any) => f.kind === "upsert" && f.conversation?.id === "no-links" && "sources" in f.conversation,
+      );
+      expect(phase2Frames.length).toBeGreaterThan(0);
+      expect(phase2Frames[0]).toMatchObject({
+        kind: "upsert",
+        conversation: expect.objectContaining({ id: "no-links", sources: [], links: [] }),
+      });
+    });
+
+    it("when listLinks throws, the sources field is ABSENT from phase 2 (not [])", async () => {
+      const sessions = fakeSessions();
+      let announce: ((c: Conversation) => void) | undefined;
+      (sessions.onConversationChange as ReturnType<typeof vi.fn>).mockImplementation(
+        (cb: (c: Conversation) => void) => { announce = cb; return () => {}; },
+      );
+      // Store whose listLinks THROWS (simulating a db error / unavailable link service).
+      const store = fakeStore([]);
+      store.listLinks = vi.fn(async () => { throw new Error("link-store down"); });
+      const api = createManagementApi({ sessions, store, server: stubServer, answerPermission: async () => {} });
+
+      const s = await callStream(api, "/conversations/events");
+
+      announce?.(conv({ id: "err", threadId: "err" }));
+      await new Promise((r) => setImmediate(r));
+
+      // Phase 2 should have fired, but with sources/links ABSENT (not []), so the UI
+      // preserves what it already has instead of wiping to empty.
+      const phase2 = s.frames.filter((f: any) => f.kind === "upsert" && f.conversation?.id === "err");
+      // There may be multiple frames (phase 1 + phase 2). Check that at least one
+      // phase-2-like frame exists (after the error) with sources ABSENT.
+      const afterError = phase2[phase2.length - 1] as any;
+      expect(afterError).toBeDefined();
+      // On error, withSources should return a frame WITHOUT sources/links keys
+      // (the fix is to catch the error and leave them absent, not to return []).
+      // This test will PASS once F3 is implemented.
+      expect(afterError.conversation).not.toHaveProperty("sources");
+      expect(afterError.conversation).not.toHaveProperty("links");
+    });
+  });
 });
