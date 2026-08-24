@@ -1,5 +1,5 @@
 /**
- * Tier 1 contract — the BYOC run path (increment 2 of todo/done/BYO_CLAUDE_REMOTE_AGENT.md §M).
+ * Tier 1 contract — the BYOC run path (increment 2 of).
  *
  *   agent-host --POST /byoc/:session/prompt--> controller --WS--> container
  *   agent-host <----------- SSE (ACP frames) --controller <--WS-- container
@@ -253,7 +253,7 @@ describe("concurrent runs on one container session", () => {
 
   it("CROSS-TALK: each conversation's stream receives ONLY its own session_updates", async () => {
     // Two conversations of one owner share the container session; each prompt names its own
-    // ACP session. The relay used to broadcast every notification to every in-flight run —
+    // ACP session. The relay used to broadcast every notification to every in-flight run
     // conversation A's transcript interleaved B's output.
     const sA = collect(relay.prompt(sessionId, { sessionId: "acp-A", prompt: [{ type: "text", text: "a" }] } as never), 3);
     const sB = collect(relay.prompt(sessionId, { sessionId: "acp-B", prompt: [{ type: "text", text: "b" }] } as never), 3);

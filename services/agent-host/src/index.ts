@@ -79,7 +79,7 @@ import type { SandboxRef, SessionId } from "./types.js";
 /** TRANSCRIPT RECORDER (test-harness): one shared instance, OFF unless
  *  TRANSCRIPT_RECORD_DIR is set. It writes one NDJSON per run capturing the RAW
  *  agent input + emitted AG-UI, so tests can REPLAY real behavior instead of
- *  hand-authored fakes. See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
+ *  hand-authored fakes.. */
 const transcriptRecorder = createRecorder(process.env.TRANSCRIPT_RECORD_DIR);
 
 export interface AgentHostConfig {
@@ -177,7 +177,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     port: Number(process.env.PORT ?? 8080),
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
     sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest",
-    // LOCAL_STATE_PATH is an EPHEMERAL CACHE of the conversations this pod is serving —
+    // LOCAL_STATE_PATH is an EPHEMERAL CACHE of the conversations this pod is serving
     // an emptyDir in cluster, wiped on every restart. It is NOT the durable record, and
     // nothing that answers "which conversations exist?" may depend on it (see
     // docs/CONVERSATION_STATE_MODEL.md: the Conversation CR is the source of truth).
@@ -366,7 +366,7 @@ export async function main(
 ): Promise<() => Promise<void>> {
   // Provisioner selection: fake (local UI) -> noop; the broker control plane when
   // SANDBOX_VIA_BROKER=1 + BROKER_URL set (the agent-host calls the broker's lifecycle
-  // API instead of touching k8s — see todo/CONTROL_PLANE_REDESIGN.md); else the legacy
+  // API instead of touching k8s — see); else the legacy
   // in-agent-host k8s provisioner (kept until PR1 St6 as a safe rollback).
   const brokerLifecycleUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
   const useBrokerProvisioner = process.env.SANDBOX_VIA_BROKER === "1" && brokerLifecycleUrl !== "";
@@ -411,7 +411,7 @@ export async function main(
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
         // Warm PVC pool: when on, claim a pre-warmed overlay upper (matching the sandbox
-        // image tag) from the warm-store-controller's pool instead of a fresh empty one —
+        // image tag) from the warm-store-controller's pool instead of a fresh empty one
         // so a new conversation finds common tools already built. Off by default;
         // WARM_STORE_POOL=1 enables it (set by kubenix when agentSandbox.warmStore.enable).
         // A cold/contended pool falls back to a fresh upper (never blocks).
@@ -419,7 +419,7 @@ export async function main(
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).
-        // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (JSON —
+        // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (JSON
         // lossless for multi-line values like NIX_CONFIG; legacy k=v;k=v accepted).
         scooterConfigMap: process.env.SCOOTER_CONFIGMAP || undefined,
         // A ConfigMap of deployment config FILES (filename -> contents) mounted as a
@@ -483,7 +483,7 @@ export async function main(
   // the /remote-agent/connect WS endpoint the user's container dials in on. Gated on
   // REMOTE_AGENT_JOIN_SECRET being set (the HS256 secret join tokens are signed with) — absent =
   // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
-  // in. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
+  // in.
   const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
   // The BYOC controller's IN-CLUSTER base URL. Ownership resolution, every ACP frame, and the
   // setup one-liner's session mint all go through it, so this pod holds no container socket and any
@@ -811,7 +811,7 @@ export async function main(
         }
       : undefined;
 
-  // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources) —
+  // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources)
   // wired ONLY on the broker path (the broker owns + applies the size). The MCP
   // `conv` param is the FULL conversationId (= threadId); the broker keys the size
   // spec by the SHORT id (the same id ensure/resume/create use), so map through
@@ -849,8 +849,8 @@ export async function main(
     : undefined;
 
   // Subagent tools: delegate work to a child conversation that SHARES this
-  // conversation's sandbox (see todo/done/SUBAGENTS.md +
-  // todo/done/SUBAGENT_INTERACTION.md). Extracted to session/subagentManager.ts so
+  // conversation's sandbox (see +
+  //). Extracted to session/subagentManager.ts so
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
   const subagentManager: SubagentManager = createSubagentManager(sessions, store);
 
@@ -1412,7 +1412,7 @@ export async function main(
     // GOOSE_MODE=approve enables the per-tool permission gate the acp client
     // auto-answers for back-pressure (allow normally; reject when a priority item
     // is queued). Off (auto) when SUBAGENT_BACKPRESSURE=0. See the shouldYield dep
-    // on createAcpClient below + todo/done/SUBAGENT_BACKPRESSURE.md.
+    // on createAcpClient below.
     const backpressureOn = process.env.SUBAGENT_BACKPRESSURE !== "0";
     const agentEnv = {
       ...cfg.agent.env,
@@ -1481,7 +1481,7 @@ export async function main(
               args: cfg.agent.args,
               env: agentEnv,
               exec,
-              // Back-pressure: auto-answer goose's approve-mode permission gate —
+              // Back-pressure: auto-answer goose's approve-mode permission gate
               // allow normally, reject the next tool when a priority item waits.
               // Late-bound (bridge assigned below). Gated with GOOSE_MODE above.
               shouldYield: backpressureOn ? () => bridge.shouldYieldToQueue() : undefined,
@@ -1513,7 +1513,7 @@ export async function main(
           createRemotePersonalizedProvider({
             controllerUrl: byocControllerUrl,
             exec,
-            // The BYO container reaches scooter-env over the TUNNEL, not this URL directly —
+            // The BYO container reaches scooter-env over the TUNNEL, not this URL directly
             // it is the loopback address the agent-host itself serves.
             mcpUrlFor: mcpEndpoint ? (conv: string) => mcpEndpoint.urlFor(conv) : undefined,
           }),

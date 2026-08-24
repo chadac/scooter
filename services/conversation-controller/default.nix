@@ -3,7 +3,6 @@
 # The Conversation CRD controller (Python). Leader-elected reconcile loop that assigns
 # each Conversation CR a hostPod (an agent-host replica) + reassigns on pod death. No
 # request routing here (a later PR); this only records ownership. See
-# todo/done/CONVERSATION_CRD_PR1.md.
 
 python3Packages.buildPythonApplication {
   pname = "conversation-controller";

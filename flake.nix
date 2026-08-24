@@ -129,7 +129,7 @@
           # via cargoPatches so it slots into the vendored-deps build without touching
           # cargoHash. Remove when an upstream-fixed goose is pinned (the OpenAI side is
           # already fixed in block/goose#10344; the Bedrock side was missed). See
-          # pkgs/goose/bedrock-tool-name-sanitize.patch + todo/GOOSE_BEDROCK_PATCH.md.
+          # pkgs/goose/bedrock-tool-name-sanitize.patch.
           agent = pkgs.goose-cli.overrideAttrs (old: {
             cargoPatches = (old.cargoPatches or [ ]) ++ [
               ./pkgs/goose/bedrock-tool-name-sanitize.patch
@@ -185,7 +185,7 @@
 
           # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
           # spawning a fresh conversation per run via the agent-host /agui. See
-          # services/scheduler/ + todo/SCHEDULED_TASKS.md.
+          # services/scheduler/.
           scheduler = pkgs.callPackage ./services/scheduler { };
 
           # Scheduler OCI image.
@@ -202,7 +202,6 @@
           # Conversation CRD controller (Python): leader-elected reconcile loop that
           # assigns each Conversation CR a hostPod (agent-host replica) + reassigns on
           # pod death. Multi-replica agent-host, stage 3. See
-          # todo/done/CONVERSATION_CRD_PR1.md.
           conversationController = pkgs.callPackage ./services/conversation-controller { };
 
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
@@ -214,7 +213,6 @@
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
           # (top-up warm Jobs, GC retired tags, return-on-suspend, leak recovery). Runs
           # alongside the upstream agent-sandbox controller. See
-          # todo/done/WARM_STORE_PVC_MANAGER.md.
           warmStoreController = pkgs.callPackage ./services/warm-store-controller { };
 
           # Conversation controller OCI image.
@@ -302,7 +300,7 @@
             testing.enable = true;
             # The cross-pod history mirror is a ReadWriteMany PVC; k3d's default
             # local-path provisioner has NO RWX, so it never binds and agent-host stays
-            # Pending. A single-node cluster e2e doesn't need cross-pod revival anyway —
+            # Pending. A single-node cluster e2e doesn't need cross-pod revival anyway
             # disable the mirror so agent-host schedules on its emptyDir `state` alone.
             conversationController.historyMirror.enable = false;
             broker = {

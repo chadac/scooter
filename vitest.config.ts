@@ -37,7 +37,7 @@ export default defineConfig({
       },
       {
         // The BYOC controller — holds the bring-your-own-Claude container sockets so ANY
-        // agent-host replica can drive them (todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L).
+        // agent-host replica can drive them.
         test: {
           name: "byoc-controller",
           include: ["services/byoc-controller/test/**/*.spec.ts"],

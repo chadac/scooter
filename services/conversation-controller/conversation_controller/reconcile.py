@@ -3,7 +3,7 @@ current agent-host pods and their load. No k8s, no I/O — so it's fully unit-te
 The controller loop (loop.py) is the imperative shell that lists, calls this per
 conversation, and patches status.
 
-Assignment model (see todo/done/CONVERSATION_CRD_PR1.md):
+Assignment model:
 - A Conversation is pinned to exactly one READY agent-host pod (`status.hostPod`).
 - Pick the least-loaded ready pod under a per-pod cap.
 - If the assigned pod is gone / NotReady, reassign (bumping the fence `generation`).
@@ -42,7 +42,6 @@ class ConversationState:
     # The backing Sandbox's spec.operatingMode ("Running" | "Suspended"), or None when the
     # Sandbox does not exist (never created yet, or already reaped). The Sandbox is the TRUTH
     # for alive/suspended — see the drift rule in reconcile() and
-    # todo/done/CONVERSATION_PHASE_DRIFT_RECONCILE.md.
     sandbox_mode: str | None = None
 
 
@@ -186,7 +185,6 @@ def reconcile(
 # pod → no independent capacity, same rule as assignment). Single-writer (patches the
 # Deployment's spec.replicas) — do NOT also run an HPA on replicas (two writers fight). A
 # custom conversations-per-pod METRIC is still exported for observability / a future HPA.
-# See todo/done/AGENT_HOST_FLEET_SCALING.md.
 
 import math
 
@@ -239,7 +237,6 @@ def desired_replicas(
 # every pod's memory (deleted CR, lost state across redeploy/migration, crash between
 # provisioner-create and CR-register) is never reaped. The controller — where the CR is
 # authoritative — reconciles Sandboxes against Conversations and GCs the difference.
-# See todo/done/ORPHANED_SANDBOX_REAPER.md.
 
 @dataclass(frozen=True)
 class SandboxRef:

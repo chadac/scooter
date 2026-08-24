@@ -1,7 +1,7 @@
 # Render check for the example platform config.
 #
 # `nix eval -f examples/check.nix` (see `just check-manifests`). Renders
-# examples/kubenix-config.nix and asserts every expected resource is present —
+# examples/kubenix-config.nix and asserts every expected resource is present
 # catching (a) Nix syntax / module eval errors and (b) SILENT resource drops
 # (e.g. a shallow `//` overwriting `deployments` and losing agent-host, which
 # renders a valid-but-wrong manifest set a plain build won't catch).
@@ -19,7 +19,7 @@ let
   expect = {
     # agent-host is a Deployment (random pods; routing by pod IP + surge rollout).
     # warm-store-controller is enabled in the example → its Deployment must render.
-    # byoc-controller renders from the ONE-KNOB enable (byoc.enable = true, nothing else) —
+    # byoc-controller renders from the ONE-KNOB enable (byoc.enable = true, nothing else)
     # pinning that the ingress/remote-agent/bridge-URL derivation actually composes.
     deployments = [ "agent-host" "agent-broker" "agent-webhooks" "ui" "warm-store-controller" "byoc-controller" ];
     services = [ "agent-host" "agent-host-pods" "agent-broker" "agent-webhooks" "ui" ];
@@ -58,7 +58,7 @@ let
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
 
-  # Rollout-drain topology invariants (todo/done/ROLLOUT_DRAIN_AND_POD_IP.md) — the fields a
+  # Rollout-drain topology invariants — the fields a
   # seamless rollout depends on. A regression here (reverting to a StatefulSet, dropping the
   # surge strategy, re-adding a per-pod PVC, or losing the routing IP field) silently
   # reintroduces the capacity gap / breaks routing, so pin them at render time.

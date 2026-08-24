@@ -1,6 +1,6 @@
 /**
  * Subagent MCP tools — the PARENT-side spawn/monitor/control surface (see
- * todo/done/SUBAGENTS.md). Pure handlers (no MCP plumbing), same shape as the
+ *). Pure handlers (no MCP plumbing), same shape as the
  * background-job handlers (mcpServer.ts). Registered per conversation in
  * buildServer; the agent (parent OR a subagent — subagents are multi-level) calls
  * them to fan out + monitor children.

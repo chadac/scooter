@@ -31,14 +31,14 @@ class Config:
     identity: str = "unknown"
     # Orphaned-Sandbox reaper: destroy Sandboxes with no owning Conversation, older than the
     # grace window (spares a just-created Sandbox whose CR isn't registered yet). On by
-    # default; grace defaults to 10 min. See todo/done/ORPHANED_SANDBOX_REAPER.md.
+    # default; grace defaults to 10 min.
     reap_orphans: bool = True
     orphan_grace_seconds: float = 600.0
     # Agent-host AUTOSCALING: the controller scales the agent-host Deployment to fit demand
     # (ceil(top-level conversations / pod_cap), clamped to [min,max]). On by default. Do NOT
     # also run an HPA on agent-host replicas (two writers fight). scale_down_cooldown avoids
     # flapping. metrics_port serves a Prometheus /metrics (conversations_per_pod) for
-    # observability / a future HPA. See todo/done/AGENT_HOST_FLEET_SCALING.md.
+    # observability / a future HPA.
     autoscale: bool = True
     min_replicas: int = 2
     max_replicas: int = 10

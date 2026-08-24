@@ -1,7 +1,7 @@
 { lib, buildNpmPackage, nodejs, ... }:
 
 # The BYOC controller — holds the bring-your-own-Claude container sockets so ANY agent-host
-# replica can drive ANY container (todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L).
+# replica can drive ANY container.
 buildNpmPackage {
   pname = "byoc-controller";
   version = "0.0.0";

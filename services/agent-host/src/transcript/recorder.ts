@@ -4,7 +4,7 @@
  * emitted AG-UI events, correlated by runId, so tests can REPLAY real behavior
  * instead of hand-authored fakes that diverge from reality.
  *
- * See todo/done/AGENT_TRANSCRIPT_HARNESS.md. Purpose: make the e2e/contract test
+ *. Purpose: make the e2e/contract test
  * harness as real as possible WITHOUT consuming credits — record a real run once,
  * replay it forever.
  *

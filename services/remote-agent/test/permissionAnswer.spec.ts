@@ -1,6 +1,6 @@
 /**
  * Tier 1 contract — the container's ACK HANDLING, pinned against what the BYOC controller actually
- * sends (increment 5 of todo/done/BYO_CLAUDE_REMOTE_AGENT.md §M).
+ * sends (increment 5 of).
  *
  * WHY THIS FILE EXISTS. The controller's own tests (increment 3) drive a FAKE container, and the
  * container's behaviour was never asserted against a real controller frame. That let a wire

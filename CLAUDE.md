@@ -2,8 +2,9 @@
 
 Guidance for working in this repo. (Working design docs are kept locally under the
 gitignored `todo/`, sorted by status into `todo/draft|done|rejected|reference/` —
-see `todo/README.md`. Some `see docs/…` comment pointers in the code refer to that
-local copy. The tracked `docs/` directory is the PUBLISHED mkdocs site — never put
+see `todo/README.md`. Code comments deliberately do NOT cite those paths: `todo/`
+is never committed, so a pointer to it is dead for anyone else who clones the
+repo. The tracked `docs/` directory is the PUBLISHED mkdocs site — never put
 working notes there.)
 
 ## What this is

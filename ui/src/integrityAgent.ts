@@ -40,7 +40,7 @@ export interface IntegrityAgentConfig extends AgentHostConfig {
    *  log re-derives the correct state (healing a DROPPED live RUN_FINISHED /
    *  PERMISSION_RESOLVED that left the UI stuck "busy" — the "agent seems dead"
    *  class). Default 25s; small values in tests. 0 disables. See
-   *  todo/done/SSE_RESILIENCE.md. */
+   *. */
   idleReconnectMs?: number;
 }
 
@@ -83,7 +83,7 @@ export class IntegrityAgent extends AbstractAgent {
   private readonly controllers = new Set<AbortController>();
   /** Stops the render-pump reconnect loop (see renderPump), called on dispose. */
   private stopPump?: () => void;
-  /** ALL unanswered interrupts (approvals) the conversation is paused on, keyed by interrupt id —
+  /** ALL unanswered interrupts (approvals) the conversation is paused on, keyed by interrupt id
    *  goose tool-permission requests AND broker (ext-) approvals, treated UNIFORMLY. An interrupt is
    *  ADDED when its RUN_FINISHED(outcome=interrupt) arrives and REMOVED only by a matching
    *  PERMISSION_RESOLVED. Crucially, run boundaries (RUN_STARTED / a plain RUN_FINISHED) do NOT clear
@@ -332,7 +332,7 @@ export class IntegrityAgent extends AbstractAgent {
     return true;
   }
 
-  /** The interrupt(s) the conversation is currently paused on (empty if none) —
+  /** The interrupt(s) the conversation is currently paused on (empty if none)
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
     return [...this.pendingApprovals.values()];
@@ -431,7 +431,7 @@ export class IntegrityAgent extends AbstractAgent {
     // reading events off a single connection). The render pump does NOT subscribe
     // to this directly — a reconnect re-replays every event, and the base applier
     // would then DOUBLE-APPLY the replay into the SAME accumulator (doubling
-    // tool-call args like '{"cmd":"ls"}{"cmd":"ls"}' and duplicating messages —
+    // tool-call args like '{"cmd":"ls"}{"cmd":"ls"}' and duplicating messages
     // the page-refresh replay bug). The pump instead runs its OWN reconnect loop
     // that re-seeds the accumulator per physical connection; see renderPump.
     return new Observable<BaseEvent>((subscriber) => {
@@ -559,7 +559,7 @@ export class IntegrityAgent extends AbstractAgent {
    *
    * The earlier design deferred a fresh fold per connection and drove reconnection
    * with rxjs `repeat({delay})`. But `processApplyEvents(apply(conn$))` completes
-   * when its SOURCE conn$ completes, and rxjs `repeat` — on that completion —
+   * when its SOURCE conn$ completes, and rxjs `repeat` — on that completion
    * unsubscribes the (still-open) connection and re-subscribes after the delay. The
    * result was a ~500ms teardown/re-replay churn on an OPEN stream: every reconnect
    * did setMessages([]) then re-folded the log from empty, and a reconnect that
@@ -723,7 +723,7 @@ export class IntegrityAgent extends AbstractAgent {
           await delay(notFoundDelay);
           notFoundDelay = Math.min(notFoundDelay * 2, 5000);
         } else if (watchdogForced) {
-          // The idle-watchdog forced this reconnect (a wedged/stalled stream) —
+          // The idle-watchdog forced this reconnect (a wedged/stalled stream)
           // reconnect NOW to re-fold the persisted log and heal stuck state.
           watchdogForced = false;
           notFoundDelay = 500;
@@ -802,7 +802,7 @@ export class IntegrityAgent extends AbstractAgent {
       const events = body.events ?? [];
       if (events.length === 0) return;
       // Fold the tail in a THROWAWAY clone first, so a fold that yields nothing
-      // renderable (e.g. the tail's final run is still in-flight — no RUN_FINISHED —
+      // renderable (e.g. the tail's final run is still in-flight — no RUN_FINISHED
       // so the base applier produces no message state) can't blank the real thread.
       // Adopt + paint only if the fold actually produced messages.
       const folded = await this.foldTail(events);

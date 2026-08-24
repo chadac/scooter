@@ -3,7 +3,7 @@
  * NFS/RWX mirror) receives an ASYNC, fire-and-forget COPY of every write, so a
  * different pod can revive the conversation from the mirror after the owner pod moves.
  *
- * Design + validation: todo/done/CONVERSATION_CRD_AND_HISTORY.md + the
+ * Design + validation: + the
  * rwx-append-mirror-spike. Two invariants the spike proved matter:
  *
  *   1. The mirror NEVER blocks local. Every mirror write is fire-and-forget; the
@@ -218,7 +218,7 @@ export function mirroredConversationStore(
     // MIRROR into LOCAL, so a pod that never owned it can hydrate + revive it after a rollout
     // reassigned it here. Reads pass through to local (the hot authority), so a
     // mirror-only conversation is invisible until this pulls it local. See
-    // todo/done/ROLLOUT_DRAIN_AND_POD_IP.md + manager.reviveFromMirror.
+    // + manager.reviveFromMirror.
     async hydrateFromMirror(id: SessionId): Promise<boolean> {
       // 1) meta — without it the conversation isn't listable/hydratable locally.
       const metas = (await mirror.listConversations?.()) ?? [];

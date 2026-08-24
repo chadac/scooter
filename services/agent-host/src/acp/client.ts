@@ -127,11 +127,11 @@ export interface AcpClientDeps {
    *  waiting (a finished subagent's result) so we REJECT the next tool — goose ends
    *  the turn, the parent idles, and the queued item injects. Omit to keep goose in
    *  auto mode (no per-tool gate; no back-pressure). See
-   *  todo/done/SUBAGENT_BACKPRESSURE.md. */
+   *. */
   shouldYield?: () => boolean;
   /** TRANSCRIPT RECORDER (test-harness): when set, called with each RAW ACP
    *  session/update frame goose sends — the ground truth for the fake ACP agent.
-   *  Omit to disable (zero overhead). See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
+   *  Omit to disable (zero overhead).. */
   recordRaw?: (update: SessionUpdate) => void;
 }
 
@@ -266,7 +266,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
         if (auto) return auto;
       }
       if (!permissionHandler) {
-        // Finding #25: a permission request arrived but no handler is registered —
+        // Finding #25: a permission request arrived but no handler is registered
         // that's a HOST WIRING BUG, not a user cancel. Returning "cancelled"
         // silently makes the agent (and any UI) think the user declined. We still
         // return cancelled so the agent run doesn't hang, but log loudly so the

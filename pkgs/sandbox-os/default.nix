@@ -74,14 +74,14 @@ let
     # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
     boot.isContainer = true;
 
-    # Overlay Nix store ALWAYS ON (the writable-store overlay is the ONE sandbox image now —
+    # Overlay Nix store ALWAYS ON (the writable-store overlay is the ONE sandbox image now
     # the plain read-only-store variant was retired). Without it /nix/store is the read-only
     # baked image layer, and the sandbox's core operations — the agent's `nix profile install`,
     # lazy-tool builds, and `scooter-rebuild` re-converge — silently can't write the store. This
     # lives HERE (the image), NOT in modules/sandbox-os, because nixosTests import that bare
     # (no baked store to overlay). The upper is a deployer-mounted volume at upperPath (the
     # provisioner's per-conversation `.scooter-rw` PVC, or a pooled warm volume).
-    # See modules/sandbox-os/overlay-store.nix + todo/done/WARM_STORE_PVC_MANAGER.md.
+    # See modules/sandbox-os/overlay-store.nix.
     programs.overlayStore.enable = true;
 
     # The pinned nixpkgs the lazy stubs + registry resolve against. MUST be the

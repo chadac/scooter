@@ -37,14 +37,13 @@ in
         Reap orphaned Sandboxes — those with no owning Conversation CR — destroying the whole
         per-conversation tree (Sandbox + its ServiceAccount + module ConfigMap). Fixes the leak
         where a Sandbox whose Conversation is gone is never cleaned up. See
-        todo/done/ORPHANED_SANDBOX_REAPER.md.
       '';
     };
     orphanGraceSeconds = mkOption {
       type = types.int;
       default = 600;
       description = ''
-        Only reap a Sandbox with no owning Conversation if it's older than this many seconds —
+        Only reap a Sandbox with no owning Conversation if it's older than this many seconds
         long enough that a normal create has registered its Conversation CR (the provisioner
         creates the Sandbox a beat before the CR), so only genuine orphans are reaped.
       '';
@@ -58,7 +57,7 @@ in
         (desired = ceil(top-level conversations / podCap), clamped to [minReplicas, maxReplicas]).
         The controller is the SINGLE writer of agent-host replicas — do NOT also attach an HPA
         to agent-host (two writers fight). A conversations-per-pod metric is still exported at
-        :metricsPort/metrics for observability. See todo/done/AGENT_HOST_FLEET_SCALING.md.
+        :metricsPort/metrics for observability.
       '';
     };
     minReplicas = mkOption {
@@ -110,7 +109,7 @@ in
         description = ''
           Provision the shared history-mirror PVC + wire MIRROR_STATE_PATH into
           agent-host. On by default: cross-pod history revival is the point of
-          multi-replica. Set false on a cluster with no RWX (nothing shared —
+          multi-replica. Set false on a cluster with no RWX (nothing shared
           each pod keeps only its own local history; routing still works).
         '';
       };
@@ -194,7 +193,6 @@ in
                     # stable DNS, so the router proxies to http://<hostIP>:<port> instead of a
                     # headless-Service DNS name. Re-derived by the controller on every (re)assign
                     # (ephemeral IPs are fine — the CR is the source of truth). Null when Pending.
-                    # See todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
                     hostIP = { type = "string"; nullable = true; };
                     assignedAt = { type = "string"; };
                     generation = { type = "integer"; };  # fence epoch, bumps per (re)assignment
@@ -225,12 +223,11 @@ in
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
           # Orphaned-Sandbox reaper: list Sandboxes + DELETE the whole per-conversation tree
           # (Sandbox CR cascades pod+PVCs; the SA + module CM are provisioner-created and must
-          # be deleted directly). See todo/done/ORPHANED_SANDBOX_REAPER.md.
+          # be deleted directly).
           { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" ]; }
           { apiGroups = [ "" ]; resources = [ "serviceaccounts" "configmaps" ]; verbs = [ "get" "list" "delete" ]; }
           # Autoscaler: read the agent-host Deployment + patch its scale subresource (the
           # controller IS the autoscaler — desired = ceil(conversations / podCap)). See
-          # todo/done/AGENT_HOST_FLEET_SCALING.md.
           { apiGroups = [ "apps" ]; resources = [ "deployments" ]; verbs = [ "get" "list" "watch" ]; }
           { apiGroups = [ "apps" ]; resources = [ "deployments/scale" ]; verbs = [ "get" "patch" "update" ]; }
         ];
@@ -321,7 +318,6 @@ in
                   # ClusterIP Service selecting the agent-host PODS — the router's FALLBACK for
                   # non-scoped / unassigned / stale-IP requests (any ready pod). It must select
                   # the pods, NOT `agent-host` (that fronts the router → a loop). See
-                  # todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
                   { name = "AGENT_HOST_SERVICE"; value = "agent-host-pods"; }
                   { name = "UPSTREAM_PORT"; value = "8080"; }
                   { name = "LISTEN_ADDR"; value = ":8080"; }

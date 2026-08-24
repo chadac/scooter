@@ -4,7 +4,7 @@
  * agent-host restart (the in-memory registry lives on one replica only). Best-effort: a DB blip
  * degrades the badge to "offline", never breaks a connection or a request.
  *
- * Two-tier truth (see todo/done/BYO_CLAUDE_REMOTE_AGENT.md):
+ * Two-tier truth:
  *   - DB status  → the BADGE (any replica can read it; survives restart).
  *   - live registry (in-memory, owning replica) → ROUTING (a prompt only goes to a genuinely-open
  *     WS; a stale DB "online" after a crash just falls to the cloud floor — RUN_ERROR-safe).

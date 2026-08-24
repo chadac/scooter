@@ -2,7 +2,7 @@
  * Subagents panel — the RightPanel tab (on a parent conversation) that lists the
  * subagents spawned in THIS conversation: title, live status, click-to-open, and
  * a cancel button. Subagents are full conversations sharing the parent's pod (see
- * todo/done/SUBAGENTS.md); their live status comes from the same session store the
+ *); their live status comes from the same session store the
  * sidebar uses (server-sourced, live via /conversations/events).
  */
 

@@ -67,7 +67,6 @@ test.describe("session selector & titles", () => {
   // TODO(rename-e2e): re-enable (`test(` not `test.skip(`) once this runs on a
   // non-CPU-starved runner (a larger hosted runner if the repo moves to an org, or a
   // self-hosted runner). The jsdom component test is the regression guard until then.
-  // See todo/RENAME_E2E_FLAKE.md.
   test.skip("the user can rename a conversation, and the agent can't override it", async ({ chat, page }) => {
     await chat.open();
     await chat.send("help me refactor the parser");
@@ -214,7 +213,7 @@ test.describe("session selector & titles", () => {
     await chat.waitForReply(/dummy agent/i);
     await expect(page.locator(sidebar.item)).toHaveCount(2);
 
-    // Back to A: its message must still be there (the reported resume bug —
+    // Back to A: its message must still be there (the reported resume bug
     // sending in B must not lose A's messages).
     await page.locator(sidebar.item).filter({ hasText: /alpha-one/i }).first().click();
     await expect(chat.userMessages().filter({ hasText: /alpha-one/i })).toHaveCount(1, {

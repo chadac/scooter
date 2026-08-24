@@ -4,7 +4,7 @@
  * Proves the ACP-over-WS split: ACP requests go DOWN + await their ack; the agent's notifications
  * come UP to the bridge callbacks; the agent's TOOL calls (Channel B) run on the CLOUD ExecBackend;
  * a dropped connection rejects in-flight requests (offline → RUN_ERROR, not a silent hang). See
- * remoteProtocol.ts + todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
+ * remoteProtocol.ts.
  */
 
 import { describe, it, expect, vi } from "vitest";

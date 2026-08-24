@@ -1,7 +1,6 @@
 /**
  * Tier 1 — goose approve-mode back-pressure: auto-answer a permission request
  * (allow normally; reject when a priority item is waiting) WITHOUT a UI prompt.
- * See todo/done/SUBAGENT_BACKPRESSURE.md.
  */
 
 import { describe, it, expect } from "vitest";

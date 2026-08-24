@@ -48,7 +48,7 @@ export interface ChecksummedEvent {
 export interface SandboxProvisioner {
   /** Cold-create a Sandbox: SA sandbox-{id}, workspace + conversation PVCs.
    *  `conversationId` is the SHORT, DNS-1123-safe id used for k8s resource NAMES.
-   *  `threadId` is the FULL conversation id the UI deep-links on (`?thread=<id>`) —
+   *  `threadId` is the FULL conversation id the UI deep-links on (`?thread=<id>`)
    *  used to build the sandbox's CONVERSATION_URL so the agent shares a link that
    *  actually resolves to THIS conversation (not the short hash). Defaults to
    *  `conversationId` when omitted (local/legacy). */
@@ -91,11 +91,11 @@ export interface ConversationMeta {
    *  undefined/false = still agent-titled (the agent may set/update the title). */
   userTitled?: boolean;
   /** The user starred this conversation. Surfaced in the UI and (in a future
-   *  retention reaper) exempts it from auto-deletion. Hibernation is unaffected —
+   *  retention reaper) exempts it from auto-deletion. Hibernation is unaffected
    *  a starred conversation still idle-suspends. */
   starred?: boolean;
   /** Messages that were still QUEUED in the bridge when the conversation was
-   *  suspended. The run queue lives in the bridge closure, which suspend() drops —
+   *  suspended. The run queue lives in the bridge closure, which suspend() drops
    *  so without persisting them here the user's already-sent message is destroyed
    *  silently (it never runs and never errors). revive() re-enqueues these on the
    *  rebuilt bridge and clears the field. */
@@ -270,7 +270,7 @@ export interface SessionManager {
    *  CR's current generation for fencing — revive only if this pod is the current owner at
    *  that generation; a stale push (older gen) is a no-op. Distinct from `revive()`, which
    *  404s when the conversation isn't already local. DESIGN STUB — see
-   *  todo/done/ROLLOUT_DRAIN_AND_POD_IP.md. */
+   *. */
   reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
@@ -859,7 +859,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     async reviveFromMirror(id, expectedGen) {
       // REVIVE-ON-ASSIGN (seamless rollout): the controller pushes this on a conversation's
-      // NEW host right after (re)assigning it. See todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
+      // NEW host right after (re)assigning it.
 
       // FENCE: only revive if this pod is the current owner at `expectedGen`. canWrite()
       // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a

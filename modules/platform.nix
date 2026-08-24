@@ -131,7 +131,7 @@ in
       description = ''
         Route the sandbox LIFECYCLE (create/suspend/resume/destroy + sizing) through
         the BROKER instead of the agent-host touching k8s directly (the control-plane
-        move — see todo/CONTROL_PLANE_REDESIGN.md). When true:
+        move. When true:
           - the agent-host runs with SANDBOX_VIA_BROKER=1 and its RBAC collapses to
             pods/exec only (the broker owns Sandbox/SA/PVC/CM CRUD),
           - the broker gets the provisioning RBAC + the deployment provisioning config
@@ -329,7 +329,7 @@ in
           The model catalog, PROVIDER-FIRST: provider -> model id -> options.
           Model ids are provider-specific namespaces — "goose" runs Bedrock ids
           (us.anthropic.…) while "claude-code" (the in-cluster subscription SDK)
-          and "byoc" (the user's own container) run API ids (claude-sonnet-4-5) —
+          and "byoc" (the user's own container) run API ids (claude-sonnet-4-5)
           so the provider is the outer key: a model two providers offer is simply
           listed under both, and each provider group marks its own `default`. A
           run only ever receives a model its provider serves — the conversation's
@@ -773,7 +773,7 @@ in
       # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
       # Deployment needed Recreate) — RollingUpdate is safe here.
       #
-      # DESIGN (rollout-drain, todo/done/ROLLOUT_DRAIN_AND_POD_IP.md) — NOT YET APPLIED:
+      # DESIGN (rollout-drain) — NOT YET APPLIED:
       # convert this StatefulSet → a Deployment for seamless upgrades:
       #   - deployments.agent-host (random pod names — routing is by POD IP now, not DNS).
       #   - strategy RollingUpdate maxSurge=1, maxUnavailable=0 (new pod Ready BEFORE the old
@@ -782,7 +782,7 @@ in
       #     is the shared RWX history mirror ⇒ no RWO PVC ⇒ no Multi-Attach blocker).
       #   - REMOVE services.agent-host-headless (no per-pod DNS); keep the `agent-host`
       #     ClusterIP Service (the router's fallback target).
-      # SEAMLESS ROLLOUT (todo/done/ROLLOUT_DRAIN_AND_POD_IP.md): a Deployment with
+      # SEAMLESS ROLLOUT: a Deployment with
       # maxSurge=1/maxUnavailable=0 — a new-gen pod becomes Ready BEFORE any old pod drains,
       # so capacity never dips during an upgrade (the StatefulSet's terminate-before-create,
       # forced by the RWO PVC's Multi-Attach, was what caused the gap). Routing is by POD IP
@@ -954,7 +954,7 @@ in
                   { name = "AWS_DEFAULT_REGION"; value = cfg.agent.region; }
                 ] ++ lib.optionals (!cfg.fakeAgent && cfg.agent.provider == "claude-code") [
                   # claude-code provider: the agent-host drives the agent via the Claude
-                  # Agent SDK (services/claude-sdk-provider, baked in) instead of goose —
+                  # Agent SDK (services/claude-sdk-provider, baked in) instead of goose
                   # so the agent's shell/file tools run IN THE SANDBOX (an in-process MCP
                   # server → ExecBackend), fixing the "tools ran in the agent-host pod,
                   # scooter-rebuild unreachable" bug. GOOSE_PROVIDER=claude-code (set above)

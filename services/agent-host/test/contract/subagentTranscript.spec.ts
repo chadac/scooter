@@ -2,7 +2,7 @@
  * Tier 1 — the subagent transcript builder. Folds a persisted AG-UI event log into
  * ordered turns INCLUDING compact tool-call summaries, so a parent monitoring a
  * subagent sees what it DID (tools) as well as what it SAID (text) — the point is
- * spotting divergence. See todo/done/SUBAGENT_INTERACTION.md.
+ * spotting divergence.
  */
 
 import { describe, it, expect } from "vitest";

@@ -12,7 +12,6 @@
 # PVCs mid-copy), verify, then set the flag back off (and later delete the old PVCs). It is
 # idempotent (cp -an = no-clobber), so a re-run only copies what's missing.
 #
-# See todo/done/LEGACY_CONVERSATION_MIGRATION.md.
 
 { config, lib, ... }:
 
@@ -22,7 +21,7 @@ let
   ns = cfg.namespace;
 
   # Mount each legacy RWO PVC read-only at /legacy/<pvc>, and the shared mirror rw at /mirror.
-  # For each, copy conversations/* into the mirror (no-clobber so a conv already on the mirror —
+  # For each, copy conversations/* into the mirror (no-clobber so a conv already on the mirror
   # e.g. one that went live during a partial migration — is never overwritten with older data).
   # NOTE: busybox `cp` does NOT support the GNU `cp -a src/. dst/` contents-copy idiom (it
   # silently no-ops), so copy each conversation DIR by glob. -a preserves; we skip a conversation

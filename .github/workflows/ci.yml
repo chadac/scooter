@@ -450,7 +450,6 @@ jobs:
   # assert it comes up + a conversation ROUTES + is assigned a hostIP. Path-gated on the
   # `platform` filter (topology/controller/router changes) — the class of change that
   # #254/#255/#256 shipped with NO cluster coverage (validated only manually on odin). See
-  # todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
   platform-smoke:
     name: Tier-2 platform smoke (k3d)
     needs: cluster-changes
@@ -763,7 +762,7 @@ jobs:
               else { try { bad = failedTests(JSON.parse(fs.readFileSync(dir + "/" + rf, "utf8"))); } catch { bad = ["(unreadable report)"]; } }
               if (bad.length) lines.push(`- **shard ${m.shard}** — ${bad.length} failure(s):\n` + bad.map((b) => `    - ${b}`).join("\n"));
             }
-            // Re-running a SINGLE shard job does NOT re-run this gate (`e2e-collect`) —
+            // Re-running a SINGLE shard job does NOT re-run this gate (`e2e-collect`)
             // GitHub only re-triggers `needs:` dependents from the workflow-level
             // "Re-run failed jobs" button. So after a fix or a flake, use THAT button
             // (not the per-shard re-run) or the gate/comment stay stuck on the old result.

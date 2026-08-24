@@ -8,7 +8,7 @@
  *
  * This interface was WRITE-ONLY, which is why that was true on paper and false in practice: a
  * source of truth nothing reads back cannot be one. `hydrate()` asked the ephemeral local store
- * "which conversations exist?" instead — a question an emptyDir cannot answer after a restart —
+ * "which conversations exist?" instead — a question an emptyDir cannot answer after a restart
  * so every pod booted with zero conversations and the idle sweep reclaimed nothing, forever.
  * list()/get() below are the missing read side.
  *
@@ -46,7 +46,7 @@ export interface ConversationSpec {
  *  sandbox and Assigned again on revive. `Assigned` doubles as "alive". These never race:
  *  the controller only patches phase during (re)assignment (NoOp on a still-ready host), and
  *  suspend drops the SANDBOX pod, not the agent-host owner pod — so assignment is unchanged.
- *  See todo/done/CONVERSATION_LIFECYCLE_CONTROLLER.md. */
+ *. */
 export type ConversationPhase = "Assigned" | "Suspended";
 
 export interface ConversationRegistry {
@@ -79,7 +79,7 @@ export interface ConversationRegistry {
 
   /**
    * GET one CR, or undefined if it does not exist. Used to re-check ownership at a point where
-   * a stale view is dangerous, without paying for a full list. Throws on a real k8s failure —
+   * a stale view is dangerous, without paying for a full list. Throws on a real k8s failure
    * "not found" is `undefined`, not an exception.
    *
    * Design stage: SIGNATURE ONLY.

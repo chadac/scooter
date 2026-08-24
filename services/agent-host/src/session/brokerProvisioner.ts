@@ -1,7 +1,7 @@
 /**
  * Broker-backed SandboxProvisioner — the agent-host no longer touches the k8s
  * Sandbox/SA/PVC API directly; it calls the BROKER's lifecycle API, which owns all
- * of that (see todo/CONTROL_PLANE_REDESIGN.md). The agent-host's only remaining
+ * of that. The agent-host's only remaining
  * direct k8s use is pods/exec.
  *
  * Implements the same SandboxProvisioner interface as createK8sProvisioner, so the

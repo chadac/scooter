@@ -1,7 +1,7 @@
 /**
  * Tier 1 contract — the trusted-caller verifier (webhooksCaller). Honors a request
  * only when its Bearer SA token authenticates (via TokenReview) as the configured
- * webhooks ServiceAccount. See auth/webhooksCaller.ts + todo/IDENTITY_MAPPING.md.
+ * webhooks ServiceAccount. See auth/webhooksCaller.ts.
  */
 
 import { describe, it, expect, vi } from "vitest";

@@ -1,5 +1,5 @@
 /**
- * Tier 1 contract — the BYOC transport (increment 4 of todo/done/BYO_CLAUDE_REMOTE_AGENT.md §M).
+ * Tier 1 contract — the BYOC transport (increment 4 of).
  *
  * This is the swap that deletes the bug class. Before: each agent-host pod held the container's
  * WebSocket in its own memory, so only the pod the container happened to reach could drive that

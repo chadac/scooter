@@ -5,7 +5,7 @@ Flow (best-effort, non-blocking): the invoking external user id (from the webhoo
 -> their EMAIL via the provider API -> the agent-host `/users/by-email` reverse
 lookup over user_identity -> the Scooter user id. If any step can't resolve (no
 token, no email on the account, no matching Scooter user), returns None and the
-conversation stays unowned — exactly today's behavior. See todo/IDENTITY_MAPPING.md.
+conversation stays unowned — exactly today's behavior.
 """
 
 from __future__ import annotations

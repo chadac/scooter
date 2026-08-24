@@ -3,7 +3,7 @@
  * input frames into a fake that drives the REAL bridge, so tests run against the
  * exact shapes real goose/claude emit (not hand-authored fictions).
  *
- * See todo/done/AGENT_TRANSCRIPT_HARNESS.md. Fixtures live under
+ *. Fixtures live under
  * test/fixtures/transcripts/<provider>/<scenario>.ndjson.
  */
 

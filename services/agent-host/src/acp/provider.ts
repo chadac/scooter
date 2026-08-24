@@ -11,7 +11,7 @@
  * Increment 1 ports the existing sdk + goose branches onto two providers with disjoint
  * eligibility (only one is eligible under today's config), so the resolver picks the SAME client
  * the old branch did — behavior-identical. Increment 2 adds a `remote-personalized` provider whose
- * eligibility encodes the human-trigger guardrail. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
+ * eligibility encodes the human-trigger guardrail.
  */
 
 import type { AcpClient } from "./client.js";
@@ -68,7 +68,7 @@ export interface AcpProvider {
 }
 
 /** Pick the ACP provider for a run: the highest-priority ELIGIBLE provider. Deterministic
- *  tie-break by id (stable across runs). Returns undefined ONLY if NO provider is eligible —
+ *  tie-break by id (stable across runs). Returns undefined ONLY if NO provider is eligible
  *  callers must include an always-eligible floor (bedrock/goose) so this never happens in prod;
  *  it's `undefined`-typed so a misconfigured registry fails loud rather than silently mis-routing. */
 export async function pickAcpProvider(

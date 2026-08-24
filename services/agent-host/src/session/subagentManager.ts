@@ -2,7 +2,6 @@
  * createSubagentManager — the SubagentManager impl, extracted from index.ts so the
  * spawn/list/check/cancel/send/monitor/search logic is unit-testable against a
  * controllable sessions + store (no real pod/bridge). See
- * todo/done/SUBAGENT_INTERACTION.md.
  */
 
 import { randomUUID } from "node:crypto";

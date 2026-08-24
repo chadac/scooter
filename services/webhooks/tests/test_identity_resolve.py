@@ -1,6 +1,6 @@
 """External-user → Scooter-user mapping (identity_resolve): fetch the invoking
 user's email per provider, then match a Scooter user via the agent-host /users/by-email.
-Best-effort: any miss -> None (unowned). See todo/IDENTITY_MAPPING.md."""
+Best-effort: any miss -> None (unowned).."""
 
 import httpx
 import pytest

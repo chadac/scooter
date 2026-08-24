@@ -9,7 +9,7 @@
 #      present at return — positive proof the overlay quiesced cleanly (a SIGKILL/crash
 #      leaves no marker → the controller discards the PVC). No nix-specific repair needed:
 #      suspend SIGTERMs systemd → graceful drain, and the state/ sqlite DB is
-#      transaction-atomic. See todo/done/WARM_STORE_PVC_MANAGER.md.
+#      transaction-atomic.
 #
 #   2. scooter-warm-store-seed — the WARM JOB producer. Runs ONLY when the warm Job
 #      requests it (a `<upper>/.warm-request` file the Job's init writes, carrying the

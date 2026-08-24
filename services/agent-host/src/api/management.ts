@@ -540,9 +540,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // the `gen` query param is the CR's current generation; if this pod isn't the current
   // owner (or the push is stale), skip — the ownership guard still gates writes regardless.
   //
-  // DESIGN STUB — not implemented. Must: (1) verify caller is the controller (SA/secret —
+  // DESIGN STUB — not implemented. Must: (1) verify caller is the controller (SA/secret
   // spec Q4); (2) hydrate-from-mirror if absent; (3) fence on `gen`; (4) be safe to call
-  // concurrently / repeatedly. See todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
+  // concurrently / repeatedly.
   r.post("/internal/revive/:id", async (ctx) => {
     const gen = Number(new URL(ctx.req.url ?? "", "http://x").searchParams.get("gen") ?? "0");
     // Hydrate-if-absent + fence (a stale/mis-routed push is a no-op inside reviveFromMirror).

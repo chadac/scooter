@@ -92,7 +92,7 @@ export type AguiRunOutcome =
 export type AguiEvent = AguiEventBase & { ts?: number };
 
 type AguiEventBase =
-  // RUN_STARTED and RUN_FINISHED both REQUIRE threadId per the AG-UI schema —
+  // RUN_STARTED and RUN_FINISHED both REQUIRE threadId per the AG-UI schema
   // the @ag-ui/client validates incoming events and rejects a missing threadId.
   | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId }
   | {
@@ -319,7 +319,7 @@ export interface SessionBridge {
    *  the run quiesces to a boundary and the queued priority item (e.g. a subagent
    *  result) can inject instead of waiting for the whole run. A normal queued
    *  prompt does NOT trigger this (it waits its turn). See
-   *  todo/done/SUBAGENT_BACKPRESSURE.md. */
+   *. */
   shouldYieldToQueue(): boolean;
 
   /** TRANSCRIPT RECORDER: record one RAW agent-input frame (goose ACP update /
@@ -429,7 +429,7 @@ export interface BridgeDeps {
   /**
    * Force-interrupt timeout (ms). When a queued PRIORITY prompt (an @scooter
    * mention) has waited longer than this while a run is active, the queue cancels
-   * the running turn so the priority item can take over. 0 (default) disables it —
+   * the running turn so the priority item can take over. 0 (default) disables it
    * a priority item then only jumps the queue order, never force-cancels.
    */
   priorityInterruptMs?: number;
@@ -475,7 +475,7 @@ export interface BridgeDeps {
    *  agent input (goose ACP frames / claude SDK messages) AND its own emitted
    *  AG-UI events, correlated by runId, so tests can REPLAY real behavior instead
    *  of hand-authored fakes. Off by default (no-op recorder). `provider` labels
-   *  which agent produced the input. See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
+   *  which agent produced the input.. */
   recorder?: Recorder;
   provider?: "goose" | "claude";
 }
@@ -1361,7 +1361,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             ? deps.model
             : defaultFor(deps.modelCatalog, provider.modelTag)
           : deps.model;
-      // A provider that cannot reach the bridge's default MCP endpoint supplies its own set —
+      // A provider that cannot reach the bridge's default MCP endpoint supplies its own set
       // the BYO container gets tunnel NAMES it proxies locally, since the default is a
       // loopback URL only in-cluster agents can reach.
       const mcpServers = provider.mcpServersFor?.(sessionId) ?? deps.config.mcpServers;
@@ -1382,7 +1382,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         if (sid && acpSessionId && sid !== acpSessionId) return;
         if (currentRun) handleUpdate(currentRun, u);
       });
-      // goose's shell tool carries the COMMAND in terminal/create, not the tool_call rawInput —
+      // goose's shell tool carries the COMMAND in terminal/create, not the tool_call rawInput
       // stash it by terminalId so the tool_call_update can show `$ <command>`.
       client.onTerminalCreated((terminalId, command, args) => {
         terminalCommands.set(terminalId, formatCommand(command, args));
@@ -1590,7 +1590,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // An unknown optionId cancels rather than forwarding a garbage selection.
       const chosen = pending.validOptions.has(optionId) ? optionId : null;
       if (pending.onExternal) {
-        // External interrupt (e.g. broker AWS request): no blocked goose run —
+        // External interrupt (e.g. broker AWS request): no blocked goose run
         // fire the callback (with the answering user's identity) + clean up +
         // record the resolution for replay.
         pendingPermissions.delete(toolCallId);

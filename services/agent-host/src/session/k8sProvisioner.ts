@@ -85,7 +85,7 @@ export interface K8sProvisionerOptions {
    *  (optimistic label CAS) and the Sandbox references it by claimName; if none is
    *  ready it falls back to a fresh volumeClaimTemplate (a cold pool NEVER blocks a
    *  conversation). Only meaningful when overlayStore is true. Default off. See
-   *  todo/done/WARM_STORE_PVC_MANAGER.md. */
+   *. */
   warmStorePool?: boolean;
   /** Resource requests/limits for the sandbox container. Without these the
    *  scheduler treats a sandbox as ~free and packs many onto one node; a burst of
@@ -202,7 +202,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // falls back to a fresh volumeClaimTemplate (a cold or contended pool NEVER blocks
   // conversation creation). See WARM_STORE_PVC_MANAGER.md.
   //
-  // NOTE: this is a JSON-patch test-and-set, NOT a resourceVersion-in-body merge patch —
+  // NOTE: this is a JSON-patch test-and-set, NOT a resourceVersion-in-body merge patch
   // k8s only honors resourceVersion as an optimistic-lock precondition on PUT (update), not
   // PATCH (a merge patch carrying resourceVersion 400s). The `test` op IS the CAS for PATCH.
   const claimWarmStorePvc = async (sandboxNameForConv: string): Promise<string | null> => {
@@ -612,7 +612,7 @@ export function sandboxManifest(
     /** imagePullPolicy for the sandbox container. Defaults to "Always" (a
      *  registry-backed cluster picks up a re-pushed :latest). Set "IfNotPresent"
      *  / "Never" for a side-loaded local cluster (kind/k3s) where the image only
-     *  exists in the node's containerd and there's no registry to pull from —
+     *  exists in the node's containerd and there's no registry to pull from
      *  "Always" there fails with ImagePullBackOff. Wired from SANDBOX_PULL_POLICY. */
     pullPolicy?: "Always" | "IfNotPresent" | "Never";
     /** RuntimeClass for the systemd sandbox pod (e.g. "crun") — a cgroup-delegating

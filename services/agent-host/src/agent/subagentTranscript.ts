@@ -3,7 +3,6 @@
  * turns INCLUDING compact tool-call summaries, so a parent monitoring a subagent
  * sees what it DID (tools) as well as what it SAID (text). Used by
  * monitor_subagent (tail) + search_subagent (filter). See
- * todo/done/SUBAGENT_INTERACTION.md.
  *
  * Distinct from agent/transcript.ts's `foldTurns` (text-only, for the revive
  * preamble) — here tool calls matter, since divergence is often in the actions.

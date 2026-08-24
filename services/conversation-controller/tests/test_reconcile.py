@@ -269,7 +269,7 @@ def test_subagent_re_pins_when_parent_moved():
     assert a.generation == 2
 
 
-# --- phase ⇄ sandbox drift reconcile (todo/done/CONVERSATION_PHASE_DRIFT_RECONCILE.md) ---
+# --- phase ⇄ sandbox drift reconcile ---
 #
 # THE DRIFT, observed live twice (2026-08-12 and 2026-08-22): a CR sits at phase=Assigned while
 # its backing Sandbox is operatingMode=Suspended. The host's setPhase("Suspended") is

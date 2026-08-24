@@ -1,7 +1,7 @@
 /**
  * Registry of connected BYO ("bring your own Claude") remote agents, keyed by OWNER, plus the
  * `remote-personalized` AcpProvider that routes a run to the owner's agent — but ONLY for
- * human-initiated triggers (the compliance guardrail). See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
+ * human-initiated triggers (the compliance guardrail).
  */
 
 import type { AcpClient } from "./client.js";

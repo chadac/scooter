@@ -1,7 +1,7 @@
 /**
  * Tier 1 contract — /agui honors the conversation OWNER only for the TRUSTED
  * webhooks caller (verified by its SA token via TokenReview — useOwnerVerifier).
- * A browser / any other caller can't claim a conversation. See todo/IDENTITY_MAPPING.md.
+ * A browser / any other caller can't claim a conversation.
  */
 
 import { describe, it, expect } from "vitest";

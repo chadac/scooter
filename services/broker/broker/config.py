@@ -109,7 +109,6 @@ class BrokerSettings(BaseSettings):
     # --- Sandbox lifecycle (broker/sandbox/) — the broker as control plane -----
     # When on, the broker owns per-conversation Sandbox provisioning (SA/PVC/CR),
     # the size spec, and the lifecycle API the agent-host calls. See
-    # todo/CONTROL_PLANE_REDESIGN.md.
     sandbox_lifecycle_enabled: bool = False
     # SA usernames allowed to drive the sandbox LIFECYCLE (ensure/suspend/resume/
     # end/list) — the CONTROL callers, i.e. the agent-host. CSV of

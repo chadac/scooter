@@ -455,7 +455,7 @@ in
                 # env, public URL). Mirrors the agent-host env → the broker's
                 # sandbox_* settings (pydantic uppercases the field). Gated so the
                 # default (agent-host owns lifecycle) adds NO broker env.
-                # See services/broker/broker/sandbox/config.py + todo/CONTROL_PLANE_REDESIGN.md.
+                # See services/broker/broker/sandbox/config.py.
                 ++ lib.optionals cfg.sandboxViaBroker ([
                   { name = "SANDBOX_LIFECYCLE_ENABLED"; value = "true"; }
                   # The control caller(s) allowed to drive ensure/suspend/resume/end

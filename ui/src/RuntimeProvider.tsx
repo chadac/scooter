@@ -5,7 +5,7 @@
  *
  * SINGLE-SOURCE (live-monitoring) model — see docs/LIVE_MONITORING_DESIGN.md.
  * The open conversation renders SOLELY from the agent-host's integrity stream
- * (GET /conversations/:id/events.integrity), which carries EVERY run's events —
+ * (GET /conversations/:id/events.integrity), which carries EVERY run's events
  * so a run driven from Slack, a webhook, or another tab appears live, not only on
  * a re-open. The render source is an `IntegrityAgent` (an @ag-ui/client
  * AbstractAgent whose run() is that continuous stream). Its base-class applier
@@ -98,7 +98,7 @@ export interface SplicedSystemMessage {
  * (bespoke), so we splice a synthetic `sys:`-prefixed assistant message right AFTER
  * the real message with id === afterMessageId (null → before all).
  *
- * KNOWN BUG (see todo/done/AGENT_TRANSCRIPT_HARNESS.md): a system message anchored
+ * KNOWN BUG: a system message anchored
  * to an assistant message that ALSO has tool calls nested into it renders ABOVE
  * those tool cards — because we splice after the message OBJECT but the message's
  * own tool parts render as part of it. The UI-layer replay test captures this.
@@ -167,7 +167,7 @@ export interface InterruptContextValue {
    *  the user the stop didn't land instead of leaving them staring. */
   cancelState: "idle" | "stopping" | "failed";
   /** The last run's RUN_ERROR message, or null. The base applier renders NO
-   *  message for a RUN_ERROR, so a failed run (e.g. the agent couldn't start —
+   *  message for a RUN_ERROR, so a failed run (e.g. the agent couldn't start
    *  the hydrate-silent-drop class) would go silent. Surfaced here so the UI can
    *  show a visible error banner. Cleared when the next run starts. */
   runError: string | null;

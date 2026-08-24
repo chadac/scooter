@@ -3,7 +3,7 @@
  * container sockets to `ws`.
  *
  * Deliberately thin: routing, auth, and relay semantics all live in tested modules, and everything
- * here is the part that genuinely needs a socket. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L/§M.
+ * here is the part that genuinely needs a socket.
  *
  * SINGLE REPLICA (§L decision 3). One process owns every container socket, so there is no
  * cross-replica socket problem at all. A restart drops the sockets and the containers reconnect on

@@ -2,7 +2,7 @@
  * The BYOC transport — a RemoteTransport that speaks HTTP/SSE to the BYOC controller instead of
  * holding a WebSocket to the user's container.
  *
- * This is the swap that deletes a whole bug class (todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L).
+ * This is the swap that deletes a whole bug class.
  * Before, each agent-host pod held the container socket in its own memory, so only the pod the
  * container happened to reach could drive that brain: a user with conversations spread across
  * replicas would find half of them dead. Same shape as the conversation-list bug in #284 — asking
@@ -63,7 +63,7 @@ export function createByocTransport(config: ByocTransportConfig): RemoteTranspor
   /** Which endpoint a frame belongs to. See ROUTING above. */
   const endpointFor = (frame: WireFrame): string => {
     if (frame.ch === "exec" && frame.id) return `${base}/exec/${encodeURIComponent(frame.id)}`;
-    // An ACP `ack` going OUT is always an answer to a permission the container is blocked on —
+    // An ACP `ack` going OUT is always an answer to a permission the container is blocked on
     // the agent-host never acks anything else (it is the requester on Channel A).
     if (frame.ch === "acp" && frame.type === "ack" && frame.id) {
       return `${base}/permission/${encodeURIComponent(frame.id)}`;

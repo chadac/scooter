@@ -5,7 +5,6 @@
 # PVCs on suspend, recovers leaks. Runs ALONGSIDE the upstream agent-sandbox controller
 # (which owns the Sandbox→pod/PVC lifecycle — we install it from a release, don't fork).
 # The agent-host provisioner does the CLAIM (claimName swap). See
-# todo/done/WARM_STORE_PVC_MANAGER.md.
 #
 # OFF by default (`agentSandbox.warmStore.enable`): a fresh conversation always gets a
 # working (empty) overlay upper without it — the pool is a hit-rate optimization, not a

@@ -1,5 +1,5 @@
 /**
- * Tier 1 contract — device-key auth (§P of todo/done/BYO_CLAUDE_REMOTE_AGENT.md).
+ * Tier 1 contract — device-key auth (§P of).
  *
  * WHY THIS EXISTS. The join token is a BEARER credential with a 10-minute TTL, pasted into a
  * copy-paste one-liner (so it lands in shell history, screenshots, chat logs). The container runs on

@@ -11,7 +11,7 @@
  * → the SANDBOX pod. Subscription auth is preserved: the SDK spawns the same
  * `claude` CLI, authenticated with CLAUDE_CODE_OAUTH_TOKEN via options.env.
  *
- * See todo/CLAUDE_AGENT_SDK_PROVIDER.md for the full design.
+ * See for the full design.
  */
 
 import type {
@@ -70,13 +70,13 @@ export interface SdkAcpClientDeps {
    *  then DENIES the next tool with an explanation + interrupt:true, ending the
    *  turn so the parent goes idle and the queued item can inject — instead of the
    *  agent spinning in a tool loop that blocks its own result. Omit to disable.
-   *  See todo/done/SUBAGENT_BACKPRESSURE.md. */
+   *. */
   shouldYield?: () => boolean;
   /** TRANSCRIPT RECORDER (test-harness): when set, called with each RAW SDK
    *  query() message BEFORE normalization — the ground truth for keeping the fake
    *  query() faithful. Injected by agent-host (which owns the file writing); this
    *  isolated package stays dependency-free. Omit to disable (zero overhead).
-   *  See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
+   *. */
   recordRaw?: (msg: unknown) => void;
 }
 

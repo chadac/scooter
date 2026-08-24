@@ -22,7 +22,7 @@ SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
 
-# Pool PVC labels (see todo/done/WARM_STORE_PVC_MANAGER.md).
+# Pool PVC labels.
 LBL_WARM_STORE = "scooter.io/warm-store"   # image content tag (the version key)
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed
@@ -281,7 +281,7 @@ class ControllerK8s:
 
     # --- helpers -----------------------------------------------------------
     def _claim_names_bound_to_live_pods(self) -> set[str]:
-        """PVC names currently mounted by a non-terminal pod (the RWO single-attach truth —
+        """PVC names currently mounted by a non-terminal pod (the RWO single-attach truth
         a claimed PVC is only reclaimable once no pod holds it)."""
         core, _, _, _ = _apis()
         bound: set[str] = set()

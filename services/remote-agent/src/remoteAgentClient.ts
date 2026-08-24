@@ -4,7 +4,6 @@
  * driver the cloud uses on Bedrock): ACP requests from the cloud drive the local Claude; its
  * updates/permission requests go back up; its tool calls tunnel to the cloud sandbox (Channel B via
  * the tunnel ExecBackend). The Claude subscription token stays LOCAL. See
- * todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { WebSocket } from "ws";
@@ -82,7 +81,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     if (stopped) return;
     // The controller authorizes at the UPGRADE, before any application message can be sent, so
     // credentials must ride on the URL. An earlier cut sent them in the hello FRAME: the controller
-    // read query params, the container sent a message, and device auth silently NEVER ENGAGED —
+    // read query params, the container sent a message, and device auth silently NEVER ENGAGED
     // every reconnect quietly fell back to the join token and died once it expired.
     const connectUrl = await buildConnectUrl(deps);
     ws = new WebSocket(connectUrl);
@@ -221,7 +220,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           case "prompt": {
             const p = frame.payload as { sessionId: string; prompt: Array<{ type?: string; text?: string }> };
             // Prove WHICH agent served a turn. Without this there is no way to tell from the
-            // outside whether a reply came from THIS container or from the cloud-side provider —
+            // outside whether a reply came from THIS container or from the cloud-side provider
             // the cloud falls back silently when the container is offline, so an answer arriving
             // is NOT evidence the container produced it.
             const preview = (p.prompt ?? [])
@@ -286,7 +285,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     ws.on("close", (code, reasonBuf) => {
       // Interpret the close CODE — the controller uses application codes for conditions a
       // container must react to differently than a network blip. The observed failure: token
-      // auth rejected, a generic "disconnected (code 1005)", and a fast retry loop forever —
+      // auth rejected, a generic "disconnected (code 1005)", and a fast retry loop forever
       // the machine looked fine while permanently unauthenticated.
       const disposition = upgradeAuthRejected
         ? closeDisposition(4001, "rejected at the WebSocket upgrade (HTTP 401)", attempt + 1)
@@ -321,7 +320,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       setTimeout(() => void connect(), delay);
     });
     // A NON-101 upgrade response (an older controller rejects with a raw 401 before any WS
-    // exists). Without this handler the ws lib emits a generic error and the fast retry loop —
+    // exists). Without this handler the ws lib emits a generic error and the fast retry loop
     // the same silent-auth-failure shape as an uncoded close.
     ws.on("unexpected-response", (_req, res) => {
       if (res.statusCode === 401) {
