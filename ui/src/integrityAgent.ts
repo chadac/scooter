@@ -505,6 +505,9 @@ export class IntegrityAgent extends AbstractAgent {
         while ((idx = buf.indexOf("\n\n")) !== -1) {
           const raw = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
+          // F1: Reset lastActivityAt on ANY frame (including heartbeats `: ping\n\n`),
+          // not just data: lines — heartbeats prove the connection is alive.
+          this.lastActivityAt = Date.now();
           const line = raw.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
           let frame: IntegrityFrame;
@@ -754,15 +757,23 @@ export class IntegrityAgent extends AbstractAgent {
       let healedInterruptKey: string | null = null; // pending-set we've already re-folded for
       watchdog = setInterval(() => {
         if (closed) return;
-        if (Date.now() - this.lastActivityAt < idleMs) return;
+        const silentMs = Date.now() - this.lastActivityAt;
+        if (silentMs < idleMs) return; // stream is alive
         const pending = this.getPendingInterrupts();
         // Key the pending set so a NEW interrupt re-arms the one-shot heal.
         const interruptKey = pending.length ? pending.map((i) => i.id).sort().join(",") : null;
         const runStuck = this.running;
         const interruptStuck = interruptKey !== null && interruptKey !== healedInterruptKey;
-        if (!runStuck && !interruptStuck) return;
+        // F2: LIVENESS check fires even when idle (running===false, no interrupts).
+        // Heartbeats arrive every ~25s; if NO frame (event OR heartbeat) for >60s
+        // (>2 missed pings), the connection is dead — reconnect. This is SEPARATE
+        // from the runStuck/interruptStuck checks (which solve different problems:
+        // a LIVE stream that dropped a terminal event).
+        const livenessWindowMs = Math.max(idleMs * 2.4, 60_000); // ~60s, >2 missed pings
+        const connectionDead = silentMs >= livenessWindowMs;
+        if (!runStuck && !interruptStuck && !connectionDead) return;
         if (interruptStuck) healedInterruptKey = interruptKey;
-        // Stuck: nudge the loop to reconnect + re-fold from the log.
+        // Stuck or dead: nudge the loop to reconnect + re-fold from the log.
         this.lastActivityAt = Date.now(); // avoid re-firing while the reconnect runs
         watchdogForced = true; // reconnect promptly (no drop-backoff delay)
         controller?.abort();
@@ -770,9 +781,29 @@ export class IntegrityAgent extends AbstractAgent {
       (watchdog as { unref?: () => void }).unref?.();
     }
 
+    // F3: VISIBILITYCHANGE handler forces a reconnect when the tab becomes visible.
+    // Browsers throttle background-tab timers, so a backgrounded tab can miss the
+    // watchdog window entirely. When the tab returns to foreground, force a
+    // reconnect + re-fold so the user sees current state, not stale pre-background.
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined") return; // SSR guard
+      if (document.visibilityState === "visible" && !closed && controller) {
+        // Tab just became visible — force a resync.
+        this.lastActivityAt = Date.now(); // avoid double-fire from watchdog
+        watchdogForced = true;
+        controller.abort();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
     const stop = () => {
       closed = true;
       if (watchdog) clearInterval(watchdog);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
       controller?.abort();
       connSub?.unsubscribe();
       if (this.stopPump === stop) this.stopPump = undefined;

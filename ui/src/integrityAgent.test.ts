@@ -850,6 +850,420 @@ describe("IntegrityAgent", () => {
     stop();
     agent.dispose();
   });
+  // --- IDLE DESYNC BUG: watchdog must fire on IDLE conversations too -----------
+
+  it("IDLE DESYNC: a dropped stream on an IDLE conversation (running===false) forces a reconnect", async () => {
+    // THE REPORTED BUG: conversation is IDLE (no run in-flight, no pending
+    // interrupt), the stream dies (e.g. ingress restart), and the UI never
+    // reconnects because the watchdog only checked `running || interruptStuck`.
+    // This test MUST FAIL before the fix.
+    let conn = 0;
+    const idleDeadBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          // A complete, finished turn — running===false.
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "done" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+          // Stream is now synced + idle (running===false, no interrupts) and DIES
+          // (deliberately do NOT close or send heartbeats — simulates a silent drop).
+        },
+      });
+    };
+    // Connection 2: same history, proves reconnect happened.
+    const healedBody = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "done" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ].map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(idleDeadBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(healedBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100, // liveness window: reconnect if NO frame for >100ms
+    });
+    const stop = agent.renderPump();
+
+    // Wait for connection 1 to sync (idle, running===false).
+    await new Promise((r) => setTimeout(r, 60));
+    expect(agent.runIsActive()).toBe(false); // idle
+    expect(agent.getPendingInterrupts()).toHaveLength(0); // no approvals
+
+    // Wait past the liveness window (>100ms of silence) — the watchdog MUST
+    // reconnect even though running===false and no interrupts are pending.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(conn).toBeGreaterThanOrEqual(2); // reconnect happened (FAILS before fix)
+
+    stop();
+    agent.dispose();
+  });
+
+  it("HEARTBEAT IS ACTIVITY: a quiet stream that receives ONLY heartbeats does NOT reconnect", async () => {
+    // Defect 2 guard: if we fix "heartbeats count as activity" but break the
+    // liveness check, a healthy quiet stream churns reconnects every window.
+    // Feed ONLY `: ping\n\n` (no data: frames) for 3× the idle window — assert
+    // NO reconnect (the heartbeats keep it alive). MUST FAIL if heartbeats don't
+    // reset the activity clock.
+    let conn = 0;
+    const heartbeatBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          // Synced immediately (no history).
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+          // Then ONLY heartbeats (`: ping\n\n`) every 40ms, no events.
+          const timer = setInterval(() => {
+            c.enqueue(enc.encode(`: ping\n\n`));
+          }, 40);
+          // Keep the stream open for ~500ms (5× the 100ms window).
+          setTimeout(() => { clearInterval(timer); c.close(); }, 500);
+        },
+      });
+    };
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      return new Response(heartbeatBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100, // liveness: reconnect if NO frame for >100ms
+    });
+    const stop = agent.renderPump();
+
+    // Wait 3× the idle window (heartbeats are arriving every 40ms).
+    await new Promise((r) => setTimeout(r, 350));
+
+    // NO reconnect — the heartbeats kept the stream alive.
+    expect(conn).toBe(1); // FAILS if heartbeats don't count as activity
+
+    stop();
+    agent.dispose();
+  });
+
+  it("HEARTBEAT STOPS: when heartbeats STOP arriving, the watchdog reconnects EXACTLY ONCE", async () => {
+    // Heartbeats arrive normally, then STOP (simulates a stalled connection that
+    // never closes). The liveness check must fire EXACTLY ONE reconnect — not a
+    // storm, and not zero (the stream is dead).
+    let conn = 0;
+    const stalledBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+          // Heartbeats for ~80ms, then SILENCE (stalled connection).
+          let count = 0;
+          const timer = setInterval(() => {
+            if (count++ < 3) {
+              c.enqueue(enc.encode(`: ping\n\n`));
+            } else {
+              clearInterval(timer); // stop sending, but DO NOT close
+            }
+          }, 25);
+        },
+      });
+    };
+    const healedBody = [{ kind: "synced" }].map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(stalledBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(healedBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100,
+    });
+    const stop = agent.renderPump();
+
+    // Wait long enough for the heartbeats to stop + the liveness window to expire.
+    await new Promise((r) => setTimeout(r, 350));
+
+    // EXACTLY ONE reconnect (conn 1 stalled → conn 2), not a storm.
+    expect(conn).toBe(2);
+
+    stop();
+    agent.dispose();
+  });
+
+  it("POST-RECONNECT CONVERGENCE: the folded state matches the server log EXACTLY (same events, order, checksum)", async () => {
+    // The most important test: after ANY forced reconnect (idle desync, stalled
+    // heartbeat, whatever), the client's folded state must equal the server's
+    // authoritative log EXACTLY — same event set, same order, same final message
+    // content. Not "it reconnected" — "it CONVERGED".
+    let conn = 0;
+    const partialBody = () => {
+      const enc = new TextEncoder();
+      return new ReadableStream({
+        start(c) {
+          // Connection 1: partial history (RUN_STARTED, partial message, NO RUN_FINISHED).
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "partial…" } })}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
+          // Stream stalls (no RUN_FINISHED, no more content).
+        },
+      });
+    };
+    // Connection 2: the FULL, COMPLETE log from the server.
+    const completeLog = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "partial…" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: " complete now" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const completeBody = completeLog.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(partialBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(completeBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100,
+    });
+    const stop = agent.renderPump();
+
+    // Wait for connection 1 (partial state).
+    await new Promise((r) => setTimeout(r, 60));
+    const partial = uiState(agent);
+    expect(partial.running).toBe(true); // stuck mid-run
+    expect(partial.feedText).toContain("partial…");
+    expect(partial.feedText).not.toContain("complete now"); // missing tail
+
+    // Wait for reconnect + re-fold from the complete log.
+    await new Promise((r) => setTimeout(r, 300));
+    const converged = uiState(agent);
+    expect(conn).toBe(2); // reconnected
+    // CONVERGENCE: the folded state now matches the server's complete log.
+    expect(converged.running).toBe(false); // RUN_FINISHED applied
+    expect(converged.feedText).toContain("partial… complete now"); // FULL content
+    // The final message text is EXACTLY what the server log contains (not doubled,
+    // not truncated).
+    const messages = (agent as unknown as { messages: Array<{ content?: unknown }> }).messages;
+    const finalContent = messages.map((m) => {
+      const c = m.content;
+      return typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => (p as { text?: string }).text ?? "").join("") : "";
+    }).join("");
+    expect(finalContent).toBe("partial… complete now");
+
+    stop();
+    agent.dispose();
+  });
+
+  it("NO DUPLICATES ON RECONNECT: replay after reconnect does not double-apply already-folded events", async () => {
+    // The server dedups by checksum (each event has one). Assert a replay after
+    // reconnect does not double tool-call args or duplicate messages — the
+    // page-refresh replay bug guard, but for a mid-session reconnect.
+    let conn = 0;
+    const log = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "running ls" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" } },
+      { kind: "event", event: { type: "TOOL_CALL_ARGS", toolCallId: "t1", delta: '{"cmd":"ls"}' } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "t1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const body = log.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+    const stalled = () => new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(body)); /* DO NOT close */ } });
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(stalled(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      // Connection 2: the SAME log (a replay).
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100,
+    });
+    const stop = agent.renderPump();
+
+    await new Promise((r) => setTimeout(r, 60)); // connection 1 folds
+    await new Promise((r) => setTimeout(r, 300)); // reconnect + replay
+
+    expect(conn).toBe(2); // reconnected
+    // NO DOUBLE-APPLICATION: tool args are NOT doubled.
+    const messages = (agent as unknown as { messages: Array<{ toolCalls?: Array<{ function: { arguments: string } }> }> }).messages;
+    const withTool = messages.filter((m) => (m.toolCalls?.length ?? 0) > 0);
+    expect(withTool.length).toBe(1);
+    expect(withTool[0].toolCalls![0].function.arguments).toBe('{"cmd":"ls"}'); // NOT '{"cmd":"ls"}{"cmd":"ls"}'
+    // Exactly ONE assistant message with the tool call (not two).
+    expect(messages.filter((m) => JSON.stringify(m).includes("bash")).length).toBe(1);
+
+    stop();
+    agent.dispose();
+  });
+
+  it("EVENTS WHILE DISCONNECTED ARE NOT LOST: append N events server-side during a drop, all N appear on reconnect", async () => {
+    // The server keeps appending events to the log while a client is disconnected.
+    // On reconnect, the replay MUST contain ALL those events (in order), not just
+    // the ones the client saw before the drop.
+    let conn = 0;
+    const initialLog = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "initial" } },
+      { kind: "synced" },
+    ];
+    const initialBody = () => new ReadableStream({
+      start(c) {
+        for (const f of initialLog) c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(f)}\n\n`));
+        // Stream stalls (no close).
+      },
+    });
+
+    // While disconnected, the server appended MORE events to the log (a tool call).
+    const reconnectedLog = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "initial" } },
+      // NEW events appended while the client was disconnected:
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: " + new events" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" } },
+      { kind: "event", event: { type: "TOOL_CALL_ARGS", toolCallId: "t1", delta: '{"cmd":"pwd"}' } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "t1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const reconnectedBody = reconnectedLog.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(initialBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(reconnectedBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100,
+    });
+    const stop = agent.renderPump();
+
+    await new Promise((r) => setTimeout(r, 60));
+    const before = uiState(agent);
+    expect(before.feedText).toContain("initial");
+    expect(before.feedText).not.toContain("new events"); // not yet
+
+    await new Promise((r) => setTimeout(r, 300)); // reconnect
+    const after = uiState(agent);
+    expect(conn).toBe(2);
+    // ALL new events appeared, in order.
+    expect(after.feedText).toContain("initial + new events");
+    expect(after.running).toBe(false); // RUN_FINISHED applied
+    const messages = (agent as unknown as { messages: Array<{ toolCalls?: Array<{ function: { name: string } }> }> }).messages;
+    const tools = messages.flatMap((m) => m.toolCalls ?? []).map((tc) => tc.function.name);
+    expect(tools).toContain("bash"); // the new tool call appeared
+
+    stop();
+    agent.dispose();
+  });
+
+  it("BACKGROUNDED TAB: visibilitychange forces a reconnect + resync when the tab becomes visible", async () => {
+    // Browsers throttle background-tab timers, so a backgrounded tab misses the
+    // watchdog window entirely. A visibilitychange handler must force a
+    // reconnect-and-refold when the tab becomes visible so the user sees current
+    // state, not stale pre-background state. This test will FAIL until F3 is
+    // implemented.
+    let conn = 0;
+    const stalledLog = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const stalledBody = () => new ReadableStream({
+      start(c) {
+        for (const f of stalledLog) c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(f)}\n\n`));
+        // Stream stalls (simulates: tab was backgrounded, stream went silent, tab now foreground again).
+      },
+    });
+    const freshLog = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "fresh state" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "m1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const freshBody = freshLog.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("");
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      conn += 1;
+      if (conn === 1) return new Response(stalledBody(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      return new Response(freshBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host", conversationId: "c1", fetchImpl,
+      idleReconnectMs: 100,
+    });
+    const stop = agent.renderPump();
+
+    await new Promise((r) => setTimeout(r, 60));
+    const before = uiState(agent);
+    expect(before.running).toBe(true); // stale (stuck mid-run)
+    expect(before.feedText).not.toContain("fresh state");
+
+    // Simulate the tab becoming visible (fire visibilitychange).
+    // The agent MUST listen for this and force a reconnect.
+    const event = new Event("visibilitychange");
+    Object.defineProperty(document, "visibilityState", { value: "visible", writable: true, configurable: true });
+    document.dispatchEvent(event);
+
+    // Wait for the forced reconnect to complete.
+    await new Promise((r) => setTimeout(r, 200));
+    const after = uiState(agent);
+    expect(conn).toBeGreaterThanOrEqual(2); // visibilitychange forced a reconnect (FAILS before F3)
+    expect(after.running).toBe(false); // fresh state from the log
+    expect(after.feedText).toContain("fresh state");
+
+    stop();
+    agent.dispose();
+  });
 
   it("STREAM AUTH ERROR: a 401 on the stream surfaces getStreamAuthError() (not a silent retry loop), then self-clears on recovery", async () => {
     // An expired ingress/auth session in front of the agent-host makes the stream
