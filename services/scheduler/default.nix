@@ -22,6 +22,9 @@ python3Packages.buildPythonApplication {
     aiosqlite
     asyncpg
     croniter
+    opentelemetry-api
+    opentelemetry-sdk
+    opentelemetry-exporter-otlp-proto-http
   ];
 
   nativeCheckInputs = with python3Packages; [

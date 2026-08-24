@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -13,6 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .config import require_relay_key, settings
 from .cron import InvalidSchedule
+from .metrics import MetricsSink, create_metrics
 from .models import Run, Task, TaskCreate, TaskPatch
 from .spawn import spawn_conversation
 from .store import Store
@@ -32,10 +34,16 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def _fire(store: Store, task) -> None:
+async def _fire(store: Store, task, metrics: MetricsSink) -> None:
     """Spawn one run for an ALREADY-CLAIMED task and record it. The task's
     next_run_at was advanced atomically by claim_due (the double-fire guard), so
     _fire must NOT reschedule — it only spawns + records the run."""
+    start_ms = time.perf_counter() * 1000
+    
+    # Record claim lag if available (claim_due attaches it as a transient attribute)
+    if hasattr(task, "_claim_lag_ms"):
+        metrics.claim_lag(lag_ms=task._claim_lag_ms)
+    
     run_id = await store.start_run(task.id)
     conv = await spawn_conversation(task.prompt, title=task.title, owner=task.owner)
     await store.finish_run(
@@ -44,26 +52,52 @@ async def _fire(store: Store, task) -> None:
         status="spawned" if conv else "failed",
         error=None if conv else "spawn returned no conversation",
     )
+    duration_ms = (time.perf_counter() * 1000) - start_ms
+    metrics.fire_completed(status="spawned" if conv else "failed", duration_ms=duration_ms)
     logger.info("fired task %s (%s) -> conversation %s", task.id, task.title, conv)
 
 
-async def _scheduler_loop(store: Store, stop: asyncio.Event) -> None:
+async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Event) -> None:
     """Every tick, fire all due tasks. A missed window (service down) fires once on
     recovery (next_run_at is in the past) then advances forward — no backfill storm."""
+    tick_count = 0
     while not stop.is_set():
+        outcome = "ok"
         try:
+            now = _utcnow()
             # claim_due ATOMICALLY claims + advances next_run_at, so with 2+ replicas
             # each due task is fired by exactly one replica (no double-fire). If a
             # spawn then fails, next_run_at has already advanced — the run is recorded
             # 'failed' and we don't retry until the next cron window (at-most-once).
-            due = await store.claim_due(_utcnow())
+            due = await store.claim_due(now)
+            
             for task in due:
                 try:
-                    await _fire(store, task)
+                    await _fire(store, task, metrics)
                 except Exception:  # one bad task must not stall the loop
                     logger.exception("failed firing task %s", task.id)
+                    outcome = "error"
+            
+            # Run retention sweep roughly hourly (not every tick — tick is 30s by default).
+            # Check every ~120 ticks = 3600s = 1 hour (at default tick_seconds=30).
+            tick_count += 1
+            if settings.run_retention_days > 0 and tick_count % 120 == 0:
+                try:
+                    deleted = await store.prune_old_runs(retention_days=settings.run_retention_days, now=now)
+                    if deleted > 0:
+                        metrics.runs_pruned(count=deleted)
+                        logger.info("pruned %d old runs (retention=%d days)", deleted, settings.run_retention_days)
+                except Exception:
+                    logger.exception("retention sweep failed")
+                    outcome = "error"
         except Exception:
             logger.exception("scheduler tick failed")
+            outcome = "error"
+        
+        # CRITICAL: increment scheduler_ticks_total EVERY tick, even if no tasks were due.
+        # This is the dead-loop detector — its absence means the tick loop is stuck.
+        metrics.tick_completed(outcome=outcome)
+        
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=settings.tick_seconds)
 
@@ -73,8 +107,13 @@ async def lifespan(app: FastAPI):
     store = Store(settings.dsn)
     await store.init()
     app.state.store = store
+    
+    # Initialize metrics (no-op if disabled)
+    metrics = create_metrics(enabled=settings.otel_metrics_enabled)
+    app.state.metrics = metrics
+    
     stop = asyncio.Event()
-    loop = asyncio.create_task(_scheduler_loop(store, stop))
+    loop = asyncio.create_task(_scheduler_loop(store, metrics, stop))
     try:
         yield
     finally:
@@ -82,6 +121,7 @@ async def lifespan(app: FastAPI):
         loop.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await loop
+        await metrics.shutdown()
         await store.dispose()
 
 
@@ -172,7 +212,7 @@ async def run_now(task_id: str, owner: str = Depends(_owner)) -> Run:
     row = await app.state.store.get_task(task_id, owner)
     if row is None:
         raise HTTPException(status_code=404, detail="task not found")
-    await _fire(app.state.store, row)
+    await _fire(app.state.store, row, app.state.metrics)
     runs = await app.state.store.list_runs(task_id, owner, limit=1)
     return Run.of(runs[0])
 

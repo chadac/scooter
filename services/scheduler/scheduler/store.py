@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .cron import next_run, validate
@@ -146,6 +146,11 @@ class Store:
         async with self._session() as s:
             rows = list((await s.scalars(stmt)).all())
             for row in rows:
+                # Store the lag (now - old next_run_at) as a transient attribute for metrics.
+                # SQLite returns naive-UTC datetimes; normalize to aware-UTC before subtracting.
+                if row.next_run_at:
+                    next_run_aware = row.next_run_at if row.next_run_at.tzinfo else row.next_run_at.replace(tzinfo=timezone.utc)
+                    row._claim_lag_ms = (now - next_run_aware).total_seconds() * 1000  # type: ignore
                 # Advance BEFORE releasing the lock — this is what closes the double-fire
                 # window. next_run is computed from `now` (not the stale next_run_at) so a
                 # missed window fires once then advances forward (no backfill storm).
@@ -191,3 +196,22 @@ class Store:
                 .limit(limit)
             )
             return list((await s.scalars(stmt)).all())
+
+    async def prune_old_runs(self, *, retention_days: int, now: datetime) -> int:
+        """Delete task_runs older than retention_days. Returns count of deleted rows.
+        
+        Args:
+            retention_days: Delete runs older than this many days. 0 = disabled (no delete).
+            now: Current time for computing the cutoff.
+        
+        Returns:
+            Number of rows deleted.
+        """
+        if retention_days == 0:
+            return 0
+        
+        cutoff = now - timedelta(days=retention_days)
+        async with self._session() as s:
+            result = await s.execute(delete(RunRow).where(RunRow.fired_at < cutoff))
+            await s.commit()
+            return result.rowcount
