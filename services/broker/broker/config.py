@@ -46,6 +46,15 @@ class BrokerSettings(BaseSettings):
     datadog_app_key: str = ""
     datadog_site: str = "datadoghq.com"
 
+    # --- Grafana (service-account token; http-proxy to a Grafana stack) -----
+    # The broker's grafana provider proxies /grafana/* -> <grafana_url>, injecting
+    # the token so the agent can query dashboards/datasources (and through the
+    # datasource proxy, Prometheus + Loki) without seeing it. Enabled iff BOTH the
+    # url and token are set. `grafana_url` is the stack base, e.g.
+    # https://myorg.grafana.net (no trailing slash needed; it is stripped).
+    grafana_url: str = ""
+    grafana_token: str = ""
+
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 
