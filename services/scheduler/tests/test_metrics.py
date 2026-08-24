@@ -33,7 +33,10 @@ def metrics_sink(metrics_reader):
     yield sink
     # Clean up (synchronous shutdown for test teardown)
     import asyncio
-    asyncio.get_event_loop().run_until_complete(sink.shutdown())
+    try:
+        asyncio.get_event_loop().run_until_complete(sink.shutdown())
+    except:
+        pass
 
 
 def _get_metric_value(reader, name: str, attributes: dict = None):
@@ -44,7 +47,11 @@ def _get_metric_value(reader, name: str, attributes: dict = None):
             for metric in sm.metrics:
                 if metric.name == name:
                     for point in metric.data.data_points:
-                        if attributes is None or point.attributes == attributes:
+                        if attributes is None:
+                            return point.value
+                        # Match attributes as dict
+                        point_attrs = dict(point.attributes) if point.attributes else {}
+                        if point_attrs == attributes:
                             return point.value
     return None
 
@@ -69,7 +76,6 @@ async def test_successful_fire_increments_spawned(store, metrics_reader, metrics
         await _fire(store, t, metrics_sink)
 
     # Assert: scheduler_fires_total{status=spawned} incremented
-    metrics_reader.collect()
     value = _get_metric_value(metrics_reader, "scheduler_fires_total", {"status": "spawned"})
     assert value == 1
 
@@ -92,7 +98,6 @@ async def test_failed_spawn_increments_failed(store, metrics_reader, metrics_sin
         await _fire(store, t, metrics_sink)
 
     # Assert: scheduler_fires_total{status=failed} incremented
-    metrics_reader.collect()
     value = _get_metric_value(metrics_reader, "scheduler_fires_total", {"status": "failed"})
     assert value == 1
 
@@ -117,7 +122,6 @@ async def test_tick_with_no_due_tasks_still_increments_ticks_total(store, metric
     # The tick must STILL increment scheduler_ticks_total
     metrics_sink.tick_completed(outcome="ok")
 
-    metrics_reader.collect()
     value = _get_metric_value(metrics_reader, "scheduler_ticks_total", {"outcome": "ok"})
     assert value == 1
 
