@@ -1,4 +1,4 @@
-# CLAUDE.md — kubenix-agent-manager
+# AGENTS.md — Scooter
 
 Guidance for working in this repo. (The `docs/` design docs are kept locally under
 the gitignored `todo/docs/`, not in the repo — some `see docs/…` comment pointers in
@@ -9,7 +9,7 @@ the code refer to that local copy.)
 A Nix-powered agent platform layered over the Kubernetes
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) controller.
 agent-sandbox provides the execution **body** (pods, warm pools,
-suspend/resume); this repo adds the **brain** (an off-the-shelf ACP agent — Goose
+suspend/resume); Scooter adds the **brain** (an off-the-shelf ACP agent — Goose
 — run *outside* the sandbox) and a **conversation UI** (AG-UI + assistant-ui).
 The agent drives the sandbox via the agent-sandbox API; nothing is an in-pod
 agent. See `docs/DESIGN.md` for the full architecture and the reasoning behind
@@ -17,14 +17,12 @@ the agent-outside inversion, the two-PVC persistence model, and broker auth.
 
 ## Status
 
-This is built via a staged PoC process: Research → Design → Tests →
-**Implementation**. The agent-host TypeScript is being implemented seam-by-seam
-and **Tier 1 contract tests are green (12/12)**. Done so far: ACP↔AG-UI bridge,
-ExecBackend (K8s exec API), SessionManager, real ACP client (spawns `goose
-acp`), K8s SandboxProvisioner, AG-UI SSE server, file-backed ConversationStore,
-and index.ts wiring. Still to do: the UI, the local cluster fixture
-(`test/support/cluster-up.sh`, k3s), and turning Tier 2/3 green. Nix image +
-kubenix modules are still partly sketched. See `docs/DESIGN.md`.
+This project is **implemented and running in production-shaped deployments**.
+Multi-replica agent-hosts with controller-assigned conversations, suspend/resume
+with history restore, bring-your-own-Claude (device-key auth, concurrent
+conversations), a provider-aware model catalog, webhooks/scheduler/broker
+integrations, and a working UI are all live. Development continues via iterative
+improvements and new features.
 
 ## ALWAYS run the tests
 
