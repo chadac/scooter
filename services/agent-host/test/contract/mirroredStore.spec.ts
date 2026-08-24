@@ -274,3 +274,120 @@ describe("mirroredConversationStore", () => {
     });
   });
 });
+
+  // The DURABLE-READ BUG: listLinks reads from LOCAL only (an emptyDir wiped on rollouts),
+  // so links in the MIRROR (durable, survives rollouts) disappear. PR #297 fixed this for
+  // listConversations; listLinks was left behind. The measured live-cluster symptom: 5 of
+  // 12 links missing (those from conversations created before the last rollout).
+  describe("listLinks (durable read — mirror is authoritative, unioned with local)", () => {
+    const link = (url: string) => ({ source: "github", resourceType: "pr", url, title: url });
+
+    it("THE BUG: links in the MIRROR but absent from LOCAL are returned (not lost after a rollout)", async () => {
+      // Simulates a rollout: LOCAL is empty (emptyDir wiped), but the MIRROR holds the real links.
+      const local = memStore({ listLinks: async () => [] }); // wiped
+      const mirror = memStore({ listLinks: async () => [link("https://gh/1"), link("https://gh/2")] });
+      const store = mirroredConversationStore(local, mirror);
+      const links = await store.listLinks!(ID);
+      expect(links).toEqual([link("https://gh/1"), link("https://gh/2")]); // from mirror, not []
+    });
+
+    it("union: a link only in LOCAL (just added, not yet coalesced to mirror) is still returned", async () => {
+      const local = memStore({ listLinks: async () => [link("https://gh/fresh")] });
+      const mirror = memStore({ listLinks: async () => [link("https://gh/old")] });
+      const store = mirroredConversationStore(local, mirror);
+      const links = await store.listLinks!(ID);
+      expect(links.map((l) => l.url)).toEqual(expect.arrayContaining(["https://gh/fresh", "https://gh/old"]));
+    });
+
+    it("dedupe: the same URL in both stores appears exactly once", async () => {
+      const local = memStore({ listLinks: async () => [link("https://gh/dup")] });
+      const mirror = memStore({ listLinks: async () => [link("https://gh/dup")] });
+      const store = mirroredConversationStore(local, mirror);
+      const links = await store.listLinks!(ID);
+      expect(links).toHaveLength(1);
+      expect(links[0].url).toBe("https://gh/dup");
+    });
+
+    it("a mirror read FAILURE degrades to local (never blanks the panel)", async () => {
+      const local = memStore({ listLinks: async () => [link("https://gh/safe")] });
+      const mirror = memStore({ listLinks: async () => { throw new Error("mirror read failed"); } });
+      const store = mirroredConversationStore(local, mirror);
+      const links = await store.listLinks!(ID);
+      expect(links).toEqual([link("https://gh/safe")]); // degraded, not thrown
+    });
+
+    it("regression: the write path (addLink) still writes to BOTH stores", async () => {
+      const localLinks: unknown[] = [];
+      const mirrorLinks: unknown[] = [];
+      const local = memStore({ addLink: async (_id, l) => { localLinks.push(l); } });
+      const mirror = memStore({ addLink: async (_id, l) => { mirrorLinks.push(l); } });
+      const store = mirroredConversationStore(local, mirror);
+      await store.addLink!(ID, link("https://gh/write-test"));
+      await tick();
+      expect(localLinks).toHaveLength(1);  // local written
+      expect(mirrorLinks).toHaveLength(1); // mirror written
+    });
+  });
+
+  // readModule and listJobs have the SAME bug as listLinks: read from local only (wiped emptyDir),
+  // but writes (saveModule, saveJob, updateJob) go to BOTH stores. After a rollout, modules and
+  // jobs in the mirror disappear from local-only reads.
+  describe("readModule (durable read — mirror fallback when local is wiped)", () => {
+    it("reads from MIRROR when LOCAL is empty (rollout wiped the emptyDir)", async () => {
+      const local = memStore({ readModule: async () => undefined }); // wiped
+      const mirror = memStore({ readModule: async () => "module code from mirror" });
+      const store = mirroredConversationStore(local, mirror);
+      expect(await store.readModule!(ID)).toBe("module code from mirror");
+    });
+
+    it("prefers LOCAL when both have it (local is fresher)", async () => {
+      const local = memStore({ readModule: async () => "local fresh" });
+      const mirror = memStore({ readModule: async () => "mirror stale" });
+      const store = mirroredConversationStore(local, mirror);
+      expect(await store.readModule!(ID)).toBe("local fresh");
+    });
+
+    it("degrades gracefully when mirror read fails", async () => {
+      const local = memStore({ readModule: async () => "local safe" });
+      const mirror = memStore({ readModule: async () => { throw new Error("mirror down"); } });
+      const store = mirroredConversationStore(local, mirror);
+      expect(await store.readModule!(ID)).toBe("local safe");
+    });
+  });
+
+  describe("listJobs (durable read — mirror is authoritative, unioned with local)", () => {
+    const job = (id: string, status: string) => ({ id, status } as never);
+
+    it("reads from MIRROR when LOCAL is empty (rollout wiped the emptyDir)", async () => {
+      const local = memStore({ listJobs: async () => [] }); // wiped
+      const mirror = memStore({ listJobs: async () => [job("j1", "done"), job("j2", "running")] });
+      const store = mirroredConversationStore(local, mirror);
+      const jobs = await store.listJobs!(ID);
+      expect(jobs.map((j) => j.id)).toEqual(["j1", "j2"]);
+    });
+
+    it("union: a job only in LOCAL (just added) is returned", async () => {
+      const local = memStore({ listJobs: async () => [job("j-fresh", "running")] });
+      const mirror = memStore({ listJobs: async () => [job("j-old", "done")] });
+      const store = mirroredConversationStore(local, mirror);
+      const jobs = await store.listJobs!(ID);
+      expect(jobs.map((j) => j.id)).toEqual(expect.arrayContaining(["j-fresh", "j-old"]));
+    });
+
+    it("dedupe: the same job id in both stores appears once, local wins (fresher status)", async () => {
+      const local = memStore({ listJobs: async () => [job("j1", "done")] });
+      const mirror = memStore({ listJobs: async () => [job("j1", "running")] });
+      const store = mirroredConversationStore(local, mirror);
+      const jobs = await store.listJobs!(ID);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].status).toBe("done"); // local wins
+    });
+
+    it("degrades gracefully when mirror read fails", async () => {
+      const local = memStore({ listJobs: async () => [job("j-safe", "done")] });
+      const mirror = memStore({ listJobs: async () => { throw new Error("mirror down"); } });
+      const store = mirroredConversationStore(local, mirror);
+      const jobs = await store.listJobs!(ID);
+      expect(jobs.map((j) => j.id)).toEqual(["j-safe"]);
+    });
+  });

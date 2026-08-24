@@ -156,9 +156,65 @@ export function mirroredConversationStore(
       ? (id, events) => local.replaceEvents!(id, events) : undefined,
     readEventsTail: local.readEventsTail
       ? (id, runs) => local.readEventsTail!(id, runs) : undefined,
-    readModule: local.readModule ? (id) => local.readModule!(id) : undefined,
-    listJobs: local.listJobs ? (id) => local.listJobs!(id) : undefined,
-    listLinks: local.listLinks ? (id) => local.listLinks!(id) : undefined,
+    // READ MODULE FROM THE DURABLE STORE. Same bug as listLinks/listConversations: LOCAL is an
+    // emptyDir wiped on rollouts, but saveModule writes to BOTH stores. After a rollout, a
+    // conversation's module (agent-authored code) would be in the mirror but invisible to local-only reads.
+    readModule:
+      local.readModule || mirror.readModule
+        ? async (id) => {
+            const [mirrorMod, localMod] = await Promise.all([
+              Promise.resolve(mirror.readModule?.(id)).catch(() => undefined),
+              Promise.resolve(local.readModule?.(id)).catch(() => undefined),
+            ]);
+            return localMod ?? mirrorMod; // local wins (fresher), mirror is fallback
+          }
+        : undefined,
+    // LIST JOBS FROM THE DURABLE STORE. Same bug as listLinks: LOCAL is wiped on rollouts, but
+    // saveJob/updateJob write to BOTH stores. After a rollout, jobs would disappear from the local read.
+    listJobs:
+      local.listJobs || mirror.listJobs
+        ? async (id) => {
+            const [mirrorJobs, localJobs] = await Promise.all([
+              Promise.resolve(mirror.listJobs?.(id) ?? []).catch(() => []),
+              Promise.resolve(local.listJobs?.(id) ?? []).catch(() => []),
+            ]);
+            // Dedupe by job id. Local wins (fresher status).
+            const byId = new Map<string, JobRecord>();
+            for (const job of mirrorJobs) byId.set(job.id, job);
+            for (const job of localJobs) byId.set(job.id, job); // local wins
+            return [...byId.values()];
+          }
+        : undefined,
+    // LIST LINKS FROM THE DURABLE STORE, not the local cache. LOCAL_STATE_PATH is an emptyDir:
+    // after a rollout it is EMPTY, so delegating to local-only made links disappear (measured on
+    // the cluster: 5 of 12 links missing — those from conversations created before the last rollout).
+    // Same bug as PR #297 fixed for listConversations; listLinks was left behind. The fix is the
+    // same: union mirror + local, dedupe by URL. The mirror is authoritative; local is the just-added
+    // cache (the mirror write is async + coalesced, so a just-added link can be local-only briefly).
+    listLinks:
+      local.listLinks || mirror.listLinks
+        ? async (id) => {
+            const [mirrorLinks, localLinks] = await Promise.all([
+              // A mirror read failure must not blank the panel; fall back to whatever local has.
+              Promise.resolve(mirror.listLinks?.(id) ?? []).catch((err) => {
+                console.error(`[mirror] listLinks failed for ${id} (serving local only):`, err);
+                return [];
+              }),
+              Promise.resolve(local.listLinks?.(id) ?? []).catch(() => []),
+            ]);
+            // Dedupe by URL — a link in both stores must appear once. Local wins (fresher).
+            const byUrl = new Map<string, ConversationLink>();
+            for (const link of mirrorLinks) {
+              const key = link.url ?? `${link.source}:${link.resourceType}:${link.title}`;
+              byUrl.set(key, link);
+            }
+            for (const link of localLinks) {
+              const key = link.url ?? `${link.source}:${link.resourceType}:${link.title}`;
+              byUrl.set(key, link); // local wins
+            }
+            return [...byUrl.values()];
+          }
+        : undefined,
     // LIST FROM THE DURABLE STORE, not the local cache. LOCAL_STATE_PATH is an emptyDir: after a
     // rollout it is EMPTY, so delegating here made every replica report zero conversations while
     // the mirror held the full history (measured on odin: 59 durable vs 0 local, all five replicas
