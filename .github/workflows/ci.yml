@@ -77,9 +77,15 @@ jobs:
       # Python services: their nix build runs the test suite (pytestCheckHook).
       # Building them here gives PR coverage of the Python services without a
       # separate Python toolchain in CI. Keep in sync with the buildPythonApplication
-      # services (broker, webhooks, conversation-controller, warm-store-controller).
+      # services (broker, webhooks, scheduler, conversation-controller,
+      # warm-store-controller).
+      #
+      # `scheduler` was MISSING from this list despite the "keep in sync" note above,
+      # so its suite never ran in CI — which is how a semantic merge collision (#318
+      # added a required `owner` arg; #322 branched earlier and called the old
+      # signature) landed on main with 8 failing tests and nothing to catch it.
       - name: python service tests (nix build runs pytest)
-        run: nix build .#broker .#webhooks .#conversation-controller .#warm-store-controller --print-build-logs
+        run: nix build .#broker .#webhooks .#scheduler .#conversation-controller .#warm-store-controller --print-build-logs
 
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface
