@@ -4,7 +4,7 @@
  * driver the cloud uses on Bedrock): ACP requests from the cloud drive the local Claude; its
  * updates/permission requests go back up; its tool calls tunnel to the cloud sandbox (Channel B via
  * the tunnel ExecBackend). The Claude subscription token stays LOCAL. See
- * todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { WebSocket } from "ws";

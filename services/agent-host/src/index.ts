@@ -79,7 +79,7 @@ import type { SandboxRef, SessionId } from "./types.js";
 /** TRANSCRIPT RECORDER (test-harness): one shared instance, OFF unless
  *  TRANSCRIPT_RECORD_DIR is set. It writes one NDJSON per run capturing the RAW
  *  agent input + emitted AG-UI, so tests can REPLAY real behavior instead of
- *  hand-authored fakes. See todo/docs/AGENT_TRANSCRIPT_HARNESS.md. */
+ *  hand-authored fakes. See todo/done/AGENT_TRANSCRIPT_HARNESS.md. */
 const transcriptRecorder = createRecorder(process.env.TRANSCRIPT_RECORD_DIR);
 
 export interface AgentHostConfig {
@@ -483,7 +483,7 @@ export async function main(
   // the /remote-agent/connect WS endpoint the user's container dials in on. Gated on
   // REMOTE_AGENT_JOIN_SECRET being set (the HS256 secret join tokens are signed with) — absent =
   // feature OFF (no route, no remote provider), so nothing changes for a deploy that hasn't opted
-  // in. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+  // in. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
   const remoteAgentJoinSecret = process.env.REMOTE_AGENT_JOIN_SECRET;
   // The BYOC controller's IN-CLUSTER base URL. Ownership resolution, every ACP frame, and the
   // setup one-liner's session mint all go through it, so this pod holds no container socket and any
@@ -849,8 +849,8 @@ export async function main(
     : undefined;
 
   // Subagent tools: delegate work to a child conversation that SHARES this
-  // conversation's sandbox (see todo/docs/SUBAGENTS.md +
-  // todo/docs/SUBAGENT_INTERACTION.md). Extracted to session/subagentManager.ts so
+  // conversation's sandbox (see todo/done/SUBAGENTS.md +
+  // todo/done/SUBAGENT_INTERACTION.md). Extracted to session/subagentManager.ts so
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
   const subagentManager: SubagentManager = createSubagentManager(sessions, store);
 
@@ -1412,7 +1412,7 @@ export async function main(
     // GOOSE_MODE=approve enables the per-tool permission gate the acp client
     // auto-answers for back-pressure (allow normally; reject when a priority item
     // is queued). Off (auto) when SUBAGENT_BACKPRESSURE=0. See the shouldYield dep
-    // on createAcpClient below + todo/docs/SUBAGENT_BACKPRESSURE.md.
+    // on createAcpClient below + todo/done/SUBAGENT_BACKPRESSURE.md.
     const backpressureOn = process.env.SUBAGENT_BACKPRESSURE !== "0";
     const agentEnv = {
       ...cfg.agent.env,

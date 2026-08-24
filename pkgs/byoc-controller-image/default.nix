@@ -1,7 +1,7 @@
 { pkgs, lib, n2c, byocController, ... }:
 
 # OCI image for the BYOC controller (Node service). It holds the bring-your-own-Claude container
-# sockets so ANY agent-host replica can drive them — see todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §L.
+# sockets so ANY agent-host replica can drive them — see todo/done/BYO_CLAUDE_REMOTE_AGENT.md §L.
 
 {
   image = n2c.buildImage {

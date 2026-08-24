@@ -450,7 +450,7 @@ jobs:
   # assert it comes up + a conversation ROUTES + is assigned a hostIP. Path-gated on the
   # `platform` filter (topology/controller/router changes) — the class of change that
   # #254/#255/#256 shipped with NO cluster coverage (validated only manually on odin). See
-  # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+  # todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
   platform-smoke:
     name: Tier-2 platform smoke (k3d)
     needs: cluster-changes

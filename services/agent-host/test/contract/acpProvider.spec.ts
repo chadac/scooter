@@ -4,7 +4,7 @@
  * Locks the per-run selection contract: highest-priority ELIGIBLE provider wins, with an
  * always-eligible floor guaranteeing a pick. This is the seam the human-trigger guardrail
  * (Increment 2) plugs into — a `remote-personalized` provider whose eligible() keys on
- * owner + source. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * owner + source. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { describe, it, expect } from "vitest";

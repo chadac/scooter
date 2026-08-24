@@ -81,7 +81,7 @@ let
     # lives HERE (the image), NOT in modules/sandbox-os, because nixosTests import that bare
     # (no baked store to overlay). The upper is a deployer-mounted volume at upperPath (the
     # provisioner's per-conversation `.scooter-rw` PVC, or a pooled warm volume).
-    # See modules/sandbox-os/overlay-store.nix + todo/docs/WARM_STORE_PVC_MANAGER.md.
+    # See modules/sandbox-os/overlay-store.nix + todo/done/WARM_STORE_PVC_MANAGER.md.
     programs.overlayStore.enable = true;
 
     # The pinned nixpkgs the lazy stubs + registry resolve against. MUST be the

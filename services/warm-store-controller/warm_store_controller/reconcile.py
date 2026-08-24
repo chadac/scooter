@@ -2,7 +2,7 @@
 current PVCs, Sandboxes, and pods. No k8s, no I/O — fully unit-testable. The loop
 (loop.py) is the imperative shell that lists, calls this, and applies the actions.
 
-Pool model (see todo/docs/WARM_STORE_PVC_MANAGER.md):
+Pool model (see todo/done/WARM_STORE_PVC_MANAGER.md):
 - A pool PVC is a writable overlay UPPER (`upper/`+`work/`+`state/`) on an RWO PVC,
   KEYED by the sandbox image content tag it was warmed against (`warm-store` label).
   A PVC is ONLY claimable by a sandbox whose image tag matches — the no-fixup guarantee.

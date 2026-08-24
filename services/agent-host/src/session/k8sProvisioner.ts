@@ -85,7 +85,7 @@ export interface K8sProvisionerOptions {
    *  (optimistic label CAS) and the Sandbox references it by claimName; if none is
    *  ready it falls back to a fresh volumeClaimTemplate (a cold pool NEVER blocks a
    *  conversation). Only meaningful when overlayStore is true. Default off. See
-   *  todo/docs/WARM_STORE_PVC_MANAGER.md. */
+   *  todo/done/WARM_STORE_PVC_MANAGER.md. */
   warmStorePool?: boolean;
   /** Resource requests/limits for the sandbox container. Without these the
    *  scheduler treats a sandbox as ~free and packs many onto one node; a burst of

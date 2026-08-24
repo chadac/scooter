@@ -3,7 +3,7 @@
 Exposes the autoscale signals as gauges so they're observable (dashboards) and available to
 a future HPA (custom-metrics adapter), EVEN THOUGH the controller does the scaling itself.
 The controller is the single writer of agent-host replicas; this is purely read-only
-observability. See todo/docs/AGENT_HOST_FLEET_SCALING.md.
+observability. See todo/done/AGENT_HOST_FLEET_SCALING.md.
 
 Gauges:
   scooter_conversations_total            — top-level conversations (demand)

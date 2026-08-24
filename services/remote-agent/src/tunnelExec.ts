@@ -2,7 +2,7 @@
  * Tunnel ExecBackend — the container's ExecBackend impl that forwards the local Claude agent's tool
  * calls to the CLOUD over Channel B, so tools run in the cloud sandbox (not on the user's machine).
  * The SdkAcpClient (@scooter/claude-sdk-provider) calls this; each call sends an exec/fs frame and
- * awaits the cloud's exec_result. See protocol.ts + todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * awaits the cloud's exec_result. See protocol.ts + todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import { randomUUID } from "node:crypto";

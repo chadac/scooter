@@ -3,7 +3,7 @@
  * fake sessions + store. This covers the real send/recentTurns/searchHistory logic
  * that the handler tests (over a fake manager) don't — including the send status
  * gate that behaved oddly live (a child shown "running" must accept a send). See
- * todo/docs/SUBAGENT_INTERACTION.md.
+ * todo/done/SUBAGENT_INTERACTION.md.
  */
 
 import { describe, it, expect, vi } from "vitest";

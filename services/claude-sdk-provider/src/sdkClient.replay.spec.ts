@@ -7,7 +7,7 @@
  * never fired.
  *
  * Fixture: recorded from live claude-code on odin (subagent-poll-loop).
- * See todo/docs/AGENT_TRANSCRIPT_HARNESS.md.
+ * See todo/done/AGENT_TRANSCRIPT_HARNESS.md.
  */
 
 import { describe, it, expect } from "vitest";

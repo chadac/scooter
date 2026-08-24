@@ -1,6 +1,6 @@
 /**
  * Tier 1 contract — the subagent MCP tool handlers (RED-FIRST; see
- * todo/docs/SUBAGENTS.md).
+ * todo/done/SUBAGENTS.md).
  *
  * Pure handlers (no MCP plumbing), same shape as the background-job handlers:
  *   spawn_subagent(prompt, title?, model?) -> a subagent id + a poll hint

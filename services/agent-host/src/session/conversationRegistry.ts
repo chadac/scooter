@@ -46,7 +46,7 @@ export interface ConversationSpec {
  *  sandbox and Assigned again on revive. `Assigned` doubles as "alive". These never race:
  *  the controller only patches phase during (re)assignment (NoOp on a still-ready host), and
  *  suspend drops the SANDBOX pod, not the agent-host owner pod — so assignment is unchanged.
- *  See todo/docs/CONVERSATION_LIFECYCLE_CONTROLLER.md. */
+ *  See todo/done/CONVERSATION_LIFECYCLE_CONTROLLER.md. */
 export type ConversationPhase = "Assigned" | "Suspended";
 
 export interface ConversationRegistry {

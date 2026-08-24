@@ -11,7 +11,7 @@
  * Increment 1 ports the existing sdk + goose branches onto two providers with disjoint
  * eligibility (only one is eligible under today's config), so the resolver picks the SAME client
  * the old branch did — behavior-identical. Increment 2 adds a `remote-personalized` provider whose
- * eligibility encodes the human-trigger guardrail. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
+ * eligibility encodes the human-trigger guardrail. See todo/done/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
 import type { AcpClient } from "./client.js";

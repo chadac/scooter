@@ -6,7 +6,7 @@
  *
  * A transcript replay that stops at the AG-UI log would NOT catch this class of bug:
  * the log is right; the UI splices the chip wrong. Fixtures are the real AG-UI logs
- * recorded from live agents (see todo/docs/AGENT_TRANSCRIPT_HARNESS.md).
+ * recorded from live agents (see todo/done/AGENT_TRANSCRIPT_HARNESS.md).
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -81,7 +81,7 @@ describe("UI-layer replay: real AG-UI log render order", () => {
     expect(order.some((o) => o.kind === "sys" && o.label === "subagent")).toBe(true);
   });
 
-  // Was a bug (todo/docs/AGENT_TRANSCRIPT_HARNESS.md): the subagent-result chip
+  // Was a bug (todo/done/AGENT_TRANSCRIPT_HARNESS.md): the subagent-result chip
   // rendered ABOVE the check_subagent tool cards. The base applier folds each tool
   // call as its OWN top-level message, so a SYSTEM_MESSAGE anchored to the last
   // TEXT_MESSAGE_START spliced BEFORE the tool cards. Fixed by advancing the anchor

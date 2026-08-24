@@ -1,6 +1,6 @@
 /**
  * Tier 2 — subagents share ONE sandbox pod: N agent-host bridges exec CONCURRENTLY
- * into the same pod without collision (see todo/docs/SUBAGENTS.md).
+ * into the same pod without collision (see todo/done/SUBAGENTS.md).
  *
  * A subagent reuses its parent's SandboxRef, so two bridges point at ONE pod. This
  * drives the PRODUCTION exec path — connectSandbox(ref) per bridge, then

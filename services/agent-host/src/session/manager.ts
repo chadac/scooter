@@ -270,7 +270,7 @@ export interface SessionManager {
    *  CR's current generation for fencing — revive only if this pod is the current owner at
    *  that generation; a stale push (older gen) is a no-op. Distinct from `revive()`, which
    *  404s when the conversation isn't already local. DESIGN STUB — see
-   *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
+   *  todo/done/ROLLOUT_DRAIN_AND_POD_IP.md. */
   reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
@@ -859,7 +859,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     async reviveFromMirror(id, expectedGen) {
       // REVIVE-ON-ASSIGN (seamless rollout): the controller pushes this on a conversation's
-      // NEW host right after (re)assigning it. See todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
+      // NEW host right after (re)assigning it. See todo/done/ROLLOUT_DRAIN_AND_POD_IP.md.
 
       // FENCE: only revive if this pod is the current owner at `expectedGen`. canWrite()
       // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a

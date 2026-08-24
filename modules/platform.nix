@@ -773,7 +773,7 @@ in
       # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
       # Deployment needed Recreate) — RollingUpdate is safe here.
       #
-      # DESIGN (rollout-drain, todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — NOT YET APPLIED:
+      # DESIGN (rollout-drain, todo/done/ROLLOUT_DRAIN_AND_POD_IP.md) — NOT YET APPLIED:
       # convert this StatefulSet → a Deployment for seamless upgrades:
       #   - deployments.agent-host (random pod names — routing is by POD IP now, not DNS).
       #   - strategy RollingUpdate maxSurge=1, maxUnavailable=0 (new pod Ready BEFORE the old
@@ -782,7 +782,7 @@ in
       #     is the shared RWX history mirror ⇒ no RWO PVC ⇒ no Multi-Attach blocker).
       #   - REMOVE services.agent-host-headless (no per-pod DNS); keep the `agent-host`
       #     ClusterIP Service (the router's fallback target).
-      # SEAMLESS ROLLOUT (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md): a Deployment with
+      # SEAMLESS ROLLOUT (todo/done/ROLLOUT_DRAIN_AND_POD_IP.md): a Deployment with
       # maxSurge=1/maxUnavailable=0 — a new-gen pod becomes Ready BEFORE any old pod drains,
       # so capacity never dips during an upgrade (the StatefulSet's terminate-before-create,
       # forced by the RWO PVC's Multi-Attach, was what caused the gap). Routing is by POD IP

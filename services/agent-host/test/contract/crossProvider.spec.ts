@@ -10,7 +10,7 @@
  * Re-derives updates from the recorded INPUT (claude sdk-in through the LIVE
  * adapter; goose acp-in are already normalized), so it reflects TODAY's code, not
  * the frozen agui-out captured at record time — a fix flips it. See
- * todo/docs/AGENT_TRANSCRIPT_HARNESS.md.
+ * todo/done/AGENT_TRANSCRIPT_HARNESS.md.
  */
 
 import { describe, it, expect } from "vitest";

@@ -1,7 +1,7 @@
 /**
  * The BYOC session registry — who owns which container socket.
  *
- * This is the core of the §L redesign (todo/docs/BYO_CLAUDE_REMOTE_AGENT.md). Before it, each
+ * This is the core of the §L redesign (todo/done/BYO_CLAUDE_REMOTE_AGENT.md). Before it, each
  * agent-host pod held container sockets in its own memory, so only the pod the container happened
  * to reach could drive that brain — the same shape of bug as the conversation list in #284. Here a
  * single component owns the sockets and everyone else RESOLVES BY OWNER, which is what lets any

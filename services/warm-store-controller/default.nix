@@ -5,7 +5,7 @@
 # (warm Jobs), GCs retired tags, returns claimed PVCs on suspend, and recovers leaks. Runs
 # alongside the upstream agent-sandbox controller (which owns the Sandbox→pod/PVC lifecycle).
 # The agent-host provisioner does the CLAIM (claimName swap). See
-# todo/docs/WARM_STORE_PVC_MANAGER.md.
+# todo/done/WARM_STORE_PVC_MANAGER.md.
 
 python3Packages.buildPythonApplication {
   pname = "warm-store-controller";

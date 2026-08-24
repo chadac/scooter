@@ -1,7 +1,7 @@
 /**
  * Tier 1 — the transcript recorder. OFF by default (no-op, zero overhead); when a
  * dir is set, writes one NDJSON file per run with correlated, sequenced entries.
- * See todo/docs/AGENT_TRANSCRIPT_HARNESS.md.
+ * See todo/done/AGENT_TRANSCRIPT_HARNESS.md.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
