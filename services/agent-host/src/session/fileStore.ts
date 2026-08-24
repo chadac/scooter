@@ -362,12 +362,21 @@ export function createFileConversationStore(root: string): ConversationStore {
           meta = JSON.parse(await readFile(metaPath(id), "utf8")) as ConversationMeta;
         } catch {
           // No meta.json — skip dirs that aren't real conversations (e.g. no
-          // event log either). Only surface ones that have a log.
+          // event log or links). Only surface ones that have a log OR links.
+          let hasEventsOrLinks = false;
           try {
             await readFile(logPath(id), "utf8");
+            hasEventsOrLinks = true;
           } catch {
-            continue;
+            // No events, check for links
+            try {
+              await readFile(linksPath(id), "utf8");
+              hasEventsOrLinks = true;
+            } catch {
+              // No links either
+            }
           }
+          if (!hasEventsOrLinks) continue;
         }
         let lastActivityAt = meta.lastActivityAt ?? meta.createdAt ?? 0;
         try {
