@@ -153,6 +153,35 @@ in
       };
     };
 
+    # --- Grafana (service-account token; http-proxy to a Grafana stack) -----
+    # The broker's grafana provider proxies /grafana/* -> <url>, injecting the
+    # token so the agent can query dashboards/datasources — and through Grafana's
+    # datasource proxy, the Prometheus and Loki behind them — WITHOUT seeing the
+    # token. Enabled iff BOTH url and the token secret are set (without them the
+    # /grafana/* routes never mount and calls 404).
+    grafana = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable the Grafana provider (http-proxy to a Grafana stack with a service-account token injected).";
+      };
+      url = mkOption {
+        type = types.str;
+        default = "";
+        example = "https://myorg.grafana.net";
+        description = "Base URL of the Grafana stack. Upstream for /grafana/*; a trailing slash is stripped.";
+      };
+      tokenSecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
+            key = mkOption { type = types.str; default = "GRAFANA_TOKEN"; description = "Secret key holding the Grafana service-account token."; };
+          };
+        };
+        description = "Secret holding a Grafana service-account token. Injected as GRAFANA_TOKEN. The secret must exist in the broker namespace.";
+      };
+    };
+
     # --- AWS permissions broker (dynamic, approval-gated AWS access) --------
     aws = {
       enable = mkOption {
@@ -418,6 +447,19 @@ in
                     valueFrom.secretKeyRef = {
                       name = bcfg.datadog.appKeySecret.name;
                       key = bcfg.datadog.appKeySecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.grafana.enable [
+                  # Grafana service-account token -> the broker's grafana provider
+                  # proxies /grafana/* to <url> with the token injected. Enabled iff
+                  # BOTH url and token are present; without them the /grafana/*
+                  # routes never mount and the agent's calls 404.
+                  { name = "GRAFANA_URL"; value = bcfg.grafana.url; }
+                  {
+                    name = "GRAFANA_TOKEN";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.grafana.tokenSecret.name;
+                      key = bcfg.grafana.tokenSecret.key;
                     };
                   }
                 ] ++ lib.optionals bcfg.aws.enable ([
