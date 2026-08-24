@@ -57,6 +57,24 @@ def default_resources(settings: BrokerSettings) -> SandboxResources | None:
     return validate_resources(SandboxResources.from_dict(json.loads(raw)))
 
 
+def sandbox_sizes(settings: BrokerSettings) -> dict[str, dict]:
+    """The named preset map (SANDBOX_SIZES_JSON): name -> {cpu, memory}. Empty ->
+    no presets configured (the agent/UI fall back to raw resource setting)."""
+    raw = settings.sandbox_sizes_json.strip()
+    if not raw:
+        return {}
+    return json.loads(raw)
+
+
+def preset_to_resources(preset: dict) -> SandboxResources:
+    """Convert a preset {cpu, memory} to SandboxResources (requests == limits for
+    Guaranteed QoS). Validates the quantities."""
+    return validate_resources(SandboxResources(
+        requests={"cpu": preset["cpu"], "memory": preset["memory"]},
+        limits={"cpu": preset["cpu"], "memory": preset["memory"]},
+    ))
+
+
 def size_store_config(settings: BrokerSettings) -> StoreConfig:
     """The size store shares the AWS DB components (same shared Postgres, `broker`
     DB). An explicit sandbox_db_dsn (SQLite dev default) wins when no db_password."""

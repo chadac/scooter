@@ -21,14 +21,21 @@ export interface SandboxResourceToolsWiring {
    *  May be async (it reads the broker). */
   currentResources(conversationId: string): SandboxResources | Promise<SandboxResources>;
   /** Write the size spec to the broker (PUT /size). The broker applies it on the
-   *  NEXT sandbox restart — this does NOT restart the pod. Resolves to true when the
-   *  spec was recorded. Rejects if the broker write fails. */
-  setResources(conversationId: string, resources: SandboxResources): Promise<boolean>;
+   *  NEXT sandbox restart — this does NOT restart the pod. Accepts either a preset
+   *  name (via {size: "large"}) OR raw resources. Resolves to true when the spec was
+   *  recorded. Rejects if the broker write fails. */
+  setResources(conversationId: string, resources: SandboxResources | { size: string }): Promise<boolean>;
+  /** Get the available named sandbox size presets (name → {cpu, memory}) and the
+   *  default preset name, from GET /sandbox-sizes. Used to validate preset names and
+   *  show the agent what's available. May be async (reads the broker). */
+  availableSizes?(): Promise<{ sizes: Record<string, { cpu: string; memory: string }>; default: string | null }>;
 }
 
 /** The set_sandbox_resources tool input (friendly shape; all optional — an omitted
- *  dimension keeps its current value). Mirrors SandboxResources; flat for the LLM. */
+ *  dimension keeps its current value). Accepts EITHER a preset name (size) OR raw
+ *  resources (the cpu/memory/gpu fields). Mirrors SandboxResources; flat for the LLM. */
 export interface SetSandboxResourcesArgs {
+  size?: string;
   requestCpu?: string;
   requestMemory?: string;
   requestGpu?: number;
@@ -88,36 +95,75 @@ export async function handleShowSandboxResources(
 
 /** set_sandbox_resources: validate the requested resources, then WRITE the broker
  *  size spec. The broker applies it on the NEXT sandbox restart — this does not
- *  restart the pod now. On a bad quantity returns isError with the exact field to fix. */
+ *  restart the pod now. Accepts EITHER a preset name (size) OR raw resources. On a
+ *  bad quantity or unknown preset returns isError with the exact field/issue to fix. */
 export async function handleSetSandboxResources(
   deps: SandboxResourceToolsWiring,
   conversationId: string,
   args: SetSandboxResourcesArgs,
 ): Promise<ToolResult> {
-  const requested = argsToResources(args);
-  try {
-    validateResources(requested);
-  } catch (e) {
-    if (e instanceof InvalidResourceError) {
-      return { isError: true, content: [{ type: "text", text: `${e.message} (${e.field})` }] };
+  // Preset-name path: pass {size: "..."} straight to the broker (it resolves the preset).
+  // Raw-resources path: validate + fold the flat args into the nested shape.
+  if (args.size) {
+    // Preset name provided — validate it exists if we can query available sizes.
+    if (deps.availableSizes) {
+      try {
+        const { sizes } = await deps.availableSizes();
+        if (!Object.keys(sizes).includes(args.size)) {
+          const available = Object.keys(sizes).join(", ") || "(no presets configured)";
+          return {
+            isError: true,
+            content: [{ type: "text", text: `Unknown size preset "${args.size}". Available: ${available}` }],
+          };
+        }
+      } catch (e) {
+        // Sizes query failed — let the broker reject it (don't block the write).
+        console.warn(`[resourceTools] could not query available sizes: ${(e as Error).message}`);
+      }
     }
-    throw e;
+    // Pass the preset name to the broker as {size: "..."}.
+    try {
+      await deps.setResources(conversationId, { size: args.size });
+    } catch (e) {
+      return { isError: true, content: [{ type: "text", text: `Could not set the sandbox size: ${(e as Error).message}` }] };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Recorded size preset "${args.size}" — it takes effect on the NEXT sandbox restart (not applied to the ` +
+            "running pod right now). Nothing was interrupted.",
+        },
+      ],
+    };
+  } else {
+    // Raw-resources path: validate + fold the flat args into the nested shape.
+    const requested = argsToResources(args);
+    try {
+      validateResources(requested);
+    } catch (e) {
+      if (e instanceof InvalidResourceError) {
+        return { isError: true, content: [{ type: "text", text: `${e.message} (${e.field})` }] };
+      }
+      throw e;
+    }
+    try {
+      await deps.setResources(conversationId, requested);
+    } catch (e) {
+      // A rejection is a real failure (the broker write failed) — surface it so the
+      // agent knows the resize did NOT take, never hide it.
+      return { isError: true, content: [{ type: "text", text: `Could not set the sandbox size: ${(e as Error).message}` }] };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            "Recorded — your new sandbox size takes effect on the NEXT sandbox restart (it is not applied to the " +
+            "running pod right now). Nothing was interrupted.",
+        },
+      ],
+    };
   }
-  try {
-    await deps.setResources(conversationId, requested);
-  } catch (e) {
-    // A rejection is a real failure (the broker write failed) — surface it so the
-    // agent knows the resize did NOT take, never hide it.
-    return { isError: true, content: [{ type: "text", text: `Could not set the sandbox size: ${(e as Error).message}` }] };
-  }
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          "Recorded — your new sandbox size takes effect on the NEXT sandbox restart (it is not applied to the " +
-          "running pod right now). Nothing was interrupted.",
-      },
-    ],
-  };
 }

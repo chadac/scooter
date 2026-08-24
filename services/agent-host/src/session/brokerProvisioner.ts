@@ -20,14 +20,23 @@ import type { SandboxProvisioner } from "./manager.js";
 import type { SandboxResources } from "./resources.js";
 import { brokerAuthHeaders } from "./brokerAuth.js";
 
+/** Named sandbox size preset (cpu + memory; requests == limits). */
+export interface SandboxSizePreset {
+  cpu: string;
+  memory: string;
+}
+
 /** The broker provisioner ALSO exposes the size-spec ops (GET/PUT /sandbox/{conv}/size).
  *  These are distinct from the lifecycle interface: they key by the SHORT conv id the
  *  broker stores sizes under (the same id ensure/resume use), not a SandboxRef. */
 export interface BrokerSizeClient {
   /** GET /sandbox/{conv}/size — the stored friendly size spec, or undefined if none. */
   getSize(conv: string): Promise<SandboxResources | undefined>;
-  /** PUT /sandbox/{conv}/size — write the size spec (applied on the next restart). */
-  setSize(conv: string, resources: SandboxResources): Promise<void>;
+  /** PUT /sandbox/{conv}/size — write the size spec (applied on the next restart).
+   *  Accepts either a preset name (via {size: "large"}) OR raw resources. */
+  setSize(conv: string, resources: SandboxResources | { size: string }): Promise<void>;
+  /** GET /sandbox-sizes — the available named presets and the default preset name. */
+  getSizes(): Promise<{ sizes: Record<string, SandboxSizePreset>; default: string | null }>;
 }
 
 export type BrokerProvisioner = SandboxProvisioner & BrokerSizeClient;
@@ -124,9 +133,17 @@ export function createBrokerProvisioner(opts: BrokerProvisionerOptions): BrokerP
       return body?.size ?? undefined;
     },
 
-    async setSize(conv: string, resources: SandboxResources): Promise<void> {
+    async setSize(conv: string, resources: SandboxResources | { size: string }): Promise<void> {
       const res = await call("PUT", `/sandbox/${encodeURIComponent(conv)}/size`, resources);
       await json(res, `set size ${conv}`);
+    },
+
+    async getSizes(): Promise<{ sizes: Record<string, SandboxSizePreset>; default: string | null }> {
+      const res = await call("GET", `/sandbox-sizes`);
+      const body = (await json(res, "get sandbox sizes")) as
+        | { sizes?: Record<string, SandboxSizePreset>; default?: string | null }
+        | undefined;
+      return { sizes: body?.sizes ?? {}, default: body?.default ?? null };
     },
   };
 }

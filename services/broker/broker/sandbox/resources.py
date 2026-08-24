@@ -20,11 +20,14 @@ GPU_RESOURCE = "nvidia.com/gpu"
 _CPU_RE = re.compile(r"^\d+m?$")  # "500m", "2"
 _MEMORY_RE = re.compile(r"^\d+(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$")  # "1Gi", "512Mi", "2G"
 
-# Platform fallback when no conversation spec + no deployment default apply.
-# requests == limits (cpu AND memory) => Guaranteed QoS: the scheduler reserves the
-# full amount per pod and the pod is HARD-capped there, so one runaway sandbox can't
-# burst into its neighbours' CPU/memory and starve them (the "a single bad pod blows
-# up everything" failure). No gpu by default.
+# Platform fallback when no conversation spec + no deployment default apply. This
+# mirrors the "medium" preset (cpu: 2, memory: 4Gi) from the default kubenix preset
+# table. Requests == limits (cpu AND memory) => Guaranteed QoS: the scheduler reserves
+# the full amount per pod and the pod is HARD-capped there, so one runaway sandbox
+# can't burst into its neighbours' CPU/memory and starve them (the "a single bad pod
+# blows up everything" failure). No gpu by default. Deployments override this via
+# SANDBOX_DEFAULT_RESOURCES_JSON (tier 2 in resolve_resources), which is rendered from
+# cfg.sandboxSizes.${cfg.defaultSandboxSize} in kubenix.
 PLATFORM_DEFAULT: dict = {
     "requests": {"cpu": "2", "memory": "4Gi"},
     "limits": {"cpu": "2", "memory": "4Gi"},

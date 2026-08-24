@@ -139,6 +139,53 @@ in
         Default false keeps the legacy in-agent-host k8s provisioner (rollback path).
       '';
     };
+    sandboxSizes = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          cpu = mkOption { type = types.str; description = "CPU quantity (requests == limits for Guaranteed QoS), e.g. \"2\" or \"500m\"."; };
+          memory = mkOption { type = types.str; description = "Memory quantity (requests == limits for Guaranteed QoS), e.g. \"4Gi\" or \"512Mi\"."; };
+        };
+      });
+      default = {
+        tiny = { cpu = "250m"; memory = "256Mi"; };
+        small = { cpu = "1"; memory = "2Gi"; };
+        medium = { cpu = "2"; memory = "4Gi"; };
+        large = { cpu = "4"; memory = "16Gi"; };
+      };
+      example = {
+        tiny = { cpu = "250m"; memory = "256Mi"; };
+        small = { cpu = "1"; memory = "2Gi"; };
+        medium = { cpu = "2"; memory = "4Gi"; };
+        large = { cpu = "4"; memory = "16Gi"; };
+        xlarge = { cpu = "8"; memory = "32Gi"; };
+      };
+      description = ''
+        Named sandbox size presets — a map of preset-name → {cpu, memory}. Each
+        preset sets BOTH requests and limits to the same value (Guaranteed QoS), so
+        a sandbox at that size is hard-capped and cannot burst into its neighbours'
+        resources. The agent can request a preset by name (via set_sandbox_resources),
+        and the UI shows a dropdown. Requests == limits for all presets.
+
+        The default table ships tiny / small / medium / large; a deployment can
+        override the map to retune the sizes, add presets, or remove ones it doesn't
+        want offered. The default preset (defaultSandboxSize) MUST be a key in this
+        map — an eval-time assertion enforces it.
+      '';
+    };
+    defaultSandboxSize = mkOption {
+      type = types.str;
+      default = "medium";
+      description = ''
+        The default sandbox size preset name (must be a key in sandboxSizes). A
+        conversation with no size spec gets this preset's resources. The broker
+        resolves: conversation override → this deployment default → platform default
+        (the last fallback, when this is unset or the preset is absent — currently
+        medium's 2/4Gi, mirroring PLATFORM_DEFAULT in resources.py).
+
+        An eval-time assertion enforces that this names a preset in sandboxSizes, so
+        a typo fails the build rather than silently falling back.
+      '';
+    };
     # Generic, DEPLOYMENT-parameterized tool injection — the platform doesn't know
     # what's in these; a deployment fills them with its own .scooter tools + the
     # token audiences / env its tools need. See docs/SCOOTER_DIR_INJECTION.md.
@@ -655,6 +702,19 @@ in
   };
 
   config = {
+    # Eval-time assertions: the default sandbox size must be a key in the sizes map.
+    assertions = [
+      {
+        assertion = cfg.sandboxSizes ? ${cfg.defaultSandboxSize};
+        message = ''
+          agentSandbox.defaultSandboxSize is "${cfg.defaultSandboxSize}" but that preset
+          is not defined in agentSandbox.sandboxSizes. Available presets: ${lib.concatStringsSep ", " (lib.attrNames cfg.sandboxSizes)}.
+          Either add the "${cfg.defaultSandboxSize}" preset to sandboxSizes, or change
+          defaultSandboxSize to an existing preset name.
+        '';
+      }
+    ];
+
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define
     # `deployments` / `services`, and a shallow `//` update would replace the
     # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
