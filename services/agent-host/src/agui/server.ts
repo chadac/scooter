@@ -18,6 +18,9 @@ import type { AguiEvent } from "../bridge.js";
 import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
 import type { WebServiceProxy } from "../proxy/webServiceProxy.js";
+import { logger, withConversation } from "../log.js";
+
+const log = logger("agui");
 
 /** Defensive guard for the /agui RESUME branch: after answering, the resumed run's
  *  events stream back over the SSE. If NOTHING streams within this window (any silent-
@@ -428,7 +431,13 @@ export function createAguiServer(): AguiServer {
         // real 404; give the caller an actionable message instead.
         const unknown = err instanceof Error && err.name === "UnknownConversationError";
         // eslint-disable-next-line no-console
-        console.error(`[agui] prompt failed for ${sessionId} (surfacing RUN_ERROR to the client):`, err);
+        withConversation(sessionId, () =>
+          log.errorWith("prompt failed; surfacing RUN_ERROR to the client", err, {
+            // Distinguishes "the caller asked for a conversation that does not exist" from
+            // "the run itself blew up", without parsing the message.
+            unknown_conversation: unknown,
+          }),
+        );
         if (unknown) {
           try {
             write(res, {
@@ -549,7 +558,14 @@ export function createAguiServer(): AguiServer {
       });
     },
     onPrompt(handler) {
-      promptHandler = handler;
+      // Bind the conversation id ONCE, here, rather than at each call site that invokes
+      // promptHandler. Everything the handler touches — session manager, bridge, exec, the
+      // k8s registry — then logs it without taking it as a parameter, which is the point:
+      // those sites are frames deep and have no other reason to know it.
+      // Wrapping the HANDLER (not its callers) keeps control flow identical: a throw still
+      // propagates to the caller's catch, so the /agui error path is unchanged.
+      promptHandler = (sessionId, input) =>
+        withConversation(sessionId, () => handler(sessionId, input));
     },
     onPermission(handler) {
       permissionHandler = handler;
