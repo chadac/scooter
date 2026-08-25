@@ -155,12 +155,16 @@ let
   entrypoint = pkgs.writeShellScript "ui-entrypoint" ''
     set -e
     : "''${AGENT_HOST_URL:=http://agent-host:8080}"
-    # No collector configured -> point the proxy at a loopback that always fails,
-    # which @telemetry_sink turns into a 204. Telemetry is optional by design.
-    # Telemetry is ON only when a collector was ACTUALLY configured — otherwise the UI
-    # would collect spans and post them into the 204 sink for nothing. Test before the
-    # default is applied, since the default is the "no collector" placeholder.
+    # Telemetry is ON only when a collector was ACTUALLY configured. Decide BEFORE the
+    # placeholder default below is applied, or every deployment would look configured.
+    #
+    # The kubenix module asserts this at eval (browserTelemetry.enable requires a
+    # collectorUrl), so a missing URL here means the image is running outside that module
+    # — dev, or a hand-rolled deploy. Degrade quietly rather than fail: the UI just never
+    # turns telemetry on, and /telemetry/ 204s anything that reaches it anyway.
     if [ -n "''${OTEL_COLLECTOR_URL:-}" ]; then TELEMETRY_ENABLED=true; else TELEMETRY_ENABLED=false; fi
+    # Unreachable loopback so the proxy fails fast into @telemetry_sink's 204 rather than
+    # hanging or 502ing if something posts to /telemetry/ regardless.
     : "''${OTEL_COLLECTOR_URL:=http://127.0.0.1:1}"
     : "''${TELEMETRY_SAMPLE_RATIO:=1}"
     export TELEMETRY_ENABLED TELEMETRY_SAMPLE_RATIO

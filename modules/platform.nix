@@ -539,17 +539,23 @@ in
           '';
         };
         collectorUrl = mkOption {
-          type = types.str;
-          default = "";
-          example = "http://k8s-monitoring-alloy-receiver.monitoring.svc.cluster.local:4318";
+          type = types.nullOr types.str;
+          default = null;
+          example = "http://alloy-singleton.monitoring.svc.cluster.local:4318";
           description = ''
             OTLP/HTTP base URL of the collector that receives browser telemetry.
             HTTP, not gRPC — browsers cannot speak OTLP/gRPC.
 
-            With the Grafana k8s-monitoring chart this is the alloy-receiver
-            Service on port 4318, with `applicationObservability.receivers.otlp.http`
-            enabled. Empty => the /telemetry/ route 204s and discards, so a
-            cluster with no collector is not an error.
+            NO DEFAULT, deliberately. A plausible-looking default would point
+            telemetry at an address that probably does not exist in THIS cluster,
+            and the failure would be silent: spans collected, posted, discarded.
+            Enabling browserTelemetry without setting this is an eval error (see
+            the assertion below), not a running system that quietly drops data.
+
+            With the Grafana k8s-monitoring chart this is the alloy-singleton
+            Service on port 4318, once
+            `applicationObservability.receivers.otlp.http` is enabled — verified
+            against the chart's rendered output, not guessed.
           '';
         };
         sampleRatio = mkOption {
@@ -1300,12 +1306,17 @@ in
                 name = "AGENT_HOST_URL";
                 value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
               }] ++ lib.optionals cfg.observability.browserTelemetry.enable [
-                # Where nginx forwards /telemetry/. Empty collectorUrl leaves the
-                # route 204ing, so enabling without a URL degrades rather than breaks.
-                {
-                  name = "OTEL_COLLECTOR_URL";
-                  value = cfg.observability.browserTelemetry.collectorUrl;
-                }
+                # Where nginx forwards /telemetry/. ASSERT rather than defaulting to a
+                # plausible-looking address: a wrong collector URL fails SILENTLY — the UI
+                # collects spans, posts them, and nginx's 204 sink swallows the result, so
+                # the deployment looks healthy while producing no telemetry at all. Fail
+                # at eval instead.
+                (assert lib.assertMsg (cfg.observability.browserTelemetry.collectorUrl != null)
+                  "agentSandbox.observability.browserTelemetry.enable = true requires observability.browserTelemetry.collectorUrl to be set (e.g. http://alloy-singleton.monitoring.svc.cluster.local:4318 for the Grafana k8s-monitoring chart). There is no safe default: a wrong collector URL discards telemetry silently.";
+                  {
+                    name = "OTEL_COLLECTOR_URL";
+                    value = cfg.observability.browserTelemetry.collectorUrl;
+                  })
               ];
               readinessProbe.httpGet = { path = "/"; port = "http"; };
             };
