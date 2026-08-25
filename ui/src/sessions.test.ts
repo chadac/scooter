@@ -573,6 +573,25 @@ describe("the SERVER owns conversation ids", () => {
     expect(await rebuilt.ifCreated(async (id) => id, "not-created")).toBe("real-server-id");
   });
 
+  it("a merge does NOT duplicate a conversation created on its first send", async () => {
+    // The merge is keyed by SERVER id; a conversation created on its first send keeps its
+    // local key. Indexing by the key missed it and inserted a second row for the same
+    // conversation — every sidebar row rendered twice (1 -> 2, 2 -> 4 in the e2e).
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    setConversationMinter(async () => "server-abc");
+    await sessionStore.ensureCurrentCreated();
+    const key = sessionStore.get().currentId;
+
+    // The poll now returns that conversation under its SERVER id.
+    sessionStore.mergeFromServer([{ id: "server-abc", title: "From the server" }]);
+
+    expect(sessionStore.get().sessions).toHaveLength(1);
+    // ...and the merge did not swap the stable key out from under the mounted runtime.
+    expect(sessionStore.get().currentId).toBe(key);
+    expect(sessionStore.current().serverId).toBe("server-abc");
+    expect(sessionStore.current().title).toBe("From the server");
+  });
+
   it("a server-listed conversation is never re-created", async () => {
     sessionStore.mergeFromServer([{ id: "from-server", title: "Existing" }]);
     sessionStore.switchTo("from-server");

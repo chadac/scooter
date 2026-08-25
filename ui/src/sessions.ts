@@ -368,8 +368,11 @@ export const sessionStore = {
     // merge still re-rendered the sidebar, and that reconciliation was the disruptor.
     if (state.editingId !== undefined) return;
     const serverIds = new Set(convs.map((c) => c.id));
+    // Index by the SERVER id, which is what `convs` is keyed by. A conversation created on
+    // its first send keeps its local key, so indexing by `s.id` would miss it and insert a
+    // SECOND row for the same conversation — every row rendering twice.
     const byId = new Map<string, Session>();
-    for (const s of state.sessions) byId.set(s.id, s);
+    for (const s of state.sessions) byId.set(s.serverId ?? s.id, s);
     for (const c of convs) {
       const existing = byId.get(c.id);
       // Title precedence: a real server title wins; but a local non-default
@@ -386,7 +389,11 @@ export const sessionStore = {
         ? c.title // user-set title from the server wins outright
         : serverTitle ?? localTitle ?? c.title ?? existing?.title ?? DEFAULT_TITLE;
       const merged: Session = {
-        id: c.id,
+        // PRESERVE the existing stable key. For a conversation created on its first send
+        // the key is local and the server id differs; overwriting the key here would be
+        // the same mid-run remount this design removes. New rows key by the server id,
+        // which for them IS their identity.
+        id: existing?.id ?? c.id,
         title,
         userTitled,
         // It came FROM the server, so the server has it — prompting it is safe and

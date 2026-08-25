@@ -26,7 +26,14 @@ test.describe("linked resources panel", () => {
     // Discover the UI's current thread id.
     const threadId = await page.evaluate(() => {
       const raw = window.localStorage.getItem("kubenix-agent.sessions.v1");
-      return raw ? (JSON.parse(raw) as { currentId: string }).currentId : "";
+      // The SERVER's id, not `currentId` — that is the stable local KEY, which for a
+      // conversation created on its first send is a placeholder the server never issued.
+      if (!raw) return "";
+      const st = JSON.parse(raw) as {
+        currentId?: string;
+        sessions?: Array<{ id: string; serverId?: string }>;
+      };
+      return st.sessions?.find((s) => s.id === st.currentId)?.serverId ?? "";
     });
     expect(threadId).toBeTruthy();
 
@@ -64,7 +71,14 @@ test.describe("linked resources panel", () => {
 
     const threadId = await page.evaluate(() => {
       const raw = window.localStorage.getItem("kubenix-agent.sessions.v1");
-      return raw ? (JSON.parse(raw) as { currentId: string }).currentId : "";
+      // The SERVER's id, not `currentId` — that is the stable local KEY, which for a
+      // conversation created on its first send is a placeholder the server never issued.
+      if (!raw) return "";
+      const st = JSON.parse(raw) as {
+        currentId?: string;
+        sessions?: Array<{ id: string; serverId?: string }>;
+      };
+      return st.sessions?.find((s) => s.id === st.currentId)?.serverId ?? "";
     });
     expect(threadId).toBeTruthy();
 

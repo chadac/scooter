@@ -39,10 +39,19 @@ async function currentConversationId(
   request: import("@playwright/test").APIRequestContext,
   base: string,
 ): Promise<string> {
+  // The SERVER's id for the selected conversation. `currentId` is the stable local KEY —
+  // for a conversation created on its first send it is a placeholder the server never
+  // issued, so suspending by it 404s. The server id is recorded alongside it.
   const fromUi = await page.evaluate(() => {
     try {
       const raw = localStorage.getItem("kubenix-agent.sessions.v1");
-      return raw ? ((JSON.parse(raw) as { currentId?: string }).currentId ?? null) : null;
+      if (!raw) return null;
+      const st = JSON.parse(raw) as {
+        currentId?: string;
+        sessions?: Array<{ id: string; serverId?: string }>;
+      };
+      const cur = st.sessions?.find((s) => s.id === st.currentId);
+      return cur?.serverId ?? null;
     } catch {
       return null;
     }
