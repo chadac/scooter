@@ -47,15 +47,16 @@ type ConversationCR = {
  * not serving it, every test below fails at setup.
  */
 async function createConversation(cluster: Cluster): Promise<string> {
-  const body = await cluster.curlInCluster(`${AGENT_HOST}/conversations`, {
+  // curlJson, not JSON.parse(curlInCluster(...)): the curl pod's output can carry a stray
+  // line after the payload, which fails the parse with entirely valid data on line 1.
+  const res = await cluster.curlJson<{ id?: string }>(`${AGENT_HOST}/conversations`, {
     method: "POST",
     headers: ["Content-Type: application/json"],
     body: "{}",
     timeoutMs: 60_000,
   });
-  const id = JSON.parse(body).id as string;
-  expect(id, `POST /conversations returned no id: ${body}`).toBeTruthy();
-  return id;
+  expect(res.id, `POST /conversations returned no id: ${JSON.stringify(res)}`).toBeTruthy();
+  return res.id as string;
 }
 
 maybe("multi-replica platform smoke", () => {
