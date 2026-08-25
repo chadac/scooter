@@ -414,6 +414,17 @@ export class IntegrityAgent extends AbstractAgent {
   }
 
   /**
+   * Re-point this agent at the conversation id the SERVER assigned. A conversation seeded
+   * locally is created on its first send, and the server picks the id; the agent was built
+   * with the local one. Every read of cfg.conversationId happens at call time, so updating
+   * it here makes the send (and the stream that follows) target the real conversation —
+   * without recreating the agent mid-send and tearing down the render pump.
+   */
+  setConversationId(conversationId: string): void {
+    this.cfg.conversationId = conversationId;
+  }
+
+  /**
    * The RENDER source: a CONTINUOUS Observable of the conversation's events from
    * GET /conversations/:id/events.integrity. Emits each frame's inner event
    * (already a BaseEvent) and does NOT complete while the stream is open, so the

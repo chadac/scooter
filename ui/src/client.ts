@@ -251,6 +251,35 @@ export async function stopWebService(
 /** Resume (start) a suspended sandbox pod — POST /conversations/:id/resume, which
  *  revives the pod (mounts the PVCs). Returns the conversation's new status, or null
  *  on failure. Lets the user bring the pod up to reach services without prompting. */
+/** Create a conversation (POST /conversations) and return the id the SERVER assigned.
+ *  The server owns conversation ids: a client-chosen id would become an event-log key and
+ *  a k8s resource name. Returns null on failure so the caller can surface it rather than
+ *  prompting an id that does not exist. */
+export async function createConversation(
+  config: AgentHostConfig,
+  title?: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+      },
+      body: JSON.stringify(title ? { title } : {}),
+    });
+    if (!res.ok) {
+      console.warn(`[client] createConversation: HTTP ${res.status}`);
+      return null;
+    }
+    const body = (await res.json()) as { id?: string };
+    return body.id ?? null;
+  } catch (e) {
+    console.warn("[client] createConversation failed:", e);
+    return null;
+  }
+}
+
 export async function resumeConversation(
   config: AgentHostConfig,
   conversationId: string,

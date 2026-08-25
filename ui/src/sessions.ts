@@ -28,6 +28,12 @@ export interface Session {
   /** Creating user (server-sourced). undefined = unowned/public. Drives the
    *  Mine/All view filter. */
   owner?: string;
+  /** True once the SERVER has created this conversation (POST /conversations). A session
+   *  seeded locally — freshState() at module load, deleteSession()'s replacement — has a
+   *  client-chosen id the server has never seen, and prompting it is refused. Undefined is
+   *  treated as "not yet created": ensureCurrentCreated() swaps in the server's id on the
+   *  first send. Server-sourced sessions (GET /conversations) are created by definition. */
+  serverCreated?: boolean;
   /** The spawning conversation, when this is a SUBAGENT (server-sourced).
    *  undefined = a top-level conversation. Drives sidebar nesting + subagent
    *  grouping. */
@@ -196,6 +202,21 @@ const persist = (s: State) => {
   }
 };
 
+/** How a new conversation gets its id. The SERVER owns conversation ids — a client-chosen
+ *  one would become an event-log key and a k8s resource name — so the app injects a minter
+ *  that calls POST /conversations. Defaults to crypto.randomUUID() so the store stays a pure,
+ *  synchronously-testable module and works before the app has wired a backend. */
+let mintId: () => Promise<string | null> = async () => crypto.randomUUID();
+
+/** Install the server-backed id minter. Called once at app start. */
+export const setConversationMinter = (fn: () => Promise<string | null>) => {
+  mintId = fn;
+};
+
+/** In-flight ensureCurrentCreated() calls, keyed by the local id being replaced, so
+ *  concurrent callers share one POST instead of creating duplicate conversations. */
+const inFlightCreate = new Map<string, Promise<string | null>>();
+
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 const setState = (next: State) => {
@@ -213,14 +234,53 @@ export const sessionStore = {
 
   current: () => state.sessions.find((s) => s.id === state.currentId)!,
 
-  newSession(): string {
-    const id = crypto.randomUUID();
+  /** Create a conversation and select it. The id comes from the SERVER (see mintId), so
+   *  this is async. Returns the new id, or null if creation failed — in which case the
+   *  store is left untouched rather than selecting a conversation that does not exist. */
+  async newSession(): Promise<string | null> {
+    const id = await mintId();
+    if (!id) return null;
     setState({
       ...state,
-      sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }, ...state.sessions],
+      sessions: [
+        { id, title: DEFAULT_TITLE, createdAt: Date.now(), serverCreated: true },
+        ...state.sessions,
+      ],
       currentId: id,
     });
     return id;
+  },
+
+  /** Ensure the CURRENT conversation exists server-side, replacing its locally-seeded id
+   *  with the server's if it was never created. freshState() and deleteSession() seed a
+   *  conversation synchronously (they run at module load / in a sync handler and the UI
+   *  needs an id to render), so that id is client-chosen until the first send. Call this
+   *  before prompting. Returns the id to prompt, or null if creation failed. */
+  async ensureCurrentCreated(): Promise<string | null> {
+    const cur = state.sessions.find((s) => s.id === state.currentId);
+    if (!cur) return null;
+    if (cur.serverCreated) return cur.id;
+    // De-dupe concurrent callers. Every mount asks (a page load, a conversation switch),
+    // and without this two overlapping calls would each POST /conversations and leave a
+    // stray empty conversation in the sidebar.
+    const pending = inFlightCreate.get(cur.id);
+    if (pending) return pending;
+    const p = (async () => {
+      const id = await mintId();
+      if (!id) return null;
+      setState({
+        ...state,
+        sessions: state.sessions.map((s) =>
+          s.id === cur.id ? { ...s, id, serverCreated: true } : s,
+        ),
+        // Only follow the id if this conversation is STILL the selected one — the user
+        // may have switched away while the create was in flight.
+        currentId: state.currentId === cur.id ? id : state.currentId,
+      });
+      return id;
+    })().finally(() => inFlightCreate.delete(cur.id));
+    inFlightCreate.set(cur.id, p);
+    return p;
   },
 
   switchTo(id: string) {
@@ -288,6 +348,9 @@ export const sessionStore = {
         id: c.id,
         title,
         userTitled,
+        // It came FROM the server, so the server has it — prompting it is safe and
+        // ensureCurrentCreated() must not mint a second id for it.
+        serverCreated: true,
         // Starred is server-owned; take the server's value.
         starred: c.starred ?? existing?.starred,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),

@@ -167,24 +167,41 @@ async function callRaw(
 }
 
 describe("management API", () => {
-  // Creating a conversation is a CONTROL-PLANE write served by the
-  // conversation-router (it writes the CR directly and consults no agent-host
-  // capacity). The agent-host must NOT offer a create route: the fleet is
-  // capacity-bounded, so creating here made conversation replicas*cap+1
-  // uncreatable. See services/conversation-router/create.go.
-  it("POST /conversations is NOT served by the agent-host", async () => {
+  // POST /conversations exists here for SINGLE-REPLICA (and e2e, which runs the agent-host
+  // with no router in front). In multi-replica the conversation-router serves this path
+  // itself — a control-plane CR write that consults no agent-host capacity — and never
+  // proxies it here. What both share is that the SERVER mints the id.
+  it("POST /conversations mints the id SERVER-side and returns 201", async () => {
+    const sessions = fakeSessions();
     const api = createManagementApi({
-      sessions: fakeSessions(),
+      sessions,
       store: fakeStore([]),
       server: stubServer,
       answerPermission: async () => {},
     });
-    // handle() returns false for an UNMATCHED route (the caller then 404s), so
-    // this asserts the route is absent rather than asserting a status the router
-    // never writes.
-    const req = Object.assign(new PassThrough(), { method: "POST", url: "/conversations", headers: {} });
-    const res = { setHeader() {}, writeHead() { return res; }, end() {}, write() {}, req } as unknown as ServerResponse;
-    expect(await api.handle(req as never, res)).toBe(false);
+
+    const res = await call(api, "POST", "/conversations", { title: "hello" });
+
+    expect(res.status).toBe(201);
+    expect((res.json as { id?: string }).id).toBeTruthy();
+  });
+
+  it("POST /conversations IGNORES a caller-supplied threadId", async () => {
+    // The regression that matters. The old route honored body.threadId, which made an
+    // unvalidated, caller-chosen string into a conversation id, an event-log key, and a
+    // k8s resource name.
+    const sessions = fakeSessions();
+    const api = createManagementApi({
+      sessions,
+      store: fakeStore([]),
+      server: stubServer,
+      answerPermission: async () => {},
+    });
+
+    const res = await call(api, "POST", "/conversations", { threadId: "attacker-chosen-id" });
+
+    expect(res.status).toBe(201);
+    expect((res.json as { id?: string }).id).not.toBe("attacker-chosen-id");
   });
 
   it("GET /conversations lists conversations (JSON-safe view)", async () => {

@@ -52,7 +52,8 @@ import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
 import { toRepositorySnapshot, type RepositorySnapshot } from "./messageRepository.js";
 import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
-import { sessionStore, useSessions } from "./sessions.js";
+import { createConversation } from "./client.js";
+import { sessionStore, setConversationMinter, useSessions } from "./sessions.js";
 import {
   createIntegrityAgent,
   type IntegrityAgent,
@@ -212,6 +213,12 @@ export const InterruptContext = createContext<InterruptContextValue>({
 export const useConversationInterrupts = () => useContext(InterruptContext);
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
+
+// The SERVER owns conversation ids. Install the minter that asks for one (POST
+// /conversations) instead of letting the client choose — a client-chosen id would become
+// an event-log key and a k8s resource name, and the agent-host refuses an id it never
+// issued. Module scope so it is in place before any component renders.
+setConversationMinter(() => createConversation({ baseUrl: BASE_URL }));
 // Idle-watchdog reconnect threshold (ms). Overridable so e2e fault tests can set a
 // small value (via VITE_IDLE_RECONNECT_MS) and not wait the 25s production default.
 const IDLE_RECONNECT_MS = import.meta.env.VITE_IDLE_RECONNECT_MS
@@ -301,7 +308,16 @@ function ConversationRuntime({
         // OPTIMISTIC solidify: title the session from this first message NOW, before the
         // fire-and-forget send round-trips, so a brand-new "New chat" doesn't stay pristine
         // (and droppable by the background merge) until the server echoes it back.
-        if (text) sessionStore.titleFromFirstMessage(conversationId, text);
+        // The conversation must EXIST server-side before we prompt it. A session seeded
+        // locally — freshState() at module load, deleteSession()'s replacement — carries a
+        // client-chosen id the server never issued, and /agui refuses it. Create it on the
+        // FIRST SEND (not on mount: mounting is not user intent, and creating there left a
+        // stray conversation for every page load). Re-point the agent at the server's id
+        // rather than rebuilding it, so this send is not torn down mid-flight.
+        const created = await sessionStore.ensureCurrentCreated();
+        if (!created) throw new Error("could not create the conversation — please retry");
+        if (created !== conversationId) agent.setConversationId(created);
+        if (text) sessionStore.titleFromFirstMessage(created, text);
         // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
         // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
         // the running turn (bridge "thinking" policy) instead of queuing the message
@@ -334,7 +350,7 @@ function ConversationRuntime({
     () => ({
       threadId: conversationId,
       onSwitchToNewThread: async () => {
-        sessionStore.newSession();
+        await sessionStore.newSession();
       },
       onSwitchToThread: async (threadId: string) => {
         // Selection only — the render pump re-points at the new thread's log (the
