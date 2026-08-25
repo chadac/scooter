@@ -185,3 +185,43 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
             assert secret_id != value, f"raw identifier leaked as field {key}"
         # ...and the pseudonym must be there, so the line is still correlatable.
         assert getattr(rec, "user_id", None) == ir.pseudonym(secret_id)
+
+
+@pytest.mark.asyncio
+async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(monkeypatch, caplog):
+    """On the success path the database user id is what should be logged.
+
+    It is the identifier the rest of the system keys on, so it is what makes a log line
+    joinable to a conversation's owner — and it is already internal rather than personal
+    data. It is still pseudonymized: a leaked log then cannot be joined against a database
+    dump either.
+    """
+    import logging as _logging
+
+    from webhooks import identity_resolve as ir
+
+    external = "U-EXTERNAL-123"
+    email = "alice@example.com"
+    db_user_id = "scooter-user-abc123"
+
+    async def _email(provider, ext):
+        return email
+
+    async def _lookup(_email):
+        return db_user_id
+
+    monkeypatch.setattr(ir, "get_user_email", _email)
+    monkeypatch.setattr(ir, "_scooter_user_for_email", _lookup)
+
+    with caplog.at_level(_logging.INFO):
+        got = await ir.resolve_owner("slack", external)
+
+    assert got == db_user_id  # the caller still receives the real id
+    rec = next(r for r in caplog.records if "resolved external user" in r.getMessage())
+
+    # The logged id is the pseudonymized SCOOTER id...
+    assert rec.user_id == ir.pseudonym(db_user_id)
+    assert rec.id_source == "scooter"
+    # ...and NEITHER the raw db id, the external id, nor the email appears anywhere.
+    for value in rec.__dict__.values():
+        assert value not in (db_user_id, external, email)

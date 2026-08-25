@@ -24,26 +24,34 @@ _C = {"component": "identity_resolve"}
 
 
 def pseudonym(value: str | None) -> str | None:
-    """A stable, non-reversible stand-in for an external identifier.
+    """A stable, non-reversible stand-in for an identifier, for logs.
 
-    WHY NOT THE RAW VALUE. A Slack user id, a GitHub login and an email address are all
-    personal data. Interpolating one into a prose log line was already questionable;
-    promoting it to a STRUCTURED, INDEXED field is materially worse — it becomes
-    searchable and inherits the log store's retention, which is a privacy decision rather
-    than a formatting one.
+    WHAT TO PASS. Preferably the SCOOTER USER ID — the `user_identity.id` our own database
+    assigns. That is already an internal handle rather than personal data, so
+    pseudonymizing it is belt-and-braces: even the internal id never reaches the log
+    store, and a leaked log cannot be joined against a database dump.
 
-    WHY NOT JUST DROP IT. Support ("user X says the bot ignored them") needs to find the
-    line, and a lookup failure is undiagnosable without knowing whether the same principal
-    keeps failing. A stable pseudonym keeps both: the same input always yields the same
-    token, so lines correlate, but the token does not reveal who it is.
+    External identifiers (a Slack user id, a GitHub login, an email) are personal data and
+    must NEVER be logged raw. Where the Scooter id is not yet known — the resolution
+    FAILURE paths, which run before the lookup succeeds — the external identifier is
+    pseudonymized instead, so the line stays correlatable without carrying an identity.
+    Those lines mark themselves with id_source so a reader can tell the two apart; a
+    pseudonym of an email and a pseudonym of a user id are different tokens for the same
+    person, and silently mixing them would make the field lie.
+
+    WHY A PSEUDONYM AND NOT NOTHING. Support ("user X says the bot ignored them") needs to
+    find the line, and a lookup failure is undiagnosable without knowing whether the SAME
+    principal keeps failing. A stable token keeps correlation across lines and restarts;
+    it just does not say who.
 
     WHY A PLAIN DIGEST AND NOT AN HMAC. An HMAC needs a key. Keying off the per-provider
     webhook secrets would silently break correlation the moment one rotates — the same
     user would start producing a different token — and there is no other stable secret
     here. The threat model is "an operator reading logs should not see identities", not
-    "an attacker holding the log store must not brute-force them"; the input space of
-    Slack ids is small enough that a keyless digest is reversible by someone determined,
-    and that limit is stated here rather than papered over.
+    "an attacker holding the log store must not brute-force them"; the Slack-id input
+    space is small enough that a keyless digest is reversible by someone determined, and
+    that limit is stated rather than papered over. Raising that bar needs a dedicated
+    pseudonym key, which is a deployment concern rather than a code one.
 
     12 hex chars: collision-safe at this cardinality, short enough to eyeball.
     """
@@ -74,14 +82,14 @@ async def _slack_email(user_id: str) -> str | None:
         if not data.get("ok"):
             logger.info(
                 "slack users.info not ok",
-                extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "slack_error": data.get("error")},
+                extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "id_source": "external", "slack_error": data.get("error")},
             )
             return None
         return (data.get("user", {}).get("profile", {}) or {}).get("email") or None
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "error": format_error(e)},
+            extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "id_source": "external", "error": format_error(e)},
         )
         return None
 
@@ -103,7 +111,7 @@ async def _github_email(login: str) -> str | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "github", "user_id": pseudonym(login), "error": format_error(e)},
+            extra={**_C, "provider": "github", "user_id": pseudonym(login), "id_source": "external", "error": format_error(e)},
         )
         return None
 
@@ -130,7 +138,7 @@ async def _gitlab_email(username: str) -> str | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "gitlab", "user_id": pseudonym(username), "error": format_error(e)},
+            extra={**_C, "provider": "gitlab", "user_id": pseudonym(username), "id_source": "external", "error": format_error(e)},
         )
         return None
 
@@ -169,6 +177,7 @@ async def _scooter_user_for_email(email: str) -> str | None:
                 # what actually distinguishes a misconfigured tenant from a missing user,
                 # and it identifies an organisation rather than a person.
                 "user_id": pseudonym(email),
+                "id_source": "external",
                 "email_domain": email.rpartition("@")[2] or None,
                 "error": format_error(e),
             },
@@ -189,6 +198,16 @@ async def resolve_owner(provider: str, external_id: str) -> str | None:
     if owner:
         logger.info(
             "resolved external user to scooter user",
-            extra={**_C, "provider": provider, "user_id": pseudonym(external_id), "owner": owner},
+            extra={
+                **_C,
+                "provider": provider,
+                # The SCOOTER user id (user_identity.id), not the external one — this is
+                # the identifier the rest of the system keys on, so it is what makes a log
+                # line joinable to a conversation's owner. Pseudonymized even though it is
+                # already internal: a leaked log then cannot be joined against a database
+                # dump either.
+                "user_id": pseudonym(owner),
+                "id_source": "scooter",
+            },
         )
     return owner
