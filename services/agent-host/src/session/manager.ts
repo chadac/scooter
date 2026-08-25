@@ -210,6 +210,19 @@ export interface ConversationStore {
   updateJob?(id: SessionId, job: JobRecord): Promise<void>;
 }
 
+/**
+ * A prompt arrived for a conversation that does not exist. The agent-host does not
+ * create one implicitly — conversations are created by the conversation-router
+ * (see services/conversation-router/create.go), so a caller-chosen id can never
+ * become a conversation id, an event-log key, or a k8s resource name.
+ */
+export class UnknownConversationError extends Error {
+  constructor(readonly threadId: string) {
+    super(`unknown conversation: ${threadId}`);
+    this.name = "UnknownConversationError";
+  }
+}
+
 export type ConversationStatus = "running" | "suspended" | "ended";
 
 export interface Conversation {
@@ -954,10 +967,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entry = await hydrateByThread(threadId);
       }
       if (!entry) {
-        // A genuinely new webhook thread: stamp the resolved owner (if any) so the
-        // conversation belongs to the invoking external user's Scooter account.
-        const conv = await this.start(threadId, model, owner);
-        entry = entries.get(conv.id)!;
+        // Not in memory, not persisted -> it does not exist. Callers create
+        // explicitly (POST /conversations on the router) and prompt the id returned.
+        throw new UnknownConversationError(threadId);
       } else {
         await applyModelSwitch(entry, model);
         if (!entry.bridge) {

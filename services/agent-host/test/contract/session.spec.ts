@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import {
   createSessionManager,
+  UnknownConversationError,
   type SandboxProvisioner,
   type ConversationStore,
 } from "../../src/session/manager.js";
@@ -308,7 +309,33 @@ describe("SessionManager", () => {
     expect(optsSeen.at(-1)).toBeUndefined();
   });
 
-  it("promptByThread() stamps the owner on a NEW thread, but not on an existing one", async () => {
+  it("promptByThread() REFUSES an unknown thread instead of creating one", async () => {
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt: vi.fn(async () => "run-x"),
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory });
+
+    // The agent-host no longer creates a conversation implicitly. That path let an
+    // unvalidated, caller-chosen threadId become a conversation id, an event-log
+    // key, and a k8s resource name — and gated the id on agent-host capacity.
+    // Conversations are created by the router (POST /conversations).
+    await expect(
+      sessions.promptByThread("never-created", "hi from slack", undefined, undefined, "user-alice"),
+    ).rejects.toThrow(UnknownConversationError);
+
+    // Nothing was created as a side effect.
+    expect(sessions.list()).toHaveLength(0);
+    expect(provisioner.create).not.toHaveBeenCalled();
+  });
+
+  it("promptByThread() prompts an EXISTING thread and leaves its owner alone", async () => {
     const bridgeFactory = () =>
       ({
         start: vi.fn(async () => {}),
@@ -320,15 +347,13 @@ describe("SessionManager", () => {
       }) as never;
     const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory });
 
-    // A brand-new webhook thread with a resolved owner -> the conversation is owned.
-    await sessions.promptByThread("wh-thread", "hi from slack", undefined, undefined, "user-alice");
-    const created = [...sessions.list()].find((c) => c.threadId === "wh-thread");
-    expect(created?.owner).toBe("user-alice");
+    // Created explicitly (as the router now does), owned by alice.
+    const conv = await sessions.start("wh-thread", undefined, "user-alice");
 
-    // A follow-up to the SAME (now-existing) thread with a different owner does NOT
-    // change ownership — owner is stamped only at start.
+    // A follow-up carrying a DIFFERENT owner does not change ownership — owner is
+    // stamped only at creation.
     await sessions.promptByThread("wh-thread", "follow up", undefined, undefined, "user-bob");
-    expect(sessions.get(created!.id)?.owner).toBe("user-alice");
+    expect(sessions.get(conv.id)?.owner).toBe("user-alice");
   });
 
   it("end() destroys the sandbox and GCs the conversation", async () => {

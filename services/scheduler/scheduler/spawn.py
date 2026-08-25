@@ -9,7 +9,6 @@ list must include the scheduler's SA). Returns the conversation_id or None on fa
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 
 import httpx
@@ -31,35 +30,50 @@ def _sa_token() -> str | None:
 async def spawn_conversation(
     prompt: str, *, title: str | None, owner: str | None, client: httpx.AsyncClient | None = None
 ) -> str | None:
-    """POST the prompt to the agent-host /agui. Returns the conversation_id
-    (the threadId we generate) on a 2xx, else None. `client` is injectable for tests."""
-    conversation_id = str(uuid.uuid4())
-    body: dict = {
-        "threadId": conversation_id,
-        "messages": [{"role": "user", "content": prompt}],
-        # A scheduled fire is a SYSTEM message (not a human turn) — the agent-host
-        # decorates it + the UI can hide it.
-        "source": "scheduler",
-    }
-    if title:
-        body["title"] = title
-    if owner:
-        # Honored only for the SA-token-verified caller (webhooksCaller); the
-        # scheduler's SA must be in the agent-host's trusted list.
-        body["owner"] = owner
+    """Create a conversation, then prompt it. Returns the server-assigned
+    conversation id, or None. `client` is injectable for tests.
 
+    Two calls: the server mints the id (POST /conversations). We do not invent one.
+    """
+    base = settings.agent_host_url.rstrip("/")
     headers = {"content-type": "application/json"}
     token = _sa_token()
     if token:
         headers["authorization"] = f"Bearer {token}"
+    if owner:
+        # Honored only for the SA-token-verified caller; the scheduler's SA must be
+        # in the agent-host's trusted list.
+        headers["x-auth-user"] = owner
 
-    url = f"{settings.agent_host_url.rstrip('/')}/agui"
     owns = client is None
     client = client or httpx.AsyncClient(timeout=30.0)
     try:
+        # 1. CREATE
+        create_body: dict = {}
+        if title:
+            create_body["title"] = title
+        resp = await client.post(f"{base}/conversations", json=create_body, headers=headers)
+        if resp.status_code >= 300:
+            logger.error("create failed: HTTP %s for task %r", resp.status_code, title)
+            return None
+        conversation_id = resp.json().get("id")
+        if not conversation_id:
+            logger.error("create returned no id for task %r", title)
+            return None
+
+        # 2. PROMPT the id the server gave us.
+        body = {
+            "threadId": conversation_id,
+            "messages": [{"role": "user", "content": prompt}],
+            # A scheduled fire is a SYSTEM message (not a human turn) — the agent-host
+            # decorates it + the UI can hide it.
+            "source": "scheduler",
+        }
+        if owner:
+            body["owner"] = owner
         # /agui streams SSE; we only need the request accepted (the agent then runs
-        # the turn independently). Read+discard the stream quickly, or just POST.
-        resp = await client.post(url, json=body, headers=headers)
+        # the turn independently).
+        resp = await client.post(f"{base}/agui", json=body, headers=headers)
         if resp.status_code >= 300:
             logger.error("spawn failed: HTTP %s for task %r", resp.status_code, title)
             return None

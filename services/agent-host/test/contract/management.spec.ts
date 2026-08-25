@@ -167,6 +167,26 @@ async function callRaw(
 }
 
 describe("management API", () => {
+  // Creating a conversation is a CONTROL-PLANE write served by the
+  // conversation-router (it writes the CR directly and consults no agent-host
+  // capacity). The agent-host must NOT offer a create route: the fleet is
+  // capacity-bounded, so creating here made conversation replicas*cap+1
+  // uncreatable. See services/conversation-router/create.go.
+  it("POST /conversations is NOT served by the agent-host", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(),
+      store: fakeStore([]),
+      server: stubServer,
+      answerPermission: async () => {},
+    });
+    // handle() returns false for an UNMATCHED route (the caller then 404s), so
+    // this asserts the route is absent rather than asserting a status the router
+    // never writes.
+    const req = Object.assign(new PassThrough(), { method: "POST", url: "/conversations", headers: {} });
+    const res = { setHeader() {}, writeHead() { return res; }, end() {}, write() {}, req } as unknown as ServerResponse;
+    expect(await api.handle(req as never, res)).toBe(false);
+  });
+
   it("GET /conversations lists conversations (JSON-safe view)", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(),
@@ -279,16 +299,6 @@ describe("management API", () => {
     expect(s.frames).toContainEqual(
       expect.objectContaining({ kind: "upsert", conversation: expect.objectContaining({ id: "c2" }) }),
     );
-  });
-
-  it("POST /conversations creates with a title", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const { status, json } = await call(api, "POST", "/conversations", { threadId: "new1", title: "My task" });
-    expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("new1", undefined, undefined);
-    expect(sessions.setTitle).toHaveBeenCalledWith("new1", "My task");
-    expect((json as any).title).toBe("My task");
   });
 
   // --- user rename + starring ------------------------------------------------
@@ -481,29 +491,6 @@ describe("management API", () => {
     expect(json).toEqual({ default: "opus", available: ["opus"], hints: {}, providers: {} });
   });
 
-  it("POST /conversations honors an offered model", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({
-      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
-      models: { default: "opus", available: ["opus", "sonnet"] },
-    });
-    const { status, json } = await call(api, "POST", "/conversations", { threadId: "m1", model: "sonnet" });
-    expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("m1", "sonnet", undefined);
-    expect((json as any).model).toBe("sonnet");
-  });
-
-  it("POST /conversations rejects an unknown model", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({
-      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
-      models: { default: "opus", available: ["opus", "sonnet"] },
-    });
-    const { status } = await call(api, "POST", "/conversations", { threadId: "m2", model: "haiku" });
-    expect(status).toBe(400);
-    expect(sessions.start).not.toHaveBeenCalled();
-  });
-
   it("POST /conversations/:id/suspend + resume flip status", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
@@ -621,16 +608,6 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status } = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
     expect(status).toBe(404);
-  });
-
-  it("POST /conversations stamps the caller (x-auth-user) as the owner", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const res = await call(api, "POST", "/conversations", { threadId: "owned" }, { "x-auth-user": "alice" });
-    expect(res.status).toBe(201);
-    // start() was called with (threadId, model, owner="alice").
-    expect(sessions.start).toHaveBeenCalledWith("owned", undefined, "alice");
-    expect((res.json as any).owner).toBe("alice");
   });
 
   it("GET /conversations?scope=mine returns STRICTLY the caller's own (not others, not unowned)", async () => {
