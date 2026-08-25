@@ -18,6 +18,7 @@ import type { AguiEvent } from "../../src/bridge.js";
 
 const conv = (over: Partial<Conversation> = {}): Conversation => ({
   id: "c1",
+const waitForProvisioning = () => new Promise((resolve) => setTimeout(resolve, 10));
   threadId: "c1",
   sandbox: { name: "conv-c1", namespace: "ns" },
   status: "running",
@@ -510,7 +511,7 @@ describe("management API", () => {
     const s = await call(api, "POST", "/conversations/c1/suspend");
     expect((s.json as any).status).toBe("suspended");
     const r = await call(api, "POST", "/conversations/c1/resume");
-    expect((r.json as any).status).toBe("running");
+    expect((r.json as any).status).toBe("ready");
   });
 
   it("POST /conversations/:id/compact compacts (202) then revives", async () => {
@@ -637,7 +638,9 @@ describe("management API", () => {
     const sessions = fakeSessions();
     // alice + bob each own one; c1 (the seed) has no owner -> unowned.
     await sessions.start("a1", undefined, "alice");
+    await waitForProvisioning();
     await sessions.start("b1", undefined, "bob");
+    await waitForProvisioning();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
 
     const mine = await call(api, "GET", "/conversations?scope=mine", undefined, { "x-auth-user": "alice" });
@@ -650,7 +653,9 @@ describe("management API", () => {
   it("GET /conversations?scope=mine for an ANONYMOUS caller still shows everything (dev-friendly)", async () => {
     const sessions = fakeSessions();
     await sessions.start("a1", undefined, "alice");
+    await waitForProvisioning();
     await sessions.start("b1", undefined, "bob");
+    await waitForProvisioning();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     // No x-auth-user -> anonymous -> can't distinguish -> sees all.
     const mine = await call(api, "GET", "/conversations?scope=mine");
@@ -661,7 +666,9 @@ describe("management API", () => {
   it("GET /conversations?scope=all returns everything regardless of owner", async () => {
     const sessions = fakeSessions();
     await sessions.start("a1", undefined, "alice");
+    await waitForProvisioning();
     await sessions.start("b1", undefined, "bob");
+    await waitForProvisioning();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const all = await call(api, "GET", "/conversations?scope=all", undefined, { "x-auth-user": "alice" });
     const ids = (all.json as any[]).map((c) => c.id).sort();
@@ -671,6 +678,7 @@ describe("management API", () => {
   it("GET /conversations default scope is 'mine'", async () => {
     const sessions = fakeSessions();
     await sessions.start("b1", undefined, "bob");
+    await waitForProvisioning();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const def = await call(api, "GET", "/conversations", undefined, { "x-auth-user": "alice" });
     const ids = (def.json as any[]).map((c) => c.id);
@@ -680,6 +688,7 @@ describe("management API", () => {
   it("anonymous (no header) sees all conversations (single-user/dev unchanged)", async () => {
     const sessions = fakeSessions();
     await sessions.start("a1", undefined, "alice");
+    await waitForProvisioning();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     // No x-auth-user -> anonymous -> sees everything even at default scope.
     const res = await call(api, "GET", "/conversations");

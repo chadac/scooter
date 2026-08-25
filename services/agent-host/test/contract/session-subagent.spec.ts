@@ -18,6 +18,7 @@ import {
   createSessionManager,
   type SandboxProvisioner,
   type ConversationStore,
+const waitForProvisioning = () => new Promise((resolve) => setTimeout(resolve, 10));
 } from "../../src/session/manager.js";
 import type { AguiEvent } from "../../src/bridge.js";
 import type { SandboxRef, SessionId } from "../../src/types.js";
@@ -72,6 +73,7 @@ describe("SessionManager subagents", () => {
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
 
     const parent = await sessions.start("parent-1", undefined, "alice");
+    await waitForProvisioning();
     expect(provisioner.create).toHaveBeenCalledOnce(); // the parent's cold sandbox
 
     const child = await sessions.spawnChild(parent.id, "child-1", { prompt: "research X" });
@@ -90,6 +92,7 @@ describe("SessionManager subagents", () => {
   it("lists a parent's children via parentId", async () => {
     const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
     const parent = await sessions.start("p", undefined, "alice");
+    await waitForProvisioning();
     await sessions.spawnChild(parent.id, "c1", { prompt: "a" });
     await sessions.spawnChild(parent.id, "c2", { prompt: "b" });
 
@@ -101,6 +104,7 @@ describe("SessionManager subagents", () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
     const root = await sessions.start("root", undefined, "alice");
+    await waitForProvisioning();
     const child = await sessions.spawnChild(root.id, "c1", { prompt: "a" });
     const grandchild = await sessions.spawnChild(child.id, "gc1", { prompt: "deeper" });
 
@@ -114,6 +118,7 @@ describe("SessionManager subagents", () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
     const root = await sessions.start("root", undefined, "alice");
+    await waitForProvisioning();
     await sessions.spawnChild(root.id, "c1", { prompt: "a" });
     await sessions.spawnChild("c1", "gc1", { prompt: "deeper" }); // grandchild
     await sessions.spawnChild(root.id, "c2", { prompt: "b" });
@@ -131,6 +136,7 @@ describe("SessionManager subagents", () => {
   it("does NOT idle-sweep a conversation with a live DESCENDANT (recursively)", async () => {
     const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
     const root = await sessions.start("root", undefined, "alice");
+    await waitForProvisioning();
     await sessions.spawnChild(root.id, "c1", { prompt: "a" });
     await sessions.spawnChild("c1", "gc1", { prompt: "deeper" }); // a live grandchild
 
@@ -140,7 +146,7 @@ describe("SessionManager subagents", () => {
     // (the shared pod can't drop while any descendant runs).
     expect(suspended).not.toContain(root.id);
     expect(suspended).not.toContain("c1");
-    expect(sessions.get(root.id)?.status).toBe("running");
+    expect(sessions.get(root.id)?.status).toBe("ready");
   });
 
   it("onSubagentComplete fires (subagentId + parentId) when a subagent's run FINISHES — event-driven, no poll", async () => {
@@ -151,6 +157,7 @@ describe("SessionManager subagents", () => {
       bridgeFactory: bf.factory,
     });
     const parent = await sessions.start("p", undefined, "alice");
+    await waitForProvisioning();
     const child = await sessions.spawnChild(parent.id, "c1", { prompt: "a" });
 
     const fired: Array<{ subagentId: string; parentId: string }> = [];

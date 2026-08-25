@@ -840,8 +840,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/ready", async (ctx) => {
     const id = await resolveConvId(ctx.params.id);
     const conv = id ? sessions.get(id) : undefined;
-    // Only a running-status conversation can be ready; suspended/ended are never ready.
-    if (!id || !conv || conv.status !== "running" || !deps.webServices) {
+    // Only a ready-status conversation can be ready; provisioning/suspended/ended/failed are not ready.
+    if (!id || !conv || conv.status !== "ready" || !deps.webServices) {
       return { json: { ready: false, status: conv?.status ?? "unknown" } };
     }
     const ready = await deps.webServices.ready(id).catch(() => false);

@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+const waitForProvisioning = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 import {
   createSessionManager,
@@ -107,7 +108,7 @@ describe("hydrate() adopts from the Conversation CR", () => {
     await sessions.hydrate();
 
     expect(sessions.list(), "the CR is the source of truth; local was empty").toHaveLength(1);
-    expect(sessions.get("gamma")?.status).toBe("running");
+    expect(sessions.get("gamma")?.status).toBe("ready");
 
     // ...and therefore the sweep can finally reclaim it (I2).
     const swept = await sessions.sweepIdle(0);

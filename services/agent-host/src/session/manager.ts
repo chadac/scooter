@@ -17,6 +17,7 @@ import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile
 import { hasDanglingRun } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
+import { provisionConversation } from "./provisioningLogic.js";
 
 /** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
  *  Not the user's literal prompt (which would re-do work / double-post): a nudge
@@ -94,6 +95,10 @@ export interface ConversationMeta {
    *  retention reaper) exempts it from auto-deletion. Hibernation is unaffected —
    *  a starred conversation still idle-suspends. */
   starred?: boolean;
+  /** Current provisioning attempt number (1-based). undefined = not provisioning or already provisioned. */
+  provisioningAttempt?: number;
+  /** Last provisioning error message. Persists across retries and survives restart. */
+  provisioningError?: string;
   /** Messages that were still QUEUED in the bridge when the conversation was
    *  suspended. The run queue lives in the bridge closure, which suspend() drops —
    *  so without persisting them here the user's already-sent message is destroyed
@@ -210,7 +215,7 @@ export interface ConversationStore {
   updateJob?(id: SessionId, job: JobRecord): Promise<void>;
 }
 
-export type ConversationStatus = "running" | "suspended" | "ended";
+export type ConversationStatus = "provisioning" | "ready" | "suspended" | "ended" | "failed";
 
 export interface Conversation {
   readonly id: SessionId;
@@ -236,6 +241,12 @@ export interface Conversation {
   readonly userTitled?: boolean;
   /** The user starred it (UI highlight + future retention exemption). */
   readonly starred?: boolean;
+  /** Current provisioning attempt number (1-based). undefined = not provisioning or already provisioned. */
+  readonly provisioningAttempt?: number;
+  /** Last provisioning error message. Persists across retries and survives restart. */
+  readonly provisioningError?: string;
+  /** Messages queued while provisioning or suspended, to be replayed on ready/revive. */
+  readonly pendingQueue?: Array<{ text: string; priority: number }>;
 }
 
 export interface SessionManager {
@@ -416,6 +427,12 @@ export interface SessionManagerDeps {
   /** Optional: how to build a bridge per conversation. Omitted in unit tests
    *  that only assert lifecycle/provisioning. */
   bridgeFactory?: BridgeFactory;
+  /** Max provisioning attempts before giving up (default 5). */
+  provisionRetryMax?: number;
+  /** Base delay in ms between provisioning retries (default 5000). Exponential backoff. */
+  provisionRetryBaseMs?: number;
+  /** Cap on retry delay in ms (default 30000). */
+  provisionRetryCapMs?: number;
   /** Optional: called after a conversation's bridge is (re)built by revive() — with
    *  a live bridge. index.ts uses it to re-raise approval interrupts a pod rollout
    *  dropped: the interrupt's in-memory answer-routing is lost on restart, but the
@@ -444,6 +461,8 @@ interface Entry {
   parentId?: SessionId;
   userTitled?: boolean;
   starred?: boolean;
+  provisioningAttempt?: number;
+  provisioningError?: string;
   /** Messages still QUEUED in the bridge when this conversation was suspended, so
    *  revive() can re-enqueue them (the bridge closure that held them is gone). */
   pendingQueue?: Array<{ text: string; priority: number }>;
@@ -470,6 +489,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const { provisioner, store, bridgeFactory } = deps;
   const ownershipGuard = deps.ownershipGuard ?? allowAllGuard;
   const conversationRegistry = deps.conversationRegistry ?? noopRegistry;
+
+  // Provisioning retry configuration (D3)
+  const PROVISION_RETRY_MAX = deps.provisionRetryMax ?? 5;
+  const PROVISION_RETRY_BASE_MS = deps.provisionRetryBaseMs ?? 5000;
+  const PROVISION_RETRY_CAP_MS = deps.provisionRetryCapMs ?? 30000;
+
   const entries = new Map<SessionId, Entry>();
 
   // Subagent-completion subscribers (see onSubagentComplete). Fired event-driven
@@ -498,6 +523,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     parentId: e.parentId,
     userTitled: e.userTitled,
     starred: e.starred,
+    provisioningAttempt: e.provisioningAttempt,
+    provisioningError: e.provisioningError,
+    pendingQueue: e.pendingQueue,
   });
 
   // Conversation lifecycle subscribers (the /conversations/events push stream).
@@ -534,7 +562,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // create() 409s AlreadyExists — the bug this distinction fixes.)
       sandbox: onCluster ? onCluster.ref : { name, namespace: "" },
       bridge: undefined,
-      status: onCluster?.running ? "running" : "suspended",
+      status: onCluster?.running ? "ready" : "suspended",
       title: m.title,
       createdAt: m.createdAt,
       lastActivityAt: m.lastActivityAt,
@@ -594,6 +622,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       parentId: e.parentId,
       userTitled: e.userTitled,
       starred: e.starred,
+      provisioningAttempt: e.provisioningAttempt,
+      provisioningError: e.provisioningError,
       pendingQueue: e.pendingQueue,
     }) ?? Promise.resolve();
 
@@ -642,20 +672,27 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   return {
     async start(threadId, model, owner) {
-      // The conversation id IS the thread id, so AG-UI events broadcast/persist
-      // under the same key the UI subscribes by. The sandbox (k8s) name uses a
-      // short DNS-safe hash of it.
+      // D1: Return immediately after minting the ID — provisioning happens async.
       const id: SessionId = threadId;
-      // REGISTER THE ENTRY FIRST — before the (slow) sandbox provisioning below.
+      
+      // REGISTER THE ENTRY FIRST with status="provisioning" (D2).
       // The UI POSTs /agui then IMMEDIATELY opens GET .../events.integrity; if the
       // entry isn't in `entries` yet, that route 404s ("unknown conversation") and
       // the UI gives up reconnecting → a new chat looks broken. So the conversation
-      // must be visible from the moment start() begins. The sandbox + bridge are
-      // filled in after provisioning; the integrity stream just waits for events.
+      // must be visible from the moment start() begins.
       const entry: Entry = {
-        id, threadId, sandbox: { name: `conv-${shortId(threadId)}`, namespace: "" },
-        bridge: undefined, status: "running",
-        title: "New chat", createdAt: nowMs(), lastActivityAt: nowMs(), model, owner,
+        id,
+        threadId,
+        sandbox: { name: `conv-${shortId(threadId)}`, namespace: "" },
+        bridge: undefined,
+        status: "provisioning", // D2: initial state
+        title: "New chat",
+        createdAt: nowMs(),
+        lastActivityAt: nowMs(),
+        model,
+        owner,
+        provisioningAttempt: undefined,
+        provisioningError: undefined,
       };
       entries.set(id, entry);
       await saveMeta(entry);
@@ -663,21 +700,87 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       // Register the assignment-table CR so the controller assigns a hostPod and the
       // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
-      // failure must not fail the conversation); noop in single-replica mode. Do it
-      // BEFORE the slow provision so assignment can happen while the sandbox spins up.
+      // failure must not fail the conversation); noop in single-replica mode.
       await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name });
 
-      // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
-      // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).
-      entry.sandbox = await provisioner.create(shortId(threadId), threadId);
-      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
-      wireEventLog(entry); // wire AFTER the bridge exists (it no-ops on a null bridge)
-      // Re-persist with the real sandbox ref (a crash mid-provision must not leave a
-      // dangling entry with no namespace that revive() then can't resume).
-      await saveMeta(entry);
-      // NOTE: do NOT eagerly bridge.start() here — that spawns goose and blocks
-      // on its ACP newSession. bridge.prompt() lazily starts on first use, after
-      // emitting RUN_STARTED, so the UI always sees the run begin.
+      // D1: Launch async provisioning (D3: with retry). Fire-and-forget — does NOT
+      // block the return. Failures are persisted as events (D2) so a reattaching UI sees them.
+      void provisionConversation(
+        shortId(threadId),
+        threadId,
+        provisioner,
+        {
+          retryMax: PROVISION_RETRY_MAX,
+          retryBaseMs: PROVISION_RETRY_BASE_MS,
+          retryCapMs: PROVISION_RETRY_CAP_MS,
+        },
+        {
+          updateState: async (update) => {
+            // Update in-memory entry
+            if (update.status) entry.status = update.status;
+            if (update.sandbox) entry.sandbox = update.sandbox;
+            if (update.provisioningAttempt !== undefined) {
+              entry.provisioningAttempt = update.provisioningAttempt;
+            }
+            if (update.provisioningError !== undefined) {
+              entry.provisioningError = update.provisioningError;
+            }
+            
+            // Persist + emit change
+            await saveMeta(entry);
+            emitChange(entry);
+            
+            // When provisioning succeeds (status -> "ready"), create the bridge
+            if (update.status === "ready" && !entry.bridge) {
+              entry.bridge = bridgeFactory?.({
+                conversationId: id,
+                sandbox: entry.sandbox,
+                model,
+                owner: entry.owner,
+              });
+              wireEventLog(entry);
+              await saveMeta(entry); // persist with bridge created
+              
+              // D5: If there are queued messages (sent during provisioning),
+              // replay them now that the bridge exists.
+              if (entry.pendingQueue?.length) {
+                const queued = entry.pendingQueue;
+                entry.pendingQueue = undefined;
+                await saveMeta(entry);
+                
+                for (const msg of queued) {
+                  entry.bridge?.prompt(
+                    {
+                      threadId: entry.threadId,
+                      text: msg.text,
+                    },
+                    { priority: msg.priority },
+                  );
+                }
+              }
+            }
+          },
+          emitEvent: async (event) => {
+            // Emit to live subscribers and persist to durable log
+            if (!ownershipGuard.canWrite(id)) return;
+            await store.appendEvent(id, event);
+          },
+          isCancelled: () => {
+            // Check if conversation was deleted/ended during provisioning
+            const current = entries.get(id);
+            return !current || current.status === "ended";
+          },
+        },
+      ).catch((err) => {
+        // Unexpected error outside the retry loop (should not happen, but be defensive)
+        // eslint-disable-next-line no-console
+        console.error(`[manager] Provisioning task failed unexpectedly for ${id}:`, err);
+        entry.status = "failed";
+        entry.provisioningError = err instanceof Error ? err.message : String(err);
+        void saveMeta(entry).then(() => emitChange(entry));
+      });
+
+      // D1: Return immediately with status="provisioning"
       return toConversation(entry);
     },
 
@@ -696,7 +799,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         threadId: childThreadId,
         sandbox: parent.sandbox, // REUSE — no provisioner.create
         bridge: undefined,
-        status: "running",
+        status: "ready",
         title: args.title ?? "Subagent",
         createdAt: nowMs(),
         lastActivityAt: nowMs(),
@@ -753,7 +856,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         ? await provisioner.resume(entry.sandbox)
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model, owner: entry.owner }) ?? entry.bridge;
-      entry.status = "running";
+      entry.status = "ready";
       // RE-REGISTER the CR on revive. register() is only called on start()/spawnChild(), so a
       // conversation revived after a restart/rollout (or hydrated on a lazy prompt) whose CR was
       // never created / was lost would run CR-less — invisible to `kubectl get conversations`
@@ -931,7 +1034,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       touch(entry);
       await applyModelSwitch(entry, model);
       // Revive whenever there's no LIVE bridge (goose process), not just when the
-      // status is non-running: a HYDRATED conversation can be status "running"
+      // status is non-ready: a HYDRATED conversation can be status "ready"
       // (its pod is up, per hydrate's reconcile) yet have no bridge in THIS
       // process, so the prompt would silently no-op (bridge?.prompt on undefined).
       if (!entry.bridge) await this.revive(id);
@@ -960,14 +1063,25 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entry = entries.get(conv.id)!;
       } else {
         await applyModelSwitch(entry, model);
-        if (!entry.bridge) {
+        if (!entry.bridge && entry.status !== "provisioning") {
           // No live bridge -> revive (start goose). Covers suspended, hydrated-but-
-          // "running" (pod up, no goose in this process), AND just-hydrated-on-demand
-          // conversations.
+          // "ready" (pod up, no goose in this process), AND just-hydrated-on-demand
+          // conversations. Skip revive if still provisioning (the bridge will be
+          // created once provisioning completes).
           await this.revive(entry.id);
         }
       }
       touch(entry);
+      
+      // D5: If the conversation is still provisioning, queue the message.
+      // It will be replayed once the bridge is created (when status -> "ready").
+      if (entry.status === "provisioning") {
+        entry.pendingQueue = entry.pendingQueue ?? [];
+        entry.pendingQueue.push({ text, priority: priority ?? 0 });
+        await saveMeta(entry);
+        return; // Message queued, will run after provisioning completes
+      }
+      
       // A priority prompt is a webhook @mention to an ACTIVE conversation (the only
       // priority source). Preempt with the "thinking" policy: interrupt idle text
       // generation right away, but let an IN-FLIGHT TOOL CALL finish first — don't
@@ -1314,7 +1428,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         return false;
       };
       for (const entry of entries.values()) {
-        if (entry.status !== "running") continue;
+        if (entry.status !== "ready") continue;
         if (now - entry.lastActivityAt < idleMs) continue;
         if (hasLiveDescendant(entry.id)) continue; // keep the shared pod up
         // NEVER suspend a conversation with a run IN FLIGHT. lastActivityAt is bumped
