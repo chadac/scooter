@@ -89,3 +89,75 @@ test.describe("linked resources panel", () => {
     await expect(icon).toHaveCount(1, { timeout: 30_000 });
   });
 });
+
+test.describe("linked resources durability (mirror fallback after rollout)", () => {
+  test("a link survives suspend/revive (rollout wipes LOCAL_STATE_PATH, must read from mirror)", async ({
+    chat,
+    page,
+    request,
+    baseURL,
+  }) => {
+    // THE BUG: listLinks reads from LOCAL only (an emptyDir wiped on rollouts), even
+    // though addLink writes to BOTH stores. After a rollout, LOCAL is empty but the
+    // MIRROR holds the real data. Reading local-only makes links disappear.
+    //
+    // Measured on cluster: 5 of 12 links missing (those from pre-rollout conversations).
+    //
+    // This test simulates a rollout via suspend (which tears down the pod, wiping the
+    // emptyDir). The link must survive and appear after revive.
+    const base = baseURL ?? "http://localhost:5173";
+
+    await chat.open();
+    await chat.send("initial message");
+    await chat.waitForReply(/dummy agent/i);
+
+    // Discover the conversation id.
+    const threadId = await page.evaluate(() => {
+      const raw = window.localStorage.getItem("kubenix-agent.sessions.v1");
+      return raw ? (JSON.parse(raw) as { currentId: string }).currentId : "";
+    });
+    expect(threadId).toBeTruthy();
+
+    // Push a link (as the webhooks service would).
+    const linkRes = await request.post(`${base}/conversations/${threadId}/links`, {
+      data: {
+        source: "github",
+        resourceType: "pull_request",
+        url: "https://github.com/test-org/test-repo/pull/999",
+        title: "test-org/test-repo #999",
+      },
+    });
+    expect(linkRes.ok()).toBeTruthy();
+
+    // Verify the link appears initially.
+    const panel = {
+      root: '[data-testid="linked-resources"]',
+      item: '[data-testid="linked-resource"]',
+    };
+    await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
+    const itemBefore = page.locator(panel.item).filter({ hasText: /test-org\/test-repo #999/i });
+    await expect(itemBefore).toHaveCount(1, { timeout: 30_000 });
+
+    // SUSPEND (simulates a rollout: tears down the pod, wipes LOCAL_STATE_PATH emptyDir).
+    const suspendRes = await request.post(`${base}/conversations/${encodeURIComponent(threadId)}/suspend`);
+    expect(suspendRes.ok(), "suspend must succeed").toBeTruthy();
+
+    // REVIVE by sending a message (the real user path).
+    await chat.send("message after rollout");
+    await expect(
+      chat.userMessages().filter({ hasText: /message after rollout/i }),
+    ).toHaveCount(1, { timeout: 30_000 });
+
+    // THE ASSERTION: the link must STILL be visible after the revive.
+    // LOCAL_STATE_PATH was wiped by the suspend, so this read MUST come from the
+    // durable mirror, not the local cache. If listLinks reads local-only, this fails.
+    await expect(page.locator(panel.root), "the linked-resources panel must reappear after revive").toBeVisible({
+      timeout: 30_000,
+    });
+    const itemAfter = page.locator(panel.item).filter({ hasText: /test-org\/test-repo #999/i });
+    await expect(
+      itemAfter,
+      "the link must survive the suspend/revive (rollout) — reading from the durable mirror, not wiped local",
+    ).toHaveCount(1, { timeout: 30_000 });
+  });
+});
