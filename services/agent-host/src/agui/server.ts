@@ -423,8 +423,24 @@ export function createAguiServer(): AguiServer {
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // The caller prompted an id that does not exist — a caller bug, not a run
+        // failure. The 200 + SSE head is already committed here, so this cannot be a
+        // real 404; give the caller an actionable message instead.
+        const unknown = err instanceof Error && err.name === "UnknownConversationError";
         // eslint-disable-next-line no-console
         console.error(`[agui] prompt failed for ${sessionId} (surfacing RUN_ERROR to the client):`, err);
+        if (unknown) {
+          try {
+            write(res, {
+              type: "RUN_ERROR",
+              message: `No such conversation: ${sessionId}. Create one first (POST /conversations) and prompt the id it returns.`,
+            });
+          } catch {
+            /* stream already torn down */
+          }
+          res.end();
+          return;
+        }
         try {
           write(res, { type: "RUN_ERROR", message: `The agent could not start this run: ${message}` });
         } catch {

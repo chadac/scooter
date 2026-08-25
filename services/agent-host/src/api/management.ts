@@ -382,6 +382,28 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { ...view(c, now), sources, links: linkSummary };
   };
 
+  // CREATE a conversation. The SERVER mints the id — this route accepts no caller-chosen
+  // threadId, which is the whole point: a client-chosen id would become an event-log key
+  // and a k8s resource name.
+  //
+  // In MULTI-REPLICA the conversation-router serves this path instead (it writes the
+  // Conversation CR without consulting host capacity) and never proxies it here. This
+  // route is what SINGLE-REPLICA deployments — and e2e, which runs the agent-host with no
+  // router in front — create through. Both mint server-side, so the UI has one contract.
+  r.post("/conversations", async (ctx) => {
+    const body = await ctx.body<{ title?: string; model?: string }>();
+    // Reject an unknown model rather than silently falling back, so a client
+    // mistake is visible.
+    if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
+      return { status: 400, json: { error: `unknown model: ${body.model}` } };
+    }
+    // Stamp the creating user as the owner (for the "my conversations" filter).
+    const owner = ctx.user.anonymous ? undefined : ctx.user.id;
+    const conv = await sessions.start(randomUUID(), body.model, owner);
+    if (body.title) sessions.setTitle(conv.id, body.title);
+    return { status: 201, json: view(sessions.get(conv.id)!) };
+  });
+
   r.get("/conversations", async (ctx) => {
     const now = Date.now();
     const list = sessions.list().filter(visibleFilter(ctx));
@@ -436,20 +458,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
     ctx.req.on("close", () => unsub());
   });
 
-  r.post("/conversations", async (ctx) => {
-    const body = await ctx.body<{ threadId?: string; title?: string; model?: string }>();
-    const threadId = body.threadId ?? randomUUID();
-    // Reject an unknown model rather than silently falling back, so a client
-    // mistake is visible.
-    if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
-      return { status: 400, json: { error: `unknown model: ${body.model}` } };
-    }
-    // Stamp the creating user as the owner (for the "my conversations" filter).
-    const owner = ctx.user.anonymous ? undefined : ctx.user.id;
-    const conv = await sessions.start(threadId, body.model, owner);
-    if (body.title) sessions.setTitle(conv.id, body.title);
-    return { status: 201, json: view(sessions.get(conv.id)!) };
-  });
+  // No POST /conversations here: creating a conversation is a control-plane write
+  // served by the conversation-router (services/conversation-router/create.go).
+  // This fleet is capacity-bounded, so creating here gated the id on capacity.
 
   r.get("/conversations/:id", async (ctx) => {
     // Hydrate-if-absent (read-only) so a reconnect after a pod move / cleared CR resolves

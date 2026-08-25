@@ -27,6 +27,30 @@ def _agui_url() -> str:
     return f"{settings.agent_host_url.rstrip('/')}/agui"
 
 
+def _conversations_url() -> str:
+    return f"{settings.agent_host_url.rstrip('/')}/conversations"
+
+
+async def _create_conversation(owner: str | None) -> str | None:
+    """Ask the server for a conversation id (POST /conversations). None on failure."""
+    headers = {"content-type": "application/json"}
+    token = _sa_token()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    if owner:
+        headers["x-auth-user"] = owner
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(_conversations_url(), json={}, headers=headers)
+        if resp.status_code >= 300:
+            logger.error("create_conversation: HTTP %s from POST /conversations", resp.status_code)
+            return None
+        return resp.json().get("id")
+    except (httpx.HTTPError, ValueError) as e:
+        logger.error("create_conversation: POST /conversations failed: %s", e)
+        return None
+
+
 def _content(
     text: str, images: list[dict] | None, files: list[dict] | None = None
 ) -> str | list[dict]:
@@ -76,7 +100,9 @@ async def create_conversation(
     infer its thread from (the Slack "first message escapes the thread" bug). A
     hook failure is logged, not fatal — the run proceeds.
     """
-    conversation_id = str(uuid.uuid4())
+    conversation_id = await _create_conversation(owner)
+    if conversation_id is None:
+        return None  # nothing to prompt
     task = initial_message
     if repository:
         task = f"Repository: {repository}\n\n{task}"

@@ -262,14 +262,14 @@ test.describe("session selector & titles", () => {
     baseURL,
   }) => {
     // Seed conversations on the SERVER directly (no UI), as if a previous
-    // user/session had created them. The server (agent-host) is the source of
-    // truth; a brand-new browser visit must show them.
+    // user/session had created them. The server assigns the ids — the caller does not
+    // pick them — and is the source of truth; a brand-new browser visit must show them.
     const base = baseURL ?? "http://localhost:5173";
     const r1 = await request.post(`${base}/conversations`, {
-      data: { threadId: `seeded-one-${Date.now()}`, title: "Seeded session one" },
+      data: { title: "Seeded session one" },
     });
     const r2 = await request.post(`${base}/conversations`, {
-      data: { threadId: `seeded-two-${Date.now()}`, title: "Seeded session two" },
+      data: { title: "Seeded session two" },
     });
     expect(r1.ok() && r2.ok(), "seeding /conversations failed").toBeTruthy();
 

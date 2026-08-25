@@ -712,9 +712,15 @@ in
               # Multi-replica: the agent-host WATCHES Conversations (ownershipGuard fencing)
               # and CREATES one per new conversation (conversationRegistry) so the controller
               # can assign it a hostPod.
+              #
+              # PATCH is needed because the router now creates the CR (POST /conversations)
+              # WITHOUT a sandboxRef — it does not provision. The host owns that field, and
+              # the router derives its routing short-id from it, so the host must merge-patch
+              # spec.sandboxRef onto an already-existing CR. Without this verb that patch
+              # 403s silently (fire-and-forget) and the conversation stays unroutable.
               apiGroups = [ "scooter.chadac.dev" ];
               resources = [ "conversations" ];
-              verbs = [ "get" "list" "watch" "create" ];
+              verbs = [ "get" "list" "watch" "create" "patch" ];
             }
             {
               # The agent-host PUBLISHES liveness to status.phase (Assigned on

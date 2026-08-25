@@ -3,7 +3,7 @@
  * feature). Marked `fixme` until part 1 + part 2 are implemented.
  *
  * Simulates a Slack-originated conversation the way the webhooks service creates
- * one: a fire-and-forget POST /agui with a NEW threadId this browser tab did NOT
+ * one: an out-of-band CREATE + prompt for a conversation this browser tab did NOT
  * start. Then asserts, WITHOUT any manual refresh:
  *
  *   Part 2 — the new conversation appears in the sidebar live (pushed via
@@ -23,25 +23,34 @@ const sel = {
 };
 
 /** Create an out-of-band conversation exactly like the webhooks service does:
- *  a fire-and-forget POST /agui with a fresh threadId (no browser involvement).
+ *  an out-of-band create-then-prompt (no browser involvement).
  *  The POST is an SSE stream the server holds open until the run finishes, so we
  *  do NOT await the response body — just fire it and let the run drive server-side
  *  (its events reach an open UI via the integrity stream). */
+/** Drive a conversation from OUTSIDE the browser, the way webhooks (Slack/GitHub) do:
+ *  CREATE it (the server assigns the id), then prompt that id. The caller no longer picks
+ *  the id — /agui refuses one it never issued — so this mirrors the real webhooks path. */
 function createExternalConversation(
   request: import("@playwright/test").APIRequestContext,
   base: string,
-  threadId: string,
   task: string,
 ): void {
-  void request
-    .post(`${base}/agui`, {
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      data: { threadId, runId: "r1", messages: [{ id: "m1", role: "user", content: task }] },
-      timeout: 60_000,
-    })
-    .catch(() => {
-      /* fire-and-forget — the run drives server-side; we watch via the UI */
+  void (async () => {
+    const created = await request.post(`${base}/conversations`, {
+      headers: { "Content-Type": "application/json" },
+      data: { title: task },
+      timeout: 30_000,
     });
+    if (!created.ok()) return;
+    const { id } = (await created.json()) as { id: string };
+    await request.post(`${base}/agui`, {
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      data: { threadId: id, runId: "r1", messages: [{ id: "m1", role: "user", content: task }] },
+      timeout: 60_000,
+    });
+  })().catch(() => {
+    /* fire-and-forget — the run drives server-side; we watch via the UI */
+  });
 }
 
 test.describe("live monitoring", () => {
@@ -51,8 +60,7 @@ test.describe("live monitoring", () => {
       const base = (baseURL ?? "").replace(/\/$/, "");
       await chat.open();
 
-      const threadId = `slack-e2e-${Date.now()}`;
-      createExternalConversation(request, base, threadId, "help from slack");
+      createExternalConversation(request, base, "help from slack");
 
       // Part 2: the row shows up WITHOUT reloading the page or waiting 10s.
       await expect(
@@ -67,8 +75,7 @@ test.describe("live monitoring", () => {
       const base = (baseURL ?? "").replace(/\/$/, "");
       await chat.open();
 
-      const threadId = `slack-e2e-${Date.now()}`;
-      createExternalConversation(request, base, threadId, "review the auth module");
+      createExternalConversation(request, base, "review the auth module");
 
       // Open the pushed conversation from the sidebar.
       await page.locator(sel.conversationRow).filter({ hasText: /auth module|slack/i }).first().click();

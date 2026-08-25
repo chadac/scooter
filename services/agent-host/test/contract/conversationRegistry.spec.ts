@@ -15,10 +15,16 @@ import { createK8sConversationRegistry } from "../../src/session/k8sConversation
 
 /** A fake KubeConfig whose CustomObjectsApi records create + status-patch calls and can be
  *  told to fail (create failures via opts.code; status-patch failures via opts.patchCode). */
-function fakeKc(opts: { code?: number; patchCode?: number } = {}) {
+function fakeKc(opts: { code?: number; patchCode?: number; specPatchCode?: number } = {}) {
   const creates: Array<Record<string, unknown>> = [];
   const patches: Array<Record<string, unknown>> = [];
+  const specPatches: Array<Record<string, unknown>> = [];
   const api = {
+    patchNamespacedCustomObject: async (args: Record<string, unknown>) => {
+      specPatches.push(args);
+      if (opts.specPatchCode) throw Object.assign(new Error("k8s"), { code: opts.specPatchCode });
+      return {};
+    },
     createNamespacedCustomObject: async (args: Record<string, unknown>) => {
       creates.push(args);
       if (opts.code) throw Object.assign(new Error("k8s"), { code: opts.code });
@@ -30,7 +36,7 @@ function fakeKc(opts: { code?: number; patchCode?: number } = {}) {
       return {};
     },
   };
-  return { kc: { makeApiClient: () => api as never } as never, creates, patches };
+  return { kc: { makeApiClient: () => api as never } as never, creates, patches, specPatches };
 }
 
 describe("noopRegistry (single-replica default)", () => {
@@ -76,6 +82,31 @@ describe("k8sConversationRegistry.register", () => {
   it("swallows a 409 AlreadyExists (idempotent re-register / race)", async () => {
     const { kc } = fakeKc({ code: 409 });
     await expect(createK8sConversationRegistry("ns", kc).register("conv-1", {})).resolves.toBeUndefined();
+  });
+
+  it("PATCHES the spec on 409 so a router-created CR gets its sandboxRef", async () => {
+    // The router creates the CR (POST /conversations) with no sandboxRef — it does not
+    // provision. So 409 is now the COMMON path, not a rare race. Swallowing it outright
+    // meant sandboxRef could never be written, and the router derives its routing short-id
+    // from that field: the conversation stayed unroutable for its whole life.
+    const { kc, specPatches } = fakeKc({ code: 409 });
+    await createK8sConversationRegistry("ns", kc).register("conv-1", {
+      model: "sonnet",
+      sandboxRef: "conv-abc123",
+    });
+
+    expect(specPatches).toHaveLength(1);
+    const body = specPatches[0].body as { spec: Record<string, string> };
+    expect(body.spec.sandboxRef).toBe("conv-abc123");
+    // MERGE patch, not replace — owner/model/parentId as the creator set them must survive.
+    expect(specPatches[0].name).toBe("conv-1");
+  });
+
+  it("swallows a 404 on the 409 spec-patch (CR deleted mid-flight)", async () => {
+    const { kc } = fakeKc({ code: 409, specPatchCode: 404 });
+    await expect(
+      createK8sConversationRegistry("ns", kc).register("conv-1", { sandboxRef: "conv-abc" }),
+    ).resolves.toBeUndefined();
   });
 
   it("swallows a non-409 error (a conversation must still start) and logs it", async () => {

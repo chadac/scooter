@@ -29,7 +29,7 @@ import {
   type UserView,
   type RegistryModule,
 } from "./client.js";
-import { useSessions } from "./sessions.js";
+import { useSessions, currentConversation } from "./sessions.js";
 import { viewStore, useSettingsTab, SETTINGS_TABS, type SettingsTab } from "./view.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -329,8 +329,13 @@ function ModulesSettingsSection() {
 
   useEffect(() => {
     void (async () => {
-      if (!currentId) { setAvailable(false); setLoading(false); return; }
-      const res = await searchModules(agentHostConfig, currentId, "");
+      // Modules live in the conversation's sandbox, so there is nothing to list until the
+      // conversation exists server-side. Unavailable, not a 404 against a synthetic id.
+      const res = await currentConversation()?.ifCreated(
+        (id) => searchModules(agentHostConfig, id, ""),
+        null as Awaited<ReturnType<typeof searchModules>> | null,
+      );
+      if (!res) { setAvailable(false); setLoading(false); return; }
       setAvailable(res.configured);
       // Settings shows the shared catalog — public modules only.
       setModules(res.modules.filter((m) => m.visibility === "public"));

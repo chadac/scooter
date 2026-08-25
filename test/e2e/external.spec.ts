@@ -34,7 +34,16 @@ function authHeader(): Record<string, string> {
 async function runConversation(task: string, timeoutMs = 180_000): Promise<string> {
   const ctx = await pwRequest.newContext({ extraHTTPHeaders: authHeader() });
   try {
-    const threadId = `ext-e2e-${Date.now()}`;
+    // CREATE first: the server assigns the id. A caller-chosen threadId is refused —
+    // conversations come into existence through POST /conversations, never as a side
+    // effect of being prompted.
+    const created = await ctx.post(`${BASE}/conversations`, {
+      headers: { "Content-Type": "application/json" },
+      data: { title: task.slice(0, 60) },
+      timeout: 30_000,
+    });
+    expect(created.ok(), `POST /conversations failed: ${created.status()}`).toBeTruthy();
+    const { id: threadId } = (await created.json()) as { id: string };
     const res = await ctx.post(`${BASE}/agui`, {
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       data: { threadId, runId: "r1", messages: [{ id: "m1", role: "user", content: task }] },
