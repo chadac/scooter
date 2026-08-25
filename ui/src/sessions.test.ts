@@ -468,16 +468,20 @@ describe("the SERVER owns conversation ids", () => {
     expect(sessionStore.current().serverCreated).toBe(false);
   });
 
-  it("the local id is replaced by the server's on the FIRST SEND", async () => {
+  it("the server id is RECORDED on the first send — the stable key does not change", async () => {
+    // The key is what React, selection and the runtime are mounted on. Swapping it when the
+    // server id arrives tore down the run in flight (Stop stopped responding), so the
+    // server id is recorded ALONGSIDE the key instead of replacing it.
     sessionStore.newSession();
-    const local = sessionStore.get().currentId;
+    const key = sessionStore.get().currentId;
     setConversationMinter(async () => "server-assigned-id");
 
     const id = await sessionStore.ensureCurrentCreated();
 
     expect(id).toBe("server-assigned-id");
-    expect(sessionStore.get().currentId).toBe("server-assigned-id");
-    expect(sessionStore.get().sessions.some((s) => s.id === local)).toBe(false);
+    expect(sessionStore.get().currentId).toBe(key);
+    expect(sessionStore.current().serverId).toBe("server-assigned-id");
+    expect(sessionStore.current().serverCreated).toBe(true);
   });
 
   it("a failed create leaves the store UNTOUCHED", async () => {
@@ -492,23 +496,21 @@ describe("the SERVER owns conversation ids", () => {
     expect(sessionStore.get().sessions).toHaveLength(before.sessions.length);
   });
 
-  it("ensureCurrentCreated() replaces a locally-seeded id with the server's", async () => {
+  it("a locally-seeded conversation gets a server id without changing its key", async () => {
     // freshState() seeds a conversation at module load so the UI has something to render
     // before any network call, and deleteSession() seeds a replacement the same way. Those
-    // ids are client-chosen and /agui refuses them. Reproduce that state directly: the
-    // store is a module singleton, so an earlier test may have left a created one current.
-    // Delete every session: the last deletion seeds a fresh client-chosen replacement,
-    // which is exactly the state freshState() leaves the app in on first load.
+    // keys are local placeholders the server has never heard of.
     for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
-    const seeded = sessionStore.get().currentId;
+    const key = sessionStore.get().currentId;
     expect(sessionStore.current().serverCreated).toBeFalsy();
+    expect(sessionStore.current().serverId).toBeUndefined();
 
     setConversationMinter(async () => "real-id");
     const id = await sessionStore.ensureCurrentCreated();
 
     expect(id).toBe("real-id");
-    expect(sessionStore.get().currentId).toBe("real-id");
-    expect(sessionStore.get().sessions.some((s) => s.id === seeded)).toBe(false);
+    expect(sessionStore.get().currentId).toBe(key); // unchanged — nothing is remounted
+    expect(sessionStore.current().serverId).toBe("real-id");
   });
 
   it("ensureCurrentCreated() is a NO-OP for an already-created conversation", async () => {

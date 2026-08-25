@@ -11,8 +11,19 @@
 
 import { useSyncExternalStore } from "react";
 
+import { Conversation } from "./conversation.js";
+
 export interface Session {
-  id: string; // AG-UI threadId
+  /** STABLE identity. Never changes for the life of the conversation — including at the
+   *  moment the server assigns a real id. React keys, selection and the runtime mount on
+   *  THIS. For a server-known conversation it IS the conversation id; for one the user has
+   *  only just started it is a local placeholder that never leaves the UI.
+   *
+   *  Use `serverId` (or the Conversation object, see conversationFor) to address the
+   *  server — `id` may be a placeholder the server has never heard of. */
+  id: string;
+  /** The SERVER's conversation id (the AG-UI threadId), or undefined before creation. */
+  serverId?: string;
   title: string;
   createdAt: number;
   /** Per-conversation model (undefined = host default). Sent on the next prompt
@@ -213,9 +224,45 @@ export const setConversationMinter = (fn: () => Promise<string | null>) => {
   mintId = fn;
 };
 
-/** In-flight ensureCurrentCreated() calls, keyed by the local id being replaced, so
- *  concurrent callers share one POST instead of creating duplicate conversations. */
-const inFlightCreate = new Map<string, Promise<string | null>>();
+/** The Conversation object per session, keyed by the session's STABLE key. It owns the
+ *  identity — whether the server has assigned an id yet, and what each operation means
+ *  before it has. The Session record stays the render model; this is the behavior. */
+const conversations = new Map<string, Conversation>();
+
+/** The Conversation for a session, created on first use. A session already known to the
+ *  server is `existing` (its key IS its id); one the user only just started is `pending`
+ *  and has no server id until its first send. */
+export const conversationFor = (session: Pick<Session, "id" | "serverCreated">): Conversation => {
+  const found = conversations.get(session.id);
+  if (found) return found;
+  const create = () => mintId();
+  const onCreated = (key: string, id: string) => adoptServerId(key, id);
+  const c = session.serverCreated
+    ? Conversation.existing(session.id, create, onCreated)
+    : Conversation.pending(session.id, create, onCreated);
+  conversations.set(session.id, c);
+  return c;
+};
+
+/** The CURRENT conversation. The one object the UI should be reaching for. */
+export const currentConversation = (): Conversation | undefined => {
+  const cur = state.sessions.find((s) => s.id === state.currentId);
+  return cur ? conversationFor(cur) : undefined;
+};
+
+/** Record the server's id on the session whose key this is. The session's `id` — its
+ *  stable key — deliberately does NOT change: it is what React, selection and the runtime
+ *  are keyed on, and changing it mid-run is what tore down an in-flight run. */
+const adoptServerId = (key: string, serverId: string): void => {
+  const cur = state.sessions.find((s) => s.id === key);
+  if (!cur) return;
+  setState({
+    ...state,
+    sessions: state.sessions.map((s) =>
+      s.id === key ? { ...s, serverCreated: true, serverId } : s,
+    ),
+  });
+};
 
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
@@ -262,40 +309,13 @@ export const sessionStore = {
    *  conversation synchronously (they run at module load / in a sync handler and the UI
    *  needs an id to render), so that id is client-chosen until the first send. Call this
    *  before prompting. Returns the id to prompt, or null if creation failed. */
+  /** Ensure the CURRENT conversation exists server-side, returning its SERVER id (or null
+   *  if creation failed). Delegates to the Conversation object, which is idempotent and
+   *  shares one in-flight create. Note what it does NOT do: change the session's `id`.
+   *  That id is the stable key everything is mounted on, and swapping it mid-run tore down
+   *  the run in flight. */
   async ensureCurrentCreated(): Promise<string | null> {
-    const cur = state.sessions.find((s) => s.id === state.currentId);
-    if (!cur) return null;
-    if (cur.serverCreated) return cur.id;
-    // De-dupe concurrent callers. Every mount asks (a page load, a conversation switch),
-    // and without this two overlapping calls would each POST /conversations and leave a
-    // stray empty conversation in the sidebar.
-    const pending = inFlightCreate.get(cur.id);
-    if (pending) return pending;
-    const p = (async () => {
-      const id = await mintId();
-      if (!id) return null;
-      // Re-read `state`: the create was awaited, and a background merge (10s poll / SSE)
-      // may have changed the list — including adding the very conversation we just made.
-      const local = state.sessions.find((s) => s.id === cur.id);
-      if (!local) return id; // the placeholder is gone (deleted / merged away)
-      // The server list may ALREADY carry the new id. Renaming the placeholder onto it
-      // would put two rows under one key — React then warns about duplicate keys and drops
-      // one, which is how a conversation vanished from the sidebar mid-run.
-      const already = state.sessions.some((s) => s.id === id && s.id !== cur.id);
-      const sessions = already
-        ? state.sessions.filter((s) => s.id !== cur.id)
-        : state.sessions.map((s) => (s.id === cur.id ? { ...s, id, serverCreated: true } : s));
-      setState({
-        ...state,
-        sessions,
-        // Only follow the id if this conversation is STILL the selected one — the user
-        // may have switched away while the create was in flight.
-        currentId: state.currentId === cur.id ? id : state.currentId,
-      });
-      return id;
-    })().finally(() => inFlightCreate.delete(cur.id));
-    inFlightCreate.set(cur.id, p);
-    return p;
+    return (await currentConversation()?.ensureCreated()) ?? null;
   },
 
   switchTo(id: string) {
@@ -364,8 +384,10 @@ export const sessionStore = {
         title,
         userTitled,
         // It came FROM the server, so the server has it — prompting it is safe and
-        // ensureCurrentCreated() must not mint a second id for it.
+        // ensureCurrentCreated() must not mint a second id for it. For these the stable
+        // key and the server id are the same string by construction.
         serverCreated: true,
+        serverId: c.id,
         // Starred is server-owned; take the server's value.
         starred: c.starred ?? existing?.starred,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),

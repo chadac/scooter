@@ -53,7 +53,7 @@ import { toRepositorySnapshot, type RepositorySnapshot } from "./messageReposito
 import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { createConversation } from "./client.js";
-import { sessionStore, setConversationMinter, useSessions } from "./sessions.js";
+import { currentConversation, sessionStore, setConversationMinter, useSessions } from "./sessions.js";
 import {
   createIntegrityAgent,
   type IntegrityAgent,
@@ -245,6 +245,16 @@ function ConversationRuntime({
 }: Readonly<{ conversationId: string; children: ReactNode }>) {
   const { sessions } = useSessions();
   const model = sessions.find((s) => s.id === conversationId)?.model;
+  // The conversation OBJECT for this mount. It owns whether a server id exists yet and
+  // what each operation means before it does, so nothing here branches on id presence.
+  const conversation = useMemo(
+    () => currentConversation(),
+    // Re-resolve when the mounted conversation changes; the object itself is stable across
+    // creation (its key never changes), which is why this component is not torn down when
+    // the server id arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [conversationId],
+  );
 
   // The render source: an IntegrityAgent bound to this conversation. run() is the
   // continuous integrity stream; send()/submitResume() are fire-and-forget POST
@@ -308,16 +318,15 @@ function ConversationRuntime({
         // OPTIMISTIC solidify: title the session from this first message NOW, before the
         // fire-and-forget send round-trips, so a brand-new "New chat" doesn't stay pristine
         // (and droppable by the background merge) until the server echoes it back.
-        // The conversation must EXIST server-side before we prompt it. A session seeded
-        // locally — freshState() at module load, deleteSession()'s replacement — carries a
-        // client-chosen id the server never issued, and /agui refuses it. Create it on the
-        // FIRST SEND (not on mount: mounting is not user intent, and creating there left a
-        // stray conversation for every page load). Re-point the agent at the server's id
-        // rather than rebuilding it, so this send is not torn down mid-flight.
-        const created = await sessionStore.ensureCurrentCreated();
-        if (!created) throw new Error("could not create the conversation — please retry");
-        if (created !== conversationId) agent.setConversationId(created);
-        if (text) sessionStore.titleFromFirstMessage(created, text);
+        // Sending is an ACTION, so the conversation is created if it does not exist yet —
+        // withId() does that and hands us the SERVER's id. The session's key is untouched,
+        // so this component (mounted on the key) is not torn down mid-send. The agent is
+        // re-pointed in place; it reads the id at call time.
+        if (!conversation) throw new Error("no conversation selected");
+        await conversation.withId(async (serverId) => {
+          agent.setConversationId(serverId);
+        });
+        if (text) sessionStore.titleFromFirstMessage(conversationId, text);
         // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
         // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
         // the running turn (bridge "thinking" policy) instead of queuing the message
