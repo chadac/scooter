@@ -272,7 +272,7 @@ export const Sidebar = memo(function Sidebar() {
           variant="outline"
           size="sm"
           data-testid="new-session"
-          onClick={() => void sessionStore.newSession()}
+          onClick={() => sessionStore.newSession()}
           className="w-full"
         >
           + New conversation

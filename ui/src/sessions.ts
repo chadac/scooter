@@ -234,16 +234,22 @@ export const sessionStore = {
 
   current: () => state.sessions.find((s) => s.id === state.currentId)!,
 
-  /** Create a conversation and select it. The id comes from the SERVER (see mintId), so
-   *  this is async. Returns the new id, or null if creation failed — in which case the
-   *  store is left untouched rather than selecting a conversation that does not exist. */
-  async newSession(): Promise<string | null> {
-    const id = await mintId();
-    if (!id) return null;
+  /** Start a new conversation and select it IMMEDIATELY.
+   *
+   *  The id is local until the first send: asking the server for one here would leave the
+   *  UI showing the PREVIOUS conversation across a network round-trip, so a fast typist
+   *  (and the e2e specs, which click and send in the same tick) would send into the wrong
+   *  thread. ensureCurrentCreated() swaps in the server's id on the first prompt, which is
+   *  the only moment the id has to be real. It also means an unused "New chat" never costs
+   *  a server-side conversation.
+   *
+   *  Synchronous, and returns the local id. */
+  newSession(): string {
+    const id = crypto.randomUUID();
     setState({
       ...state,
       sessions: [
-        { id, title: DEFAULT_TITLE, createdAt: Date.now(), serverCreated: true },
+        { id, title: DEFAULT_TITLE, createdAt: Date.now(), serverCreated: false },
         ...state.sessions,
       ],
       currentId: id,

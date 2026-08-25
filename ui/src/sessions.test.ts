@@ -303,10 +303,10 @@ describe("a brand-new conversation survives the background merge", () => {
     // reconcile against — the condition that used to trigger the phantom-drop).
     sessionStore.mergeFromServer([{ id: "server-conv", title: "Existing" }]);
 
-    // The user clicks "New chat": a pristine, SELECTED session. The id comes from the
-    // server (newSession is async), but the LIST poll has not picked it up yet — which is
-    // the case this guards: a conversation the merge does not know about must survive.
-    const fresh = await sessionStore.newSession();
+    // The user clicks "New chat": a pristine, server-unknown, SELECTED session. The id
+    // stays local until the first send, so the merge will not know about it — which is
+    // exactly the case this guards.
+    const fresh = sessionStore.newSession();
     expect(sessionStore.get().currentId).toBe(fresh);
 
     // The 10s poll fires: the server list still doesn't include the new chat.
@@ -455,26 +455,37 @@ describe("nestSubagents (sidebar hierarchy)", () => {
 });
 
 describe("the SERVER owns conversation ids", () => {
-  it("newSession() uses the id the server assigns, never one it picked itself", async () => {
-    const mint = vi.fn(async () => "server-assigned-id");
+  it("newSession() selects the new conversation SYNCHRONOUSLY (no server round-trip)", () => {
+    // Asking the server for the id here would leave the UI on the PREVIOUS conversation
+    // for the length of a network call, so a fast typist sends into the wrong thread.
+    const mint = vi.fn(async () => "must-not-be-called-yet");
     setConversationMinter(mint);
 
-    const id = await sessionStore.newSession();
+    const id = sessionStore.newSession();
 
-    expect(mint).toHaveBeenCalled();
-    expect(id).toBe("server-assigned-id");
-    expect(sessionStore.get().currentId).toBe("server-assigned-id");
+    expect(mint).not.toHaveBeenCalled();
+    expect(sessionStore.get().currentId).toBe(id);
+    expect(sessionStore.current().serverCreated).toBe(false);
   });
 
-  it("newSession() leaves the store UNTOUCHED when creation fails", async () => {
-    setConversationMinter(async () => "first");
-    await sessionStore.newSession();
+  it("the local id is replaced by the server's on the FIRST SEND", async () => {
+    sessionStore.newSession();
+    const local = sessionStore.get().currentId;
+    setConversationMinter(async () => "server-assigned-id");
+
+    const id = await sessionStore.ensureCurrentCreated();
+
+    expect(id).toBe("server-assigned-id");
+    expect(sessionStore.get().currentId).toBe("server-assigned-id");
+    expect(sessionStore.get().sessions.some((s) => s.id === local)).toBe(false);
+  });
+
+  it("a failed create leaves the store UNTOUCHED", async () => {
+    sessionStore.newSession();
     const before = sessionStore.get();
 
-    // The create call failed. Selecting a conversation the server does not have would
-    // strand the user on a thread every prompt is refused for.
     setConversationMinter(async () => null);
-    const id = await sessionStore.newSession();
+    const id = await sessionStore.ensureCurrentCreated();
 
     expect(id).toBeNull();
     expect(sessionStore.get().currentId).toBe(before.currentId);
@@ -502,7 +513,8 @@ describe("the SERVER owns conversation ids", () => {
 
   it("ensureCurrentCreated() is a NO-OP for an already-created conversation", async () => {
     setConversationMinter(async () => "made-once");
-    await sessionStore.newSession();
+    sessionStore.newSession();
+    await sessionStore.ensureCurrentCreated();
 
     const mint = vi.fn(async () => "must-not-be-used");
     setConversationMinter(mint);

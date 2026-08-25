@@ -350,7 +350,7 @@ function ConversationRuntime({
     () => ({
       threadId: conversationId,
       onSwitchToNewThread: async () => {
-        await sessionStore.newSession();
+        sessionStore.newSession();
       },
       onSwitchToThread: async (threadId: string) => {
         // Selection only — the render pump re-points at the new thread's log (the
