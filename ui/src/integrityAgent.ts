@@ -416,12 +416,22 @@ export class IntegrityAgent extends AbstractAgent {
   /**
    * Re-point this agent at the conversation id the SERVER assigned. A conversation seeded
    * locally is created on its first send, and the server picks the id; the agent was built
-   * with the local one. Every read of cfg.conversationId happens at call time, so updating
-   * it here makes the send (and the stream that follows) target the real conversation —
-   * without recreating the agent mid-send and tearing down the render pump.
+   * with the local one.
+   *
+   * Reads of cfg.conversationId happen at call time, so send/cancel follow immediately. The
+   * integrity stream does NOT: renderPump() already opened it on the old id, and it would
+   * keep reading a conversation nothing writes to any more — the run's events (including the
+   * RUN_FINISHED that a cancel produces) would never arrive, leaving the Stop button dead
+   * and the status bar stuck. So drop the open stream; the pump reconnects on the new id.
    */
   setConversationId(conversationId: string): void {
+    if (conversationId === this.cfg.conversationId) return;
     this.cfg.conversationId = conversationId;
+    // Drop the live connection(s). Each reconnect recomputes the URL, so the pump comes
+    // back on the new conversation; leaving them open would keep folding a conversation
+    // nothing writes to any more.
+    for (const c of this.controllers) c.abort();
+    this.controllers.clear();
   }
 
   /**
@@ -592,7 +602,11 @@ export class IntegrityAgent extends AbstractAgent {
    */
   renderPump(): () => void {
     const input = this.prepareRunAgentInput();
-    const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
+    // Recomputed per CONNECTION, not captured once: setConversationId() can re-point this
+    // agent at the id the server assigned, and a reconnect must follow it. A URL captured
+    // here would keep the pump reading the conversation the UI has already left.
+    const streamUrl = () =>
+      `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
@@ -666,7 +680,7 @@ export class IntegrityAgent extends AbstractAgent {
         });
 
         const outcome = await this.readConnection(
-          url,
+          streamUrl(),
           headers,
           controller,
           (e) => {

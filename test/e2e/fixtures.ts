@@ -502,10 +502,37 @@ export async function assertMatchesServer(
   const res = await request.get(`${base}/conversations`);
   if (!res.ok()) return; // server not reachable for this stack — skip rather than fail spuriously
   const convs = (await res.json()) as Array<{ id: string }>;
-  const s = await snapshot(page);
-  // The sidebar must list exactly the conversations the server knows about.
-  expect(s.sessions, `${when}: sidebar shows ${s.sessions} sessions, server has ${convs.length}`)
-    .toBe(convs.length);
+
+  // Compare the actual IDS, not just counts — a matching count with different ids is exactly
+  // the silent detachment this guards against.
+  //
+  // A conversation the user has started but not yet sent in ("+ New conversation") is
+  // deliberately local-only: it is selected instantly, and the server assigns its real id on
+  // the first prompt. Those rows mark themselves data-pending-create and are expected to be
+  // absent server-side; every OTHER row must correspond to a real conversation.
+  const rows = await page.locator('[data-testid="session-item"]').evaluateAll((els) =>
+    els.map((el) => ({
+      id: el.getAttribute("data-conversation-id") ?? "",
+      pending: el.getAttribute("data-pending-create") === "true",
+    })),
+  );
+  const serverIds = new Set(convs.map((c) => c.id));
+  const missing = rows.filter((r) => !r.pending && !serverIds.has(r.id)).map((r) => r.id);
+  const notShown = convs.filter((c) => !rows.some((r) => r.id === c.id)).map((c) => c.id);
+
+  expect(
+    missing,
+    `${when}: sidebar shows conversation(s) the server does not have: ${missing.join(", ")}`,
+  ).toEqual([]);
+  expect(
+    notShown,
+    `${when}: server has conversation(s) the sidebar does not show: ${notShown.join(", ")}`,
+  ).toEqual([]);
+  // At most one unsent "New chat" can be pending at a time — more means they are leaking.
+  expect(
+    rows.filter((r) => r.pending).length,
+    `${when}: more than one uncreated conversation in the sidebar`,
+  ).toBeLessThanOrEqual(1);
 }
 
 /** Where step screenshots land. One directory per test run; each shot is prefixed with a monotonic

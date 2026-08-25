@@ -274,11 +274,20 @@ export const sessionStore = {
     const p = (async () => {
       const id = await mintId();
       if (!id) return null;
+      // Re-read `state`: the create was awaited, and a background merge (10s poll / SSE)
+      // may have changed the list — including adding the very conversation we just made.
+      const local = state.sessions.find((s) => s.id === cur.id);
+      if (!local) return id; // the placeholder is gone (deleted / merged away)
+      // The server list may ALREADY carry the new id. Renaming the placeholder onto it
+      // would put two rows under one key — React then warns about duplicate keys and drops
+      // one, which is how a conversation vanished from the sidebar mid-run.
+      const already = state.sessions.some((s) => s.id === id && s.id !== cur.id);
+      const sessions = already
+        ? state.sessions.filter((s) => s.id !== cur.id)
+        : state.sessions.map((s) => (s.id === cur.id ? { ...s, id, serverCreated: true } : s));
       setState({
         ...state,
-        sessions: state.sessions.map((s) =>
-          s.id === cur.id ? { ...s, id, serverCreated: true } : s,
-        ),
+        sessions,
         // Only follow the id if this conversation is STILL the selected one — the user
         // may have switched away while the create was in flight.
         currentId: state.currentId === cur.id ? id : state.currentId,
