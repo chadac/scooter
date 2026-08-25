@@ -577,8 +577,25 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       console.error(`[manager] hydrateByThread(${threadId}) store lookup FAILED (may create a duplicate):`, err);
       return undefined;
     }
-    const m = metas.find((x) => x.threadId === threadId);
-    if (!m) return undefined;
+    let m = metas.find((x) => x.threadId === threadId);
+    if (!m) {
+      // No local meta. The conversation may still EXIST as a Conversation CR that this
+      // pod has not cached yet — the router creates the CR and returns immediately, so a
+      // prompt can arrive before any store write. The CR is authoritative for existence,
+      // so adopt from it (same synthesis hydrate() uses to adopt at boot).
+      const c = await conversationRegistry.get(threadId).catch(() => undefined);
+      if (!c) return undefined;
+      m = {
+        id: c.id,
+        threadId: c.id,
+        title: "",
+        createdAt: nowMs(),
+        lastActivityAt: nowMs(),
+        model: c.spec.model,
+        owner: c.spec.owner,
+        parentId: c.spec.parentId,
+      };
+    }
     if (entries.has(m.id)) return entries.get(m.id);
     // Reconcile just this conversation's Sandbox so we track a still-running pod
     // correctly (best-effort; on failure revive() recreates from the placeholder).

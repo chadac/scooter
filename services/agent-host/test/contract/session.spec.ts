@@ -16,6 +16,7 @@ import {
   type SandboxProvisioner,
   type ConversationStore,
 } from "../../src/session/manager.js";
+import { noopRegistry } from "../../src/session/conversationRegistry.js";
 import { createFileConversationStore } from "../../src/session/fileStore.js";
 import type { AguiEvent } from "../../src/bridge.js";
 import type { SandboxRef, SessionId } from "../../src/types.js";
@@ -333,6 +334,51 @@ describe("SessionManager", () => {
     // Nothing was created as a side effect.
     expect(sessions.list()).toHaveLength(0);
     expect(provisioner.create).not.toHaveBeenCalled();
+  });
+
+  it("promptByThread() ADOPTS a conversation that exists only as a CR (create-then-prompt race)", async () => {
+    // The router creates the Conversation CR and returns the id IMMEDIATELY, without
+    // waiting for assignment. So a prompt can reach a pod whose local store has never
+    // seen the id. The CR is authoritative for existence: adopt from it rather than
+    // rejecting a conversation the control plane already created.
+    const prompt = vi.fn(async () => "run-x");
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt,
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const conversationRegistry = {
+      ...noopRegistry,
+      get: vi.fn(async (id: string) => ({
+        id,
+        spec: { owner: "user-alice", model: "sonnet" },
+      })),
+    } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      bridgeFactory,
+      conversationRegistry,
+    });
+
+    const threadId = "created-by-the-router";
+    await expect(
+      sessions.promptByThread(threadId, "first message", undefined, undefined, "user-alice"),
+    ).resolves.not.toThrow();
+
+    // It was adopted, not invented: the CR's spec is what the entry carries.
+    const [conv] = sessions.list();
+    expect(conv.threadId).toBe(threadId);
+    expect(conv.owner).toBe("user-alice");
+    // ...and the prompt actually reached the bridge.
+    expect(prompt).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId, text: "first message" }),
+      undefined,
+    );
   });
 
   it("promptByThread() prompts an EXISTING thread and leaves its owner alone", async () => {
