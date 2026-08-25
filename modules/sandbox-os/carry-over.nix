@@ -42,21 +42,6 @@ let
     if nixStubsLib != null
     then nixStubsLib.mkLazyPackage { package = pkgs.awscli2; commands = [ "aws" "aws_completer" ]; }
     else pkgs.awscli2;
-
-  # Git config base file (read-only, in /nix/store) — included from the writable
-  # /workspace/.gitconfig via [include] directive. Carries the Nix-declared defaults
-  # (user.name, user.email, extraConfig); later writes to the writable config override.
-  # The shape is NixOS programs.git.config compatible (nested attrset -> INI sections).
-  gitConfigBase = pkgs.writeText "scooter-gitconfig" (
-    lib.generators.toINI {} (
-      {
-        user = {
-          name = cfg.git.userName;
-          email = cfg.git.userEmail;
-        };
-      } // cfg.git.extraConfig
-    )
-  );
 in
 {
   options.programs.scooterCarryOver = {
@@ -109,9 +94,9 @@ in
       awscli   # a lazy nix-stubs shim (realises awscli2 on first `aws` call)
     ];
 
-    # configure_git_broker: point git's credential helper at the broker, once the
-    # broker URL is known. Writes $HOME/.gitconfig (HOME = /workspace, set by the
-    # provisioner). Best-effort, like the old entrypoint.
+    # configure_git_broker: Write Nix-declared git config defaults to /workspace/.gitconfig,
+    # but ONLY if they're not already set (idempotent). Agent writes override and persist
+    # across restarts.
     systemd.services.scooter-git-broker = {
       description = "Configure git credential helper -> broker";
       wantedBy = [ "multi-user.target" ];
@@ -120,58 +105,38 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      # BROKER_URL comes from the container env; systemd PID 1 keeps it in its
-      # environ (only HOME is reset), so we read it from there. We write the
-      # gitconfig to the AGENT's HOME (cfg.home) explicitly via --file, since
-      # --global would target systemd's HOME=/root, not where the agent reads.
-      #
-      # NEW: insert [include] directive at the TOP of .gitconfig (if not already
-      # present), pointing to the read-only Nix base. The [include] MUST come first
-      # (git is LAST-WINS, so later writes override the base). We never remove or
-      # reorder existing keys (the file is agent data on a persistent PVC).
       script = ''
         set -euo pipefail
 
-        GITCONFIG="${lib.escapeShellArg "${cfg.home}/.gitconfig"}"
-        BASE="${gitConfigBase}"
-
-        # Assert the base exists (fail loud if the build is broken).
-        if ! test -r "$BASE"; then
-          echo "ERROR: git config base $BASE missing or unreadable" >&2
-          exit 1
-        fi
+        GITCONFIG=${lib.escapeShellArg "${cfg.home}/.gitconfig"}
+        GIT="${pkgs.git}/bin/git config --file $GITCONFIG"
 
         mkdir -p ${lib.escapeShellArg cfg.home}
 
-        # If .gitconfig doesn't exist yet, create it with [include] at the top.
-        if ! test -f "$GITCONFIG"; then
-          cat > "$GITCONFIG" <<EOF
-[include]
-	path = $BASE
-EOF
-          echo "initialized $GITCONFIG with [include] -> $BASE"
-        else
-          # .gitconfig exists — check if it already includes the base.
-          if ! grep -qF "path = $BASE" "$GITCONFIG" 2>/dev/null; then
-            # Missing [include] — prepend it (preserve existing content).
-            tmpfile=$(mktemp)
-            cat > "$tmpfile" <<EOF
-[include]
-	path = $BASE
-EOF
-            cat "$GITCONFIG" >> "$tmpfile"
-            mv "$tmpfile" "$GITCONFIG"
-            echo "prepended [include] -> $BASE to $GITCONFIG"
-          fi
+        # Write Nix-declared defaults if not already set (agent writes win).
+        if ! $GIT --get user.name >/dev/null 2>&1; then
+          $GIT user.name ${lib.escapeShellArg cfg.git.userName}
+          echo "set user.name=${cfg.git.userName}"
         fi
 
-        # Set credential.helper=broker (after the include, so it overrides extraConfig).
-        # Use --file explicitly (not --global, which would write to /root/.gitconfig).
-        broker_url=$(tr '\0' '\n' < /proc/1/environ | sed -n 's/^BROKER_URL=//p' | head -1 || true)
-        if [ -n "$broker_url" ]; then
-          ${pkgs.git}/bin/git config --file "$GITCONFIG" credential.helper broker || true
-          echo "git credential helper -> broker ($broker_url) in $GITCONFIG"
+        if ! $GIT --get user.email >/dev/null 2>&1; then
+          $GIT user.email ${lib.escapeShellArg cfg.git.userEmail}
+          echo "set user.email=${cfg.git.userEmail}"
         fi
+
+        # Write extraConfig defaults (each section.key), but only if not set.
+        ${lib.concatStrings (lib.mapAttrsToList (section: keys:
+          lib.concatStrings (lib.mapAttrsToList (key: value: ''
+            if ! $GIT --get ${lib.escapeShellArg "${section}.${key}"} >/dev/null 2>&1; then
+              $GIT ${lib.escapeShellArg "${section}.${key}"} ${lib.escapeShellArg value}
+              echo "set ${section}.${key}=${value}"
+            fi
+          '') keys)
+        ) cfg.git.extraConfig)}
+
+        # Set credential.helper=broker (ALWAYS, overriding extraConfig if present).
+        $GIT credential.helper broker
+        echo "set credential.helper=broker"
       '';
     };
 
