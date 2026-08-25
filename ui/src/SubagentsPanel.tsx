@@ -7,6 +7,7 @@
  */
 
 import { sessionStore, useSessions, type Session } from "./sessions.js";
+import { Button } from "@/components/ui/button";
 
 /** The subagents (children) of `parentId`, from the session store. */
 export function subagentsOf(sessions: Session[], parentId: string | undefined): Session[] {
@@ -15,8 +16,8 @@ export function subagentsOf(sessions: Session[], parentId: string | undefined): 
 }
 
 const STATUS_DOT: Record<string, string> = {
-  running: "bg-green-500 animate-pulse",
-  suspended: "bg-amber-500",
+  running: "bg-success animate-pulse",
+  suspended: "bg-warning",
   ended: "bg-muted-foreground/40",
 };
 
@@ -44,23 +45,27 @@ export function SubagentsPanelView({ subagents, onOpen, onCancel }: SubagentsPan
           className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent/50"
         >
           <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[s.status ?? "ended"] ?? STATUS_DOT.ended}`} aria-hidden />
-          <button
-            className="min-w-0 flex-1 truncate text-left"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="min-w-0 flex-1 justify-start truncate px-0"
             title={s.title}
             onClick={() => onOpen(s.id)}
             data-testid="subagent-open"
           >
             {s.title}
-          </button>
+          </Button>
           {s.status === "running" && (
-            <button
+            <Button
+              variant="ghost"
+              size="xs"
               data-testid="subagent-cancel"
               aria-label={`Cancel ${s.title}`}
               onClick={() => onCancel(s.id)}
-              className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+              className="shrink-0 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
             >
               Stop
-            </button>
+            </Button>
           )}
         </li>
       ))}

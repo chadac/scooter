@@ -27,6 +27,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { FiClock, FiZap } from "react-icons/fi";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
+import { Button } from "@/components/ui/button";
 
 type QueuedMessage = { id: string; text: string; priority: number };
 
@@ -57,14 +58,14 @@ function QueuedMessageRow({ m }: { m: QueuedMessage }) {
       className={
         "flex items-start gap-2 rounded-md border px-2 py-1.5 " +
         (priority
-          ? "border-amber-500/40 bg-amber-500/10 text-foreground"
+          ? "border-warning/40 bg-warning/10 text-foreground"
           : "border-transparent text-muted-foreground")
       }
       title={priority ? "Will interrupt the current turn" : "Waiting for the current turn to finish"}
     >
       {/* State cue: a lightning bolt for a priority (interrupting) message, a clock
           for a normal waiting one. */}
-      <span aria-hidden className={"mt-0.5 shrink-0 " + (priority ? "text-amber-600" : "text-muted-foreground/70")}>
+      <span aria-hidden className={"mt-0.5 shrink-0 " + (priority ? "text-warning" : "text-muted-foreground/70")}>
         {priority ? <FiZap size={13} /> : <FiClock size={13} />}
       </span>
       <div className="min-w-0 flex-1">
@@ -80,7 +81,7 @@ function QueuedMessageRow({ m }: { m: QueuedMessage }) {
           {priority && (
             <span
               data-testid="queued-priority-pill"
-              className="mr-1.5 rounded bg-amber-500/20 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700"
+              className="mr-1.5 rounded bg-warning/20 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-warning"
             >
               Priority
             </span>
@@ -88,14 +89,15 @@ function QueuedMessageRow({ m }: { m: QueuedMessage }) {
           {m.text}
         </div>
         {(overflows || expanded) && (
-          <button
-            type="button"
+          <Button
+            variant="link"
+            size="xs"
             data-testid="queued-message-toggle"
             onClick={() => setExpanded((e) => !e)}
-            className="mt-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+            className="mt-0.5 h-auto p-0 text-muted-foreground"
           >
             {expanded ? "Show less" : "Show more"}
-          </button>
+          </Button>
         )}
       </div>
     </div>

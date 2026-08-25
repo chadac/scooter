@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import { compactConversation } from "./client.js";
 import { agentHostConfig } from "./config.js";
+import { Button } from "@/components/ui/button";
 
 /** "3s" / "2m 10s" — compact elapsed time for the working indicator. */
 function fmtElapsed(ms: number): string {
@@ -39,7 +40,7 @@ export function ContextFillBar() {
 
   if (contextFill == null) return null;
   const pct = Math.round(contextFill * 100);
-  const color = pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-500" : "bg-muted-foreground/40";
+  const color = pct >= 90 ? "bg-destructive" : pct >= 75 ? "bg-warning" : "bg-muted-foreground/40";
   const tip = contextTokens
     ? `Context ${pct}% full — ${contextTokens.used.toLocaleString()} / ${contextTokens.total.toLocaleString()} tokens`
     : `Context ${pct}% full`;
@@ -74,16 +75,17 @@ export function ContextFillBar() {
         </div>
         <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
         {(canCompact || compacting) && (
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="xs"
             data-testid="compact-button"
             disabled={compacting}
             onClick={() => void compact()}
             title="Summarize older messages to free up context"
-            className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] hover:bg-accent disabled:opacity-60"
+            className="shrink-0 rounded-full px-2 py-0.5 text-[10px]"
           >
             {compacting ? "Compacting…" : "Compact"}
-          </button>
+          </Button>
         )}
       </div>
       {note && <span data-testid="compact-note" className="text-[10px] text-muted-foreground">{note}</span>}
@@ -133,7 +135,7 @@ export function InlineRunStatus() {
       <div
         data-testid="run-retrying-bar"
         role="status"
-        className="mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+        className="mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning"
       >
         <span aria-hidden className="animate-spin">↻</span>
         <span data-testid="run-retrying-message">
@@ -183,8 +185,9 @@ export function InlineRunStatus() {
           {stopping ? "Stopping…" : failed ? "Stop didn't land — the run is still going" : workingLabel}
         </span>
       </span>
-      <button
-        type="button"
+      <Button
+        variant="outline"
+        size="sm"
         data-testid="stop-run"
         // While a stop is in flight the button is disabled + shows the pending state,
         // so the click is visibly acknowledged (the run's terminal event still
@@ -193,10 +196,10 @@ export function InlineRunStatus() {
         disabled={stopping}
         aria-busy={stopping}
         onClick={() => void cancel()}
-        className="shrink-0 rounded-full border px-3 py-0.5 font-medium hover:bg-background disabled:cursor-not-allowed disabled:opacity-60"
+        className="shrink-0 rounded-full px-3 py-0.5 font-medium"
       >
         {stopping ? "Stopping…" : failed ? "Retry stop" : "Stop"}
-      </button>
+      </Button>
     </div>
   );
 }

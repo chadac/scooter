@@ -128,14 +128,14 @@ describe("ContextFillBar", () => {
     expect(html).toContain('data-testid="context-fill-bar"');
     expect(html).toContain('data-fill="92"');
     expect(html).toContain(">92%<");
-    expect(html).toContain("bg-red-500"); // >=90% → red
+    expect(html).toContain("bg-destructive"); // >=90% → destructive (red)
   });
 
   it("uses a neutral color when well under the threshold", () => {
     const html = renderBar({ contextFill: 0.4 });
     expect(html).toContain('data-fill="40"');
-    expect(html).not.toContain("bg-red-500");
-    expect(html).not.toContain("bg-amber-500");
+    expect(html).not.toContain("bg-destructive");
+    expect(html).not.toContain("bg-warning");
   });
 
   it("offers Compact once context is ≥50% and not mid-run", () => {
