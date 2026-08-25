@@ -58,19 +58,21 @@ func (d *dynamicCreator) Create(ctx context.Context, name string, spec map[strin
 	return err
 }
 
-// createRequest is the accepted body. `threadId` is deliberately NOT honored — the
-// server owns identity (see todo/draft/SERVER_OWNS_CONVERSATION_IDS.md). A client
-// that sends one gets a 400 rather than a silently different id.
+// createRequest is the accepted body. Note there is no threadId: the server mints
+// the conversation id (see todo/draft/SERVER_OWNS_CONVERSATION_IDS.md). A stray
+// `threadId` key is simply ignored by encoding/json — the caller gets the id from
+// the response either way.
 type createRequest struct {
-	ThreadID string `json:"threadId"`
 	Title    string `json:"title"`
 	Model    string `json:"model"`
 	ParentID string `json:"parentId"`
 }
 
 type createResponse struct {
+	// The conversation id. It IS the thread id — manager.ts:648 sets
+	// `const id: SessionId = threadId`, so they are the same value by
+	// construction. This endpoint returns it once.
 	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
 	Status    string `json:"status"`
 	Title     string `json:"title"`
 	CreatedAt int64  `json:"createdAt"`
@@ -100,14 +102,6 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 		}
 	}
 
-	// The server owns conversation ids. Reject a client-supplied one loudly rather
-	// than ignoring it — a caller that thinks it chose the id would otherwise use
-	// the wrong one for every subsequent request.
-	if req.ThreadID != "" {
-		writeJSONError(w, http.StatusBadRequest,
-			"threadId is server-assigned; omit it and use the id from this response")
-		return
-	}
 	if req.Model != "" && !modelRe.MatchString(req.Model) {
 		writeJSONError(w, http.StatusBadRequest, "invalid model")
 		return
@@ -142,7 +136,6 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(createResponse{
 		ID:        id,
-		ThreadID:  id,
 		Status:    "pending",
 		Title:     req.Title,
 		CreatedAt: time.Now().UnixMilli(),

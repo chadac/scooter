@@ -61,9 +61,6 @@ func TestCreateMintsIdAndReturns201(t *testing.T) {
 	if resp.ID == "" {
 		t.Fatal("no id returned")
 	}
-	if resp.ID != resp.ThreadID {
-		t.Fatalf("id and threadId must match: %q vs %q", resp.ID, resp.ThreadID)
-	}
 	// The conversation exists but has no host yet — that is normal, not a failure.
 	if resp.Status != "pending" {
 		t.Fatalf("want status=pending, got %q", resp.Status)
@@ -96,17 +93,22 @@ func TestCreateDoesNotConsultAgentHostCapacity(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsClientSuppliedThreadId(t *testing.T) {
+// A stray threadId is ignored, not honored — the server mints the id. There is no
+// rejection branch: encoding/json drops the unknown key, and the caller gets the
+// real id from the response.
+func TestCreateIgnoresAStrayThreadId(t *testing.T) {
 	c := &fakeCreator{}
 	w := postCreate(t, c, `{"threadId":"attacker-chosen-id"}`, nil)
 
-	// Rejected LOUDLY: silently minting a different id would leave the caller
-	// using one the server never assigned.
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 for a client-supplied threadId, got %d", w.Code)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d (%s)", w.Code, w.Body.String())
 	}
-	if len(c.calls) != 0 {
-		t.Fatalf("no CR should be created: %+v", c.calls)
+	var resp createResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if resp.ID == "attacker-chosen-id" || c.calls[0].name == "attacker-chosen-id" {
+		t.Fatalf("client-supplied id must never be used, got %q / CR %q", resp.ID, c.calls[0].name)
 	}
 }
 
