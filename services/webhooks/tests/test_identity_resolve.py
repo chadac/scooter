@@ -145,13 +145,8 @@ def test_pseudonym_is_stable_and_does_not_reveal_the_input():
 
 @pytest.mark.asyncio
 async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
-    """The regression that matters.
-
-    A Slack user id / GitHub login / email is personal data. Interpolating one into prose
-    was already questionable; promoting it to a STRUCTURED, INDEXED field makes it
-    searchable and gives it the log store's retention. Every identifier on these lines
-    must be the pseudonym.
-    """
+    """No identifier reaches a log field raw — a structured field is searchable and
+    inherits the log store's retention."""
     import logging as _logging
 
     from webhooks import identity_resolve as ir
@@ -193,13 +188,8 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(monkeypatch, caplog):
-    """On the success path the database user id is what should be logged.
-
-    It is the identifier the rest of the system keys on, so it is what makes a log line
-    joinable to a conversation's owner — and it is already internal rather than personal
-    data. It is still pseudonymized: a leaked log then cannot be joined against a database
-    dump either.
-    """
+    """The success line carries the Scooter id (what the rest of the system keys on),
+    pseudonymized so a leaked log cannot be joined against a database dump."""
     import logging as _logging
 
     from webhooks import identity_resolve as ir
