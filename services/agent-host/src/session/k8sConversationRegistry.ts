@@ -14,6 +14,10 @@
 
 import { KubeConfig, CustomObjectsApi, setHeaderOptions, PatchStrategy } from "@kubernetes/client-node";
 
+import { logger } from "../log.js";
+
+const log = logger("conversationRegistry");
+
 import type {
   ConversationRegistry,
   ConversationSpec,
@@ -75,14 +79,14 @@ export function createK8sConversationRegistry(
               )
               .catch((pe: { code?: number }) => {
                 if (pe?.code === 404) return; // deleted between create and patch
-                console.error(`[conversationRegistry] failed to patch Conversation CR ${id}:`, pe);
+                log.errorWith("failed to patch Conversation CR", pe, { conversation_id: id });
               });
             return;
           }
           // Any OTHER error must not fail the conversation: log it and continue. The guard
           // fails open for an unregistered conversation, so the only cost is that it pins
           // to the default pod until a later register() (or the controller) creates the CR.
-          console.error(`[conversationRegistry] failed to create Conversation CR ${id}:`, e);
+          log.errorWith("failed to create Conversation CR", e, { conversation_id: id });
         });
     },
 
@@ -98,7 +102,7 @@ export function createK8sConversationRegistry(
         )
         .catch((e: { code?: number }) => {
           if (e?.code === 404) return; // CR not there (yet) — nothing to update.
-          console.error(`[conversationRegistry] failed to set phase=${phase} on ${id}:`, e);
+          log.errorWith("failed to set phase", e, { conversation_id: id, phase });
         });
     },
 
