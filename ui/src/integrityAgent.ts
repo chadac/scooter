@@ -27,6 +27,7 @@ import type { BaseEvent } from "@ag-ui/core";
 import { Observable, Subject, type Subscription, catchError, EMPTY } from "rxjs";
 
 import type { AgentHostConfig } from "./client.js";
+import { ATTR, record } from "./telemetry.js";
 
 export interface IntegrityAgentConfig extends AgentHostConfig {
   /** The conversation/thread this agent renders + sends to. */
@@ -426,6 +427,12 @@ export class IntegrityAgent extends AbstractAgent {
    */
   setConversationId(conversationId: string): void {
     if (conversationId === this.cfg.conversationId) return;
+    // The moment a conversation stops being local and becomes the server's. Both ids are
+    // recorded because this is precisely where a trace would otherwise break in two.
+    record("conversation.id_assigned", {
+      [ATTR.conversationKey]: this.cfg.conversationId,
+      [ATTR.conversationId]: conversationId,
+    });
     this.cfg.conversationId = conversationId;
     // Drop the live connection(s). Each reconnect recomputes the URL, so the pump comes
     // back on the new conversation; leaving them open would keep folding a conversation
@@ -643,6 +650,7 @@ export class IntegrityAgent extends AbstractAgent {
         } else {
           this.setMessages([]);
         }
+        const isFirstConnection = firstConn;
         firstConn = false;
         // A fresh connection re-replays the whole log; recompute pending interrupts from scratch.
         // Each interrupt's RUN_FINISHED(interrupt) re-adds it and any settling PERMISSION_RESOLVED
@@ -679,6 +687,12 @@ export class IntegrityAgent extends AbstractAgent {
             .subscribe({ error: () => resolve(), complete: () => resolve() });
         });
 
+        record("stream.connect", {
+          [ATTR.conversationId]: this.cfg.conversationId,
+          // A RECONNECT (false) is the interesting case: the visible transcript was just
+          // reset and replayed, which is what "it restarted" looks like to a user.
+          "stream.first_connection": isFirstConnection,
+        });
         const outcome = await this.readConnection(
           streamUrl(),
           headers,

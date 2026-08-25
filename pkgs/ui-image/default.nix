@@ -65,6 +65,40 @@ let
           proxy_buffering off;
           proxy_read_timeout 3600s;
         }
+        # BROWSER TELEMETRY. The UI posts OTLP/HTTP here; nginx forwards it to the
+        # cluster's Alloy collector, which ships traces to Grafana Cloud Tempo.
+        #
+        # Proxied SAME-ORIGIN rather than sent to the collector directly, because
+        # that is what keeps this behind the ingress auth: the browser holds no
+        # telemetry credential, and a vendor change (Grafana -> Datadog) is a
+        # collector-side config change with no UI rebuild.
+        #
+        # Buffering ON (unlike /agui): these are small batched POSTs, not a
+        # stream. When OTEL_COLLECTOR_URL is unset this returns 204 and discards
+        # the payload, so a deployment without a collector is not an error.
+        location /telemetry/ {
+          proxy_pass ''${OTEL_COLLECTOR_URL}/;
+          proxy_set_header Host $host;
+          # Telemetry must never delay or break the page: fail fast and stay quiet.
+          proxy_connect_timeout 2s;
+          proxy_read_timeout 5s;
+          proxy_intercept_errors on;
+          error_page 500 502 503 504 = @telemetry_sink;
+        }
+        # Swallow collector failures (and stand in when none is configured) so the
+        # browser sees success and does not retry into a hole.
+        location @telemetry_sink { return 204; }
+
+        # RUNTIME telemetry config. The UI image is built ONCE and deployed to clusters
+        # that may or may not have a collector, so this cannot be a build-time VITE_ flag
+        # baked into the bundle. The UI fetches this on load and stays inert unless
+        # enabled is true. Must be matched BEFORE `location /telemetry/` above would
+        # proxy it to the collector — nginx prefers an exact match, so `= ` does that.
+        location = /telemetry/config.json {
+          default_type application/json;
+          return 200 '{"enabled":''${TELEMETRY_ENABLED},"sampleRatio":''${TELEMETRY_SAMPLE_RATIO}}';
+        }
+
         location /sessions      { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
         location /models        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
         # The caller's identity (used by the UI for the Mine/All filter + the user
@@ -121,7 +155,16 @@ let
   entrypoint = pkgs.writeShellScript "ui-entrypoint" ''
     set -e
     : "''${AGENT_HOST_URL:=http://agent-host:8080}"
-    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_URL' \
+    # No collector configured -> point the proxy at a loopback that always fails,
+    # which @telemetry_sink turns into a 204. Telemetry is optional by design.
+    # Telemetry is ON only when a collector was ACTUALLY configured — otherwise the UI
+    # would collect spans and post them into the 204 sink for nothing. Test before the
+    # default is applied, since the default is the "no collector" placeholder.
+    if [ -n "''${OTEL_COLLECTOR_URL:-}" ]; then TELEMETRY_ENABLED=true; else TELEMETRY_ENABLED=false; fi
+    : "''${OTEL_COLLECTOR_URL:=http://127.0.0.1:1}"
+    : "''${TELEMETRY_SAMPLE_RATIO:=1}"
+    export TELEMETRY_ENABLED TELEMETRY_SAMPLE_RATIO
+    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO' \
       < ${nginxConfTemplate} > /tmp/nginx.conf
     exec ${pkgs.nginx}/bin/nginx -c /tmp/nginx.conf -g 'daemon off;'
   '';
@@ -143,7 +186,11 @@ in
     ];
     config = {
       Entrypoint = [ "${entrypoint}" ];
-      Env = [ "AGENT_HOST_URL=http://agent-host:8080" ];
+      Env = [
+        "AGENT_HOST_URL=http://agent-host:8080"
+        # Unset by default: no collector => /telemetry/ 204s and discards.
+        "OTEL_COLLECTOR_URL="
+      ];
       ExposedPorts = { "8080/tcp" = { }; };
     };
   };

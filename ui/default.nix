@@ -13,10 +13,11 @@ buildNpmPackage {
   version = "0.0.0";
   src = ./.;
 
-  npmDepsHash = "sha256-c0EqlWjAAosRNZbSzOfWhJDiAKbMCGHQzkPIAi0JPrA=";
+  npmDepsHash = "sha256-1cOej29YtcUgfUbhVrDy+IiZ8tq5hcFiCLMIMKXc6+U=";
 
   # Same-origin: relative /agui + /sessions (reverse-proxied to the agent-host).
   VITE_AGENT_HOST_URL = "";
+
 
   # `npm run build` -> dist/. Static output, no bin to wrap.
   installPhase = ''

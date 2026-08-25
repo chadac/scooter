@@ -7,6 +7,24 @@ import { viewStore } from "./view.js";
 import { sessionStore } from "./sessions.js";
 import { loadConversations, loadConversationsResult, loadWhoami } from "./client.js";
 import { subscribeConversations } from "./conversationStream.js";
+import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
+
+// Browser telemetry, configured at RUNTIME rather than build time: the image is built once
+// and deployed to clusters that may or may not have a collector, so a VITE_* flag baked
+// into the bundle could not express that. nginx serves /telemetry/config.json from the
+// deployment's own env.
+//
+// TRADE-OFF: fetching that config is asynchronous, so fetch auto-instrumentation patches
+// window.fetch a tick or two AFTER load — the very first requests of a page load are not
+// traced. Accepted deliberately: those are the sidebar/whoami fetches, and the failures
+// worth catching (stream reconnects, id reassignment, mid-run remounts) all happen later.
+// Making them traceable would mean blocking startup on a network round-trip, which is a
+// bad trade for an observability feature.
+//
+// The error handlers install SYNCHRONOUSLY and are not gated on telemetry being ready, so
+// a throw during startup is still captured once the exporter comes up.
+void initTelemetryFromServer();
+installGlobalErrorHandlers();
 
 // On load — and then on a light interval — pull every conversation from the
 // agent-host so the sidebar survives a refresh, lists conversations created
