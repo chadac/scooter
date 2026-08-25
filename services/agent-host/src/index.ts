@@ -1220,7 +1220,7 @@ export async function main(
     let running = 0;
     let suspended = 0;
     for (const c of sessions.list()) {
-      if (c.status === "running") running++;
+      if (c.status === "ready" || c.status === "provisioning") running++;
       else if (c.status === "suspended") suspended++;
     }
     metrics.setSandboxCounts({ running, suspended });
@@ -1258,7 +1258,7 @@ export async function main(
   if (jobManager) {
     jobCleanupTimer = setInterval(() => {
       for (const c of sessions.list()) {
-        if (c.status !== "running") continue;
+        if (c.status !== "ready") continue;
         void jobManager.cleanup(c.id).catch(() => {});
       }
     }, config.idleSweepIntervalMs);
@@ -1276,9 +1276,9 @@ export async function main(
   if (jobWatchEnabled) {
     jobWatchTimer = setInterval(() => {
       for (const c of sessions.list()) {
-        // Poll conversations whose pod is up (running) — a suspended conversation's
+        // Poll conversations whose pod is up (ready) — a suspended conversation's
         // completions are announced on its next revive (the watcher sees them then).
-        if (c.status !== "running") continue;
+        if (c.status !== "ready") continue;
         void (async () => {
           const done = await jobManager!.pollCompletions(c.id).catch(() => [] as JobStatus[]);
           for (const st of done) {

@@ -116,6 +116,10 @@ type AguiEventBase =
   // (n/N)…" banner. NOT persisted as a terminal — a following RUN_STARTED clears it (success) or, on
   // exhaustion, the final RUN_ERROR replaces it. See the pump's retry loop.
   | { type: "RUN_RETRYING"; threadId: ThreadId; attempt: number; max: number; delayMs: number; code?: string }
+  // Provisioning lifecycle events (D2 - observable provisioning state)
+  | { type: "PROVISIONING_STARTED"; threadId: ThreadId }
+  | { type: "PROVISIONING_ERROR"; threadId: ThreadId; message: string; attempt: number; max: number }
+  | { type: "PROVISIONING_RETRYING"; threadId: ThreadId; attempt: number; max: number; delayMs: number }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "TEXT_MESSAGE_END"; messageId: string }
