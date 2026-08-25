@@ -922,16 +922,22 @@ describe("IntegrityAgent", () => {
     let conn = 0;
     const heartbeatBody = () => {
       const enc = new TextEncoder();
+      let timer: any;
+      let closeTimer: any;
       return new ReadableStream({
         start(c) {
           // Synced immediately (no history).
           c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
           // Then ONLY heartbeats (`: ping\n\n`) every 40ms, no events.
-          const timer = setInterval(() => {
+          timer = setInterval(() => {
             c.enqueue(enc.encode(`: ping\n\n`));
           }, 40);
           // Keep the stream open for ~500ms (5× the 100ms window).
-          setTimeout(() => { clearInterval(timer); c.close(); }, 500);
+          closeTimer = setTimeout(() => { clearInterval(timer); c.close(); }, 500);
+        },
+        cancel() {
+          clearInterval(timer);
+          clearTimeout(closeTimer);
         },
       });
     };
@@ -967,18 +973,22 @@ describe("IntegrityAgent", () => {
     let conn = 0;
     const stalledBody = () => {
       const enc = new TextEncoder();
+      let timer: any;
       return new ReadableStream({
         start(c) {
           c.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "synced" })}\n\n`));
           // Heartbeats for ~80ms, then SILENCE (stalled connection).
           let count = 0;
-          const timer = setInterval(() => {
+          timer = setInterval(() => {
             if (count++ < 3) {
               c.enqueue(enc.encode(`: ping\n\n`));
             } else {
               clearInterval(timer); // stop sending, but DO NOT close
             }
           }, 25);
+        },
+        cancel() {
+          if (timer) clearInterval(timer);
         },
       });
     };
