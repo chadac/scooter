@@ -11,8 +11,19 @@
 
 import { useSyncExternalStore } from "react";
 
+import { Conversation } from "./conversation.js";
+
 export interface Session {
-  id: string; // AG-UI threadId
+  /** STABLE identity. Never changes for the life of the conversation — including at the
+   *  moment the server assigns a real id. React keys, selection and the runtime mount on
+   *  THIS. For a server-known conversation it IS the conversation id; for one the user has
+   *  only just started it is a local placeholder that never leaves the UI.
+   *
+   *  Use `serverId` (or the Conversation object, see conversationFor) to address the
+   *  server — `id` may be a placeholder the server has never heard of. */
+  id: string;
+  /** The SERVER's conversation id (the AG-UI threadId), or undefined before creation. */
+  serverId?: string;
   title: string;
   createdAt: number;
   /** Per-conversation model (undefined = host default). Sent on the next prompt
@@ -28,6 +39,12 @@ export interface Session {
   /** Creating user (server-sourced). undefined = unowned/public. Drives the
    *  Mine/All view filter. */
   owner?: string;
+  /** True once the SERVER has created this conversation (POST /conversations). A session
+   *  seeded locally — freshState() at module load, deleteSession()'s replacement — has a
+   *  client-chosen id the server has never seen, and prompting it is refused. Undefined is
+   *  treated as "not yet created": ensureCurrentCreated() swaps in the server's id on the
+   *  first send. Server-sourced sessions (GET /conversations) are created by definition. */
+  serverCreated?: boolean;
   /** The spawning conversation, when this is a SUBAGENT (server-sourced).
    *  undefined = a top-level conversation. Drives sidebar nesting + subagent
    *  grouping. */
@@ -196,6 +213,63 @@ const persist = (s: State) => {
   }
 };
 
+/** How a new conversation gets its id. The SERVER owns conversation ids — a client-chosen
+ *  one would become an event-log key and a k8s resource name — so the app injects a minter
+ *  that calls POST /conversations. Defaults to crypto.randomUUID() so the store stays a pure,
+ *  synchronously-testable module and works before the app has wired a backend. */
+let mintId: () => Promise<string | null> = async () => crypto.randomUUID();
+
+/** Install the server-backed id minter. Called once at app start. */
+export const setConversationMinter = (fn: () => Promise<string | null>) => {
+  mintId = fn;
+};
+
+/** The Conversation object per session, keyed by the session's STABLE key. It owns the
+ *  identity — whether the server has assigned an id yet, and what each operation means
+ *  before it has. The Session record stays the render model; this is the behavior. */
+const conversations = new Map<string, Conversation>();
+
+/** The Conversation for a session, created on first use. A session already known to the
+ *  server is `existing` (its key IS its id); one the user only just started is `pending`
+ *  and has no server id until its first send. */
+export const conversationFor = (
+  session: Pick<Session, "id" | "serverCreated" | "serverId">,
+): Conversation => {
+  const found = conversations.get(session.id);
+  // The map is module state, so a page RELOAD rebuilds every Conversation from the
+  // persisted session. Rebuild from `serverId` — the key may be a local placeholder that
+  // outlived creation, and addressing the server with it is exactly the bug this whole
+  // change removes.
+  if (found && found.serverId() === session.serverId) return found;
+  const create = () => mintId();
+  const onCreated = (key: string, id: string) => adoptServerId(key, id);
+  const c = session.serverId
+    ? new Conversation({ key: session.id, id: session.serverId, create, onCreated })
+    : Conversation.pending(session.id, create, onCreated);
+  conversations.set(session.id, c);
+  return c;
+};
+
+/** The CURRENT conversation. The one object the UI should be reaching for. */
+export const currentConversation = (): Conversation | undefined => {
+  const cur = state.sessions.find((s) => s.id === state.currentId);
+  return cur ? conversationFor(cur) : undefined;
+};
+
+/** Record the server's id on the session whose key this is. The session's `id` — its
+ *  stable key — deliberately does NOT change: it is what React, selection and the runtime
+ *  are keyed on, and changing it mid-run is what tore down an in-flight run. */
+const adoptServerId = (key: string, serverId: string): void => {
+  const cur = state.sessions.find((s) => s.id === key);
+  if (!cur) return;
+  setState({
+    ...state,
+    sessions: state.sessions.map((s) =>
+      s.id === key ? { ...s, serverCreated: true, serverId } : s,
+    ),
+  });
+};
+
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 const setState = (next: State) => {
@@ -213,14 +287,41 @@ export const sessionStore = {
 
   current: () => state.sessions.find((s) => s.id === state.currentId)!,
 
+  /** Start a new conversation and select it IMMEDIATELY.
+   *
+   *  The id is local until the first send: asking the server for one here would leave the
+   *  UI showing the PREVIOUS conversation across a network round-trip, so a fast typist
+   *  (and the e2e specs, which click and send in the same tick) would send into the wrong
+   *  thread. ensureCurrentCreated() swaps in the server's id on the first prompt, which is
+   *  the only moment the id has to be real. It also means an unused "New chat" never costs
+   *  a server-side conversation.
+   *
+   *  Synchronous, and returns the local id. */
   newSession(): string {
     const id = crypto.randomUUID();
     setState({
       ...state,
-      sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }, ...state.sessions],
+      sessions: [
+        { id, title: DEFAULT_TITLE, createdAt: Date.now(), serverCreated: false },
+        ...state.sessions,
+      ],
       currentId: id,
     });
     return id;
+  },
+
+  /** Ensure the CURRENT conversation exists server-side, replacing its locally-seeded id
+   *  with the server's if it was never created. freshState() and deleteSession() seed a
+   *  conversation synchronously (they run at module load / in a sync handler and the UI
+   *  needs an id to render), so that id is client-chosen until the first send. Call this
+   *  before prompting. Returns the id to prompt, or null if creation failed. */
+  /** Ensure the CURRENT conversation exists server-side, returning its SERVER id (or null
+   *  if creation failed). Delegates to the Conversation object, which is idempotent and
+   *  shares one in-flight create. Note what it does NOT do: change the session's `id`.
+   *  That id is the stable key everything is mounted on, and swapping it mid-run tore down
+   *  the run in flight. */
+  async ensureCurrentCreated(): Promise<string | null> {
+    return (await currentConversation()?.ensureCreated()) ?? null;
   },
 
   switchTo(id: string) {
@@ -267,8 +368,11 @@ export const sessionStore = {
     // merge still re-rendered the sidebar, and that reconciliation was the disruptor.
     if (state.editingId !== undefined) return;
     const serverIds = new Set(convs.map((c) => c.id));
+    // Index by the SERVER id, which is what `convs` is keyed by. A conversation created on
+    // its first send keeps its local key, so indexing by `s.id` would miss it and insert a
+    // SECOND row for the same conversation — every row rendering twice.
     const byId = new Map<string, Session>();
-    for (const s of state.sessions) byId.set(s.id, s);
+    for (const s of state.sessions) byId.set(s.serverId ?? s.id, s);
     for (const c of convs) {
       const existing = byId.get(c.id);
       // Title precedence: a real server title wins; but a local non-default
@@ -285,9 +389,18 @@ export const sessionStore = {
         ? c.title // user-set title from the server wins outright
         : serverTitle ?? localTitle ?? c.title ?? existing?.title ?? DEFAULT_TITLE;
       const merged: Session = {
-        id: c.id,
+        // PRESERVE the existing stable key. For a conversation created on its first send
+        // the key is local and the server id differs; overwriting the key here would be
+        // the same mid-run remount this design removes. New rows key by the server id,
+        // which for them IS their identity.
+        id: existing?.id ?? c.id,
         title,
         userTitled,
+        // It came FROM the server, so the server has it — prompting it is safe and
+        // ensureCurrentCreated() must not mint a second id for it. For these the stable
+        // key and the server id are the same string by construction.
+        serverCreated: true,
+        serverId: c.id,
         // Starred is server-owned; take the server's value.
         starred: c.starred ?? existing?.starred,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),

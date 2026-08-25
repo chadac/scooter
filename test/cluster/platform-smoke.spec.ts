@@ -34,6 +34,31 @@ type ConversationCR = {
   status?: { phase?: string; hostPod?: string; hostIP?: string; generation?: number };
 };
 
+
+/**
+ * Create a conversation the way every caller now does: POST /conversations
+ * through the front door, which the ROUTER serves by writing the Conversation CR
+ * directly. Returns the SERVER-ASSIGNED id.
+ *
+ * Callers no longer invent a threadId and rely on /agui creating the conversation
+ * implicitly — that path is gone (the agent-host fleet is capacity-bounded, so
+ * creating there made conversation replicas*cap+1 uncreatable). This helper is
+ * therefore also the k3d coverage for the router's create route: if the router is
+ * not serving it, every test below fails at setup.
+ */
+async function createConversation(cluster: Cluster): Promise<string> {
+  // curlJson, not JSON.parse(curlInCluster(...)): the curl pod's output can carry a stray
+  // line after the payload, which fails the parse with entirely valid data on line 1.
+  const res = await cluster.curlJson<{ id?: string }>(`${AGENT_HOST}/conversations`, {
+    method: "POST",
+    headers: ["Content-Type: application/json"],
+    body: "{}",
+    timeoutMs: 60_000,
+  });
+  expect(res.id, `POST /conversations returned no id: ${JSON.stringify(res)}`).toBeTruthy();
+  return res.id as string;
+}
+
 maybe("multi-replica platform smoke", () => {
   let cluster: Cluster;
 
@@ -42,7 +67,8 @@ maybe("multi-replica platform smoke", () => {
   });
 
   it("a conversation routed through the front door is assigned a hostPod + hostIP", async () => {
-    const threadId = `smoke-${Date.now()}`;
+    // CREATE first (router → Conversation CR), then prompt the id it assigned.
+    const threadId = await createConversation(cluster);
 
     // POST /agui through the front-door Service (→ router → a ready pod, since it's unassigned
     // at first). The fakeAgent replies deterministically; we only need the run to START so the
@@ -114,7 +140,7 @@ maybe("multi-replica platform smoke", () => {
     // Unit tests cover the cache in isolation; only a MULTI-REPLICA cluster proves the request
     // actually reaches the owner, because with one pod the fallback IS the owner and the bug is
     // invisible. That is exactly how this shipped.
-    const threadId = `shortid-${Date.now()}`;
+    const threadId = await createConversation(cluster);
     await cluster.curlInCluster(`${AGENT_HOST}/agui`, {
       method: "POST",
       headers: ["Content-Type: application/json", "Accept: text/event-stream"],
@@ -161,7 +187,9 @@ maybe("multi-replica platform smoke", () => {
   });
 
   it("GET /conversations returns EVERY conversation in the fleet, not one pod's slice", async () => {
-    const ids = [1, 2, 3].map((n) => `fanout-${Date.now()}-${n}`);
+    // Three conversations, each created by the ROUTER (server-assigned ids).
+    const ids: string[] = [];
+    for (let n = 0; n < 3; n++) ids.push(await createConversation(cluster));
 
     for (const threadId of ids) {
       await cluster.curlInCluster(`${AGENT_HOST}/agui`, {

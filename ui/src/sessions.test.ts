@@ -8,9 +8,16 @@
  * deliberate exception to mergeFromServer's selection-neutrality.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
-import { sessionStore, visibleSessions, nestSubagents, type Session } from "./sessions.js";
+import {
+  conversationFor,
+  sessionStore,
+  setConversationMinter,
+  visibleSessions,
+  nestSubagents,
+  type Session,
+} from "./sessions.js";
 
 beforeEach(() => {
   globalThis.localStorage?.clear?.();
@@ -292,13 +299,14 @@ describe("ended subagents are pruned from the sidebar", () => {
 });
 
 describe("a brand-new conversation survives the background merge", () => {
-  it("does NOT drop the currently-selected 'New chat' the server hasn't seen yet", () => {
+  it("does NOT drop the currently-selected 'New chat' the server hasn't seen yet", async () => {
     // A real server conversation already exists (so the merge has 'truth' to
     // reconcile against — the condition that used to trigger the phantom-drop).
     sessionStore.mergeFromServer([{ id: "server-conv", title: "Existing" }]);
 
-    // The user clicks "New chat": a pristine, server-unknown, SELECTED session.
-    // The server won't learn about it until the first message POSTs /agui.
+    // The user clicks "New chat": a pristine, server-unknown, SELECTED session. The id
+    // stays local until the first send, so the merge will not know about it — which is
+    // exactly the case this guards.
     const fresh = sessionStore.newSession();
     expect(sessionStore.get().currentId).toBe(fresh);
 
@@ -444,5 +452,155 @@ describe("nestSubagents (sidebar hierarchy)", () => {
   it("top-level-only list is unchanged (all depth 0)", () => {
     const rows = nestSubagents([s("a"), s("b")]);
     expect(rows.map((r) => r.depth)).toEqual([0, 0]);
+  });
+});
+
+describe("the SERVER owns conversation ids", () => {
+  it("newSession() selects the new conversation SYNCHRONOUSLY (no server round-trip)", () => {
+    // Asking the server for the id here would leave the UI on the PREVIOUS conversation
+    // for the length of a network call, so a fast typist sends into the wrong thread.
+    const mint = vi.fn(async () => "must-not-be-called-yet");
+    setConversationMinter(mint);
+
+    const id = sessionStore.newSession();
+
+    expect(mint).not.toHaveBeenCalled();
+    expect(sessionStore.get().currentId).toBe(id);
+    expect(sessionStore.current().serverCreated).toBe(false);
+  });
+
+  it("the server id is RECORDED on the first send — the stable key does not change", async () => {
+    // The key is what React, selection and the runtime are mounted on. Swapping it when the
+    // server id arrives tore down the run in flight (Stop stopped responding), so the
+    // server id is recorded ALONGSIDE the key instead of replacing it.
+    sessionStore.newSession();
+    const key = sessionStore.get().currentId;
+    setConversationMinter(async () => "server-assigned-id");
+
+    const id = await sessionStore.ensureCurrentCreated();
+
+    expect(id).toBe("server-assigned-id");
+    expect(sessionStore.get().currentId).toBe(key);
+    expect(sessionStore.current().serverId).toBe("server-assigned-id");
+    expect(sessionStore.current().serverCreated).toBe(true);
+  });
+
+  it("a failed create leaves the store UNTOUCHED", async () => {
+    sessionStore.newSession();
+    const before = sessionStore.get();
+
+    setConversationMinter(async () => null);
+    const id = await sessionStore.ensureCurrentCreated();
+
+    expect(id).toBeNull();
+    expect(sessionStore.get().currentId).toBe(before.currentId);
+    expect(sessionStore.get().sessions).toHaveLength(before.sessions.length);
+  });
+
+  it("a locally-seeded conversation gets a server id without changing its key", async () => {
+    // freshState() seeds a conversation at module load so the UI has something to render
+    // before any network call, and deleteSession() seeds a replacement the same way. Those
+    // keys are local placeholders the server has never heard of.
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    const key = sessionStore.get().currentId;
+    expect(sessionStore.current().serverCreated).toBeFalsy();
+    expect(sessionStore.current().serverId).toBeUndefined();
+
+    setConversationMinter(async () => "real-id");
+    const id = await sessionStore.ensureCurrentCreated();
+
+    expect(id).toBe("real-id");
+    expect(sessionStore.get().currentId).toBe(key); // unchanged — nothing is remounted
+    expect(sessionStore.current().serverId).toBe("real-id");
+  });
+
+  it("ensureCurrentCreated() is a NO-OP for an already-created conversation", async () => {
+    setConversationMinter(async () => "made-once");
+    sessionStore.newSession();
+    await sessionStore.ensureCurrentCreated();
+
+    const mint = vi.fn(async () => "must-not-be-used");
+    setConversationMinter(mint);
+    const id = await sessionStore.ensureCurrentCreated();
+
+    expect(mint).not.toHaveBeenCalled();
+    expect(id).toBe("made-once");
+  });
+
+  it("CONCURRENT ensureCurrentCreated() calls share ONE create", async () => {
+    // Every mount asks — a page load, a conversation switch, React StrictMode's double
+    // effect. Without de-duping, each overlapping call POSTs /conversations and leaves a
+    // stray empty conversation in the sidebar (5 rows where the test expected 2).
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    let calls = 0;
+    setConversationMinter(async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 5));
+      return `server-${calls}`;
+    });
+
+    const [a, b, c] = await Promise.all([
+      sessionStore.ensureCurrentCreated(),
+      sessionStore.ensureCurrentCreated(),
+      sessionStore.ensureCurrentCreated(),
+    ]);
+
+    expect(calls).toBe(1);
+    expect(a).toBe("server-1");
+    expect(b).toBe("server-1");
+    expect(c).toBe("server-1");
+    expect(sessionStore.get().sessions).toHaveLength(1);
+  });
+
+  it("a conversation rebuilt after a RELOAD addresses the server by its SERVER id", async () => {
+    // The Conversation map is module state, so a page reload rebuilds every object from the
+    // persisted session. A conversation created via the first send keeps its local key, so
+    // rebuilding from the key would address the server with a placeholder — the queue
+    // vanished on reload because of exactly this.
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    setConversationMinter(async () => "real-server-id");
+    await sessionStore.ensureCurrentCreated();
+
+    const key = sessionStore.get().currentId;
+    const persisted = sessionStore.current();
+    expect(persisted.serverId).toBe("real-server-id");
+    expect(key).not.toBe("real-server-id"); // the key stayed local
+
+    // Rebuild as a reload would, from the persisted record alone.
+    const rebuilt = conversationFor(persisted);
+    expect(rebuilt.serverId()).toBe("real-server-id");
+    expect(rebuilt.key).toBe(key);
+    expect(await rebuilt.ifCreated(async (id) => id, "not-created")).toBe("real-server-id");
+  });
+
+  it("a merge does NOT duplicate a conversation created on its first send", async () => {
+    // The merge is keyed by SERVER id; a conversation created on its first send keeps its
+    // local key. Indexing by the key missed it and inserted a second row for the same
+    // conversation — every sidebar row rendered twice (1 -> 2, 2 -> 4 in the e2e).
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    setConversationMinter(async () => "server-abc");
+    await sessionStore.ensureCurrentCreated();
+    const key = sessionStore.get().currentId;
+
+    // The poll now returns that conversation under its SERVER id.
+    sessionStore.mergeFromServer([{ id: "server-abc", title: "From the server" }]);
+
+    expect(sessionStore.get().sessions).toHaveLength(1);
+    // ...and the merge did not swap the stable key out from under the mounted runtime.
+    expect(sessionStore.get().currentId).toBe(key);
+    expect(sessionStore.current().serverId).toBe("server-abc");
+    expect(sessionStore.current().title).toBe("From the server");
+  });
+
+  it("a server-listed conversation is never re-created", async () => {
+    sessionStore.mergeFromServer([{ id: "from-server", title: "Existing" }]);
+    sessionStore.switchTo("from-server");
+
+    const mint = vi.fn(async () => "must-not-be-used");
+    setConversationMinter(mint);
+    const id = await sessionStore.ensureCurrentCreated();
+
+    expect(mint).not.toHaveBeenCalled();
+    expect(id).toBe("from-server");
   });
 });

@@ -119,6 +119,7 @@ export class IntegrityAgent extends AbstractAgent {
    *  idle-watchdog forces a reconnect if `running` is true but this hasn't moved
    *  for idleReconnectMs (a dropped terminal event left the UI stuck "busy"). */
   private lastActivityAt = Date.now();
+  private livenessHealed = false; // F2: one-shot liveness reconnect tracker
 
   // The tool call currently in flight during the active run (its name, e.g. "bash"),
   // and the ts of the last RUN_STARTED — so the UI can show WHAT it's doing and for
@@ -413,6 +414,27 @@ export class IntegrityAgent extends AbstractAgent {
   }
 
   /**
+   * Re-point this agent at the conversation id the SERVER assigned. A conversation seeded
+   * locally is created on its first send, and the server picks the id; the agent was built
+   * with the local one.
+   *
+   * Reads of cfg.conversationId happen at call time, so send/cancel follow immediately. The
+   * integrity stream does NOT: renderPump() already opened it on the old id, and it would
+   * keep reading a conversation nothing writes to any more — the run's events (including the
+   * RUN_FINISHED that a cancel produces) would never arrive, leaving the Stop button dead
+   * and the status bar stuck. So drop the open stream; the pump reconnects on the new id.
+   */
+  setConversationId(conversationId: string): void {
+    if (conversationId === this.cfg.conversationId) return;
+    this.cfg.conversationId = conversationId;
+    // Drop the live connection(s). Each reconnect recomputes the URL, so the pump comes
+    // back on the new conversation; leaving them open would keep folding a conversation
+    // nothing writes to any more.
+    for (const c of this.controllers) c.abort();
+    this.controllers.clear();
+  }
+
+  /**
    * The RENDER source: a CONTINUOUS Observable of the conversation's events from
    * GET /conversations/:id/events.integrity. Emits each frame's inner event
    * (already a BaseEvent) and does NOT complete while the stream is open, so the
@@ -505,6 +527,13 @@ export class IntegrityAgent extends AbstractAgent {
         while ((idx = buf.indexOf("\n\n")) !== -1) {
           const raw = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
+          // F1: Reset lastActivityAt on ANY frame (including heartbeats `: ping\n\n`),
+          // not just data: lines — heartbeats prove the connection is alive.
+          this.lastActivityAt = Date.now();
+          // F2: LIVE frames (not replay) arriving → reset the liveness one-shot so a
+          // NEW silence can trigger. Replay frames (during reconnect resync) don't
+          // count as "alive" — they're historical; only post-synced live frames do.
+          if (!this.replaying) this.livenessHealed = false;
           const line = raw.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
           let frame: IntegrityFrame;
@@ -573,7 +602,11 @@ export class IntegrityAgent extends AbstractAgent {
    */
   renderPump(): () => void {
     const input = this.prepareRunAgentInput();
-    const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
+    // Recomputed per CONNECTION, not captured once: setConversationId() can re-point this
+    // agent at the id the server assigned, and a reconnect must follow it. A URL captured
+    // here would keep the pump reading the conversation the UI has already left.
+    const streamUrl = () =>
+      `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
@@ -647,7 +680,7 @@ export class IntegrityAgent extends AbstractAgent {
         });
 
         const outcome = await this.readConnection(
-          url,
+          streamUrl(),
           headers,
           controller,
           (e) => {
@@ -754,15 +787,30 @@ export class IntegrityAgent extends AbstractAgent {
       let healedInterruptKey: string | null = null; // pending-set we've already re-folded for
       watchdog = setInterval(() => {
         if (closed) return;
-        if (Date.now() - this.lastActivityAt < idleMs) return;
+        const silentMs = Date.now() - this.lastActivityAt;
+        if (silentMs < idleMs) return; // stream is alive
         const pending = this.getPendingInterrupts();
         // Key the pending set so a NEW interrupt re-arms the one-shot heal.
         const interruptKey = pending.length ? pending.map((i) => i.id).sort().join(",") : null;
         const runStuck = this.running;
         const interruptStuck = interruptKey !== null && interruptKey !== healedInterruptKey;
-        if (!runStuck && !interruptStuck) return;
+        // F2: LIVENESS check fires even when idle (running===false, no interrupts).
+        // Heartbeats arrive every ~25s (configurable via idleMs); if NO frame
+        // (event OR heartbeat) for >2× the expected interval, the connection is
+        // dead — reconnect ONCE. This is SEPARATE from the runStuck/interruptStuck
+        // checks (which solve different problems: a LIVE stream that dropped a
+        // terminal event). One-shot: if we already reconnected for silence and the
+        // stream is STILL silent (e.g. a legitimately pending approval with no
+        // heartbeats), don't churn reconnects.
+        const livenessWindowMs = idleMs * 2.4; // 2.4× interval = >2 missed pings
+        const connectionDead = silentMs >= livenessWindowMs && !this.livenessHealed;
+        if (!runStuck && !interruptStuck && !connectionDead) return;
         if (interruptStuck) healedInterruptKey = interruptKey;
-        // Stuck: nudge the loop to reconnect + re-fold from the log.
+        // Any reconnect (runStuck/interruptStuck/connectionDead) resets the liveness
+        // one-shot: we just reconnected, so the connection is fresh — don't fire
+        // liveness again until activity resumes and silence recurs.
+        this.livenessHealed = true;
+        // Stuck or dead: nudge the loop to reconnect + re-fold from the log.
         this.lastActivityAt = Date.now(); // avoid re-firing while the reconnect runs
         watchdogForced = true; // reconnect promptly (no drop-backoff delay)
         controller?.abort();
@@ -770,9 +818,29 @@ export class IntegrityAgent extends AbstractAgent {
       (watchdog as { unref?: () => void }).unref?.();
     }
 
+    // F3: VISIBILITYCHANGE handler forces a reconnect when the tab becomes visible.
+    // Browsers throttle background-tab timers, so a backgrounded tab can miss the
+    // watchdog window entirely. When the tab returns to foreground, force a
+    // reconnect + re-fold so the user sees current state, not stale pre-background.
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined") return; // SSR guard
+      if (document.visibilityState === "visible" && !closed && controller) {
+        // Tab just became visible — force a resync.
+        this.lastActivityAt = Date.now(); // avoid double-fire from watchdog
+        watchdogForced = true;
+        controller.abort();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
     const stop = () => {
       closed = true;
       if (watchdog) clearInterval(watchdog);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
       controller?.abort();
       connSub?.unsubscribe();
       if (this.stopPump === stop) this.stopPump = undefined;

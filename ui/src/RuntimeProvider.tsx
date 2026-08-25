@@ -52,7 +52,8 @@ import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
 import { toRepositorySnapshot, type RepositorySnapshot } from "./messageRepository.js";
 import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
-import { sessionStore, useSessions } from "./sessions.js";
+import { createConversation } from "./client.js";
+import { currentConversation, sessionStore, setConversationMinter, useSessions } from "./sessions.js";
 import {
   createIntegrityAgent,
   type IntegrityAgent,
@@ -212,6 +213,12 @@ export const InterruptContext = createContext<InterruptContextValue>({
 export const useConversationInterrupts = () => useContext(InterruptContext);
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
+
+// The SERVER owns conversation ids. Install the minter that asks for one (POST
+// /conversations) instead of letting the client choose — a client-chosen id would become
+// an event-log key and a k8s resource name, and the agent-host refuses an id it never
+// issued. Module scope so it is in place before any component renders.
+setConversationMinter(() => createConversation({ baseUrl: BASE_URL }));
 // Idle-watchdog reconnect threshold (ms). Overridable so e2e fault tests can set a
 // small value (via VITE_IDLE_RECONNECT_MS) and not wait the 25s production default.
 const IDLE_RECONNECT_MS = import.meta.env.VITE_IDLE_RECONNECT_MS
@@ -226,32 +233,59 @@ export function RuntimeProvider({ children }: Readonly<{ children: ReactNode }>)
   // conversation's messages on screen. Keying by currentId tears the runtime (and the
   // IntegrityAgent + its render pump + the snapshot) down and recreates it fresh.
   return (
-    <ConversationRuntime key={currentId} conversationId={currentId}>
+    <ConversationRuntime key={currentId} conversationKey={currentId}>
       {children}
     </ConversationRuntime>
   );
 }
 
 function ConversationRuntime({
-  conversationId,
+  conversationKey,
   children,
-}: Readonly<{ conversationId: string; children: ReactNode }>) {
+}: Readonly<{ conversationKey: string; children: ReactNode }>) {
   const { sessions } = useSessions();
-  const model = sessions.find((s) => s.id === conversationId)?.model;
+  const session = sessions.find((s) => s.id === conversationKey);
+  const model = session?.model;
+  // The SERVER's id for this conversation, or the key while it does not exist yet. The
+  // agent reads it at call time and is re-pointed in place by setConversationId() the
+  // moment the server assigns one — the MOUNT stays keyed on the stable key, so nothing is
+  // torn down when that happens.
+  const conversationId = session?.serverId ?? conversationKey;
+  // The conversation OBJECT for this mount. It owns whether a server id exists yet and
+  // what each operation means before it does, so nothing here branches on id presence.
+  const conversation = useMemo(
+    () => currentConversation(),
+    // Re-resolve when the mounted conversation changes; the object itself is stable across
+    // creation (its key never changes), which is why this component is not torn down when
+    // the server id arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [conversationKey],
+  );
 
   // The render source: an IntegrityAgent bound to this conversation. run() is the
   // continuous integrity stream; send()/submitResume() are fire-and-forget POST
-  // /agui. Keyed to conversationId ONLY — NOT model. The model only rides the
-  // X-Agent-Model header on the next send and has no effect on the render stream,
-  // so recreating the agent (+ tearing down the render pump) on a model switch is
-  // needless — and it RACES the next send's events in a slow environment, dropping
-  // the reply (the model-switch-mid-conversation bug). Instead we keep the agent
-  // stable and update the model in place (effect below).
+  // /agui. Keyed to the stable conversation KEY — NOT the server id, and NOT model.
+  //
+  // Not the server id, because that id ARRIVES (on the first send of a new conversation).
+  // Rebuilding the agent then would tear down the render pump mid-run and lose the
+  // in-flight run's state — the Stop button stops responding. setConversationId() re-points
+  // it in place instead, and reads happen at call time.
+  //
+  // Not model, for the same reason: the model only rides the X-Agent-Model header on the
+  // next send and has no effect on the render stream, so recreating the agent on a model
+  // switch is needless — and it RACES the next send's events in a slow environment,
+  // dropping the reply (the model-switch-mid-conversation bug).
   const agent = useMemo(
     () => createIntegrityAgent({ baseUrl: BASE_URL, conversationId, model, idleReconnectMs: IDLE_RECONNECT_MS }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conversationId],
+    [conversationKey],
   );
+
+  // Follow the server id in place. It appears when a brand-new conversation is created on
+  // its first send, and after a RELOAD the agent is built from the persisted id directly.
+  useEffect(() => {
+    agent.setConversationId(conversationId);
+  }, [agent, conversationId]);
 
   // Model switch mid-conversation: update the agent in place (no teardown). Do it
   // SYNCHRONOUSLY during render, NOT in an effect — an effect runs after render, so
@@ -301,6 +335,14 @@ function ConversationRuntime({
         // OPTIMISTIC solidify: title the session from this first message NOW, before the
         // fire-and-forget send round-trips, so a brand-new "New chat" doesn't stay pristine
         // (and droppable by the background merge) until the server echoes it back.
+        // Sending is an ACTION, so the conversation is created if it does not exist yet —
+        // withId() does that and hands us the SERVER's id. The session's key is untouched,
+        // so this component (mounted on the key) is not torn down mid-send. The agent is
+        // re-pointed in place; it reads the id at call time.
+        if (!conversation) throw new Error("no conversation selected");
+        await conversation.withId(async (serverId) => {
+          agent.setConversationId(serverId);
+        });
         if (text) sessionStore.titleFromFirstMessage(conversationId, text);
         // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
         // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts

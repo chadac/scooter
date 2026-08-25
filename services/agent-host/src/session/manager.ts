@@ -210,6 +210,19 @@ export interface ConversationStore {
   updateJob?(id: SessionId, job: JobRecord): Promise<void>;
 }
 
+/**
+ * A prompt arrived for a conversation that does not exist. The agent-host does not
+ * create one implicitly — conversations are created by the conversation-router
+ * (see services/conversation-router/create.go), so a caller-chosen id can never
+ * become a conversation id, an event-log key, or a k8s resource name.
+ */
+export class UnknownConversationError extends Error {
+  constructor(readonly threadId: string) {
+    super(`unknown conversation: ${threadId}`);
+    this.name = "UnknownConversationError";
+  }
+}
+
 export type ConversationStatus = "running" | "suspended" | "ended";
 
 export interface Conversation {
@@ -564,8 +577,38 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       console.error(`[manager] hydrateByThread(${threadId}) store lookup FAILED (may create a duplicate):`, err);
       return undefined;
     }
-    const m = metas.find((x) => x.threadId === threadId);
-    if (!m) return undefined;
+    let m = metas.find((x) => x.threadId === threadId);
+    if (!m) {
+      // No local meta. The conversation may still EXIST as a Conversation CR that this
+      // pod has not cached yet — the router creates the CR and returns immediately, so a
+      // prompt can arrive before any store write. The CR is authoritative for existence,
+      // so adopt from it (same synthesis hydrate() uses to adopt at boot).
+      const c = await conversationRegistry.get(threadId).catch(() => undefined);
+      if (!c) return undefined;
+      m = {
+        id: c.id,
+        threadId: c.id,
+        title: "",
+        createdAt: nowMs(),
+        lastActivityAt: nowMs(),
+        model: c.spec.model,
+        owner: c.spec.owner,
+        parentId: c.spec.parentId,
+      };
+      // Publish sandboxRef NOW, not after revive() finishes provisioning. The router
+      // derives the routing short-id from spec.sandboxRef, so a conversation adopted
+      // here would otherwise be unroutable for the whole sandbox boot (minutes on a
+      // cold node). start() registers it up front for exactly this reason; adoption
+      // has to match. register() is idempotent and never throws.
+      if (!c.spec.sandboxRef) {
+        void conversationRegistry.register(c.id, {
+          model: c.spec.model,
+          owner: c.spec.owner,
+          parentId: c.spec.parentId,
+          sandboxRef: `conv-${shortId(c.id)}`,
+        });
+      }
+    }
     if (entries.has(m.id)) return entries.get(m.id);
     // Reconcile just this conversation's Sandbox so we track a still-running pod
     // correctly (best-effort; on failure revive() recreates from the placeholder).
@@ -954,10 +997,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entry = await hydrateByThread(threadId);
       }
       if (!entry) {
-        // A genuinely new webhook thread: stamp the resolved owner (if any) so the
-        // conversation belongs to the invoking external user's Scooter account.
-        const conv = await this.start(threadId, model, owner);
-        entry = entries.get(conv.id)!;
+        // Not in memory, not persisted -> it does not exist. Callers create
+        // explicitly (POST /conversations on the router) and prompt the id returned.
+        throw new UnknownConversationError(threadId);
       } else {
         await applyModelSwitch(entry, model);
         if (!entry.bridge) {

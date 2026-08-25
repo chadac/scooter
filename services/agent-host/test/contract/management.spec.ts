@@ -167,6 +167,43 @@ async function callRaw(
 }
 
 describe("management API", () => {
+  // POST /conversations exists here for SINGLE-REPLICA (and e2e, which runs the agent-host
+  // with no router in front). In multi-replica the conversation-router serves this path
+  // itself — a control-plane CR write that consults no agent-host capacity — and never
+  // proxies it here. What both share is that the SERVER mints the id.
+  it("POST /conversations mints the id SERVER-side and returns 201", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({
+      sessions,
+      store: fakeStore([]),
+      server: stubServer,
+      answerPermission: async () => {},
+    });
+
+    const res = await call(api, "POST", "/conversations", { title: "hello" });
+
+    expect(res.status).toBe(201);
+    expect((res.json as { id?: string }).id).toBeTruthy();
+  });
+
+  it("POST /conversations IGNORES a caller-supplied threadId", async () => {
+    // The regression that matters. The old route honored body.threadId, which made an
+    // unvalidated, caller-chosen string into a conversation id, an event-log key, and a
+    // k8s resource name.
+    const sessions = fakeSessions();
+    const api = createManagementApi({
+      sessions,
+      store: fakeStore([]),
+      server: stubServer,
+      answerPermission: async () => {},
+    });
+
+    const res = await call(api, "POST", "/conversations", { threadId: "attacker-chosen-id" });
+
+    expect(res.status).toBe(201);
+    expect((res.json as { id?: string }).id).not.toBe("attacker-chosen-id");
+  });
+
   it("GET /conversations lists conversations (JSON-safe view)", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(),
@@ -279,16 +316,6 @@ describe("management API", () => {
     expect(s.frames).toContainEqual(
       expect.objectContaining({ kind: "upsert", conversation: expect.objectContaining({ id: "c2" }) }),
     );
-  });
-
-  it("POST /conversations creates with a title", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const { status, json } = await call(api, "POST", "/conversations", { threadId: "new1", title: "My task" });
-    expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("new1", undefined, undefined);
-    expect(sessions.setTitle).toHaveBeenCalledWith("new1", "My task");
-    expect((json as any).title).toBe("My task");
   });
 
   // --- user rename + starring ------------------------------------------------
@@ -481,29 +508,6 @@ describe("management API", () => {
     expect(json).toEqual({ default: "opus", available: ["opus"], hints: {}, providers: {} });
   });
 
-  it("POST /conversations honors an offered model", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({
-      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
-      models: { default: "opus", available: ["opus", "sonnet"] },
-    });
-    const { status, json } = await call(api, "POST", "/conversations", { threadId: "m1", model: "sonnet" });
-    expect(status).toBe(201);
-    expect(sessions.start).toHaveBeenCalledWith("m1", "sonnet", undefined);
-    expect((json as any).model).toBe("sonnet");
-  });
-
-  it("POST /conversations rejects an unknown model", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({
-      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
-      models: { default: "opus", available: ["opus", "sonnet"] },
-    });
-    const { status } = await call(api, "POST", "/conversations", { threadId: "m2", model: "haiku" });
-    expect(status).toBe(400);
-    expect(sessions.start).not.toHaveBeenCalled();
-  });
-
   it("POST /conversations/:id/suspend + resume flip status", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
@@ -621,16 +625,6 @@ describe("management API", () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status } = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
     expect(status).toBe(404);
-  });
-
-  it("POST /conversations stamps the caller (x-auth-user) as the owner", async () => {
-    const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const res = await call(api, "POST", "/conversations", { threadId: "owned" }, { "x-auth-user": "alice" });
-    expect(res.status).toBe(201);
-    // start() was called with (threadId, model, owner="alice").
-    expect(sessions.start).toHaveBeenCalledWith("owned", undefined, "alice");
-    expect((res.json as any).owner).toBe("alice");
   });
 
   it("GET /conversations?scope=mine returns STRICTLY the caller's own (not others, not unowned)", async () => {

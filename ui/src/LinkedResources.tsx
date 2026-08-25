@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { loadLinks, type ConversationLink } from "./client.js";
-import { useSessions } from "./sessions.js";
+import { useSessions, currentConversation } from "./sessions.js";
 import { SourceBadge } from "./sourceIcon.js";
 import { Button } from "@/components/ui/button";
 
@@ -29,10 +29,14 @@ export function LinkedResources() {
 
   useEffect(() => {
     let cancelled = false;
+    // A conversation the server has not created yet has no links, and asking for them
+    // would GET /conversations/<a key the server never issued>/links — a 404 every poll.
     const refresh = () =>
-      void loadLinks({ baseUrl: BASE_URL }, currentId).then((ls) => {
-        if (!cancelled) setLinks(ls);
-      });
+      void currentConversation()
+        ?.ifCreated((id) => loadLinks({ baseUrl: BASE_URL }, id), [] as ConversationLink[])
+        .then((ls) => {
+          if (!cancelled) setLinks(ls);
+        });
     setLinks([]); // clear when switching conversations
     refresh();
     const t = setInterval(refresh, 10000); // a late-arriving link still shows

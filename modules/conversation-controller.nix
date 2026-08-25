@@ -290,8 +290,14 @@ in
       roles.conversation-router = {
         metadata = { name = "conversation-router"; namespace = cfg.namespace; };
         rules = [
-          # Read-only: the router only READS status.hostPod (the controller writes it).
-          { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" ]; verbs = [ "get" "list" "watch" ]; }
+          # READS status.hostPod for routing (the controller writes it), and CREATES the CR:
+          # POST /conversations is served by the ROUTER, not proxied to an agent-host. The
+          # agent-host fleet is capacity-bounded (the controller leaves a conversation Pending
+          # when every pod is at cap), so creating there made conversation replicas*cap+1
+          # uncreatable — its id would be minted by the component that could not host it.
+          # Creating the CR here consults no agent-host; `Pending` is then a normal state.
+          # Still NO update/patch/delete: assignment and lifecycle stay the controller's.
+          { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" ]; verbs = [ "get" "list" "watch" "create" ]; }
         ];
       };
       roleBindings.conversation-router = {

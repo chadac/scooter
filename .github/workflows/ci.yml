@@ -33,6 +33,16 @@ on:
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  # MERGE QUEUE. Required for the queue to function: GitHub tests each entry on a
+  # temporary `gh-readonly-queue/*` ref built from main + the entries ahead of it,
+  # and reports the required checks against THAT ref. Without this trigger the
+  # checks never run and every queue entry times out.
+  #
+  # This is what catches a SEMANTIC merge collision — two PRs that touch no common
+  # line but disagree about a signature. #318 added a required `owner` argument
+  # while #322 (branched earlier) still called the old one: both green, the merge
+  # textually clean, and main went red.
+  merge_group:
   # Nightly: run the FULL nixosTest set incl. the heavy ones (see HEAVY_TESTS
   # below) that are too slow for per-PR (a ~1h from-source NixOS toplevel build).
   # Also runs the flake-detection job (the whole e2e suite, each test 5×).
@@ -316,6 +326,16 @@ jobs:
               - 'services/agent-host/src/session/k8sConversationRegistry.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'
+              # The CREATE contract: conversations are created by the ROUTER (a CR write),
+              # and the agent-host REFUSES an unknown threadId rather than creating one
+              # implicitly. platform-smoke is the only place that exercises create-then-
+              # prompt against a real cluster, so a change to either side of that contract
+              # — the /agui handler, the management routes, or the two services that spawn
+              # conversations — must run it.
+              - 'services/agent-host/src/agui/server.ts'
+              - 'services/agent-host/src/api/management.ts'
+              - 'services/scheduler/scheduler/spawn.py'
+              - 'services/webhooks/webhooks/agent_host_client.py'
 
   # Tier-2 image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
   # Docker; no root, runs on the standard runner). Covers what the nixosTest VMs

@@ -36,6 +36,25 @@ class _FakeStream:
         return False
 
 
+# The id the fake server assigns. Every test that runs a conversation needs this
+# stubbed, since create_conversation now asks the server for the id.
+SERVER_CONV_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _patch_create(monkeypatch, captured: dict | None = None, status: int = 201, conv_id=SERVER_CONV_ID):
+    """Stub POST /conversations. Returns a server-assigned id, like the router."""
+
+    async def fake_post(self, url, **kwargs):  # noqa: ANN001
+        if captured is not None:
+            captured["create_url"] = url
+            captured["create_json"] = kwargs.get("json")
+            captured["create_headers"] = kwargs.get("headers")
+        payload = {"id": conv_id, "status": "pending"} if conv_id else {"status": "pending"}
+        return httpx.Response(status, json=payload, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+
 def _patch_stream(monkeypatch, body: bytes, captured: dict | None = None):
     def fake_stream(self, method, url, **kwargs):  # noqa: ANN001
         if captured is not None:
@@ -44,6 +63,8 @@ def _patch_stream(monkeypatch, body: bytes, captured: dict | None = None):
         return _FakeStream(body)
 
     monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+    # Every path that streams /agui first CREATES the conversation.
+    _patch_create(monkeypatch, captured)
 
 
 async def test_create_conversation_collects_final_message(monkeypatch):
@@ -78,6 +99,7 @@ async def test_on_created_fires_with_conv_id_BEFORE_the_run(monkeypatch):
         return _FakeStream(_sse('{"type":"RUN_FINISHED","threadId":"t","runId":"r"}'))
 
     monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+    _patch_create(monkeypatch)  # the run is preceded by POST /conversations
 
     seen: dict = {}
 
@@ -131,6 +153,7 @@ async def test_connection_drop_mid_run_is_INTERRUPTED_not_failed(monkeypatch):
             raise httpx.ReadError("connection reset")  # pod died mid-stream
 
     monkeypatch.setattr(httpx.AsyncClient, "stream", lambda *a, **k: _DroppingStream(b""))
+    _patch_create(monkeypatch)  # the run is preceded by POST /conversations
     result = await ahc.create_conversation("do a thing")
     assert result is not None
     assert result.get("interrupted") is True
@@ -316,3 +339,41 @@ async def test_create_conversation_without_files_or_images_stays_plain(monkeypat
 
     # Back-compat: no attachments -> content stays a plain string (byte-for-byte).
     assert captured["json"]["messages"][0]["content"] == "just text"
+
+
+async def test_create_conversation_uses_the_SERVER_assigned_id(monkeypatch):
+    """webhooks must not invent the conversation id; everything downstream —
+    on_created, the link mapping, the prompt — uses the server's."""
+    captured: dict = {}
+    body = b'data: {"type":"RUN_FINISHED","threadId":"t","runId":"r"}\n'
+    _patch_stream(monkeypatch, body, captured)
+
+    seen: list[str] = []
+
+    async def on_created(cid: str) -> None:
+        seen.append(cid)
+
+    result = await ahc.create_conversation("do a thing", on_created=on_created)
+
+    assert result is not None
+    assert result["conversation_id"] == SERVER_CONV_ID
+    # on_created registers the link mapping, so it must get the server's id or the
+    # agent's first reply has no thread to infer.
+    assert seen == [SERVER_CONV_ID]
+    assert captured["json"]["threadId"] == SERVER_CONV_ID
+    assert "threadId" not in (captured["create_json"] or {})
+
+
+async def test_create_conversation_returns_None_when_create_fails(monkeypatch):
+    """No conversation means nothing to prompt."""
+    streamed: list[str] = []
+
+    def fake_stream(self, method, url, **kwargs):  # noqa: ANN001
+        streamed.append(url)
+        return _FakeStream(b"")
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+    _patch_create(monkeypatch, status=502, conv_id=None)
+
+    assert await ahc.create_conversation("do a thing") is None
+    assert streamed == []  # never reached /agui

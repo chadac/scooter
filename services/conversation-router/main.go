@@ -65,7 +65,8 @@ func main() {
 	cache := NewOwnershipCache()
 	go cache.Run(ctx, dyn, cfg.namespace)
 
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(cfg, cache)}
+	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(cfg, cache, creator)}
 	go func() {
 		<-ctx.Done()
 		sctx, c := context.WithTimeout(context.Background(), 10*time.Second)
@@ -82,13 +83,21 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(cfg config, cache *OwnershipCache) http.Handler {
+func newRouter(cfg config, cache *OwnershipCache, creator ConversationCreator) http.Handler {
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// FLEET-AGGREGATE routes must be answered from EVERY pod, not one. An agent-host serves the
 		// conversation list from its in-memory session map, which (with podCap=1) holds only the
 		// conversations that pod hosts — so proxying to a single pod returns a fraction of the
 		// user's conversations and they appear to vanish between refreshes. See aggregate.go.
+		// CREATE is served HERE, not proxied. The agent-host is capacity-bounded
+		// (the controller leaves a conversation Pending when every pod is at cap),
+		// so proxying create would make conversation N*C+1 uncreatable. Writing the
+		// CR consults no agent-host. See create.go.
+		if IsConversationCreate(r.Method, r.URL.Path) {
+			serveConversationCreate(w, r, creator, ownerFrom(r))
+			return
+		}
 		if IsFleetAggregate(r.Method, r.URL.Path) {
 			ups := upstreamsFor(cfg, cache, fallback)
 			if isSSE(r) {

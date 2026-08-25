@@ -3,6 +3,7 @@ module github.com/chadac/scooter/conversation-router
 go 1.26
 
 require (
+	github.com/google/uuid v1.6.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0
 )

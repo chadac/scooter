@@ -28,7 +28,7 @@ import {
   type SandboxResources,
 } from "./client.js";
 import { agentHostConfig } from "./config.js";
-import { useSessions } from "./sessions.js";
+import { useSessions, currentConversation } from "./sessions.js";
 import { ServiceRows } from "./ServicesPanel.js";
 import { Button } from "@/components/ui/button";
 
@@ -50,16 +50,24 @@ export function useSandboxStatus() {
   // the store), so it's accurate even when suspended / deep-linked. `ready` is false
   // while the pod is still ContainerCreating (status is "running" then) — so the UI
   // shows "Starting…" until it's genuinely up. Poll while mounted.
+  // Reads answer EMPTY for a conversation the server has not created yet, rather than
+  // GETting an id it never issued (a 404 on every poll of a fresh page).
   const refreshStatus = useCallback(async () => {
-    if (!currentId) return;
-    const { status, ready: r } = await loadSandboxReady({ baseUrl: BASE_URL }, currentId);
-    if (status && status !== "unknown") setServerStatus(status);
-    setReady(r);
+    const res = await currentConversation()?.ifCreated(
+      (id) => loadSandboxReady({ baseUrl: BASE_URL }, id),
+      { status: "unknown", ready: false },
+    );
+    if (!res) return;
+    if (res.status && res.status !== "unknown") setServerStatus(res.status);
+    setReady(res.ready);
   }, [currentId]);
 
   const refreshServices = useCallback(async () => {
-    if (!currentId) return;
-    setServices(await loadWebServices({ baseUrl: BASE_URL }, currentId));
+    const svcs = await currentConversation()?.ifCreated(
+      (id) => loadWebServices({ baseUrl: BASE_URL }, id),
+      [] as Awaited<ReturnType<typeof loadWebServices>>,
+    );
+    if (svcs) setServices(svcs);
   }, [currentId]);
 
   useEffect(() => {
@@ -81,9 +89,13 @@ export function useSandboxStatus() {
   }, [serverStatus, ready]);
 
   const startSandbox = useCallback(async () => {
-    if (!currentId) return;
+    const conv = currentConversation();
+    if (!conv) return;
     setStarting(true);
-    const res = await resumeConversation({ baseUrl: BASE_URL }, currentId);
+    // Starting the sandbox is an ACTION: create the conversation if it does not exist yet.
+    const res = await conv
+      .withId((id) => resumeConversation({ baseUrl: BASE_URL }, id))
+      .catch(() => null);
     if (!res) {
       setStarting(false);
       return;
@@ -94,7 +106,9 @@ export function useSandboxStatus() {
 
   const act = async (name: string, fn: typeof startWebService) => {
     setBusy((b) => ({ ...b, [name]: true }));
-    await fn({ baseUrl: BASE_URL }, currentId, name);
+    await currentConversation()
+      ?.withId((id) => fn({ baseUrl: BASE_URL }, id, name))
+      .catch(() => undefined);
     await refreshServices();
     setBusy((b) => ({ ...b, [name]: false }));
   };
@@ -392,7 +406,12 @@ export function SandboxPanel() {
   useEffect(() => {
     if (!currentId) return;
     let alive = true;
-    void loadSandboxResources({ baseUrl: BASE_URL }, currentId).then((r) => {
+    void currentConversation()
+      ?.ifCreated(
+        (id) => loadSandboxResources({ baseUrl: BASE_URL }, id),
+        null as Awaited<ReturnType<typeof loadSandboxResources>>,
+      )
+      .then((r) => {
       if (alive) setResources(r);
     });
     return () => {
