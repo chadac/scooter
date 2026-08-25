@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+import hashlib
+
 import httpx
 
 from .config import settings
@@ -19,6 +21,36 @@ from .logging_config import format_error
 
 logger = logging.getLogger(__name__)
 _C = {"component": "identity_resolve"}
+
+
+def pseudonym(value: str | None) -> str | None:
+    """A stable, non-reversible stand-in for an external identifier.
+
+    WHY NOT THE RAW VALUE. A Slack user id, a GitHub login and an email address are all
+    personal data. Interpolating one into a prose log line was already questionable;
+    promoting it to a STRUCTURED, INDEXED field is materially worse — it becomes
+    searchable and inherits the log store's retention, which is a privacy decision rather
+    than a formatting one.
+
+    WHY NOT JUST DROP IT. Support ("user X says the bot ignored them") needs to find the
+    line, and a lookup failure is undiagnosable without knowing whether the same principal
+    keeps failing. A stable pseudonym keeps both: the same input always yields the same
+    token, so lines correlate, but the token does not reveal who it is.
+
+    WHY A PLAIN DIGEST AND NOT AN HMAC. An HMAC needs a key. Keying off the per-provider
+    webhook secrets would silently break correlation the moment one rotates — the same
+    user would start producing a different token — and there is no other stable secret
+    here. The threat model is "an operator reading logs should not see identities", not
+    "an attacker holding the log store must not brute-force them"; the input space of
+    Slack ids is small enough that a keyless digest is reversible by someone determined,
+    and that limit is stated here rather than papered over.
+
+    12 hex chars: collision-safe at this cardinality, short enough to eyeball.
+    """
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
 
 _SLACK_API = "https://slack.com/api"
 _GITHUB_API = "https://api.github.com"
@@ -42,14 +74,14 @@ async def _slack_email(user_id: str) -> str | None:
         if not data.get("ok"):
             logger.info(
                 "slack users.info not ok",
-                extra={**_C, "provider": "slack", "external_id": user_id, "slack_error": data.get("error")},
+                extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "slack_error": data.get("error")},
             )
             return None
         return (data.get("user", {}).get("profile", {}) or {}).get("email") or None
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "slack", "external_id": user_id, "error": format_error(e)},
+            extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "error": format_error(e)},
         )
         return None
 
@@ -71,7 +103,7 @@ async def _github_email(login: str) -> str | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "github", "external_id": login, "error": format_error(e)},
+            extra={**_C, "provider": "github", "user_id": pseudonym(login), "error": format_error(e)},
         )
         return None
 
@@ -98,7 +130,7 @@ async def _gitlab_email(username: str) -> str | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "gitlab", "external_id": username, "error": format_error(e)},
+            extra={**_C, "provider": "gitlab", "user_id": pseudonym(username), "error": format_error(e)},
         )
         return None
 
@@ -133,6 +165,10 @@ async def _scooter_user_for_email(email: str) -> str | None:
             "by-email lookup failed",
             extra={
                 **_C,
+                # The email itself never reaches the log. The domain stays because it is
+                # what actually distinguishes a misconfigured tenant from a missing user,
+                # and it identifies an organisation rather than a person.
+                "user_id": pseudonym(email),
                 "email_domain": email.rpartition("@")[2] or None,
                 "error": format_error(e),
             },
@@ -153,6 +189,6 @@ async def resolve_owner(provider: str, external_id: str) -> str | None:
     if owner:
         logger.info(
             "resolved external user to scooter user",
-            extra={**_C, "provider": provider, "external_id": external_id, "owner": owner},
+            extra={**_C, "provider": provider, "user_id": pseudonym(external_id), "owner": owner},
         )
     return owner
