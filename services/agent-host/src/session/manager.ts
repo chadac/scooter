@@ -595,6 +595,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         owner: c.spec.owner,
         parentId: c.spec.parentId,
       };
+      // Publish sandboxRef NOW, not after revive() finishes provisioning. The router
+      // derives the routing short-id from spec.sandboxRef, so a conversation adopted
+      // here would otherwise be unroutable for the whole sandbox boot (minutes on a
+      // cold node). start() registers it up front for exactly this reason; adoption
+      // has to match. register() is idempotent and never throws.
+      if (!c.spec.sandboxRef) {
+        void conversationRegistry.register(c.id, {
+          model: c.spec.model,
+          owner: c.spec.owner,
+          parentId: c.spec.parentId,
+          sandboxRef: `conv-${shortId(c.id)}`,
+        });
+      }
     }
     if (entries.has(m.id)) return entries.get(m.id);
     // Reconcile just this conversation's Sandbox so we track a still-running pod

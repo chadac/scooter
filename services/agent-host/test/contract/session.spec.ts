@@ -137,7 +137,13 @@ describe("SessionManager", () => {
   });
 
   it("revive() RE-REGISTERS the CR (self-heals a conversation whose CR was lost/never made)", async () => {
-    const register = vi.fn(async () => {});
+    // Record the ORDER of register vs the (slow) sandbox provisioning. Asserting that
+    // register merely happened is tautological — revive() also registers a sandboxRef,
+    // so it fires either way. What matters is that it happens BEFORE provisioning.
+    const order: string[] = [];
+    const register = vi.fn(async () => {
+      order.push("register");
+    });
     const registry = { register, setPhase: vi.fn(async () => {}) };
     const sessions = createSessionManager({
       provisioner: fakeProvisioner(), store: inMemoryStore(), conversationRegistry: registry,
@@ -351,15 +357,33 @@ describe("SessionManager", () => {
         onPersist: () => () => {},
         onTitle: () => () => {},
       }) as never;
+    // Record the ORDER of register vs the (slow) sandbox provisioning. Asserting that
+    // register merely happened is tautological — revive() also registers a sandboxRef,
+    // so it fires either way. What matters is that it happens BEFORE provisioning.
+    const order: string[] = [];
+    const register = vi.fn(async () => {
+      order.push("register");
+    });
     const conversationRegistry = {
       ...noopRegistry,
+      register,
       get: vi.fn(async (id: string) => ({
         id,
+        // No sandboxRef: the router creates the CR without one, since it does not
+        // provision. This is the state a just-created conversation is actually in.
         spec: { owner: "user-alice", model: "sonnet" },
       })),
     } as never;
+    const baseProvisioner = fakeProvisioner();
+    const provisioner = {
+      ...baseProvisioner,
+      create: vi.fn(async (...args: never[]) => {
+        order.push("provision");
+        return (baseProvisioner.create as never as (...a: never[]) => never)(...args);
+      }),
+    } as never;
     const sessions = createSessionManager({
-      provisioner: fakeProvisioner(),
+      provisioner,
       store: inMemoryStore(),
       bridgeFactory,
       conversationRegistry,
@@ -379,6 +403,16 @@ describe("SessionManager", () => {
       expect.objectContaining({ threadId, text: "first message" }),
       undefined,
     );
+
+    // sandboxRef must be published on ADOPTION, not after the sandbox finishes booting.
+    // The router derives its routing short-id from spec.sandboxRef, so publishing it late
+    // leaves the conversation unroutable for the whole provision (minutes on a cold node).
+    expect(register).toHaveBeenCalledWith(
+      threadId,
+      expect.objectContaining({ sandboxRef: expect.stringMatching(/^conv-/) }),
+    );
+    expect(order[0]).toBe("register");
+    expect(order).toContain("provision");
   });
 
   it("promptByThread() prompts an EXISTING thread and leaves its owner alone", async () => {
