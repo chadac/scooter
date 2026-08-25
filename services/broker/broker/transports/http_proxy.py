@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from ..core.autolink import Link, LinkRule, post_link
 from ..core.types import AuthDependency, Identity, Provider, Transport
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -106,14 +107,31 @@ class HttpProxy(Transport):
         try:
             data = json.loads(resp.content)
         except (json.JSONDecodeError, ValueError):
-            logger.debug("auto-link: response for %s %s wasn't JSON — skipping", method, path)
+            logger.debug(
+                "auto-link skipped; response was not JSON",
+                extra={
+                    "conversation_id": conversation_id,
+                    "http_method": method,
+                    "path": path,
+                    "status": resp.status_code,
+                },
+            )
             return
         if not isinstance(data, dict):
             return
         try:
             link: Link | None = rule.extract(data)
         except Exception as e:  # a bad response shape must not break the proxy
-            logger.warning("auto-link extract failed for %s %s: %s", method, path, e)
+            logger.warning(
+                "auto-link extract failed",
+                extra={
+                    "conversation_id": conversation_id,
+                    "http_method": method,
+                    "path": path,
+                    "status": resp.status_code,
+                    "error": format_error(e),
+                },
+            )
             return
         if link is not None and link.url:
             await post_link(self.agent_host_url, conversation_id, link)

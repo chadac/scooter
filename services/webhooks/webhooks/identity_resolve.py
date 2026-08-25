@@ -15,8 +15,10 @@ import logging
 import httpx
 
 from .config import settings
+from .logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "identity_resolve"}
 
 _SLACK_API = "https://slack.com/api"
 _GITHUB_API = "https://api.github.com"
@@ -38,11 +40,17 @@ async def _slack_email(user_id: str) -> str | None:
             )
             data = resp.json()
         if not data.get("ok"):
-            logger.info("slack users.info(%s) not ok: %s", user_id, data.get("error"))
+            logger.info(
+                "slack users.info not ok",
+                extra={**_C, "provider": "slack", "external_id": user_id, "slack_error": data.get("error")},
+            )
             return None
         return (data.get("user", {}).get("profile", {}) or {}).get("email") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("slack email lookup failed for %s: %s", user_id, e)
+        logger.warning(
+            "email lookup failed",
+            extra={**_C, "provider": "slack", "external_id": user_id, "error": format_error(e)},
+        )
         return None
 
 
@@ -61,7 +69,10 @@ async def _github_email(login: str) -> str | None:
                 return None
             return resp.json().get("email") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("github email lookup failed for %s: %s", login, e)
+        logger.warning(
+            "email lookup failed",
+            extra={**_C, "provider": "github", "external_id": login, "error": format_error(e)},
+        )
         return None
 
 
@@ -85,7 +96,10 @@ async def _gitlab_email(username: str) -> str | None:
             return None
         return users[0].get("email") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("gitlab email lookup failed for %s: %s", username, e)
+        logger.warning(
+            "email lookup failed",
+            extra={**_C, "provider": "gitlab", "external_id": username, "error": format_error(e)},
+        )
         return None
 
 
@@ -111,7 +125,18 @@ async def _scooter_user_for_email(email: str) -> str | None:
                 return None
             return resp.json().get("id") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("by-email lookup failed for %s: %s", email, e)
+        # DOMAIN only, not the address. The pre-conversion line interpolated the full
+        # address, but promoting it to a structured, INDEXED field changes its retention
+        # and searchability in the log store — that is a privacy decision, not a
+        # formatting one, and the domain is what actually helps diagnose a lookup failure.
+        logger.warning(
+            "by-email lookup failed",
+            extra={
+                **_C,
+                "email_domain": email.rpartition("@")[2] or None,
+                "error": format_error(e),
+            },
+        )
         return None
 
 
@@ -126,5 +151,8 @@ async def resolve_owner(provider: str, external_id: str) -> str | None:
         return None
     owner = await _scooter_user_for_email(email)
     if owner:
-        logger.info("resolved %s user %s -> scooter user %s", provider, external_id, owner)
+        logger.info(
+            "resolved external user to scooter user",
+            extra={**_C, "provider": provider, "external_id": external_id, "owner": owner},
+        )
     return owner

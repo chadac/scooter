@@ -10,9 +10,13 @@
  * failure mode is silent (lines simply lack the field).
  */
 
+import { PassThrough } from "node:stream";
+import type { ServerResponse } from "node:http";
+
 import { describe, it, expect } from "vitest";
 
 import { createAguiServer } from "../../src/agui/server.js";
+import { createRouter } from "../../src/http/router.js";
 import { currentContext, logger, reconfigureLogging } from "../../src/log.js";
 
 describe("POST /agui binds the log context", () => {
@@ -132,5 +136,60 @@ describe("POST /agui binds the log context", () => {
     expect(queued).toBeDefined();
     expect(queued?.conversation_id).toBe("conv-logged");
     expect(queued?.component).toBe("bridge");
+  });
+});
+
+describe("the management router binds the log context", () => {
+  it("makes the path :id ambient for EVERY /conversations/:id route", async () => {
+    // 27 management routes (suspend, resume, cancel, compact, rename, links, …) carry a
+    // conversation id in their path. Binding at the dispatch point covers all of them
+    // without editing any — and without this, the entire management surface logs failures
+    // with no way to tell WHICH conversation they belonged to.
+    const router = createRouter();
+    let seen: string | undefined;
+    router.post("/conversations/:id/suspend", async () => {
+      seen = currentContext().conversation_id;
+      return { status: 200, json: { ok: true } };
+    });
+
+    const req = Object.assign(new PassThrough(), {
+      method: "POST",
+      url: "/conversations/conv-42/suspend",
+      headers: {},
+    });
+    const res = {
+      setHeader() {},
+      writeHead() {
+        return res;
+      },
+      end() {},
+      write() {},
+      req,
+    } as unknown as ServerResponse;
+
+    await router.handle(req as never, res);
+    expect(seen).toBe("conv-42");
+  });
+
+  it("binds nothing for a route with no conversation id", async () => {
+    const router = createRouter();
+    let seen: string | undefined = "sentinel";
+    router.get("/healthz", async () => {
+      seen = currentContext().conversation_id;
+      return { status: 200, json: {} };
+    });
+    const req = Object.assign(new PassThrough(), { method: "GET", url: "/healthz", headers: {} });
+    const res = {
+      setHeader() {},
+      writeHead() {
+        return res;
+      },
+      end() {},
+      write() {},
+      req,
+    } as unknown as ServerResponse;
+
+    await router.handle(req as never, res);
+    expect(seen).toBeUndefined();
   });
 });

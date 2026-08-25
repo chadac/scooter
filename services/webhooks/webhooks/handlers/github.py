@@ -22,6 +22,7 @@ from ..identity_resolve import resolve_owner
 from ..responses.github import post_github_comment
 
 logger = logging.getLogger(__name__)
+_C = {"component": "handlers.github"}
 router = APIRouter()
 
 
@@ -117,7 +118,7 @@ async def handle_github_webhook(
     payload = await request.json()
     event_type = x_github_event
 
-    logger.info("Received GitHub event: %s", event_type)
+    logger.info("received event", extra={**_C, "source": "github", "event_type": event_type})
 
     if event_type == "issue_comment":
         await _handle_comment(payload)
@@ -126,7 +127,7 @@ async def handle_github_webhook(
     elif event_type == "pull_request":
         await _handle_pr_event(payload)
     else:
-        logger.debug("Ignoring GitHub event type: %s", event_type)
+        logger.debug("ignoring event type", extra={**_C, "source": "github", "event_type": event_type})
 
     return {"status": "ok"}
 
@@ -183,7 +184,16 @@ async def _handle_comment(payload: dict):
         ok = await send_message(existing, forward_msg, priority=has_mention, source="github")
         if ok:
             return
-        logger.warning("Failed to send to existing conversation %s, creating new one", existing)
+        logger.warning(
+            "send to existing conversation failed, creating a new one",
+            extra={
+                **_C,
+                "conversation_id": existing,
+                "source": "github",
+                "resource_type": res_type,
+                "resource_id": res_id,
+            },
+        )
 
     await db.store_conversation("github", res_type, res_id, PENDING_CONVERSATION_ID)
 
@@ -343,10 +353,16 @@ async def _background_create_conversation(
         for msg in messages:
             ok = await send_message(conv_id, msg, source="github")
             if not ok:
-                logger.warning("Failed to flush pending message to conversation %s", conv_id)
+                logger.warning(
+                    "flush of pending message failed",
+                    extra={**_C, "conversation_id": conv_id, "source": "github", "resource_id": res_id},
+                )
     except Exception:
         await _clear_pending(res_type, res_id)
-        logger.exception("Error in background conversation creation for %s", res_id)
+        logger.exception(
+            "background conversation creation failed",
+            extra={**_C, "source": "github", "resource_type": res_type, "resource_id": res_id},
+        )
 
 
 async def _clear_pending(res_type: str, res_id: str) -> None:

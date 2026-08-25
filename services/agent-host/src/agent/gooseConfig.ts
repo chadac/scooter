@@ -33,6 +33,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { formatError, logger } from "../log.js";
+
+const log = logger("agent-host");
+
 /** The developer-extension tools that goose's AcpTools redirects to the ACP
  *  client (the sandbox): read/write/edit/shell. Excludes tree + read_image,
  *  which AcpTools does NOT redirect (they'd run locally in the agent-host pod). */
@@ -91,8 +95,7 @@ export function ensureGooseConfig(
   }
   try {
     writeGooseConfig(home);
-    // eslint-disable-next-line no-console
-    console.log(`[agent-host] wrote goose config (developer enabled) to ${home}/.config/goose`);
+    log.info("wrote goose config (developer enabled)", { path: join(home, ".config", "goose") });
   } catch (e) {
     if (opts.fatal) {
       throw new Error(
@@ -102,7 +105,6 @@ export function ensureGooseConfig(
         { cause: e },
       );
     }
-    // eslint-disable-next-line no-console
-    console.warn("[agent-host] failed to write goose config (non-fatal, fake sandbox):", e);
+    log.warn("failed to write goose config (non-fatal, fake sandbox)", { error: formatError(e) });
   }
 }

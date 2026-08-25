@@ -872,9 +872,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           const before = pending.length;
           pending = pending.filter((p) => !loggedUserTexts.has(p.text));
           if (pending.length !== before) {
-            console.warn(
-              `[manager] revive(${id}): skipping ${before - pending.length} already-logged message(s) (in-flight replay dedupe)`,
-            );
+            log.warn("revive: skipping already-logged messages (in-flight replay dedupe)", {
+              conversation_id: id,
+              skipped: before - pending.length,
+            });
           }
         } catch (err) {
           // A read failure must not block the revive. Replaying is the safer default:

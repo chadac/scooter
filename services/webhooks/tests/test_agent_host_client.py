@@ -225,7 +225,11 @@ async def test_status_5xx_returns_none_and_warns(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="webhooks.agent_host_client"):
         assert await ahc.get_conversation_status("c1") is None
     # A transient failure is surfaced at WARNING (NOT silently like a 404).
-    assert any("FAILED (transient" in r.message for r in caplog.records)
+    # msg is a CONSTANT now; the varying detail rides as structured fields.
+    warned = [r for r in caplog.records if r.message == "status fetch failed, transient, will retry"]
+    assert warned
+    assert warned[0].conversation_id == "c1"
+    assert warned[0].error["status"] == 503
 
 
 # --- multimodal content (stage 5): images -> text+image parts array -----------

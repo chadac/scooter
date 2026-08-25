@@ -19,6 +19,7 @@ from ..config import settings
 from ..core.authz import authorizer_from_settings, aws_account_object, user_object
 from ..core.registry import register_provider
 from ..core.types import Provider
+from ..logging_config import format_error
 from ..transports.aws_permissions import AwsPermissions
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,10 @@ def _load_registry() -> dict[str, dict]:
         # JSON) silently disables the AWS provider — the broker boots "healthy" and
         # every request gets a misleading 503, indistinguishable from a deliberately
         # disabled provider. If the operator explicitly enabled AWS, fail fast instead.
-        logger.exception("failed to read aws_accounts_file %s", settings.aws_accounts_file)
+        logger.exception(
+            "failed to read aws_accounts_file",
+            extra={"path": settings.aws_accounts_file, "aws_enabled": settings.aws_enabled},
+        )
         if settings.aws_enabled:
             raise
         return {}
@@ -94,37 +98,80 @@ async def notify_host(req) -> None:
         except httpx.HTTPError as e:
             if last:
                 logger.error(
-                    "aws notify: POST %s errored after %d attempt(s) for %s: %s "
-                    "(request stays PENDING; the host re-queries /aws/pending on revive)",
-                    url, attempt, req.request_id, e,
+                    "notify errored; giving up (request stays PENDING, host re-queries /aws/pending on revive)",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": req.request_id,
+                        "url": url,
+                        "attempt": attempt,
+                        "attempts": attempts,
+                        "error": format_error(e),
+                    },
                 )
                 return
-            logger.warning("aws notify: attempt %d/%d errored for %s: %s", attempt, attempts, req.request_id, e)
+            logger.warning(
+                "notify attempt errored; retrying",
+                extra={
+                    "conversation_id": req.conversation_id,
+                    "request_id": req.request_id,
+                    "url": url,
+                    "attempt": attempt,
+                    "attempts": attempts,
+                    "retry_in_ms": int(delay * 1000),
+                    "error": format_error(e),
+                },
+            )
         else:
             if resp.status_code < 300:
                 logger.info(
-                    "aws notify: raised approval interrupt for %s (conversation %s)",
-                    req.request_id, req.conversation_id,
+                    "notify raised approval interrupt",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": req.request_id,
+                        "status": resp.status_code,
+                        "attempt": attempt,
+                    },
                 )
                 return
             # 4xx that won't change on a retry -> permanent; stop and say so.
             if 400 <= resp.status_code < 500 and resp.status_code not in (408, 429):
                 logger.error(
-                    "aws notify: POST %s returned %s for %s — NOT retrying "
-                    "(permanent: unknown conversation or bad payload). Body: %s",
-                    url, resp.status_code, req.request_id, resp.text[:500],
+                    "notify returned a permanent error; not retrying (unknown conversation or bad payload)",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": req.request_id,
+                        "url": url,
+                        "status": resp.status_code,
+                        "attempt": attempt,
+                        "body": resp.text[:500],
+                    },
                 )
                 return
             if last:
                 logger.error(
-                    "aws notify: POST %s returned %s after %d attempt(s) for %s "
-                    "(request stays PENDING; the host re-queries /aws/pending on revive). Body: %s",
-                    url, resp.status_code, attempt, req.request_id, resp.text[:500],
+                    "notify failed; giving up (request stays PENDING, host re-queries /aws/pending on revive)",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": req.request_id,
+                        "url": url,
+                        "status": resp.status_code,
+                        "attempt": attempt,
+                        "attempts": attempts,
+                        "body": resp.text[:500],
+                    },
                 )
                 return
             logger.warning(
-                "aws notify: attempt %d/%d returned %s for %s; retrying",
-                attempt, attempts, resp.status_code, req.request_id,
+                "notify returned a transient error; retrying",
+                extra={
+                    "conversation_id": req.conversation_id,
+                    "request_id": req.request_id,
+                    "url": url,
+                    "status": resp.status_code,
+                    "attempt": attempt,
+                    "attempts": attempts,
+                    "retry_in_ms": int(delay * 1000),
+                },
             )
         await asyncio.sleep(delay)
         delay *= 2
@@ -194,9 +241,15 @@ def aws() -> Provider:
                         obj=aws_account_object(alias),
                     )
                 except Exception:
-                    logger.exception("failed seeding approver %s for %s", approver, alias)
+                    logger.exception(
+                        "failed seeding approver tuple",
+                        extra={"approver": approver, "account_alias": alias},
+                    )
         if settings.fga_enabled:
-            logger.info("seeded AWS approver tuples from the account registry")
+            logger.info(
+                "seeded approver tuples from the account registry",
+                extra={"account_count": len(registry)},
+            )
 
     async def on_startup() -> None:
         await store.init()
@@ -207,11 +260,20 @@ def aws() -> Provider:
                 try:
                     swept = await service.sweep_expired()
                     if swept:
-                        logger.info("swept %d expired AWS roles: %s", len(swept), swept)
+                        logger.info(
+                            "swept expired roles",
+                            extra={"swept_count": len(swept), "request_ids": swept},
+                        )
                 except Exception:
-                    logger.exception("AWS expiry sweep failed")
+                    logger.exception(
+                        "expiry sweep failed",
+                        extra={"sweep_interval_s": settings.aws_sweep_interval},
+                    )
         _sweep_task.append(asyncio.create_task(sweep_loop()))
-        logger.info("AWS permissions provider ready (%d accounts)", len(registry))
+        logger.info(
+            "provider ready",
+            extra={"account_count": len(registry)},
+        )
 
     async def on_shutdown() -> None:
         for t in _sweep_task:

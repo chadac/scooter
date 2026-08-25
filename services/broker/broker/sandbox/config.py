@@ -15,6 +15,7 @@ from .manifest import DeployConfig
 from .resources import SandboxResources, validate_resources
 from ..aws.store import StoreConfig
 from ..config import BrokerSettings
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,10 @@ def deploy_config(settings: BrokerSettings) -> DeployConfig:
         try:
             extra_env = json.loads(settings.sandbox_extra_env_json)
         except json.JSONDecodeError as e:
-            logger.error("SANDBOX_EXTRA_ENV_JSON is invalid — ignoring: %s", e)
+            logger.error(
+                "SANDBOX_EXTRA_ENV_JSON is invalid; ignoring it",
+                extra={"error": format_error(e)},
+            )
     return DeployConfig(
         namespace=settings.sandbox_namespace,
         sandbox_image=settings.sandbox_image,

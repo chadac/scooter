@@ -520,8 +520,10 @@ export function createAguiServer(): AguiServer {
             // something that gets screenshotted and pasted into issues. Routes with an
             // expected failure mode should catch it themselves and answer specifically
             // (see /remote-agent/join-token) — landing here is a bug worth the log line.
-            // eslint-disable-next-line no-console
-            console.error(`[agui] unhandled route error ${req.method} ${req.url}:`, err);
+            log.errorWith("unhandled route error", err, {
+              http_method: req.method,
+              url: req.url,
+            });
             if (!res.headersSent) {
               res.writeHead(500, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ error: "internal error" }));

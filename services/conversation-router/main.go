@@ -16,7 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -54,36 +54,49 @@ func configFromEnv() config {
 }
 
 func main() {
+	setupLogging()
+	log := logger("main")
+
 	cfg := configFromEnv()
+	// ctx is the PROCESS-lifetime context: cancelled on SIGTERM/SIGINT. It is handed to the
+	// proxy layer so a cancellation caused by OUR shutdown can be told apart from a client
+	// hanging up — see classifyProxyError.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
 	dyn, err := newDynamicClient()
 	if err != nil {
-		log.Fatalf("k8s client: %v", err)
+		log.Error("k8s client init failed", errAttr(err))
+		os.Exit(1)
 	}
 	cache := NewOwnershipCache()
 	go cache.Run(ctx, dyn, cfg.namespace)
 
 	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(cfg, cache, creator)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator)}
 	go func() {
 		<-ctx.Done()
+		log.Info("shutdown signalled, draining")
 		sctx, c := context.WithTimeout(context.Background(), 10*time.Second)
 		defer c()
 		_ = srv.Shutdown(sctx) // drains in-flight; SSE/WS closed by upstream on their own
 	}()
-	logf("conversation-router listening on %s (ns=%s svc=%s)", cfg.listenAddr, cfg.namespace, cfg.clusterIPService)
+	log.Info("listening",
+		slog.String("listen_addr", cfg.listenAddr),
+		slog.String("namespace", cfg.namespace),
+		slog.String("agent_host_service", cfg.clusterIPService))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("serve: %v", err)
+		log.Error("serve failed", errAttr(err))
+		os.Exit(1)
 	}
+	log.Info("stopped")
 }
 
 // newRouter builds the HTTP handler: resolve target (owner pod IP or ClusterIP fallback),
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(cfg config, cache *OwnershipCache, creator ConversationCreator) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator) http.Handler {
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// FLEET-AGGREGATE routes must be answered from EVERY pod, not one. An agent-host serves the
@@ -107,33 +120,71 @@ func newRouter(cfg config, cache *OwnershipCache, creator ConversationCreator) h
 			}
 			return
 		}
-		target := resolveTarget(cfg, cache, r, fallback)
+		// convID is resolved ONCE here and threaded into the proxy layer, so every line a
+		// request produces carries conversation_id — the field the cross-service query joins on.
+		convID, target := resolveTargetFor(cfg, cache, r, fallback)
 		// Retry ONLY when the primary target is an owner IP (not already the fallback) AND
 		// nothing has been written to the client yet (a dial error, pre-response). Streaming
 		// bodies (SSE/WS) that fail mid-stream can't be safely retried — but a DIAL failure
 		// happens before any bytes flow, so the guard below (headerWritten) makes it safe.
 		canRetry := target.Host != fallback.Host
-		serveVia(w, r, target, fallback, canRetry)
+		serveVia(shutdownCtx, w, r, target, fallback, canRetry, convID)
 	})
 }
 
 // serveVia reverse-proxies r to `target`; on a connect/dial failure (upstream unreachable,
 // pre-response) it retries once against `fallback` when `retry` is set. A failure AFTER the
 // response has begun (headers written / stream started) is surfaced as-is — not retryable.
-func serveVia(w http.ResponseWriter, r *http.Request, target, fallback *url.URL, retry bool) {
+func serveVia(shutdownCtx context.Context, w http.ResponseWriter, r *http.Request, target, fallback *url.URL, retry bool, convID string) {
+	log := logger("proxy")
 	tw := &trackingWriter{ResponseWriter: w}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.FlushInterval = -1 // flush immediately: required for SSE (don't buffer the stream).
 	proxy.ErrorHandler = func(ww http.ResponseWriter, rr *http.Request, e error) {
+		kind := classifyProxyError(e, shutdownCtx, rr.Context())
+		fields := []any{
+			convAttr(convID),
+			slog.String("upstream", target.Host),
+			slog.String("method", rr.Method),
+			slog.String("path", rr.URL.Path),
+			slog.String("reason", kind.String()),
+			errAttr(e),
+		}
+
+		// ROUTINE ENDINGS ARE NOT ERRORS. An SSE reader navigating away or a finished body
+		// surfaces here as context.Canceled / io.EOF; that was ~55 false errors a day, burying
+		// the real ones. There is also nobody left to receive a 502, and writing one after the
+		// stream started would corrupt it — so we log and return.
+		if kind.routine() {
+			log.Debug("stream ended", fields...)
+			return
+		}
+		if kind == proxyErrShutdown {
+			// Expected during a rollout, but it IS us dropping somebody's in-flight request —
+			// visible at warn rather than hidden at debug.
+			log.Warn("request cancelled by shutdown", fields...)
+			return
+		}
+
 		if retry && !tw.wrote {
 			// Owner IP unreachable before any bytes flowed (e.g. pod replaced) → serve via
 			// the fallback Service (any ready pod). Recurse with retry=false so a fallback
 			// failure returns a real 502.
-			logf("proxy to %s failed pre-response (%v) — retrying via fallback %s", target.Host, e, fallback.Host)
-			serveVia(ww, rr, fallback, fallback, false)
+			log.Warn("upstream unreachable, retrying via fallback",
+				append(fields, slog.String("fallback", fallback.Host),
+					slog.Bool("dial_failure", isDialFailure(e)))...)
+			serveVia(shutdownCtx, ww, rr, fallback, fallback, false, convID)
 			return
 		}
-		logf("proxy to %s failed: %v", target.Host, e)
+		// A genuine proxy failure with no retry left: the client gets a real 502.
+		log.Error("proxy failed",
+			append(fields, slog.Bool("response_started", tw.wrote),
+				slog.Bool("dial_failure", isDialFailure(e)))...)
+		if tw.wrote {
+			// Headers already went out; a 502 now would be a protocol violation. The truncated
+			// stream is all the client can be told.
+			return
+		}
 		http.Error(ww, "upstream unavailable", http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(tw, r)
@@ -175,8 +226,17 @@ func (t *trackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // conversation is scoped + assigned, else the ClusterIP fallback (non-scoped, unassigned,
 // or unknown — the controller converges the owner shortly).
 func resolveTarget(cfg config, cache *OwnershipCache, r *http.Request, fallback *url.URL) *url.URL {
+	_, u := resolveTargetFor(cfg, cache, r, fallback)
+	return u
+}
+
+// resolveTargetFor is resolveTarget plus the conversation id it resolved, so the caller can
+// attach `conversation_id` to every log line the request produces. Returns "" for a non-scoped
+// or unidentifiable request (healthz, a malformed agui body) — the id field is then omitted
+// rather than logged empty.
+func resolveTargetFor(cfg config, cache *OwnershipCache, r *http.Request, fallback *url.URL) (string, *url.URL) {
 	if IsNonScoped(r.URL.Path) {
-		return fallback
+		return "", fallback
 	}
 	convID := ""
 	if IsAguiPost(r.Method, r.URL.Path) {
@@ -186,10 +246,10 @@ func resolveTarget(cfg config, cache *OwnershipCache, r *http.Request, fallback 
 	}
 	if convID != "" {
 		if ip, ok := cache.HostIP(convID); ok {
-			return TargetURL(ip, cfg.upstreamPort)
+			return convID, TargetURL(ip, cfg.upstreamPort)
 		}
 	}
-	return fallback
+	return convID, fallback
 }
 
 // aguiThreadID reads the POST /agui JSON body to get threadId, then restores the body on
@@ -254,5 +314,3 @@ func isSSE(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") ||
 		strings.HasSuffix(r.URL.Path, "/events")
 }
-
-func logf(f string, a ...interface{}) { log.Printf(f, a...) }
