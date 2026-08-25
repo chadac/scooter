@@ -54,6 +54,14 @@ def pseudonym(value: str | None) -> str | None:
     pseudonym key, which is a deployment concern rather than a code one.
 
     12 hex chars: collision-safe at this cardinality, short enough to eyeball.
+
+    NOT CACHED, deliberately. Measured at 0.34 us per call, and the call sites here are
+    mutually exclusive — AT MOST ONE fires per webhook delivery, so there is nothing to
+    amortize. A cache would add an unbounded dict keyed by exactly the personal data this
+    function exists to keep out of memory-dumpable structures, to save one hash. If a
+    caller ever needs this per-user rather than per-request, the right home is a cached
+    attribute on the user record in the agent-host identity store (where the model
+    actually lives) — not a module-level map in the service that only sees id strings.
     """
     if not value:
         return None
