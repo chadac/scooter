@@ -27,6 +27,8 @@ import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
 import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
 import { useSessions } from "./sessions.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type Tab = "sandbox" | "approvals" | "queue" | "subagents";
 
@@ -46,18 +48,19 @@ function TabButton({
   alert?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
       role="tab"
       aria-selected={active}
       data-testid={`right-panel-tab-${label.toLowerCase()}`}
       onClick={onClick}
-      className={
-        "flex flex-1 items-center justify-center gap-1.5 border-b-2 px-3 py-2 text-sm " +
-        (active
+      className={cn(
+        "flex-1 rounded-none border-b-2",
+        active
           ? "border-foreground font-medium text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground")
-      }
+          : "border-transparent text-muted-foreground hover:bg-transparent hover:text-foreground"
+      )}
     >
       {label}
       {count > 0 && (
@@ -67,14 +70,14 @@ function TabButton({
           className={
             "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-xs " +
             (alert
-              ? "bg-red-600 font-semibold text-white"
+              ? "bg-destructive font-semibold text-white dark:bg-destructive/60"
               : "bg-muted text-muted-foreground")
           }
         >
           {count}
         </span>
       )}
-    </button>
+    </Button>
   );
 }
 

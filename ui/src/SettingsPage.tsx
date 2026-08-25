@@ -31,6 +31,8 @@ import {
 } from "./client.js";
 import { useSessions } from "./sessions.js";
 import { viewStore, useSettingsTab, SETTINGS_TABS, type SettingsTab } from "./view.js";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const BLANK: ScheduledTaskInput = { title: "", prompt: "", cron: "", timezone: "UTC", enabled: true };
 
@@ -124,17 +126,23 @@ function TaskForm({
       </label>
       {error && <p data-testid="task-form-error" className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">
-        <button
+        <Button
+          variant="default"
+          size="sm"
           data-testid="task-submit"
           disabled={!valid || busy}
           onClick={submit}
-          className="rounded-md bg-foreground px-3 py-1.5 text-sm text-background disabled:opacity-50"
         >
           {busy ? "Saving…" : submitLabel}
-        </button>
-        <button data-testid="task-cancel" onClick={onCancel} className="rounded-md border px-3 py-1.5 text-sm hover:bg-accent">
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="task-cancel"
+          onClick={onCancel}
+        >
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -197,7 +205,7 @@ function TaskRow({
           <span
             className={
               "rounded px-1.5 py-0.5 text-[10px] " +
-              (task.enabled ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400" : "bg-muted text-muted-foreground")
+              (task.enabled ? "bg-success/15 text-success" : "bg-muted text-muted-foreground")
             }
           >
             {task.enabled ? "enabled" : "disabled"}
@@ -212,32 +220,36 @@ function TaskRow({
         <p className="mt-1 line-clamp-2 text-sm text-foreground/80">{task.prompt}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <button
+        <Button
+          variant="outline"
+          size="xs"
           data-testid="task-toggle"
           disabled={busy}
           onClick={toggle}
           title={task.enabled ? "Disable" : "Enable"}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
         >
           {task.enabled ? "Disable" : "Enable"}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
+          size="xs"
           data-testid="task-edit"
           disabled={busy}
           onClick={() => setEditing(true)}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
         >
           Edit
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
+          size="xs"
           data-testid="task-delete"
           disabled={busy}
           onClick={remove}
           aria-label={`Delete ${task.title}`}
-          className="rounded-md border px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          className="text-destructive hover:bg-destructive/10"
         >
           Delete
-        </button>
+        </Button>
       </div>
     </li>
   );
@@ -390,13 +402,14 @@ function ScheduledTasksSection() {
           </p>
         </div>
         {configured && !creating && (
-          <button
+          <Button
+            variant="default"
+            size="sm"
             data-testid="task-new"
             onClick={() => setCreating(true)}
-            className="rounded-md bg-foreground px-3 py-1.5 text-sm text-background"
           >
             + New task
-          </button>
+          </Button>
         )}
       </div>
 
@@ -493,7 +506,7 @@ function DeviceList() {
   return (
     <div data-testid="byoc-device-list" className="flex flex-col gap-2">
       <h3 className="text-sm font-medium">Registered devices</h3>
-      {error && <p data-testid="byoc-device-error" className="text-sm text-red-600">{error}</p>}
+      {error && <p data-testid="byoc-device-error" className="text-sm text-destructive">{error}</p>}
       {devices.map((d) => (
         <div
           key={d.id}
@@ -504,15 +517,15 @@ function DeviceList() {
             <span data-testid="byoc-device-label" className="font-medium">{d.label ?? "Unnamed device"}</span>
             <span className="ml-2 text-muted-foreground">last seen {formatLastSeen(d.lastSeen)}</span>
           </span>
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="xs"
             data-testid="byoc-device-deregister"
             disabled={busy === d.id}
             onClick={() => void remove(d.id)}
-            className="rounded-md border px-2 py-1 text-xs hover:bg-muted/50 disabled:opacity-50"
           >
             {busy === d.id ? "Removing…" : "Deregister"}
-          </button>
+          </Button>
         </div>
       ))}
     </div>
@@ -582,9 +595,9 @@ function ClaudeAgentSection() {
         </div>
         <div
           data-testid="claude-agent-disabled"
-          className="flex flex-col gap-3 rounded-md border border-red-500/40 bg-red-500/10 p-4"
+          className="flex flex-col gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-4"
         >
-          <p className="text-sm font-medium text-red-700 dark:text-red-400">
+          <p className="text-sm font-medium text-destructive">
             Not enabled on this deployment.
           </p>
           <p className="text-sm text-muted-foreground">
@@ -623,10 +636,10 @@ function ClaudeAgentSection() {
       <div className="flex items-center gap-2 text-sm" data-testid="claude-agent-status">
         <span
           aria-hidden
-          className={`inline-block h-2.5 w-2.5 rounded-full ${connected ? "bg-green-500" : "bg-muted-foreground/40"}`}
+          className={`inline-block h-2.5 w-2.5 rounded-full ${connected ? "bg-success" : "bg-muted-foreground/40"}`}
         />
         {connected ? (
-          <span data-testid="claude-agent-connected" className="font-medium text-green-700">Connected</span>
+          <span data-testid="claude-agent-connected" className="font-medium text-success">Connected</span>
         ) : (
           <span data-testid="claude-agent-disconnected" className="text-muted-foreground">Not connected</span>
         )}
@@ -636,7 +649,7 @@ function ClaudeAgentSection() {
           Previously a container with a bad/expired token fast-looped in silence while this
           page showed a clean "Not connected" — invisible on both ends. */}
       {!connected && authFailure ? (
-        <p data-testid="claude-agent-auth-failure" className="text-sm text-red-700 dark:text-red-400">
+        <p data-testid="claude-agent-auth-failure" className="text-sm text-destructive">
           A container failed to authenticate at {new Date(authFailure.at).toLocaleString()}:{" "}
           <span className="font-mono">{authFailure.reason}</span>. Generate a fresh command below and
           restart it.
@@ -644,14 +657,15 @@ function ClaudeAgentSection() {
       ) : null}
 
       {!command ? (
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           data-testid="claude-agent-generate"
           onClick={() => void generate()}
-          className="self-start rounded-md border px-3 py-1.5 text-sm hover:bg-muted/50"
+          className="self-start"
         >
           Connect your Claude agent
-        </button>
+        </Button>
       ) : (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-muted-foreground">
@@ -665,25 +679,26 @@ function ClaudeAgentSection() {
             {command}
           </pre>
           <div className="flex gap-2">
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="sm"
               data-testid="claude-agent-copy"
               onClick={copy}
-              className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted/50"
             >
               {copied ? "Copied ✓" : "Copy command"}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => void generate()}
-              className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50"
+              className="text-muted-foreground"
             >
               Regenerate
-            </button>
+            </Button>
           </div>
         </div>
       )}
-      {error && <p data-testid="claude-agent-error" className="text-sm text-red-600">{error}</p>}
+      {error && <p data-testid="claude-agent-error" className="text-sm text-destructive">{error}</p>}
       <DeviceList />
     </section>
   );
@@ -719,13 +734,14 @@ export function SettingsPage() {
   return (
     <div data-testid="settings-page" className="mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden p-6">
       <div className="flex items-center gap-3">
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           data-testid="settings-back"
           onClick={() => viewStore.set("chat")}
-          className="rounded-md border px-2 py-1 text-sm hover:bg-accent"
         >
           ← Back
-        </button>
+        </Button>
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
 
@@ -736,18 +752,21 @@ export function SettingsPage() {
           {SETTINGS_TABS.map((t) => {
             const active = t.id === tab;
             return (
-              <button
+              <Button
                 key={t.id}
+                variant="ghost"
+                size="sm"
                 role="tab"
                 aria-selected={active}
                 data-testid={`settings-tab-${t.id}`}
                 onClick={() => viewStore.setTab(t.id)}
-                className={`rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                  active ? "bg-accent font-medium" : "hover:bg-accent/50 text-muted-foreground"
-                }`}
+                className={cn(
+                  "justify-start",
+                  active ? "bg-accent font-medium" : "text-muted-foreground"
+                )}
               >
                 {t.label}
-              </button>
+              </Button>
             );
           })}
         </nav>

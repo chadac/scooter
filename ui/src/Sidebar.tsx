@@ -22,6 +22,8 @@ import { LinkedResources } from "./LinkedResources.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
 import { agentHostConfig } from "./config.js";
 import { renameConversation, setConversationStarred, deleteConversation } from "./client.js";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 /** A small "?" affordance with an explanatory tooltip (native title + aria-label,
  *  matching the sidebar's lightweight style). */
@@ -125,20 +127,22 @@ const SessionRow = memo(function SessionRow({
     >
       {/* Star toggle — top-level only (subagents aren't independently retained). */}
       {depth === 0 && (
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           data-testid="session-star"
           aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
           aria-pressed={s.starred ? true : false}
           onClick={toggleStar}
-          className={
-            "shrink-0 rounded p-1 " +
-            (s.starred
-              ? "text-amber-500"
-              : "text-muted-foreground opacity-0 hover:text-amber-500 group-hover:opacity-100")
-          }
+          className={cn(
+            "shrink-0",
+            s.starred
+              ? "text-warning"
+              : "text-muted-foreground opacity-0 hover:text-warning group-hover:opacity-100"
+          )}
         >
           {s.starred ? "★" : "☆"}
-        </button>
+        </Button>
       )}
 
       {editing ? (
@@ -174,10 +178,12 @@ const SessionRow = memo(function SessionRow({
           className="min-w-0 flex-1 rounded border bg-background px-2 py-1.5 text-sm"
         />
       ) : (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => sessionStore.switchTo(s.id)}
           onDoubleClick={openRename}
-          className={"min-w-0 flex-1 truncate px-3 py-2 text-left " + (active ? "font-medium" : "")}
+          className={cn("min-w-0 flex-1 justify-start truncate", active && "font-medium")}
           title={`${s.title} — double-click to rename`}
         >
           {depth > 0 && <span className="me-1 text-muted-foreground" aria-hidden>↳</span>}
@@ -187,7 +193,7 @@ const SessionRow = memo(function SessionRow({
               ▸ {childCount} subagent{childCount === 1 ? "" : "s"}
             </span>
           )}
-        </button>
+        </Button>
       )}
 
       {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
@@ -202,7 +208,9 @@ const SessionRow = memo(function SessionRow({
       {/* Explicit rename affordance — a dedicated button (not overloading the title's
           click/double-click, which raced with switchTo re-rendering the row). */}
       {!editing && (
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           data-testid="session-rename"
           aria-label={`Rename ${s.title}`}
           title="Rename"
@@ -210,21 +218,23 @@ const SessionRow = memo(function SessionRow({
             e.stopPropagation();
             openRename();
           }}
-          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover:opacity-100"
+          className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100"
         >
           ✎
-        </button>
+        </Button>
       )}
 
       {!editing && (
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
           data-testid="session-delete"
           aria-label={`Delete ${s.title}`}
           onClick={remove}
-          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="shrink-0 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
         >
           ✕
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -258,13 +268,15 @@ export const Sidebar = memo(function Sidebar() {
   return (
     <aside className="flex h-full w-64 flex-col border-r bg-muted/30">
       <div className="p-3">
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           data-testid="new-session"
           onClick={() => sessionStore.newSession()}
-          className="w-full rounded-md border bg-background px-3 py-2 text-sm hover:bg-accent"
+          className="w-full"
         >
           + New conversation
-        </button>
+        </Button>
       </div>
       {/* Keyword search over the title + linked-resource names. */}
       <div className="px-3 pb-2">
@@ -282,13 +294,14 @@ export const Sidebar = memo(function Sidebar() {
       {/* Advanced filters — a collapsible below search holding Scope (Mine/All),
           the linked-provider filter chips, and the Show (label-mode) control. */}
       <div className="px-3 pb-2">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="xs"
           data-testid="filters-toggle"
           data-open={filtersOpen}
           aria-expanded={filtersOpen}
           onClick={() => setFiltersOpen((o) => !o)}
-          className="flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs text-muted-foreground hover:text-foreground"
+          className="w-full justify-start gap-1.5 px-1 text-muted-foreground"
         >
           <span className={"transition-transform " + (filtersOpen ? "rotate-90" : "")}>›</span>
           <span className="font-medium">Advanced</span>
@@ -300,7 +313,7 @@ export const Sidebar = memo(function Sidebar() {
               {activeFilters}
             </span>
           )}
-        </button>
+        </Button>
 
         {filtersOpen && (
           <div data-testid="filters-panel" className="mt-1 flex flex-col gap-2 rounded-md border bg-background/60 p-2 text-xs">
@@ -310,18 +323,20 @@ export const Sidebar = memo(function Sidebar() {
               <span className="w-12 shrink-0 text-muted-foreground">Default</span>
               <div data-testid="scope-toggle" className="flex flex-1 gap-1">
                 {(["mine", "all"] as const).map((s) => (
-                  <button
+                  <Button
                     key={s}
+                    variant="ghost"
+                    size="xs"
                     data-testid={`scope-${s}`}
                     data-active={scope === s}
                     onClick={() => sessionStore.setScope(s)}
-                    className={
-                      "flex-1 rounded px-2 py-1 capitalize " +
-                      (scope === s ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent/50")
-                    }
+                    className={cn(
+                      "flex-1 capitalize",
+                      scope === s ? "bg-accent font-medium" : "text-muted-foreground"
+                    )}
                   >
                     {s}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -337,24 +352,24 @@ export const Sidebar = memo(function Sidebar() {
                 {LINK_PROVIDERS.map((p) => {
                   const active = providerFilter.includes(p);
                   return (
-                    <button
+                    <Button
                       key={p}
-                      type="button"
+                      variant="outline"
+                      size="icon-xs"
                       data-testid={`provider-${p}`}
                       data-active={active}
                       aria-pressed={active}
                       aria-label={`Filter by ${sourceLabel(p)}`}
                       title={`Filter by ${sourceLabel(p)}`}
                       onClick={() => sessionStore.toggleProvider(p)}
-                      className={
-                        "flex items-center justify-center rounded-md border p-1.5 " +
-                        (active
+                      className={cn(
+                        active
                           ? "border-foreground bg-accent"
-                          : "border-transparent opacity-40 hover:opacity-100 hover:bg-accent/50")
-                      }
+                          : "border-transparent opacity-40 hover:opacity-100"
+                      )}
                     >
                       <SourceBadge source={p} size={15} />
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -378,9 +393,10 @@ export const Sidebar = memo(function Sidebar() {
                   const active = labelMode === m;
                   const lbl = m === "title" ? "Conversation title" : `${sourceLabel(m)} link name`;
                   return (
-                    <button
+                    <Button
                       key={m}
-                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
                       role="radio"
                       aria-checked={active}
                       data-testid={`label-${m}`}
@@ -388,13 +404,13 @@ export const Sidebar = memo(function Sidebar() {
                       aria-label={lbl}
                       title={lbl}
                       onClick={() => sessionStore.setLabelMode(m as LabelMode)}
-                      className={
-                        "flex flex-1 items-center justify-center rounded p-1 " +
-                        (active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50")
-                      }
+                      className={cn(
+                        "flex-1",
+                        active ? "bg-accent text-foreground" : "text-muted-foreground"
+                      )}
                     >
                       {m === "title" ? <TitleBadge size={15} /> : <SourceBadge source={m} size={15} />}
-                    </button>
+                    </Button>
                   );
                 })}
               </div>

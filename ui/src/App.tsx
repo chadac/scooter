@@ -16,6 +16,8 @@ import { viewStore, useView } from "./view.js";
 import { StartingPodLanding } from "./DeadPodLanding.js";
 import { useSandboxStatus } from "./SandboxPanel.js";
 import { Thread } from "@/components/assistant-ui/thread";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 /** The Thread wrapped in an error boundary keyed to the render tick, so a
  *  transient assistant-ui runtime crash (e.g. during a model-switch rebuild)
@@ -54,19 +56,18 @@ export function App() {
           </div>
           <div className="flex items-center gap-3">
             {/* Settings (scheduled tasks, …). Toggles the main pane. */}
-            <button
+            <Button
               data-testid="settings-toggle"
+              variant="outline"
+              size="sm"
               aria-label="Settings"
               title="Settings"
               aria-pressed={view === "settings"}
               onClick={() => viewStore.set(view === "settings" ? "chat" : "settings")}
-              className={
-                "rounded-md border px-2 py-1 hover:bg-accent " +
-                (view === "settings" ? "bg-accent" : "")
-              }
+              className={cn(view === "settings" && "bg-accent")}
             >
               ⚙
-            </button>
+            </Button>
             {/* Signed-in user (from the ingress identity); hidden when anonymous. */}
             <UserBadge />
           </div>

@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { loadLinks, type ConversationLink } from "./client.js";
 import { useSessions } from "./sessions.js";
 import { SourceBadge } from "./sourceIcon.js";
+import { Button } from "@/components/ui/button";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
@@ -45,15 +46,16 @@ export function LinkedResources() {
 
   return (
     <div className="border-t text-sm" data-testid="linked-resources">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between px-3 py-2 text-left text-muted-foreground hover:bg-accent/50"
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-full justify-between text-muted-foreground"
         onClick={() => setOpen((o) => !o)}
         data-testid="linked-resources-toggle"
       >
         <span>Linked ({links.length})</span>
         <span aria-hidden>{open ? "▾" : "▸"}</span>
-      </button>
+      </Button>
       {open && (
         <ul className="px-2 pb-2">
           {links.map((l, i) => (

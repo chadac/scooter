@@ -7,6 +7,7 @@
  */
 
 import type { WebService } from "./client.js";
+import { Button } from "@/components/ui/button";
 
 export function ServiceRows({
   services,
@@ -31,7 +32,7 @@ export function ServiceRows({
         >
           <span className="flex min-w-0 items-center gap-1">
             <span
-              className={`inline-block h-2 w-2 shrink-0 rounded-full ${s.running ? "bg-green-500" : "bg-muted-foreground/40"}`}
+              className={`inline-block h-2 w-2 shrink-0 rounded-full ${s.running ? "bg-success" : "bg-muted-foreground/40"}`}
               aria-hidden
             />
             <span className="truncate">{s.displayName}</span>
@@ -49,25 +50,26 @@ export function ServiceRows({
               </a>
             )}
             {s.running ? (
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="xs"
                 data-testid="service-stop"
                 disabled={starting[s.name]}
                 onClick={() => onStop?.(s.name)}
-                className="rounded-md border border-border bg-background px-2 py-0.5 text-muted-foreground hover:text-destructive disabled:opacity-50"
+                className="text-muted-foreground hover:text-destructive"
               >
                 {starting[s.name] ? "…" : "Stop"}
-              </button>
+              </Button>
             ) : (
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="xs"
                 data-testid="service-start"
                 disabled={starting[s.name]}
                 onClick={() => onStart(s.name)}
-                className="rounded-md border border-border bg-background px-2 py-0.5 text-foreground disabled:opacity-50"
               >
                 {starting[s.name] ? "Starting…" : "Start"}
-              </button>
+              </Button>
             )}
           </span>
         </li>
