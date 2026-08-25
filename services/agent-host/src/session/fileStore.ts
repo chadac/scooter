@@ -13,8 +13,11 @@ import type { AguiEvent } from "../bridge.js";
 import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionId } from "../types.js";
+import { logger } from "../log.js";
 import { EMPTY_CHECKSUM, chainNext } from "../agui/integrity.js";
 import { tailByRuns } from "./eventWindow.js";
+
+const log = logger("fileStore");
 
 // Atomic whole-file write: write a temp sibling then rename over the target.
 // rename(2) is atomic on POSIX, so a concurrent reader (e.g. listConversations()
@@ -88,8 +91,9 @@ export function createFileConversationStore(root: string): ConversationStore {
       // precisely to detect corruption, so swallowing it silently defeats it. Log
       // loudly for anything other than not-found.
       if (!isENOENT(e)) {
-        // eslint-disable-next-line no-console
-        console.error(`[fileStore] checksum seed for ${id} failed to read/parse the log (integrity may be off):`, e);
+        log.errorWith("checksum seed failed to read/parse the log (integrity may be off)", e, {
+          conversation_id: id,
+        });
       }
     }
     if (!seeded.has(id)) {
@@ -123,8 +127,7 @@ export function createFileConversationStore(root: string): ConversationStore {
             // nobody sees the rejection. Surface it loudly + notify observers
             // (the only persistence the conversation has just lost a turn), THEN
             // rethrow so an awaiting caller (tests, sync writers) sees it too.
-            // eslint-disable-next-line no-console
-            console.error(`[fileStore] durable append FAILED for ${id} (turn lost):`, error);
+            log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
             for (const cb of appendErrorListeners) {
               try { cb(id, error); } catch { /* an observer must not break the store */ }
             }

@@ -19,8 +19,10 @@ from collections.abc import Awaitable, Callable
 import httpx
 
 from .config import settings
+from .logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "agent_host_client"}
 
 
 def _agui_url() -> str:
@@ -43,11 +45,17 @@ async def _create_conversation(owner: str | None) -> str | None:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(_conversations_url(), json={}, headers=headers)
         if resp.status_code >= 300:
-            logger.error("create_conversation: HTTP %s from POST /conversations", resp.status_code)
+            logger.error(
+                "create conversation returned an error status",
+                extra={**_C, "status": resp.status_code, "path": "/conversations"},
+            )
             return None
         return resp.json().get("id")
     except (httpx.HTTPError, ValueError) as e:
-        logger.error("create_conversation: POST /conversations failed: %s", e)
+        logger.error(
+            "create conversation request failed",
+            extra={**_C, "path": "/conversations", "error": format_error(e)},
+        )
         return None
 
 
@@ -125,7 +133,10 @@ async def create_conversation(
         try:
             await on_created(conversation_id)
         except Exception:
-            logger.exception("create_conversation on_created hook failed (continuing)")
+            logger.exception(
+                "on_created hook failed",
+                extra={**_C, "conversation_id": conversation_id, "continuing": True},
+            )
 
     try:
         result_text = await _run_and_collect(payload)
@@ -133,20 +144,29 @@ async def create_conversation(
         # The run was interrupted (agent-host restart) — the conversation exists
         # (created via on_created) and the agent-host resumes it on boot. Signal
         # INTERRUPTED (not a failure) so the caller doesn't post "couldn't start".
-        logger.warning("create_conversation for %s was interrupted (restart) — agent-host will resume", conversation_id)
+        logger.warning(
+            "run interrupted by restart, agent-host will resume",
+            extra={**_C, "conversation_id": conversation_id},
+        )
         return {"conversation_id": conversation_id, "result": "", "interrupted": True}
     except RunErrored as e:
         # The agent CRASHED mid-run. The conversation EXISTS (on_created posted the
         # link + anchor) and did work — so this is NOT "couldn't start". Signal
         # ERRORED (with the message) so the caller posts a truthful "hit an error
         # partway through" note, not a create-failed one.
-        logger.warning("create_conversation for %s errored mid-run: %s", conversation_id, e)
+        logger.warning(
+            "run errored mid-run",
+            extra={**_C, "conversation_id": conversation_id, "error": format_error(e)},
+        )
         return {"conversation_id": conversation_id, "result": "", "errored": True, "error": str(e)}
     except Exception:
         # A GENUINE early failure BEFORE the run produced anything (rare — on_created
         # already ran by here, so the conversation usually exists; this is the
         # can't-actually-create case). Return None → the caller's "couldn't start".
-        logger.exception("create_conversation failed")
+        logger.exception(
+            "create conversation failed",
+            extra={**_C, "conversation_id": conversation_id},
+        )
         return None
 
     return {"conversation_id": conversation_id, "result": result_text}
@@ -182,7 +202,10 @@ async def send_message(
         await _run_and_collect(payload)
         return True
     except Exception:
-        logger.exception("send_message failed for %s", conversation_id)
+        logger.exception(
+            "send message failed",
+            extra={**_C, "conversation_id": conversation_id},
+        )
         return False
 
 
@@ -292,8 +315,17 @@ async def push_link(
                 json=body,
             )
             return resp.status_code in (200, 201)
-    except httpx.HTTPError:
-        logger.warning("push_link failed for %s (%s/%s)", conversation_id, source, resource_type)
+    except httpx.HTTPError as e:
+        logger.warning(
+            "push link failed",
+            extra={
+                **_C,
+                "conversation_id": conversation_id,
+                "source": source,
+                "resource_type": resource_type,
+                "error": format_error(e),
+            },
+        )
         return False
 
 
@@ -312,7 +344,10 @@ async def get_conversation_status(conversation_id: str) -> str | None:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{base}/conversations/{conversation_id}")
             if resp.status_code == 404:
-                logger.debug("conversation %s not found (404) — no status", conversation_id)
+                logger.debug(
+                    "conversation not found, no status",
+                    extra={**_C, "conversation_id": conversation_id, "status": 404},
+                )
                 return None
             resp.raise_for_status()
             return resp.json().get("status")
@@ -320,7 +355,10 @@ async def get_conversation_status(conversation_id: str) -> str | None:
         # Transient: the agent-host is unreachable or erroring. NOT the same as a
         # 404 — surface it so a flapping/dead agent-host doesn't silently freeze
         # all status comments.
-        logger.warning("status fetch for %s FAILED (transient, will retry): %s", conversation_id, e)
+        logger.warning(
+            "status fetch failed, transient, will retry",
+            extra={**_C, "conversation_id": conversation_id, "error": format_error(e)},
+        )
         return None
 
 

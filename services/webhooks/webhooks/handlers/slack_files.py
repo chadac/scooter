@@ -28,8 +28,10 @@ from dataclasses import dataclass, field
 import httpx
 
 from ..config import settings
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "handlers.slack_files"}
 
 # Images the agent can see (mirrors the agent-host AssetStore allow-list).
 _ALLOWED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -149,7 +151,10 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
         return result
     token = settings.slack_bot_token
     if not token:
-        logger.warning("Slack message has files but SLACK_BOT_TOKEN is unset — cannot download files")
+        logger.warning(
+            "message has files but slack bot token is unset, cannot download",
+            extra={**_C, "file_count": len(files)},
+        )
         return result
 
     text_blocks: list[str] = []
@@ -163,7 +168,16 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
             # Skip early when Slack's declared size is over the cap.
             size = f.get("size")
             if isinstance(size, int) and size > max_bytes:
-                logger.info("Slack file %s is %d bytes (> cap) — skipping", name, size)
+                logger.info(
+                    "file over size cap, skipping",
+                    extra={
+                        **_C,
+                        "file_name": name,
+                        "size_bytes": size,
+                        "max_bytes": max_bytes,
+                        "size_from": "declared",
+                    },
+                )
                 continue
 
             url = f.get("url_private_download") or f.get("url_private")
@@ -175,11 +189,23 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                 resp.raise_for_status()
                 data = resp.content
             except httpx.HTTPError as e:
-                logger.warning("Slack file download failed for %s: %s", name, e)
+                logger.warning(
+                    "file download failed",
+                    extra={**_C, "file_name": name, "error": format_error(e)},
+                )
                 continue
 
             if len(data) > max_bytes:
-                logger.info("Slack file %s is %d bytes (> cap) — skipping", name, len(data))
+                logger.info(
+                    "file over size cap, skipping",
+                    extra={
+                        **_C,
+                        "file_name": name,
+                        "size_bytes": len(data),
+                        "max_bytes": max_bytes,
+                        "size_from": "downloaded",
+                    },
+                )
                 continue
 
             if mimetype in _ALLOWED_MIME:
@@ -194,7 +220,10 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                 except UnicodeDecodeError:
                     # Declared/looked textual but isn't valid UTF-8 — fall back to a
                     # binary file part rather than mangling it.
-                    logger.info("Slack file %s isn't valid UTF-8 — forwarding as a binary attachment", name)
+                    logger.info(
+                        "file is not valid utf-8, forwarding as a binary attachment",
+                        extra={**_C, "file_name": name, "mime_type": mimetype},
+                    )
                     result.file_parts.append(
                         {
                             "name": name,

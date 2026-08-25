@@ -16,10 +16,13 @@
  * map wired, this is a passthrough.
  */
 
+import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
 import { normalizeEmail } from "./email.js";
 
 import type { AsyncIdentityResolver, UserContext } from "./identity.js";
+
+const log = logger("identityStore");
 
 export interface IdentityRecord {
   email?: string;
@@ -135,8 +138,7 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
       )
       .then(() => undefined)
       .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.error("[identityStore] ensure table failed (identity enrichment off):", (e as Error).message);
+        log.error("ensure table failed (identity enrichment off)", { error: formatError(e) });
         ensured = undefined; // allow a retry on the next call
       });
     return ensured;
@@ -151,8 +153,7 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
         if (!row) return undefined;
         return { email: row.email ?? undefined, name: row.name ?? undefined };
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[identityStore] get(${id}) failed (no learned email):`, (e as Error).message);
+        log.error("get failed (no learned email)", { user_id: id, error: formatError(e) });
         return undefined;
       }
     },
@@ -173,8 +174,7 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
           [id, email, rec.name ?? null],
         );
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[identityStore] put(${id}) failed (mapping not learned):`, (e as Error).message);
+        log.error("put failed (mapping not learned)", { user_id: id, error: formatError(e) });
       }
     },
     async getByEmail(email) {
@@ -193,8 +193,7 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
         const row = res.rows[0];
         return row ? { id: row.id as string } : undefined;
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[identityStore] getByEmail failed (no match):`, (err as Error).message);
+        log.error("getByEmail failed (no match)", { error: formatError(err) });
         return undefined;
       }
     },
@@ -213,8 +212,7 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
           updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
         }));
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[identityStore] list failed:`, (e as Error).message);
+        log.error("list failed", { error: formatError(e) });
         return [];
       }
     },

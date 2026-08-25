@@ -16,6 +16,7 @@ from .config import DatabaseSettings
 from .models import Base, ConversationMap, CredentialScope, JiraTicket, PendingMessage, ResourceLink
 
 logger = logging.getLogger(__name__)
+_C = {"component": "store"}
 
 PENDING_CONVERSATION_ID = "__pending__"
 _PENDING_TIMEOUT_SECONDS = 120
@@ -45,7 +46,7 @@ async def init_db(settings: DatabaseSettings | None = None) -> None:
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database initialized: %s", settings.db_host)
+    logger.info("database initialized", extra={**_C, "db_host": settings.db_host})
 
 
 async def close_db() -> None:
@@ -113,8 +114,14 @@ async def lookup_conversation(source: str, resource_type: str, resource_id: str)
                     )
                 )
                 logger.warning(
-                    "Cleared stale pending conversation for %s/%s/%s (age=%ds)",
-                    source, resource_type, resource_id, int(age),
+                    "cleared stale pending conversation",
+                    extra={
+                        **_C,
+                        "source": source,
+                        "resource_type": resource_type,
+                        "resource_id": resource_id,
+                        "age_s": int(age),
+                    },
                 )
                 return None
 
@@ -147,7 +154,16 @@ async def store_conversation(
                 conversation_id=conversation_id,
             ))
 
-    logger.info("Stored mapping: %s/%s/%s -> %s", source, resource_type, resource_id, conversation_id)
+    logger.info(
+        "stored mapping",
+        extra={
+            **_C,
+            "source": source,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "conversation_id": conversation_id,
+        },
+    )
 
 
 async def store_note_metadata(
@@ -366,7 +382,15 @@ async def store_pending_message(
             resource_id=resource_id,
             message=message,
         ))
-    logger.info("Queued pending message for %s/%s/%s", source, resource_type, resource_id)
+    logger.info(
+        "queued pending message",
+        extra={
+            **_C,
+            "source": source,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+        },
+    )
 
 
 async def get_and_clear_pending_messages(
@@ -412,7 +436,15 @@ async def clear_conversation(
                 ConversationMap.resource_id == resource_id,
             )
         )
-    logger.info("Cleared conversation mapping for %s/%s/%s", source, resource_type, resource_id)
+    logger.info(
+        "cleared conversation mapping",
+        extra={
+            **_C,
+            "source": source,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

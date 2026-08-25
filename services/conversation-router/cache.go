@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 )
+
+// watchRetryDelay is the backoff between a failed list/watch and the next attempt. Named so the
+// log line can report it as retry_in_ms instead of hiding it in prose.
+const watchRetryDelay = 2 * time.Second
 
 var conversationGVR = schema.GroupVersionResource{
 	Group:    "scooter.chadac.dev",
@@ -123,23 +128,40 @@ func (c *OwnershipCache) forget(obj *unstructured.Unstructured) {
 // Run keeps the cache in sync: LIST to seed, then WATCH for changes, reconnecting on
 // error. Blocks until ctx is cancelled. The status.hostPod field is what we track.
 func (c *OwnershipCache) Run(ctx context.Context, dyn dynamic.Interface, namespace string) {
+	log := logger("cache")
 	ri := dyn.Resource(conversationGVR).Namespace(namespace)
 	for ctx.Err() == nil {
 		// Seed from a full list (so we don't route blind before the first watch event).
 		list, err := ri.List(ctx, metav1ListOptions())
 		if err != nil {
-			logf("cache list failed: %v", err)
-			sleep(ctx, 2*time.Second)
+			if ctx.Err() != nil {
+				return // shutting down; a cancelled list is not a failure
+			}
+			// "(retrying in 2s)" was prose; it is a field now.
+			log.Error("conversation list failed",
+				slog.String("namespace", namespace),
+				slog.Int("retry_in_ms", int(watchRetryDelay.Milliseconds())),
+				errAttr(err))
+			sleep(ctx, watchRetryDelay)
 			continue
 		}
+		log.Debug("cache seeded",
+			slog.String("namespace", namespace),
+			slog.Int("conversations", len(list.Items)))
 		for i := range list.Items {
 			c.observe(&list.Items[i])
 		}
 		// Watch from the list's resourceVersion onward.
 		w, err := ri.Watch(ctx, metav1WatchOptions(list.GetResourceVersion()))
 		if err != nil {
-			logf("cache watch failed: %v", err)
-			sleep(ctx, 2*time.Second)
+			if ctx.Err() != nil {
+				return
+			}
+			log.Error("conversation watch failed",
+				slog.String("namespace", namespace),
+				slog.Int("retry_in_ms", int(watchRetryDelay.Milliseconds())),
+				errAttr(err))
+			sleep(ctx, watchRetryDelay)
 			continue
 		}
 		for ev := range w.ResultChan() {
@@ -155,7 +177,9 @@ func (c *OwnershipCache) Run(ctx context.Context, dyn dynamic.Interface, namespa
 			}
 		}
 		w.Stop()
-		// Channel closed (watch expired) — loop re-lists + re-watches.
+		// Channel closed (watch expired) — loop re-lists + re-watches. Routine k8s behaviour,
+		// not a failure: debug.
+		log.Debug("watch channel closed, re-listing", slog.String("namespace", namespace))
 	}
 }
 

@@ -21,7 +21,11 @@
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
+import { logger } from "../log.js";
+
 import type { AsyncIdentityResolver, UserContext } from "./identity.js";
+
+const log = logger("albVerify");
 
 export interface AlbVerifyConfig {
   region: string;
@@ -116,8 +120,7 @@ export function withAlbVerification(
       const ok = await verifyAlbJwt(token, keyFor);
       if (ok) return user;
       // Unverified: keep the id (from the separate identity header), drop claims.
-      // eslint-disable-next-line no-console
-      console.warn("[albVerify] x-amzn-oidc-data signature did NOT verify — dropping unverified claims");
+      log.warn("x-amzn-oidc-data signature did NOT verify — dropping unverified claims");
       return { id: user.id, anonymous: false };
     },
   };

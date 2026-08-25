@@ -109,7 +109,13 @@ class AwsPermissions(Transport):
             except Exception as e:
                 # Never leak a bare 500: surface the real exception so the agent can
                 # act on it (e.g. an IAM/STS failure the request path didn't wrap).
-                logger.exception("aws request failed unexpectedly")
+                logger.exception(
+                    "aws request failed unexpectedly",
+                    extra={
+                        "conversation_id": identity.conversation_id,
+                        "target_account": body.get("target_account"),
+                    },
+                )
                 raise HTTPException(status_code=500, detail={"errors": [f"{type(e).__name__}: {e}"]})
             return _request_view(req)
 

@@ -20,14 +20,14 @@ CRITICAL: NO task_id or owner attributes — unbounded cardinality.
 
 from __future__ import annotations
 
-import logging
-
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider, ObservableGauge
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 
-logger = logging.getLogger("scheduler.metrics")
+from .logging_config import format_error, get_logger
+
+logger = get_logger("metrics")
 
 
 class MetricsSink:
@@ -158,7 +158,7 @@ class _OTelMetricsSink(MetricsSink):
         try:
             self._provider.shutdown()
         except Exception as e:
-            logger.error("metrics shutdown failed: %s", e)
+            logger.error("metrics shutdown failed", extra={"error": format_error(e)})
 
 
 class _NoopMetricsSink(MetricsSink):

@@ -1656,19 +1656,26 @@ export function installShutdownHandlers(
   const proc = opts.proc ?? process;
   const timeoutMs = opts.timeoutMs ?? Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 8000);
   const setTimeoutFn = opts.setTimeoutFn ?? setTimeout;
-  const log = opts.log ?? ((m) => console.log(m));
+  // opts.log stays a plain-string seam (tests inject it); its DEFAULT routes through the
+  // structured logger. Drain lines are exactly what gets grepped during a bad rollout, so
+  // the signal and the timeout belong in fields rather than baked into the message.
+  const injected = opts.log;
+  const drainLog = (msg: string, fields?: Record<string, unknown>) => {
+    if (injected) injected(msg);
+    else hostLog.info(msg, fields);
+  };
   let shuttingDown = false;
   const onSignal = (sig: NodeJS.Signals) => {
     if (shuttingDown) return; // ignore repeat signals mid-drain
     shuttingDown = true;
-    log(`[agent-host] ${sig} — draining…`);
+    drainLog("draining", { signal: sig });
     const timer = setTimeoutFn(() => {
-      log(`[agent-host] drain exceeded ${timeoutMs}ms — exiting`);
+      drainLog("drain exceeded the timeout — exiting", { timeout_ms: timeoutMs });
       proc.exit(0);
     }, timeoutMs);
     (timer as { unref?: () => void }).unref?.();
     shutdown()
-      .then(() => { log("[agent-host] drained cleanly"); proc.exit(0); })
+      .then(() => { drainLog("drained cleanly"); proc.exit(0); })
       .catch((e) => { hostLog.errorWith("drain error", e); proc.exit(0); });
   };
   proc.on("SIGTERM", onSignal);

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -52,6 +53,7 @@ func upstreamsFor(cfg config, cache *OwnershipCache, fallback *url.URL) []*url.U
 // serveAggregatedList fans GET /conversations out to every upstream, merges the JSON arrays,
 // de-dupes by conversation id, and writes one array newest-first.
 func serveAggregatedList(w http.ResponseWriter, r *http.Request, ups []*url.URL) {
+	log := logger("aggregate")
 	type row = map[string]any
 
 	var (
@@ -67,7 +69,11 @@ func serveAggregatedList(w http.ResponseWriter, r *http.Request, ups []*url.URL)
 			rows, err := fetchList(r, u)
 			if err != nil {
 				// Degrade, don't fail: one unreachable pod must not blank the whole sidebar.
-				logf("aggregate: %s failed (%v) — skipping, list will be partial", u.Host, err)
+				// warn, not error: the response still goes out, just short of this pod's rows.
+				log.Warn("upstream list failed, skipping pod",
+					slog.String("upstream", u.Host),
+					slog.Bool("list_partial", true),
+					errAttr(err))
 				return
 			}
 			mu.Lock()
@@ -101,8 +107,18 @@ func serveAggregatedList(w http.ResponseWriter, r *http.Request, ups []*url.URL)
 	if okCount == 0 && len(ups) > 0 {
 		// EVERY upstream failed — that is a real outage, not a partial view. Say so rather than
 		// returning an empty array the UI would render as "you have no conversations".
+		log.Error("all upstreams failed for conversation list",
+			slog.Int("upstream_count", len(ups)))
 		http.Error(w, "all agent-host replicas failed to answer the conversation list", http.StatusBadGateway)
 		return
+	}
+	if okCount < len(ups) {
+		// The response IS going out, but short. Recorded so a chronically-missing pod is
+		// visible rather than silently shrinking everyone's sidebar.
+		log.Warn("conversation list is partial",
+			slog.Int("upstreams_ok", okCount),
+			slog.Int("upstream_count", len(ups)),
+			slog.Int("conversations", len(uniq)))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -145,6 +161,7 @@ func fetchList(r *http.Request, u *url.URL) ([]map[string]any, error) {
 // serveAggregatedSSE multiplexes every upstream's /conversations/events stream onto ONE response, so
 // the sidebar's live stream reflects the whole fleet instead of one pod's slice.
 func serveAggregatedSSE(w http.ResponseWriter, r *http.Request, ups []*url.URL) {
+	log := logger("aggregate-sse")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -164,12 +181,25 @@ func serveAggregatedSSE(w http.ResponseWriter, r *http.Request, ups []*url.URL) 
 			defer wg.Done()
 			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String()+r.URL.RequestURI(), nil)
 			if err != nil {
+				log.Error("building upstream SSE request failed",
+					slog.String("upstream", u.Host), errAttr(err))
 				return
 			}
 			copyIdentityHeaders(r, req)
 			res, err := http.DefaultClient.Do(req)
 			if err != nil {
-				logf("aggregate SSE: %s failed (%v) — that pod's updates will be missing", u.Host, err)
+				// A client that navigated away cancels r.Context(), which fails every in-flight
+				// upstream request with context.Canceled. That is the stream ending normally,
+				// not a pod failing — logging it at error made every closed sidebar look like an
+				// outage. Only a genuine connect failure is an error here.
+				if isClientGone(err, r.Context()) {
+					log.Debug("upstream SSE ended, client gone",
+						slog.String("upstream", u.Host),
+						slog.String("reason", proxyErrClientGone.String()))
+					return
+				}
+				log.Warn("upstream SSE failed, updates will be missing",
+					slog.String("upstream", u.Host), errAttr(err))
 				return
 			}
 			defer res.Body.Close()
@@ -184,8 +214,17 @@ func serveAggregatedSSE(w http.ResponseWriter, r *http.Request, ups []*url.URL) 
 				}
 				mu.Unlock()
 				if werr != nil {
-					return // client hung up
+					// The client hung up mid-frame. Routine: debug, not error.
+					log.Debug("client write failed, ending fan-out leg",
+						slog.String("upstream", u.Host),
+						slog.String("reason", proxyErrClientGone.String()))
+					return
 				}
+			}
+			if err := sc.Err(); err != nil && !isClientGone(err, r.Context()) {
+				// A scan error that is NOT the client leaving means the upstream stream broke.
+				log.Warn("upstream SSE stream broke",
+					slog.String("upstream", u.Host), errAttr(err))
 			}
 		}(u)
 	}

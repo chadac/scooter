@@ -5,8 +5,10 @@ import logging
 import httpx
 
 from ..config import settings
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "responses.slack"}
 
 SLACK_API = "https://slack.com/api"
 
@@ -42,13 +44,34 @@ async def post_slack_message(channel: str, text: str, thread_ts: str | None = No
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):
-                logger.error("Slack postMessage failed: %s", data.get("error"))
+                logger.error(
+                    "slack api call not ok",
+                    extra={
+                        **_C,
+                        "slack_method": "chat.postMessage",
+                        "slack_error": data.get("error"),
+                        "channel": channel,
+                        "thread_ts": thread_ts,
+                    },
+                )
                 return None
             ts = data.get("ts")
-            logger.info("Posted Slack message %s in %s", ts, channel)
+            logger.info(
+                "posted message",
+                extra={**_C, "message_ts": ts, "channel": channel, "thread_ts": thread_ts},
+            )
             return ts
     except httpx.HTTPError as e:
-        logger.error("Failed to post Slack message in %s: %s", channel, e)
+        logger.error(
+            "slack api request failed",
+            extra={
+                **_C,
+                "slack_method": "chat.postMessage",
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "error": format_error(e),
+            },
+        )
         return None
 
 
@@ -72,11 +95,32 @@ async def update_slack_message(channel: str, ts: str, text: str) -> None:
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):
-                logger.error("Slack chat.update failed: %s", data.get("error"))
+                logger.error(
+                    "slack api call not ok",
+                    extra={
+                        **_C,
+                        "slack_method": "chat.update",
+                        "slack_error": data.get("error"),
+                        "channel": channel,
+                        "message_ts": ts,
+                    },
+                )
             else:
-                logger.debug("Updated Slack message %s in %s", ts, channel)
+                logger.debug(
+                    "updated message",
+                    extra={**_C, "message_ts": ts, "channel": channel},
+                )
     except httpx.HTTPError as e:
-        logger.error("Failed to update Slack message %s in %s: %s", ts, channel, e)
+        logger.error(
+            "slack api request failed",
+            extra={
+                **_C,
+                "slack_method": "chat.update",
+                "channel": channel,
+                "message_ts": ts,
+                "error": format_error(e),
+            },
+        )
 
 
 async def add_slack_reaction(channel: str, ts: str, name: str) -> None:
@@ -91,9 +135,29 @@ async def add_slack_reaction(channel: str, ts: str, name: str) -> None:
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok") and data.get("error") != "already_reacted":
-                logger.error("Slack reactions.add failed: %s", data.get("error"))
+                logger.error(
+                    "slack api call not ok",
+                    extra={
+                        **_C,
+                        "slack_method": "reactions.add",
+                        "slack_error": data.get("error"),
+                        "channel": channel,
+                        "message_ts": ts,
+                        "reaction": name,
+                    },
+                )
     except httpx.HTTPError as e:
-        logger.error("Failed to add Slack reaction: %s", e)
+        logger.error(
+            "slack api request failed",
+            extra={
+                **_C,
+                "slack_method": "reactions.add",
+                "channel": channel,
+                "message_ts": ts,
+                "reaction": name,
+                "error": format_error(e),
+            },
+        )
 
 
 async def get_thread_history(channel: str, thread_ts: str) -> list[dict]:
@@ -108,11 +172,29 @@ async def get_thread_history(channel: str, thread_ts: str) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):
-                logger.error("Slack conversations.replies failed: %s", data.get("error"))
+                logger.error(
+                    "slack api call not ok",
+                    extra={
+                        **_C,
+                        "slack_method": "conversations.replies",
+                        "slack_error": data.get("error"),
+                        "channel": channel,
+                        "thread_ts": thread_ts,
+                    },
+                )
                 return []
             return data.get("messages", [])
     except httpx.HTTPError as e:
-        logger.error("Failed to get Slack thread history: %s", e)
+        logger.error(
+            "slack api request failed",
+            extra={
+                **_C,
+                "slack_method": "conversations.replies",
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "error": format_error(e),
+            },
+        )
         return []
 
 
@@ -127,11 +209,17 @@ async def get_bot_user_id() -> str | None:
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):
-                logger.error("Slack auth.test failed: %s", data.get("error"))
+                logger.error(
+                    "slack api call not ok",
+                    extra={**_C, "slack_method": "auth.test", "slack_error": data.get("error")},
+                )
                 return None
             return data.get("user_id")
     except httpx.HTTPError as e:
-        logger.error("Failed to get Slack bot user ID: %s", e)
+        logger.error(
+            "slack api request failed",
+            extra={**_C, "slack_method": "auth.test", "error": format_error(e)},
+        )
         return None
 
 

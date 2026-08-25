@@ -113,8 +113,10 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       try {
         await deps.ensureRunning();
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[k8sExec] resume-on-missing-pod for ${ref.namespace}/${ref.name} failed:`, err);
+        log.errorWith("resume-on-missing-pod failed", err, {
+          namespace: ref.namespace,
+          pod_name: ref.name,
+        });
       }
       await sleep(1500);
       continue; // re-poll: the pod is now being recreated

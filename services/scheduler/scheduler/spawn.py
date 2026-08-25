@@ -8,14 +8,14 @@ list must include the scheduler's SA). Returns the conversation_id or None on fa
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import httpx
 
 from .config import settings
+from .logging_config import format_error, get_logger
 
-logger = logging.getLogger("scheduler.spawn")
+logger = get_logger("spawn")
 
 
 def _sa_token() -> str | None:
@@ -54,11 +54,13 @@ async def spawn_conversation(
             create_body["title"] = title
         resp = await client.post(f"{base}/conversations", json=create_body, headers=headers)
         if resp.status_code >= 300:
-            logger.error("create failed: HTTP %s for task %r", resp.status_code, title)
+            logger.error(
+                "create failed", extra={"status": resp.status_code, "task_title": title}
+            )
             return None
         conversation_id = resp.json().get("id")
         if not conversation_id:
-            logger.error("create returned no id for task %r", title)
+            logger.error("create returned no id", extra={"task_title": title})
             return None
 
         # 2. PROMPT the id the server gave us.
@@ -75,11 +77,20 @@ async def spawn_conversation(
         # the turn independently).
         resp = await client.post(f"{base}/agui", json=body, headers=headers)
         if resp.status_code >= 300:
-            logger.error("spawn failed: HTTP %s for task %r", resp.status_code, title)
+            logger.error(
+                "spawn failed",
+                extra={
+                    "status": resp.status_code,
+                    "task_title": title,
+                    "conversation_id": conversation_id,
+                },
+            )
             return None
         return conversation_id
     except httpx.HTTPError as e:
-        logger.error("spawn failed: %s", e)
+        # str() on an httpx transport error is often EMPTY; format_error falls back to
+        # repr()/the type name so this line always names the failure.
+        logger.error("spawn failed", extra={"task_title": title, "error": format_error(e)})
         return None
     finally:
         if owns:

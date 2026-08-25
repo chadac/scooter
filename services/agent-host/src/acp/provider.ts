@@ -14,8 +14,12 @@
  * eligibility encodes the human-trigger guardrail. See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
+import { formatError, logger } from "../log.js";
+
 import type { AcpClient } from "./client.js";
 import type { SessionId } from "../types.js";
+
+const log = logger("acp-providers");
 
 /** The per-run context a provider's `eligible()` decides on. Assembled by the bridge at the start
  *  of each run from the conversation + the incoming prompt. */
@@ -84,7 +88,10 @@ export async function pickAcpProvider(
     try {
       ok = await p.eligible(ctx);
     } catch (err) {
-      console.warn(`[acp-providers] ${p.id}.eligible threw (${String(err)}) — treating as not eligible`);
+      log.warn("provider eligible() threw — treating as not eligible", {
+        provider_id: p.id,
+        error: formatError(err),
+      });
       ok = false;
     }
     if (!ok) continue;

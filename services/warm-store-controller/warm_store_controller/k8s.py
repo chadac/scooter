@@ -13,9 +13,10 @@ from dataclasses import dataclass
 
 from kubernetes import client, config
 
+from .logging_config import format_error
 from .reconcile import PoolPvc, SandboxRef, WarmJobStatus
 
-logger = logging.getLogger("warm-store-controller")
+logger = logging.getLogger("k8s")
 
 # Sandbox CR coordinates (agent-sandbox upstream, v1beta1).
 SANDBOX_GROUP = "agents.x-k8s.io"
@@ -159,7 +160,10 @@ class ControllerK8s:
         try:
             return self._marker_present(pvc)
         except client.ApiException as e:
-            logger.warning("clean-marker read for %s failed (treating unclean): %s", conv_id, e)
+            logger.warning(
+                "clean-marker read failed, treating as unclean",
+                extra={"conversation_id": conv_id, "pvc": pvc, "error": format_error(e)},
+            )
             return False
 
     # --- apply -------------------------------------------------------------
