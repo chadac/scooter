@@ -241,6 +241,12 @@ export interface Conversation {
   readonly userTitled?: boolean;
   /** The user starred it (UI highlight + future retention exemption). */
   readonly starred?: boolean;
+  /** Current provisioning attempt number (1-based). undefined = not provisioning or already provisioned. */
+  readonly provisioningAttempt?: number;
+  /** Last provisioning error message. Persists across retries and survives restart. */
+  readonly provisioningError?: string;
+  /** Messages queued while provisioning or suspended, to be replayed on ready/revive. */
+  readonly pendingQueue?: Array<{ text: string; priority: number }>;
 }
 
 export interface SessionManager {
@@ -517,6 +523,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     parentId: e.parentId,
     userTitled: e.userTitled,
     starred: e.starred,
+    provisioningAttempt: e.provisioningAttempt,
+    provisioningError: e.provisioningError,
+    pendingQueue: e.pendingQueue,
   });
 
   // Conversation lifecycle subscribers (the /conversations/events push stream).
@@ -1054,10 +1063,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entry = entries.get(conv.id)!;
       } else {
         await applyModelSwitch(entry, model);
-        if (!entry.bridge) {
+        if (!entry.bridge && entry.status !== "provisioning") {
           // No live bridge -> revive (start goose). Covers suspended, hydrated-but-
-          // "running" (pod up, no goose in this process), AND just-hydrated-on-demand
-          // conversations.
+          // "ready" (pod up, no goose in this process), AND just-hydrated-on-demand
+          // conversations. Skip revive if still provisioning (the bridge will be
+          // created once provisioning completes).
           await this.revive(entry.id);
         }
       }

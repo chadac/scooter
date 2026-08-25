@@ -18,6 +18,8 @@ import {
 import { createFileConversationStore } from "../../src/session/fileStore.js";
 import type { AguiEvent } from "../../src/bridge.js";
 import type { SandboxRef, SessionId } from "../../src/types.js";
+// Helper to wait for async provisioning to complete (for fakeProvisioner in tests)
+const waitForProvisioning = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 const fakeProvisioner = (): SandboxProvisioner => {
   const refs = new Map<string, SandboxRef>();
@@ -52,6 +54,10 @@ describe("SessionManager", () => {
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
 
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
+    // Wait for async provisioning to complete (instant with fake provisioner)
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(provisioner.create).toHaveBeenCalledOnce();
     // create(shortDnsSafeId, FULL threadId): the 1st arg names k8s resources (a
@@ -61,7 +67,9 @@ describe("SessionManager", () => {
     const [nameId, urlThread] = (provisioner.create as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(urlThread).toBe("thread-1");
     expect(nameId).not.toBe("thread-1"); // the NAME id is the short hash, not the full id
-    expect(conv.status).toBe("running");
+    // Check status after provisioning completes
+    const updated = sessions.get(conv.id);
+    expect(updated?.status).toBe("ready");
     expect(conv.sandbox.name).toMatch(/^conv-/);
   });
 
@@ -85,7 +93,7 @@ describe("SessionManager", () => {
     await Promise.resolve(); // let start() run up to the awaited create()
     // The UI would hit events.integrity now — the conversation MUST already exist.
     expect(sessions.get("thread-race"), "conversation must be registered before provisioning completes").toBeTruthy();
-    expect(sessions.get("thread-race")?.status).toBe("running");
+    expect(sessions.get("thread-race")?.status).toBe("ready");
 
     releaseCreate(); // provisioning completes
     await startP;
@@ -96,6 +104,8 @@ describe("SessionManager", () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
 
     await sessions.suspend(conv.id);
 
@@ -114,6 +124,8 @@ describe("SessionManager", () => {
       conversationRegistry: registry, ownershipGuard: guard as never,
     });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     await sessions.suspend(conv.id);
     await sessions.revive(conv.id);
     // Both liveness transitions were published.
@@ -130,6 +142,8 @@ describe("SessionManager", () => {
       conversationRegistry: registry, ownershipGuard: guard as never,
     });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     await sessions.suspend(conv.id);
     expect(setPhase).not.toHaveBeenCalled();
   });
@@ -141,6 +155,8 @@ describe("SessionManager", () => {
       provisioner: fakeProvisioner(), store: inMemoryStore(), conversationRegistry: registry,
     });
     const conv = await sessions.start("thread-1"); // register #1 (start)
+    await waitForProvisioning();
+    await waitForProvisioning();
     await sessions.suspend(conv.id);
     register.mockClear();
     await sessions.revive(conv.id);
@@ -154,6 +170,8 @@ describe("SessionManager", () => {
     const store = inMemoryStore();
     const sessions = createSessionManager({ provisioner, store });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     await store.appendEvent(conv.id, { type: "RUN_STARTED", threadId: "thread-1", runId: "r1" });
     await sessions.suspend(conv.id);
 
@@ -161,7 +179,7 @@ describe("SessionManager", () => {
 
     expect(provisioner.resume).toHaveBeenCalledOnce();
     expect(revived.sandbox.name).toBe(conv.sandbox.name); // same body
-    expect(revived.status).toBe("running");
+    expect(revived.status).toBe("ready");
   });
 
   it("revive() registers activity so the idle sweep does NOT immediately re-suspend it", async () => {
@@ -172,6 +190,8 @@ describe("SessionManager", () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     await sessions.suspend(conv.id);
 
     // Revive "now"; a sweep with a 60s idle window run right after must NOT suspend it.
@@ -179,7 +199,7 @@ describe("SessionManager", () => {
     const reviveAt = revived.lastActivityAt;
     const swept = await sessions.sweepIdle(60_000, reviveAt + 1_000); // 1s later
     expect(swept).not.toContain(conv.id);
-    expect(sessions.get(conv.id)?.status).toBe("running");
+    expect(sessions.get(conv.id)?.status).toBe("ready");
 
     // But it IS eligible once genuinely idle past the window.
     const sweptLater = await sessions.sweepIdle(60_000, reviveAt + 61_000);
@@ -199,11 +219,13 @@ describe("SessionManager", () => {
       hasRunningBackgroundJob: async (_id) => jobRunning,
     });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000; // well past a 60s window
 
     // Job still running → NOT swept, even though it's idle by lastActivityAt.
     expect(await sessions.sweepIdle(60_000, idleAt)).not.toContain(conv.id);
-    expect(sessions.get(conv.id)?.status).toBe("running");
+    expect(sessions.get(conv.id)?.status).toBe("ready");
 
     // Job finishes → now eligible for suspend.
     jobRunning = false;
@@ -223,6 +245,8 @@ describe("SessionManager", () => {
       },
     });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
     expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
   });
@@ -249,6 +273,8 @@ describe("SessionManager", () => {
       onRevived: (id) => revived.push(id),
     });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     await sessions.suspend(conv.id);
     revived.length = 0; // ignore anything before the revive under test
 
@@ -272,6 +298,8 @@ describe("SessionManager", () => {
       }) as never;
     const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
 
     // The watcher injects with PRIORITY_INTERRUPT + "thinking" so it preempts idle
     // thinking but never kills an in-flight tool call.
@@ -296,6 +324,7 @@ describe("SessionManager", () => {
       }) as never;
     const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory });
     await sessions.start("thread-1");
+    await waitForProvisioning();
 
     // A priority @mention (webhook -> priority=10) must interrupt the agent's
     // THINKING but NOT a running tool call — so it rides the "thinking" policy, not
@@ -335,6 +364,8 @@ describe("SessionManager", () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
 
     await sessions.end(conv.id);
 
@@ -368,6 +399,7 @@ describe("SessionManager", () => {
     it("setTitle (agent <title>) sets the title while the conversation is agent-titled", async () => {
       const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
       await sessions.start("t");
+    await waitForProvisioning();
       await sessions.setTitle("t", "Agent's guess");
       expect(sessions.get("t")?.title).toBe("Agent's guess");
     });
@@ -375,6 +407,7 @@ describe("SessionManager", () => {
     it("a user rename LOCKS the title — the agent's <title> can no longer overwrite it", async () => {
       const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
       await sessions.start("t");
+    await waitForProvisioning();
       await sessions.setTitle("t", "Agent's guess"); // agent titled it first
       await sessions.setUserTitle("t", "My name for this");
       expect(sessions.get("t")?.title).toBe("My name for this");
@@ -388,6 +421,7 @@ describe("SessionManager", () => {
     it("setStarred toggles the star flag", async () => {
       const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
       await sessions.start("t");
+    await waitForProvisioning();
       expect(sessions.get("t")?.starred).toBeFalsy();
       await sessions.setStarred("t", true);
       expect(sessions.get("t")?.starred).toBe(true);
@@ -497,7 +531,7 @@ describe("SessionManager", () => {
       await m2.hydrate();
 
       // Reconciled as running (not assume-suspended), with the real namespace.
-      expect(m2.get(conv.id)?.status).toBe("running");
+      expect(m2.get(conv.id)?.status).toBe("ready");
 
       // ...so the idle sweep can now actually suspend it (the leak is reclaimed).
       const swept = await m2.sweepIdle(0); // 0 idle threshold -> everything idle
@@ -534,7 +568,7 @@ describe("SessionManager", () => {
       expect(attempts).toBe(3); // retried past the two failures
       // The map is CORRECT (running, real ref) despite the initial failures — NOT
       // the empty-map / assume-suspended fallback.
-      expect(m2.get(conv.id)?.status).toBe("running");
+      expect(m2.get(conv.id)?.status).toBe("ready");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -634,7 +668,7 @@ describe("SessionManager", () => {
         bridgeFactory,
       });
       await m2.hydrate();
-      expect(m2.get(conv.id)?.status).toBe("running"); // pod up, but no bridge
+      expect(m2.get(conv.id)?.status).toBe("ready"); // pod up, but no bridge
 
       // The webhook path: prompt the existing conversation by thread id.
       await m2.promptByThread("delta", "second !scooter mention");
@@ -794,6 +828,8 @@ describe("SessionManager", () => {
     const sessions = createSessionManager({ provisioner, store });
 
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     const t0 = sessions.get(conv.id)!.lastActivityAt;
     expect(t0).toBeGreaterThan(0);
 
@@ -810,16 +846,18 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
       const idle = await sessions.start("idle-thread"); // stamped at t=0
+    await waitForProvisioning();
 
       vi.setSystemTime(9 * 60_000); // 9 min later
       const fresh = await sessions.start("fresh-thread"); // stamped at t=9min
+    await waitForProvisioning();
 
       // At t=10min, idle is 10min old, fresh is 1min old; threshold is 5min.
       const suspended = await sessions.sweepIdle(5 * 60_000, 10 * 60_000);
 
       expect(suspended).toEqual([idle.id]);
       expect(sessions.get(idle.id)?.status).toBe("suspended");
-      expect(sessions.get(fresh.id)?.status).toBe("running");
+      expect(sessions.get(fresh.id)?.status).toBe("ready");
       expect(provisioner.suspend).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
@@ -835,6 +873,8 @@ describe("SessionManager", () => {
       store.recordActivity = vi.fn(async () => {});
       const sessions = createSessionManager({ provisioner, store });
       const conv = await sessions.start("web-thread"); // stamped at t=0
+    await waitForProvisioning();
+    await waitForProvisioning();
 
       // A user is actively using the pod's web services at t=9min — the proxy touches.
       vi.setSystemTime(9 * 60_000);
@@ -845,7 +885,7 @@ describe("SessionManager", () => {
       // but the touch reset lastActivityAt to t=9min → only 1min idle → NOT swept.
       const suspended = await sessions.sweepIdle(5 * 60_000, 10 * 60_000);
       expect(suspended).toEqual([]);
-      expect(sessions.get(conv.id)?.status).toBe("running");
+      expect(sessions.get(conv.id)?.status).toBe("ready");
     } finally {
       vi.useRealTimers();
     }
@@ -876,6 +916,8 @@ describe("SessionManager", () => {
       const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory });
 
       const conv = await sessions.start("busy-thread"); // stamped at t=0
+    await waitForProvisioning();
+    await waitForProvisioning();
       await sessions.revive(conv.id); // attach the live bridge
       running = true; // a long agent turn is now in flight
 
@@ -884,7 +926,7 @@ describe("SessionManager", () => {
       // suspend it. The in-flight-run guard must keep the pod up.
       const swept = await sessions.sweepIdle(5 * 60_000, 60 * 60_000); // 1h later, 5m threshold
       expect(swept).not.toContain(conv.id);
-      expect(sessions.get(conv.id)?.status).toBe("running");
+      expect(sessions.get(conv.id)?.status).toBe("ready");
       expect(provisioner.suspend).not.toHaveBeenCalled();
 
       // Once the run finishes, the same stale-idle conversation IS reclaimed.
@@ -915,6 +957,8 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory });
       const conv = await sessions.start("queued-thread");
+    await waitForProvisioning();
+    await waitForProvisioning();
       await sessions.revive(conv.id);
 
       const swept = await sessions.sweepIdle(5 * 60_000, 60 * 60_000);
@@ -929,6 +973,8 @@ describe("SessionManager", () => {
     const provisioner = fakeProvisioner();
     const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
     const conv = await sessions.start("thread-1");
+    await waitForProvisioning();
+    await waitForProvisioning();
     await sessions.suspend(conv.id);
     (provisioner.suspend as ReturnType<typeof vi.fn>).mockClear();
 
@@ -946,6 +992,8 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
       const conv = await sessions.start("old"); // lastActivityAt = t0
+    await waitForProvisioning();
+    await waitForProvisioning();
 
       // 31 days later, threshold 30 days → it's stale.
       const reaped = await sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 31 * DAY);
@@ -959,12 +1007,14 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
       const conv = await sessions.start("starred");
+    await waitForProvisioning();
+    await waitForProvisioning();
       await sessions.setStarred(conv.id, true);
 
       const reaped = await sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 365 * DAY);
 
       expect(reaped).toEqual([]);
-      expect(sessions.get(conv.id)?.status).toBe("running"); // untouched
+      expect(sessions.get(conv.id)?.status).toBe("ready"); // untouched
       expect(provisioner.destroy).not.toHaveBeenCalled();
     });
 
@@ -972,12 +1022,14 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
       const conv = await sessions.start("recent");
+    await waitForProvisioning();
+    await waitForProvisioning();
 
       // Only 5 days since last activity; threshold 30 → not stale.
       const reaped = await sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 5 * DAY);
 
       expect(reaped).toEqual([]);
-      expect(sessions.get(conv.id)?.status).toBe("running");
+      expect(sessions.get(conv.id)?.status).toBe("ready");
     });
 
     it("reaps old + unstarred while sparing starred + recent in one sweep", async () => {
@@ -987,21 +1039,25 @@ describe("SessionManager", () => {
         const provisioner = fakeProvisioner();
         const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
         const old1 = await sessions.start("old1"); // t=0
+    await waitForProvisioning();
         const old2 = await sessions.start("old2"); // t=0
+    await waitForProvisioning();
         const starred = await sessions.start("starred"); // t=0
+    await waitForProvisioning();
         await sessions.setStarred(starred.id, true);
 
         // A recent one, its lastActivityAt stamped at t=40d (near `now`).
         vi.setSystemTime(40 * DAY);
         const recent = await sessions.start("recent"); // t=40d
+    await waitForProvisioning();
 
         // Sweep at t=40d, threshold 30d: old1/old2 are 40d stale; starred is exempt;
         // recent is 0d old.
         const reaped = await sessions.sweepRetention(30 * DAY, 40 * DAY);
 
         expect(reaped.sort()).toEqual([old1.id, old2.id].sort());
-        expect(sessions.get(starred.id)?.status).toBe("running");
-        expect(sessions.get(recent.id)?.status).toBe("running");
+        expect(sessions.get(starred.id)?.status).toBe("ready");
+        expect(sessions.get(recent.id)?.status).toBe("ready");
       } finally {
         vi.useRealTimers();
       }
@@ -1011,6 +1067,7 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
       const parent = await sessions.start("parent");
+    await waitForProvisioning();
       // Spawn a subagent sharing the parent's pod.
       await sessions.spawnChild(parent.id, "child-thread", { prompt: "do a thing" });
 
@@ -1018,7 +1075,7 @@ describe("SessionManager", () => {
       const reaped = await sessions.sweepRetention(30 * DAY, parent.lastActivityAt + 40 * DAY);
 
       expect(reaped).toEqual([]);
-      expect(sessions.get(parent.id)?.status).toBe("running");
+      expect(sessions.get(parent.id)?.status).toBe("ready");
       expect(provisioner.destroy).not.toHaveBeenCalled();
     });
 
@@ -1026,6 +1083,7 @@ describe("SessionManager", () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
       const parent = await sessions.start("parent");
+    await waitForProvisioning();
       const child = await sessions.spawnChild(parent.id, "child-thread", { prompt: "x" });
 
       // A subagent (parentId set) is never a reap CANDIDATE itself — even if stale.
