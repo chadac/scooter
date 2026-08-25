@@ -518,6 +518,51 @@ in
     };
 
     observability = {
+      # BROWSER telemetry (RUM). Separate from `otel` below, which is the
+      # agent-host's own metrics: this is the UI, running in the user's browser,
+      # pushing OTLP over the same origin. It exists because the failures that
+      # matter most in a chat UI — a render stream reconnecting to the wrong
+      # conversation, a runtime remounting mid-run — happen entirely client-side
+      # and never reach a pod log.
+      browserTelemetry = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Let the UI send OTLP traces to a collector, proxied same-origin
+            through the UI's nginx at /telemetry/. OFF by default.
+
+            Same-origin on purpose: the browser holds no telemetry credential and
+            the traffic stays behind the ingress auth, so changing vendor
+            (Grafana Cloud, Datadog, ...) is a collectorUrl change rather than a
+            UI rebuild. Requires collectorUrl to be set.
+          '';
+        };
+        collectorUrl = mkOption {
+          type = types.str;
+          default = "";
+          example = "http://k8s-monitoring-alloy-receiver.monitoring.svc.cluster.local:4318";
+          description = ''
+            OTLP/HTTP base URL of the collector that receives browser telemetry.
+            HTTP, not gRPC — browsers cannot speak OTLP/gRPC.
+
+            With the Grafana k8s-monitoring chart this is the alloy-receiver
+            Service on port 4318, with `applicationObservability.receivers.otlp.http`
+            enabled. Empty => the /telemetry/ route 204s and discards, so a
+            cluster with no collector is not an error.
+          '';
+        };
+        sampleRatio = mkOption {
+          type = types.float;
+          default = 1.0;
+          description = ''
+            Fraction of browser traces to record (0.0-1.0). 1.0 while debugging;
+            lower it if the UI's live event stream produces more spans than the
+            collector should carry.
+          '';
+        };
+      };
+
       otel = {
         enable = mkOption {
           type = types.bool;
@@ -1254,7 +1299,14 @@ in
               env = [{
                 name = "AGENT_HOST_URL";
                 value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
-              }];
+              }] ++ lib.optionals cfg.observability.browserTelemetry.enable [
+                # Where nginx forwards /telemetry/. Empty collectorUrl leaves the
+                # route 204ing, so enabling without a URL degrades rather than breaks.
+                {
+                  name = "OTEL_COLLECTOR_URL";
+                  value = cfg.observability.browserTelemetry.collectorUrl;
+                }
+              ];
               readinessProbe.httpGet = { path = "/"; port = "http"; };
             };
           };
