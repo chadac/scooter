@@ -32,12 +32,16 @@ def pseudonym(value: str | None) -> str | None:
     store, and a leaked log cannot be joined against a database dump.
 
     External identifiers (a Slack user id, a GitHub login, an email) are personal data and
-    must NEVER be logged raw. Where the Scooter id is not yet known — the resolution
-    FAILURE paths, which run before the lookup succeeds — the external identifier is
-    pseudonymized instead, so the line stays correlatable without carrying an identity.
-    Those lines mark themselves with id_source so a reader can tell the two apart; a
-    pseudonym of an email and a pseudonym of a user id are different tokens for the same
-    person, and silently mixing them would make the field lie.
+    must NEVER be logged raw either. They are pseudonymized too, but they go in their OWN
+    fields — `external_user`, `email` — never in `user_id`.
+
+    That separation matters. A pseudonym of an email and a pseudonym of a Scooter user id
+    are DIFFERENT tokens for the same person. Putting both under `user_id` would make the
+    field mean two things depending on how far resolution got: a query grouping by
+    `user_id` would split one human into several, and a reader would have no way to tell
+    why some lines carry an id that joins to nothing. One field, one meaning — `user_id`
+    is the Scooter user and nothing else, and its absence is itself the signal that
+    resolution never got that far.
 
     WHY A PSEUDONYM AND NOT NOTHING. Support ("user X says the bot ignored them") needs to
     find the line, and a lookup failure is undiagnosable without knowing whether the SAME
@@ -90,14 +94,14 @@ async def _slack_email(user_id: str) -> str | None:
         if not data.get("ok"):
             logger.info(
                 "slack users.info not ok",
-                extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "id_source": "external", "slack_error": data.get("error")},
+                extra={**_C, "provider": "slack", "external_user": pseudonym(user_id), "slack_error": data.get("error")},
             )
             return None
         return (data.get("user", {}).get("profile", {}) or {}).get("email") or None
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "slack", "user_id": pseudonym(user_id), "id_source": "external", "error": format_error(e)},
+            extra={**_C, "provider": "slack", "external_user": pseudonym(user_id), "error": format_error(e)},
         )
         return None
 
@@ -119,7 +123,7 @@ async def _github_email(login: str) -> str | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "github", "user_id": pseudonym(login), "id_source": "external", "error": format_error(e)},
+            extra={**_C, "provider": "github", "external_user": pseudonym(login), "error": format_error(e)},
         )
         return None
 
@@ -146,7 +150,7 @@ async def _gitlab_email(username: str) -> str | None:
     except (httpx.HTTPError, ValueError) as e:
         logger.warning(
             "email lookup failed",
-            extra={**_C, "provider": "gitlab", "user_id": pseudonym(username), "id_source": "external", "error": format_error(e)},
+            extra={**_C, "provider": "gitlab", "external_user": pseudonym(username), "error": format_error(e)},
         )
         return None
 
@@ -184,8 +188,7 @@ async def _scooter_user_for_email(email: str) -> str | None:
                 # The email itself never reaches the log. The domain stays because it is
                 # what actually distinguishes a misconfigured tenant from a missing user,
                 # and it identifies an organisation rather than a person.
-                "user_id": pseudonym(email),
-                "id_source": "external",
+                "email": pseudonym(email),
                 "email_domain": email.rpartition("@")[2] or None,
                 "error": format_error(e),
             },
@@ -215,7 +218,6 @@ async def resolve_owner(provider: str, external_id: str) -> str | None:
                 # already internal: a leaked log then cannot be joined against a database
                 # dump either.
                 "user_id": pseudonym(owner),
-                "id_source": "scooter",
             },
         )
     return owner

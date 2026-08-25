@@ -184,7 +184,11 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
         for key, value in rec.__dict__.items():
             assert secret_id != value, f"raw identifier leaked as field {key}"
         # ...and the pseudonym must be there, so the line is still correlatable.
-        assert getattr(rec, "user_id", None) == ir.pseudonym(secret_id)
+        # In its OWN field: this is the external identifier, not a Scooter user id.
+        assert getattr(rec, "external_user", None) == ir.pseudonym(secret_id)
+        # user_id means the SCOOTER user and nothing else. Resolution never got that far
+        # here, so it must be ABSENT rather than holding a token that joins to nothing.
+        assert not hasattr(rec, "user_id")
 
 
 @pytest.mark.asyncio
@@ -221,7 +225,6 @@ async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(mo
 
     # The logged id is the pseudonymized SCOOTER id...
     assert rec.user_id == ir.pseudonym(db_user_id)
-    assert rec.id_source == "scooter"
     # ...and NEITHER the raw db id, the external id, nor the email appears anywhere.
     for value in rec.__dict__.values():
         assert value not in (db_user_id, external, email)
