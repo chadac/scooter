@@ -116,10 +116,13 @@ const SessionRow = memo(function SessionRow({
   return (
     <div
       data-testid="session-item"
-      data-conversation-id={s.id}
+      // The SERVER's id, absent until the conversation is created. e2e cross-checks the
+      // sidebar against the server by this; the row's React key is `s.id`, which for a
+      // not-yet-created conversation is a local placeholder the server has never heard of.
+      data-conversation-id={s.serverId}
       // A conversation the server has not created yet (an unsent "New chat"). e2e uses this
       // to tell an expected local-only row from a genuine UI/server divergence.
-      data-pending-create={s.serverCreated === false ? "true" : undefined}
+      data-pending-create={s.serverId === undefined ? "true" : undefined}
       data-active={active}
       data-starred={s.starred ? "true" : undefined}
       data-subagent={depth > 0 ? "true" : undefined}

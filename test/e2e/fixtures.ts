@@ -512,7 +512,7 @@ export async function assertMatchesServer(
   // absent server-side; every OTHER row must correspond to a real conversation.
   const rows = await page.locator('[data-testid="session-item"]').evaluateAll((els) =>
     els.map((el) => ({
-      id: el.getAttribute("data-conversation-id") ?? "",
+      id: el.getAttribute("data-conversation-id") ?? "",  // the SERVER id; absent while pending
       pending: el.getAttribute("data-pending-create") === "true",
     })),
   );

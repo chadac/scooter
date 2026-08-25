@@ -233,18 +233,24 @@ export function RuntimeProvider({ children }: Readonly<{ children: ReactNode }>)
   // conversation's messages on screen. Keying by currentId tears the runtime (and the
   // IntegrityAgent + its render pump + the snapshot) down and recreates it fresh.
   return (
-    <ConversationRuntime key={currentId} conversationId={currentId}>
+    <ConversationRuntime key={currentId} conversationKey={currentId}>
       {children}
     </ConversationRuntime>
   );
 }
 
 function ConversationRuntime({
-  conversationId,
+  conversationKey,
   children,
-}: Readonly<{ conversationId: string; children: ReactNode }>) {
+}: Readonly<{ conversationKey: string; children: ReactNode }>) {
   const { sessions } = useSessions();
-  const model = sessions.find((s) => s.id === conversationId)?.model;
+  const session = sessions.find((s) => s.id === conversationKey);
+  const model = session?.model;
+  // The SERVER's id for this conversation, or the key while it does not exist yet. The
+  // agent reads it at call time and is re-pointed in place by setConversationId() the
+  // moment the server assigns one — the MOUNT stays keyed on the stable key, so nothing is
+  // torn down when that happens.
+  const conversationId = session?.serverId ?? conversationKey;
   // The conversation OBJECT for this mount. It owns whether a server id exists yet and
   // what each operation means before it does, so nothing here branches on id presence.
   const conversation = useMemo(
@@ -253,22 +259,33 @@ function ConversationRuntime({
     // creation (its key never changes), which is why this component is not torn down when
     // the server id arrives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conversationId],
+    [conversationKey],
   );
 
   // The render source: an IntegrityAgent bound to this conversation. run() is the
   // continuous integrity stream; send()/submitResume() are fire-and-forget POST
-  // /agui. Keyed to conversationId ONLY — NOT model. The model only rides the
-  // X-Agent-Model header on the next send and has no effect on the render stream,
-  // so recreating the agent (+ tearing down the render pump) on a model switch is
-  // needless — and it RACES the next send's events in a slow environment, dropping
-  // the reply (the model-switch-mid-conversation bug). Instead we keep the agent
-  // stable and update the model in place (effect below).
+  // /agui. Keyed to the stable conversation KEY — NOT the server id, and NOT model.
+  //
+  // Not the server id, because that id ARRIVES (on the first send of a new conversation).
+  // Rebuilding the agent then would tear down the render pump mid-run and lose the
+  // in-flight run's state — the Stop button stops responding. setConversationId() re-points
+  // it in place instead, and reads happen at call time.
+  //
+  // Not model, for the same reason: the model only rides the X-Agent-Model header on the
+  // next send and has no effect on the render stream, so recreating the agent on a model
+  // switch is needless — and it RACES the next send's events in a slow environment,
+  // dropping the reply (the model-switch-mid-conversation bug).
   const agent = useMemo(
     () => createIntegrityAgent({ baseUrl: BASE_URL, conversationId, model, idleReconnectMs: IDLE_RECONNECT_MS }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [conversationId],
+    [conversationKey],
   );
+
+  // Follow the server id in place. It appears when a brand-new conversation is created on
+  // its first send, and after a RELOAD the agent is built from the persisted id directly.
+  useEffect(() => {
+    agent.setConversationId(conversationId);
+  }, [agent, conversationId]);
 
   // Model switch mid-conversation: update the agent in place (no teardown). Do it
   // SYNCHRONOUSLY during render, NOT in an effect — an effect runs after render, so

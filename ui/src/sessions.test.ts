@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 import {
+  conversationFor,
   sessionStore,
   setConversationMinter,
   visibleSessions,
@@ -549,6 +550,27 @@ describe("the SERVER owns conversation ids", () => {
     expect(b).toBe("server-1");
     expect(c).toBe("server-1");
     expect(sessionStore.get().sessions).toHaveLength(1);
+  });
+
+  it("a conversation rebuilt after a RELOAD addresses the server by its SERVER id", async () => {
+    // The Conversation map is module state, so a page reload rebuilds every object from the
+    // persisted session. A conversation created via the first send keeps its local key, so
+    // rebuilding from the key would address the server with a placeholder — the queue
+    // vanished on reload because of exactly this.
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    setConversationMinter(async () => "real-server-id");
+    await sessionStore.ensureCurrentCreated();
+
+    const key = sessionStore.get().currentId;
+    const persisted = sessionStore.current();
+    expect(persisted.serverId).toBe("real-server-id");
+    expect(key).not.toBe("real-server-id"); // the key stayed local
+
+    // Rebuild as a reload would, from the persisted record alone.
+    const rebuilt = conversationFor(persisted);
+    expect(rebuilt.serverId()).toBe("real-server-id");
+    expect(rebuilt.key).toBe(key);
+    expect(await rebuilt.ifCreated(async (id) => id, "not-created")).toBe("real-server-id");
   });
 
   it("a server-listed conversation is never re-created", async () => {

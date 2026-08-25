@@ -232,13 +232,19 @@ const conversations = new Map<string, Conversation>();
 /** The Conversation for a session, created on first use. A session already known to the
  *  server is `existing` (its key IS its id); one the user only just started is `pending`
  *  and has no server id until its first send. */
-export const conversationFor = (session: Pick<Session, "id" | "serverCreated">): Conversation => {
+export const conversationFor = (
+  session: Pick<Session, "id" | "serverCreated" | "serverId">,
+): Conversation => {
   const found = conversations.get(session.id);
-  if (found) return found;
+  // The map is module state, so a page RELOAD rebuilds every Conversation from the
+  // persisted session. Rebuild from `serverId` — the key may be a local placeholder that
+  // outlived creation, and addressing the server with it is exactly the bug this whole
+  // change removes.
+  if (found && found.serverId() === session.serverId) return found;
   const create = () => mintId();
   const onCreated = (key: string, id: string) => adoptServerId(key, id);
-  const c = session.serverCreated
-    ? Conversation.existing(session.id, create, onCreated)
+  const c = session.serverId
+    ? new Conversation({ key: session.id, id: session.serverId, create, onCreated })
     : Conversation.pending(session.id, create, onCreated);
   conversations.set(session.id, c);
   return c;
