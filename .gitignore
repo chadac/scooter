@@ -23,3 +23,7 @@ services/conversation-router/conversation-router
 # docs/gen_options.py from `nix build .#options-doc`) + the built site. Never committed.
 docs/reference/options/
 site/
+
+# Python build artifacts (uv/setuptools leave these in the service dirs).
+*.egg-info/
+__pycache__/

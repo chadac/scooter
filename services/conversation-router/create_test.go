@@ -10,8 +10,7 @@ import (
 	"testing"
 )
 
-// fakeCreator records what would have been written to the API server. Note it has
-// NO notion of agent-host capacity — which is the point of the whole change.
+// fakeCreator records what would have been written to the API server.
 type fakeCreator struct {
 	calls []struct {
 		name string
@@ -61,7 +60,6 @@ func TestCreateMintsIdAndReturns201(t *testing.T) {
 	if resp.ID == "" {
 		t.Fatal("no id returned")
 	}
-	// The conversation exists but has no host yet — that is normal, not a failure.
 	if resp.Status != "pending" {
 		t.Fatalf("want status=pending, got %q", resp.Status)
 	}
@@ -70,9 +68,7 @@ func TestCreateMintsIdAndReturns201(t *testing.T) {
 	}
 }
 
-// THE POINT OF THE CHANGE. The agent-host is capacity-bounded: the controller
-// leaves a conversation Pending when every pod is at cap. Creation must not
-// consult that at all — conversation N*C+1 is still creatable.
+// Creation must not consult agent-host capacity.
 func TestCreateDoesNotConsultAgentHostCapacity(t *testing.T) {
 	c := &fakeCreator{}
 	for i := 0; i < 50; i++ { // far beyond any plausible replicas x cap
@@ -93,9 +89,7 @@ func TestCreateDoesNotConsultAgentHostCapacity(t *testing.T) {
 	}
 }
 
-// A stray threadId is ignored, not honored — the server mints the id. There is no
-// rejection branch: encoding/json drops the unknown key, and the caller gets the
-// real id from the response.
+// A stray threadId is ignored, not honored.
 func TestCreateIgnoresAStrayThreadId(t *testing.T) {
 	c := &fakeCreator{}
 	w := postCreate(t, c, `{"threadId":"attacker-chosen-id"}`, nil)
@@ -129,8 +123,7 @@ func TestCreateAnonymousOmitsOwner(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d", w.Code)
 	}
-	// Anonymous is a valid scope; an EMPTY owner must not be written, or the
-	// conversation would be owned by "" rather than being unowned.
+	// An empty owner must not be written — the conversation would be owned by "".
 	if _, present := c.calls[0].spec["owner"]; present {
 		t.Fatalf("owner must be absent when anonymous, got %+v", c.calls[0].spec)
 	}
@@ -140,8 +133,6 @@ func TestCreateSurfacesApiServerFailure(t *testing.T) {
 	c := &fakeCreator{err: errors.New("apiserver unreachable")}
 	w := postCreate(t, c, `{}`, nil)
 
-	// A failed CR write means the conversation does NOT exist. Returning an id
-	// would hand back something unusable, so this must be an error.
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("want 502 when the CR write fails, got %d (%s)", w.Code, w.Body.String())
 	}
