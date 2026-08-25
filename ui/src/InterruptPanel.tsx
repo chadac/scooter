@@ -17,6 +17,8 @@ import { useEffect, useState } from "react";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import type { PendingInterrupt } from "./integrityAgent.js";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface Option {
   optionId: string;
@@ -110,22 +112,20 @@ function InterruptCard({
         {options.map((o) => {
           const blocked = approveBlocked && o.optionId === "approve";
           return (
-            <button
+            <Button
               key={o.optionId}
-              type="button"
+              variant="outline"
+              size="sm"
               disabled={busy || blocked}
               data-testid="interrupt-option"
               data-option-id={o.optionId}
               data-blocked={blocked ? "true" : undefined}
               title={blocked ? "You need an admin to approve this request." : undefined}
-              className={
-                "rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 " +
-                (blocked ? "cursor-not-allowed" : "hover:bg-accent")
-              }
+              className={cn(blocked && "cursor-not-allowed")}
               onClick={() => !blocked && answer(intr, "resolved", o.optionId)}
             >
               {o.name}
-            </button>
+            </Button>
           );
         })}
         {approveBlocked && (
@@ -135,15 +135,16 @@ function InterruptCard({
         )}
         {/* Always offer an explicit dismiss when there are no options or
             the user wants to decline. */}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           disabled={busy}
           data-testid="interrupt-cancel"
-          className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50"
+          className="text-muted-foreground"
           onClick={() => answer(intr, "cancelled")}
         >
           Dismiss
-        </button>
+        </Button>
       </div>
     </div>
   );

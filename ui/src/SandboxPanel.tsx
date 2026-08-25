@@ -30,6 +30,7 @@ import {
 import { agentHostConfig } from "./config.js";
 import { useSessions } from "./sessions.js";
 import { ServiceRows } from "./ServicesPanel.js";
+import { Button } from "@/components/ui/button";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
@@ -132,10 +133,10 @@ const LABEL: Record<SandboxState, string> = {
 };
 
 const DOT: Record<SandboxState, string> = {
-  running: "bg-green-500",
-  suspended: "bg-amber-500",
+  running: "bg-success",
+  suspended: "bg-warning",
   ended: "bg-muted-foreground/40",
-  starting: "bg-amber-500 animate-pulse",
+  starting: "bg-warning animate-pulse",
   unknown: "bg-muted-foreground/40 animate-pulse",
 };
 
@@ -187,9 +188,9 @@ export function ModulesSection({ conversationId }: { conversationId: string }) {
           placeholder="Search modules…"
           className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
         />
-        <button type="submit" className="rounded-md border px-2 py-1 text-xs hover:bg-accent">
+        <Button variant="outline" size="xs" type="submit">
           Search
-        </button>
+        </Button>
       </form>
 
       {!configured ? (
@@ -214,19 +215,20 @@ export function ModulesSection({ conversationId }: { conversationId: string }) {
                 {m.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{m.description}</p>}
               </div>
               {m.attached ? (
-                <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-success/15 text-success">
                   installed
                 </span>
               ) : (
-                <button
-                  type="button"
+                <Button
+                  variant="outline"
+                  size="xs"
                   data-testid="module-install"
                   disabled={installing === m.name}
                   onClick={() => void install(m.name)}
-                  className="shrink-0 rounded-md border px-2 py-1 text-xs hover:bg-accent disabled:opacity-60"
+                  className="shrink-0"
                 >
                   {installing === m.name ? "Installing…" : "Install"}
-                </button>
+                </Button>
               )}
             </li>
           ))}
@@ -322,15 +324,16 @@ export function SandboxPanelView({
           {LABEL[state]}
         </span>
         {(state === "suspended" || state === "starting") && (
-          <button
-            type="button"
+          <Button
+            variant="default"
+            size="xs"
             data-testid="sandbox-start"
             disabled={state === "starting"}
             onClick={onStartSandbox}
-            className="ml-auto rounded-md bg-foreground px-2.5 py-1 text-xs text-background disabled:opacity-60"
+            className="ml-auto"
           >
             {state === "starting" ? "Starting…" : "Start sandbox"}
-          </button>
+          </Button>
         )}
       </div>
 
