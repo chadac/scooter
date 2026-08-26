@@ -53,6 +53,7 @@ import { toRepositorySnapshot, type RepositorySnapshot } from "./messageReposito
 import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { createConversation } from "./client.js";
+import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
 import { currentConversation, sessionStore, setConversationMinter, useSessions } from "./sessions.js";
 import {
   createIntegrityAgent,
@@ -143,7 +144,9 @@ export interface InterruptContextValue {
   submitResume: (entries: readonly ResumeEntry[]) => Promise<void>;
   /** The current conversation id + agent-host base URL, so the panel can hit
    *  host endpoints (e.g. the per-viewer AWS can-approve check). */
-  conversationId: string;
+  /** The SERVER's conversation id, or AWAITING_ID before creation. Same type as the agent
+   *  uses, so a consumer cannot `?? key` its way around it either. */
+  conversationId: MaybeConversationId;
   baseUrl: string;
   /** True while a goose run is in flight — drives the Stop button + thinking
    *  indicator. Sourced from the IntegrityAgent's log-derived isRunning(). */
@@ -250,7 +253,14 @@ function ConversationRuntime({
   // agent reads it at call time and is re-pointed in place by setConversationId() the
   // moment the server assigns one — the MOUNT stays keyed on the stable key, so nothing is
   // torn down when that happens.
-  const conversationId = session?.serverId ?? conversationKey;
+  // The SERVER's id, or undefined. NO fallback to the key: `?? conversationKey` was the
+  // leak — it handed the render agent a local placeholder, which then streamed against a
+  // conversation the server had never created (three 404 reconnects, then a duplicate
+  // start whose dangling run produced a spurious "interrupted by a restart" message).
+  // AWAITING_ID, not undefined, when the server has not created it: that makes
+  // `serverId ?? conversationKey` — the substitution that caused the 404-reconnect storm —
+  // a COMPILE ERROR rather than a silent fallback.
+  const conversationId: MaybeConversationId = session?.serverId ?? AWAITING_ID;
   // The conversation OBJECT for this mount. It owns whether a server id exists yet and
   // what each operation means before it does, so nothing here branches on id presence.
   const conversation = useMemo(
@@ -276,7 +286,14 @@ function ConversationRuntime({
   // switch is needless — and it RACES the next send's events in a slow environment,
   // dropping the reply (the model-switch-mid-conversation bug).
   const agent = useMemo(
-    () => createIntegrityAgent({ baseUrl: BASE_URL, conversationId, model, idleReconnectMs: IDLE_RECONNECT_MS }),
+    () =>
+      createIntegrityAgent({
+        baseUrl: BASE_URL,
+        // undefined until the server creates it — the agent cannot stream before then.
+        conversationId,
+        model,
+        idleReconnectMs: IDLE_RECONNECT_MS,
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [conversationKey],
   );
@@ -284,7 +301,7 @@ function ConversationRuntime({
   // Follow the server id in place. It appears when a brand-new conversation is created on
   // its first send, and after a RELOAD the agent is built from the persisted id directly.
   useEffect(() => {
-    agent.setConversationId(conversationId);
+    if (hasId(conversationId)) agent.setConversationId(conversationId);
   }, [agent, conversationId]);
 
   // Model switch mid-conversation: update the agent in place (no teardown). Do it
@@ -343,7 +360,7 @@ function ConversationRuntime({
         await conversation.withId(async (serverId) => {
           agent.setConversationId(serverId);
         });
-        if (text) sessionStore.titleFromFirstMessage(conversationId, text);
+        if (text) sessionStore.titleFromFirstMessage(conversationKey, text);
         // If a run is ALREADY active, the user is sending to interrupt it (e.g. a
         // stuck polling loop). Send with PRIORITY so the agent-host force-interrupts
         // the running turn (bridge "thinking" policy) instead of queuing the message
@@ -374,7 +391,9 @@ function ConversationRuntime({
 
   const threadListAdapter = useMemo(
     () => ({
-      threadId: conversationId,
+      // assistant-ui identifies the thread for its own bookkeeping; that is the stable
+      // KEY, not a server address. Passing the key here is correct and always defined.
+      threadId: conversationKey,
       onSwitchToNewThread: async () => {
         sessionStore.newSession();
       },
@@ -554,7 +573,7 @@ function ConversationRuntime({
         ?.map((c) => ("text" in c ? c.text : ""))
         .join(" ")
         .trim();
-      if (text) sessionStore.titleFromFirstMessage(conversationId, text);
+      if (text) sessionStore.titleFromFirstMessage(conversationKey, text);
     });
   }, [runtime, conversationId]);
 

@@ -15,6 +15,10 @@ import type * as schema from "@zed-industries/agent-client-protocol";
 import type { ExecBackend } from "../types.js";
 import { debug } from "../debug.js";
 
+import { logger } from "../log.js";
+
+const log = logger("sandboxHandlers");
+
 /** The subset of ACP Client methods that map onto the ExecBackend. */
 export interface SandboxClientHandlers {
   readTextFile(p: schema.ReadTextFileRequest): Promise<schema.ReadTextFileResponse>;
@@ -30,7 +34,7 @@ export interface SandboxClientHandlers {
   killTerminal(p: schema.KillTerminalCommandRequest): Promise<schema.KillTerminalResponse | void>;
   /** Kill EVERY live terminal for this session (a user cancel / force-interrupt).
    *  Best-effort — a kill that finds a finished terminal is a no-op. */
-  killAllTerminals(): Promise<void>;
+  killAllTerminals(graceForPendingSpawn?: boolean): Promise<void>;
 }
 
 export function createSandboxClientHandlers(
@@ -43,6 +47,16 @@ export function createSandboxClientHandlers(
   onTerminalCreated?: (terminalId: string, command: string, args: string[]) => void,
 ): SandboxClientHandlers {
   // Per-terminal handle + accumulated output, keyed by the (unique) handle id.
+  /** A USER stop can land before the shell it means to stop exists: the Stop button
+   *  appears at RUN_STARTED, but the terminal only registers once the tool call spawns.
+   *  Killing an empty map then succeeds silently and the run never ends. Hold a kill for
+   *  the next terminal until this deadline instead.
+   *
+   *  Armed ONLY for a user stop, and BOUNDED. Internal preemption also cancels with no
+   *  terminal live, and there the replacement shell must survive — arming on every cancel
+   *  killed the preempting run's own terminal, so nothing stayed running to queue behind. */
+  const CANCEL_GRACE_MS = 2_000;
+  let cancelDeadline = 0;
   const terminals = new Map<string, ReturnType<ExecBackend["spawn"]>>();
   const terminalBuffers = new Map<string, string>();
 
@@ -72,6 +86,14 @@ export function createSandboxClientHandlers(
         env: Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])),
       });
       terminals.set(handle.id, handle);
+      if (Date.now() < cancelDeadline) {
+        // A cancel landed while this terminal was still starting — kill it now rather
+        // than letting it run to completion after the user asked it to stop. Consumed
+        // here so one missed cancel kills one terminal, not every later one.
+        cancelDeadline = 0;
+        log.info("killing a terminal that started after a cancel", { terminal_id: handle.id });
+        void handle.kill().catch(() => {});
+      }
       // Accumulate streamed output so terminalOutput() can read it.
       terminalBuffers.set(handle.id, "");
       handle.onOutput((chunk) => {
@@ -115,10 +137,17 @@ export function createSandboxClientHandlers(
       await terminals.get(params.terminalId)?.kill();
     },
 
-    async killAllTerminals() {
+    async killAllTerminals(graceForPendingSpawn = false) {
       // Cancel: kill every live terminal so a running command (a stuck shell) is
       // actually stopped, not just left orphaned. Kills concurrently; a failure on
       // one must not skip the rest.
+      //
+      // An EMPTY map succeeds silently — indistinguishable from a real kill at the call
+      // site, which is how "the Stop button does nothing" looks from above. When there
+      // is nothing to kill, arm the grace window instead: the shell this cancel was
+      // aimed at is probably still spawning.
+      if (graceForPendingSpawn && terminals.size === 0) cancelDeadline = Date.now() + CANCEL_GRACE_MS;
+      log.info("killAllTerminals", { terminal_count: terminals.size, grace: graceForPendingSpawn });
       await Promise.allSettled([...terminals.values()].map((h) => h.kill()));
     },
   };

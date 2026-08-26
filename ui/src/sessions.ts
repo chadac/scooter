@@ -11,6 +11,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import type { AgentHostConfig } from "./client.js";
 import { Conversation } from "./conversation.js";
 
 export interface Session {
@@ -224,6 +225,14 @@ export const setConversationMinter = (fn: () => Promise<string | null>) => {
   mintId = fn;
 };
 
+/** How conversations reach the server. Injected once at app start (main/RuntimeProvider)
+ *  rather than read from a module global here — the store should not know the transport,
+ *  and a test should not have to stub one. */
+let agentHostConfig: AgentHostConfig = { baseUrl: "" };
+export const setAgentHostConfig = (cfg: AgentHostConfig) => {
+  agentHostConfig = cfg;
+};
+
 /** The Conversation object per session, keyed by the session's STABLE key. It owns the
  *  identity — whether the server has assigned an id yet, and what each operation means
  *  before it has. The Session record stays the render model; this is the behavior. */
@@ -244,8 +253,14 @@ export const conversationFor = (
   const create = () => mintId();
   const onCreated = (key: string, id: string) => adoptServerId(key, id);
   const c = session.serverId
-    ? new Conversation({ key: session.id, id: session.serverId, create, onCreated })
-    : Conversation.pending(session.id, create, onCreated);
+    ? new Conversation({
+        key: session.id,
+        id: session.serverId,
+        config: agentHostConfig,
+        create,
+        onCreated,
+      })
+    : Conversation.pending(session.id, agentHostConfig, create, onCreated);
   conversations.set(session.id, c);
   return c;
 };

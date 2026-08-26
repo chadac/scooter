@@ -604,3 +604,33 @@ describe("the SERVER owns conversation ids", () => {
     expect(id).toBe("from-server");
   });
 });
+
+describe("the local key must never be used as a server id", () => {
+  it("a pending conversation exposes NO server id to address the server with", async () => {
+    // Guarding this in one component was not enough — five separate bugs came from a raw
+    // key reaching a consumer that assumed it was a server id. The invariant belongs here:
+    // an uncreated conversation has NOTHING that can be sent to the server.
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    const key = sessionStore.get().currentId;
+    const conv = conversationFor(sessionStore.current());
+
+    expect(conv.serverId()).toBeUndefined();
+    expect(conv.url("/events.integrity")).toBeUndefined();
+    expect(conv.shareUrl("https://x")).toBeUndefined();
+    // The key exists for React/selection, and is NOT a server id.
+    expect(conv.key).toBe(key);
+  });
+
+  it("once created, every address uses the SERVER id", async () => {
+    for (const s of [...sessionStore.get().sessions]) sessionStore.deleteSession(s.id);
+    const key = sessionStore.get().currentId;
+    setConversationMinter(async () => "real-server-id");
+    await sessionStore.ensureCurrentCreated();
+
+    const conv = conversationFor(sessionStore.current());
+    expect(conv.url("/tail")).toContain("/conversations/real-server-id/tail");
+    expect(conv.shareUrl("https://x")).toBe("https://x/?thread=real-server-id");
+    expect(conv.url("/tail")).not.toContain(key);
+    expect(conv.shareUrl("https://x")).not.toContain(key);
+  });
+});

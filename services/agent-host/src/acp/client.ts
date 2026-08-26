@@ -93,7 +93,7 @@ export interface AcpClient {
   cancel(sessionId: string): Promise<void>;
   /** Kill every live sandbox terminal for this client (a user cancel / force-
    *  interrupt) — stops a running command, not just future ones. Best-effort. */
-  killActiveTerminals(): Promise<void>;
+  killActiveTerminals(graceForPendingSpawn?: boolean): Promise<void>;
 
   /** Liveness of the underlying agent process (goose/claude subprocess). `false`
    *  once it has exited — a DEFINITIVE health signal the bridge's stall watchdog
@@ -332,8 +332,8 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     async cancel(sessionId) {
       await conn.cancel({ sessionId });
     },
-    async killActiveTerminals() {
-      await sandbox.killAllTerminals();
+    async killActiveTerminals(graceForPendingSpawn = false) {
+      await sandbox.killAllTerminals(graceForPendingSpawn);
     },
     isAlive() {
       // A ChildProcess reports exitCode/signalCode === null while running; either

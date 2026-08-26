@@ -31,6 +31,10 @@ import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
 import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
 
+import { formatError, logger } from "./log.js";
+
+const log = logger("bridge");
+
 /** Where binary Slack attachments are materialized inside the sandbox. Kept in sync
  *  with the webhooks handler (services/webhooks) which notes these paths in the
  *  message text so the agent knows where to find each file. */
@@ -297,7 +301,9 @@ export interface SessionBridge {
    *  shell), and end the run cleanly (RUN_FINISHED marked cancelled). `runId` is
    *  optional — omitted cancels whatever run is currently active. A no-op if
    *  nothing is running. Queued prompts are NOT dropped; the next runs after. */
-  cancel(runId?: RunId): Promise<void>;
+  /** `userInitiated` marks a real Stop press, which gets a grace window for a terminal
+   *  that has not spawned yet. Internal preemption must NOT set it. */
+  cancel(runId?: RunId, userInitiated?: boolean): Promise<void>;
   stop(): Promise<void>;
   /** Snapshot of the run queue (for observability / the force-interrupt timer):
    *  whether a run is active, how long it's been going, and the queued backlog. */
@@ -1484,7 +1490,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       return p;
     },
 
-    async cancel(_runId?: RunId) {
+    async cancel(_runId?: RunId, userInitiated = false) {
       // Stop the RUNNING turn: mark it cancelled (so it ends as RUN_FINISHED
       // cancelled, not an error), KILL its active tool call (a running shell), then
       // tell goose to stop (session/cancel unblocks the prompt). A no-op if nothing
@@ -1493,8 +1499,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       if (!run || !acpClient) return;
       run.cancelled = true;
       try {
-        await acpClient.killActiveTerminals();
-      } catch {
+        // This is what actually ends the run: killing the shell makes the prompt
+        // return. session/cancel alone does not (the fake agent ignores it).
+        // Only a USER stop gets the pending-spawn grace window. Preemption must leave the
+        // next terminal alone: it belongs to the run that did the preempting.
+        await acpClient.killActiveTerminals(userInitiated);
+      } catch (e) {
+        // Was `catch {}` — a swallowed failure here presents as a dead Stop button.
+        log.warn("killActiveTerminals failed", { error: formatError(e) });
         /* best-effort — session/cancel below still stops goose */
       }
       if (acpSessionId) await acpClient.cancel(acpSessionId);

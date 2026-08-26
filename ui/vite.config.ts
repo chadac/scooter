@@ -5,6 +5,12 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Explicitly define VITE_TELEMETRY_CONSOLE from the environment so it's available
+  // to import.meta.env even when passed through playwright's webServer.env. Without
+  // this, the env var set by playwright might not be visible to Vite's transformation.
+  define: {
+    "import.meta.env.VITE_TELEMETRY_CONSOLE": JSON.stringify(process.env.VITE_TELEMETRY_CONSOLE),
+  },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./", import.meta.url)),

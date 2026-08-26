@@ -1488,3 +1488,58 @@ describe("seedTail + full replay must not leave DUPLICATE message ids", () => {
     ).toEqual([]);
   });
 });
+
+describe("an UNCREATED conversation never reaches the server", () => {
+  it("renderPump does NOT open a stream while conversationId is undefined", async () => {
+    // The reported bug: the pump streamed a local placeholder, 404'd, and reconnected
+    // three times in four seconds — which produced a duplicate start whose dangling run
+    // injected a spurious "interrupted by a restart" message.
+    const fetchImpl = vi.fn(async () => new Response("", { status: 404 }));
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: undefined,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 120));
+    stop();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("send() REFUSES rather than posting to a placeholder", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 }));
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: undefined,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(agent.send("hello")).rejects.toThrow(/not been created/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("starts streaming once the server id arrives", async () => {
+    const fetchImpl = vi.fn(async () => new Response("", { status: 404 }));
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: undefined,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    agent.setConversationId("server-1");
+    await new Promise((r) => setTimeout(r, 400));
+    stop();
+
+    expect(fetchImpl).toHaveBeenCalled();
+    // What matters is WHICH id is addressed, not the order. The pump starts immediately
+    // (deferring its start broke stop-run — the run's events were missed) and simply
+    // skips connections until an id exists; every request it does make must name the
+    // SERVER id, never the local key.
+    const urls = fetchImpl.mock.calls.map((c) => String((c as unknown[])[0]));
+    for (const u of urls) expect(u).toContain("/conversations/server-1/");
+    expect(urls.some((u) => u.includes("/events.integrity"))).toBe(true);
+  });
+});
