@@ -137,6 +137,17 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 // response has begun (headers written / stream started) is surfaced as-is — not retryable.
 func serveVia(shutdownCtx context.Context, w http.ResponseWriter, r *http.Request, target, fallback *url.URL, retry bool, convID string) {
 	log := logger("proxy")
+	// One debug line per proxied request. The router previously logged NOTHING but its
+	// startup, so during a live incident its behaviour was unfalsifiable — "the router
+	// never routed anything" and "the router routed everything correctly" produced the
+	// same (empty) log, and an investigation asserted the former when the latter was
+	// true. Debug level: free in normal operation, decisive when it matters.
+	log.Debug("proxying",
+		convAttr(convID),
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+		slog.String("upstream", target.Host),
+	)
 	tw := &trackingWriter{ResponseWriter: w}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.FlushInterval = -1 // flush immediately: required for SSE (don't buffer the stream).
