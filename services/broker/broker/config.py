@@ -135,6 +135,10 @@ class BrokerSettings(BaseSettings):
     sandbox_systemd_image: bool = True
     # Deployment default size (friendly {requests,limits} JSON); empty -> platform default.
     sandbox_default_resources_json: str = ""
+    # Named sandbox size presets (name -> {cpu, memory}); exposed at GET /sandbox-sizes.
+    sandbox_sizes_json: str = ""
+    # The default preset name (must be a key in sandbox_sizes_json when that's set).
+    sandbox_default_size_name: str = ""
     # Deployment-supplied provisioning config (was K8sProvisionerOptions on the agent-host).
     sandbox_aws_accounts_configmap: str = ""
     sandbox_config_files_configmap: str = ""

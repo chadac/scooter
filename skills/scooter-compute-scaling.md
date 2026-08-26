@@ -32,12 +32,12 @@ triggers:
 
 # Scale your sandbox's compute BEFORE heavy work (anticipate, don't react)
 
-Your sandbox runs with a fixed CPU + memory size. By **default it is Guaranteed
-QoS — `cpu: 2`, `memory: 4Gi`, with requests == limits.** That means the size is a
-HARD cap: you are throttled at 2 CPU and **OOM-killed** past 4Gi. It also means you
-can't "borrow" spare capacity from the node — you get exactly what you reserved,
-and so does everyone else (that isolation is deliberate: it stops one runaway
-sandbox from starving its neighbours).
+Your sandbox runs with a fixed CPU + memory size. **By default you start at the
+`medium` preset: `cpu: 2`, `memory: 4Gi`, with requests == limits (Guaranteed QoS).**
+That means the size is a HARD cap: you are throttled at 2 CPU and **OOM-killed**
+past 4Gi. It also means you can't "borrow" spare capacity from the node — you get
+exactly what you reserved, and so does everyone else (that isolation is deliberate:
+it stops one runaway sandbox from starving its neighbours).
 
 So if you're about to do something heavy, **size up first**. Don't wait to get
 killed and retry.
@@ -70,23 +70,41 @@ cap was too low: raise `memory`, restart, retry — don't just re-run at the sam
 ## When to scale DOWN
 
 When a heavy phase is done and the conversation goes back to light editing/chat,
-size back toward the default (`cpu: 2`, `memory: 4Gi`) so you're not holding a big
-reservation idle. Bigger sandboxes are more expensive and reduce how many can be
-packed on a node.
+size back toward the default (`medium`: `cpu: 2`, `memory: 4Gi`) so you're not
+holding a big reservation idle. Bigger sandboxes are more expensive and reduce how
+many can be packed on a node.
 
 ## How
 
 1. `show_sandbox_resources` — see what you currently have.
-2. `set_sandbox_resources` — set only the fields you want to change (omit a field to
-   keep it). Keep requests == limits unless you have a specific reason not to, so you
-   stay Guaranteed QoS. Quantities are k8s-style: cpu `"2"` / `"500m"`, memory
-   `"16Gi"` / `"512Mi"`, gpu a whole number.
+2. `set_sandbox_resources` — use a **named preset** (easiest) OR set raw cpu/memory/gpu fields.
 
-Example — before a large parallel build:
+### Named presets (recommended)
+
+Most deployments offer these standard presets (requests == limits for Guaranteed QoS):
+
+- **`tiny`**: 250m CPU, 256Mi memory — minimal for light editing
+- **`small`**: 1 CPU, 2Gi memory — small builds, scripting
+- **`medium`**: 2 CPU, 4Gi memory — **the default**
+- **`large`**: 4 CPU, 16Gi memory — parallel builds, heavy compute
+
+Pass the preset name to `set_sandbox_resources`:
 
 ```
-set_sandbox_resources(requestCpu="8", limitCpu="8", requestMemory="16Gi", limitMemory="16Gi")
+set_sandbox_resources(size="large")
 ```
 
-Then let the sandbox restart pick it up, and start the build. When you're done and
-back to normal work, scale down again.
+Then let the sandbox restart pick it up, and start the build. When you're done:
+
+```
+set_sandbox_resources(size="medium")
+```
+
+### Raw resources (advanced)
+
+You can also set raw quantities (cpu `"2"` / `"500m"`, memory `"16Gi"` / `"512Mi"`,
+gpu a whole number). Omit a field to keep it. Keep requests == limits for Guaranteed QoS.
+
+```
+set_sandbox_resources(requestCpu="8", limitCpu="8", requestMemory="32Gi", limitMemory="32Gi")
+```

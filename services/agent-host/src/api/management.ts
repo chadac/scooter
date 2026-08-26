@@ -139,6 +139,10 @@ export interface ManagementDeps {
    *  so the Sandbox tab can show the user what the pod is allotted. Wired only on the
    *  broker path (the broker owns + applies sizing); absent = the route reports none. */
   sandboxResources?: (conversationId: string) => Promise<SandboxResources | undefined>;
+  /** The available named sandbox size presets (name → {cpu, memory}) and the default
+   *  preset name, from GET /sandbox-sizes. Used by the UI dropdown and the agent to
+   *  discover available sizes. Wired only on the broker path; absent = no presets. */
+  sandboxSizes?: () => Promise<{ sizes: Record<string, { cpu: string; memory: string }>; default: string | null }>;
   /** Bring-your-own-Claude (Increment 2): powers the Settings "Connect your Claude agent"
    *  section — mint an owner-bound join token + the copyable docker one-liner, and report whether
    *  the caller's agent is currently connected (for the live badge). Optional — absent when BYO
@@ -893,6 +897,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!id || !deps.sandboxResources) return { json: { resources: null } };
     const resources = (await deps.sandboxResources(id).catch(() => undefined)) ?? null;
     return { json: { resources } };
+  });
+
+  // The available named sandbox size presets (name → {cpu, memory}) and the default
+  // preset name. Used by the UI dropdown and the agent to discover available sizes.
+  // Absent getter (no broker / fake mode) -> {sizes: {}, default: null}.
+  r.get("/sandbox-sizes", async () => {
+    if (!deps.sandboxSizes) return { json: { sizes: {}, default: null } };
+    const result = (await deps.sandboxSizes().catch(() => ({ sizes: {}, default: null })));
+    return { json: result };
   });
 
   r.post("/conversations/:id/web-services/:name/start", async (ctx) => {

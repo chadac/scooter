@@ -21,12 +21,15 @@ let
 
   # Shape of one conversation's resources. `id` = conversationId.
   mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker", overlayStore ? false, overlayStorage ? "20Gi"
-    # MUST mirror the broker's PLATFORM_DEFAULT (sandbox/resources.py): requests ==
-    # limits (cpu AND memory) => Guaranteed QoS, so one runaway sandbox is hard-capped
-    # and can't starve its neighbours (the "single bad pod blows up everything" case).
-    # This file is the Nix-rendered contract for a directly-created Sandbox; a mismatch
-    # drifts from what the provisioner produces at runtime.
-  , sandboxResources ? { requests = { cpu = "2"; memory = "4Gi"; }; limits = { cpu = "2"; memory = "4Gi"; }; }
+    # Default sandbox size: the "medium" preset from cfg.sandboxSizes (2 CPU / 4Gi).
+    # Requests == limits (Guaranteed QoS) so one runaway sandbox is hard-capped and
+    # can't starve its neighbours. This is the Nix-rendered contract for a directly-
+    # created Sandbox; the broker's PLATFORM_DEFAULT (resources.py) mirrors this.
+    # Deployments tune the default via cfg.defaultSandboxSize + cfg.sandboxSizes.
+  , sandboxResources ? let defaultPreset = cfg.sandboxSizes.${cfg.defaultSandboxSize}; in {
+      requests = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; };
+      limits = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; };
+    }
   }: {
     # ServiceAccount sandbox-${id}  (unique per conversation; broker identity)
     serviceAccount = {

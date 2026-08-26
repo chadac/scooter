@@ -504,6 +504,28 @@ in
                   # — the agent-host SA (a sandbox SA is only ever allowed its OWN size).
                   { name = "SANDBOX_CONTROL_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # The deployment default size (tier 2 in the broker's resolve_resources:
+                  # conversation override → this → PLATFORM_DEFAULT). Rendered from the
+                  # defaultSandboxSize preset name → its {cpu, memory}. Requests == limits
+                  # (Guaranteed QoS) for all presets.
+                  { name = "SANDBOX_DEFAULT_RESOURCES_JSON";
+                    value = let
+                      preset = cfg.sandboxSizes.${cfg.defaultSandboxSize};
+                    in builtins.toJSON {
+                      requests = { cpu = preset.cpu; memory = preset.memory; };
+                      limits = { cpu = preset.cpu; memory = preset.memory; };
+                    };
+                  }
+                  # The full preset map (name → {cpu, memory}), exposed at GET /sandbox-sizes
+                  # so the UI dropdown and the agent can discover what's available. Each preset
+                  # renders as requests == limits (Guaranteed QoS).
+                  { name = "SANDBOX_SIZES_JSON";
+                    value = builtins.toJSON (lib.mapAttrs (_name: preset: {
+                      cpu = preset.cpu;
+                      memory = preset.memory;
+                    }) cfg.sandboxSizes);
+                  }
+                  { name = "SANDBOX_DEFAULT_SIZE_NAME"; value = cfg.defaultSandboxSize; }
                 ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
                   # Extra projected-token audiences a deployment's tools need
                   # (was SCOOTER_TOKEN_AUDIENCES on the agent-host).

@@ -155,10 +155,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   const ns = opts.namespace;
   const audience = opts.brokerAudience ?? "agent-broker";
   const storage = opts.workspaceStorage ?? "10Gi";
-  // Sandbox container resources (see the option doc): default requests == limits on
-  // cpu AND memory => Guaranteed QoS, so one runaway sandbox is hard-capped and can't
-  // starve its neighbours. Deployment-overridable; the agent can also scale its own
-  // sandbox up via the resize tool when it anticipates heavy compute.
+  // Sandbox container resources (see the option doc): default is the "medium" preset
+  // (2 CPU / 4Gi, requests == limits => Guaranteed QoS), so one runaway sandbox is
+  // hard-capped and can't starve its neighbours. Deployment-overridable via presets
+  // (cfg.defaultSandboxSize); the agent can also resize its own sandbox via the tool.
   const sandboxResources = opts.sandboxResources ?? {
     requests: { cpu: "2", memory: "4Gi" },
     limits: { cpu: "2", memory: "4Gi" },

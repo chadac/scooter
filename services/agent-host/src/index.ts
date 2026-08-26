@@ -823,10 +823,11 @@ export async function main(
     ? {
         currentResources: async (id: string): Promise<SandboxResources> =>
           (await brokerProvisioner.getSize(shortId(id))) ?? {},
-        setResources: async (id: string, r: SandboxResources): Promise<boolean> => {
+        setResources: async (id: string, r: SandboxResources | { size: string }): Promise<boolean> => {
           await brokerProvisioner.setSize(shortId(id), r);
           return true; // recorded — the broker applies it on the next sandbox restart
         },
+        availableSizes: async () => brokerProvisioner.getSizes(),
       }
     : undefined;
 
@@ -1126,6 +1127,9 @@ export async function main(
       sandboxResources: brokerProvisioner
         ? (id: string) => brokerProvisioner.getSize(shortId(id))
         : undefined,
+      // The available named sandbox size presets and the default preset name. Broker
+      // path only; used by the UI dropdown and the agent to discover available sizes.
+      sandboxSizes: brokerProvisioner ? () => brokerProvisioner.getSizes() : undefined,
       // BYO-Claude Settings section (mint one-liner + connected badge). Undefined = BYO off.
       remoteAgent: remoteAgentUi,
       // Manual compaction — summarize older turns via a one-off SDK query with the

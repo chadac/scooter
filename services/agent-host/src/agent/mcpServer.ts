@@ -370,18 +370,19 @@ export async function buildServer(
       {
         title: "Resize your sandbox",
         description:
-          "Change the cpu / memory / gpu (requests and/or limits) YOUR sandbox runs with. The new size is " +
-          "RECORDED and takes effect on the NEXT sandbox restart — it does NOT restart the running pod, so " +
-          "nothing in flight is interrupted. Scale up for a heavy build/large model; scale down when idle. " +
-          "Omit a field to keep it. Quantities are k8s-style (cpu \"500m\"/\"2\", memory \"1Gi\"/\"512Mi\", " +
-          "gpu a whole number).",
+          "Change the cpu / memory / gpu YOUR sandbox runs with. The new size is RECORDED and takes effect on the " +
+          "NEXT sandbox restart — it does NOT restart the running pod, so nothing in flight is interrupted. " +
+          "Scale up for a heavy build/large model; scale down when idle. Accepts EITHER a named preset (size: " +
+          "\"tiny\"/\"small\"/\"medium\"/\"large\") OR raw resources (cpu/memory/gpu fields). Omit all fields to " +
+          "keep current. Quantities are k8s-style (cpu \"500m\"/\"2\", memory \"1Gi\"/\"512Mi\", gpu a whole number).",
         inputSchema: {
-          requestCpu: z.string().optional().describe('cpu request, e.g. "500m" or "2".'),
-          requestMemory: z.string().optional().describe('memory request, e.g. "1Gi".'),
-          requestGpu: z.number().int().nonnegative().optional().describe("whole GPUs to request (nvidia.com/gpu)."),
-          limitCpu: z.string().optional().describe('cpu limit, e.g. "2".'),
-          limitMemory: z.string().optional().describe('memory limit, e.g. "8Gi".'),
-          limitGpu: z.number().int().nonnegative().optional().describe("whole GPUs to limit (nvidia.com/gpu)."),
+          size: z.string().optional().describe('Named preset: "tiny", "small", "medium", or "large" (deployment may have more).'),
+          requestCpu: z.string().optional().describe('cpu request, e.g. "500m" or "2" (ignored if size is set).'),
+          requestMemory: z.string().optional().describe('memory request, e.g. "1Gi" (ignored if size is set).'),
+          requestGpu: z.number().int().nonnegative().optional().describe("whole GPUs to request (ignored if size is set)."),
+          limitCpu: z.string().optional().describe('cpu limit, e.g. "2" (ignored if size is set).'),
+          limitMemory: z.string().optional().describe('memory limit, e.g. "8Gi" (ignored if size is set).'),
+          limitGpu: z.number().int().nonnegative().optional().describe("whole GPUs to limit (ignored if size is set)."),
         },
       },
       async (args) => handleSetSandboxResources(resources, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
