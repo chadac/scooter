@@ -45,6 +45,16 @@ async function serverIds(
 }
 
 test.describe("client/server conversation identity", () => {
+  // CLUSTER-HONEST BUDGET. The new-conversation test funds TWO full conversation
+  // boots in one budget, and on the cluster the second is the expensive one: with
+  // pod_cap=1 a fresh conversation can demand a NEW agent-host replica (autoscale
+  // observed 3->5 exactly at its assignment in CI run 32990346244) before its
+  // sandbox pod even starts. First boot + assign-wait + second boot legitimately
+  // reaches 60-90s on the shared k3d node while the run itself is healthy — the
+  // trace shows the tool call running and the reply landing after the default 60s
+  // expired. Same class as stop-run's budgets; behaviour-bound, not time-bound.
+  test.setTimeout(120_000);
+
   test("the id in the URL is one the SERVER issued", async ({ chat, page, request, baseURL }) => {
     const base = baseURL!;
     await chat.open();
