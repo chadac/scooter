@@ -240,7 +240,8 @@ cluster-redeploy:
         names+=("${name}:latest")
       done
     done
-    k3d image import "${names[@]}" -c {{_K3D_CLUSTER}}
+    # A manifests-only drift rebuilds no images; k3d fatals on zero args.
+    [ ${#names[@]} -gt 0 ] && k3d image import "${names[@]}" -c {{_K3D_CLUSTER}}
     # imagePullPolicy is IfNotPresent on side-loaded images, so a restart is what
     # actually picks up the new layers — `set image` would be a no-op at :latest.
     for pair in {{_PLATFORM_IMAGES}}; do
