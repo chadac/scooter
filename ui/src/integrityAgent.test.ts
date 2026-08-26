@@ -1534,12 +1534,12 @@ describe("an UNCREATED conversation never reaches the server", () => {
     stop();
 
     expect(fetchImpl).toHaveBeenCalled();
-    // Ordering matters: seedTail FIRST (fast first paint), then the stream. Gating inside
-    // the reconnect loop — an earlier attempt — skipped seedTail entirely, so `seeded`
-    // stayed false and the first connection wiped the visible transcript.
+    // What matters is WHICH id is addressed, not the order. The pump starts immediately
+    // (deferring its start broke stop-run — the run's events were missed) and simply
+    // skips connections until an id exists; every request it does make must name the
+    // SERVER id, never the local key.
     const urls = fetchImpl.mock.calls.map((c) => String((c as unknown[])[0]));
-    expect(urls[0]).toContain("/conversations/server-1/tail");
-    // ...and every URL addresses the SERVER id, never the local key.
     for (const u of urls) expect(u).toContain("/conversations/server-1/");
+    expect(urls.some((u) => u.includes("/events.integrity"))).toBe(true);
   });
 });

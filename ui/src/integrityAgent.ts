@@ -719,8 +719,18 @@ export class IntegrityAgent extends AbstractAgent {
           // reset and replayed, which is what "it restarted" looks like to a user.
           "stream.first_connection": isFirstConnection,
         });
+        // No server id yet: nothing to connect to. Wait a beat and re-check rather than
+        // streaming a placeholder (the 404-reconnect storm). This sits AFTER seedTail and
+        // the per-connection reset, so the pump's ordering is untouched — deferring the
+        // pump's START instead broke stop-run, twice, in ways a bisect caught and reading
+        // did not.
+        const url = streamUrl();
+        if (url === undefined) {
+          await delay(50);
+          continue;
+        }
         const outcome = await this.readConnection(
-          streamUrl() as string, // non-undefined: guarded at the loop head above
+          url,
           headers,
           controller,
           (e) => {
@@ -898,9 +908,7 @@ export class IntegrityAgent extends AbstractAgent {
     // `seeded` stayed false and the first real connection wiped the visible transcript
     // rather than preserving the seeded tail. seedTail runs once, before the loop; the
     // gate has to sit before it, not inside what follows it.
-    void this.awaitConversationId()
-      .then(() => (closed ? undefined : this.seedTail()))
-      .finally(() => { if (!closed) void loop(); });
+    void this.seedTail().finally(() => { if (!closed) void loop(); });
     return stop;
   }
 
@@ -908,15 +916,6 @@ export class IntegrityAgent extends AbstractAgent {
    *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
    *  first paint before the full replay. Best-effort: any failure just skips the
    *  seed and the full replay paints as before. */
-  /** Resolve once the server has assigned this conversation an id. Polls rather than
-   *  subscribing, because setConversationId is a plain setter; 100ms is imperceptible and
-   *  costs no I/O. Returns immediately when an id already exists — the common case. */
-  private async awaitConversationId(): Promise<void> {
-    while (!hasId(this.cfg.conversationId)) {
-      await delay(100);
-    }
-  }
-
   private async seedTail(runs = 8): Promise<void> {
     try {
       if (!hasId(this.cfg.conversationId)) return; // nothing to seed from yet
