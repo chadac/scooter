@@ -23,17 +23,25 @@ const sb = {
 };
 
 async function currentThreadId(page: import("@playwright/test").Page): Promise<string> {
-  const id = await page.evaluate(() => {
-    const raw = window.localStorage.getItem("kubenix-agent.sessions.v1");
-    // The SERVER's id, not `currentId` — that is the stable local KEY, which for a
-    // conversation created on its first send is a placeholder the server never issued.
-    if (!raw) return "";
-    const st = JSON.parse(raw) as {
-      currentId?: string;
-      sessions?: Array<{ id: string; serverId?: string }>;
-    };
-    return st.sessions?.find((s) => s.id === st.currentId)?.serverId ?? "";
-  });
+  // Poll for serverId with retries — it's set asynchronously after the conversation
+  // is created on the server, so there's a race between the reply arriving and the
+  // serverId being persisted to localStorage.
+  let id = "";
+  for (let i = 0; i < 50; i++) {
+    id = await page.evaluate(() => {
+      const raw = window.localStorage.getItem("kubenix-agent.sessions.v1");
+      // The SERVER's id, not `currentId` — that is the stable local KEY, which for a
+      // conversation created on its first send is a placeholder the server never issued.
+      if (!raw) return "";
+      const st = JSON.parse(raw) as {
+        currentId?: string;
+        sessions?: Array<{ id: string; serverId?: string }>;
+      };
+      return st.sessions?.find((s) => s.id === st.currentId)?.serverId ?? "";
+    });
+    if (id) break;
+    await page.waitForTimeout(100);
+  }
   expect(id).toBeTruthy();
   return id;
 }
