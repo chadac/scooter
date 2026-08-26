@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./globals.css";
 import { App } from "./App.js";
 import { viewStore } from "./view.js";
-import { sessionStore } from "./sessions.js";
+import { currentConversation, sessionStore } from "./sessions.js";
 import { loadConversations, loadConversationsResult, loadWhoami } from "./client.js";
 import { subscribeConversations } from "./conversationStream.js";
 import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
@@ -94,7 +94,13 @@ if (threadParam) sessionStore.requestSelect(threadParam);
 // updated when they return to chat, so the deep-link stays accurate.
 sessionStore.subscribe(() => {
   if (viewStore.get() === "settings") return;
-  const id = sessionStore.get().currentId;
+  // The SERVER's id, never `currentId` — that is the LOCAL KEY. Writing it here
+  // produced a `?thread=<key>` the server 404s: the stream ran against the real
+  // conversation while the URL named a phantom, so a reload lost the conversation
+  // entirely. Same class as #341/#347, which fixed the streaming path and missed
+  // this one. Before the id arrives there is nothing to reflect — leave the URL be.
+  const id = currentConversation()?.serverId();
+  if (id === undefined) return;
   const url = new URL(globalThis.location.href);
   if (url.searchParams.get("thread") !== id) {
     url.searchParams.set("thread", id);
