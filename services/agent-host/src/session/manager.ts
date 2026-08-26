@@ -1382,6 +1382,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       for (const entry of entries.values()) {
         if (entry.status !== "running") continue;
+        // OWNERSHIP FILTER (the #297 residual, finally). Multi-replica, BOTH pods can hold
+        // the same conversation (dual adoption); without this they both swept it ~3s apart.
+        // The second sweeper's background-job EXEC PROBE rides the pollForReadyPod
+        // self-heal, which RESUMES the sandbox the first sweeper just suspended — and with
+        // the conversation then evicted everywhere, nothing ever re-suspends it. Observed
+        // on valhalla: three sandbox pods running 9-12h, conversations phase=Suspended,
+        // each with two 'idle-suspended' log lines 3.5s apart. Only the OWNER sweeps —
+        // and, as importantly, only the owner PROBES.
+        if (!ownershipGuard.canWrite(entry.id)) continue;
         if (now - entry.lastActivityAt < idleMs) continue;
         if (hasLiveDescendant(entry.id)) continue; // keep the shared pod up
         // NEVER suspend a conversation with a run IN FLIGHT. lastActivityAt is bumped

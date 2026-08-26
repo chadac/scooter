@@ -110,6 +110,15 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
     // idle-suspend leaves the pod gone while the bridge issues tool calls that all fail.
     if (candidates.length === 0 && deps.ensureRunning && !healed) {
       healed = true;
+      // LOUD. This resume is load-bearing for a live bridge — but fired against a
+      // just-suspended sandbox (a racing sweeper's probe) it is the destructive half
+      // of the zombie-sandbox bug: the resume lands last, the conversation is evicted
+      // everywhere, and the pod runs forever. Success was previously silent, which is
+      // why 9-12h zombies had no trace of WHO woke them.
+      log.warn("resume-on-missing-pod: resuming the sandbox (idle-suspend self-heal)", {
+        namespace: ref.namespace,
+        pod_name: ref.name,
+      });
       try {
         await deps.ensureRunning();
       } catch (err) {
