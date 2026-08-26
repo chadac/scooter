@@ -15,6 +15,10 @@ import type * as schema from "@zed-industries/agent-client-protocol";
 import type { ExecBackend } from "../types.js";
 import { debug } from "../debug.js";
 
+import { logger } from "../log.js";
+
+const log = logger("sandboxHandlers");
+
 /** The subset of ACP Client methods that map onto the ExecBackend. */
 export interface SandboxClientHandlers {
   readTextFile(p: schema.ReadTextFileRequest): Promise<schema.ReadTextFileResponse>;
@@ -43,6 +47,10 @@ export function createSandboxClientHandlers(
   onTerminalCreated?: (terminalId: string, command: string, args: string[]) => void,
 ): SandboxClientHandlers {
   // Per-terminal handle + accumulated output, keyed by the (unique) handle id.
+  /** True once a cancel arrived with NO terminal to kill. The next terminal to
+   *  register is killed on arrival, closing the window between RUN_STARTED (which
+   *  reveals the Stop button) and the shell actually spawning. */
+  let cancelPending = false;
   const terminals = new Map<string, ReturnType<ExecBackend["spawn"]>>();
   const terminalBuffers = new Map<string, string>();
 
@@ -72,6 +80,17 @@ export function createSandboxClientHandlers(
         env: Object.fromEntries((params.env ?? []).map((e) => [e.name, e.value])),
       });
       terminals.set(handle.id, handle);
+      if (cancelPending) {
+        // A cancel landed while this terminal was still starting — kill it now rather
+        // than letting it run to completion after the user asked it to stop.
+        //
+        // Cleared HERE, on consumption: the latch belongs to the one cancel that missed,
+        // not to the conversation. Leaving it set killed the NEXT run's terminal too —
+        // observed as term-2 dying on a run the user never cancelled.
+        cancelPending = false;
+        log.info("killing a terminal that started after a cancel", { terminal_id: handle.id });
+        void handle.kill().catch(() => {});
+      }
       // Accumulate streamed output so terminalOutput() can read it.
       terminalBuffers.set(handle.id, "");
       handle.onOutput((chunk) => {
@@ -116,9 +135,16 @@ export function createSandboxClientHandlers(
     },
 
     async killAllTerminals() {
+        // A cancel can arrive BEFORE the agent spawns its shell. Killing an empty map
+        // succeeds silently, the shell then starts unimpeded, and the run never ends —
+        // the Stop button looks dead. Latch it so the next terminal is killed on sight.
+        cancelPending = true;
       // Cancel: kill every live terminal so a running command (a stuck shell) is
       // actually stopped, not just left orphaned. Kills concurrently; a failure on
       // one must not skip the rest.
+        // An EMPTY map succeeds silently — indistinguishable from a real kill at the
+        // call site, which is how "the Stop button does nothing" looks from above.
+        log.info("killAllTerminals", { terminal_count: terminals.size });
       await Promise.allSettled([...terminals.values()].map((h) => h.kill()));
     },
   };

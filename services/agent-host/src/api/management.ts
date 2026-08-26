@@ -602,6 +602,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.post("/conversations/:id/cancel", async (ctx) => {
     const conv = sessions.get(ctx.params.id);
     if (!conv) return { status: 404, json: { error: "not found" } };
+    // `bridge?.cancel()` answers 202 even with NO bridge — a silent no-op indistinguishable
+    // from a real stop. Record which happened.
+    log.info("cancel requested", {
+      conversation_id: ctx.params.id,
+      has_bridge: conv.bridge !== undefined,
+      status: conv.status,
+    });
     await conv.bridge?.cancel();
     return { status: 202, json: { ok: true } };
   });

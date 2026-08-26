@@ -31,6 +31,10 @@ import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
 import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
 
+import { formatError, logger } from "./log.js";
+
+const log = logger("bridge");
+
 /** Where binary Slack attachments are materialized inside the sandbox. Kept in sync
  *  with the webhooks handler (services/webhooks) which notes these paths in the
  *  message text so the agent knows where to find each file. */
@@ -1493,8 +1497,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       if (!run || !acpClient) return;
       run.cancelled = true;
       try {
+        // This is what actually ends the run: killing the shell makes the prompt
+        // return. session/cancel alone does not (the fake agent ignores it).
         await acpClient.killActiveTerminals();
-      } catch {
+      } catch (e) {
+        // Was `catch {}` — a swallowed failure here presents as a dead Stop button.
+        log.warn("killActiveTerminals failed", { error: formatError(e) });
         /* best-effort — session/cancel below still stops goose */
       }
       if (acpSessionId) await acpClient.cancel(acpSessionId);

@@ -148,6 +148,17 @@ export class IntegrityAgent extends AbstractAgent {
    *  event, ignoring out-of-band `ext-` runs. Returns true if anything the UI shows
    *  changed (so the caller can nudge subscribers). */
   private trackRunning(e: BaseEvent): boolean {
+    // The Stop button is gated on `running`, which ONLY these events move. If a cancel
+    // returns 202 but the bar never clears, either the terminal event never arrives here
+    // or it arrives and is ignored — this span says which.
+    const t = (e as unknown as { type?: string }).type;
+    if (t === "RUN_STARTED" || t === "RUN_FINISHED" || t === "RUN_ERROR") {
+      record("run.state_event", {
+        "event.type": String(t),
+        "run.id": String((e as unknown as { runId?: string }).runId ?? ""),
+        running_before: this.running,
+      });
+    }
     const ev = e as unknown as { type?: string; runId?: string; ts?: number; toolCallName?: string };
     const isExt = typeof ev.runId === "string" && ev.runId.startsWith("ext-");
     if (isExt) return false;
@@ -660,6 +671,9 @@ export class IntegrityAgent extends AbstractAgent {
     const loop = async () => {
       let notFoundDelay = 500;
       let firstConn = true;
+        /** Consecutive ticks spent waiting for a server id — sampled into a span so a
+         *  pump that never connects is visible instead of silent. */
+        let waitTicks = 0;
       while (!closed) {
         // No server id yet: there is nothing to connect to, so wait BEFORE doing any
         // per-connection work. This must be the FIRST thing in the loop body — the reset
@@ -670,8 +684,18 @@ export class IntegrityAgent extends AbstractAgent {
         // The pump's START is deliberately NOT deferred: bisection showed that breaks the
         // same spec, whether the deferral is a poll or an immediate signal.
         if (!hasId(this.cfg.conversationId)) {
+          // Sampled: the loop spins at 50ms, so record the FIRST wait and then every 20th
+          // (~1s) — enough to show "still waiting" without burying the output.
+          if (waitTicks === 0 || waitTicks % 20 === 0) {
+            record("stream.awaiting_id", { wait_ticks: waitTicks });
+          }
+          waitTicks++;
           await delay(50);
           continue;
+        }
+        if (waitTicks > 0) {
+          record("stream.id_arrived", { wait_ticks: waitTicks });
+          waitTicks = 0;
         }
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
         // replay rebuilds identical state rather than doubling onto the previous
