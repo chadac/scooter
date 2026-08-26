@@ -67,9 +67,15 @@ run_one() {
   else
     (cd "$dir" && npx vitest run "$file" -t "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
   fi
+  # "fail" means the named test RAN and asserted red. A file that cannot even load
+  # shows up differently per runner: vitest prints "Test Files 1 failed" but its
+  # "Tests" summary line shows no failed tests; playwright prints an error with no
+  # "N failed" count line.
   if [ $rc -eq 0 ]; then
     echo pass
-  elif grep -qE '[0-9]+ failed' "$out"; then
+  elif is_playwright "$file" && grep -qE '^ *[0-9]+ failed' "$out"; then
+    echo fail
+  elif ! is_playwright "$file" && grep -qE '^ *Tests([^0-9]|.*[^s] )*[0-9]+ failed' "$out"; then
     echo fail
   else
     echo load-error
