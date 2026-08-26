@@ -178,6 +178,19 @@ class ControllerK8s:
         )
 
     # --- orphaned-Sandbox reaper -------------------------------------------
+    def suspend_sandbox(self, name: str) -> None:
+        """Set the Sandbox's spec.operatingMode=Suspended (the zombie repair). Merge-patch,
+        idempotent; a 404 (sandbox already gone) is fine."""
+        _, custom, _ = _apis()
+        try:
+            custom.patch_namespaced_custom_object(
+                group="agents.x-k8s.io", version="v1alpha1", plural="sandboxes",
+                namespace=self.namespace, name=name,
+                body={"spec": {"operatingMode": "Suspended"}},
+            )
+        except client.ApiException as e:
+            _ignore_404(e)
+
     def list_sandboxes(self) -> list["SandboxRef"]:
         """Every per-conversation Sandbox, as (name, age_seconds) for the reaper decision."""
         _, custom, _ = _apis()

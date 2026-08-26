@@ -226,7 +226,7 @@ in
           # Orphaned-Sandbox reaper: list Sandboxes + DELETE the whole per-conversation tree
           # (Sandbox CR cascades pod+PVCs; the SA + module CM are provisioner-created and must
           # be deleted directly). See todo/docs/ORPHANED_SANDBOX_REAPER.md.
-          { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" ]; }
+          { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" "patch" ]; }
           { apiGroups = [ "" ]; resources = [ "serviceaccounts" "configmaps" ]; verbs = [ "get" "list" "delete" ]; }
           # Autoscaler: read the agent-host Deployment + patch its scale subresource (the
           # controller IS the autoscaler — desired = ceil(conversations / podCap)). See

@@ -20,6 +20,7 @@ from .reconcile import (
     find_orphans,
     desired_replicas,
     demand_of,
+    SuspendSandbox,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
         # None when the Sandbox doesn't exist (or the ref is unset) — the drift rule treats
         # absence as no-evidence, never as suspension (the creation race).
         sandbox_mode=(sandbox_modes or {}).get(ref) if ref else None,
+        sandbox_ref=ref,
         phase=st.get("phase", "Pending"),
         # Whether the CR actually carries a phase (vs. the "Pending" default above). A
         # status-less CR (status: null / no phase) needs its phase MATERIALIZED even when it
@@ -45,6 +47,13 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
         host_ip=st.get("hostIP"),
         parent_id=spec.get("parentId"),
     )
+
+
+# ZOMBIE two-tick confirmation. A real revive patches the Sandbox Running BEFORE writing
+# phase=Assigned, so one sighting of (Suspended, unhosted, Running) can be a revive
+# mid-flight. Act only on the SECOND consecutive sighting; a controller restart merely
+# re-arms the confirmation. Module-level: one controller process, one loop.
+_zombie_suspects: set[str] = set()
 
 
 def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
@@ -87,6 +96,23 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
             results.append((c.name, "noop"))
+            continue
+        if isinstance(action, SuspendSandbox):
+            if c.name in _zombie_suspects and c.sandbox_ref:
+                _zombie_suspects.discard(c.name)
+                logger.warning(
+                    "zombie sandbox — re-suspending",
+                    extra={**_C, "conversation_id": c.name, "sandbox": c.sandbox_ref, "reason": action.reason},
+                )
+                k8s.suspend_sandbox(c.sandbox_ref)
+                results.append((c.name, "suspend-sandbox"))
+            else:
+                _zombie_suspects.add(c.name)
+                logger.info(
+                    "zombie sandbox suspect — confirming next tick",
+                    extra={**_C, "conversation_id": c.name, "sandbox": c.sandbox_ref or ""},
+                )
+                results.append((c.name, "suspend-sandbox-suspect"))
             continue
         if isinstance(action, Detach):
             # A SUSPENDED conversation that still carries stale placement → release it (the

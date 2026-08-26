@@ -13,6 +13,7 @@ from conversation_controller.reconcile import (
     desired_replicas,
     demand_of,
     Detach,
+    SuspendSandbox,
 )
 
 
@@ -338,3 +339,31 @@ def test_mark_suspended_takes_a_phantom_out_of_demand():
         name="c1", host_pod=None, phase="Suspended", generation=1
     )
     assert demand_of([healed]) == 0
+
+
+# --- zombie sandboxes ---------------------------------------------------------
+#
+# Observed on valhalla: three sandbox pods running 9-12h, conversations
+# phase=Suspended host=<none>. A racing sweeper's exec probe resumed a
+# just-suspended sandbox; every host then evicted the conversation, so no sweep
+# will ever visit it again — "the sweep reclaims it either way" is structurally
+# unreachable for this state. The controller is the only actor left.
+
+def test_suspended_unhosted_running_sandbox_is_a_zombie():
+    a = reconcile(conv(host=None, phase="Suspended", gen=1, sandbox_mode="Running"),
+                  [Pod("a", True)], {}, cap=10)
+    assert isinstance(a, SuspendSandbox)
+
+
+def test_suspended_with_host_detaches_first_even_if_sandbox_runs():
+    # Placement release comes first; the zombie check re-fires next tick once unhosted.
+    a = reconcile(conv(host="a", phase="Suspended", gen=1, sandbox_mode="Running"),
+                  [Pod("a", True)], {"a": 1}, cap=10)
+    assert isinstance(a, Detach)
+
+
+def test_suspended_with_suspended_or_absent_sandbox_stays_noop():
+    for mode in ("Suspended", None):
+        a = reconcile(conv(host=None, phase="Suspended", gen=1, sandbox_mode=mode),
+                      [Pod("a", True)], {}, cap=10)
+        assert isinstance(a, NoOp), f"sandbox_mode={mode}"
