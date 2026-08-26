@@ -1352,6 +1352,43 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("cancel() RETRIES a 404 through the assignment window, then succeeds", async () => {
+    // The first ~1-2s of a conversation: no owner assigned, the router's cache has no
+    // hostIP, and the cancel POST lands on a random pod that answers 404 — while this
+    // client is actively STREAMING the conversation, so it demonstrably exists.
+    // Observed live: an immediate Stop 404'd in the same second as the run's first
+    // prompt and the status bar never cleared. Retrying rides out the window.
+    let calls = 0;
+    const fetchSpy = vi.fn(async () => {
+      calls++;
+      return calls < 3 ? new Response("nf", { status: 404 }) : new Response("", { status: 202 });
+    }) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).resolves.toBeUndefined();
+    expect(calls).toBe(3);
+    agent.dispose();
+  });
+
+  it("cancel() still throws when the 404 persists (a truly deleted conversation)", async () => {
+    const fetchSpy = vi.fn(async () => new Response("nf", { status: 404 })) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).rejects.toThrow(/cancel request failed: 404/);
+    agent.dispose();
+  });
+
+  it("cancel() does NOT retry a non-404 failure (a 500 throws immediately)", async () => {
+    let calls = 0;
+    const fetchSpy = vi.fn(async () => {
+      calls++;
+      return new Response("boom", { status: 500 });
+    }) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).rejects.toThrow(/cancel request failed: 500/);
+    expect(calls).toBe(1);
+    agent.dispose();
+  });
+
+
   it("cancel() THROWS on a network error (fetch rejects) rather than swallowing it", async () => {
     const fetchSpy = vi.fn(async () => {
       throw new Error("network down");

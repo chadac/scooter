@@ -1059,13 +1059,26 @@ export class IntegrityAgent extends AbstractAgent {
       "Content-Type": "application/json",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
     };
-    const res = await this.doFetch(
-      `${this.base}/conversations/${encodeURIComponent(this.#requireId("cancel"))}/cancel`,
-      { method: "POST", headers },
-    );
-    if (!res.ok) {
-      throw new Error(`cancel request failed: ${res.status} ${res.statusText}`);
+    const url = `${this.base}/conversations/${encodeURIComponent(this.#requireId("cancel"))}/cancel`;
+    // RETRY a 404. In the first ~1-2s of a conversation the controller has not assigned
+    // an owner yet, so the router's CR-watch cache has no hostIP and the POST falls back
+    // to a random pod that does not hold the conversation — observed as an immediate
+    // Stop 404ing (nginx: POST …/cancel 404 in the SAME second as the run's first
+    // prompt) while the run kept going and the status bar never cleared. The
+    // conversation demonstrably exists — this client is streaming it — so a 404 here is
+    // the assignment window, not absence. The router's cache converges in ~a second;
+    // three spaced retries cover it. Other failures still throw immediately: cancel
+    // must never silently do nothing (#347).
+    let last = 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await delay(700);
+      const res = await this.doFetch(url, { method: "POST", headers });
+      if (res.ok) return;
+      last = res.status;
+      if (res.status !== 404) break;
+      record("cancel.retry_404", { attempt });
     }
+    throw new Error(`cancel request failed: ${last}`);
   }
 
   /** Fire-and-forget POST /agui; deliberately does NOT consume the response body,
