@@ -9,12 +9,15 @@
 
 import { Writable, Readable, PassThrough } from "node:stream";
 import { debugError } from "../debug.js";
+import { logger } from "../log.js";
 import { existsSync } from "node:fs";
 
 import { KubeConfig, Exec, CoreV1Api, type V1Status } from "@kubernetes/client-node";
 
 import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
+
+const log = logger("k8sExec");
 
 const SANDBOX_LABEL = "agents.x-k8s.io/sandbox-name";
 
@@ -96,9 +99,11 @@ export interface ResolveReadyPodDeps {
  *  `ensureRunning` ONCE if the first lookup finds no pod at all — the idle-suspend self-heal. */
 export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps): Promise<Pod> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const deadline = Date.now() + (deps.deadlineMs ?? 90_000);
+  const started = Date.now();
+  const deadline = started + (deps.deadlineMs ?? 90_000);
   let lastRunning: Pod | undefined;
   let healed = false; // ensureRunning is fired at most once
+  let waitLogged = false; // one "waiting" line per call, not one per poll
   for (;;) {
     const candidates = await deps.listCandidates();
     // SELF-HEAL: no pod at all → the sandbox may be idle-SUSPENDED (mode=Suspended, pod deleted) out
@@ -107,11 +112,22 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
     // idle-suspend leaves the pod gone while the bridge issues tool calls that all fail.
     if (candidates.length === 0 && deps.ensureRunning && !healed) {
       healed = true;
+      // LOUD. This resume is load-bearing for a live bridge — but fired against a
+      // just-suspended sandbox (a racing sweeper's probe) it is the destructive half
+      // of the zombie-sandbox bug: the resume lands last, the conversation is evicted
+      // everywhere, and the pod runs forever. Success was previously silent, which is
+      // why 9-12h zombies had no trace of WHO woke them.
+      log.warn("resume-on-missing-pod: resuming the sandbox (idle-suspend self-heal)", {
+        namespace: ref.namespace,
+        pod_name: ref.name,
+      });
       try {
         await deps.ensureRunning();
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[k8sExec] resume-on-missing-pod for ${ref.namespace}/${ref.name} failed:`, err);
+        log.errorWith("resume-on-missing-pod failed", err, {
+          namespace: ref.namespace,
+          pod_name: ref.name,
+        });
       }
       await sleep(1500);
       continue; // re-poll: the pod is now being recreated
@@ -121,10 +137,42 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
         p.status?.phase === "Running" &&
         (p.status?.containerStatuses ?? []).every((c) => c.ready),
     );
-    if (ready?.metadata?.name) return ready;
+    if (ready?.metadata?.name) {
+      const waitedMs = Date.now() - started;
+      // A wait that spanned more than one poll is the latency the caller's turn is
+      // eating — record it (this was invisible: a 60s boot-wait looked identical to
+      // an instant hit, and CI hangs died with no trace of WHICH stage ate the time).
+      if (waitedMs > 2_000) {
+        log.info("ready-pod wait ended", {
+          namespace: ref.namespace,
+          pod_name: ready.metadata.name,
+          waited_ms: waitedMs,
+          healed,
+        });
+      }
+      return ready;
+    }
+    if (!waitLogged) {
+      waitLogged = true;
+      log.info("waiting for a ready pod", {
+        namespace: ref.namespace,
+        sandbox: ref.name,
+        candidates: candidates.map((p) => ({
+          name: p.metadata?.name,
+          phase: p.status?.phase,
+          ready: (p.status?.containerStatuses ?? []).map((c) => c.ready),
+        })),
+      });
+    }
     lastRunning = candidates.find((p) => p.status?.phase === "Running") ?? lastRunning;
     if (Date.now() > deadline) {
       // Fall back to any Running pod (or fail) rather than hang forever.
+      log.warn("ready-pod deadline expired", {
+        namespace: ref.namespace,
+        sandbox: ref.name,
+        waited_ms: Date.now() - started,
+        falling_back_to: lastRunning?.metadata?.name ?? null,
+      });
       if (lastRunning) return lastRunning;
       throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}`);
     }
@@ -217,8 +265,40 @@ export function createK8sSandboxApiClient(
       const out = sink();
       const err = sink();
       let status: V1Status | undefined;
+      // ── STALL WATCHDOG. The two silent-forever failure modes here are (a) the
+      // pods/exec UPGRADE request that a starved kubelet never answers (exec()'s
+      // promise never settles) and (b) a WS that opens but never receives a close
+      // frame. Neither had a timeout or a log line, so a hung tool call produced
+      // NOTHING between "acp prompt: sending" and the heat death of the test — three
+      // CI runs and a throttled local repro all dead-ended there. The watchdog names
+      // the stage a still-running exec is stuck in; it never kills anything (a
+      // legitimately long command must stay legal), it just refuses to be silent.
+      const startedAt = Date.now();
+      let stage = "upgrade-pending"; // -> "ws-open" -> settled
+      let settled = false;
+      const cmdSummary = command.join(" ").slice(0, 120);
+      const watchdog = setInterval(() => {
+        if (settled) return;
+        log.warn("exec still running", {
+          namespace: ref.namespace,
+          pod_name: podName,
+          stage,
+          elapsed_ms: Date.now() - startedAt,
+          cmd: cmdSummary,
+        });
+      }, 30_000);
+      watchdog.unref?.();
+      const settle = () => {
+        settled = true;
+        clearInterval(watchdog);
+      };
+      log.debug("exec dispatch", { namespace: ref.namespace, pod_name: podName, cmd: cmdSummary });
+      /** The WebSocket close frame, kept so a failure that surfaces as a property-less
+       *  event still has something diagnosable attached to its log line. */
+      let lastClose: { code: number; reason: string } | undefined;
       if (signal?.aborted) {
         // Already cancelled before we even opened the stream.
+        settle();
         resolve({ stdout: out.text(), stderr: "aborted", exitCode: 130 });
         return;
       }
@@ -237,6 +317,12 @@ export function createK8sSandboxApiClient(
           },
         )
         .then((ws) => {
+          stage = "ws-open";
+          log.debug("exec ws open", {
+            namespace: ref.namespace,
+            pod_name: podName,
+            upgrade_ms: Date.now() - startedAt,
+          });
           // Honor a cancel: closing the pods/exec WebSocket tears down the remote
           // exec (SIGTERM/HUP to its process). Retained so kill()/abort can end a
           // long-running command mid-flight (the whole point of cancel).
@@ -246,31 +332,61 @@ export function createK8sSandboxApiClient(
             } catch {
               /* already closing */
             }
+            // Do NOT wait for the close handshake. kubelet keeps the exec'd process
+            // running after a client disconnect and may not ack the close until that
+            // process exits — so a kill() of `sh -c sleep 20` left waitForExit hanging
+            // ~20s on a real cluster while the fake stack (local subprocess, instant
+            // SIGTERM) resolved immediately. The agent then never finished its turn and
+            // Stop looked dead — the last two Tier-2 failures. The caller asked for the
+            // command to END; from its point of view it has: resolve now (130), and
+            // force the socket down so nothing leaks.
+            try {
+              (ws as { terminate?: () => void }).terminate?.();
+            } catch {
+              /* already down */
+            }
+            settle();
+            resolve({
+              stdout: out.text(),
+              stderr: err.text(),
+              exitCode: 130,
+            });
           };
           if (signal) {
             if (signal.aborted) onAbort();
             else signal.addEventListener("abort", onAbort, { once: true });
           }
-          ws.on("close", () =>
+          // Capture the close code/reason on the way past. When the socket dies, the value
+          // reaching the error/catch paths below can be an event with NO own properties —
+          // which is why this logged a bare `{}` in production even though it ALREADY used
+          // getOwnPropertyNames. Serialization was never the problem; there was nothing to
+          // serialize. The close frame is the detail that was being thrown away here.
+          ws.on("close", (code?: number, reason?: Buffer) => {
+            if (code !== undefined) lastClose = { code, reason: reason?.toString() || "" };
+            settle();
+            const exit_code = signal?.aborted ? 130 : exitCodeFromStatus(status);
+            log.debug("exec closed", {
+              namespace: ref.namespace,
+              pod_name: podName,
+              exit_code,
+              duration_ms: Date.now() - startedAt,
+              ws_close: lastClose ?? null,
+            });
             resolve({
               stdout: out.text(),
               stderr: err.text(),
-              exitCode: signal?.aborted ? 130 : exitCodeFromStatus(status),
-            }),
-          );
+              exitCode: exit_code,
+            });
+          });
           ws.on("error", (e: unknown) => {
-                        debugError(
-              "[k8sExec] ws error:",
-              e instanceof Error ? e.message : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
-            );
+            settle();
+            log.errorWith("ws error", e, lastClose ? { ws_close: lastClose } : {});
             reject(e);
           });
         })
         .catch((e: unknown) => {
-                    debugError(
-            "[k8sExec] exec() rejected:",
-            e instanceof Error ? `${e.message}\n${e.stack}` : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
-          );
+          settle();
+          log.errorWith("exec() rejected", e, lastClose ? { ws_close: lastClose } : {});
           reject(e);
         });
     });

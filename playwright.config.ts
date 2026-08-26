@@ -1,4 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+// The FULL-target allowlist lives in test/e2e/full-specs.json — ONE source of truth
+// shared with CI's shard distribution (shard-e2e.mjs SPEC_SET=full). START SMALL,
+// WIDEN AS IT EARNS IT: add a spec once it has passed against a cluster.
+const fullSpecs: string[] = JSON.parse(
+  readFileSync(new URL("./test/e2e/full-specs.json", import.meta.url), "utf8"),
+);
 
 /**
  * Tier 3 E2E config. Two modes:
@@ -14,6 +22,14 @@ import { defineConfig, devices } from "@playwright/test";
  *    can't. See test/e2e/external.spec.ts.
  */
 const external = process.env.RUN_EXTERNAL_E2E === "1";
+
+// FULL target: the same specs, against a REAL cluster (k3d in CI, or a live
+// deployment). The browser/real-server seam is otherwise untested — the fast target
+// drives a UI with no real cluster, and test/cluster drives a real cluster with no
+// UI, so a bug living between them is invisible to both.
+// E2E_TARGET=full + E2E_CLUSTER_URL=<ui> selects it.
+const full = process.env.E2E_TARGET === "full";
+const clusterUrl = process.env.E2E_CLUSTER_URL ?? "";
 
 export default defineConfig({
   testDir: "./test/e2e",
@@ -40,8 +56,35 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
+    // full — a real cluster. Only the specs that opt in (or do not opt out) run here;
+    // see test/e2e/target.ts. No local webServer: the stack is already up.
+    ...(full
+      ? [
+          {
+            name: "full",
+            // START SMALL, WIDEN AS IT EARNS IT. A cluster run costs k3d startup and
+            // this target is the one nobody watches, so 153 specs on day one buys
+            // noise, not confidence — and a flaky rarely-run suite trains everyone to
+            // dismiss it (see FLAKE_platform_smoke_empty_create_body). These are the
+            // user stories that justify the target existing:
+            //   cluster-stories      — multi-pod + rollout; impossible on the fake stack
+            //   client-server-identity — the class that shipped (#353)
+            //   refresh-history      — "send a message, see the response", across a reload
+            //   stop-run             — a run starts and can be stopped, for real
+            // Add a spec here once it has passed against a cluster; do not bulk-enable.
+            testMatch: fullSpecs.map((f) => `**/${f}`),
+            use: {
+              ...devices["Desktop Chrome"],
+              baseURL: clusterUrl,
+              ...(process.env.PW_CHROME
+                ? { launchOptions: { executablePath: process.env.PW_CHROME } }
+                : {}),
+            },
+          },
+        ]
+      : []),
     {
-      name: "chromium",
+      name: "fast",
       use: {
         ...devices["Desktop Chrome"],
         // On Nix the npm-downloaded browser revision often doesn't match the
@@ -55,7 +98,8 @@ export default defineConfig({
   ],
 
   // External mode targets a live deployment, so boot no local servers.
-  webServer: external
+  // The full target's cluster is already running, so boot nothing locally there either.
+  webServer: external || full
     ? undefined
     : [
         {
@@ -101,7 +145,13 @@ export default defineConfig({
           // forces that compile ONCE at boot; `timeout` gives it room. This got much
           // worse under sharding: each shard boots its own cold Vite.
           command: "npm --prefix ui run dev",
-          env: { AGENT_HOST_URL: "http://localhost:8080" },
+          env: {
+            AGENT_HOST_URL: "http://localhost:8080",
+            // Span-per-line to the browser console when debugging a spec:
+            //   E2E_TELEMETRY=1 npx playwright test <spec>
+            // Off by default — a chat UI emits enough spans to bury real console errors.
+            ...(process.env.E2E_TELEMETRY === "1" ? { VITE_TELEMETRY_CONSOLE: "1" } : {}),
+          },
           url: "http://localhost:5173",
           timeout: 120_000,
           // Reuse is opt-IN locally (E2E_REUSE_SERVER=1), not the default. A server left over from
@@ -140,6 +190,7 @@ export default defineConfig({
             AGENT_HOST_URL: "http://localhost:8080",
             AGENT_HOST_STREAM_URL: "http://localhost:8090",
             VITE_IDLE_RECONNECT_MS: "2000",
+            ...(process.env.E2E_TELEMETRY === "1" ? { VITE_TELEMETRY_CONSOLE: "1" } : {}),
           },
           // Same cold-compile warm-up as the 5173 server — GET the page until it 200s.
           url: "http://localhost:5273",

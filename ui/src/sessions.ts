@@ -11,6 +11,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import type { AgentHostConfig } from "./client.js";
 import { Conversation } from "./conversation.js";
 
 export interface Session {
@@ -217,11 +218,25 @@ const persist = (s: State) => {
  *  one would become an event-log key and a k8s resource name — so the app injects a minter
  *  that calls POST /conversations. Defaults to crypto.randomUUID() so the store stays a pure,
  *  synchronously-testable module and works before the app has wired a backend. */
-let mintId: () => Promise<string | null> = async () => crypto.randomUUID();
+let mintId: () => Promise<string | null> = async () => {
+  // LOUD. This default exists so the store stays synchronously testable, but if it ever
+  // runs in the app the client invents an id the server never issued — which then reaches
+  // the URL and the stream, and the conversation cannot be found. Silent for years; say so.
+  console.warn("[sessions] mintId FELL BACK to a client UUID — setConversationMinter was not installed");
+  return crypto.randomUUID();
+};
 
 /** Install the server-backed id minter. Called once at app start. */
 export const setConversationMinter = (fn: () => Promise<string | null>) => {
   mintId = fn;
+};
+
+/** How conversations reach the server. Injected once at app start (main/RuntimeProvider)
+ *  rather than read from a module global here — the store should not know the transport,
+ *  and a test should not have to stub one. */
+let agentHostConfig: AgentHostConfig = { baseUrl: "" };
+export const setAgentHostConfig = (cfg: AgentHostConfig) => {
+  agentHostConfig = cfg;
 };
 
 /** The Conversation object per session, keyed by the session's STABLE key. It owns the
@@ -244,8 +259,14 @@ export const conversationFor = (
   const create = () => mintId();
   const onCreated = (key: string, id: string) => adoptServerId(key, id);
   const c = session.serverId
-    ? new Conversation({ key: session.id, id: session.serverId, create, onCreated })
-    : Conversation.pending(session.id, create, onCreated);
+    ? new Conversation({
+        key: session.id,
+        id: session.serverId,
+        config: agentHostConfig,
+        create,
+        onCreated,
+      })
+    : Conversation.pending(session.id, agentHostConfig, create, onCreated);
   conversations.set(session.id, c);
   return c;
 };

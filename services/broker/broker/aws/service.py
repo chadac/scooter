@@ -234,7 +234,13 @@ class PermissionService:
             and policy.is_read_only_policy(policy_document)
         ):
             logger.info(
-                "auto-approving read-only request %s for account '%s'", request_id, target_account
+                "auto-approving read-only request",
+                extra={
+                    "conversation_id": req.conversation_id,
+                    "request_id": request_id,
+                    "target_account": target_account,
+                    "auto_approve_reason": "read_only",
+                },
             )
             return await self._provision(req, approver=AUTO_APPROVE_PRINCIPAL)
 
@@ -251,8 +257,13 @@ class PermissionService:
             acct.get("auto_allowed_managed_policies", []),
         ):
             logger.info(
-                "auto-approving request %s for account '%s' (covered by auto_allowed_policy)",
-                request_id, target_account,
+                "auto-approving request",
+                extra={
+                    "conversation_id": req.conversation_id,
+                    "request_id": request_id,
+                    "target_account": target_account,
+                    "auto_approve_reason": "auto_allowed_policy",
+                },
             )
             return await self._provision(req, approver=AUTO_APPROVE_PRINCIPAL)
 
@@ -262,7 +273,14 @@ class PermissionService:
             try:
                 await self._on_request(req)
             except Exception:
-                logger.exception("on_request notify failed for %s", request_id)
+                logger.exception(
+                    "on_request notify failed",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": request_id,
+                        "target_account": target_account,
+                    },
+                )
         return req
 
     # --- approver identity -------------------------------------------------
@@ -401,7 +419,16 @@ class PermissionService:
                         target_account=sib.target_account, policy_arn=sib.iam_policy_arn
                     )
             except Exception:
-                logger.exception("superseding sibling %s: IAM teardown failed", sib.request_id)
+                logger.exception(
+                    "IAM teardown failed while superseding sibling",
+                    extra={
+                        "conversation_id": sib.conversation_id,
+                        "request_id": sib.request_id,
+                        "target_account": sib.target_account,
+                        "role_arn": sib.iam_role_arn,
+                        "policy_arn": sib.iam_policy_arn,
+                    },
+                )
             self._creds.pop(sib.request_id, None)
             await self._store.update(sib.request_id, status=RequestStatus.SUPERSEDED)
 
@@ -569,17 +596,28 @@ class PermissionService:
                 # only KEEP retrying while it's within grace.
                 if self._creds_expired_beyond_grace(req):
                     logger.warning(
-                        "sweep_expired: force-expiring %s (IAM teardown failing but creds "
-                        "lapsed > %dh ago); role %s may be orphaned until teardown perms are restored",
-                        req.request_id, _FORCE_EXPIRE_GRACE_HOURS, req.iam_role_arn,
+                        "force-expiring request; IAM teardown failing but creds lapsed past grace "
+                        "(role may be orphaned until teardown permissions are restored)",
+                        extra={
+                            "conversation_id": req.conversation_id,
+                            "request_id": req.request_id,
+                            "target_account": req.target_account,
+                            "role_arn": req.iam_role_arn,
+                            "grace_hours": _FORCE_EXPIRE_GRACE_HOURS,
+                        },
                     )
                     self._creds.pop(req.request_id, None)
                     await self._store.update(req.request_id, status=RequestStatus.EXPIRED)
                     swept.append(req.request_id)
                     continue
                 logger.error(
-                    "sweep_expired: IAM teardown failed for %s; leaving non-terminal for retry",
-                    req.request_id,
+                    "IAM teardown failed during sweep; leaving non-terminal for retry",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": req.request_id,
+                        "target_account": req.target_account,
+                        "role_arn": req.iam_role_arn,
+                    },
                 )
                 continue
             self._creds.pop(req.request_id, None)

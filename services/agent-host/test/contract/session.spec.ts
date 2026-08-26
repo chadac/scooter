@@ -1192,3 +1192,92 @@ describe("SessionManager", () => {
     }
   });
 });
+
+
+describe("sweepIdle is OWNER-ONLY (the zombie-sandbox bug)", () => {
+  it("a non-owner neither suspends NOR probes an idle conversation", async () => {
+    // The #297 residual, observed on valhalla as three sandbox pods running 9-12h with
+    // their conversations phase=Suspended: BOTH pods held the same (dual-adopted)
+    // conversation and both swept it ~3.5s apart. The second sweeper's background-job
+    // EXEC PROBE rides the pollForReadyPod self-heal, which RESUMED the sandbox the
+    // first sweeper had just suspended — and with the conversation then evicted from
+    // every pod, nothing ever re-suspended it. The probe is the destructive half, so
+    // this asserts the non-owner does not probe AT ALL, not merely that it skips the
+    // suspend.
+    const provisioner = fakeProvisioner();
+    let probes = 0;
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      hasRunningBackgroundJob: async () => {
+        probes++;
+        return false;
+      },
+      ownershipGuard: { canWrite: () => false }, // another pod owns everything
+    });
+    const conv = await sessions.start("thread-zombie");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+
+    expect(await sessions.sweepIdle(60_000, idleAt)).not.toContain(conv.id);
+    expect(probes, "a non-owner must not fire the exec probe — the probe is what resumes").toBe(0);
+    expect((provisioner.suspend as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("the owner still sweeps normally", async () => {
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      ownershipGuard: { canWrite: () => true },
+    });
+    const conv = await sessions.start("thread-owned");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+    expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
+  });
+});
+
+/**
+ * The CR is the source of truth for EXISTENCE, so ending a conversation must remove it.
+ *
+ * Found by the Tier-2 browser tests on their first run against a real cluster: DELETE
+ * answered 204 while the conversation stayed listed as `running` indefinitely. end()
+ * cleared local state and the store record, but nothing could delete the CR — the
+ * registry had register/setPhase/list and no delete — so hydrate() re-adopted it and the
+ * conversation came back. Every Tier-2 test failed on `cleanState could not empty the
+ * server after 50 attempts`.
+ */
+describe("end() removes the Conversation CR", () => {
+  it("deletes the CR, not just local state", async () => {
+    const remove = vi.fn(async () => {});
+    const conversationRegistry = { ...noopRegistry, remove } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      conversationRegistry,
+    });
+
+    const conv = await sessions.start("thread-cr-remove" as never);
+    await sessions.end(conv.id as SessionId);
+
+    // Without this the conversation is re-adopted from its surviving CR and comes back.
+    expect(remove).toHaveBeenCalledWith(conv.id);
+    expect(sessions.get(conv.id as SessionId), "and it is gone locally").toBeUndefined();
+  });
+
+  it("a registry failure does NOT fail the delete", async () => {
+    // Matches register/setPhase: a k8s hiccup must not turn a successful local delete
+    // into a 500 for the caller. The registry logs it; end() carries on.
+    const remove = vi.fn(async () => {
+      throw new Error("apiserver unreachable");
+    });
+    const conversationRegistry = { ...noopRegistry, remove } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      conversationRegistry,
+    });
+
+    const conv = await sessions.start("thread-cr-remove-fail" as never);
+    await expect(sessions.end(conv.id as SessionId)).resolves.not.toThrow();
+  });
+});

@@ -18,7 +18,10 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-logger = logging.getLogger("conversation-controller")
+from .logging_config import format_error
+
+logger = logging.getLogger(__name__)
+_C = {"component": "metrics"}
 
 # The latest snapshot, updated each reconcile tick; served on /metrics. A plain dict guarded
 # by the GIL (single writer = the reconcile loop; readers = HTTP handler threads) — the reads
@@ -75,7 +78,10 @@ def serve(port: int, stop: threading.Event) -> None:
     try:
         httpd = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
     except OSError as e:
-        logger.warning("metrics server failed to bind :%d (%s) — metrics disabled", port, e)
+        logger.warning(
+            "metrics server failed to bind",
+            extra={**_C, "port": port, "error": format_error(e), "metrics_enabled": False},
+        )
         return
 
     def _run() -> None:
@@ -85,4 +91,4 @@ def serve(port: int, stop: threading.Event) -> None:
         httpd.server_close()
 
     threading.Thread(target=_run, name="metrics", daemon=True).start()
-    logger.info("metrics serving on :%d/metrics", port)
+    logger.info("metrics serving", extra={**_C, "port": port, "path": "/metrics"})

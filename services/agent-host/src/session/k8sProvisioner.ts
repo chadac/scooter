@@ -25,6 +25,9 @@ import {
 
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
+import { formatError, logger } from "../log.js";
+
+const log = logger("k8sProvisioner");
 
 /** Delete-error policy (findings #7/#8): a 404 means the object is already gone
  *  (the delete's goal — fine to ignore); EVERY other error means the delete did
@@ -189,7 +192,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       if ((data["module.nix"] ?? "").trim() === "") return {};
       return data;
     } catch (e) {
-      console.warn(`[k8sProvisioner] could not read deployment scooterConfigMap '${cmName}' to seed the module (using base config):`, e);
+      log.warn("could not read the deployment scooterConfigMap; using base config", {
+        configmap: cmName,
+        error: formatError(e),
+      });
       return {};
     }
   };
@@ -247,21 +253,21 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
               },
               setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
             )
-            .catch((e) => console.warn(`[k8sProvisioner] warm-store: last-used stamp failed (non-fatal):`, e));
-          console.log(`[k8sProvisioner] warm-store: claimed ${name} for ${sandboxNameForConv}`);
+            .catch((e) => log.warn("warm-store: last-used stamp failed (non-fatal)", { error: formatError(e) }));
+          log.info("warm-store: claimed a volume", { volume: name, sandbox: sandboxNameForConv });
           return name; // we won the claim
         } catch (e: unknown) {
           const code = (e as { code?: number })?.code;
           // 422 (test op failed) / 409 (conflict) = another claimer won — try the next.
           if (code === 422 || code === 409) continue;
-          console.warn(`[k8sProvisioner] warm-store: claim patch on ${name} errored (code=${code}):`, e);
+          log.warn("warm-store: claim patch errored", { volume: name, code, error: formatError(e) });
           throw e;
         }
       }
       return null; // no ready PVC for this tag
     } catch (e) {
       // A pool-read failure must NEVER block conversation creation — fall back to a fresh vct.
-      console.warn(`[k8sProvisioner] warm-store claim failed (using a fresh upper):`, e);
+      log.warn("warm-store claim failed; using a fresh upper", { error: formatError(e) });
       return null;
     }
   };
@@ -398,7 +404,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // Running.
       if (alreadyExisted) {
         await setOperatingMode({ name, namespace: ns }, "Running").catch((e) => {
-          console.warn(`[k8sProvisioner] adopted existing Sandbox ${name} but resume failed (may already be running):`, e);
+          log.warn("adopted an existing Sandbox but resume failed (may already be running)", {
+            sandbox: name,
+            error: formatError(e),
+          });
         });
       }
 
@@ -480,11 +489,11 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
               )
               .then(() => true)
               .catch(() => false);
-            // eslint-disable-next-line no-console
-            console.log(
+            log.info(
               reclaimWon
-                ? `[k8sProvisioner] resume(${ref.name}): re-claimed own returned warm volume ${claim}`
-                : `[k8sProvisioner] resume(${ref.name}): lost the re-claim race on ${claim} — re-binding fresh`,
+                ? "resume: re-claimed own returned warm volume"
+                : "resume: lost the re-claim race — re-binding fresh",
+              { sandbox: ref.name, volume: claim, reclaim_won: reclaimWon },
             );
           }
 
@@ -521,15 +530,19 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
               },
               setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
             );
-            // eslint-disable-next-line no-console
-            console.warn(
-              `[k8sProvisioner] resume(${ref.name}): warm-store claim ${claim} no longer exists — re-bound to ${fresh} (store cache reset)`,
-            );
+            log.warn("resume: warm-store claim no longer exists; re-bound (store cache reset)", {
+              sandbox: ref.name,
+              stale_volume: claim,
+              volume: fresh,
+            });
           }
         }
       } catch (e) {
         // eslint-disable-next-line no-console
-        console.warn(`[k8sProvisioner] resume(${ref.name}): warm-store heal check failed (resuming anyway):`, e);
+        log.warn("resume: warm-store heal check failed; resuming anyway", {
+          sandbox: ref.name,
+          error: formatError(e),
+        });
       }
       await setOperatingMode(ref, "Running");
       return ref;

@@ -92,7 +92,10 @@ class FgaAuthorizer:
             return bool(getattr(res, "allowed", False))
         except Exception:
             # Fail CLOSED for a permission gate: if FGA is unreachable, deny.
-            logger.exception("OpenFGA check failed (denying): %s#%s@%s", obj, relation, user)
+            logger.exception(
+                "OpenFGA check failed; denying",
+                extra={"fga_object": obj, "relation": relation, "fga_user": user},
+            )
             return False
 
     async def grant(self, *, user: str, relation: str, obj: str) -> None:
@@ -111,7 +114,10 @@ class FgaAuthorizer:
             # permanently and silently locked out. Re-raise so the caller's loud
             # handler (seed_approver_tuples -> logger.exception) actually fires.
             if _is_duplicate_tuple_error(exc):
-                logger.debug("OpenFGA grant no-op (tuple exists) for %s#%s@%s", obj, relation, user)
+                logger.debug(
+                    "OpenFGA grant is a no-op; tuple exists",
+                    extra={"fga_object": obj, "relation": relation, "fga_user": user},
+                )
                 return
             raise
 

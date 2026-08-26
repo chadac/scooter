@@ -28,6 +28,12 @@ import pytest
 from broker.providers import aws as aws_provider
 
 
+def _errors(caplog):
+    """The ERROR-level records, which under structured logging carry their values
+    as record ATTRIBUTES (set via `extra=`) rather than interpolated into msg."""
+    return [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
 @dataclass
 class _Risk:
     value: str = "low"
@@ -135,8 +141,9 @@ async def test_5xx_exhausts_the_budget_and_logs_an_error(monkeypatch, caplog):
 
     assert len(seen) == 3, "a persistent 5xx must use the whole retry budget"
     # The decisive part: it must be VISIBLE. The old code logged nothing at all.
-    assert any(r.levelno >= logging.ERROR for r in caplog.records)
-    assert "req-abc123" in caplog.text
+    errors = _errors(caplog)
+    assert errors
+    assert any(getattr(r, "request_id", None) == "req-abc123" for r in errors)
 
 
 @pytest.mark.asyncio
@@ -149,7 +156,12 @@ async def test_connect_error_is_retried_then_logged(monkeypatch, caplog):
         await aws_provider.notify_host(_Req())
 
     assert len(seen) == 3
-    assert "req-abc123" in caplog.text
+    errors = _errors(caplog)
+    assert errors
+    assert any(getattr(r, "request_id", None) == "req-abc123" for r in errors)
+    # str() on an httpx transport error can be empty; format_error must still say
+    # something useful about it (this is why the convention forbids bare str(e)).
+    assert all(getattr(r, "error", {}).get("message") for r in errors)
 
 
 @pytest.mark.asyncio
@@ -176,8 +188,9 @@ async def test_404_is_not_retried_and_is_logged_loudly(monkeypatch, caplog):
         await aws_provider.notify_host(_Req())
 
     assert len(seen) == 1, "a 404 must NOT be retried"
-    assert any(r.levelno >= logging.ERROR for r in caplog.records)
-    assert "404" in caplog.text
+    errors = _errors(caplog)
+    assert errors
+    assert any(getattr(r, "status", None) == 404 for r in errors)
 
 
 @pytest.mark.parametrize("status", [408, 429])

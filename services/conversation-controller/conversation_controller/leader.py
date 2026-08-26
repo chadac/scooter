@@ -18,7 +18,8 @@ from kubernetes import client
 
 from .k8s import _apis
 
-logger = logging.getLogger("conversation-controller")
+logger = logging.getLogger(__name__)
+_C = {"component": "leader"}
 
 
 def _now() -> datetime:
@@ -80,7 +81,10 @@ class LeaderElector:
         )
         try:
             coord.create_namespaced_lease(self.namespace, body)
-            logger.info("acquired lease %s as %s", self.lease_name, self.identity)
+            logger.info(
+                "acquired lease",
+                extra={**_C, "lease_name": self.lease_name, "identity": self.identity, "via": "create"},
+            )
             return True
         except client.ApiException as e:
             if e.status == 409:  # someone created it first
@@ -98,7 +102,10 @@ class LeaderElector:
         try:
             coord.replace_namespaced_lease(self.lease_name, self.namespace, lease)
             if acquiring:
-                logger.info("acquired lease %s as %s", self.lease_name, self.identity)
+                logger.info(
+                    "acquired lease",
+                    extra={**_C, "lease_name": self.lease_name, "identity": self.identity, "via": "takeover"},
+                )
             return True
         except client.ApiException as e:
             if e.status == 409:  # lost a race — not the leader this tick

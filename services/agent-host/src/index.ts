@@ -75,6 +75,9 @@ import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
 import type { SandboxRef, SessionId } from "./types.js";
+import { formatError, logger } from "./log.js";
+
+const hostLog = logger("agent-host");
 
 /** TRANSCRIPT RECORDER (test-harness): one shared instance, OFF unless
  *  TRANSCRIPT_RECORD_DIR is set. It writes one NDJSON per run capturing the RAW
@@ -165,7 +168,21 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
   // GOOSE_BIN=fake runs the bundled dummy ACP agent (no model, no AWS).
   const useFakeAgent = process.env.GOOSE_BIN === "fake";
   const fakeAgentPath = new URL("./fakeAgent.js", import.meta.url).pathname;
-  const fakeSandbox = process.env.FAKE_SANDBOX === "1" || useFakeAgent;
+    // The AGENT and the SANDBOX are separate choices. GOOSE_BIN=fake picks a
+    // deterministic agent (no model key); it must NOT also disable the provisioner.
+    // Coupling them meant the k3d platform — which sets GOOSE_BIN=fake on purpose —
+    // silently got createNoopProvisioner(): no Sandbox CR, no sandbox pod, nothing
+    // logged, and every turn hung until the 60s timeout. "A tool call runs in a real
+    // sandbox" could not pass there by construction.
+    //
+    // Still defaults to a fake sandbox OUT of a cluster, so the local Tier-3 stack (no
+    // k8s at all) keeps working unchanged: KUBERNETES_SERVICE_HOST is set only by the
+    // kubelet. In-cluster, the fake agent now runs against a REAL sandbox — the
+    // combination the cluster tier exists to exercise. FAKE_SANDBOX=1 forces the old
+    // behaviour anywhere.
+    const inCluster = process.env.KUBERNETES_SERVICE_HOST !== undefined;
+    const fakeSandbox =
+      process.env.FAKE_SANDBOX === "1" || (useFakeAgent && !inCluster);
   // In prod the k8s manifest mounts /var/lib/... (a writable emptyDir/PVC). In
   // fake/local mode those paths aren't writable, so default to an OS temp dir so
   // the local e2e stack is self-contained (env still overrides either way).
@@ -240,7 +257,7 @@ function readPricing(): string {
       // is a misconfiguration, not a default-off. Log it as an error (with cause)
       // so it's not mistaken for "cost simply isn't configured".
       // eslint-disable-next-line no-console
-      console.error(`[agent-host] AGENT_PRICING_FILE ${file} unreadable — cost metrics DISABLED (misconfig?):`, e);
+      hostLog.errorWith("AGENT_PRICING_FILE unreadable; cost metrics DISABLED (misconfig?)", e, { file });
     }
   }
   return "";
@@ -256,7 +273,7 @@ function safeParsePrices(json: string) {
     // disabled. Best-effort (no crash), but an explicit-config failure, so log
     // it as an error rather than a quiet warn.
     // eslint-disable-next-line no-console
-    console.error("[agent-host] invalid pricing JSON — cost metrics DISABLED (misconfig?):", e);
+    hostLog.errorWith("invalid pricing JSON; cost metrics DISABLED (misconfig?)", e);
     return {};
   }
 }
@@ -408,6 +425,18 @@ export async function main(
         // runtime nix builds (tool installs, re-converge) + persisting them across
         // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
         // upper — the overlay still works, writes just don't persist).
+        // Sandbox pod sizing. Default (unset) = the provisioner's Guaranteed 2cpu/4Gi.
+        // SANDBOX_RESOURCES is a JSON {requests:{cpu,memory},limits:{cpu,memory}} —
+        // set by the TEST platform to small values: on a 4-vCPU CI runner the 2cpu
+        // Guaranteed default makes a SECOND concurrent sandbox unschedulable
+        // (Insufficient cpu -> Pending forever), which failed exactly the one e2e
+        // test that holds two live conversations at once.
+        sandboxResources: process.env.SANDBOX_RESOURCES
+          ? (JSON.parse(process.env.SANDBOX_RESOURCES) as {
+              requests?: { cpu?: string; memory?: string };
+              limits?: { cpu?: string; memory?: string };
+            })
+          : undefined,
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
         // Warm PVC pool: when on, claim a pre-warmed overlay upper (matching the sandbox
@@ -433,6 +462,14 @@ export async function main(
         // conversation (so the agent can share a link, e.g. to approve an AWS req).
         publicUrl: process.env.PUBLIC_URL || undefined,
       });
+    // WHICH provisioner did we get? A noop provisioner silently creates no sandbox, so
+    // every turn hangs with nothing logged — that cost a long investigation on k3d.
+    // Say it once at boot so the answer is in the first page of any log.
+    hostLog.info("sandbox provisioner selected", {
+      provisioner: config.fakeSandbox ? "noop" : brokerProvisioner ? "broker" : "k8s",
+      fake_sandbox: config.fakeSandbox,
+      in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
+    });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
   // of running them locally in this pod. On a REAL deployment a failure here is
@@ -453,10 +490,9 @@ export async function main(
         // (full error + stack) AND on the persistence-error metric — same treatment as a
         // local durable-append failure (store.onAppendError below).
         onMirrorError: (conversationId, err) => {
-          console.error(
-            `[mirror] backup write FAILED for ${conversationId} (local intact; mirror diverging):`,
-            err, // Node prints the stack/traceback for an Error
-          );
+          logger("mirror").errorWith("backup write failed; local intact, mirror diverging", err, {
+            conversation_id: conversationId,
+          });
           metrics.persistenceError?.({ conversationId });
         },
       })
@@ -620,7 +656,7 @@ export async function main(
     // UI shows no button (the reported approval-interrupt-lost-on-rollout bug).
     onRevived: (id) => {
       void reRaisePendingAwsInterrupts(id).catch((err) =>
-        console.error(`[agent-host] re-raise pending AWS interrupts failed for ${id}:`, err),
+        hostLog.errorWith("re-raise pending AWS interrupts failed", err, { conversation_id: id }),
       );
     },
     // Keep the pod up while a background job is still running — else the idle sweep would
@@ -660,7 +696,7 @@ export async function main(
     // still-pending request would never be re-raised after a rollout/resume/revive and the Approve
     // window would never reappear. Keep RAISING the interrupt on the real conversation `id`/bridge.
     const pending = await fetchPendingAwsRequests(brokerUrl, shortId(id), await brokerAuthHeaders(), (status) =>
-      console.warn(`[agent-host] broker /aws/pending for ${id}: HTTP ${status}`),
+      hostLog.warn("broker /aws/pending returned a non-2xx", { conversation_id: id, status }),
     );
     for (const req of pending) {
       raiseAwsApprovalInterrupt(bridge, id, req, resolveAwsRequestForBroker);
@@ -680,7 +716,7 @@ export async function main(
   ): Promise<void> => {
     const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
     if (!brokerUrl) {
-      console.warn("[agent-host] BROKER_URL unset; cannot resolve AWS request", { requestId });
+      hostLog.warn("BROKER_URL unset; cannot resolve AWS request", { request_id: requestId });
       return;
     }
     const action = approved ? "approve" : "deny";
@@ -709,7 +745,7 @@ export async function main(
               "setup, then they can re-approve. Broker error:\n\n" + detail,
             undefined, undefined, undefined, undefined, undefined, "broker",
           )
-          .catch((e) => console.error("[agent-host] failed to feed AWS provisioning error to the agent:", e));
+          .catch((e) => hostLog.errorWith("failed to feed the AWS provisioning error to the agent", e));
       }
       throw new Error(`broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`);
     }
@@ -928,19 +964,21 @@ export async function main(
       } catch (err) {
         if (attempt === RETRIES - 1) {
           // eslint-disable-next-line no-console
-          console.error(
-            `[agent-host] hydrate FAILED after ${RETRIES} attempts — cannot read the conversation ` +
-              `source of truth, refusing to serve on a stale view:`,
-            err,
-          );
+          hostLog.errorWith(
+              "hydrate failed; cannot read the conversation source of truth, refusing to serve on a stale view",
+              err,
+              { attempts: RETRIES },
+            );
           throw err;
         }
         const delay = 250 * 2 ** attempt;
         // eslint-disable-next-line no-console
-        console.warn(
-          `[agent-host] hydrate attempt ${attempt + 1}/${RETRIES} failed (retrying in ${delay}ms):`,
-          (err as Error)?.message ?? err,
-        );
+        hostLog.warn("hydrate attempt failed; retrying", {
+            attempt: attempt + 1,
+            attempts: RETRIES,
+            retry_in_ms: delay,
+            error: formatError(err),
+          });
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -968,7 +1006,7 @@ export async function main(
         const stored = await assets.put(sessionId, { data: Buffer.from(img.data, "base64"), mimeType: img.mimeType });
         promptImages.push({ assetId: stored.assetId, mimeType: stored.mimeType });
       } catch (e) {
-        console.warn(`[agent-host] dropped an attached image for ${sessionId}:`, (e as Error).message);
+        hostLog.warn("dropped an attached image", { conversation_id: sessionId, error: formatError(e) });
       }
     }
     // Binary file attachments (Slack pdf/zip/…) ride straight through to the bridge,
@@ -998,7 +1036,7 @@ export async function main(
           message: `The agent could not start this run: ${message}`,
         });
       } catch (persistErr) {
-        console.error(`[agent-host] failed to persist RUN_ERROR for ${sessionId}:`, persistErr);
+        hostLog.errorWith("failed to persist RUN_ERROR", persistErr, { conversation_id: sessionId });
       }
       throw err; // rethrow so the /agui handler also emits a LIVE RUN_ERROR + closes
     }
@@ -1040,10 +1078,16 @@ export async function main(
     //    on the request id). A revive failure (e.g. conversation genuinely gone) is not
     //    fatal — we still attempt the answer and, failing that, report ok:false.
     await sessions.revive(sessionId as SessionId).catch((err) => {
-      console.warn(`[agent-host] resume: revive of ${sessionId} failed (answering best-effort):`, err);
+      hostLog.warn("resume: revive failed; answering best-effort", {
+        conversation_id: sessionId,
+        error: formatError(err),
+      });
     });
     await reRaisePendingAwsInterrupts(sessionId).catch((err) => {
-      console.warn(`[agent-host] resume: re-raise pending interrupts for ${sessionId} failed:`, err);
+      hostLog.warn("resume: re-raise pending interrupts failed", {
+        conversation_id: sessionId,
+        error: formatError(err),
+      });
     });
     if (answer()) return { ok: true };
 
@@ -1103,6 +1147,15 @@ export async function main(
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
     createManagementApi({
+    // The integrity stream must not sit silent on a non-owner pod: live appends only
+    // reach the OWNER's local store. Absent registry/podName => single-replica ("mine").
+    streamOwnership: conversationRegistry && podName
+      ? async (id: string) => {
+          const rec = await conversationRegistry.get(id).catch(() => undefined);
+          if (!rec?.hostPod) return "unknown" as const; // not assigned yet — serve on
+          return rec.hostPod === podName ? ("mine" as const) : ("elsewhere" as const);
+        }
+      : undefined,
       sessions,
       store,
       server,
@@ -1145,7 +1198,7 @@ export async function main(
         // the blocked agent run (ACP request_permission).
         const answered = sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId);
         if (!answered) {
-          console.warn("[agent-host] no pending permission", { sessionId, toolCallId });
+          hostLog.warn("no pending permission", { conversation_id: sessionId, tool_call_id: toolCallId });
         }
       },
       // Approve/deny the broker AWS request the user answered. Shared with the
@@ -1196,7 +1249,7 @@ export async function main(
 
   await server.listen(config.port);
   // eslint-disable-next-line no-console
-  console.log(`[agent-host] listening on :${config.port}`);
+  hostLog.info("listening", { port: config.port });
 
   // Resume conversations interrupted by THIS restart (a run that started but never
   // finished): revive + nudge them to continue. Fire-and-forget AFTER listen(), so
@@ -1206,9 +1259,9 @@ export async function main(
     void sessions
       .resumeInterrupted()
       .then((ids) => {
-        if (ids.length) console.log(`[agent-host] resumed ${ids.length} interrupted conversation(s)`);
+        if (ids.length) hostLog.info("resumed interrupted conversations", { count: ids.length });
       })
-      .catch((err) => console.error("[agent-host] resumeInterrupted failed:", err));
+      .catch((err) => hostLog.errorWith("resumeInterrupted failed", err));
   }
 
   // Idle-suspend sweep — kube-native-friendly: the agent-host owns the activity
@@ -1231,7 +1284,7 @@ export async function main(
   if (config.idleSuspendMs > 0) {
     sweepTimer = setInterval(() => {
       void sessions.sweepIdle(config.idleSuspendMs).then((ids) => {
-        if (ids.length) console.log(`[agent-host] idle-suspended ${ids.length}:`, ids);
+        if (ids.length) hostLog.info("idle-suspended conversations", { count: ids.length, conversation_ids: ids });
         reportSandboxCounts();
       });
     }, config.idleSweepIntervalMs);
@@ -1245,9 +1298,14 @@ export async function main(
   if (config.retentionMaxAgeMs > 0) {
     const reap = () =>
       void sessions.sweepRetention(config.retentionMaxAgeMs).then((ids) => {
-        if (ids.length) console.log(`[agent-host] retention-reaped ${ids.length} (inactive > ${config.retentionMaxAgeMs}ms, unstarred):`, ids);
+        if (ids.length)
+          hostLog.info("retention-reaped conversations", {
+            count: ids.length,
+            inactive_over_ms: config.retentionMaxAgeMs,
+            conversation_ids: ids,
+          });
         reportSandboxCounts();
-      }).catch((err) => console.error("[agent-host] retention sweep failed:", err));
+      }).catch((err) => hostLog.errorWith("retention sweep failed", err));
     retentionTimer = setInterval(reap, config.retentionSweepIntervalMs);
     retentionTimer.unref?.();
   }
@@ -1292,7 +1350,7 @@ export async function main(
               `React to this result if it's relevant to your task; otherwise acknowledge briefly.`;
             await sessions
               .prompt(c.id as SessionId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "background job")
-              .catch((e) => console.error(`[agent-host] job-completion inject failed for ${c.id}:`, e));
+              .catch((e) => hostLog.errorWith("job-completion inject failed", e, { conversation_id: c.id }));
           }
         })();
       }
@@ -1334,13 +1392,13 @@ export async function main(
         const text = subagentDoneNotice(subagentId, child?.title, lastAssistantText(events));
         await sessions
           .prompt(parentId, text, undefined, PRIORITY_INTERRUPT, "thinking", undefined, undefined, "subagent")
-          .catch((e) => console.error(`[agent-host] subagent-completion inject failed for parent ${parentId}:`, e));
+          .catch((e) => hostLog.errorWith("subagent-completion inject failed", e, { parent_id: parentId }));
       }
       // Clean up the finished subagent (cascade-safe: a child shares the parent's
       // pod, so end() won't tear the pod down for it).
       await sessions
         .end(subagentId)
-        .catch((e) => console.error(`[agent-host] subagent cleanup (end) failed for ${subagentId}:`, e));
+        .catch((e) => hostLog.errorWith("subagent cleanup (end) failed", e, { subagent_id: subagentId }));
     };
 
     // Primary: fire the moment a subagent's run terminates.
@@ -1378,11 +1436,10 @@ export async function main(
       try {
         await mirroredStore.drainMirror();
       } catch (err) {
-        console.error(
-          "[agent-host] MIRROR DRAIN FAILED on shutdown — the NFS backup may be missing " +
-            "its buffered tail (data loss on this rollout). Error:",
-          err, // Node prints the stack/traceback for an Error
-        );
+        hostLog.errorWith(
+            "mirror drain failed on shutdown; the NFS backup may be missing its buffered tail (data loss on this rollout)",
+            err,
+          );
       }
     }
   };
@@ -1435,7 +1492,8 @@ export async function main(
     // cwd. Re-read on every conversation start, so editing the skills ConfigMap
     // takes effect for new conversations with no image rebuild.
     const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
-    if (skillCount) console.log(`[agent-host] ${conversationId}: ${skillCount} skill(s) -> .goosehints`);
+    if (skillCount)
+      hostLog.info("wrote skills to .goosehints", { conversation_id: conversationId, skills: skillCount });
     const metricModel = resolved ?? cfg.model ?? "unknown";
     // Offer the agent the in-process MCP tools (background jobs / model selection /
     // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
@@ -1523,15 +1581,21 @@ export async function main(
     // If the registry is absent the BYO provider is not even a CANDIDATE — every run goes to the
     // cloud floor and looks completely normal from the outside. Say so once per bridge, with the
     // owner, so a "why did my container not serve this?" question is answerable from the log.
-    console.log(
-      `[acp-providers] conversation=${conversationId} owner=${owner ?? "-"} ` +
-        `candidates=[${acpProviders.map((p) => `${p.id}@${p.priority}`).join(", ")}] ` +
-        `byocController=${byocControllerUrl || "ABSENT (BYO disabled — cloud floor only)"}`,
-    );
+    // This line was ALREADY key=value — the drift toward structure the audit noted.
+        // Now the values are real fields instead of a string that looks like fields.
+        logger("acp-providers").info("resolved provider candidates", {
+          conversation_id: conversationId,
+          owner: owner ?? null,
+          candidates: acpProviders.map((pr) => `${pr.id}@${pr.priority}`),
+          byoc_controller: byocControllerUrl || null,
+        });
 
     const bridge = createSessionBridge({
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
+        // Stamped onto RUN_STARTED so a later reader can tell a run THIS pod is still
+        // executing from one stranded by a dead host — see hasDanglingRun.
+        selfPod: podName,
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
       livenessProbeMs: config.livenessProbeMs,
       // TRANSCRIPT RECORDER (test-harness, off unless TRANSCRIPT_RECORD_DIR is set):
@@ -1606,8 +1670,13 @@ function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<v
   const ensure = createDeferredConnector(() => connectSandbox(sandbox, { ensureRunning }));
   return {
     mode: "k8s-exec" as const,
-    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0]) {
-      return (await ensure()).execute(req);
+    // FORWARD THE SIGNAL. This wrapper used to take only `req`, silently discarding the
+    // AbortSignal sandboxExec passes — so kill()'s abort never reached the k8s exec
+    // layer and waitForExit hung until the remote command exited on its own. The type
+    // let it happen because the parameter is optional: a seam narrowing a contract
+    // with nothing to say so — the same silent-drop family this tier keeps catching.
+    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0], signal?: AbortSignal) {
+      return (await ensure()).execute(req, signal);
     },
     async download(path: string) {
       return (await ensure()).download(path);
@@ -1638,20 +1707,27 @@ export function installShutdownHandlers(
   const proc = opts.proc ?? process;
   const timeoutMs = opts.timeoutMs ?? Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 8000);
   const setTimeoutFn = opts.setTimeoutFn ?? setTimeout;
-  const log = opts.log ?? ((m) => console.log(m));
+  // opts.log stays a plain-string seam (tests inject it); its DEFAULT routes through the
+  // structured logger. Drain lines are exactly what gets grepped during a bad rollout, so
+  // the signal and the timeout belong in fields rather than baked into the message.
+  const injected = opts.log;
+  const drainLog = (msg: string, fields?: Record<string, unknown>) => {
+    if (injected) injected(msg);
+    else hostLog.info(msg, fields);
+  };
   let shuttingDown = false;
   const onSignal = (sig: NodeJS.Signals) => {
     if (shuttingDown) return; // ignore repeat signals mid-drain
     shuttingDown = true;
-    log(`[agent-host] ${sig} — draining…`);
+    drainLog("draining", { signal: sig });
     const timer = setTimeoutFn(() => {
-      log(`[agent-host] drain exceeded ${timeoutMs}ms — exiting`);
+      drainLog("drain exceeded the timeout — exiting", { timeout_ms: timeoutMs });
       proc.exit(0);
     }, timeoutMs);
     (timer as { unref?: () => void }).unref?.();
     shutdown()
-      .then(() => { log("[agent-host] drained cleanly"); proc.exit(0); })
-      .catch((e) => { console.error("[agent-host] drain error:", e); proc.exit(0); });
+      .then(() => { drainLog("drained cleanly"); proc.exit(0); })
+      .catch((e) => { hostLog.errorWith("drain error", e); proc.exit(0); });
   };
   proc.on("SIGTERM", onSignal);
   proc.on("SIGINT", onSignal);
@@ -1662,7 +1738,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   main()
     .then((shutdown) => installShutdownHandlers(shutdown))
     .catch((err) => {
-      console.error("[agent-host] fatal:", err);
+      hostLog.errorWith("fatal", err);
       process.exit(1);
     });
 }

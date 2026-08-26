@@ -17,6 +17,7 @@ from .autolink import Link, create_link, list_links
 from .registry import discover_providers
 from .types import Identity
 from ..config import settings
+from ..logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +131,11 @@ def create_app() -> FastAPI:
                 prefix=f"/{provider.name}",
             )
         logger.info(
-            "mounted provider %s (transports: %s)",
-            provider.name,
-            ", ".join(t.name for t in provider.transports),
+            "mounted provider",
+            extra={
+                "provider": provider.name,
+                "transports": [t.name for t in provider.transports],
+            },
         )
 
     return app
@@ -141,4 +144,14 @@ def create_app() -> FastAPI:
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(create_app(), host="0.0.0.0", port=settings.port)
+    # Structured JSON logs (one object per line) — replaces logging.basicConfig.
+    # Installed BEFORE create_app() so provider discovery's own lines are captured
+    # in the same shape, and before uvicorn.run() so uvicorn's loggers inherit the
+    # root handler instead of installing their own prose formatter.
+    configure_logging("broker")
+    uvicorn.run(
+        create_app(),
+        host="0.0.0.0",
+        port=settings.port,
+        log_config=None,  # keep OUR root handler; uvicorn's default dictConfig replaces it
+    )

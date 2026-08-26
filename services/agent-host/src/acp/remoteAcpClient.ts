@@ -173,7 +173,7 @@ export function createRemoteAcpClient(deps: RemoteAcpClientDeps): AcpClient {
     async cancel(sessionId) {
       await request("cancel", { sessionId });
     },
-    async killActiveTerminals() {
+    async killActiveTerminals(_graceForPendingSpawn = false) {
       // Best-effort — a disconnected agent has no terminals to kill.
       if (closed || !transport.isOpen()) return;
       await request("kill_terminals", {}).catch(() => {});

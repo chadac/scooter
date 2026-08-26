@@ -21,6 +21,7 @@ from ..agent_host_client import conversation_url, create_conversation, send_mess
 from ..responses.jira import post_jira_comment
 
 logger = logging.getLogger(__name__)
+_C = {"component": "handlers.jira"}
 router = APIRouter()
 
 
@@ -85,7 +86,7 @@ async def handle_jira_webhook(request: Request):
     payload = await request.json()
     event_type = payload.get("webhookEvent", "")
 
-    logger.info("Received Jira event: %s", event_type)
+    logger.info("received event", extra={**_C, "source": "jira", "event_type": event_type})
 
     if event_type == "comment_created":
         await _handle_comment(payload)
@@ -94,7 +95,7 @@ async def handle_jira_webhook(request: Request):
     elif event_type == "jira:issue_updated":
         await _handle_issue_updated(payload)
     else:
-        logger.debug("Ignoring Jira event type: %s", event_type)
+        logger.debug("ignoring event type", extra={**_C, "source": "jira", "event_type": event_type})
 
     return {"status": "ok"}
 
@@ -140,7 +141,16 @@ async def _handle_comment(payload: dict):
         ok = await send_message(existing, forward_msg, priority=has_mention, source="jira")
         if ok:
             return
-        logger.warning("Failed to send to existing conversation %s, creating new one", existing)
+        logger.warning(
+            "send to existing conversation failed, creating a new one",
+            extra={
+                **_C,
+                "conversation_id": existing,
+                "source": "jira",
+                "resource_type": "issue",
+                "resource_id": issue_key,
+            },
+        )
 
     await db.store_conversation("jira", "issue", issue_key, PENDING_CONVERSATION_ID)
     await db.link_jira_ticket(PENDING_CONVERSATION_ID, issue_key)
@@ -247,10 +257,16 @@ async def _background_create_conversation(
         for msg in messages:
             ok = await send_message(conv_id, msg, source="jira")
             if not ok:
-                logger.warning("Failed to flush pending message to conversation %s", conv_id)
+                logger.warning(
+                    "flush of pending message failed",
+                    extra={**_C, "conversation_id": conv_id, "source": "jira", "resource_id": issue_key},
+                )
     except Exception:
         await _clear_pending(issue_key)
-        logger.exception("Error in background conversation creation for Jira %s", issue_key)
+        logger.exception(
+            "background conversation creation failed",
+            extra={**_C, "source": "jira", "resource_type": "issue", "resource_id": issue_key},
+        )
 
 
 async def _clear_pending(issue_key: str) -> None:

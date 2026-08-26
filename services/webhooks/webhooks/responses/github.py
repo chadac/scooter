@@ -13,8 +13,10 @@ import httpx
 import jwt
 
 from ..config import settings
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "responses.github"}
 
 GITHUB_API = "https://api.github.com"
 
@@ -34,7 +36,10 @@ def _load_private_key() -> str | None:
             with open(key) as f:
                 return f.read()
         except OSError as e:
-            logger.error("Failed to read GitHub App private key from %s: %s", key, e)
+            logger.error(
+                "read of github app private key failed",
+                extra={**_C, "key_path": key, "error": format_error(e)},
+            )
             return None
     return key
 
@@ -78,7 +83,10 @@ async def _get_installation_token(installation_id: int) -> str | None:
             _token_cache[installation_id] = (token, time.time() + _TOKEN_TTL)
             return token
     except httpx.HTTPError as e:
-        logger.error("Failed to get installation token for %d: %s", installation_id, e)
+        logger.error(
+            "get installation token failed",
+            extra={**_C, "installation_id": installation_id, "error": format_error(e)},
+        )
         return None
 
 
@@ -101,7 +109,10 @@ async def _get_installation_id_for_repo(owner: str, repo: str) -> int | None:
             resp.raise_for_status()
             return resp.json()["id"]
     except httpx.HTTPError as e:
-        logger.error("Failed to get installation ID for %s/%s: %s", owner, repo, e)
+        logger.error(
+            "get installation id failed",
+            extra={**_C, "repo_owner": owner, "repo": repo, "error": format_error(e)},
+        )
         return None
 
 
@@ -153,10 +164,28 @@ async def post_github_comment(
             resp.raise_for_status()
             data = resp.json()
             comment_id = data.get("id")
-            logger.info("Posted GitHub comment %s on %s/%s#%d", comment_id, owner, repo, issue_number)
+            logger.info(
+                "posted comment",
+                extra={
+                    **_C,
+                    "comment_id": comment_id,
+                    "repo_owner": owner,
+                    "repo": repo,
+                    "issue_number": issue_number,
+                },
+            )
             return comment_id
     except httpx.HTTPError as e:
-        logger.error("Failed to post GitHub comment on %s/%s#%d: %s", owner, repo, issue_number, e)
+        logger.error(
+            "post comment failed",
+            extra={
+                **_C,
+                "repo_owner": owner,
+                "repo": repo,
+                "issue_number": issue_number,
+                "error": format_error(e),
+            },
+        )
         return None
 
 
@@ -173,9 +202,21 @@ async def update_github_comment(
                 json={"body": body},
             )
             resp.raise_for_status()
-            logger.debug("Updated GitHub comment %s on %s/%s", comment_id, owner, repo)
+            logger.debug(
+                "updated comment",
+                extra={**_C, "comment_id": comment_id, "repo_owner": owner, "repo": repo},
+            )
     except httpx.HTTPError as e:
-        logger.error("Failed to update GitHub comment %s on %s/%s: %s", comment_id, owner, repo, e)
+        logger.error(
+            "update comment failed",
+            extra={
+                **_C,
+                "comment_id": comment_id,
+                "repo_owner": owner,
+                "repo": repo,
+                "error": format_error(e),
+            },
+        )
 
 
 async def get_issue_or_pr(owner: str, repo: str, number: int) -> dict | None:
@@ -190,5 +231,14 @@ async def get_issue_or_pr(owner: str, repo: str, number: int) -> dict | None:
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPError as e:
-        logger.error("Failed to get issue %s/%s#%d: %s", owner, repo, number, e)
+        logger.error(
+            "get issue failed",
+            extra={
+                **_C,
+                "repo_owner": owner,
+                "repo": repo,
+                "issue_number": number,
+                "error": format_error(e),
+            },
+        )
         return None

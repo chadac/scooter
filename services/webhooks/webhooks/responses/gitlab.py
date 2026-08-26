@@ -5,8 +5,10 @@ import logging
 import httpx
 
 from ..config import settings
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "responses.gitlab"}
 
 GITLAB_API = "https://gitlab.com/api/v4"
 
@@ -16,7 +18,10 @@ async def post_gitlab_comment(
 ) -> int | None:
     """Post a comment on a GitLab issue or MR. Returns note ID or None."""
     if not settings.gitlab_token:
-        logger.warning("GITLAB_TOKEN not set -- skipping comment post")
+        logger.warning(
+            "gitlab token not set, skipping comment post",
+            extra={**_C, "project_id": project_id, "noteable_type": noteable_type, "noteable_iid": noteable_iid},
+        )
         return None
 
     url = f"{GITLAB_API}/projects/{project_id}/{noteable_type}/{noteable_iid}/notes"
@@ -28,10 +33,22 @@ async def post_gitlab_comment(
                 json={"body": body},
             )
             resp.raise_for_status()
-            logger.info("Posted comment on %s %s/%s", noteable_type, project_id, noteable_iid)
+            logger.info(
+                "posted comment",
+                extra={**_C, "noteable_type": noteable_type, "project_id": project_id, "noteable_iid": noteable_iid},
+            )
             return resp.json().get("id")
     except httpx.HTTPError as e:
-        logger.error("Failed to post GitLab comment: %s", e)
+        logger.error(
+            "post comment failed",
+            extra={
+                **_C,
+                "project_id": project_id,
+                "noteable_type": noteable_type,
+                "noteable_iid": noteable_iid,
+                "error": format_error(e),
+            },
+        )
     return None
 
 
@@ -52,4 +69,14 @@ async def update_gitlab_comment(
             )
             resp.raise_for_status()
     except httpx.HTTPError as e:
-        logger.error("Failed to update GitLab comment: %s", e)
+        logger.error(
+            "update comment failed",
+            extra={
+                **_C,
+                "project_id": project_id,
+                "noteable_type": noteable_type,
+                "noteable_iid": noteable_iid,
+                "note_id": note_id,
+                "error": format_error(e),
+            },
+        )

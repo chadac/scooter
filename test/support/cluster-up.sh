@@ -12,6 +12,9 @@ set -euo pipefail
 
 PROVIDER="${1:-k3s}"
 CLUSTER_NAME="agent-sandbox"
+# Where the k3d kubeconfig is written, so callers (just cluster-platform / e2e-cluster)
+# can find it without depending on ~/.kube/config being writable or correct.
+K3D_KUBECONFIG="${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}"
 NAMESPACE="${SANDBOX_NAMESPACE:-agent-sandbox}"
 # Pin the agent-sandbox release used for the controller + CRDs. v0.5.x serves the
 # v1beta1 API (v1alpha1 deprecated in v0.5.0); the provisioners target v1beta1.
@@ -65,7 +68,18 @@ bring_up_cluster() {
       ;;
     kind)     ensure_cmd kind; kind get clusters | grep -qx "$CLUSTER_NAME" || kind create cluster --name "$CLUSTER_NAME" ;;
     minikube) ensure_cmd minikube; minikube status -p "$CLUSTER_NAME" >/dev/null 2>&1 || minikube start -p "$CLUSTER_NAME" ;;
-    k3d)      ensure_cmd k3d; k3d cluster list | grep -q "$CLUSTER_NAME" || k3d cluster create "$CLUSTER_NAME" ;;
+    k3d)
+      ensure_cmd k3d
+      k3d cluster list | grep -q "$CLUSTER_NAME" || k3d cluster create "$CLUSTER_NAME"
+      # POINT KUBECTL AT IT. k3d merges into ~/.kube/config, but that write FAILS
+      # silently when KUBECONFIG names a root-owned path left over from a k3s setup
+      # (/etc/rancher/k3s/k3s.yaml) — the cluster comes up healthy and every kubectl
+      # afterwards talks to the wrong context, surfacing as "failed to download
+      # openapi" rather than anything about kubeconfig. Write our own and export it.
+      k3d kubeconfig get "$CLUSTER_NAME" > "$K3D_KUBECONFIG"
+      export KUBECONFIG="$K3D_KUBECONFIG"
+      log "KUBECONFIG=$KUBECONFIG (k3d; export this for kubectl in your shell)"
+      ;;
     *) echo "unknown provider: $PROVIDER" >&2; exit 1 ;;
   esac
 }

@@ -32,7 +32,11 @@ import type { AssetStore } from "../session/assetStore.js";
 import type { SchedulerClient } from "../agent/schedulerTools.js";
 import type { SandboxResources } from "../session/resources.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
+import { logger } from "../log.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
+
+const log = logger("agent-host");
+const remoteAgentLog = logger("remote-agent");
 
 /** Public (JSON-safe) view of a conversation — omits the in-memory bridge.
  *  Exposes activity metadata (lastActivityAt, idleMs, ageMs) so the UI and any
@@ -64,6 +68,13 @@ function view(c: Conversation, now = Date.now()) {
 export interface ManagementDeps {
   sessions: SessionManager;
   store: ConversationStore;
+  /** Who serves this conversation's LIVE stream. "elsewhere" => another pod owns it, so
+   *  this pod's integrity stream would replay history and then sit silent forever (live
+   *  appends land on the OWNER's local store). Streams opened before the controller
+   *  assigned an owner land on a random pod ~half the time and stayed there — the
+   *  Tier-2 "no tool card / Working… forever" coin-flip. Optional: absent =
+   *  single-replica, everything is "mine". */
+  streamOwnership?: (id: string) => Promise<"mine" | "elsewhere" | "unknown">;
   server: AguiServer;
   /** Answer a pending tool permission (wired to the bridge in index.ts). `approver`
    *  is the identity of the human answering (for an AWS interrupt, the broker
@@ -226,11 +237,11 @@ export function raiseAwsApprovalInterrupt(
       // loses the user's security decision.
       void resolveAwsRequest?.(conversationId, req.request_id, optionId === "approve", approverIdentity).catch(
         (err) => {
-          // eslint-disable-next-line no-console
-          console.error(
-            `[agent-host] AWS approval NOT recorded for ${conversationId} (request ${req.request_id}, ${optionId}):`,
-            err,
-          );
+          log.errorWith("AWS approval NOT recorded", err, {
+            conversation_id: conversationId,
+            request_id: req.request_id,
+            decision: optionId,
+          });
         },
       );
     },
@@ -279,8 +290,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       // Return the raw token + the ready-to-copy one-liner (token baked in) + the wss URL.
       return { json: { token, dockerCommand, wsUrl } };
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[remote-agent] join-token mint failed for ${ctx.user.id}:`, err);
+      remoteAgentLog.errorWith("join-token mint failed", err, { user_id: ctx.user.id });
       // 503 (dependency unavailable), naming the dependency — and deliberately NOT echoing
       // err.message: this response gets logged/screenshotted, and an error path must never
       // carry token material or internals. The full error is in the host log above.
@@ -599,7 +609,14 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.post("/conversations/:id/cancel", async (ctx) => {
     const conv = sessions.get(ctx.params.id);
     if (!conv) return { status: 404, json: { error: "not found" } };
-    await conv.bridge?.cancel();
+    // `bridge?.cancel()` answers 202 even with NO bridge — a silent no-op indistinguishable
+    // from a real stop. Record which happened.
+    log.info("cancel requested", {
+      conversation_id: ctx.params.id,
+      has_bridge: conv.bridge !== undefined,
+      status: conv.status,
+    });
+    await conv.bridge?.cancel(undefined, true);
     return { status: 202, json: { ok: true } };
   });
 
@@ -745,6 +762,24 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Mark the end of the initial replay so the client knows it's caught up.
     send({ kind: "synced" });
 
+      // OWNERSHIP: this stream only carries LIVE events for a conversation THIS pod
+      // runs (onAppend is the local store). If another pod owns it — typical when the
+      // stream was opened BEFORE the controller assigned an owner, and the router
+      // therefore picked a pod at random — end the stream after the replay: the
+      // client's reconnect goes back through the router, which routes by hostIP now.
+      // Checked again periodically so a MID-STREAM reassignment also hands the viewer
+      // to the new owner instead of leaving them on a silent stream.
+      const closeIfElsewhere = async () => {
+        const where = await deps.streamOwnership?.(id).catch(() => "unknown" as const);
+        if (where === "elsewhere") {
+          try { res.write(": owner-elsewhere — reconnect\n\n"); } catch { /* closing */ }
+          res.end();
+        }
+      };
+      void closeIfElsewhere();
+      const ownershipTimer = setInterval(() => void closeIfElsewhere(), 5_000);
+      if (typeof ownershipTimer.unref === "function") ownershipTimer.unref();
+
     // SSE HEARTBEAT: an idle conversation emits no events, so without this the stream
     // goes byte-silent until the next activity. Any proxy in front (the UI's nginx has
     // proxy_read_timeout 3600s; an ingress/LB may be far stricter) then times the
@@ -761,6 +796,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
     ctx.req.on("close", () => {
       clearInterval(heartbeat);
+      clearInterval(ownershipTimer);
       unsub?.();
     });
   });
@@ -999,7 +1035,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
         await sessions.revive(conv.id);
         bridge = sessions.get(conv.id)?.bridge;
       } catch (err) {
-        console.error(`[agent-host] aws-request could not revive ${conv.id}:`, err);
+        log.errorWith("aws-request could not revive", err, { conversation_id: conv.id });
       }
     }
     if (!bridge) return { status: 503, json: { error: "could not activate conversation to raise the approval" } };

@@ -16,9 +16,12 @@
  * factory returns undefined and the tools fall back to `ref` alone.
  */
 
+import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
 
 import type { ResourceMapping } from "./agentTools.js";
+
+const log = logger("resourceLookup");
 
 export interface ResourceLookupConfig {
   /** Postgres connection string (postgresql://user:pass@host:port/db). */
@@ -64,8 +67,11 @@ export function createResourceLookup(config: ResourceLookupConfig): ResourceLook
           slackTs: row.slack_ts ?? undefined,
         };
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[resourceLookup] query failed for ${conversationId}/${source} (falling back to ref-only):`, (err as Error).message);
+        log.error("query failed (falling back to ref-only)", {
+          conversation_id: conversationId,
+          source,
+          error: formatError(err),
+        });
         return undefined;
       }
     },

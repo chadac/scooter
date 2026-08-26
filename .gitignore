@@ -27,3 +27,4 @@ site/
 # Python build artifacts (uv/setuptools leave these in the service dirs).
 *.egg-info/
 __pycache__/
+.e2e-cluster/

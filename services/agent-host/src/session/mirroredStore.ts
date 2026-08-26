@@ -20,6 +20,7 @@
  * Mirror errors are non-fatal — logged via onMirrorError; local persistence is intact.
  */
 
+import { logger } from "../log.js";
 import { chainNext, EMPTY_CHECKSUM } from "../agui/integrity.js";
 import type { AguiEvent } from "../bridge.js";
 import type { SessionId } from "../types.js";
@@ -29,6 +30,8 @@ import type {
   ConversationLink,
 } from "./manager.js";
 import type { JobRecord } from "./jobManager.js";
+
+const log = logger("mirror");
 
 export interface MirrorOptions {
   /** Max buffered events before an immediate mirror flush. */
@@ -120,7 +123,7 @@ export function mirroredConversationStore(
   readEventsDurable: (id: SessionId) => AsyncIterable<AguiEvent>;
 } {
   const onErr = opts.onMirrorError ?? ((id, e) =>
-    console.error(`[mirror] write failed for ${id} (local intact):`, e));
+    log.errorWith("write failed (local intact)", e, { conversation_id: id }));
   const coalescer = new CoalescingMirror(
     mirror,
     opts.maxBatch ?? 64,
@@ -175,7 +178,7 @@ export function mirroredConversationStore(
               Promise.resolve(local.listConversations?.() ?? []).catch(() => []),
               // A mirror read failure must not blank the list; fall back to whatever local has.
               Promise.resolve(mirror.listConversations?.() ?? []).catch((err) => {
-                console.error("[mirror] listConversations failed (serving local only):", err);
+                log.errorWith("listConversations failed (serving local only)", err);
                 return [];
               }),
             ]);

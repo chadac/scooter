@@ -13,8 +13,11 @@
  * and permission paths already use.
  */
 
+import { formatError, logger } from "../log.js";
 import { createTunnelService, type TunnelServiceDeps } from "./tunnelService.js";
 import type { WireFrame } from "./remoteProtocol.js";
+
+const log = logger("tunnel");
 
 export interface TunnelClientDeps extends Omit<TunnelServiceDeps, "send"> {
   /** The controller's in-cluster base URL. */
@@ -57,13 +60,23 @@ export function startTunnelClient(deps: TunnelClientDeps): TunnelClient {
           // A non-OK reply is a DROPPED response the container is still waiting on — surface it
           // rather than letting the tool call hang until the SDK gives up.
           if (!res.ok) {
-            // eslint-disable-next-line no-console
-            console.warn(`[tunnel] reply ${frame.type} for ${frame.id} rejected: HTTP ${res.status}`);
+            log.warn("reply rejected", {
+              conversation_id: deps.conversationId,
+              session_id: deps.sessionId,
+              frame_type: frame.type,
+              stream: frame.id,
+              status: res.status,
+            });
           }
         })
         .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn(`[tunnel] reply ${frame.type} for ${frame.id} failed: ${String(err)}`);
+          log.warn("reply failed", {
+            conversation_id: deps.conversationId,
+            session_id: deps.sessionId,
+            frame_type: frame.type,
+            stream: frame.id,
+            error: formatError(err),
+          });
         });
     },
   });
@@ -106,8 +119,12 @@ export function startTunnelClient(deps: TunnelClientDeps): TunnelClient {
         }
       } catch (err) {
         if (closed) return;
-        // eslint-disable-next-line no-console
-        console.warn(`[tunnel] inbound stream dropped (reconnecting): ${String(err)}`);
+        log.warn("inbound stream dropped (reconnecting)", {
+          conversation_id: deps.conversationId,
+          session_id: deps.sessionId,
+          retry_in_ms: 1000,
+          error: formatError(err),
+        });
       }
       if (closed) return;
       await new Promise((r) => setTimeout(r, 1000));
@@ -116,8 +133,10 @@ export function startTunnelClient(deps: TunnelClientDeps): TunnelClient {
 
   // Say so, once, per session. A silent tunnel client is indistinguishable from one that never
   // started — which is exactly what made the first live failure hard to place.
-  // eslint-disable-next-line no-console
-  console.log(`[tunnel] following inbound stream for session=${deps.sessionId} conversation=${deps.conversationId}`);
+  log.info("following inbound stream", {
+    conversation_id: deps.conversationId,
+    session_id: deps.sessionId,
+  });
   void follow();
 
   return {

@@ -12,6 +12,7 @@ import {
   resolverFromEnv,
   type UserContext,
 } from "../auth/identity.js";
+import { withConversation } from "../log.js";
 
 /** How the router resolves the caller's identity per request. Async so a resolver
  *  can enrich via a store (identityStore.ts). Defaults to the env-configured
@@ -117,7 +118,14 @@ export function createRouter(resolveUser: ResolveUser = defaultResolveUser()): R
             return (cachedBody ? JSON.parse(cachedBody) : {}) as T;
           },
         };
-        const result = await route.handler(ctx);
+        // Bind the conversation id for the WHOLE management surface in one place. Every
+        // /conversations/:id route (27 of them — suspend, resume, cancel, compact, rename,
+        // links, …) logs it without any of them being edited, and a route that has no
+        // conversation id simply binds nothing. Mirrors what onPrompt does for /agui.
+        const convId = params.id;
+        const result = convId
+          ? await withConversation(convId, () => route.handler(ctx))
+          : await route.handler(ctx);
         if (result && typeof result === "object" && "json" in result) {
           res.writeHead(result.status ?? 200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(result.json));

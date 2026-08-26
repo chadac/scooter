@@ -260,6 +260,18 @@ in
     # INTERNAL. Set by modules/testing.nix, never by a deploy config. It exists as an option only
     # because the production env-var block below has to read it; the guard in that module is what
     # keeps a real deploy from turning it on. See modules/testing.nix for why this inverted.
+    sandboxResources = mkOption {
+      type = types.nullOr types.attrs;
+      default = null;
+      description = ''
+        Resource requests/limits for each conversation's sandbox pod, as
+        {requests = {cpu, memory}; limits = {cpu, memory};}. null = the agent-host
+        default (Guaranteed QoS, 2 cpu / 4Gi — reserves the full amount per sandbox).
+        Set smaller values on constrained clusters (CI runners) where reserving
+        2 whole CPUs per sandbox makes a second concurrent sandbox unschedulable.
+      '';
+    };
+
     fakeAgent = mkOption {
       type = types.bool;
       default = false;
@@ -518,6 +530,57 @@ in
     };
 
     observability = {
+      # BROWSER telemetry (RUM). Separate from `otel` below, which is the
+      # agent-host's own metrics: this is the UI, running in the user's browser,
+      # pushing OTLP over the same origin. It exists because the failures that
+      # matter most in a chat UI — a render stream reconnecting to the wrong
+      # conversation, a runtime remounting mid-run — happen entirely client-side
+      # and never reach a pod log.
+      browserTelemetry = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Let the UI send OTLP traces to a collector, proxied same-origin
+            through the UI's nginx at /telemetry/. OFF by default.
+
+            Same-origin on purpose: the browser holds no telemetry credential and
+            the traffic stays behind the ingress auth, so changing vendor
+            (Grafana Cloud, Datadog, ...) is a collectorUrl change rather than a
+            UI rebuild. Requires collectorUrl to be set.
+          '';
+        };
+        collectorUrl = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "http://alloy-singleton.monitoring.svc.cluster.local:4318";
+          description = ''
+            OTLP/HTTP base URL of the collector that receives browser telemetry.
+            HTTP, not gRPC — browsers cannot speak OTLP/gRPC.
+
+            NO DEFAULT, deliberately. A plausible-looking default would point
+            telemetry at an address that probably does not exist in THIS cluster,
+            and the failure would be silent: spans collected, posted, discarded.
+            Enabling browserTelemetry without setting this is an eval error (see
+            the assertion below), not a running system that quietly drops data.
+
+            With the Grafana k8s-monitoring chart this is the alloy-singleton
+            Service on port 4318, once
+            `applicationObservability.receivers.otlp.http` is enabled — verified
+            against the chart's rendered output, not guessed.
+          '';
+        };
+        sampleRatio = mkOption {
+          type = types.float;
+          default = 1.0;
+          description = ''
+            Fraction of browser traces to record (0.0-1.0). 1.0 while debugging;
+            lower it if the UI's live event stream produces more spans than the
+            collector should carry.
+          '';
+        };
+      };
+
       otel = {
         enable = mkOption {
           type = types.bool;
@@ -720,7 +783,11 @@ in
               # 403s silently (fire-and-forget) and the conversation stays unroutable.
               apiGroups = [ "scooter.chadac.dev" ];
               resources = [ "conversations" ];
-              verbs = [ "get" "list" "watch" "create" "patch" ];
+              # DELETE: ending a conversation must remove its CR. The CR is the source of
+              # truth for existence, so without this a deleted conversation is re-adopted by
+              # hydrate() and comes back — DELETE answered 204 while the conversation stayed
+              # listed as `running` forever, and the 403 was invisible until remove() logged it.
+              verbs = [ "get" "list" "watch" "create" "patch" "delete" ];
             }
             {
               # The agent-host PUBLISHES liveness to status.phase (Assigned on
@@ -991,6 +1058,9 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; }
+                ++ lib.optional (cfg.sandboxResources != null)
+                  # Per-sandbox pod sizing (JSON) — see the sandboxResources option.
+                  { name = "SANDBOX_RESOURCES"; value = builtins.toJSON cfg.sandboxResources; }
                 ++ lib.optionals cfg.agent.remoteAgent.enable [
                   # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
                   # The HS256 signing key for owner-bound join tokens (one server-side secret).
@@ -1254,7 +1324,19 @@ in
               env = [{
                 name = "AGENT_HOST_URL";
                 value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
-              }];
+              }] ++ lib.optionals cfg.observability.browserTelemetry.enable [
+                # Where nginx forwards /telemetry/. ASSERT rather than defaulting to a
+                # plausible-looking address: a wrong collector URL fails SILENTLY — the UI
+                # collects spans, posts them, and nginx's 204 sink swallows the result, so
+                # the deployment looks healthy while producing no telemetry at all. Fail
+                # at eval instead.
+                (assert lib.assertMsg (cfg.observability.browserTelemetry.collectorUrl != null)
+                  "agentSandbox.observability.browserTelemetry.enable = true requires observability.browserTelemetry.collectorUrl to be set (e.g. http://alloy-singleton.monitoring.svc.cluster.local:4318 for the Grafana k8s-monitoring chart). There is no safe default: a wrong collector URL discards telemetry silently.";
+                  {
+                    name = "OTEL_COLLECTOR_URL";
+                    value = cfg.observability.browserTelemetry.collectorUrl;
+                  })
+              ];
               readinessProbe.httpGet = { path = "/"; port = "http"; };
             };
           };

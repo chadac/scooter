@@ -27,6 +27,7 @@ import type {
 import type { ExecBackend } from "./types.js";
 import { sdkMessageToUpdates, type SdkMessage } from "./sdkAdapter.js";
 import { createSandboxMcpServer } from "./sandboxMcp.js";
+import { decideTool } from "./toolPolicy.js";
 import { debug, debugError } from "./debug.js";
 
 // Stream text/thinking as deltas (responsive AG-UI). MUST be threaded into
@@ -172,17 +173,50 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     },
     toolAliases,
     disallowedTools,
-    // Keep the sandbox tools auto-approved at the SDK layer; the bridge's own
-    // permission flow (onPermissionRequest) is the UI gate. permissionMode
-    // "acceptEdits"/"default" — allow our aliased tools without a CLI prompt.
-    // The scooter-env MCP tools are made AVAILABLE by the mcpServers entry above;
-    // `allowedTools` only suppresses the permission PROMPT (per the SDK docs), so we
-    // add the server prefix to keep them from prompting. Their real gate is the
-    // bridge's canUseTool below.
+    // DENY-BY-DEFAULT. "default" mode PROMPTS for anything not pre-approved, and the
+    // spawned CLI is headless — nobody answers, the turn stalls holding the prompt,
+    // and readMessages throws `stop_reason=tool_use` while the UI shows a bare exit 1.
+    // "dontAsk" is documented as "Don't prompt for permissions, deny if not
+    // pre-approved", which is exactly the contract we want. Belt to the hook's braces:
+    // even if a call bypasses PreToolUse, nothing headless can sit on a prompt.
+    permissionMode: "dontAsk",
+    // Suppresses the permission PROMPT for tools we own (per the SDK docs). Their real
+    // gate is the PreToolUse hook below + the bridge's own permission flow.
     allowedTools: [
       ...Object.values(toolAliases),
       ...(deps.mcpEndpointUrl ? ["mcp__scooter-env"] : []),
     ],
+    // THE enforcement point. canUseTool is a USER-INPUT callback — the SDK docs say it
+    // "never fires for auto-approved tools", which is why the note below about it not
+    // firing 18× is documented behaviour rather than a bug. For logic that must apply
+    // to EVERY call the documented mechanism is PreToolUse, which runs before the rest
+    // of the permission flow and cannot be short-circuited by an earlier approval.
+    //
+    // A denial here is seen by the model, which "may adjust its approach" (SDK docs),
+    // so an unsupported tool redirects it onto the scooter-env equivalent instead of
+    // hanging the turn. See toolPolicy.ts for the policy and its rationale.
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            async (input: unknown) => {
+              const name = (input as { tool_name?: string })?.tool_name ?? "";
+              const decision = decideTool(name, Object.values(toolAliases));
+              if (decision.allow) return { continue: true };
+              debugError("[sdk:tool-denied]", `${name}: ${decision.reason}`);
+              return {
+                continue: true,
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: decision.reason,
+                },
+              };
+            },
+          ],
+        },
+      ],
+    },
     includePartialMessages: INCLUDE_PARTIALS, // stream text deltas for responsive AG-UI
     // Surface the spawned claude CLI's stderr — otherwise a CLI failure (bad flag,
     // auth, version mismatch) is an opaque "exited with code 1". Always logged.
@@ -191,13 +225,16 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // (does not merge), so passing only the token strips PATH/HOME/etc and the
     // spawned claude crashes configuring its HTTP client (the axios baseURL error).
     env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: deps.oauthToken, ...(deps.extraEnv ?? {}) },
-    // canUseTool bridges the SDK permission gate to our handler.
-    // IMPORTANT: verified in production (2026-08) that the SDK does NOT invoke
-    // canUseTool for tools covered by `allowedTools` (our aliased sandbox tools +
-    // the `mcp__scooter-env` prefix) — a check_subagent loop ran 18× with this
-    // callback never firing. So back-pressure CANNOT rely on this path; the real
-    // yield gate is the tool-call-boundary interrupt in prompt()'s stream loop
-    // below. This deny is kept as defense-in-depth for any tool that DOES reach it.
+    // canUseTool is the USER-INPUT callback: the SDK calls it only when it needs a
+    // human (an approval prompt, or AskUserQuestion). It does NOT fire for tools an
+    // earlier step already approved — allowedTools, or a mode like dontAsk — which is
+    // documented behaviour, not a quirk. Seen in production (2026-08) as a
+    // check_subagent loop running 18× with this callback never firing.
+    //
+    // So back-pressure CANNOT rely on this path; the real yield gate is the
+    // tool-call-boundary interrupt in prompt()'s stream loop below, and per-call policy
+    // lives in the PreToolUse hook above. Kept as defence in depth for anything that
+    // DOES reach it. https://code.claude.com/docs/en/agent-sdk/user-input
     canUseTool: async (toolName: string, input: unknown) => {
       // BACK-PRESSURE (defense-in-depth; the stream-loop interrupt is primary): if a
       // higher-priority item is waiting, DENY with interrupt:true so the turn ENDS.

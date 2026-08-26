@@ -67,6 +67,21 @@ in
     agentSandbox = {
       fakeAgent = lib.mkForce tcfg.fakeAgent;
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
+      # SMALL sandboxes. The production default is Guaranteed QoS 2cpu/4Gi PER
+      # sandbox — on a 4-vCPU CI runner that makes the SECOND concurrent sandbox
+      # unschedulable (Insufficient cpu -> Pending forever), which deterministically
+      # failed the one e2e test that holds two live conversations at once
+      # (client-server-identity "a NEW conversation...", CI runs 32990346244/
+      # 32992826841). Tests assert behaviour, not perf isolation: a fake agent's
+      # echo + a short shell command fit comfortably here, and several sandboxes
+      # must be schedulable side by side. REQUESTS are near-zero (scheduling
+      # density is the whole point); LIMITS stay real because the sandbox is a
+      # genuine systemd NixOS pod even under the fake agent — a tiny memory LIMIT
+      # would OOM-kill it at boot, and limits (not requests) are what kill.
+      sandboxResources = lib.mkForce {
+        requests = { cpu = "50m"; memory = "64Mi"; };
+        limits = { cpu = "1"; memory = "1Gi"; };
+      };
     };
 
     # A loud marker on every rendered object, so a manifest built with test overrides is

@@ -14,6 +14,10 @@
 
 import { KubeConfig, CustomObjectsApi, setHeaderOptions, PatchStrategy } from "@kubernetes/client-node";
 
+import { logger } from "../log.js";
+
+const log = logger("conversationRegistry");
+
 import type {
   ConversationRegistry,
   ConversationSpec,
@@ -45,6 +49,7 @@ export function createK8sConversationRegistry(
       if (spec.owner) cleanSpec.owner = spec.owner;
       if (spec.parentId) cleanSpec.parentId = spec.parentId;
       if (spec.sandboxRef) cleanSpec.sandboxRef = spec.sandboxRef;
+      if (spec.creatorPod) cleanSpec.creatorPod = spec.creatorPod;
 
       await custom
         .createNamespacedCustomObject({
@@ -75,14 +80,14 @@ export function createK8sConversationRegistry(
               )
               .catch((pe: { code?: number }) => {
                 if (pe?.code === 404) return; // deleted between create and patch
-                console.error(`[conversationRegistry] failed to patch Conversation CR ${id}:`, pe);
+                log.errorWith("failed to patch Conversation CR", pe, { conversation_id: id });
               });
             return;
           }
           // Any OTHER error must not fail the conversation: log it and continue. The guard
           // fails open for an unregistered conversation, so the only cost is that it pins
           // to the default pod until a later register() (or the controller) creates the CR.
-          console.error(`[conversationRegistry] failed to create Conversation CR ${id}:`, e);
+          log.errorWith("failed to create Conversation CR", e, { conversation_id: id });
         });
     },
 
@@ -98,7 +103,32 @@ export function createK8sConversationRegistry(
         )
         .catch((e: { code?: number }) => {
           if (e?.code === 404) return; // CR not there (yet) — nothing to update.
-          console.error(`[conversationRegistry] failed to set phase=${phase} on ${id}:`, e);
+          log.errorWith("failed to set phase", e, { conversation_id: id, phase });
+        });
+    },
+
+    async remove(id: string): Promise<void> {
+      // DELETE the CR. Without this the conversation comes BACK: end() clears local state
+      // and the store record, but hydrate() re-adopts any surviving CR, so a deleted
+      // conversation reappears in GET /conversations forever (observed on a real cluster,
+      // with DELETE answering 204 the whole time).
+      //
+      // Never throws, matching the other write methods — a k8s failure must not turn a
+      // successful local delete into a 500. A 404 means someone else already removed it,
+      // which is the desired end state, so it is not an error.
+      await custom
+        .deleteNamespacedCustomObject({
+          group: GROUP,
+          version: VERSION,
+          namespace,
+          plural: PLURAL,
+          name: id,
+        })
+        .catch((e: { code?: number }) => {
+          if (e?.code === 404) return; // already gone — that is the outcome we wanted
+          log.errorWith("failed to delete the Conversation CR (it will be re-adopted)", e, {
+            conversation_id: id,
+          });
         });
     },
 
