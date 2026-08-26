@@ -1,4 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+// The FULL-target allowlist lives in test/e2e/full-specs.json — ONE source of truth
+// shared with CI's shard distribution (shard-e2e.mjs SPEC_SET=full). START SMALL,
+// WIDEN AS IT EARNS IT: add a spec once it has passed against a cluster.
+const fullSpecs: string[] = JSON.parse(
+  readFileSync(new URL("./test/e2e/full-specs.json", import.meta.url), "utf8"),
+);
 
 /**
  * Tier 3 E2E config. Two modes:
@@ -64,12 +72,7 @@ export default defineConfig({
             //   refresh-history      — "send a message, see the response", across a reload
             //   stop-run             — a run starts and can be stopped, for real
             // Add a spec here once it has passed against a cluster; do not bulk-enable.
-            testMatch: [
-              /cluster-stories\.spec\.ts/,
-              /client-server-identity\.spec\.ts/,
-              /refresh-history\.spec\.ts/,
-              /stop-run\.spec\.ts/,
-            ],
+            testMatch: fullSpecs.map((f) => `**/${f}`),
             use: {
               ...devices["Desktop Chrome"],
               baseURL: clusterUrl,

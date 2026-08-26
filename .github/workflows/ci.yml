@@ -482,17 +482,65 @@ jobs:
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-example || true
 
+  # e2e full is sharded with the SAME distribute -> shard-matrix -> collect shape as
+  # e2e fast, so the two suites stay structurally consistent and widening the full
+  # allowlist later is a number bump, not a restructure. One shard for now: the k3d
+  # setup (~13m) dwarfs the 4-spec test phase (~4m), so more shards would multiply
+  # setup to split the small part. Bump E2E_FULL_SHARDS when the test phase outgrows
+  # the setup (each shard boots its OWN cluster — that is the price of a shard here).
+  e2e-full-distribute:
+    name: e2e full distribute (shard)
+    needs: cluster-changes
+    if: needs.cluster-changes.outputs.platform == 'true'
+    runs-on: ubuntu-latest
+    env:
+      E2E_FULL_SHARDS: "1"
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Weights from the last green full run (best-effort), mirroring e2e fast.
+      - name: fetch prior e2e-full report (for weights)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p prior
+          run_id=$(gh run list --workflow "${{ github.workflow }}" --branch "${{ github.event.repository.default_branch }}" \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "${run_id:-}" ]; then
+            gh run download "$run_id" --name e2e-full-report --dir prior 2>/dev/null \
+              && echo "downloaded prior e2e-full report from run $run_id" \
+              || echo "no e2e-full-report artifact on run $run_id — using committed weights"
+          else
+            echo "no prior successful run — using committed weights"
+          fi
+
+      - id: plan
+        name: plan shards
+        run: |
+          set -euo pipefail
+          report=""
+          [ -f prior/report.json ] && report="prior/report.json"
+          matrix=$(SPEC_SET=full PRIOR_REPORT="$report" SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   # PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
   # (agent-host Deployment + conversation-controller + conversation-router, fake agent) and
   # assert it comes up + a conversation ROUTES + is assigned a hostIP. Path-gated on the
   # `platform` filter (topology/controller/router changes) — the class of change that
   # #254/#255/#256 shipped with NO cluster coverage (validated only manually on odin). See
   # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
-  platform-smoke:
-    name: e2e full (k3d platform smoke + browser)
-    needs: cluster-changes
+  e2e-full-shard:
+    name: e2e full shard ${{ matrix.shard }}
+    needs: [cluster-changes, e2e-full-distribute]
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # one shard failing must not cancel the others (collect reports all)
+      matrix: ${{ fromJSON(needs.e2e-full-distribute.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
@@ -578,11 +626,12 @@ jobs:
       #
       # Port-forward the `ui` Service (nginx: static build + API proxy, so ONE origin
       # serves both the app and /conversations — exactly the browser's real topology).
-      - name: e2e full browser stories
+      - name: e2e full browser stories (shard ${{ matrix.shard }})
         env:
           E2E_TARGET: full
           E2E_CLUSTER_URL: http://127.0.0.1:8899
           CI: "1"
+          PLAYWRIGHT_JSON_OUTPUT_NAME: "report-full-shard-${{ matrix.shard }}.json"
         run: |
           set -euo pipefail
           # Port-forward the `ui` Service: nginx serving the static build AND proxying the
@@ -610,13 +659,22 @@ jobs:
             sleep 2
           done
           curl -sf -o /dev/null http://127.0.0.1:8899/ || { echo "the UI never served:"; cat /tmp/pf.log; exit 1; }
-          nix develop --command bash -c 'npm install && npx playwright test --project=full'
+          nix develop --command bash -c 'npm install && npx playwright test --project=full --reporter=json,list ${{ matrix.specs }}'
+
+      - name: upload shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-report-shard-${{ matrix.shard }}
+          path: report-full-shard-${{ matrix.shard }}.json
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: upload cluster browser artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: tier2-browser-artifacts
+          name: e2e-full-results-shard-${{ matrix.shard }}
           path: |
             test-results/
             /tmp/pf.log
@@ -642,6 +700,58 @@ jobs:
       - name: tear down k3d
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+  # The GATE for e2e full: succeeds only when every shard passed; merges the per-shard
+  # reports into `e2e-full-report` so the next run's distribute weights by real
+  # durations. Mirrors e2e-collect. Skips (not passes) when the path filter skipped
+  # the suite — a green PR with this job skipped is NOT cluster-verified.
+  e2e-full-collect:
+    name: e2e full (k3d)
+    needs: [cluster-changes, e2e-full-distribute, e2e-full-shard]
+    if: always() && needs.cluster-changes.outputs.platform == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: gate on shard results
+        env:
+          SHARDS_RESULT: ${{ needs.e2e-full-shard.result }}
+          DISTRIBUTE_RESULT: ${{ needs.e2e-full-distribute.result }}
+        run: |
+          set -euo pipefail
+          echo "distribute=$DISTRIBUTE_RESULT shards=$SHARDS_RESULT"
+          [ "$DISTRIBUTE_RESULT" = "success" ] && [ "$SHARDS_RESULT" = "success" ]
+
+      - name: download shard reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-full-report-shard-*
+          path: shard-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: merge reports → e2e-full-report
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const dir = "shard-reports";
+            let suites = [];
+            for (const f of (fs.existsSync(dir) ? fs.readdirSync(dir) : [])) {
+              if (!f.endsWith(".json")) continue;
+              try { const r = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")); suites = suites.concat(r.suites || []); } catch {}
+            }
+            fs.writeFileSync("report.json", JSON.stringify({ suites }));
+            console.log("merged " + suites.length + " top-level suites into report.json");
+          '
+
+      - name: upload merged e2e-full-report (for next run's shard weights)
+        if: needs.e2e-full-shard.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-report
+          path: report.json
+          retention-days: 14
+          if-no-files-found: ignore
 
   # e2e fast — Playwright through the UI against the fake-agent stack (no
   # cluster/model). SHARDED across N parallel runners (default 4): distribute →
