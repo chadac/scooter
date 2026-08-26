@@ -16,8 +16,23 @@
 # technically red, but weaker proof than an assertion failure — reviewers can tell
 # the difference from the output.
 #
-# Marker contract: `@proves` must be on the same line as `it(`/`test(` and the
-# title must be a single plain-quoted string (no template interpolation).
+# ── SUITE MATRIX — where a claim runs is decided by its file's path ──────────
+#   services/**/*.spec.ts, *.test.ts     -> unit      (vitest, single test)
+#   ui/**/*.test.ts(x)                   -> unit      (vitest, single test)
+#   test/e2e/*.spec.ts                   -> e2e fast  (playwright, fast project)
+#   services/<svc>/tests/test_*.py       -> python    (nix build .#<svc>; the
+#                                           whole suite runs, the claim is
+#                                           classified from the pytest log)
+#   e2e full (cluster)                   -> NOT PROVABLE here: red-on-base would
+#                                           need a cluster running base images.
+#                                           A fullOnly-gated claim skips on HEAD,
+#                                           reads as not-passing, and is flagged —
+#                                           prove cluster fixes with a unit or
+#                                           fast-runnable test instead.
+#
+# Marker contract:
+#   TS/Playwright: `@proves` in the it()/test() title, same line, plain quotes.
+#   Python:        `def test_x():  # @proves` — marker in a comment on the def line.
 #
 # Usage: test/support/fails-first.sh [base-ref]     (default origin/main)
 set -euo pipefail
@@ -31,18 +46,24 @@ cd "$ROOT"
 # ── 1. collect newly-added @proves tests ─────────────────────────────────────
 # Parse the -U0 diff: track `+++ b/<file>` headers, match added `it(`/`test(`
 # lines carrying @proves, extract the quoted title.
-mapfile -t CLAIMS < <(git diff -U0 "$MB..$HEAD_SHA" -- '*.spec.ts' '*.test.ts' '*.spec.tsx' '*.test.tsx' \
+mapfile -t CLAIMS < <(git diff -U0 "$MB..$HEAD_SHA" -- '*.spec.ts' '*.test.ts' '*.spec.tsx' '*.test.tsx' '*.py' \
   | python3 -c '
 import re, sys
 file = None
-pat = re.compile(r"""(?:\bit|\btest)(?:\.\w+)?\(\s*(['"'"'"`])(.*?@proves.*?)\1""")
+ts_pat = re.compile(r"(?:\bit|\btest)(?:\.\w+)?\(\s*([\x27\x22`])(.*?@proves.*?)\1")
+py_pat = re.compile(r"def\s+(test_\w+)\s*\(.*#.*@proves")
+def suite(f):
+    if f.endswith(".py"): return "python"
+    if f.startswith("test/e2e/"): return "e2e-fast"
+    return "unit"
 for line in sys.stdin:
     if line.startswith("+++ b/"):
         file = line[6:].strip()
     elif line.startswith("+") and not line.startswith("+++") and file:
-        m = pat.search(line)
+        m = py_pat.search(line) if file.endswith(".py") else ts_pat.search(line)
         if m:
-            print(f"{file}\t{m.group(2)}")
+            title = m.group(1) if file.endswith(".py") else m.group(2)
+            print(f"{file}\t{suite(file)}\t{title}")
 ')
 
 if [ ${#CLAIMS[@]} -eq 0 ]; then
@@ -50,40 +71,47 @@ if [ ${#CLAIMS[@]} -eq 0 ]; then
   exit 0
 fi
 echo "fails-first: ${#CLAIMS[@]} claimed proof(s) vs $BASE (merge-base ${MB:0:8}):"
-printf '  %s\n' "${CLAIMS[@]}"
+for c in "${CLAIMS[@]}"; do
+  IFS=$'\t' read -r _f _s _t <<<"$c"
+  echo "  [$_s] $_f :: $_t"
+done
 
 # ── runner helpers ───────────────────────────────────────────────────────────
 regex_escape() { python3 -c 'import re,sys; print(re.escape(sys.argv[1]))' "$1"; }
 
-# e2e specs run on the FAST project only — a full-target (cluster) claim cannot be
-# proven red-on-base here (that would need a cluster running base images), so a
-# fullOnly-gated @proves test skips on HEAD, reads as not-passing, and is flagged.
-# Prove cluster-only fixes with a unit/fast-runnable test instead.
-is_playwright() { case "$1" in test/e2e/*) return 0 ;; *) return 1 ;; esac; }
+# services/<svc>/... -> the flake attr whose nix build runs that service's pytest
+py_attr() { echo "$1" | sed -nE 's#^services/([^/]+)/.*#\1#p'; }
 
-# run <dir> <file> <title>; echoes verdict: pass | fail | load-error
+# run <dir> <file> <suite> <title>; echoes verdict: pass | fail | load-error
 run_one() {
-  local dir="$1" file="$2" title="$3" out rc pattern
+  local dir="$1" file="$2" suite="$3" title="$4" out rc pattern attr
   pattern=$(regex_escape "$title")
   out=$(mktemp)
-  if is_playwright "$file"; then
-    (cd "$dir" && npx playwright test --project=fast "$file" --grep "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
-  else
-    (cd "$dir" && npx vitest run "$file" -t "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
-  fi
-  # "fail" means the named test RAN and asserted red. A file that cannot even load
-  # shows up differently per runner: vitest prints "Test Files 1 failed" but its
-  # "Tests" summary line shows no failed tests; playwright prints an error with no
-  # "N failed" count line.
-  if [ $rc -eq 0 ]; then
-    echo pass
-  elif is_playwright "$file" && grep -qE '^ *[0-9]+ failed' "$out"; then
-    echo fail
-  elif ! is_playwright "$file" && grep -qE '^ *Tests([^0-9]|.*[^s] )*[0-9]+ failed' "$out"; then
-    echo fail
-  else
-    echo load-error
-  fi
+  case "$suite" in
+    e2e-fast)
+      (cd "$dir" && npx playwright test --project=fast "$file" --grep "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
+      # "fail" = the named test RAN and asserted red; a load error prints no count line.
+      if [ $rc -eq 0 ]; then echo pass
+      elif grep -qE '^ *[0-9]+ failed' "$out"; then echo fail
+      else echo load-error; fi ;;
+    python)
+      # No pytest outside the nix sandbox, so the service's nix build IS the runner:
+      # the whole suite runs and the claim is classified from the pytest log. Coarser
+      # than a single-test run, but every python service is small enough for this.
+      attr=$(py_attr "$file")
+      if [ -z "$attr" ]; then echo load-error; rm -f "$out"; return; fi
+      (cd "$dir" && nix build ".#${attr}" -L --no-link) >"$out" 2>&1 && rc=0 || rc=$?
+      if [ $rc -eq 0 ]; then echo pass
+      elif grep -qE "FAILED[^ ]*::${title}\b" "$out"; then echo fail
+      else echo load-error; fi ;;
+    *)
+      (cd "$dir" && npx vitest run "$file" -t "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
+      # vitest prints "Test Files 1 failed" on a LOAD error too; only the "Tests"
+      # summary line proves the named test asserted red.
+      if [ $rc -eq 0 ]; then echo pass
+      elif grep -qE '^ *Tests([^0-9]|.*[^s] )*[0-9]+ failed' "$out"; then echo fail
+      else echo load-error; fi ;;
+  esac
   rm -f "$out"
 }
 
@@ -91,7 +119,7 @@ run_one() {
 # machine where those are already held (a dev server — possibly someone else's on
 # a shared box) the run would either collide or silently reuse a server running
 # DIFFERENT code. Refuse instead; never kill the ports.
-if printf '%s\n' "${CLAIMS[@]}" | cut -f1 | grep -q '^test/e2e/' && [ "${E2E_REUSE_SERVER:-}" != "1" ]; then
+if printf '%s\n' "${CLAIMS[@]}" | cut -f2 | grep -q 'e2e-fast' && [ "${E2E_REUSE_SERVER:-}" != "1" ]; then
   for p in 8080 5173 8090 5273; do
     if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
       exec 3>&- || true
@@ -106,13 +134,13 @@ fi
 violations=0
 declare -a REPORT
 for c in "${CLAIMS[@]}"; do
-  file="${c%%$'\t'*}"; title="${c#*$'\t'}"
-  v=$(run_one "$ROOT" "$file" "$title")
+  IFS=$'\t' read -r file suite title <<<"$c"
+  v=$(run_one "$ROOT" "$file" "$suite" "$title")
   if [ "$v" != pass ]; then
-    REPORT+=("HEAD  $v  $file :: $title   <-- must PASS with the fix")
+    REPORT+=("HEAD  $v  [$suite] $file :: $title   <-- must PASS with the fix")
     violations=$((violations + 1))
   else
-    REPORT+=("HEAD  pass  $file :: $title")
+    REPORT+=("HEAD  pass  [$suite] $file :: $title")
   fi
 done
 
@@ -149,16 +177,16 @@ done
   || echo "fails-first: WARNING — base workspace build failed; dist-dependent claims will read load-error"
 
 for c in "${CLAIMS[@]}"; do
-  file="${c%%$'\t'*}"; title="${c#*$'\t'}"
-  v=$(run_one "$WT" "$file" "$title")
+  IFS=$'\t' read -r file suite title <<<"$c"
+  v=$(run_one "$WT" "$file" "$suite" "$title")
   case "$v" in
     pass)
-      REPORT+=("BASE  PASS  $file :: $title   <-- NO DISCRIMINATING POWER: passes without the fix")
+      REPORT+=("BASE  PASS  [$suite] $file :: $title   <-- NO DISCRIMINATING POWER: passes without the fix")
       violations=$((violations + 1)) ;;
     fail)
-      REPORT+=("BASE  fail  $file :: $title   (assertion-strength proof)") ;;
+      REPORT+=("BASE  fail  [$suite] $file :: $title   (assertion-strength proof)") ;;
     load-error)
-      REPORT+=("BASE  load-error  $file :: $title   (weak proof: file does not run on base)") ;;
+      REPORT+=("BASE  load-error  [$suite] $file :: $title   (weak proof: does not run on base)") ;;
   esac
 done
 
