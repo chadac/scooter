@@ -106,6 +106,31 @@ export function createK8sConversationRegistry(
         });
     },
 
+    async remove(id: string): Promise<void> {
+      // DELETE the CR. Without this the conversation comes BACK: end() clears local state
+      // and the store record, but hydrate() re-adopts any surviving CR, so a deleted
+      // conversation reappears in GET /conversations forever (observed on a real cluster,
+      // with DELETE answering 204 the whole time).
+      //
+      // Never throws, matching the other write methods — a k8s failure must not turn a
+      // successful local delete into a 500. A 404 means someone else already removed it,
+      // which is the desired end state, so it is not an error.
+      await custom
+        .deleteNamespacedCustomObject({
+          group: GROUP,
+          version: VERSION,
+          namespace,
+          plural: PLURAL,
+          name: id,
+        })
+        .catch((e: { code?: number }) => {
+          if (e?.code === 404) return; // already gone — that is the outcome we wanted
+          log.errorWith("failed to delete the Conversation CR (it will be re-adopted)", e, {
+            conversation_id: id,
+          });
+        });
+    },
+
     async list(): Promise<ConversationRecord[]> {
       // THROWS on failure, unlike the write methods. The CR list is the source of truth for
       // "which conversations exist?"; a caller that gets [] because the apiserver was briefly

@@ -64,6 +64,21 @@ export interface ConversationRegistry {
   setPhase(id: string, phase: ConversationPhase): Promise<void>;
 
   /**
+   * DELETE the `Conversation` CR — the conversation no longer exists.
+   *
+   * Required because the CR is the source of truth for EXISTENCE: end() removing local
+   * state and the store record is not enough, since a surviving CR is re-adopted by
+   * hydrate() and the conversation comes back. Observed on a real cluster — DELETE
+   * answered 204 and the conversation stayed listed as `running` indefinitely, because
+   * nothing could remove its CR.
+   *
+   * Idempotent (already gone => no-op) and never throws, matching register/setPhase: a
+   * k8s failure must not turn a successful local delete into a 500. It IS logged — a CR
+   * outliving its conversation is a leak, and a silent one is how this bug survived.
+   */
+  remove(id: string): Promise<void>;
+
+  /**
    * LIST every Conversation CR in the namespace — the authoritative answer to "which
    * conversations exist?". Callers filter to what they own (`hostPod === selfPod`); adoption of
    * an UNASSIGNED CR is deliberately not a host's job, because the controller is the single
@@ -113,6 +128,9 @@ export const noopRegistry: ConversationRegistry = {
     /* no CR in single-replica mode */
   },
   async setPhase() {
+    /* no CR in single-replica mode */
+  },
+  async remove() {
     /* no CR in single-replica mode */
   },
   async list() {

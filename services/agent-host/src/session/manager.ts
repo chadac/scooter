@@ -1105,6 +1105,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // not end, is the durable handle.)
         entries.delete(targetId);
         await store.removeConversation?.(targetId);
+        // DELETE THE CR TOO. It is the source of truth for existence, so clearing local
+        // state alone is not enough: hydrate() re-adopts a surviving CR and the
+        // conversation comes back. Observed on a real cluster — DELETE answered 204 and
+        // the conversation stayed listed as `running` indefinitely.
+        // Swallow: the local delete already succeeded and is authoritative for the
+        // caller. A surviving CR is a leak to reconcile, not a reason to answer 500 for
+        // a conversation that IS gone — that would tell the caller nothing true and
+        // invite a retry that 404s.
+        await conversationRegistry.remove(targetId).catch((err: unknown) => {
+          log.errorWith("failed to remove the Conversation CR; it may be re-adopted", err, {
+            conversation_id: targetId,
+          });
+        });
       };
       // Destroy the pod once — for the conversation actually being ended. (If `id`
       // is itself a subagent, it shares its ancestor's pod; ending it should NOT

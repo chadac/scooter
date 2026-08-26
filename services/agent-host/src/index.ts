@@ -168,7 +168,21 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
   // GOOSE_BIN=fake runs the bundled dummy ACP agent (no model, no AWS).
   const useFakeAgent = process.env.GOOSE_BIN === "fake";
   const fakeAgentPath = new URL("./fakeAgent.js", import.meta.url).pathname;
-  const fakeSandbox = process.env.FAKE_SANDBOX === "1" || useFakeAgent;
+    // The AGENT and the SANDBOX are separate choices. GOOSE_BIN=fake picks a
+    // deterministic agent (no model key); it must NOT also disable the provisioner.
+    // Coupling them meant the k3d platform — which sets GOOSE_BIN=fake on purpose —
+    // silently got createNoopProvisioner(): no Sandbox CR, no sandbox pod, nothing
+    // logged, and every turn hung until the 60s timeout. "A tool call runs in a real
+    // sandbox" could not pass there by construction.
+    //
+    // Still defaults to a fake sandbox OUT of a cluster, so the local Tier-3 stack (no
+    // k8s at all) keeps working unchanged: KUBERNETES_SERVICE_HOST is set only by the
+    // kubelet. In-cluster, the fake agent now runs against a REAL sandbox — the
+    // combination the cluster tier exists to exercise. FAKE_SANDBOX=1 forces the old
+    // behaviour anywhere.
+    const inCluster = process.env.KUBERNETES_SERVICE_HOST !== undefined;
+    const fakeSandbox =
+      process.env.FAKE_SANDBOX === "1" || (useFakeAgent && !inCluster);
   // In prod the k8s manifest mounts /var/lib/... (a writable emptyDir/PVC). In
   // fake/local mode those paths aren't writable, so default to an OS temp dir so
   // the local e2e stack is self-contained (env still overrides either way).
@@ -436,6 +450,14 @@ export async function main(
         // conversation (so the agent can share a link, e.g. to approve an AWS req).
         publicUrl: process.env.PUBLIC_URL || undefined,
       });
+    // WHICH provisioner did we get? A noop provisioner silently creates no sandbox, so
+    // every turn hangs with nothing logged — that cost a long investigation on k3d.
+    // Say it once at boot so the answer is in the first page of any log.
+    hostLog.info("sandbox provisioner selected", {
+      provisioner: config.fakeSandbox ? "noop" : brokerProvisioner ? "broker" : "k8s",
+      fake_sandbox: config.fakeSandbox,
+      in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
+    });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
   // of running them locally in this pod. On a REAL deployment a failure here is

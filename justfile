@@ -282,8 +282,48 @@ e2e-cluster *ARGS:
     done
     curl -sf -o /dev/null http://127.0.0.1:8899/ || {
       echo "the UI never served:" >&2; cat /tmp/scooter-pf.log >&2; exit 1; }
+    # PERSIST THE RUN. A cluster run costs minutes, so re-running it just to grep a
+    # different line out of output you already had is pure waste. Everything lands in
+    # .e2e-cluster/ — the full log, plus the agent-host/controller/router logs from the
+    # same window, so a failure can be investigated WITHOUT reproducing it.
+    out=".e2e-cluster"
+    # WIPE FIRST. Pods change name on every redeploy, so without this the directory
+    # accumulates logs from every ReplicaSet ever run and a grep sums across all of
+    # history — an identical error count across three runs looked like a live bug and
+    # was entirely stale files. The artifacts must describe THIS run only.
+    rm -rf "$out"
+    mkdir -p "$out"
+    started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    set +e
     E2E_TIER=2 E2E_CLUSTER_URL=http://127.0.0.1:8899 \
-      npx playwright test --project=cluster {{ARGS}}
+      npx playwright test --project=cluster {{ARGS}} 2>&1 | tee "$out/run.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    # EVERY pod in the namespace, whole log, both containers, plus the PREVIOUS
+    # container when one restarted (a crash-looped pod's real error is only there).
+    # --since-time scopes each pod's log to this run; the wipe above handles pods that
+    # no longer exist. Both are needed: one bounds time, the other bounds which pods.
+    mkdir -p "$out/pods"
+    for pod in $(kubectl -n agent-sandbox get pods -o name 2>/dev/null); do
+      name="${pod#pod/}"
+      # SINCE THE RUN STARTED. Without this, `logs` returns each pod's whole history and
+      # stale failures from earlier runs read as current — which sent one investigation
+      # down a dead end (an identical 1201-error count across two runs was old data).
+      # The full history is still available via kubectl when genuinely wanted.
+      kubectl -n agent-sandbox logs "$pod" --since-time="$started" --tail=-1 --prefix \
+        --all-containers >"$out/pods/$name.log" 2>&1 || true
+      kubectl -n agent-sandbox logs "$pod" --tail=-1 --all-containers --previous \
+        >"$out/pods/$name.previous.log" 2>/dev/null || rm -f "$out/pods/$name.previous.log"
+    done
+    # Cluster state a log alone cannot explain: what exists, what is wedged, and why.
+    kubectl -n agent-sandbox get pods,deploy,svc,conversations -o wide >"$out/state.txt" 2>&1 || true
+    kubectl -n agent-sandbox get conversations -o yaml >"$out/conversations.yaml" 2>&1 || true
+    kubectl -n agent-sandbox get events --sort-by=.lastTimestamp >"$out/events.txt" 2>&1 || true
+    kubectl -n agent-sandbox describe pods >"$out/describe-pods.txt" 2>&1 || true
+    echo ""
+    echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt)"
+    du -sh "$out" 2>/dev/null | awk '{print "      total: "$1}'
+    exit "$rc"
 # --- Quality ---------------------------------------------------------------
 
 typecheck:
