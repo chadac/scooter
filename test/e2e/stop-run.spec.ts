@@ -73,6 +73,12 @@ test.describe("Stop button + thinking indicator", () => {
   });
 
   test("a running tool call shows a spinner; it clears when the tool finishes", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET. At Tier-2 pace this test is arithmetic-bound, not
+    // behaviour-bound: send → sandbox provision (~15-25s cold) → spinner → sleep 20 →
+    // clear lands ~45-50s after send. The 60s default + a 30s clear-assertion budget
+    // was written against the ~1s fake stack and fails on timing alone while the
+    // spinner demonstrably clears (it passes whenever provisioning is warm).
+    test.setTimeout(120_000);
     // A shell tool used to render as already "complete" the instant it started: the
     // bridge emitted a premature (empty) TOOL_CALL_RESULT on the args-only
     // in_progress update, so the folded part carried a result and assistant-ui
