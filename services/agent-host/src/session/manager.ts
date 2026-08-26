@@ -14,7 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
-import { hasDanglingRun } from "./danglingRun.js";
+import { danglingRunInfo } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
@@ -991,7 +991,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // stranded. `expectedGen` is the generation the controller assigned us at — a run
         // stamped with an earlier one was left by a previous assignment and still resumes.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
-        if (hasDanglingRun(await collectEvents(store.readEvents(id)), self)) {
+        const dangling = danglingRunInfo(await collectEvents(store.readEvents(id)), self);
+        if (dangling?.cancelRequested) {
+          // The user STOPPED this run before the old host died (the persisted
+          // CANCEL_REQUESTED marker). Resuming it would resurrect work the user
+          // killed; instead END it the way the old host would have — the reconnected
+          // stream replays this terminal and the UI's run bar finally clears.
+          log.info("reviveFromMirror: dangling run was cancelled — terminating, not resuming", {
+            conversation_id: id,
+            run_id: dangling.runId,
+          });
+          await store.appendEvent(id as SessionId, {
+            type: "RUN_FINISHED",
+            threadId: dangling.threadId as never,
+            runId: dangling.runId as never,
+            cancelled: true,
+            ts: Date.now(),
+          });
+        } else if (dangling) {
           log.info("reviveFromMirror: resuming a dangling run", { conversation_id: id });
           // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
           // role:user turn) which the UI hides — the nudge is internal, not a user message.
@@ -1391,7 +1408,23 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             // started any run yet, so every RUN_STARTED in the log predates it and is
             // stranded by definition — even one stamped with our own pod name (a restarted
             // pod reuses it). Passing self would skip the very runs this scan resumes.
-          if (hasDanglingRun(events)) candidates.push(entry.id);
+          const info = danglingRunInfo(events);
+          if (info?.cancelRequested) {
+            // Stopped by the user before the previous process died — end it, don't redo it.
+            log.info("resumeInterrupted: dangling run was cancelled — terminating", {
+              conversation_id: entry.id,
+              run_id: info.runId,
+            });
+            await store.appendEvent(entry.id, {
+              type: "RUN_FINISHED",
+              threadId: info.threadId as never,
+              runId: info.runId as never,
+              cancelled: true,
+              ts: Date.now(),
+            });
+          } else if (info) {
+            candidates.push(entry.id);
+          }
         } catch (err) {
           // eslint-disable-next-line no-console
           log.errorWith("resumeInterrupted: reading the log failed, skipping", err, {
