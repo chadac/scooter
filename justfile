@@ -123,6 +123,213 @@ cluster-up:
 cluster-down:
     ./test/support/cluster-down.sh {{cluster_provider}}
 
+
+# --- Cluster-fidelity browser tests (the "tier 2" Playwright project) ------
+#
+# The browser against a REAL cluster — the seam nothing else covers: test/cluster
+# is curl-only (no UI) and the default e2e suite never sees a real server.
+#
+#   just cluster-platform     # build + import images, apply the platform
+#   just e2e-cluster          # run the cluster-project specs against it
+#   just e2e-cluster -g "..."  # …or a subset
+#
+# Teardown is `just cluster-down`. These are deliberately separate steps: bringing
+# the platform up costs minutes, and you want to iterate on the specs without
+# paying it every time.
+
+# Build + import every platform image into the local cluster, then apply the manifests.
+cluster-platform: cluster-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
+    # points at a stale k3s cluster would otherwise talk to the WRONG cluster, and the
+    # error ("failed to download openapi") never mentions kubeconfig.
+    export KUBECONFIG="${KUBECONFIG_OVERRIDE:-${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}}"
+    [ -s "$KUBECONFIG" ] || export KUBECONFIG="${HOME}/.kube/config"
+    for img in \
+      "agent-host-image=agent-host:latest" \
+      "sandbox-os-image=agent-sandbox-os:latest" \
+      "conversation-controller-image=conversation-controller:latest" \
+      "conversation-router-image=conversation-router:latest" \
+      "broker-image=agent-broker:latest" \
+      "webhooks-image=agent-webhooks:latest" \
+      "ui-image=agent-sandbox-ui:latest"; do
+      attr="${img%%=*}"; name="${img#*=}"; name="${name%%:*}"
+      echo "==> $name"
+      nix run ".#${attr}.copyTo" -- "docker-daemon:${name}"
+    done
+    k3d image import agent-host:latest agent-sandbox-os:latest \
+      conversation-controller:latest conversation-router:latest agent-broker:latest \
+      agent-webhooks:latest agent-sandbox-ui:latest -c {{_K3D_CLUSTER}}
+    kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
+    # Match CI: podCap=1 + 3 replicas so conversations SPREAD across pods. With the
+    # default topology every test conversation lands on one pod and any per-pod-view
+    # bug is invisible — which is how "GET /conversations returns one pod's slice"
+    # reached production.
+    kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
+    kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
+    for d in conversation-controller agent-host conversation-router ui; do
+      kubectl -n agent-sandbox rollout status "deployment/$d" --timeout=300s
+    done
+    kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$(just _fingerprint)" --overwrite >/dev/null
+    echo "platform up — now run: just e2e-cluster"
+
+
+# Which images the local platform runs, and how to fingerprint them. The tag is
+# always :latest, so it tells you NOTHING about staleness — but the nix DERIVATION
+# path is content-addressed and evaluates in well under a second without building.
+# Stored on the deployment as an annotation at deploy time, compared on every run.
+# cluster-up.sh names the cluster; keep these in ONE place or a local run targets a
+# cluster that does not exist (CI's is scooter-ci, cluster-up.sh's is agent-sandbox).
+_K3D_CLUSTER := env_var_or_default("K3D_CLUSTER", "agent-sandbox")
+
+# attr=image:deployment. The DEPLOYMENT is named explicitly because deriving it from the
+# image name silently failed: agent-sandbox-ui strips to "sandbox-ui" but the deployment is
+# "ui", so `ui` was rebuilt and imported and then NEVER RESTARTED — the cluster served a
+# 5-hour-old bundle while the fingerprint reported current, and several conclusions were
+# drawn against stale code before anyone checked the served asset.
+_PLATFORM_IMAGES := "agent-host-image=agent-host:agent-host conversation-controller-image=conversation-controller:conversation-controller conversation-router-image=conversation-router:conversation-router broker-image=agent-broker:agent-broker webhooks-image=agent-webhooks:agent-webhooks ui-image=agent-sandbox-ui:ui"
+
+# Print the content fingerprint of every platform image (cheap: eval, no build).
+[private]
+_fingerprint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for pair in {{_PLATFORM_IMAGES}}; do
+      attr="${pair%%=*}"
+      printf '%s=%s\n' "$attr" "$(nix eval --raw ".#${attr}.drvPath" 2>/dev/null | xargs basename)"
+    done
+
+# Rebuild + reload ONLY the platform images whose source changed, then restart them.
+cluster-redeploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
+    # points at a stale k3s cluster would otherwise talk to the WRONG cluster, and the
+    # error ("failed to download openapi") never mentions kubeconfig.
+    export KUBECONFIG="${KUBECONFIG_OVERRIDE:-${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}}"
+    [ -s "$KUBECONFIG" ] || export KUBECONFIG="${HOME}/.kube/config"
+    kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
+      echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
+    want=$(just _fingerprint)
+    have=$(kubectl -n agent-sandbox get deployment/ui -o jsonpath='{.metadata.annotations.scooter\.dev/fingerprint}' 2>/dev/null || true)
+    changed=()
+    while IFS='=' read -r attr fp; do
+      [ -z "$attr" ] && continue
+      grep -qxF "$attr=$fp" <<<"$have" || changed+=("$attr")
+    done <<<"$want"
+    if [ ${#changed[@]} -eq 0 ]; then echo "cluster is up to date"; exit 0; fi
+    echo "rebuilding: ${changed[*]}"
+    names=()
+    for pair in {{_PLATFORM_IMAGES}}; do
+      attr="${pair%%=*}"; rest="${pair#*=}"; name="${rest%%:*}"
+      for c in "${changed[@]}"; do
+        [ "$c" = "$attr" ] || continue
+        nix run ".#${attr}.copyTo" -- "docker-daemon:${name}:latest"
+        names+=("${name}:latest")
+      done
+    done
+    k3d image import "${names[@]}" -c {{_K3D_CLUSTER}}
+    # imagePullPolicy is IfNotPresent on side-loaded images, so a restart is what
+    # actually picks up the new layers — `set image` would be a no-op at :latest.
+    for pair in {{_PLATFORM_IMAGES}}; do
+      rest="${pair#*=}"; dep="deployment/${rest#*:}"
+      kubectl -n agent-sandbox rollout restart "$dep" >/dev/null || true
+    done
+    for pair in {{_PLATFORM_IMAGES}}; do
+      rest="${pair#*=}"; dep="deployment/${rest#*:}"
+      kubectl -n agent-sandbox rollout status "$dep" --timeout=300s >/dev/null || true
+    done
+    # STAMP ONLY AFTER THE ROLLOUTS SUCCEED. Stamping first meant a redeploy that failed
+    # to restart anything still reported "current", and the guard then cleared a stale
+    # cluster to run — which is exactly how a 5-hour-old UI bundle passed as fresh.
+    kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$want" --overwrite >/dev/null
+    echo "redeployed"
+# Run the cluster-project specs against the local platform (port-forwards the UI).
+e2e-cluster *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
+    # points at a stale k3s cluster would otherwise talk to the WRONG cluster, and the
+    # error ("failed to download openapi") never mentions kubeconfig.
+    export KUBECONFIG="${KUBECONFIG_OVERRIDE:-${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}}"
+    [ -s "$KUBECONFIG" ] || export KUBECONFIG="${HOME}/.kube/config"
+    kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
+      echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
+    # STALENESS. A cluster running old images reports green while testing code you did
+    # not write — the same trap as a reused dev server serving a stale build, which cost
+    # a long debugging detour once (see playwright.config.ts). Cheap to check: the nix
+    # derivation path is content-addressed and evaluates in under a second.
+    want=$(just _fingerprint)
+    have=$(kubectl -n agent-sandbox get deployment/ui -o jsonpath='{.metadata.annotations.scooter\.dev/fingerprint}' 2>/dev/null || true)
+    if [ "$want" != "$have" ]; then
+      echo "" >&2
+      if [ -z "$have" ]; then
+        echo "WARNING: this cluster was deployed before fingerprinting existed." >&2
+        echo "         It may be running stale images. Run: just cluster-redeploy" >&2
+      else
+        echo "WARNING: the cluster is running STALE images — these have changed:" >&2
+        while IFS='=' read -r attr fp; do
+          [ -z "$attr" ] && continue
+          grep -qxF "$attr=$fp" <<<"$have" || echo "           $attr" >&2
+        done <<<"$want"
+        echo "         Results will reflect the OLD code. Run: just cluster-redeploy" >&2
+      fi
+      echo "" >&2
+      [ "${E2E_ALLOW_STALE:-}" = "1" ] || { echo "refusing to run (E2E_ALLOW_STALE=1 to override)" >&2; exit 1; }
+    fi
+    kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/scooter-pf.log 2>&1 &
+    PF=$!
+    trap 'kill "$PF" 2>/dev/null || true' EXIT
+    # Wait on a real GET, not the port bind: the forward accepts before nginx serves.
+    for i in $(seq 1 60); do
+      curl -sf -o /dev/null http://127.0.0.1:8899/ && break
+      sleep 1
+    done
+    curl -sf -o /dev/null http://127.0.0.1:8899/ || {
+      echo "the UI never served:" >&2; cat /tmp/scooter-pf.log >&2; exit 1; }
+    # PERSIST THE RUN. A cluster run costs minutes, so re-running it just to grep a
+    # different line out of output you already had is pure waste. Everything lands in
+    # .e2e-cluster/ — the full log, plus the agent-host/controller/router logs from the
+    # same window, so a failure can be investigated WITHOUT reproducing it.
+    out=".e2e-cluster"
+    # WIPE FIRST. Pods change name on every redeploy, so without this the directory
+    # accumulates logs from every ReplicaSet ever run and a grep sums across all of
+    # history — an identical error count across three runs looked like a live bug and
+    # was entirely stale files. The artifacts must describe THIS run only.
+    rm -rf "$out"
+    mkdir -p "$out"
+    started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    set +e
+    E2E_TIER=2 E2E_CLUSTER_URL=http://127.0.0.1:8899 \
+      npx playwright test --project=cluster {{ARGS}} 2>&1 | tee "$out/run.log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    # EVERY pod in the namespace, whole log, both containers, plus the PREVIOUS
+    # container when one restarted (a crash-looped pod's real error is only there).
+    # --since-time scopes each pod's log to this run; the wipe above handles pods that
+    # no longer exist. Both are needed: one bounds time, the other bounds which pods.
+    mkdir -p "$out/pods"
+    for pod in $(kubectl -n agent-sandbox get pods -o name 2>/dev/null); do
+      name="${pod#pod/}"
+      # SINCE THE RUN STARTED. Without this, `logs` returns each pod's whole history and
+      # stale failures from earlier runs read as current — which sent one investigation
+      # down a dead end (an identical 1201-error count across two runs was old data).
+      # The full history is still available via kubectl when genuinely wanted.
+      kubectl -n agent-sandbox logs "$pod" --since-time="$started" --tail=-1 --prefix \
+        --all-containers >"$out/pods/$name.log" 2>&1 || true
+      kubectl -n agent-sandbox logs "$pod" --tail=-1 --all-containers --previous \
+        >"$out/pods/$name.previous.log" 2>/dev/null || rm -f "$out/pods/$name.previous.log"
+    done
+    # Cluster state a log alone cannot explain: what exists, what is wedged, and why.
+    kubectl -n agent-sandbox get pods,deploy,svc,conversations -o wide >"$out/state.txt" 2>&1 || true
+    kubectl -n agent-sandbox get conversations -o yaml >"$out/conversations.yaml" 2>&1 || true
+    kubectl -n agent-sandbox get events --sort-by=.lastTimestamp >"$out/events.txt" 2>&1 || true
+    kubectl -n agent-sandbox describe pods >"$out/describe-pods.txt" 2>&1 || true
+    echo ""
+    echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt)"
+    du -sh "$out" 2>/dev/null | awk '{print "      total: "$1}'
+    exit "$rc"
 # --- Quality ---------------------------------------------------------------
 
 typecheck:

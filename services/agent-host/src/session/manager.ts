@@ -645,6 +645,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       pendingQueue: e.pendingQueue,
     }) ?? Promise.resolve();
 
+  /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
+  const fencedDrops = new Map<SessionId, number>();
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
     // Persist via the onPersist channel ONLY. The bridge's emit() fires BOTH the
@@ -658,7 +660,26 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // stop appending so it can't corrupt the log the new owner drives. Synchronous +
       // cache-backed (no k8s call per event). allowAllGuard (single-replica) always
       // passes — today's behavior. See ownershipGuard.ts.
-      if (!ownershipGuard.canWrite(e.id)) return;
+      if (!ownershipGuard.canWrite(e.id)) {
+        // LOUD, because this drop is how a mid-run reassignment TRUNCATES the run's log:
+        // every remaining event — including the terminal — vanishes, and the UI reads the
+        // log as still-running forever. The drop itself is correct (a stale pod must not
+        // corrupt the log the new owner drives; the new owner's dangling-run resume
+        // completes the run), but it was SILENT — an investigation grepped for fencing
+        // refusals and found zero, concluding the fence never fired. It had, every time.
+        // Sampled: first drop per conversation, then every 25th, so a long stale run
+        // cannot flood the log.
+        const n = (fencedDrops.get(e.id) ?? 0) + 1;
+        fencedDrops.set(e.id, n);
+        if (n === 1 || n % 25 === 0) {
+          log.warn("ownership fence dropped an event (reassigned mid-run?)", {
+            conversation_id: e.id,
+            event_type: event.type,
+            dropped_so_far: n,
+          });
+        }
+        return;
+      }
       void store.appendEvent(e.id, event);
     });
   };
@@ -1105,6 +1126,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // not end, is the durable handle.)
         entries.delete(targetId);
         await store.removeConversation?.(targetId);
+        // DELETE THE CR TOO. It is the source of truth for existence, so clearing local
+        // state alone is not enough: hydrate() re-adopts a surviving CR and the
+        // conversation comes back. Observed on a real cluster — DELETE answered 204 and
+        // the conversation stayed listed as `running` indefinitely.
+        // Swallow: the local delete already succeeded and is authoritative for the
+        // caller. A surviving CR is a leak to reconcile, not a reason to answer 500 for
+        // a conversation that IS gone — that would tell the caller nothing true and
+        // invite a retry that 404s.
+        await conversationRegistry.remove(targetId).catch((err: unknown) => {
+          log.errorWith("failed to remove the Conversation CR; it may be re-adopted", err, {
+            conversation_id: targetId,
+          });
+        });
       };
       // Destroy the pod once — for the conversation actually being ended. (If `id`
       // is itself a subagent, it shares its ancestor's pod; ending it should NOT

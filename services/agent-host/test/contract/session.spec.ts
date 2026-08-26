@@ -1235,3 +1235,49 @@ describe("sweepIdle is OWNER-ONLY (the zombie-sandbox bug)", () => {
     expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
   });
 });
+
+/**
+ * The CR is the source of truth for EXISTENCE, so ending a conversation must remove it.
+ *
+ * Found by the Tier-2 browser tests on their first run against a real cluster: DELETE
+ * answered 204 while the conversation stayed listed as `running` indefinitely. end()
+ * cleared local state and the store record, but nothing could delete the CR — the
+ * registry had register/setPhase/list and no delete — so hydrate() re-adopted it and the
+ * conversation came back. Every Tier-2 test failed on `cleanState could not empty the
+ * server after 50 attempts`.
+ */
+describe("end() removes the Conversation CR", () => {
+  it("deletes the CR, not just local state", async () => {
+    const remove = vi.fn(async () => {});
+    const conversationRegistry = { ...noopRegistry, remove } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      conversationRegistry,
+    });
+
+    const conv = await sessions.start("thread-cr-remove" as never);
+    await sessions.end(conv.id as SessionId);
+
+    // Without this the conversation is re-adopted from its surviving CR and comes back.
+    expect(remove).toHaveBeenCalledWith(conv.id);
+    expect(sessions.get(conv.id as SessionId), "and it is gone locally").toBeUndefined();
+  });
+
+  it("a registry failure does NOT fail the delete", async () => {
+    // Matches register/setPhase: a k8s hiccup must not turn a successful local delete
+    // into a 500 for the caller. The registry logs it; end() carries on.
+    const remove = vi.fn(async () => {
+      throw new Error("apiserver unreachable");
+    });
+    const conversationRegistry = { ...noopRegistry, remove } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      conversationRegistry,
+    });
+
+    const conv = await sessions.start("thread-cr-remove-fail" as never);
+    await expect(sessions.end(conv.id as SessionId)).resolves.not.toThrow();
+  });
+});

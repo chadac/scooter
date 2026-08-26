@@ -26,15 +26,27 @@ function threadIdFromUrl(url: string): string | null {
   return new URL(url).searchParams.get("thread");
 }
 
-/** Every conversation id the SERVER admits to. */
-async function serverIds(request: { get: (u: string) => Promise<{ json: () => Promise<unknown> }> }, base: string) {
-  const list = (await (await request.get(`${base}/conversations`)).json()) as Array<{ id: string }>;
+/**
+ * Every conversation id the SERVER admits to, asked THROUGH THE BROWSER'S OWN ORIGIN.
+ *
+ * Deliberately not AGENT_HOST_URL: on a cluster the API is served by the UI's nginx
+ * (one origin for app + /conversations), so a direct-to-agent-host URL is both wrong
+ * there AND a weaker assertion — it could pass while the path the browser actually
+ * uses is broken.
+ */
+async function serverIds(
+  request: { get: (u: string) => Promise<{ json: () => Promise<unknown> }> },
+  base: string,
+) {
+  const list = (await (await request.get(`${base.replace(/\/$/, "")}/conversations`)).json()) as Array<{
+    id: string;
+  }>;
   return list.map((c) => c.id);
 }
 
 test.describe("client/server conversation identity", () => {
   test("the id in the URL is one the SERVER issued", async ({ chat, page, request, baseURL }) => {
-    const base = process.env.AGENT_HOST_URL ?? "http://localhost:8080";
+    const base = baseURL!;
     await chat.open();
     await chat.completeTurn("identity check");
 
@@ -44,11 +56,10 @@ test.describe("client/server conversation identity", () => {
     // THE ASSERTION. A client-minted id passes every other test in the suite and fails
     // here — the server simply does not have it.
     expect(await serverIds(request, base), `URL id ${urlId} must exist server-side`).toContain(urlId!);
-    void baseURL;
   });
 
-  test("the URL id survives a reload — the conversation does not vanish", async ({ chat, page, request }) => {
-    const base = process.env.AGENT_HOST_URL ?? "http://localhost:8080";
+  test("the URL id survives a reload — the conversation does not vanish", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL!;
     await chat.open();
     await chat.completeTurn("reload check");
     const before = threadIdFromUrl(page.url());
@@ -63,8 +74,8 @@ test.describe("client/server conversation identity", () => {
     await expect(chat.userMessages().first()).toBeVisible({ timeout: 20_000 });
   });
 
-  test("a NEW conversation gets a server id before it appears in the URL", async ({ chat, page, request }) => {
-    const base = process.env.AGENT_HOST_URL ?? "http://localhost:8080";
+  test("a NEW conversation gets a server id before it appears in the URL", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL!;
     await chat.open();
     await chat.completeTurn("first conversation");
     const first = threadIdFromUrl(page.url());
@@ -79,8 +90,8 @@ test.describe("client/server conversation identity", () => {
     expect(await serverIds(request, base), `new-conversation URL id ${second} must be real`).toContain(second!);
   });
 
-  test("the streamed conversation is the SAME one the URL names", async ({ chat, page, request }) => {
-    const base = process.env.AGENT_HOST_URL ?? "http://localhost:8080";
+  test("the streamed conversation is the SAME one the URL names", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL!;
     const streamed: string[] = [];
     // Catch the divergence directly: the reported failure had the stream on the REAL id
     // while the URL held a phantom, so both "worked" in isolation.

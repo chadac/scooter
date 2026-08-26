@@ -771,7 +771,11 @@ in
               # 403s silently (fire-and-forget) and the conversation stays unroutable.
               apiGroups = [ "scooter.chadac.dev" ];
               resources = [ "conversations" ];
-              verbs = [ "get" "list" "watch" "create" "patch" ];
+              # DELETE: ending a conversation must remove its CR. The CR is the source of
+              # truth for existence, so without this a deleted conversation is re-adopted by
+              # hydrate() and comes back — DELETE answered 204 while the conversation stayed
+              # listed as `running` forever, and the 403 was invisible until remove() logged it.
+              verbs = [ "get" "list" "watch" "create" "patch" "delete" ];
             }
             {
               # The agent-host PUBLISHES liveness to status.phase (Assigned on

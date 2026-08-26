@@ -324,6 +324,16 @@ jobs:
               # cluster — which is how a hydrate that adopted nothing shipped green.
               - 'services/agent-host/src/session/conversationRegistry.ts'
               - 'services/agent-host/src/session/k8sConversationRegistry.ts'
+              # The Tier-2 BROWSER stories now run in this job, so the things that
+              # decide WHAT runs must open the gate too — otherwise a change to the
+              # tier mechanism, the cluster project's testMatch, or a spec it selects
+              # silently skips the only job that exercises it. A green PR whose
+              # platform job says `skipping` is NOT cluster-verified.
+              - '.github/workflows/ci.yml'
+              - 'playwright.config.ts'
+              - 'test/e2e/tier.ts'
+              - 'test/e2e/cluster-stories.spec.ts'
+              - 'test/e2e/fixtures.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'
               # The CREATE contract: conversations are created by the ROUTER (a CR write),
@@ -498,6 +508,22 @@ jobs:
       # Build + import every image the fakeAgent platform-manifests reference, by bare name
       # (registryPrefix "" → local names). nix2container `.copyTo docker-daemon:` loads Docker
       # directly; k3d then imports by name. Cachix-cached so this is mostly download.
+      # The Sandbox CRD + controller. Previously unnecessary here BY ACCIDENT: the job
+      # set GOOSE_BIN=fake, which also forced a noop provisioner, so nothing ever touched
+      # the Sandbox API. Decoupling those flags (so the cluster tier tests a REAL sandbox)
+      # made this a hard dependency — without it the apiserver answers a plain-text
+      # "404 page not found" and every run ends RUN_ERROR.
+      #
+      # Same version + assets as test/support/cluster-up.sh installs locally.
+      - name: install agent-sandbox controller
+        run: |
+          set -euo pipefail
+          base="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2"
+          nix shell nixpkgs#kubectl -c bash -c "
+            kubectl apply -f '${base}/sandbox.yaml'
+            kubectl apply -f '${base}/extensions.yaml'
+            kubectl wait --for=condition=Available deploy --all -n agent-sandbox-system --timeout=180s
+          "
       - name: build + import platform images
         run: |
           set -euo pipefail
@@ -542,6 +568,46 @@ jobs:
           '
           nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke --no-file-parallelism'
 
+
+      # Tier 2 BROWSER: the same Playwright specs, against the REAL cluster. This is the
+      # seam nothing else covers — test/cluster is curl-only (no UI) and the Tier-3 suite
+      # never sees a real server, so a bug between them is invisible to both. That is how
+      # a client-minted conversation id reached the URL and made scooter unusable while
+      # all 122 Tier-3 tests passed.
+      #
+      # Port-forward the `ui` Service (nginx: static build + API proxy, so ONE origin
+      # serves both the app and /conversations — exactly the browser's real topology).
+      - name: browser stories against the cluster
+        env:
+          E2E_TIER: "2"
+          E2E_CLUSTER_URL: http://127.0.0.1:8899
+          CI: "1"
+        run: |
+          set -euo pipefail
+          # Port-forward the `ui` Service: nginx serving the static build AND proxying the
+          # API, so ONE origin answers both the app and /conversations — the browser's real
+          # topology, not a test-only arrangement.
+          nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox rollout status deployment/ui --timeout=180s
+          nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          # Wait on a real GET, not the port bind — the forward accepts before nginx serves.
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:8899/ && break
+            sleep 2
+          done
+          curl -sf -o /dev/null http://127.0.0.1:8899/ || { echo "the UI never served:"; cat /tmp/pf.log; exit 1; }
+          nix develop --command bash -c 'npm install && npx playwright test --project=cluster'
+
+      - name: upload cluster browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier2-browser-artifacts
+          path: |
+            test-results/
+            /tmp/pf.log
+          retention-days: 7
       - name: dump platform state on failure
         if: failure()
         run: |
