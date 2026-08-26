@@ -151,10 +151,10 @@ def test_no_sandboxes_no_orphans():
     assert find_orphans([], referenced=set(), grace_seconds=600) == []
 
 
-def conv(host=None, phase="Pending", gen=0, host_ip=None, sandbox_mode=None) -> ConversationState:
+def conv(host=None, phase="Pending", gen=0, host_ip=None, sandbox_mode=None, creator=None) -> ConversationState:
     return ConversationState(
         name="c1", host_pod=host, phase=phase, generation=gen, host_ip=host_ip,
-        sandbox_mode=sandbox_mode,
+        sandbox_mode=sandbox_mode, creator_pod=creator,
     )
 
 
@@ -367,3 +367,34 @@ def test_suspended_with_suspended_or_absent_sandbox_stays_noop():
         a = reconcile(conv(host=None, phase="Suspended", gen=1, sandbox_mode=mode),
                       [Pod("a", True)], {}, cap=10)
         assert isinstance(a, NoOp), f"sandbox_mode={mode}"
+
+# --- creator-pod placement hint ---------------------------------------------
+#
+# The run PHYSICALLY lives on the pod that created the conversation (bridge, sandbox
+# exec, local event log). A least-loaded pick that lands elsewhere splits run from
+# owner: the run's appends are fenced off mid-run, the "owner" has nothing live to
+# stream, and the UI sits at "Working…" forever — the Tier-2 browser tests' coin flip.
+
+def test_prefers_the_creator_pod_even_when_it_is_loaded():
+    # Cap bypass, same reasoning as a subagent pinning to its parent: the work is
+    # already THERE, and assigning it away does not free that capacity.
+    a = reconcile(conv(creator="a"), [Pod("a", True, ip="10.0.0.1"), Pod("b", True)],
+                  {"a": 10, "b": 0}, cap=1)
+    assert isinstance(a, Assign)
+    assert a.host_pod == "a"
+    assert a.host_ip == "10.0.0.1"
+
+
+def test_falls_back_to_least_loaded_when_the_creator_is_gone():
+    a = reconcile(conv(creator="dead"), [Pod("a", True), Pod("b", True)],
+                  {"a": 3, "b": 1}, cap=10)
+    assert isinstance(a, Assign)
+    assert a.host_pod == "b"
+
+
+def test_creator_hint_does_not_churn_an_existing_healthy_assignment():
+    # Already assigned to a ready pod → NoOp, even if the creator differs (a reassignment
+    # after a rollout may legitimately land elsewhere; do not flap it back).
+    a = reconcile(conv(host="b", phase="Assigned", gen=2, creator="a"),
+                  [Pod("a", True), Pod("b", True)], {"a": 0, "b": 1}, cap=10)
+    assert isinstance(a, NoOp)

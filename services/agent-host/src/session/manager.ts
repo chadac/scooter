@@ -734,7 +734,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
       // failure must not fail the conversation); noop in single-replica mode. Do it
       // BEFORE the slow provision so assignment can happen while the sandbox spins up.
-      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name });
+      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name, creatorPod: deps.selfPod });
 
       // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
       // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).

@@ -37,6 +37,14 @@ export interface ConversationSpec {
   parentId?: string;
   /** The backing Sandbox name, if known at start (spec.sandboxRef). */
   sandboxRef?: string;
+  /** The pod that CREATED the conversation (spec.creatorPod) — a placement hint. The
+   *  run physically lives here (bridge, sandbox exec, local event log), but the
+   *  controller's least-loaded pick could not know that and routinely assigned the
+   *  OTHER pod: the run's appends were then fenced off mid-run, the "owner" had
+   *  nothing live to stream, and the UI sat at "Working…" forever. The controller
+   *  prefers this pod when it is ready — same reasoning as a subagent pinning to its
+   *  parent's pod. */
+  creatorPod?: string;
 }
 
 /** Conversation liveness, folded into the CR's `status.phase` so it's observable via
