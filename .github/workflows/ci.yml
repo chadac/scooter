@@ -565,8 +565,22 @@ jobs:
           nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -c '
             k3d registry create scooter-reg.localhost --port 5800
             k3d cluster create scooter-ci --no-lb --wait --registry-use k3d-scooter-reg.localhost:5800
-            k3d kubeconfig merge scooter-ci --kubeconfig-merge-default'
-
+            k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
+          '
+          # Wait for registry to be ready before pushing images
+          echo "Waiting for registry to be ready..."
+          max_attempts=30
+          attempt=0
+          until curl -sf http://localhost:5800/v2/ > /dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            if [ $attempt -ge $max_attempts ]; then
+              echo "Registry failed to become ready after ${max_attempts} attempts"
+              exit 1
+            fi
+            echo "Registry not ready (attempt $attempt/$max_attempts), waiting..."
+            sleep 2
+          done
+          echo "Registry is ready!"
       # The Sandbox CRD + controller. Previously unnecessary here BY ACCIDENT: the job
       # set GOOSE_BIN=fake, which also forced a noop provisioner, so nothing ever touched
       # the Sandbox API. Decoupling those flags (so the cluster tier tests a REAL sandbox)
@@ -595,16 +609,30 @@ jobs:
             | xargs -P 4 -I{} bash -c '
                 set -euo pipefail
                 attr="${1%%=*}"; ref="${1#*=}"
-                # Push via 127.0.0.1 (the registry publishes on the host port) so the
-                # push does not depend on the runner resolving *.localhost names; the
-                # ref inside the manifests keeps the docker-DNS name the CLUSTER uses.
                 push_ref="localhost:${ref#*.localhost:}"
                 echo "push $attr -> $ref (via $push_ref)"
-                nix run ".#${attr}.copyTo" -- "docker://${push_ref}" --dest-tls-verify=false
+                
+                # Retry push up to 3 times with exponential backoff
+                max_retries=3
+                retry=0
+                while [ $retry -lt $max_retries ]; do
+                  if nix run ".#${attr}.copyTo" -- "docker://${push_ref}" --dest-tls-verify=false; then
+                    echo "✓ $attr pushed successfully"
+                    exit 0
+                  fi
+                  retry=$((retry + 1))
+                  if [ $retry -lt $max_retries ]; then
+                    wait_time=$((retry * retry))
+                    echo "Push failed, retry $retry/$max_retries after ${wait_time}s..."
+                    sleep $wait_time
+                  fi
+                done
+                echo "ERROR: Failed to push $attr after $max_retries attempts"
+                exit 1
               ' _ {}
 
-      # Apply the fakeAgent platform manifests, wait for the multi-replica pods, then run the
-      # smoke spec (deploy up + conversation routes + hostIP assigned).
+          echo "All images pushed successfully!"
+
       - name: apply platform + smoke
         env:
           RUN_CLUSTER_TESTS: "1"
