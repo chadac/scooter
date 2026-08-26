@@ -324,6 +324,16 @@ jobs:
               # cluster — which is how a hydrate that adopted nothing shipped green.
               - 'services/agent-host/src/session/conversationRegistry.ts'
               - 'services/agent-host/src/session/k8sConversationRegistry.ts'
+              # The Tier-2 BROWSER stories now run in this job, so the things that
+              # decide WHAT runs must open the gate too — otherwise a change to the
+              # tier mechanism, the cluster project's testMatch, or a spec it selects
+              # silently skips the only job that exercises it. A green PR whose
+              # platform job says `skipping` is NOT cluster-verified.
+              - '.github/workflows/ci.yml'
+              - 'playwright.config.ts'
+              - 'test/e2e/tier.ts'
+              - 'test/e2e/cluster-stories.spec.ts'
+              - 'test/e2e/fixtures.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'
               # The CREATE contract: conversations are created by the ROUTER (a CR write),
