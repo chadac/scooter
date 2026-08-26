@@ -141,3 +141,101 @@ describe("ACP sandbox handlers — concurrent terminals", () => {
     );
   });
 });
+
+/**
+ * Tier 1 contract test — a cancel that arrives BEFORE the terminal it means to kill.
+ *
+ * The Stop button is live at RUN_STARTED, but the agent's terminal only registers once
+ * the tool call spawns its shell. A cancel in that window killed an EMPTY map, which
+ * succeeds silently: the shell ran to completion, the ACP prompt never resolved, and the
+ * button looked dead. So killAllTerminals holds a kill for the next terminal instead.
+ *
+ * Both halves are pinned here because both regressed in review:
+ *   - the hold must be CONSUMED (a sticky one killed the following run's terminal), and
+ *   - it must be armed ONLY for a user stop (internal preemption also cancels with no
+ *     terminal live, and there the replacement shell has to keep running).
+ */
+function createKillTrackingExec() {
+  const spawned: Array<{ id: string; killed: boolean }> = [];
+  let seq = 0;
+  const exec: ExecBackend = {
+    async run(): Promise<never> {
+      throw new Error("not used");
+    },
+    spawn(_req: ExecRequest): TerminalHandle {
+      const rec = { id: `term-${++seq}`, killed: false };
+      spawned.push(rec);
+      return {
+        id: rec.id,
+        onOutput() {},
+        waitForExit: () => new Promise<{ exitCode: number }>(() => {}), // never exits on its own
+        async kill() {
+          rec.killed = true;
+        },
+        async release() {},
+      };
+    },
+    async readTextFile() {
+      return "";
+    },
+    async writeTextFile() {},
+  };
+  return { exec, spawned };
+}
+
+describe("ACP sandbox handlers — a cancel that beats its terminal", () => {
+  const spawnTerminal = (h: ReturnType<typeof createSandboxClientHandlers>) =>
+    h.createTerminal({ command: "sleep", args: ["20"] } as never);
+
+  /** kill() is fired without await inside createTerminal; let the microtask land. */
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it("a USER stop kills the terminal that registers just after it", async () => {
+    const { exec, spawned } = createKillTrackingExec();
+    const handlers = createSandboxClientHandlers(exec);
+
+    await handlers.killAllTerminals(true);
+    await spawnTerminal(handlers);
+    await settle();
+
+    expect(spawned[0]!.killed, "the late terminal must not survive the stop").toBe(true);
+  });
+
+  it("consumes the hold, so only ONE terminal dies per missed stop", async () => {
+    const { exec, spawned } = createKillTrackingExec();
+    const handlers = createSandboxClientHandlers(exec);
+
+    await handlers.killAllTerminals(true);
+    await spawnTerminal(handlers);
+    await settle();
+    expect(spawned[0]!.killed).toBe(true);
+
+    // The NEXT run's terminal belongs to a run nobody cancelled.
+    await spawnTerminal(handlers);
+    await settle();
+    expect(spawned[1]!.killed, "a later run's terminal must survive").toBe(false);
+  });
+
+  it("internal preemption does NOT arm the hold", async () => {
+    const { exec, spawned } = createKillTrackingExec();
+    const handlers = createSandboxClientHandlers(exec);
+
+    // applyPreemption cancels with nothing spawned yet. Killing the replacement shell
+    // here ends the preempting run too, leaving nothing in flight to queue behind.
+    await handlers.killAllTerminals();
+    await spawnTerminal(handlers);
+    await settle();
+
+    expect(spawned[0]!.killed, "the preempting run's own terminal must survive").toBe(false);
+  });
+
+  it("still kills terminals that are already live", async () => {
+    const { exec, spawned } = createKillTrackingExec();
+    const handlers = createSandboxClientHandlers(exec);
+
+    await spawnTerminal(handlers);
+    await handlers.killAllTerminals(true);
+
+    expect(spawned[0]!.killed).toBe(true);
+  });
+});

@@ -609,7 +609,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       has_bridge: conv.bridge !== undefined,
       status: conv.status,
     });
-    await conv.bridge?.cancel();
+    await conv.bridge?.cancel(undefined, true);
     return { status: 202, json: { ok: true } };
   });
 
