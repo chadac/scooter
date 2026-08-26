@@ -950,10 +950,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             log.errorWith("reviveFromMirror: mirror pull failed", err, { conversation_id: id });
             return false;
           });
-          if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
+          if (!pulled) {
+            // LOUD. This pod was ASSIGNED the conversation; giving up here means nobody
+            // will ever complete its (possibly truncated) run — the "Working… forever"
+            // condition the Tier-2 browser tests surfaced. Silent until 2026-08-26, which
+            // is why the assigned pod's total silence looked like the push never arriving.
+            log.warn("reviveFromMirror: assigned a conversation the mirror does not have", {
+              conversation_id: id,
+            });
+            return;
+          }
         }
         const entry = await hydrateByThread(id as ThreadId);
-        if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
+        if (!entry) {
+          log.warn("reviveFromMirror: pulled the mirror but could not reconstruct", {
+            conversation_id: id,
+          });
+          return;
+        }
         void expectedGen; // gen already enforced via the fence above + the append guard.
         await this.revive(id);
       }
