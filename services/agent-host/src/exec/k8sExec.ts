@@ -263,6 +263,24 @@ export function createK8sSandboxApiClient(
             } catch {
               /* already closing */
             }
+            // Do NOT wait for the close handshake. kubelet keeps the exec'd process
+            // running after a client disconnect and may not ack the close until that
+            // process exits — so a kill() of `sh -c sleep 20` left waitForExit hanging
+            // ~20s on a real cluster while the fake stack (local subprocess, instant
+            // SIGTERM) resolved immediately. The agent then never finished its turn and
+            // Stop looked dead — the last two Tier-2 failures. The caller asked for the
+            // command to END; from its point of view it has: resolve now (130), and
+            // force the socket down so nothing leaks.
+            try {
+              (ws as { terminate?: () => void }).terminate?.();
+            } catch {
+              /* already down */
+            }
+            resolve({
+              stdout: out.text(),
+              stderr: err.text(),
+              exitCode: 130,
+            });
           };
           if (signal) {
             if (signal.aborted) onAbort();
