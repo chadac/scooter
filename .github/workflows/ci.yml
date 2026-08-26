@@ -98,6 +98,38 @@ jobs:
       - name: python service tests (nix build runs pytest)
         run: nix build .#broker .#webhooks .#scheduler .#conversation-controller .#warm-store-controller --print-build-logs
 
+  # fails-first: a PR's newly-added `@proves` tests must FAIL on the PR's base.
+  # This automates the inject-verify discipline — a "proof" test that also passes
+  # without the fix has zero discriminating power and the check turns red. PRs
+  # that add no `@proves` tests pass as a no-op, so the job is cheap to require.
+  # Runs only on pull_request: the check is defined relative to a base branch.
+  fails-first:
+    name: "fails-first: @proves tests are red on base"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history: the script diffs against the PR base's merge-base and
+          # checks out files from both sides.
+          fetch-depth: 0
+
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: run fails-first against the PR base
+        env:
+          CI: "1"
+        run: |
+          nix develop --command bash -c '
+            npm install
+            test/support/fails-first.sh "origin/${{ github.base_ref }}"
+          '
+
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface
   # the nixosTests never touch (they build the NixOS toplevel, not the image) and the
