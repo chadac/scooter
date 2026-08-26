@@ -45,15 +45,15 @@ async function serverIds(
 }
 
 test.describe("client/server conversation identity", () => {
-  // CLUSTER-HONEST BUDGET. The new-conversation test funds TWO full conversation
-  // boots in one budget, and on the cluster the second is the expensive one: with
-  // pod_cap=1 a fresh conversation can demand a NEW agent-host replica (autoscale
-  // observed 3->5 exactly at its assignment in CI run 32990346244) before its
-  // sandbox pod even starts. First boot + assign-wait + second boot legitimately
-  // reaches 60-90s on the shared k3d node while the run itself is healthy — the
-  // trace shows the tool call running and the reply landing after the default 60s
-  // expired. Same class as stop-run's budgets; behaviour-bound, not time-bound.
-  test.setTimeout(120_000);
+  // CLUSTER-HONEST BUDGETS. The new-conversation test funds TWO full conversation
+  // boots in one test. The three straight CI failures here were NOT this budget in
+  // the end — they were the second sandbox being unschedulable (Guaranteed 2cpu per
+  // sandbox on a 4-vCPU runner; fixed by testing.nix's small sandboxResources) — but
+  // the budgets still must fund two sequential sandbox boots at cluster pace
+  // (instrumented runs measured 9-12s of ready-pod wait per boot under CPU
+  // pressure). NOTE: completeTurn's own poll defaults to 60s — test.setTimeout
+  // alone does NOT extend it, which made the first budget bump here a no-op.
+  test.setTimeout(240_000);
 
   test("the id in the URL is one the SERVER issued", async ({ chat, page, request, baseURL }) => {
     const base = baseURL!;
@@ -87,13 +87,13 @@ test.describe("client/server conversation identity", () => {
   test("a NEW conversation gets a server id before it appears in the URL", async ({ chat, page, request, baseURL }) => {
     const base = baseURL!;
     await chat.open();
-    await chat.completeTurn("first conversation");
+    await chat.completeTurn("first conversation", 100_000);
     const first = threadIdFromUrl(page.url());
 
     // The exact flow that broke: click New conversation, then send.
     await page.locator('[data-testid="new-session"]').click();
     await expect(chat.input()).toBeVisible({ timeout: 20_000 });
-    await chat.completeTurn("second conversation");
+    await chat.completeTurn("second conversation", 100_000);
 
     const second = threadIdFromUrl(page.url());
     expect(second, "a new conversation must get its own id").not.toBe(first);
