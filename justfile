@@ -123,6 +123,69 @@ cluster-up:
 cluster-down:
     ./test/support/cluster-down.sh {{cluster_provider}}
 
+
+# --- Cluster-fidelity browser tests (the "tier 2" Playwright project) ------
+#
+# The browser against a REAL cluster — the seam nothing else covers: test/cluster
+# is curl-only (no UI) and the default e2e suite never sees a real server.
+#
+#   just cluster-platform     # build + import images, apply the platform
+#   just e2e-cluster          # run the cluster-project specs against it
+#   just e2e-cluster -g "..."  # …or a subset
+#
+# Teardown is `just cluster-down`. These are deliberately separate steps: bringing
+# the platform up costs minutes, and you want to iterate on the specs without
+# paying it every time.
+
+# Build + import every platform image into the local cluster, then apply the manifests.
+cluster-platform: cluster-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for img in \
+      "agent-host-image=agent-host:latest" \
+      "sandbox-os-image=agent-sandbox-os:latest" \
+      "conversation-controller-image=conversation-controller:latest" \
+      "conversation-router-image=conversation-router:latest" \
+      "broker-image=agent-broker:latest" \
+      "webhooks-image=agent-webhooks:latest" \
+      "ui-image=agent-sandbox-ui:latest"; do
+      attr="${img%%=*}"; name="${img#*=}"
+      echo "==> $name"
+      nix run ".#${attr}.copyTo" -- "docker-daemon:${name}"
+    done
+    k3d image import agent-host:latest agent-sandbox-os:latest \
+      conversation-controller:latest conversation-router:latest agent-broker:latest \
+      agent-webhooks:latest agent-sandbox-ui:latest -c scooter-ci
+    kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
+    # Match CI: podCap=1 + 3 replicas so conversations SPREAD across pods. With the
+    # default topology every test conversation lands on one pod and any per-pod-view
+    # bug is invisible — which is how "GET /conversations returns one pod's slice"
+    # reached production.
+    kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
+    kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
+    for d in conversation-controller agent-host conversation-router ui; do
+      kubectl -n agent-sandbox rollout status "deployment/$d" --timeout=300s
+    done
+    echo "platform up — now run: just e2e-cluster"
+
+# Run the cluster-project specs against the local platform (port-forwards the UI).
+e2e-cluster *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
+      echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
+    kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/scooter-pf.log 2>&1 &
+    PF=$!
+    trap 'kill "$PF" 2>/dev/null || true' EXIT
+    # Wait on a real GET, not the port bind: the forward accepts before nginx serves.
+    for i in $(seq 1 60); do
+      curl -sf -o /dev/null http://127.0.0.1:8899/ && break
+      sleep 1
+    done
+    curl -sf -o /dev/null http://127.0.0.1:8899/ || {
+      echo "the UI never served:" >&2; cat /tmp/scooter-pf.log >&2; exit 1; }
+    E2E_TIER=2 E2E_CLUSTER_URL=http://127.0.0.1:8899 \
+      npx playwright test --project=cluster {{ARGS}}
 # --- Quality ---------------------------------------------------------------
 
 typecheck:
