@@ -338,8 +338,13 @@ e2e-cluster *ARGS:
     kubectl -n agent-sandbox get conversations -o yaml >"$out/conversations.yaml" 2>&1 || true
     kubectl -n agent-sandbox get events --sort-by=.lastTimestamp >"$out/events.txt" 2>&1 || true
     kubectl -n agent-sandbox describe pods >"$out/describe-pods.txt" 2>&1 || true
+    # The NODE's view: allocatable vs requested (the "Allocated resources" table) and
+    # taints/conditions. A sandbox Pending on Insufficient cpu is invisible in pod
+    # logs — only this shows the node had nothing left to give.
+    kubectl describe nodes >"$out/node.txt" 2>&1 || true
+    kubectl get sandboxes.agents.x-k8s.io -n agent-sandbox -o yaml >"$out/sandboxes.yaml" 2>&1 || true
     echo ""
-    echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt)"
+    echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt, node.txt, sandboxes.yaml)"
     du -sh "$out" 2>/dev/null | awk '{print "      total: "$1}'
     exit "$rc"
 # --- Quality ---------------------------------------------------------------

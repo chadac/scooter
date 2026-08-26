@@ -67,6 +67,18 @@ in
     agentSandbox = {
       fakeAgent = lib.mkForce tcfg.fakeAgent;
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
+      # SMALL sandboxes. The production default is Guaranteed QoS 2cpu/4Gi PER
+      # sandbox — on a 4-vCPU CI runner that makes the SECOND concurrent sandbox
+      # unschedulable (Insufficient cpu -> Pending forever), which deterministically
+      # failed the one e2e test that holds two live conversations at once
+      # (client-server-identity "a NEW conversation...", CI runs 32990346244/
+      # 32992826841). Tests assert behaviour, not perf isolation: a fake agent's
+      # echo + a short shell command fit comfortably here, and several sandboxes
+      # must be schedulable side by side.
+      sandboxResources = lib.mkForce {
+        requests = { cpu = "200m"; memory = "512Mi"; };
+        limits = { cpu = "1"; memory = "1Gi"; };
+      };
     };
 
     # A loud marker on every rendered object, so a manifest built with test overrides is

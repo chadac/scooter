@@ -425,6 +425,18 @@ export async function main(
         // runtime nix builds (tool installs, re-converge) + persisting them across
         // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
         // upper — the overlay still works, writes just don't persist).
+        // Sandbox pod sizing. Default (unset) = the provisioner's Guaranteed 2cpu/4Gi.
+        // SANDBOX_RESOURCES is a JSON {requests:{cpu,memory},limits:{cpu,memory}} —
+        // set by the TEST platform to small values: on a 4-vCPU CI runner the 2cpu
+        // Guaranteed default makes a SECOND concurrent sandbox unschedulable
+        // (Insufficient cpu -> Pending forever), which failed exactly the one e2e
+        // test that holds two live conversations at once.
+        sandboxResources: process.env.SANDBOX_RESOURCES
+          ? (JSON.parse(process.env.SANDBOX_RESOURCES) as {
+              requests?: { cpu?: string; memory?: string };
+              limits?: { cpu?: string; memory?: string };
+            })
+          : undefined,
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
         // Warm PVC pool: when on, claim a pre-warmed overlay upper (matching the sandbox
