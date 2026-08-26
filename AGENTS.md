@@ -73,8 +73,16 @@ seam that neither the e2e suite nor `test/cluster/` covers):
 just cluster-platform     # build + import images, apply the platform (minutes)
 just e2e-cluster          # run the cluster-project specs against it
 just e2e-cluster -g "..."  # …or a subset
+just cluster-redeploy     # rebuild ONLY what changed, restart it
 just cluster-down         # tear it down
 ```
+
+`e2e-cluster` **refuses to run against a stale cluster**: it fingerprints each
+platform image by its nix derivation path (content-addressed, ~6s, no build) and
+compares against what was deployed. A cluster running old images reports green while
+testing code you did not write — the same trap as a reused dev server serving a stale
+build. It names what changed and points at `cluster-redeploy`; `E2E_ALLOW_STALE=1`
+overrides when you mean it.
 
 **Never pass `--workers`.** The suite shares ONE agent-host and its conversation
 state, so parallel workers interleave: the run reports green while testing nothing

@@ -166,14 +166,93 @@ cluster-platform: cluster-up
     for d in conversation-controller agent-host conversation-router ui; do
       kubectl -n agent-sandbox rollout status "deployment/$d" --timeout=300s
     done
+    kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$(just _fingerprint)" --overwrite >/dev/null
     echo "platform up — now run: just e2e-cluster"
 
+
+# Which images the local platform runs, and how to fingerprint them. The tag is
+# always :latest, so it tells you NOTHING about staleness — but the nix DERIVATION
+# path is content-addressed and evaluates in well under a second without building.
+# Stored on the deployment as an annotation at deploy time, compared on every run.
+_PLATFORM_IMAGES := "agent-host-image=agent-host conversation-controller-image=conversation-controller conversation-router-image=conversation-router broker-image=agent-broker webhooks-image=agent-webhooks ui-image=agent-sandbox-ui"
+
+# Print the content fingerprint of every platform image (cheap: eval, no build).
+[private]
+_fingerprint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for pair in {{_PLATFORM_IMAGES}}; do
+      attr="${pair%%=*}"
+      printf '%s=%s\n' "$attr" "$(nix eval --raw ".#${attr}.drvPath" 2>/dev/null | xargs basename)"
+    done
+
+# Rebuild + reload ONLY the platform images whose source changed, then restart them.
+cluster-redeploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
+      echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
+    want=$(just _fingerprint)
+    have=$(kubectl -n agent-sandbox get deployment/ui -o jsonpath='{.metadata.annotations.scooter\.dev/fingerprint}' 2>/dev/null || true)
+    changed=()
+    while IFS='=' read -r attr fp; do
+      [ -z "$attr" ] && continue
+      grep -qxF "$attr=$fp" <<<"$have" || changed+=("$attr")
+    done <<<"$want"
+    if [ ${#changed[@]} -eq 0 ]; then echo "cluster is up to date"; exit 0; fi
+    echo "rebuilding: ${changed[*]}"
+    names=()
+    for pair in {{_PLATFORM_IMAGES}}; do
+      attr="${pair%%=*}"; name="${pair#*=}"
+      for c in "${changed[@]}"; do
+        [ "$c" = "$attr" ] || continue
+        nix run ".#${attr}.copyTo" -- "docker-daemon:${name}:latest"
+        names+=("${name}:latest")
+      done
+    done
+    k3d image import "${names[@]}" -c scooter-ci
+    # imagePullPolicy is IfNotPresent on side-loaded images, so a restart is what
+    # actually picks up the new layers — `set image` would be a no-op at :latest.
+    for pair in {{_PLATFORM_IMAGES}}; do
+      name="${pair#*=}"
+      dep=$(kubectl -n agent-sandbox get deploy -o name 2>/dev/null | grep -E "/(${name}|${name#agent-})$" || true)
+      [ -n "$dep" ] && kubectl -n agent-sandbox rollout restart "$dep" || true
+    done
+    kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$want" --overwrite >/dev/null
+    for pair in {{_PLATFORM_IMAGES}}; do
+      name="${pair#*=}"
+      dep=$(kubectl -n agent-sandbox get deploy -o name 2>/dev/null | grep -E "/(${name}|${name#agent-})$" || true)
+      [ -n "$dep" ] && kubectl -n agent-sandbox rollout status "$dep" --timeout=300s || true
+    done
+    echo "redeployed"
 # Run the cluster-project specs against the local platform (port-forwards the UI).
 e2e-cluster *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
       echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
+    # STALENESS. A cluster running old images reports green while testing code you did
+    # not write — the same trap as a reused dev server serving a stale build, which cost
+    # a long debugging detour once (see playwright.config.ts). Cheap to check: the nix
+    # derivation path is content-addressed and evaluates in under a second.
+    want=$(just _fingerprint)
+    have=$(kubectl -n agent-sandbox get deployment/ui -o jsonpath='{.metadata.annotations.scooter\.dev/fingerprint}' 2>/dev/null || true)
+    if [ "$want" != "$have" ]; then
+      echo "" >&2
+      if [ -z "$have" ]; then
+        echo "WARNING: this cluster was deployed before fingerprinting existed." >&2
+        echo "         It may be running stale images. Run: just cluster-redeploy" >&2
+      else
+        echo "WARNING: the cluster is running STALE images — these have changed:" >&2
+        while IFS='=' read -r attr fp; do
+          [ -z "$attr" ] && continue
+          grep -qxF "$attr=$fp" <<<"$have" || echo "           $attr" >&2
+        done <<<"$want"
+        echo "         Results will reflect the OLD code. Run: just cluster-redeploy" >&2
+      fi
+      echo "" >&2
+      [ "${E2E_ALLOW_STALE:-}" = "1" ] || { echo "refusing to run (E2E_ALLOW_STALE=1 to override)" >&2; exit 1; }
+    fi
     kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/scooter-pf.log 2>&1 &
     PF=$!
     trap 'kill "$PF" 2>/dev/null || true' EXIT
