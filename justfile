@@ -1,7 +1,7 @@
 # kubenix-agent-manager task runner.
 # `just` with no args lists recipes. See docs/TESTING.md for the test strategy.
 
-# Cluster provider for Tier 2/3 (existing | k3s | kind | minikube | k3d)
+# Cluster provider for the cluster suites (existing | k3s | kind | minikube | k3d)
 cluster_provider := env_var_or_default("CLUSTER_PROVIDER", "k3s")
 
 default:
@@ -46,12 +46,12 @@ image-sizes-diff base pr flag="5":
 
 # --- Test tiers ------------------------------------------------------------
 
-# Tier 1 — fast contract tests (no cluster, no network). Run this constantly.
+# unit — fast contract tests against fakes (no cluster, no network). Run this constantly.
 test-unit:
     npm install
     npm test
 
-# Tier 2 — ALL cluster tests against real Kubernetes (provision, suspend/resume,
+# cluster integration (vitest) — against real Kubernetes (provision, suspend/resume,
 # broker IRSA, webhooks spawn). Per-test names print (verbose reporter).
 test-cluster: cluster-up
     RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 RUN_WEBHOOKS_TESTS=1 \
@@ -59,11 +59,11 @@ test-cluster: cluster-up
       BROKER_NS=agent-sandbox PLATFORM_NS=agent-sandbox \
       npm run test:cluster
 
-# Tier 3 — Playwright E2E through the UI (fake ACP agent).
+# e2e fast — Playwright through the real UI + real agent-host; agent + cluster faked.
 test-e2e:
     npm run test:e2e
 
-# Tier 3 — a TARGETED subset for the inner loop (`just e2e <spec>`; never --workers).
+# e2e fast — a TARGETED subset for the inner loop (`just e2e <spec>`; never --workers).
 e2e *ARGS:
     #!/usr/bin/env bash
     # The full suite is ~25 min; one spec file is under a minute.
@@ -86,9 +86,9 @@ e2e *ARGS:
       echo "error: --workers breaks this suite (shared agent-host state). See the comment in justfile." >&2
       exit 1
     fi
-    npx playwright test --project=chromium {{ARGS}}
+    npx playwright test --project=fast {{ARGS}}
 
-# Tier 3 — E2E against a LIVE deployment (real sandbox, real exec, real Bedrock).
+# e2e external — against a LIVE deployment (real sandbox, real exec, real Bedrock).
 # Usage: just test-e2e-external https://chat.example.com [user:pass]
 # Drives the deployed agent-host API directly; catches in-cluster failures the
 # fake stack can't (e.g. a 403 on pods/exec, broker git auth).
@@ -96,7 +96,7 @@ test-e2e-external url basic_auth="":
     RUN_EXTERNAL_E2E=1 AGENT_HOST_URL={{url}} EXTERNAL_BASIC_AUTH={{basic_auth}} \
       npx playwright test test/e2e/external.spec.ts --reporter=list
 
-# Tier 3 — the single real-`goose acp` E2E (needs a model key).
+# e2e real-agent — the single real-`goose acp` E2E (needs a model key).
 test-e2e-real:
     RUN_REAL_GOOSE=1 npm run test:e2e -- real-goose
 
@@ -106,7 +106,7 @@ test-broker: cluster-up
       CLUSTER_PROVIDER={{cluster_provider}} npm run test:cluster -- broker
 
 # THE full suite — run this to confirm everything works.
-# Tier 1 always; Tier 2 + Tier 3 require a cluster (started by their recipes).
+# unit always; the cluster + e2e suites need their servers (started by their recipes).
 test: test-unit test-cluster test-e2e
     @echo "✅ all tiers passed"
 
@@ -130,8 +130,8 @@ cluster-down:
 # is curl-only (no UI) and the default e2e suite never sees a real server.
 #
 #   just cluster-platform     # build + import images, apply the platform
-#   just e2e-cluster          # run the cluster-project specs against it
-#   just e2e-cluster -g "..."  # …or a subset
+#   just e2e-full             # run the full-target specs against it
+#   just e2e-full -g "..."     # …or a subset
 #
 # Teardown is `just cluster-down`. These are deliberately separate steps: bringing
 # the platform up costs minutes, and you want to iterate on the specs without
@@ -172,7 +172,7 @@ cluster-platform: cluster-up
       kubectl -n agent-sandbox rollout status "deployment/$d" --timeout=300s
     done
     kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$(just _fingerprint)" --overwrite >/dev/null
-    echo "platform up — now run: just e2e-cluster"
+    echo "platform up — now run: just e2e-full"
 
 
 # Which images the local platform runs, and how to fingerprint them. The tag is
@@ -258,7 +258,9 @@ cluster-redeploy:
     kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$want" --overwrite >/dev/null
     echo "redeployed"
 # Run the cluster-project specs against the local platform (port-forwards the UI).
-e2e-cluster *ARGS:
+alias e2e-cluster := e2e-full
+
+e2e-full *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
@@ -313,8 +315,8 @@ e2e-cluster *ARGS:
     mkdir -p "$out"
     started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     set +e
-    E2E_TIER=2 E2E_CLUSTER_URL=http://127.0.0.1:8899 \
-      npx playwright test --project=cluster {{ARGS}} 2>&1 | tee "$out/run.log"
+    E2E_TARGET=full E2E_CLUSTER_URL=http://127.0.0.1:8899 \
+      npx playwright test --project=full {{ARGS}} 2>&1 | tee "$out/run.log"
     rc=${PIPESTATUS[0]}
     set -e
     # EVERY pod in the namespace, whole log, both containers, plus the PREVIOUS

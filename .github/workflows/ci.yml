@@ -4,19 +4,20 @@ name: CI
 #   - nix flake show          (flake evaluates)
 #   - check-manifests         (example platform config renders, resources present)
 #   - typecheck               (agent-host + ui)
-#   - Tier 1 contract tests   (vitest, no cluster)
+#   - unit tests              (vitest against fakes, no cluster)
 #   - broker + webhooks builds (their nix build runs pytest via pytestCheckHook)
 #
 # The KVM-backed dev-env nixosTests run as a parallel MATRIX (one job per VM
 # test) below, so they finish in the time of the slowest single test rather than
 # 8 serial boots.
 #
-# Tier 2 (cluster): a PATH-GATED k3d job (`cluster-image-boot`) runs the
+# Cluster (e2e full + integration): a PATH-GATED k3d job (`cluster-image-boot`) runs the
 # self-contained image-boot specs (sandbox-os + overlay-store) on a real cluster
 # when the sandbox image / its modules / those specs change — covering the OCI
 # packaging + in-pod systemd boot + the local-overlay store's PROD topology that
-# the VM tests can't. The rest of Tier 2 (controller/broker/webhooks) and Tier 3
-# (e2e) stay manual — see the `cluster` / `e2e` justfile recipes + docs/TESTING.md.
+# the VM tests can't. The rest of the cluster integration suite (controller/broker/
+# webhooks) and the e2e suites stay manual — see the `cluster` / `e2e` justfile
+# recipes + docs/TESTING.md.
 #
 # BINARY CACHE (Cachix) — one-time setup so expensive closures (e.g. the
 # scooter-module NixOS toplevel) are built ONCE and pulled across branches/PRs
@@ -59,7 +60,7 @@ concurrency:
 
 jobs:
   ci:
-    name: fast checks (flake + typecheck + Tier 1 + python)
+    name: fast checks (flake + typecheck + unit + python)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -78,8 +79,8 @@ jobs:
 
       # The fast `just ci` bundle, run inside the pinned dev shell (gets `just`,
       # node, npm from the flake). check-flake + check-manifests + typecheck +
-      # Tier 1 vitest. CI=1 makes vitest use the default (non-verbose) reporter.
-      - name: just ci (flake check, typecheck, Tier 1)
+      # unit vitest. CI=1 makes vitest use the default (non-verbose) reporter.
+      - name: just ci (flake check, typecheck, unit)
         env:
           CI: "1"
         run: nix develop --command just ci
@@ -269,7 +270,7 @@ jobs:
       - name: build ${{ matrix.test }}
         run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
 
-  # Decide whether the Tier-2 cluster job needs to run: only when the sandbox
+  # Decide whether the cluster jobs need to run: only when the sandbox
   # image, its NixOS modules, or the image-boot cluster specs change. Most PRs
   # touch none of these and skip the (heavier) cluster job entirely.
   cluster-changes:
@@ -324,7 +325,7 @@ jobs:
               # cluster — which is how a hydrate that adopted nothing shipped green.
               - 'services/agent-host/src/session/conversationRegistry.ts'
               - 'services/agent-host/src/session/k8sConversationRegistry.ts'
-              # The Tier-2 BROWSER stories now run in this job, so the things that
+              # The e2e-full BROWSER stories now run in this job, so the things that
               # decide WHAT runs must open the gate too — otherwise a change to the
               # tier mechanism, the cluster project's testMatch, or a spec it selects
               # silently skips the only job that exercises it. A green PR whose
@@ -347,14 +348,14 @@ jobs:
               - 'services/scheduler/scheduler/spawn.py'
               - 'services/webhooks/webhooks/agent_host_client.py'
 
-  # Tier-2 image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
+  # Image-boot cluster tests on a REAL Kubernetes cluster (k3d = k3s in
   # Docker; no root, runs on the standard runner). Covers what the nixosTest VMs
   # cannot: the OCI packaging + the in-pod systemd-PID-1 boot, and the
   # local-overlay store in the PROD topology (baked store as the read-only lower).
   # Path-gated via cluster-changes; only the self-contained image-boot specs run
   # (sandbox-os + overlay-store) — no controller/broker/webhooks needed.
   cluster-image-boot:
-    name: Tier-2 image boot (k3d)
+    name: cluster image boot (k3d)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.run == 'true'
     runs-on: ubuntu-latest
@@ -393,7 +394,7 @@ jobs:
       # Run ONLY the two self-contained image-boot specs against the live cluster.
       # `npm install` first (node_modules for vitest + the k8s client), inside the
       # dev shell so node/npm come from the flake.
-      - name: Tier-2 image-boot specs
+      - name: image-boot specs
         env:
           RUN_CLUSTER_TESTS: "1"
           CLUSTER_PROVIDER: existing
@@ -410,7 +411,7 @@ jobs:
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
 
-  # Tier-2 EXAMPLE VALIDATION on a real k3d apiserver. `just check-manifests` proves the
+  # EXAMPLE VALIDATION on a real k3d apiserver. `just check-manifests` proves the
   # example EVALUATES and wires its features; this proves the YAML it produces is VALID
   # KUBERNETES — server-side dry-run runs the real admission/schema validation, catching a bad
   # field, a malformed probe, or a resource the apiserver rejects. The example is the config
@@ -419,7 +420,7 @@ jobs:
   # Dry-run, not a deploy: no images are built or pulled (minutes saved), and nothing has to
   # come up — this is a validity check, and the full platform-smoke job below covers runtime.
   example-manifests:
-    name: Tier-2 example manifests (k3d dry-run)
+    name: example manifests (k3d dry-run)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.example == 'true'
     runs-on: ubuntu-latest
@@ -481,14 +482,14 @@ jobs:
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-example || true
 
-  # Tier-2 PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
+  # PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
   # (agent-host Deployment + conversation-controller + conversation-router, fake agent) and
   # assert it comes up + a conversation ROUTES + is assigned a hostIP. Path-gated on the
   # `platform` filter (topology/controller/router changes) — the class of change that
   # #254/#255/#256 shipped with NO cluster coverage (validated only manually on odin). See
   # todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
   platform-smoke:
-    name: Tier-2 platform smoke (k3d)
+    name: e2e full (k3d platform smoke + browser)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
@@ -569,17 +570,17 @@ jobs:
           nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke --no-file-parallelism'
 
 
-      # Tier 2 BROWSER: the same Playwright specs, against the REAL cluster. This is the
-      # seam nothing else covers — test/cluster is curl-only (no UI) and the Tier-3 suite
-      # never sees a real server, so a bug between them is invisible to both. That is how
-      # a client-minted conversation id reached the URL and made scooter unusable while
-      # all 122 Tier-3 tests passed.
+      # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
+      # This is the seam nothing else covers — test/cluster is curl-only (no UI) and the
+      # fast suite never sees a real server, so a bug between them is invisible to both.
+      # That is how a client-minted conversation id reached the URL and made scooter
+      # unusable while all 122 fast tests passed.
       #
       # Port-forward the `ui` Service (nginx: static build + API proxy, so ONE origin
       # serves both the app and /conversations — exactly the browser's real topology).
-      - name: browser stories against the cluster
+      - name: e2e full browser stories
         env:
-          E2E_TIER: "2"
+          E2E_TARGET: full
           E2E_CLUSTER_URL: http://127.0.0.1:8899
           CI: "1"
         run: |
@@ -609,7 +610,7 @@ jobs:
             sleep 2
           done
           curl -sf -o /dev/null http://127.0.0.1:8899/ || { echo "the UI never served:"; cat /tmp/pf.log; exit 1; }
-          nix develop --command bash -c 'npm install && npx playwright test --project=cluster'
+          nix develop --command bash -c 'npm install && npx playwright test --project=full'
 
       - name: upload cluster browser artifacts
         if: failure()
@@ -642,7 +643,7 @@ jobs:
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
 
-  # Tier 3 — Playwright E2E through the UI against the fake-agent stack (no
+  # e2e fast — Playwright through the UI against the fake-agent stack (no
   # cluster/model). SHARDED across N parallel runners (default 4): distribute →
   # e2e-shard (matrix) → e2e-collect (gate). Each shard is its OWN runner with its OWN
   # fresh webServer + /tmp state, so playwright.config's workers:1 (the suite shares
@@ -654,7 +655,7 @@ jobs:
   # from the LAST successful e2e run's Playwright JSON report (downloaded here), with a
   # committed fallback (test/e2e/shard-weights.json). Emits a matrix of {shard, specs}.
   e2e-distribute:
-    name: e2e distribute (shard)
+    name: e2e fast distribute (shard)
     runs-on: ubuntu-latest
     env:
       # Shard count — tune here (or override per-run via the workflow env). 4 balances
@@ -698,7 +699,7 @@ jobs:
   # Each shard runs its assigned spec FILES on its own runner + webServer. Emits a
   # per-shard Playwright JSON report (report.json), merged into the weights artifact.
   e2e-shard:
-    name: e2e shard ${{ matrix.shard }}
+    name: e2e fast shard ${{ matrix.shard }}
     needs: e2e-distribute
     runs-on: ubuntu-latest
     strategy:
@@ -715,7 +716,7 @@ jobs:
       # Run ONLY this shard's specs; emit a JSON report so a later run's distribute can
       # weight by real durations. PLAYWRIGHT_JSON_OUTPUT_NAME makes the json reporter
       # write to a file (not stdout). pretest:e2e (via npm) builds the agent-host dist.
-      - name: e2e (shard ${{ matrix.shard }})
+      - name: e2e fast (shard ${{ matrix.shard }})
         env:
           CI: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: "report-shard-${{ matrix.shard }}.json"
@@ -747,7 +748,7 @@ jobs:
   # reports into a single `e2e-report` artifact so the NEXT run's distribute can weight
   # by real durations (only from a fully-green run, so weights stay clean).
   e2e-collect:
-    name: e2e (Playwright, fake stack)
+    name: e2e fast (Playwright, fake stack)
     needs: [e2e-distribute, e2e-shard]
     if: always()
     runs-on: ubuntu-latest
