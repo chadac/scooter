@@ -53,6 +53,22 @@ export default defineConfig({
       ? [
           {
             name: "cluster",
+            // START SMALL, WIDEN AS IT EARNS IT. A cluster run costs k3d startup and
+            // this tier is the one nobody watches, so 153 specs on day one buys noise,
+            // not confidence — and a flaky rarely-run tier trains everyone to dismiss
+            // it (see FLAKE_platform_smoke_empty_create_body). These are the user
+            // stories that justify the tier existing:
+            //   cluster-stories      — multi-pod + rollout; impossible in Tier 3
+            //   client-server-identity — the class that shipped (#353)
+            //   refresh-history      — "send a message, see the response", across a reload
+            //   stop-run             — a run starts and can be stopped, for real
+            // Add a spec here once it has passed against a cluster; do not bulk-enable.
+            testMatch: [
+              /cluster-stories\.spec\.ts/,
+              /client-server-identity\.spec\.ts/,
+              /refresh-history\.spec\.ts/,
+              /stop-run\.spec\.ts/,
+            ],
             use: {
               ...devices["Desktop Chrome"],
               baseURL: clusterUrl,

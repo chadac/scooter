@@ -542,6 +542,46 @@ jobs:
           '
           nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke --no-file-parallelism'
 
+
+      # Tier 2 BROWSER: the same Playwright specs, against the REAL cluster. This is the
+      # seam nothing else covers — test/cluster is curl-only (no UI) and the Tier-3 suite
+      # never sees a real server, so a bug between them is invisible to both. That is how
+      # a client-minted conversation id reached the URL and made scooter unusable while
+      # all 122 Tier-3 tests passed.
+      #
+      # Port-forward the `ui` Service (nginx: static build + API proxy, so ONE origin
+      # serves both the app and /conversations — exactly the browser's real topology).
+      - name: browser stories against the cluster
+        env:
+          E2E_TIER: "2"
+          E2E_CLUSTER_URL: http://127.0.0.1:8899
+          CI: "1"
+        run: |
+          set -euo pipefail
+          # Port-forward the `ui` Service: nginx serving the static build AND proxying the
+          # API, so ONE origin answers both the app and /conversations — the browser's real
+          # topology, not a test-only arrangement.
+          nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox rollout status deployment/ui --timeout=180s
+          nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          # Wait on a real GET, not the port bind — the forward accepts before nginx serves.
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:8899/ && break
+            sleep 2
+          done
+          curl -sf -o /dev/null http://127.0.0.1:8899/ || { echo "the UI never served:"; cat /tmp/pf.log; exit 1; }
+          nix develop --command bash -c 'npm install && npx playwright test --project=cluster'
+
+      - name: upload cluster browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier2-browser-artifacts
+          path: |
+            test-results/
+            /tmp/pf.log
+          retention-days: 7
       - name: dump platform state on failure
         if: failure()
         run: |
