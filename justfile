@@ -141,6 +141,11 @@ cluster-down:
 cluster-platform: cluster-up
     #!/usr/bin/env bash
     set -euo pipefail
+    # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
+    # points at a stale k3s cluster would otherwise talk to the WRONG cluster, and the
+    # error ("failed to download openapi") never mentions kubeconfig.
+    export KUBECONFIG="${KUBECONFIG_OVERRIDE:-${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}}"
+    [ -s "$KUBECONFIG" ] || export KUBECONFIG="${HOME}/.kube/config"
     for img in \
       "agent-host-image=agent-host:latest" \
       "sandbox-os-image=agent-sandbox-os:latest" \
@@ -155,7 +160,7 @@ cluster-platform: cluster-up
     done
     k3d image import agent-host:latest agent-sandbox-os:latest \
       conversation-controller:latest conversation-router:latest agent-broker:latest \
-      agent-webhooks:latest agent-sandbox-ui:latest -c scooter-ci
+      agent-webhooks:latest agent-sandbox-ui:latest -c {{_K3D_CLUSTER}}
     kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
     # Match CI: podCap=1 + 3 replicas so conversations SPREAD across pods. With the
     # default topology every test conversation lands on one pod and any per-pod-view
@@ -174,6 +179,10 @@ cluster-platform: cluster-up
 # always :latest, so it tells you NOTHING about staleness — but the nix DERIVATION
 # path is content-addressed and evaluates in well under a second without building.
 # Stored on the deployment as an annotation at deploy time, compared on every run.
+# cluster-up.sh names the cluster; keep these in ONE place or a local run targets a
+# cluster that does not exist (CI's is scooter-ci, cluster-up.sh's is agent-sandbox).
+_K3D_CLUSTER := env_var_or_default("K3D_CLUSTER", "agent-sandbox")
+
 _PLATFORM_IMAGES := "agent-host-image=agent-host conversation-controller-image=conversation-controller conversation-router-image=conversation-router broker-image=agent-broker webhooks-image=agent-webhooks ui-image=agent-sandbox-ui"
 
 # Print the content fingerprint of every platform image (cheap: eval, no build).
@@ -190,6 +199,11 @@ _fingerprint:
 cluster-redeploy:
     #!/usr/bin/env bash
     set -euo pipefail
+    # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
+    # points at a stale k3s cluster would otherwise talk to the WRONG cluster, and the
+    # error ("failed to download openapi") never mentions kubeconfig.
+    export KUBECONFIG="${KUBECONFIG_OVERRIDE:-${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}}"
+    [ -s "$KUBECONFIG" ] || export KUBECONFIG="${HOME}/.kube/config"
     kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
       echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
     want=$(just _fingerprint)
@@ -210,7 +224,7 @@ cluster-redeploy:
         names+=("${name}:latest")
       done
     done
-    k3d image import "${names[@]}" -c scooter-ci
+    k3d image import "${names[@]}" -c {{_K3D_CLUSTER}}
     # imagePullPolicy is IfNotPresent on side-loaded images, so a restart is what
     # actually picks up the new layers — `set image` would be a no-op at :latest.
     for pair in {{_PLATFORM_IMAGES}}; do
@@ -229,6 +243,11 @@ cluster-redeploy:
 e2e-cluster *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
+    # k3d writes its kubeconfig here (see cluster-up.sh): a shell whose ~/.kube/config
+    # points at a stale k3s cluster would otherwise talk to the WRONG cluster, and the
+    # error ("failed to download openapi") never mentions kubeconfig.
+    export KUBECONFIG="${KUBECONFIG_OVERRIDE:-${K3D_KUBECONFIG:-/tmp/scooter-k3d.kubeconfig}}"
+    [ -s "$KUBECONFIG" ] || export KUBECONFIG="${HOME}/.kube/config"
     kubectl -n agent-sandbox get deployment/ui >/dev/null 2>&1 || {
       echo "no platform in the cluster — run: just cluster-platform" >&2; exit 1; }
     # STALENESS. A cluster running old images reports green while testing code you did
