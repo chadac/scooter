@@ -15,6 +15,7 @@
  */
 
 import { test, expect, snapshot, assertConsistent, assertMatchesServer } from "./fixtures.js";
+import { tier3Only } from "./tier.js";
 import type { APIRequestContext } from "@playwright/test";
 
 const PROXY = "http://localhost:8090";
@@ -26,7 +27,7 @@ async function clearFault(request: APIRequestContext) {
   await setFault(request, { mode: "none" });
 }
 
-test.describe("integrity stream corruption", () => {
+tier3Only("needs the SSE fault proxy to corrupt stream frames")("integrity stream corruption", () => {
   test.use({ baseURL: "http://localhost:5273" });
   test.afterEach(async ({ request }) => { await clearFault(request); });
 

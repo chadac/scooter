@@ -13,6 +13,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { tier3Only } from "./tier.js";
 
 const PROXY = "http://localhost:8090";
 async function setFault(request: import("@playwright/test").APIRequestContext, fault: Record<string, unknown>) {
@@ -23,7 +24,7 @@ async function clearFault(request: import("@playwright/test").APIRequestContext)
   await setFault(request, { mode: "none" });
 }
 
-test.describe("reload mid-run / mid-queue (pristine stack)", () => {
+tier3Only("needs the SSE fault proxy to kill the stream mid-run")("reload mid-run / mid-queue (pristine stack)", () => {
   test("reload WHILE a run is in flight → the run completes + its reply is visible (no lost turn)", async ({ chat, page }) => {
     await chat.open();
     await chat.send("!sleep 3");

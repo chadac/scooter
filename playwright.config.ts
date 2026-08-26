@@ -15,6 +15,13 @@ import { defineConfig, devices } from "@playwright/test";
  */
 const external = process.env.RUN_EXTERNAL_E2E === "1";
 
+// TIER 2: the same specs, against a REAL cluster (k3d in CI, or a live deployment).
+// The browser/real-server seam is otherwise untested — Tier 3 drives a UI with no real
+// cluster, and test/cluster drives a real cluster with no UI, so a bug living between
+// them is invisible to both. E2E_TIER=2 + E2E_CLUSTER_URL=<ui> selects it.
+const tier2 = process.env.E2E_TIER === "2";
+const clusterUrl = process.env.E2E_CLUSTER_URL ?? "";
+
 export default defineConfig({
   testDir: "./test/e2e",
   timeout: 60_000,
@@ -40,6 +47,22 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
+    // Tier 2 — a real cluster. Only the specs that opt in (or do not opt out) run here;
+    // see test/e2e/tier.ts. No local webServer: the stack is already up.
+    ...(tier2
+      ? [
+          {
+            name: "cluster",
+            use: {
+              ...devices["Desktop Chrome"],
+              baseURL: clusterUrl,
+              ...(process.env.PW_CHROME
+                ? { launchOptions: { executablePath: process.env.PW_CHROME } }
+                : {}),
+            },
+          },
+        ]
+      : []),
     {
       name: "chromium",
       use: {
@@ -55,7 +78,8 @@ export default defineConfig({
   ],
 
   // External mode targets a live deployment, so boot no local servers.
-  webServer: external
+  // Tier 2 targets a cluster that is already running, so boot nothing locally.
+  webServer: external || tier2
     ? undefined
     : [
         {
