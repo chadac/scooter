@@ -1658,8 +1658,13 @@ function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<v
   const ensure = createDeferredConnector(() => connectSandbox(sandbox, { ensureRunning }));
   return {
     mode: "k8s-exec" as const,
-    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0]) {
-      return (await ensure()).execute(req);
+    // FORWARD THE SIGNAL. This wrapper used to take only `req`, silently discarding the
+    // AbortSignal sandboxExec passes — so kill()'s abort never reached the k8s exec
+    // layer and waitForExit hung until the remote command exited on its own. The type
+    // let it happen because the parameter is optional: a seam narrowing a contract
+    // with nothing to say so — the same silent-drop family this tier keeps catching.
+    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0], signal?: AbortSignal) {
+      return (await ensure()).execute(req, signal);
     },
     async download(path: string) {
       return (await ensure()).download(path);
