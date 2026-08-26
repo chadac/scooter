@@ -14,8 +14,9 @@ store: AWAIT writes so a crash can't lose a row.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import String, Text, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -23,13 +24,18 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .models import PermissionRequest, RequestStatus, RiskLevel
 
+logger = logging.getLogger("broker.aws.store")
+
 
 @dataclass
 class StoreConfig:
-    """DSN assembly mirroring the webhooks DatabaseSettings: an explicit `dsn`
-    wins; otherwise, when `db_password` is set, build
-    postgresql+asyncpg://{user}:{pw}@{host}:{port}/{name}. Default = SQLite."""
+    """DSN assembly with explicit backend selection: postgres (fail loudly if password
+    empty/missing) or sqlite (must be chosen deliberately). No silent fallback."""
 
+    # Backend choice: postgres (production) or sqlite (deliberate dev/test only).
+    # Default postgres. postgres + empty/missing password -> FAIL LOUDLY at init.
+    store_backend: Literal["postgres", "sqlite"] = "postgres"
+    
     dsn: str = "sqlite+aiosqlite:////tmp/broker-aws.db"
     db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
     db_port: int = 5432
@@ -38,11 +44,21 @@ class StoreConfig:
     db_name: str = "broker"     # SEPARATE database on the shared Postgres
 
     def resolved_dsn(self) -> str:
-        if self.db_password and not self.dsn.startswith("postgresql"):
-            return (
-                f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
-                f"@{self.db_host}:{self.db_port}/{self.db_name}"
-            )
+        if self.store_backend == "postgres":
+            # Postgres selected: password MUST be present. Empty/missing -> FAIL LOUDLY.
+            if not self.db_password:
+                raise ValueError(
+                    "store_backend=postgres requires db_password to be set (non-empty). "
+                    "An empty password would silently fall back to SQLite. Set db_password "
+                    "or choose store_backend=sqlite explicitly for dev/test."
+                )
+            # Build the Postgres DSN from components (unless already explicit).
+            if not self.dsn.startswith("postgresql"):
+                return (
+                    f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+                    f"@{self.db_host}:{self.db_port}/{self.db_name}"
+                )
+        # else store_backend == "sqlite": return the dsn as-is (default or explicit).
         return self.dsn
 
 
@@ -145,6 +161,13 @@ class PermissionStore:
     it (identity from the SA token). Async (asyncpg/aiosqlite)."""
 
     def __init__(self, config: StoreConfig) -> None:
+        dsn = config.resolved_dsn()
+        
+        # Log the resolved backend (password redacted).
+        backend = "postgres" if dsn.startswith("postgresql") else "sqlite"
+        dsn_safe = dsn.replace(config.db_password, "***") if config.db_password else dsn
+        logger.info("AWS permission store backend: %s (dsn: %s)", backend, dsn_safe)
+        
         # pool_pre_ping: emit a lightweight liveness check when a connection is checked out of the
         # pool and RECYCLE it if the server (or an idle-timeout / proxy / failover) closed it
         # underneath us — instead of handing out a dead connection and failing the request with
@@ -154,7 +177,7 @@ class PermissionStore:
         # that failure in production; without them a postgres restart / failover breaks this
         # service until it is itself restarted.
         self._engine: AsyncEngine = create_async_engine(
-            config.resolved_dsn(),
+            dsn,
             echo=False,
             pool_pre_ping=True,
             pool_recycle=1800,  # recycle connections older than 30 min

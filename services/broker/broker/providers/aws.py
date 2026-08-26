@@ -190,6 +190,7 @@ def aws() -> Provider:
 
     store = PermissionStore(
         StoreConfig(
+            store_backend=settings.store_backend,
             dsn=settings.aws_db_dsn,
             db_host=settings.aws_db_host,
             db_port=settings.aws_db_port,

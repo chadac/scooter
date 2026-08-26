@@ -85,7 +85,7 @@ READ = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3
 
 
 async def make_service(tmp_path, iam=None):
-    cfg = StoreConfig()
+    cfg = StoreConfig(store_backend="sqlite")
     cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"  # local SQLite for tests
     store = PermissionStore(cfg)
     await store.init()

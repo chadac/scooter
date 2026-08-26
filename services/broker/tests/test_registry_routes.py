@@ -26,7 +26,7 @@ def _identity(conv: str) -> Identity:
 
 @pytest.fixture
 async def store():
-    s = ModuleRegistryStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
+    s = ModuleRegistryStore(StoreConfig(store_backend="sqlite", dsn="sqlite+aiosqlite:///:memory:"))
     await s.init()
     return s
 

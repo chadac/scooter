@@ -12,7 +12,7 @@ from broker.registry.store import ModuleRegistryStore
 
 @pytest.fixture
 async def store():
-    s = ModuleRegistryStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
+    s = ModuleRegistryStore(StoreConfig(store_backend="sqlite", dsn="sqlite+aiosqlite:///:memory:"))
     await s.init()
     return s
 

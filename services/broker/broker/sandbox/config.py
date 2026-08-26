@@ -63,8 +63,9 @@ def default_resources(settings: BrokerSettings) -> SandboxResources | None:
 
 def size_store_config(settings: BrokerSettings) -> StoreConfig:
     """The size store shares the AWS DB components (same shared Postgres, `broker`
-    DB). An explicit sandbox_db_dsn (SQLite dev default) wins when no db_password."""
+    DB). Explicit backend from settings."""
     return StoreConfig(
+        store_backend=settings.store_backend,
         dsn=settings.sandbox_db_dsn,
         db_host=settings.aws_db_host,
         db_port=settings.aws_db_port,

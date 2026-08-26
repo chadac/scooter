@@ -28,6 +28,14 @@ in
       defaultText = literalExpression ''"''${registryPrefix}agent-scheduler:latest"'';
       description = "OCI ref of the scheduler image.";
     };
+    storeBackend = mkOption {
+      type = types.enum [ "postgres" "sqlite" ];
+      default = "postgres";
+      description = ''
+        Store backend: postgres (production, fails loudly if password missing) or
+        sqlite (must be chosen deliberately for dev). Default postgres.
+      '';
+    };
     tickSeconds = mkOption {
       type = types.int;
       default = 30;
@@ -88,6 +96,7 @@ in
                 ports = [{ containerPort = 8080; name = "http"; }];
                 env = [
                   { name = "AGENT_HOST_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
+                  { name = "STORE_BACKEND"; value = scfg.storeBackend; }
                   { name = "TICK_SECONDS"; value = toString scfg.tickSeconds; }
                   { name = "RUN_RETENTION_DAYS"; value = toString scfg.runRetentionDays; }
                   { name = "SA_TOKEN_PATH"; value = "/var/run/secrets/agent-host/token"; }
@@ -111,7 +120,6 @@ in
                   { name = "DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-scheduler"; key = "password"; }; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 volumeMounts = [
-                  { name = "data"; mountPath = "/data"; }
                   # Projected SA token (audience agent-host) → /agui owner trust.
                   { name = "agent-host-token"; mountPath = "/var/run/secrets/agent-host"; readOnly = true; }
                 ];
@@ -119,7 +127,6 @@ in
                 livenessProbe.httpGet = { path = "/healthz"; port = "http"; };
               };
               volumes = [
-                { name = "data"; emptyDir = { }; }
                 {
                   name = "agent-host-token";
                   projected.sources = [{

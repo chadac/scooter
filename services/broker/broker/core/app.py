@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
         # Share the AWS DB components (same shared Postgres `broker` DB); the SQLite
         # registry_db_dsn is the dev default when no db_password is set.
         registry_store = ModuleRegistryStore(StoreConfig(
+            store_backend=settings.store_backend,
             dsn=settings.registry_db_dsn,
             db_host=settings.aws_db_host, db_port=settings.aws_db_port,
             db_user=settings.aws_db_user, db_password=settings.aws_db_password,
