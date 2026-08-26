@@ -851,6 +851,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 201, json: { ok: true } };
   });
 
+  // Reverse lookup: find conversations by linked URL (for webhook routing).
+  // Query params: url (required), owner (optional for scoped lookup).
+  // Returns: { conversationIds: string[] } — all conversations linking to that URL.
+  r.get("/links/by-url", async (ctx) => {
+    const url = ctx.query.get("url");
+    const owner = ctx.query.get("owner") ?? undefined;
+    
+    if (!url) {
+      return { status: 400, json: { error: "url query parameter required" } };
+    }
+
+    const conversationIds = (await store.findAllConversationsByLink?.(url, owner)) ?? [];
+    return { json: { conversationIds } };
+  });
+
   // Web services (marimo/xterm/vscode) declared in the conversation's sandbox and
   // reverse-proxied at /c/<id>/<name>/. The UI Services panel lists them (with
   // liveness) and Starts one. No extra auth — same view-filter model as the rest.
