@@ -52,6 +52,9 @@ export function ContextFillBar() {
     setCompacting(true);
     setNote(null);
     try {
+      // Compaction acts on an EXISTING conversation; there is nothing to compact before
+      // the server has one.
+      if (!conversationId) return;
       const r = await compactConversation(agentHostConfig, conversationId);
       setNote(r.compacted ? "Compacted earlier messages." : "Nothing to compact yet.");
     } catch (e) {

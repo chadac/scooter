@@ -29,6 +29,8 @@
  *     placeholder, so it is impossible to use one by accident.
  */
 
+import type { AgentHostConfig } from "./client.js";
+
 export interface ConversationSnapshot {
   /** Stable local identity — never changes, including when the server id arrives. */
   key: string;
@@ -47,6 +49,10 @@ export type OnCreated = (key: string, id: string) => void;
 export class Conversation {
   readonly key: string;
   #id: string | undefined;
+  /** How this conversation reaches the server. A DEPENDENCY, not a module global: it is
+   *  what lets the object own its own I/O instead of every call site re-reading BASE_URL
+   *  and deciding for itself how to address the server. */
+  readonly #config: AgentHostConfig;
   readonly #create: CreateConversation;
   readonly #onCreated: OnCreated | undefined;
   /** One in-flight create, shared by concurrent callers — two sends racing must not make
@@ -56,24 +62,36 @@ export class Conversation {
   constructor(opts: {
     key: string;
     id?: string;
+    config: AgentHostConfig;
     create: CreateConversation;
     onCreated?: OnCreated;
   }) {
     this.key = opts.key;
     this.#id = opts.id;
+    this.#config = opts.config;
     this.#create = opts.create;
     this.#onCreated = opts.onCreated;
   }
 
   /** A conversation the server already knows — its key IS its id. */
-  static existing(id: string, create: CreateConversation, onCreated?: OnCreated): Conversation {
-    return new Conversation({ key: id, id, create, onCreated });
+  static existing(
+    id: string,
+    config: AgentHostConfig,
+    create: CreateConversation,
+    onCreated?: OnCreated,
+  ): Conversation {
+    return new Conversation({ key: id, id, config, create, onCreated });
   }
 
   /** A conversation the user has started but not yet sent in. It has no server id until
    *  `ensureCreated()` runs, and its key is a local placeholder that never leaves the UI. */
-  static pending(key: string, create: CreateConversation, onCreated?: OnCreated): Conversation {
-    return new Conversation({ key, create, onCreated });
+  static pending(
+    key: string,
+    config: AgentHostConfig,
+    create: CreateConversation,
+    onCreated?: OnCreated,
+  ): Conversation {
+    return new Conversation({ key, config, create, onCreated });
   }
 
   /** The server's id, or undefined if this conversation does not exist server-side yet.
@@ -124,6 +142,39 @@ export class Conversation {
     const id = await this.ensureCreated();
     if (!id) throw new Error("could not create the conversation — please retry");
     return fn(id);
+  }
+
+  /**
+   * The URL that shares THIS conversation, or undefined before the server has created it.
+   *
+   * Undefined is the point. The deep link was previously built from the local key, so a
+   * brand-new conversation produced a `?thread=<key>` URL that could never resolve —
+   * exactly the link that surfaced this class of bug. An unshareable conversation is a
+   * state to render, not a broken link to hand out.
+   */
+  shareUrl(origin: string): string | undefined {
+    const id = this.#id;
+    return id === undefined ? undefined : `${origin}/?thread=${encodeURIComponent(id)}`;
+  }
+
+  /**
+   * The agent-host address for a per-conversation path, or undefined before creation.
+   *
+   * Everything that talks to the server about this conversation goes through here, so
+   * there is ONE place that decides how a conversation is addressed — and it is incapable
+   * of addressing one the server has never issued.
+   */
+  url(path: string): string | undefined {
+    const id = this.#id;
+    if (id === undefined) return undefined;
+    const base = this.#config.baseUrl.replace(/\/$/, "");
+    return `${base}/conversations/${encodeURIComponent(id)}${path}`;
+  }
+
+  /** The transport config, for the few collaborators that construct their own client
+   *  (the render agent). Exposed deliberately narrowly — prefer url()/withId(). */
+  config(): AgentHostConfig {
+    return this.#config;
   }
 
   /**

@@ -30,8 +30,12 @@ import type { AgentHostConfig } from "./client.js";
 import { ATTR, record } from "./telemetry.js";
 
 export interface IntegrityAgentConfig extends AgentHostConfig {
-  /** The conversation/thread this agent renders + sends to. */
-  conversationId: string;
+  /** The SERVER's conversation id this agent renders + sends to, or undefined when the
+   *  conversation has not been created yet. Undefined means the agent has nothing to
+   *  address: renderPump() will not open a stream, and send/cancel are refused. That is
+   *  deliberate — the previous `string` type let a caller pass a LOCAL placeholder, which
+   *  streamed against a conversation the server had never issued. */
+  conversationId: string | undefined;
   /** Per-conversation model, sent as the X-Agent-Model header on POST /agui. */
   model?: string;
   /** Injectable fetch (tests). */
@@ -425,12 +429,23 @@ export class IntegrityAgent extends AbstractAgent {
    * RUN_FINISHED that a cancel produces) would never arrive, leaving the Stop button dead
    * and the status bar stuck. So drop the open stream; the pump reconnects on the new id.
    */
+  /** The server id, or throw. For ACTIONS (send/cancel/resume) whose caller has already
+   *  ensured the conversation exists — a throw here is a programming error, not a state to
+   *  render, and is far better than silently addressing a placeholder. */
+  #requireId(op: string): string {
+    const id = this.cfg.conversationId;
+    if (id === undefined) {
+      throw new Error(`cannot ${op}: the conversation has not been created yet`);
+    }
+    return id;
+  }
+
   setConversationId(conversationId: string): void {
     if (conversationId === this.cfg.conversationId) return;
     // The moment a conversation stops being local and becomes the server's. Both ids are
     // recorded because this is precisely where a trace would otherwise break in two.
     record("conversation.id_assigned", {
-      [ATTR.conversationKey]: this.cfg.conversationId,
+      [ATTR.conversationKey]: this.cfg.conversationId ?? "(uncreated)",
       [ATTR.conversationId]: conversationId,
     });
     this.cfg.conversationId = conversationId;
@@ -449,6 +464,10 @@ export class IntegrityAgent extends AbstractAgent {
    * truth, not a per-run request. Reconnects on drop.
    */
   run(_input: RunAgentInput): Observable<BaseEvent> {
+    // Nothing to stream until the server has created the conversation. Returning an EMPTY
+    // observable (rather than streaming a placeholder id) is the fix for the 404-reconnect
+    // storm: there is no conversation yet, so there are no events yet.
+    if (this.cfg.conversationId === undefined) return EMPTY;
     const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
@@ -612,8 +631,10 @@ export class IntegrityAgent extends AbstractAgent {
     // Recomputed per CONNECTION, not captured once: setConversationId() can re-point this
     // agent at the id the server assigned, and a reconnect must follow it. A URL captured
     // here would keep the pump reading the conversation the UI has already left.
-    const streamUrl = () =>
-      `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
+    const streamUrl = (): string | undefined =>
+      this.cfg.conversationId === undefined
+        ? undefined
+        : `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
@@ -635,6 +656,15 @@ export class IntegrityAgent extends AbstractAgent {
       let notFoundDelay = 500;
       let firstConn = true;
       while (!closed) {
+        // WAIT, do not connect, while the conversation has no server id. This is the
+        // 404-reconnect storm's fix at the loop level: previously the pump streamed a
+        // local placeholder, got 404s, and backed off — three connects in four seconds.
+        // setConversationId() gives us one the moment creation lands, and the poll is
+        // cheap because it does no I/O.
+        if (this.cfg.conversationId === undefined) {
+          await delay(250);
+          continue;
+        }
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
         // replay rebuilds identical state rather than doubling onto the previous
         // connection's fold (the page-refresh double-apply bug). A `Subject`
@@ -688,13 +718,13 @@ export class IntegrityAgent extends AbstractAgent {
         });
 
         record("stream.connect", {
-          [ATTR.conversationId]: this.cfg.conversationId,
+          [ATTR.conversationId]: this.cfg.conversationId ?? "(uncreated)",
           // A RECONNECT (false) is the interesting case: the visible transcript was just
           // reset and replayed, which is what "it restarted" looks like to a user.
           "stream.first_connection": isFirstConnection,
         });
         const outcome = await this.readConnection(
-          streamUrl(),
+          streamUrl() as string, // non-undefined: guarded at the loop head above
           headers,
           controller,
           (e) => {
@@ -875,6 +905,7 @@ export class IntegrityAgent extends AbstractAgent {
    *  seed and the full replay paints as before. */
   private async seedTail(runs = 8): Promise<void> {
     try {
+      if (this.cfg.conversationId === undefined) return; // nothing to seed from yet
       const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
       const res = await this.doFetch(url, {
         headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
@@ -935,8 +966,8 @@ export class IntegrityAgent extends AbstractAgent {
           ]
         : text;
     await this.postAgui({
-      threadId: this.cfg.conversationId,
-      runId: `send-${this.cfg.conversationId}-${text.length}`,
+      threadId: this.#requireId("send"),
+      runId: `send-${this.#requireId("send")}-${text.length}`,
       messages: [{ id: `u-${text.length}`, role: "user", content }],
       // When the user sends WHILE a run is active (a loop they want to interrupt),
       // the caller passes priority so the agent-host FORCE-INTERRUPTS the running
@@ -952,7 +983,7 @@ export class IntegrityAgent extends AbstractAgent {
    * resume path). The continued run streams back through the integrity source.
    */
   async submitResume(entries: readonly ResumeEntry[]): Promise<void> {
-    await this.postAgui({ threadId: this.cfg.conversationId, resume: [...entries] });
+    await this.postAgui({ threadId: this.#requireId("submit a resume"), resume: [...entries] });
   }
 
   /** Stop the running turn — the Stop button. POSTs the agent-host cancel
@@ -972,7 +1003,7 @@ export class IntegrityAgent extends AbstractAgent {
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
     };
     const res = await this.doFetch(
-      `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/cancel`,
+      `${this.base}/conversations/${encodeURIComponent(this.#requireId("cancel"))}/cancel`,
       { method: "POST", headers },
     );
     if (!res.ok) {

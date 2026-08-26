@@ -51,7 +51,9 @@ export function awsRequestId(intr: PendingInterrupt): string | undefined {
  */
 function useCanApprove(
   requestId: string | undefined,
-  conversationId: string,
+  // Was typed `string` while the body already guarded `!conversationId` — the signature
+  // was lying. Undefined before the server creates the conversation.
+  conversationId: string | undefined,
   baseUrl: string,
 ): boolean | undefined {
   const [can, setCan] = useState<boolean | undefined>(undefined);
@@ -88,7 +90,10 @@ function InterruptCard({
   intr: PendingInterrupt;
   busy: boolean;
   answer: (intr: PendingInterrupt, status: "resolved" | "cancelled", optionId?: string) => void;
-  conversationId: string;
+  /** undefined before the server creates the conversation; an interrupt implies it
+
+   *  exists, but the type does not assume it. */
+  conversationId: string | undefined;
   baseUrl: string;
 }) {
   const options = optionsOf(intr);
