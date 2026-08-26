@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { hasId, type MaybeConversationId } from "./conversation.js";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import type { PendingInterrupt } from "./integrityAgent.js";
@@ -51,14 +52,12 @@ export function awsRequestId(intr: PendingInterrupt): string | undefined {
  */
 function useCanApprove(
   requestId: string | undefined,
-  // Was typed `string` while the body already guarded `!conversationId` — the signature
-  // was lying. Undefined before the server creates the conversation.
-  conversationId: string | undefined,
+  conversationId: MaybeConversationId,
   baseUrl: string,
 ): boolean | undefined {
   const [can, setCan] = useState<boolean | undefined>(undefined);
   useEffect(() => {
-    if (!requestId || !conversationId) return;
+    if (!requestId || !hasId(conversationId)) return;
     let cancelled = false;
     fetch(
       `${baseUrl}/conversations/${encodeURIComponent(conversationId)}/aws-request/${encodeURIComponent(requestId)}/can-approve`,
@@ -93,7 +92,7 @@ function InterruptCard({
   /** undefined before the server creates the conversation; an interrupt implies it
 
    *  exists, but the type does not assume it. */
-  conversationId: string | undefined;
+  conversationId: MaybeConversationId;
   baseUrl: string;
 }) {
   const options = optionsOf(intr);

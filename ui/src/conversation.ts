@@ -31,6 +31,29 @@
 
 import type { AgentHostConfig } from "./client.js";
 
+/**
+ * The server has not assigned this conversation an id yet.
+ *
+ * A distinct VALUE, not `undefined`, and that is the entire point. `undefined` is what
+ * `??` and `||` exist to paper over, so `serverId ?? localKey` compiles happily and
+ * substitutes a placeholder — which is exactly the bug this type prevents. AwaitingId is
+ * not a string, so any attempt to use it as one is a compile error, and the name says why
+ * the id is missing rather than leaving a reader to guess.
+ *
+ * A frozen singleton so `=== AWAITING_ID` is a valid check and nobody can mutate it.
+ */
+export const AWAITING_ID = Object.freeze({ kind: "awaiting-conversation-id" as const });
+export type AwaitingId = typeof AWAITING_ID;
+
+/** A conversation id, or the explicit "not created yet" marker. */
+export type MaybeConversationId = string | AwaitingId;
+
+/** Narrow to a usable server id. Prefer this over a truthiness check — it says what the
+ *  other case IS. */
+export function hasId(id: MaybeConversationId): id is string {
+  return typeof id === "string";
+}
+
 export interface ConversationSnapshot {
   /** Stable local identity — never changes, including when the server id arrives. */
   key: string;

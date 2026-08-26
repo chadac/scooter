@@ -53,6 +53,7 @@ import { toRepositorySnapshot, type RepositorySnapshot } from "./messageReposito
 import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { createConversation } from "./client.js";
+import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
 import { currentConversation, sessionStore, setConversationMinter, useSessions } from "./sessions.js";
 import {
   createIntegrityAgent,
@@ -143,10 +144,9 @@ export interface InterruptContextValue {
   submitResume: (entries: readonly ResumeEntry[]) => Promise<void>;
   /** The current conversation id + agent-host base URL, so the panel can hit
    *  host endpoints (e.g. the per-viewer AWS can-approve check). */
-  /** The SERVER's conversation id, or undefined before creation. An interrupt can only
-   *  exist on a conversation the server has, so in practice this is set whenever the panel
-   *  has anything to show — but the type says so rather than assuming it. */
-  conversationId: string | undefined;
+  /** The SERVER's conversation id, or AWAITING_ID before creation. Same type as the agent
+   *  uses, so a consumer cannot `?? key` its way around it either. */
+  conversationId: MaybeConversationId;
   baseUrl: string;
   /** True while a goose run is in flight — drives the Stop button + thinking
    *  indicator. Sourced from the IntegrityAgent's log-derived isRunning(). */
@@ -257,7 +257,10 @@ function ConversationRuntime({
   // leak — it handed the render agent a local placeholder, which then streamed against a
   // conversation the server had never created (three 404 reconnects, then a duplicate
   // start whose dangling run produced a spurious "interrupted by a restart" message).
-  const conversationId = session?.serverId;
+  // AWAITING_ID, not undefined, when the server has not created it: that makes
+  // `serverId ?? conversationKey` — the substitution that caused the 404-reconnect storm —
+  // a COMPILE ERROR rather than a silent fallback.
+  const conversationId: MaybeConversationId = session?.serverId ?? AWAITING_ID;
   // The conversation OBJECT for this mount. It owns whether a server id exists yet and
   // what each operation means before it does, so nothing here branches on id presence.
   const conversation = useMemo(
@@ -298,7 +301,7 @@ function ConversationRuntime({
   // Follow the server id in place. It appears when a brand-new conversation is created on
   // its first send, and after a RELOAD the agent is built from the persisted id directly.
   useEffect(() => {
-    if (conversationId) agent.setConversationId(conversationId);
+    if (hasId(conversationId)) agent.setConversationId(conversationId);
   }, [agent, conversationId]);
 
   // Model switch mid-conversation: update the agent in place (no teardown). Do it
@@ -388,7 +391,9 @@ function ConversationRuntime({
 
   const threadListAdapter = useMemo(
     () => ({
-      threadId: conversationId,
+      // assistant-ui identifies the thread for its own bookkeeping; that is the stable
+      // KEY, not a server address. Passing the key here is correct and always defined.
+      threadId: conversationKey,
       onSwitchToNewThread: async () => {
         sessionStore.newSession();
       },

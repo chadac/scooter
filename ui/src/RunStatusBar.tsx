@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { hasId } from "./conversation.js";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import { compactConversation } from "./client.js";
@@ -52,9 +53,8 @@ export function ContextFillBar() {
     setCompacting(true);
     setNote(null);
     try {
-      // Compaction acts on an EXISTING conversation; there is nothing to compact before
-      // the server has one.
-      if (!conversationId) return;
+      // Compaction acts on an EXISTING conversation; nothing to compact before one.
+      if (!hasId(conversationId)) return;
       const r = await compactConversation(agentHostConfig, conversationId);
       setNote(r.compacted ? "Compacted earlier messages." : "Nothing to compact yet.");
     } catch (e) {

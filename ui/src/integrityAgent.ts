@@ -27,15 +27,17 @@ import type { BaseEvent } from "@ag-ui/core";
 import { Observable, Subject, type Subscription, catchError, EMPTY } from "rxjs";
 
 import type { AgentHostConfig } from "./client.js";
+import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
 import { ATTR, record } from "./telemetry.js";
 
 export interface IntegrityAgentConfig extends AgentHostConfig {
-  /** The SERVER's conversation id this agent renders + sends to, or undefined when the
-   *  conversation has not been created yet. Undefined means the agent has nothing to
-   *  address: renderPump() will not open a stream, and send/cancel are refused. That is
-   *  deliberate — the previous `string` type let a caller pass a LOCAL placeholder, which
-   *  streamed against a conversation the server had never issued. */
-  conversationId: string | undefined;
+  /** The SERVER's conversation id, or AWAITING_ID before the server has created it.
+   *
+   *  AWAITING_ID rather than undefined so `serverId ?? localKey` is a COMPILE ERROR — that
+   *  substitution is what streamed a local placeholder at the server and produced a
+   *  404-reconnect storm. Narrow with hasId(). While awaiting: renderPump does not
+   *  connect, run() is empty, and send/cancel throw. */
+  conversationId: MaybeConversationId;
   /** Per-conversation model, sent as the X-Agent-Model header on POST /agui. */
   model?: string;
   /** Injectable fetch (tests). */
@@ -394,7 +396,10 @@ export class IntegrityAgent extends AbstractAgent {
   }
 
   constructor(config: IntegrityAgentConfig) {
-    super({ threadId: config.conversationId });
+    // The base class wants a string thread id. Before creation there is none — pass the
+    // empty string, which is never a valid conversation id, rather than leaking the
+    // AWAITING_ID marker into a library that would stringify it.
+    super({ threadId: hasId(config.conversationId) ? config.conversationId : "" });
     this.cfg = config;
     this.base = config.baseUrl.replace(/\/$/, "");
     // Bind to globalThis: an unbound `fetch` reference invoked as `this.doFetch(...)`
@@ -434,7 +439,7 @@ export class IntegrityAgent extends AbstractAgent {
    *  render, and is far better than silently addressing a placeholder. */
   #requireId(op: string): string {
     const id = this.cfg.conversationId;
-    if (id === undefined) {
+    if (!hasId(id)) {
       throw new Error(`cannot ${op}: the conversation has not been created yet`);
     }
     return id;
@@ -445,7 +450,7 @@ export class IntegrityAgent extends AbstractAgent {
     // The moment a conversation stops being local and becomes the server's. Both ids are
     // recorded because this is precisely where a trace would otherwise break in two.
     record("conversation.id_assigned", {
-      [ATTR.conversationKey]: this.cfg.conversationId ?? "(uncreated)",
+      [ATTR.conversationKey]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
       [ATTR.conversationId]: conversationId,
     });
     this.cfg.conversationId = conversationId;
@@ -467,7 +472,7 @@ export class IntegrityAgent extends AbstractAgent {
     // Nothing to stream until the server has created the conversation. Returning an EMPTY
     // observable (rather than streaming a placeholder id) is the fix for the 404-reconnect
     // storm: there is no conversation yet, so there are no events yet.
-    if (this.cfg.conversationId === undefined) return EMPTY;
+    if (!hasId(this.cfg.conversationId)) return EMPTY;
     const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
@@ -632,9 +637,9 @@ export class IntegrityAgent extends AbstractAgent {
     // agent at the id the server assigned, and a reconnect must follow it. A URL captured
     // here would keep the pump reading the conversation the UI has already left.
     const streamUrl = (): string | undefined =>
-      this.cfg.conversationId === undefined
-        ? undefined
-        : `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`;
+      hasId(this.cfg.conversationId)
+        ? `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/events.integrity`
+        : undefined;
     const headers: Record<string, string> = {
       Accept: "text/event-stream",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
@@ -661,7 +666,7 @@ export class IntegrityAgent extends AbstractAgent {
         // local placeholder, got 404s, and backed off — three connects in four seconds.
         // setConversationId() gives us one the moment creation lands, and the poll is
         // cheap because it does no I/O.
-        if (this.cfg.conversationId === undefined) {
+        if (!hasId(this.cfg.conversationId)) {
           await delay(250);
           continue;
         }
@@ -718,7 +723,7 @@ export class IntegrityAgent extends AbstractAgent {
         });
 
         record("stream.connect", {
-          [ATTR.conversationId]: this.cfg.conversationId ?? "(uncreated)",
+          [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
           // A RECONNECT (false) is the interesting case: the visible transcript was just
           // reset and replayed, which is what "it restarted" looks like to a user.
           "stream.first_connection": isFirstConnection,
@@ -905,7 +910,7 @@ export class IntegrityAgent extends AbstractAgent {
    *  seed and the full replay paints as before. */
   private async seedTail(runs = 8): Promise<void> {
     try {
-      if (this.cfg.conversationId === undefined) return; // nothing to seed from yet
+      if (!hasId(this.cfg.conversationId)) return; // nothing to seed from yet
       const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
       const res = await this.doFetch(url, {
         headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,

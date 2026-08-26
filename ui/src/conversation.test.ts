@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-import { Conversation } from "./conversation.js";
+import { AWAITING_ID, Conversation, hasId, type MaybeConversationId } from "./conversation.js";
 
 const creates = (id: string | null) => vi.fn(async () => id);
 const CFG = { baseUrl: "http://agent-host:8080" };
@@ -166,5 +166,60 @@ describe("addressing the server", () => {
   it("tolerates a trailing slash on the base url", () => {
     const c = Conversation.existing("server-1", { baseUrl: "http://h:8080/" }, creates(null));
     expect(c.url("/tail")).toBe("http://h:8080/conversations/server-1/tail");
+  });
+});
+
+describe("AWAITING_ID — the type that blocks the ?? bug", () => {
+  it("is NOT nullish, so ?? and || cannot silently substitute a placeholder", () => {
+    // The whole reason this is a value rather than `undefined`. With undefined,
+    // `serverId ?? localKey` compiles and quietly streams a local key at the server —
+    // which is the bug that produced a 404 storm and a spurious restart message.
+    // Being non-nullish means ?? passes it THROUGH, so the result is not a string and
+    // the compiler rejects the assignment. (Verified against tsc, not just asserted.)
+    const awaiting: MaybeConversationId = AWAITING_ID;
+    expect(awaiting ?? "fallback").toBe(AWAITING_ID);
+    expect(awaiting || "fallback").toBe(AWAITING_ID);
+  });
+
+  it("hasId narrows correctly in both directions", () => {
+    const real: MaybeConversationId = "server-1";
+    const pending: MaybeConversationId = AWAITING_ID;
+    expect(hasId(real)).toBe(true);
+    expect(hasId(pending)).toBe(false);
+  });
+
+  it("is frozen, so it cannot be mutated into something that looks like an id", () => {
+    expect(Object.isFrozen(AWAITING_ID)).toBe(true);
+  });
+
+  it("names WHY the id is missing", () => {
+    // A reader hitting this in a debugger or a log gets an explanation, not `undefined`.
+    expect(AWAITING_ID.kind).toBe("awaiting-conversation-id");
+  });
+});
+
+describe("AWAITING_ID — the type that blocks the ?? bug", () => {
+  it("is NOT nullish, so ?? and || pass it THROUGH instead of substituting", () => {
+    // The entire reason this is a value rather than `undefined`. With undefined,
+    // `serverId ?? localKey` compiles and quietly streams a local key at the server —
+    // the bug that produced a 404 storm and a spurious restart message. Being non-nullish
+    // means the result is not a string, so tsc rejects the assignment at compile time.
+    const awaiting: MaybeConversationId = AWAITING_ID;
+    expect(awaiting ?? "fallback").toBe(AWAITING_ID);
+    expect(awaiting || "fallback").toBe(AWAITING_ID);
+  });
+
+  it("hasId narrows in both directions", () => {
+    expect(hasId("server-1" as MaybeConversationId)).toBe(true);
+    expect(hasId(AWAITING_ID)).toBe(false);
+  });
+
+  it("is frozen, so it cannot be mutated into something id-shaped", () => {
+    expect(Object.isFrozen(AWAITING_ID)).toBe(true);
+  });
+
+  it("names WHY the id is missing", () => {
+    // A reader hitting this in a debugger gets an explanation, not `undefined`.
+    expect(AWAITING_ID.kind).toBe("awaiting-conversation-id");
   });
 });
