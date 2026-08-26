@@ -16,6 +16,10 @@ class FakeK8s:
         self.patches = []                       # [(name, status)] for assertions
         self.revives = []                       # [(host_ip, conv_name, generation)] revive-pushes
         self.deleted_trees = []                 # [sandbox_name] reaped
+        self.cost_calls = []                    # [(pod, cost)] set_pod_deletion_cost
+
+    def set_pod_deletion_cost(self, name, cost):
+        self.cost_calls.append((name, cost))
 
     def get_agent_host_replicas(self):
         return self._replicas
@@ -375,3 +379,47 @@ def test_sandbox_list_failure_must_not_abort_assignment():
     results = reconcile_once(k8s, cap=10)
     assert ("newborn", "assign") in results  # assignment still happened
     assert not any(kind == "mark-suspended" for _, kind in results)
+
+
+# --- scale-down victim steering (pod-deletion-cost) ---------------------------
+#
+# Observed in e2e-full CI (run 33015148191): conversation 82d29b1f assigned to a pod
+# at 21:32:57, autoscale down 5->2 at 21:33:07 killed that pod, the run died with it,
+# and the browser showed "Working…" forever. The Deployment picks scale-down victims
+# blindly unless pods carry controller.kubernetes.io/pod-deletion-cost.
+
+
+def _conv(name, host, phase="Assigned", parent=None):
+    return {
+        "metadata": {"name": name},
+        "spec": ({"parentId": parent} if parent else {}),
+        "status": {"phase": phase, "hostPod": host, "generation": 1},
+    }
+
+
+def test_hosting_pods_get_their_conversation_count_as_deletion_cost():  # @proves
+    pods = [Pod("a", True, "10.0.0.1"), Pod("b", True, "10.0.0.2")]
+    k8s = FakeK8s(pods, [_conv("c1", "a"), _conv("c2", "a"), _conv("c3", "b")])
+    autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
+    assert ("a", 2) in k8s.cost_calls
+    assert ("b", 1) in k8s.cost_calls
+
+
+def test_empty_pods_cost_zero_and_unchanged_costs_are_not_repatched():  # @proves
+    # Pod "a" already carries the right cost (1) -> no patch; "b" is empty -> cost 0.
+    pods = [Pod("a", True, "10.0.0.1", deletion_cost=1), Pod("b", True, "10.0.0.2")]
+    k8s = FakeK8s(pods, [_conv("c1", "a")])
+    autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
+    assert ("a", 1) not in k8s.cost_calls, "unchanged cost must not be re-patched"
+    assert ("b", 0) in k8s.cost_calls
+
+
+def test_suspended_and_subagent_conversations_do_not_count():  # @proves
+    pods = [Pod("a", True, "10.0.0.1")]
+    k8s = FakeK8s(pods, [
+        _conv("c1", "a", phase="Suspended"),
+        _conv("c2", "a", parent="c-parent"),
+        _conv("c3", "a"),
+    ])
+    autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
+    assert ("a", 1) in k8s.cost_calls

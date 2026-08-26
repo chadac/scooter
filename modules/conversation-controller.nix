@@ -222,7 +222,7 @@ in
         metadata = { name = "conversation-controller"; namespace = cfg.namespace; };
         rules = [
           { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" "conversations/status" ]; verbs = [ "get" "list" "watch" "patch" "update" ]; }
-          { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "get" "list" "watch" ]; }
+          { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "get" "list" "watch" "patch" ]; }  # patch: pod-deletion-cost annotation (scale-down victim steering)
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
           # Orphaned-Sandbox reaper: list Sandboxes + DELETE the whole per-conversation tree
           # (Sandbox CR cascades pod+PVCs; the SA + module CM are provisioner-created and must

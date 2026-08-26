@@ -37,6 +37,7 @@ GROUP = "scooter.chadac.dev"
 VERSION = "v1alpha1"
 PLURAL = "conversations"
 AGENT_HOST_LABEL = "app=agent-host"
+DELETION_COST_ANNOTATION = "controller.kubernetes.io/pod-deletion-cost"
 AGENT_HOST_DEPLOYMENT = "agent-host"  # the Deployment the controller autoscales
 
 # The upstream agent-sandbox Sandbox CR (what the reaper GCs).
@@ -110,8 +111,23 @@ class ControllerK8s:
         for p in core.list_namespaced_pod(self.namespace, label_selector=AGENT_HOST_LABEL).items:
             ready = _pod_ready(p)
             ip = p.status.pod_ip if p.status is not None else None
-            out.append(Pod(name=p.metadata.name, ready=ready, ip=ip))
+            raw = (p.metadata.annotations or {}).get(DELETION_COST_ANNOTATION)
+            try:
+                cost = int(raw) if raw is not None else None
+            except ValueError:
+                cost = None
+            out.append(Pod(name=p.metadata.name, ready=ready, ip=ip, deletion_cost=cost))
         return out
+
+    def set_pod_deletion_cost(self, name: str, cost: int) -> None:
+        """Annotate an agent-host pod with its scale-down deletion cost (see
+        reconcile.deletion_costs). 404-tolerant: the pod may be terminating."""
+        core, _, _ = _apis()
+        body = {"metadata": {"annotations": {DELETION_COST_ANNOTATION: str(cost)}}}
+        try:
+            core.patch_namespaced_pod(name, self.namespace, body)
+        except client.ApiException as e:
+            _ignore_404(e)
 
     # --- revive-push (seamless rollout) ------------------------------------
     def notify_revive(self, host_ip: str, conv_name: str, generation: int) -> None:
