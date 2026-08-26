@@ -65,7 +65,10 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     from the CURRENT status and update it as we assign, so a burst of Pending
     conversations spreads across pods instead of all landing on the least-loaded one."""
     pods = k8s.list_host_pods()
-    ready_names = {p.name for p in pods if p.ready}
+    # "Ready" for ASSIGNMENT excludes terminating pods: a scale-down victim reports
+    # Ready through its grace period, and assigning to it schedules the very mid-run
+    # reassignment the deletion-cost annotation exists to prevent.
+    ready_names = {p.name for p in pods if p.ready and not p.terminating}
     # One Sandbox list per tick: the DRIFT rule needs each conversation's backing
     # operatingMode (the Sandbox is the truth for alive/suspended — see MarkSuspended).
     # BEST-EFFORT, same rule the reaper documents: sandbox listing is auxiliary and must

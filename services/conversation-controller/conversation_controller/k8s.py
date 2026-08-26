@@ -116,7 +116,13 @@ class ControllerK8s:
                 cost = int(raw) if raw is not None else None
             except ValueError:
                 cost = None
-            out.append(Pod(name=p.metadata.name, ready=ready, ip=ip, deletion_cost=cost))
+            out.append(Pod(
+                name=p.metadata.name,
+                ready=ready,
+                ip=ip,
+                deletion_cost=cost,
+                terminating=p.metadata.deletion_timestamp is not None,
+            ))
         return out
 
     def set_pod_deletion_cost(self, name: str, cost: int) -> None:

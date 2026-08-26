@@ -27,6 +27,11 @@ class Pod:
     # controller.kubernetes.io/pod-deletion-cost currently on the pod (None = unset).
     # Carried so the loop patches only on CHANGE, not every tick.
     deletion_cost: int | None = None
+    # metadata.deletionTimestamp is set: the pod is on its way OUT (a scale-down
+    # victim draining gracefully). It can report Ready for its whole grace period —
+    # assigning a conversation to it just schedules another mid-run reassignment
+    # (observed: assigned 23:40:26, reassigned 23:40:34, same conversation).
+    terminating: bool = False
 
 
 @dataclass(frozen=True)

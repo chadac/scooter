@@ -423,3 +423,15 @@ def test_suspended_and_subagent_conversations_do_not_count():  # @proves
     ])
     autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
     assert ("a", 1) in k8s.cost_calls
+
+
+def test_terminating_pods_are_not_assignment_targets():  # @proves
+    # A scale-down victim stays Ready through its grace period; assigning to it just
+    # schedules another mid-run reassignment (CI: assigned 23:40:26 -> reassigned
+    # 23:40:34, the same conversation). Only the live pod may receive work.
+    pods = [Pod("dying", True, "10.0.0.1", terminating=True), Pod("alive", True, "10.0.0.2")]
+    k8s = FakeK8s(pods, [_conv("c1", None, phase="Pending")])
+    reconcile_once(k8s, cap=10)
+    assigned = [st for name, st in k8s.patches if name == "c1"]
+    assert assigned, "the conversation must be assigned"
+    assert all(st.get("hostPod") != "dying" for st in assigned), "never to a terminating pod"

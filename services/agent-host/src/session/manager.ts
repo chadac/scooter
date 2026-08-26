@@ -681,7 +681,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
         return;
       }
-      void store.appendEvent(e.id, event);
+      // NOT bare `void`: the store RETHROWS append failures after logging them
+      // (finding #4), and `void promise` leaves that rejection unhandled — which
+      // KILLS the Node process. A late event racing the conversation's deletion
+      // (cleanState, a reassignment's aftermath) made ENOENT here take down the
+      // whole agent-host mid-suite: 11 e2e-fast tests died to one stale append.
+      // The store already logged + notified observers; swallowing here loses nothing.
+      store.appendEvent(e.id, event).catch(() => {});
     });
   };
 
