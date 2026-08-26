@@ -332,8 +332,13 @@ jobs:
               # platform job says `skipping` is NOT cluster-verified.
               - '.github/workflows/ci.yml'
               - 'playwright.config.ts'
-              - 'test/e2e/tier.ts'
+              - 'test/e2e/target.ts'
+              # The full-target allowlist IS "what runs": adding/removing a spec there
+              # must run the only job that executes it.
+              - 'test/e2e/full-specs.json'
               - 'test/e2e/cluster-stories.spec.ts'
+              - 'test/e2e/chat-search-filter.spec.ts'
+              - 'test/e2e/linked-resources.spec.ts'
               - 'test/e2e/fixtures.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'
