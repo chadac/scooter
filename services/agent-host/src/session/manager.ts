@@ -943,7 +943,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // this the UI is stuck "thinking" forever. Same mechanism boot uses (resumeInterrupted),
       // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
       try {
-        if (hasDanglingRun(await collectEvents(store.readEvents(id)))) {
+        // Pass our identity: a run THIS pod started at THIS generation is in flight, not
+        // stranded. `expectedGen` is the generation the controller assigned us at — a run
+        // stamped with an earlier one was left by a previous assignment and still resumes.
+        const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
+        if (hasDanglingRun(await collectEvents(store.readEvents(id)), self)) {
           log.info("reviveFromMirror: resuming a dangling run", { conversation_id: id });
           // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
           // role:user turn) which the UI hides — the nudge is internal, not a user message.
@@ -1325,6 +1329,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // hasDanglingRun only needs the tail, but reading the whole log here is
           // fine (bounded per conversation, once).
           const events = await collectEvents(store.readEvents(entry.id));
+            // NO `self` here, deliberately. This is the BOOT scan: this process has not
+            // started any run yet, so every RUN_STARTED in the log predates it and is
+            // stranded by definition — even one stamped with our own pod name (a restarted
+            // pod reuses it). Passing self would skip the very runs this scan resumes.
           if (hasDanglingRun(events)) candidates.push(entry.id);
         } catch (err) {
           // eslint-disable-next-line no-console
