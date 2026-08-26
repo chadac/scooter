@@ -199,6 +199,11 @@ _fingerprint:
       attr="${pair%%=*}"
       printf '%s=%s\n' "$attr" "$(nix eval --raw ".#${attr}.drvPath" 2>/dev/null | xargs basename)"
     done
+    # The MANIFESTS too — a CRD schema change is invisible to the image fingerprints, and
+    # the apiserver PRUNES fields the live CRD does not know: creatorPod was silently
+    # stripped from every patch while all images read "current". Third deployed≠current
+    # incident; the fingerprint now covers everything the platform is made of.
+    printf 'platform-manifests=%s\n' "$(nix eval --raw ".#platform-manifests.drvPath" 2>/dev/null | xargs basename)"
 
 # Rebuild + reload ONLY the platform images whose source changed, then restart them.
 cluster-redeploy:
@@ -220,6 +225,12 @@ cluster-redeploy:
     done <<<"$want"
     if [ ${#changed[@]} -eq 0 ]; then echo "cluster is up to date"; exit 0; fi
     echo "rebuilding: ${changed[*]}"
+    for c in "${changed[@]}"; do
+      if [ "$c" = "platform-manifests" ]; then
+        echo "==> manifests changed — applying (CRDs/RBAC/env are not in any image)"
+        kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
+      fi
+    done
     names=()
     for pair in {{_PLATFORM_IMAGES}}; do
       attr="${pair%%=*}"; rest="${pair#*=}"; name="${rest%%:*}"
