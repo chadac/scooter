@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from ..logging_config import format_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,11 +76,38 @@ async def post_link(agent_host_url: str, conversation_id: str, link: Link) -> No
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(_links_url(agent_host_url, conversation_id), json=payload)
         if resp.status_code >= 300:
-            logger.warning("auto-link POST /links failed (%s) for %s: %s", resp.status_code, conversation_id, link.url)
+            logger.warning(
+                "auto-link POST /links failed",
+                extra={
+                    "conversation_id": conversation_id,
+                    "status": resp.status_code,
+                    "source": link.source,
+                    "resource_type": link.resource_type,
+                    "url": link.url,
+                },
+            )
         else:
-            logger.info("auto-linked %s %s -> conversation %s", link.source, link.resource_type, conversation_id)
+            logger.info(
+                "auto-linked resource to conversation",
+                extra={
+                    "conversation_id": conversation_id,
+                    "status": resp.status_code,
+                    "source": link.source,
+                    "resource_type": link.resource_type,
+                    "url": link.url,
+                },
+            )
     except httpx.HTTPError as e:
-        logger.warning("auto-link POST /links errored for %s: %s", conversation_id, e)
+        logger.warning(
+            "auto-link POST /links errored",
+            extra={
+                "conversation_id": conversation_id,
+                "source": link.source,
+                "resource_type": link.resource_type,
+                "url": link.url,
+                "error": format_error(e),
+            },
+        )
 
 
 async def create_link(agent_host_url: str, conversation_id: str, link: Link) -> None:

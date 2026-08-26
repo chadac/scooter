@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from kubernetes import client, config
 
 from .manifest import GROUP, PLURAL_SANDBOXES, VERSION, DeployConfig, sandbox_manifest
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,10 @@ class SandboxK8s:
             if e.status == 404:
                 # Configured but the CM isn't there yet — treat as no overlay rather
                 # than blocking conversation creation.
-                logger.warning("manifest-overlay ConfigMap %s not found — no overlay applied", cm_name)
+                logger.warning(
+                    "manifest-overlay ConfigMap not found; no overlay applied",
+                    extra={"configmap": cm_name, "namespace": self.ns, "status": e.status},
+                )
                 return {}
             raise
         data = cm.data or {}
@@ -141,7 +145,15 @@ class SandboxK8s:
             try:
                 self._set_operating_mode(name, "Running")
             except client.ApiException as e:
-                logger.warning("adopted existing Sandbox %s but resume failed: %s", name, e)
+                logger.warning(
+                    "adopted an existing Sandbox but resume failed",
+                    extra={
+                        "sandbox": name,
+                        "namespace": self.ns,
+                        "operating_mode": "Running",
+                        "error": format_error(e),
+                    },
+                )
 
         return PodRef(name=name, namespace=self.ns)
 

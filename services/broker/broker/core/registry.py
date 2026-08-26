@@ -53,7 +53,10 @@ def _load_entrypoint_providers() -> None:
         try:
             ep.load()  # importing registers via @register_provider
         except Exception:  # pragma: no cover
-            logger.exception("failed loading provider entry-point %s", ep.name)
+            logger.exception(
+                "failed loading provider entry-point",
+                extra={"entry_point": ep.name},
+            )
 
 
 def discover_providers() -> list[Provider]:
@@ -77,9 +80,9 @@ def discover_providers() -> list[Provider]:
             # routes 404/503), which is easy to mistake for "disabled". Log it as a
             # loud, alert-worthy error naming the consequence, not a quiet "skip".
             logger.exception(
-                "provider %s FAILED to build and is now ABSENT (its routes will not "
-                "serve) — this is a misconfiguration/bug, not a deliberate disable",
-                name,
+                "provider FAILED to build and is now ABSENT (its routes will not serve) "
+                "— this is a misconfiguration/bug, not a deliberate disable",
+                extra={"provider": name},
             )
             continue
         if provider.enabled:

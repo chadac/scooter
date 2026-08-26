@@ -12,8 +12,12 @@
  * point of the error paths below.
  */
 
+import { formatError, logger } from "../log.js";
 import { resolveTunnelTarget, type TunnelTargetDeps } from "./tunnelTargets.js";
 import type { WireFrame } from "./remoteProtocol.js";
+
+const log = logger("tunnel");
+const traceLog = logger("tunnel.trace");
 
 export interface TunnelServiceDeps extends TunnelTargetDeps {
   /** Send a frame back toward the container. */
@@ -37,6 +41,8 @@ interface Pending {
   method: string;
   headers: Record<string, string>;
   body: Buffer[];
+  /** The conversation this stream is scoped to — carried so log lines can name it. */
+  conversationId: string;
 }
 
 /** One structured trace line per tunnel event.
@@ -54,18 +60,18 @@ interface Pending {
 const TRACE = process.env.TUNNEL_TRACE === "1";
 function trace(event: string, fields: Record<string, unknown>): void {
   if (!TRACE) return;
-  const pairs = Object.entries(fields)
-    .filter(([, v]) => v !== undefined)
-    .map(([k, v]) => `${k}=${typeof v === "string" && /[ "]/.test(v) ? JSON.stringify(v) : String(v)}`);
-  // eslint-disable-next-line no-console
-  console.log(`[tunnel.trace] ${event} ${pairs.join(" ")}`);
+  // `event` is one of a small closed set ("open"/"request"/"response"/…), so it stays a
+  // constant, groupable msg; every value it carries is already a separate field.
+  const defined: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) if (v !== undefined) defined[k] = v;
+  traceLog.info(event, defined);
 }
 
 /** The JSON-RPC method + id in a body, for correlation. Never throws on a non-JSON body. */
-function rpcOf(body: Buffer): { method?: string; rpcId?: string | number } {
+function rpcOf(body: Buffer): { method?: string; rpc_id?: string | number } {
   try {
     const m = JSON.parse(body.toString()) as { method?: string; id?: string | number };
-    return { method: m?.method, rpcId: m?.id };
+    return { method: m?.method, rpc_id: m?.id };
   } catch {
     return {};
   }
@@ -95,7 +101,7 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       // probes optional methods (server/discover) and RELIES on receiving the rejection so it
       // can fall back to the standard initialize handshake. Eating that response is what left
       // the SDK with no server at all.
-      trace("response", { stream: id, status: res.status, hasBody: !!res.body });
+      trace("response", { stream: id, status: res.status, has_body: !!res.body });
       const headers: Record<string, string> = {};
       res.headers?.forEach?.((v, k) => (headers[k] = v));
       let head = { status: res.status, headers };
@@ -124,13 +130,15 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         const text = await res.text();
         deps.send({ ch: "tunnel", type: "chunk", id, payload: { data: Buffer.from(text).toString("base64"), ...head } });
       }
-      trace("close", { stream: id, totalBytes: total });
+      trace("close", { stream: id, total_bytes: total });
       deps.send({ ch: "tunnel", type: "close", id, payload: {} });
     } catch (err) {
-      // eslint-disable-next-line no-console
-      trace("failed", { stream: id, error: String(err) });
-      // eslint-disable-next-line no-console
-      console.warn(`[tunnel] fetch FAILED stream=${id}: ${String(err)}`);
+      trace("failed", { stream: id, error: formatError(err) });
+      log.warn("fetch FAILED", {
+        conversation_id: p.conversationId,
+        stream: id,
+        error: formatError(err),
+      });
       closeWithError(id, err instanceof Error ? err.message : String(err));
     } finally {
       pending.delete(id);
@@ -146,12 +154,15 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
       };
 
       if (frame.type === "open") {
-        trace("open", { stream: id, conv: conversationId, target: payload.target, method: payload.method });
+        trace("open", { stream: id, conversation_id: conversationId, target: payload.target, method: payload.method });
         const resolution = resolveTunnelTarget(payload.target ?? "", conversationId, deps);
         if (!resolution.ok) {
           // Loud on both ends: the container logs the reason, and so do we.
-          // eslint-disable-next-line no-console
-          console.warn(`[tunnel] refusing target ${JSON.stringify(payload.target)} for ${conversationId}: ${resolution.reason}`);
+          log.warn("refusing target", {
+            conversation_id: conversationId,
+            target: payload.target,
+            reason: resolution.reason,
+          });
           closeWithError(id, resolution.reason);
           return;
         }
@@ -162,7 +173,13 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         const headers = { ...(payload.headers ?? {}) };
         delete headers.host; // the container's Host names its own loopback proxy
         delete headers["content-length"]; // recomputed by fetch
-        pending.set(id, { url: resolution.target.url, method: payload.method ?? "GET", headers, body: [] });
+        pending.set(id, {
+          url: resolution.target.url,
+          method: payload.method ?? "GET",
+          headers,
+          body: [],
+          conversationId,
+        });
         return;
       }
 
@@ -176,7 +193,13 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         return;
       }
       if (frame.type === "end") {
-        trace("request", { stream: id, url: p.url, bytes: Buffer.concat(p.body).length, ...rpcOf(Buffer.concat(p.body)) });
+        trace("request", {
+          stream: id,
+          conversation_id: p.conversationId,
+          url: p.url,
+          bytes: Buffer.concat(p.body).length,
+          ...rpcOf(Buffer.concat(p.body)),
+        });
         const task = run(id, p);
         inflight.add(task);
         void task.finally(() => inflight.delete(task));

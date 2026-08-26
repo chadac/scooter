@@ -10,7 +10,10 @@
  *     WS; a stale DB "online" after a crash just falls to the cloud floor — RUN_ERROR-safe).
  */
 
+import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
+
+const log = logger("remoteAgentStore");
 
 export interface RemoteAgentBinding {
   owner: string;
@@ -51,8 +54,7 @@ export function createPgRemoteAgentStore(config: PgRemoteAgentStoreConfig): Remo
       )
       .then(() => undefined)
       .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.error("[remoteAgentStore] ensure table failed (badge persistence off):", (e as Error).message);
+        log.error("ensure table failed (badge persistence off)", { error: formatError(e) });
         ensured = undefined; // retry next call
       });
     return ensured;
@@ -69,8 +71,7 @@ export function createPgRemoteAgentStore(config: PgRemoteAgentStoreConfig): Remo
           [owner],
         );
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[remoteAgentStore] markOnline(${owner}) failed:`, (e as Error).message);
+        log.error("markOnline failed", { owner, error: formatError(e) });
       }
     },
     async markOffline(owner) {
@@ -81,8 +82,7 @@ export function createPgRemoteAgentStore(config: PgRemoteAgentStoreConfig): Remo
           [owner],
         );
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[remoteAgentStore] markOffline(${owner}) failed:`, (e as Error).message);
+        log.error("markOffline failed", { owner, error: formatError(e) });
       }
     },
     async isOnline(owner) {
@@ -91,8 +91,7 @@ export function createPgRemoteAgentStore(config: PgRemoteAgentStoreConfig): Remo
         const res = await pool.query(`SELECT status FROM remote_agents WHERE owner = $1 LIMIT 1`, [owner]);
         return res.rows[0]?.status === "online";
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error(`[remoteAgentStore] isOnline(${owner}) failed:`, (e as Error).message);
+        log.error("isOnline failed", { owner, error: formatError(e) });
         return false;
       }
     },

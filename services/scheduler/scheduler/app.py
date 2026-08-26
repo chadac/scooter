@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,20 +13,19 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .config import require_relay_key, settings
 from .cron import InvalidSchedule
+from .logging_config import configure_logging, get_logger
 from .metrics import MetricsSink, create_metrics
 from .models import Run, Task, TaskCreate, TaskPatch
 from .spawn import spawn_conversation
 from .store import Store
 
-# Configure the root logger so our logger.info/debug actually reach stdout — without
-# this the root defaults to WARNING and everything below it is silently dropped (only
-# uvicorn's own logger prints). Level from LOG_LEVEL (settings.log_level), default INFO.
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+# Install the structured JSON handler on the ROOT logger, so our logger.info/debug
+# actually reach stdout — without this the root defaults to WARNING and everything below
+# it is silently dropped (only uvicorn's own logger prints). Level from LOG_LEVEL
+# (settings.log_level as the default), format from LOG_FORMAT (json in a container).
+configure_logging("scheduler", default_level=settings.log_level)
 
-logger = logging.getLogger("scheduler")
+logger = get_logger("app")
 
 
 def _utcnow() -> datetime:
@@ -54,7 +52,16 @@ async def _fire(store: Store, task, metrics: MetricsSink) -> None:
     )
     duration_ms = (time.perf_counter() * 1000) - start_ms
     metrics.fire_completed(status="spawned" if conv else "failed", duration_ms=duration_ms)
-    logger.info("fired task %s (%s) -> conversation %s", task.id, task.title, conv)
+    logger.info(
+        "fired task",
+        extra={
+            "task_id": task.id,
+            "task_title": task.title,
+            "conversation_id": conv,
+            "status": "spawned" if conv else "failed",
+            "duration_ms": duration_ms,
+        },
+    )
 
 
 async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Event) -> None:
@@ -75,7 +82,7 @@ async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Even
                 try:
                     await _fire(store, task, metrics)
                 except Exception:  # one bad task must not stall the loop
-                    logger.exception("failed firing task %s", task.id)
+                    logger.exception("failed firing task", extra={"task_id": task.id})
                     outcome = "error"
             
             # Run retention sweep roughly hourly (not every tick — tick is 30s by default).
@@ -86,7 +93,13 @@ async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Even
                     deleted = await store.prune_old_runs(retention_days=settings.run_retention_days, now=now)
                     if deleted > 0:
                         metrics.runs_pruned(count=deleted)
-                        logger.info("pruned %d old runs (retention=%d days)", deleted, settings.run_retention_days)
+                        logger.info(
+                            "pruned old runs",
+                            extra={
+                                "deleted_count": deleted,
+                                "retention_days": settings.run_retention_days,
+                            },
+                        )
                 except Exception:
                     logger.exception("retention sweep failed")
                     outcome = "error"

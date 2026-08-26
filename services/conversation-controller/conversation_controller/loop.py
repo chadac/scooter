@@ -22,7 +22,8 @@ from .reconcile import (
     demand_of,
 )
 
-logger = logging.getLogger("conversation-controller")
+logger = logging.getLogger(__name__)
+_C = {"component": "loop"}
 
 
 def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> ConversationState:
@@ -63,7 +64,9 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     try:
         sandbox_modes = {sb.name: sb.operating_mode for sb in k8s.list_sandboxes()}
     except Exception:  # noqa: BLE001
-        logger.warning("list_sandboxes failed — skipping drift repair this tick", exc_info=True)
+        logger.warning(
+            "list_sandboxes failed", extra={**_C, "skipped": "drift-repair"}, exc_info=True
+        )
         sandbox_modes = {}
     convs = [_state(cr, sandbox_modes) for cr in k8s.list_conversations()]
 
@@ -107,7 +110,9 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             # the phantom stops counting as autoscale demand and the router stops routing to a
             # pod that no longer hosts it. Logged loudly — every silent operatingMode/phase
             # divergence so far has cost a debugging session.
-            logger.warning("phase drift repaired: %s — %s", c.name, action.reason)
+            logger.warning(
+                "phase drift repaired", extra={**_C, "conversation_id": c.name, "reason": action.reason}
+            )
             k8s.patch_status(c.name, {"phase": "Suspended", "hostPod": None, "hostIP": None})
             hosts[c.name] = None
             results.append((c.name, "mark-suspended"))
@@ -137,7 +142,16 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         if c.parent_id is None:
             load[action.host_pod] = load.get(action.host_pod, 0) + 1  # count it for the rest of this pass
         results.append((c.name, "assign"))
-        logger.info("assigned %s -> %s @ %s (gen %d)", c.name, action.host_pod, action.host_ip, action.generation)
+        logger.info(
+            "assigned",
+            extra={
+                **_C,
+                "conversation_id": c.name,
+                "host_pod": action.host_pod,
+                "host_ip": action.host_ip,
+                "generation": action.generation,
+            },
+        )
         # Push the new host to revive the conversation from the mirror BEFORE user traffic
         # arrives (seamless rollout — see todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md). notify_revive
         # is FIRE-AND-FORGET (spawns a daemon thread) so a stale/unroutable hostIP can never
@@ -148,7 +162,11 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             try:
                 k8s.notify_revive(action.host_ip, c.name, action.generation)
             except Exception:  # noqa: BLE001 — never let a push failure abort the reconcile pass
-                logger.warning("revive-push spawn for %s failed (will rely on lazy revive)", c.name)
+                logger.warning(
+                    "revive-push spawn failed",
+                    extra={**_C, "conversation_id": c.name, "fallback": "lazy-revive"},
+                    exc_info=True,
+                )
 
     return results
 
@@ -184,13 +202,19 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     if target > current:
         # Scale UP immediately — a Pending conversation is a user waiting for a slot.
         k8s.set_agent_host_replicas(target)
-        logger.info("autoscale UP %d -> %d (demand=%d cap=%d)", current, target, demand, cfg.pod_cap)
+        logger.info(
+            "autoscale up",
+            extra={**_C, "from_replicas": current, "to_replicas": target, "demand": demand, "pod_cap": cfg.pod_cap},
+        )
     elif target < current:
         # Scale DOWN only after the cooldown (avoid flapping / dropping a pod on a brief dip).
         if now - state.last_scale_down >= cfg.scale_down_cooldown_seconds:
             k8s.set_agent_host_replicas(target)
             state.last_scale_down = now
-            logger.info("autoscale DOWN %d -> %d (demand=%d cap=%d)", current, target, demand, cfg.pod_cap)
+            logger.info(
+                "autoscale down",
+                extra={**_C, "from_replicas": current, "to_replicas": target, "demand": demand, "pod_cap": cfg.pod_cap},
+            )
         # else: within cooldown — hold at `current`.
 
     return {"demand": demand, "current": current, "target": target, "ready_pods": ready_pods, "per_pod": per_pod}
@@ -216,7 +240,12 @@ def reap_orphans(k8s, grace_seconds: float) -> list[str]:
         try:
             k8s.delete_sandbox_tree(name)
             reaped.append(name)
-            logger.info("reaped orphaned sandbox %s (no owning Conversation)", name)
+            logger.info(
+                "reaped orphaned sandbox", extra={**_C, "sandbox_name": name, "reason": "no owning Conversation"}
+            )
         except Exception:  # noqa: BLE001 — one failed reap must not abort the pass
-            logger.exception("reap of orphaned sandbox %s failed (will retry next pass)", name)
+            logger.exception(
+                "reap of orphaned sandbox failed",
+                extra={**_C, "sandbox_name": name, "will_retry_next_pass": True},
+            )
     return reaped

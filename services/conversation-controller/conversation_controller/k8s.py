@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 
 from kubernetes import client, config
 
+from .logging_config import format_error
 from .reconcile import Pod, SandboxRef
 
-logger = logging.getLogger("conversation-controller")
+logger = logging.getLogger(__name__)
+_C = {"component": "k8s"}
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -134,10 +136,31 @@ class ControllerK8s:
             try:
                 with urllib.request.urlopen(req, timeout=REVIVE_TIMEOUT_SECONDS) as resp:
                     if resp.status // 100 != 2:
-                        logger.warning("revive-push %s -> HTTP %s", url, resp.status)
+                        logger.warning(
+                            "revive-push non-2xx",
+                            extra={
+                                **_C,
+                                "conversation_id": conv_name,
+                                "url": url,
+                                "http_status": resp.status,
+                                "generation": generation,
+                            },
+                        )
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 # Non-fatal — the host revives lazily on first request as the backstop.
-                logger.warning("revive-push to %s failed (lazy revive will cover it): %s", url, e)
+                logger.warning(
+                    "revive-push failed",
+                    extra={
+                        **_C,
+                        "conversation_id": conv_name,
+                        "url": url,
+                        "generation": generation,
+                        "fallback": "lazy-revive",
+                        # str() on TimeoutError/URLError is often EMPTY — format_error falls
+                        # back to repr() + the type name so this line still says something.
+                        "error": format_error(e),
+                    },
+                )
 
         threading.Thread(target=_push, name=f"revive-{conv_name}", daemon=True).start()
 

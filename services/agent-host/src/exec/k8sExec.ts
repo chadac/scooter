@@ -9,12 +9,15 @@
 
 import { Writable, Readable, PassThrough } from "node:stream";
 import { debugError } from "../debug.js";
+import { logger } from "../log.js";
 import { existsSync } from "node:fs";
 
 import { KubeConfig, Exec, CoreV1Api, type V1Status } from "@kubernetes/client-node";
 
 import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
+
+const log = logger("k8sExec");
 
 const SANDBOX_LABEL = "agents.x-k8s.io/sandbox-name";
 
@@ -110,8 +113,10 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       try {
         await deps.ensureRunning();
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[k8sExec] resume-on-missing-pod for ${ref.namespace}/${ref.name} failed:`, err);
+        log.errorWith("resume-on-missing-pod failed", err, {
+          namespace: ref.namespace,
+          pod_name: ref.name,
+        });
       }
       await sleep(1500);
       continue; // re-poll: the pod is now being recreated
@@ -217,6 +222,9 @@ export function createK8sSandboxApiClient(
       const out = sink();
       const err = sink();
       let status: V1Status | undefined;
+      /** The WebSocket close frame, kept so a failure that surfaces as a property-less
+       *  event still has something diagnosable attached to its log line. */
+      let lastClose: { code: number; reason: string } | undefined;
       if (signal?.aborted) {
         // Already cancelled before we even opened the stream.
         resolve({ stdout: out.text(), stderr: "aborted", exitCode: 130 });
@@ -251,26 +259,26 @@ export function createK8sSandboxApiClient(
             if (signal.aborted) onAbort();
             else signal.addEventListener("abort", onAbort, { once: true });
           }
-          ws.on("close", () =>
+          // Capture the close code/reason on the way past. When the socket dies, the value
+          // reaching the error/catch paths below can be an event with NO own properties —
+          // which is why this logged a bare `{}` in production even though it ALREADY used
+          // getOwnPropertyNames. Serialization was never the problem; there was nothing to
+          // serialize. The close frame is the detail that was being thrown away here.
+          ws.on("close", (code?: number, reason?: Buffer) => {
+            if (code !== undefined) lastClose = { code, reason: reason?.toString() || "" };
             resolve({
               stdout: out.text(),
               stderr: err.text(),
               exitCode: signal?.aborted ? 130 : exitCodeFromStatus(status),
-            }),
-          );
+            });
+          });
           ws.on("error", (e: unknown) => {
-                        debugError(
-              "[k8sExec] ws error:",
-              e instanceof Error ? e.message : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
-            );
+            log.errorWith("ws error", e, lastClose ? { ws_close: lastClose } : {});
             reject(e);
           });
         })
         .catch((e: unknown) => {
-                    debugError(
-            "[k8sExec] exec() rejected:",
-            e instanceof Error ? `${e.message}\n${e.stack}` : JSON.stringify(e, Object.getOwnPropertyNames(e ?? {})),
-          );
+          log.errorWith("exec() rejected", e, lastClose ? { ws_close: lastClose } : {});
           reject(e);
         });
     });

@@ -23,6 +23,9 @@ import type {
   TerminalHandle,
 } from "../types.js";
 import { debugError } from "../debug.js";
+import { formatError, logger } from "../log.js";
+
+const log = logger("exec");
 
 /**
  * Thin exec client for one sandbox pod. Production impl wraps the Kubernetes
@@ -126,13 +129,12 @@ export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExe
           // run. Surface it as terminal output + a non-zero exit instead. A
           // TIMEOUT gets a specific message so the agent knows to narrow the
           // command (not retry it verbatim).
-          const detail =
-            err instanceof Error
-              ? err.message
-              : typeof err === "object" && err !== null
-                ? JSON.stringify(err)
-                : String(err);
-                    debugError("[exec] spawn execute failed:", detail);
+          // formatError, NOT JSON.stringify: a WebSocket / k8s client error keeps its
+          // useful fields non-enumerable, so stringify renders it as `{}` and the failure
+          // becomes unattributable. This line produced exactly that in production.
+          const formatted = formatError(err);
+          const detail = String(formatted.message ?? JSON.stringify(formatted));
+          log.errorWith("spawn execute failed", err);
           const msg = timedOut
             ? `command timed out after ${Math.round(commandTimeoutMs / 1000)}s and was terminated — ` +
               `narrow it (e.g. scope the path, avoid scanning /nix/store or /) or run it in the background`

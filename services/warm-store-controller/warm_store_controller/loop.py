@@ -11,7 +11,7 @@ import logging
 
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
-logger = logging.getLogger("warm-store-controller")
+logger = logging.getLogger("loop")
 
 
 def reconcile_once(k8s, cfg: PoolConfig) -> list[tuple[str, str]]:
@@ -28,15 +28,21 @@ def reconcile_once(k8s, cfg: PoolConfig) -> list[tuple[str, str]]:
             if isinstance(a, WarmNew):
                 k8s.warm_new(a.image_tag)
                 results.append((a.image_tag, "warm"))
-                logger.info("warming a new pool PVC for tag %s", a.image_tag)
+                logger.info("warming a new pool PVC", extra={"image_tag": a.image_tag})
             elif isinstance(a, Relabel):
                 k8s.relabel(a.pvc, a.state, a.labels)
                 results.append((a.pvc, "relabel"))
-                logger.info("relabel %s -> %s %s", a.pvc, a.state, a.labels)
+                logger.info(
+                    "relabel pool PVC",
+                    extra={"pvc": a.pvc, "state": a.state, "labels": a.labels},
+                )
             elif isinstance(a, DeletePvc):
                 k8s.delete_pvc(a.pvc)
                 results.append((a.pvc, "delete"))
-                logger.info("delete %s (%s)", a.pvc, a.reason)
+                logger.info("delete pool PVC", extra={"pvc": a.pvc, "reason": a.reason})
         except Exception:  # noqa: BLE001 — one failed action must not abort the pass
-            logger.exception("action failed: %s", a)
+            logger.exception(
+                "action failed",
+                extra={"action": type(a).__name__, "target": getattr(a, "pvc", None) or getattr(a, "image_tag", None)},
+            )
     return results

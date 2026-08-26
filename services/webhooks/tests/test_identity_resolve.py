@@ -123,3 +123,98 @@ async def test_resolve_owner_no_scooter_match(monkeypatch):
 
 async def test_resolve_owner_empty_external_id(monkeypatch):
     assert await ir.resolve_owner("slack", "") is None
+
+
+# --- privacy: personal data must not reach a structured log field ---------------
+
+
+def test_pseudonym_is_stable_and_does_not_reveal_the_input():
+    from webhooks.identity_resolve import pseudonym
+
+    # Stable: the same principal always correlates across lines and across restarts.
+    assert pseudonym("U123ABC") == pseudonym("U123ABC")
+    # Distinct principals do not collide.
+    assert pseudonym("U123ABC") != pseudonym("U999ZZZ")
+    # The raw value never appears in the token.
+    tok = pseudonym("alice@example.com")
+    assert "alice" not in tok and "example.com" not in tok
+    # Empty in, empty out — never the string "None" as a field value.
+    assert pseudonym("") is None
+    assert pseudonym(None) is None
+
+
+@pytest.mark.asyncio
+async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
+    """No identifier reaches a log field raw — a structured field is searchable and
+    inherits the log store's retention."""
+    import logging as _logging
+
+    from webhooks import identity_resolve as ir
+
+    secret_id = "U-SECRET-SLACK-ID"
+    monkeypatch.setattr(ir.settings, "slack_bot_token", "xoxb-test", raising=False)
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            raise ir.httpx.HTTPError("upstream down")
+
+    monkeypatch.setattr(ir.httpx, "AsyncClient", _Boom)
+
+    with caplog.at_level(_logging.WARNING):
+        await ir.get_user_email("slack", secret_id)
+
+    assert caplog.records, "expected a warning to be logged"
+    for rec in caplog.records:
+        # The raw id must not be in the message OR in any structured field.
+        assert secret_id not in rec.getMessage()
+        for key, value in rec.__dict__.items():
+            assert secret_id != value, f"raw identifier leaked as field {key}"
+        # ...and the pseudonym must be there, so the line is still correlatable.
+        # In its OWN field: this is the external identifier, not a Scooter user id.
+        assert getattr(rec, "external_user", None) == ir.pseudonym(secret_id)
+        # user_id means the SCOOTER user and nothing else. Resolution never got that far
+        # here, so it must be ABSENT rather than holding a token that joins to nothing.
+        assert not hasattr(rec, "user_id")
+
+
+@pytest.mark.asyncio
+async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(monkeypatch, caplog):
+    """The success line carries the Scooter id (what the rest of the system keys on),
+    pseudonymized so a leaked log cannot be joined against a database dump."""
+    import logging as _logging
+
+    from webhooks import identity_resolve as ir
+
+    external = "U-EXTERNAL-123"
+    email = "alice@example.com"
+    db_user_id = "scooter-user-abc123"
+
+    async def _email(provider, ext):
+        return email
+
+    async def _lookup(_email):
+        return db_user_id
+
+    monkeypatch.setattr(ir, "get_user_email", _email)
+    monkeypatch.setattr(ir, "_scooter_user_for_email", _lookup)
+
+    with caplog.at_level(_logging.INFO):
+        got = await ir.resolve_owner("slack", external)
+
+    assert got == db_user_id  # the caller still receives the real id
+    rec = next(r for r in caplog.records if "resolved external user" in r.getMessage())
+
+    # The logged id is the pseudonymized SCOOTER id...
+    assert rec.user_id == ir.pseudonym(db_user_id)
+    # ...and NEITHER the raw db id, the external id, nor the email appears anywhere.
+    for value in rec.__dict__.values():
+        assert value not in (db_user_id, external, email)

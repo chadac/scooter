@@ -4,6 +4,7 @@
  * human-initiated triggers (the compliance guardrail). See todo/docs/BYO_CLAUDE_REMOTE_AGENT.md.
  */
 
+import { formatError, logger } from "../log.js";
 import type { AcpClient } from "./client.js";
 import type { ExecBackend } from "../types.js";
 import type { AcpProvider, RunContext } from "./provider.js";
@@ -12,6 +13,9 @@ import { createByocTransport } from "./byocTransport.js";
 import { offeredTunnelServers } from "./tunnelTargets.js";
 import { startTunnelClient } from "./tunnelClient.js";
 import type { RemoteTransport } from "./remoteProtocol.js";
+
+const log = logger("remote-personalized");
+const tunnelLog = logger("tunnel");
 
 /**
  * HUMAN-TRIGGER allowlist — the compliance guardrail. A BYO remote agent may ONLY be driven by a
@@ -132,10 +136,13 @@ export function createRemotePersonalizedProvider(deps: {
       const hasOwner = ctx.owner !== undefined;
       const human = isHumanTrigger(ctx.source);
       if (!hasOwner || !human) {
-        console.log(
-          `[remote-personalized] SKIP owner=${ctx.owner ?? "-"} source=${ctx.source ?? "(undefined=ui)"} ` +
-            `hasOwner=${hasOwner} humanTrigger=${human} -> falling to the cloud floor`,
-        );
+        log.info("SKIP — falling to the cloud floor", {
+          conversation_id: ctx.conversationId,
+          owner: ctx.owner,
+          source: ctx.source,
+          has_owner: hasOwner,
+          human_trigger: human,
+        });
         return false;
       }
       const owner = ctx.owner as string;
@@ -144,25 +151,38 @@ export function createRemotePersonalizedProvider(deps: {
           headers: { Accept: "application/json" },
         });
         if (!res.ok) {
-          console.log(`[remote-personalized] SKIP owner=${owner} controller status ${res.status}`);
+          log.info("SKIP — controller status not ok", {
+            conversation_id: ctx.conversationId,
+            owner,
+            status: res.status,
+          });
           return false;
         }
         const body = (await res.json()) as { sessionId?: string; status?: string };
         // "connected" is the ONLY state that can serve a run: "minted" means the session exists but
         // the container has not dialled in, so routing a prompt there would hang.
         if (body.status !== "connected" || !body.sessionId) {
-          console.log(
-            `[remote-personalized] SKIP owner=${owner} controller says ${body.status ?? "?"} ` +
-              `-> falling to the cloud floor`,
-          );
+          log.info("SKIP — container not connected, falling to the cloud floor", {
+            conversation_id: ctx.conversationId,
+            owner,
+            byoc_status: body.status,
+          });
           return false;
         }
         resolved.set(owner, body.sessionId);
-        console.log(`[remote-personalized] SELECTED owner=${owner} session=${body.sessionId}`);
+        log.info("SELECTED", {
+          conversation_id: ctx.conversationId,
+          owner,
+          session_id: body.sessionId,
+        });
         return true;
       } catch (err) {
         // A controller outage must cost the user their personal model for this run, NOT the run.
-        console.log(`[remote-personalized] SKIP owner=${owner} controller unreachable (${String(err)})`);
+        log.info("SKIP — controller unreachable", {
+          conversation_id: ctx.conversationId,
+          owner,
+          error: formatError(err),
+        });
         return false;
       }
     },
@@ -182,8 +202,10 @@ export function createRemotePersonalizedProvider(deps: {
       // inbound stream open for as long as this client lives. Only when scooter-env is actually
       // offered — no offer means no streams to serve.
       if (!deps.mcpUrlFor) {
-        // eslint-disable-next-line no-console
-        console.log(`[tunnel] NOT started for ${sessionId}: no MCP endpoint configured — the BYO agent gets sandbox tools only`);
+        tunnelLog.info("NOT started: no MCP endpoint configured — the BYO agent gets sandbox tools only", {
+          conversation_id: ctx.conversationId,
+          session_id: sessionId,
+        });
       }
       const tunnelClient = deps.mcpUrlFor
         ? startTunnelClient({

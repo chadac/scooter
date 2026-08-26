@@ -22,6 +22,7 @@ from ..identity_resolve import resolve_owner
 from ..responses.gitlab import post_gitlab_comment
 
 logger = logging.getLogger(__name__)
+_C = {"component": "handlers.gitlab"}
 router = APIRouter()
 
 _JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
@@ -76,8 +77,15 @@ async def _infer_conversation_from_jira(
         if conv_id:
             await db.link_resource(conv_id, "gitlab", gitlab_resource_type, gitlab_resource_id)
             logger.info(
-                "Auto-linked gitlab/%s/%s to conversation %s (via Jira %s)",
-                gitlab_resource_type, gitlab_resource_id, conv_id, key,
+                "auto-linked gitlab resource to conversation via jira",
+                extra={
+                    **_C,
+                    "conversation_id": conv_id,
+                    "source": "gitlab",
+                    "resource_type": gitlab_resource_type,
+                    "resource_id": gitlab_resource_id,
+                    "jira_key": key,
+                },
             )
             return conv_id
     return None
@@ -177,7 +185,7 @@ async def handle_gitlab_webhook(
     payload = await request.json()
     event_type = x_gitlab_event
 
-    logger.info("Received GitLab event: %s", event_type)
+    logger.info("received event", extra={**_C, "source": "gitlab", "event_type": event_type})
 
     if event_type == "Note Hook":
         await _handle_note(payload)
@@ -186,7 +194,7 @@ async def handle_gitlab_webhook(
     elif event_type == "Merge Request Hook":
         await _handle_merge_request(payload)
     else:
-        logger.debug("Ignoring GitLab event type: %s", event_type)
+        logger.debug("ignoring event type", extra={**_C, "source": "gitlab", "event_type": event_type})
 
     return {"status": "ok"}
 
@@ -281,7 +289,16 @@ async def _handle_note(payload: dict):
         ok = await send_message(existing, forward_msg, priority=has_mention, source="gitlab")
         if ok:
             return
-        logger.warning("Failed to send to existing conversation %s, creating new one", existing)
+        logger.warning(
+            "send to existing conversation failed, creating a new one",
+            extra={
+                **_C,
+                "conversation_id": existing,
+                "source": "gitlab",
+                "resource_type": res_type,
+                "resource_id": res_id,
+            },
+        )
 
     await db.store_conversation("gitlab", res_type, res_id, PENDING_CONVERSATION_ID)
 
@@ -439,10 +456,16 @@ async def _background_create_conversation(
         for msg in messages:
             ok = await send_message(conv_id, msg, source="gitlab")
             if not ok:
-                logger.warning("Failed to flush pending message to conversation %s", conv_id)
+                logger.warning(
+                    "flush of pending message failed",
+                    extra={**_C, "conversation_id": conv_id, "source": source, "resource_id": res_id},
+                )
     except Exception:
         await _clear_pending(source, res_type, res_id)
-        logger.exception("Error in background conversation creation for %s", res_id)
+        logger.exception(
+            "background conversation creation failed",
+            extra={**_C, "source": source, "resource_type": res_type, "resource_id": res_id},
+        )
 
 
 async def _clear_pending(source: str, res_type: str, res_id: str) -> None:

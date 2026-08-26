@@ -17,6 +17,9 @@ import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile
 import { hasDanglingRun } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
+import { formatError, logger } from "../log.js";
+
+const log = logger("manager");
 
 /** The synthetic prompt sent to resume a run interrupted by an agent-host restart.
  *  Not the user's literal prompt (which would re-do work / double-post): a nudge
@@ -492,7 +495,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     for (const cb of subagentCompleteSubs) {
       try { cb(subagentId, parentId); } catch (err) {
         // eslint-disable-next-line no-console
-        console.error(`[manager] onSubagentComplete listener threw for ${subagentId}:`, err);
+        log.errorWith("onSubagentComplete listener threw", err, { subagent_id: subagentId });
       }
     }
   };
@@ -574,7 +577,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       metas = (await store.listConversations?.()) ?? [];
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[manager] hydrateByThread(${threadId}) store lookup FAILED (may create a duplicate):`, err);
+      log.errorWith("hydrateByThread store lookup failed; may create a duplicate", err, {
+        conversation_id: threadId,
+      });
       return undefined;
     }
     let m = metas.find((x) => x.threadId === threadId);
@@ -823,7 +828,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         try {
           deps.onRevived?.(id);
         } catch (err) {
-          console.error(`[manager] onRevived hook failed for ${id}:`, err);
+          log.errorWith("onRevived hook failed", err, { conversation_id: id });
         }
       }
       // RE-ENQUEUE anything that was still queued when this conversation was suspended.
@@ -867,14 +872,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           const before = pending.length;
           pending = pending.filter((p) => !loggedUserTexts.has(p.text));
           if (pending.length !== before) {
-            console.warn(
-              `[manager] revive(${id}): skipping ${before - pending.length} already-logged message(s) (in-flight replay dedupe)`,
-            );
+            log.warn("revive: skipping already-logged messages (in-flight replay dedupe)", {
+              conversation_id: id,
+              skipped: before - pending.length,
+            });
           }
         } catch (err) {
           // A read failure must not block the revive. Replaying is the safer default:
           // a possible duplicate turn beats silently dropping the user's message.
-          console.error(`[manager] revive(${id}) replay dedupe read failed (replaying all):`, err);
+          log.errorWith("revive: replay dedupe read failed, replaying all", err, { conversation_id: id });
         }
       }
       if (pending.length > 0 || (entry.pendingQueue?.length ?? 0) > 0) {
@@ -890,7 +896,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
               item.priority ? { priority: item.priority } : undefined,
             )
             .catch((err) => {
-              console.error(`[manager] re-enqueued message failed for ${id}:`, err);
+              log.errorWith("re-enqueued message failed", err, { conversation_id: id });
             });
         }
       }
@@ -920,7 +926,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entries.get(id)) {
         if (deps.hydrateFromMirror) {
           const pulled = await deps.hydrateFromMirror(id).catch((err) => {
-            console.error(`[manager] reviveFromMirror(${id}) mirror pull failed:`, err);
+            log.errorWith("reviveFromMirror: mirror pull failed", err, { conversation_id: id });
             return false;
           });
           if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
@@ -938,15 +944,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
       try {
         if (hasDanglingRun(await collectEvents(store.readEvents(id)))) {
-          console.log(`[manager] reviveFromMirror(${id}): resuming a dangling run`);
+          log.info("reviveFromMirror: resuming a dangling run", { conversation_id: id });
           // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
           // role:user turn) which the UI hides — the nudge is internal, not a user message.
           void this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume").catch((err) =>
-            console.error(`[manager] reviveFromMirror(${id}) dangling-run resume failed:`, err),
+            log.errorWith("reviveFromMirror: dangling-run resume failed", err, { conversation_id: id }),
           );
         }
       } catch (err) {
-        console.error(`[manager] reviveFromMirror(${id}) dangling-run check failed:`, err);
+        log.errorWith("reviveFromMirror: dangling-run check failed", err, { conversation_id: id });
       }
     },
 
@@ -960,7 +966,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // a suspended placeholder; the next prompt revives the pod on demand.
       if (deps.hydrateFromMirror) {
         await deps.hydrateFromMirror(id).catch((err) => {
-          console.error(`[manager] ensureReadable(${id}) mirror pull failed:`, err);
+          log.errorWith("ensureReadable: mirror pull failed", err, { conversation_id: id });
           return false;
         });
       }
@@ -1126,7 +1132,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         metas = (await store.listConversations?.()) ?? [];
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error(`[manager] getByShortId(${shortHash}) store lookup FAILED:`, err);
+        log.errorWith("getByShortId store lookup failed", err, { short_id: shortHash });
         return undefined;
       }
       const m = metas.find((x) => shortId(x.threadId) === shortHash);
@@ -1220,12 +1226,21 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             // create() recovers a wrong map per-prompt; a periodic re-hydrate would
             // self-heal fully (a follow-up). Log loudly so it's observable.
             // eslint-disable-next-line no-console
-            console.error(`[manager] hydrate reconcile FAILED after ${RETRIES} attempts — assuming all suspended (pod-leak risk if persistent):`, err);
+            log.errorWith(
+              "hydrate reconcile failed; assuming all suspended (pod-leak risk if persistent)",
+              err,
+              { attempts: RETRIES },
+            );
           } else {
             // Exponential backoff (250ms, 500, 1s, 2s) to ride out a boot blip.
             const delay = 250 * 2 ** attempt;
             // eslint-disable-next-line no-console
-            console.warn(`[manager] hydrate reconcile attempt ${attempt + 1}/${RETRIES} failed (retrying in ${delay}ms):`, (err as Error)?.message ?? err);
+            log.warn("hydrate reconcile attempt failed; retrying", {
+              attempt: attempt + 1,
+              attempts: RETRIES,
+              retry_in_ms: delay,
+              error: formatError(err),
+            });
             await new Promise((r) => setTimeout(r, delay));
           }
         }
@@ -1313,12 +1328,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           if (hasDanglingRun(events)) candidates.push(entry.id);
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.error(`[manager] resumeInterrupted: reading ${entry.id}'s log failed (skipping):`, err);
+          log.errorWith("resumeInterrupted: reading the log failed, skipping", err, {
+            conversation_id: entry.id,
+          });
         }
       }
       if (candidates.length === 0) return [];
       // eslint-disable-next-line no-console
-      console.log(`[manager] resuming ${candidates.length} interrupted conversation(s) after restart`);
+      log.info("resuming interrupted conversations after restart", { count: candidates.length });
 
       // Bounded concurrency: revive + nudge each. A cold start could have many, so
       // don't spawn every goose at once. prompt() revives if there's no bridge.
@@ -1334,7 +1351,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             resumed.push(id);
           } catch (err) {
             // eslint-disable-next-line no-console
-            console.error(`[manager] resumeInterrupted: resuming ${id} failed:`, err);
+            log.errorWith("resumeInterrupted: resume failed", err, { conversation_id: id });
           }
         }
       };
@@ -1381,7 +1398,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           try {
             jobRunning = await deps.hasRunningBackgroundJob(entry.id);
           } catch (err) {
-            console.error(`[manager] background-job check failed for ${entry.id} (suspending anyway):`, err);
+            log.errorWith("background-job check failed; suspending anyway", err, {
+              conversation_id: entry.id,
+            });
           }
           if (jobRunning) continue;
         }
@@ -1393,7 +1412,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // suspend ALWAYS fails leaks a pod forever with zero signal. Log it so a
           // chronically-unsuspendable conversation is visible.
           // eslint-disable-next-line no-console
-          console.error(`[manager] idle-suspend failed for ${entry.id} (will retry next sweep):`, err);
+          log.errorWith("idle-suspend failed; will retry next sweep", err, { conversation_id: entry.id });
         }
       }
       return suspended;
@@ -1437,7 +1456,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // Best-effort: a failed reap retries next sweep. Log so a conversation that
           // can NEVER be reaped (e.g. a wedged provisioner.destroy) is visible.
           // eslint-disable-next-line no-console
-          console.error(`[manager] retention reap failed for ${entry.id} (will retry next sweep):`, err);
+          log.errorWith("retention reap failed; will retry next sweep", err, { conversation_id: entry.id });
         }
       }
       return reaped;

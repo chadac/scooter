@@ -12,11 +12,38 @@ from __future__ import annotations
 
 import logging
 
+import hashlib
+
 import httpx
 
 from .config import settings
+from .logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "identity_resolve"}
+
+
+def pseudonym(value: str | None) -> str | None:
+    """A stable, non-reversible stand-in for an identifier, for logs.
+
+    Identifiers are personal data (a Slack id, a GitHub login, an email) or joinable to
+    it (our own user_identity.id), so none is logged raw. A stable token still lets a
+    reader tell whether the SAME principal keeps failing, which is what makes a lookup
+    failure diagnosable at all.
+
+    Each identifier keeps its own field — user_id, external_user, email — because these
+    are different tokens for the same person and one field holding several would split
+    that person across a query.
+
+    Not an HMAC: there is no stable key here (the per-provider webhook secrets rotate,
+    which would break correlation). So this resists an operator reading logs, not an
+    attacker brute-forcing a small id space. Not cached: 0.34 us, and at most one call
+    per delivery.
+    """
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
 
 _SLACK_API = "https://slack.com/api"
 _GITHUB_API = "https://api.github.com"
@@ -38,11 +65,17 @@ async def _slack_email(user_id: str) -> str | None:
             )
             data = resp.json()
         if not data.get("ok"):
-            logger.info("slack users.info(%s) not ok: %s", user_id, data.get("error"))
+            logger.info(
+                "slack users.info not ok",
+                extra={**_C, "provider": "slack", "external_user": pseudonym(user_id), "slack_error": data.get("error")},
+            )
             return None
         return (data.get("user", {}).get("profile", {}) or {}).get("email") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("slack email lookup failed for %s: %s", user_id, e)
+        logger.warning(
+            "email lookup failed",
+            extra={**_C, "provider": "slack", "external_user": pseudonym(user_id), "error": format_error(e)},
+        )
         return None
 
 
@@ -61,7 +94,10 @@ async def _github_email(login: str) -> str | None:
                 return None
             return resp.json().get("email") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("github email lookup failed for %s: %s", login, e)
+        logger.warning(
+            "email lookup failed",
+            extra={**_C, "provider": "github", "external_user": pseudonym(login), "error": format_error(e)},
+        )
         return None
 
 
@@ -85,7 +121,10 @@ async def _gitlab_email(username: str) -> str | None:
             return None
         return users[0].get("email") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("gitlab email lookup failed for %s: %s", username, e)
+        logger.warning(
+            "email lookup failed",
+            extra={**_C, "provider": "gitlab", "external_user": pseudonym(username), "error": format_error(e)},
+        )
         return None
 
 
@@ -111,7 +150,17 @@ async def _scooter_user_for_email(email: str) -> str | None:
                 return None
             return resp.json().get("id") or None
     except (httpx.HTTPError, ValueError) as e:
-        logger.warning("by-email lookup failed for %s: %s", email, e)
+        # Domain alongside the pseudonym: it separates a misconfigured tenant from a
+        # missing user, and names an organisation rather than a person.
+        logger.warning(
+            "by-email lookup failed",
+            extra={
+                **_C,
+                "email": pseudonym(email),
+                "email_domain": email.rpartition("@")[2] or None,
+                "error": format_error(e),
+            },
+        )
         return None
 
 
@@ -126,5 +175,8 @@ async def resolve_owner(provider: str, external_id: str) -> str | None:
         return None
     owner = await _scooter_user_for_email(email)
     if owner:
-        logger.info("resolved %s user %s -> scooter user %s", provider, external_id, owner)
+        logger.info(
+            "resolved external user to scooter user",
+            extra={**_C, "provider": provider, "user_id": pseudonym(owner)},
+        )
     return owner

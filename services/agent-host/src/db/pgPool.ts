@@ -21,6 +21,7 @@
  * `max` and any extra options are per-caller; these defaults can be overridden.
  */
 
+import { formatError, logger } from "../log.js";
 import { Pool, type PoolConfig } from "pg";
 
 export interface PgPoolOptions extends PoolConfig {
@@ -42,8 +43,7 @@ export function createPgPool(label: string, opts: PgPoolOptions): Pool {
   // pg emits 'error' on the pool for backend/idle-client failures — log and continue
   // so a DB blip never crashes the process.
   pool.on("error", (err) => {
-    // eslint-disable-next-line no-console
-    console.error(`[${label}] idle pg client error (non-fatal):`, err.message);
+    logger(label).error("idle pg client error (non-fatal)", { error: formatError(err) });
   });
   return pool;
 }

@@ -6,8 +6,10 @@ import time
 import httpx
 
 from ..config import settings
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
+_C = {"component": "responses.jira"}
 
 _token_cache: dict[str, str | float] = {}
 
@@ -45,7 +47,7 @@ async def _get_access_token() -> str | None:
             _token_cache["expires_at"] = now + expires_in - 60  # refresh 60s early
             return token
     except httpx.HTTPError as e:
-        logger.error("Failed to get Atlassian OAuth token: %s", e)
+        logger.error("get atlassian oauth token failed", extra={**_C, "error": format_error(e)})
         return None
 
 
@@ -89,10 +91,16 @@ async def post_jira_comment(issue_key: str, body: str) -> str | None:
             resp.raise_for_status()
             data = resp.json()
             comment_id = data.get("id")
-            logger.info("Posted Jira comment %s on %s", comment_id, issue_key)
+            logger.info(
+                "posted comment",
+                extra={**_C, "comment_id": comment_id, "issue_key": issue_key},
+            )
             return comment_id
     except httpx.HTTPError as e:
-        logger.error("Failed to post Jira comment on %s: %s", issue_key, e)
+        logger.error(
+            "post comment failed",
+            extra={**_C, "issue_key": issue_key, "error": format_error(e)},
+        )
         return None
 
 
@@ -119,9 +127,15 @@ async def update_jira_comment(issue_key: str, comment_id: str, body: str) -> Non
                 json=adf_body,
             )
             resp.raise_for_status()
-            logger.debug("Updated Jira comment %s on %s", comment_id, issue_key)
+            logger.debug(
+                "updated comment",
+                extra={**_C, "comment_id": comment_id, "issue_key": issue_key},
+            )
     except httpx.HTTPError as e:
-        logger.error("Failed to update Jira comment %s on %s: %s", comment_id, issue_key, e)
+        logger.error(
+            "update comment failed",
+            extra={**_C, "comment_id": comment_id, "issue_key": issue_key, "error": format_error(e)},
+        )
 
 
 async def get_jira_issue(issue_key: str) -> dict | None:
@@ -136,5 +150,8 @@ async def get_jira_issue(issue_key: str) -> dict | None:
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPError as e:
-        logger.error("Failed to get Jira issue %s: %s", issue_key, e)
+        logger.error(
+            "get issue failed",
+            extra={**_C, "issue_key": issue_key, "error": format_error(e)},
+        )
         return None

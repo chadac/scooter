@@ -22,6 +22,7 @@ import logging
 import time
 
 from .models import StsCredentials
+from ..logging_config import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,14 @@ class IamProvisioner:
             ],
         )
         arn = resp["Policy"]["Arn"]
-        logger.info("created dynamic policy %s in %s", arn, target_account)
+        logger.info(
+            "created dynamic policy",
+            extra={
+                "request_id": request_id,
+                "target_account": target_account,
+                "policy_arn": arn,
+            },
+        )
         return arn
 
     def create_dynamic_role(
@@ -132,7 +140,14 @@ class IamProvisioner:
                 Tags=[{"Key": "agent-permissions-broker", "Value": "true"}, {"Key": "request-id", "Value": request_id}],
             )
         except ClientError:
-            logger.warning("could not tag role %s (non-fatal)", role_name)
+            logger.warning(
+                "could not tag role (non-fatal)",
+                extra={
+                    "request_id": request_id,
+                    "target_account": target_account,
+                    "role_name": role_name,
+                },
+            )
 
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
         if policy_arn:
@@ -178,7 +193,16 @@ class IamProvisioner:
                 break
             except ClientError as e:
                 if retry and "AccessDenied" in str(e) and i < attempts - 1:
-                    logger.info("assume_role attempt %d failed (propagation), retrying", i + 1)
+                    logger.info(
+                        "assume_role failed on propagation; retrying",
+                        extra={
+                            "role_arn": role_arn,
+                            "attempt": i + 1,
+                            "attempts": attempts,
+                            "retry_in_ms": 5000,
+                            "error": format_error(e),
+                        },
+                    )
                     time.sleep(5)
                 else:
                     raise
@@ -202,7 +226,10 @@ class IamProvisioner:
         except ClientError as e:
             if e.response["Error"]["Code"] == "NoSuchEntity":
                 return True
-            logger.exception("failed to delete policy %s", policy_arn)
+            logger.exception(
+                "failed to delete policy",
+                extra={"target_account": target_account, "policy_arn": policy_arn},
+            )
             return False
 
     def delete_dynamic_role(self, *, target_account: str, role_arn: str, policy_arn: str | None) -> bool:
@@ -234,7 +261,15 @@ class IamProvisioner:
                 _ignore_missing(lambda: iam.delete_policy(PolicyArn=policy_arn))
             return True
         except Exception:
-            logger.exception("failed to delete role %s", role_arn)
+            logger.exception(
+                "failed to delete role",
+                extra={
+                    "target_account": target_account,
+                    "role_arn": role_arn,
+                    "role_name": role_name,
+                    "policy_arn": policy_arn,
+                },
+            )
             return False
 
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -100,7 +101,10 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := creator.Create(ctx, id, spec); err != nil {
-		logf("conversation create failed for %s: %v", id, err)
+		logger("create").Error("conversation create failed",
+			convAttr(id),
+			slog.String("owner", owner),
+			errAttr(err))
 		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("could not create conversation: %v", err))
 		return
 	}

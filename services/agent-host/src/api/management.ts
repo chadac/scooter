@@ -32,7 +32,11 @@ import type { AssetStore } from "../session/assetStore.js";
 import type { SchedulerClient } from "../agent/schedulerTools.js";
 import type { SandboxResources } from "../session/resources.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
+import { logger } from "../log.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
+
+const log = logger("agent-host");
+const remoteAgentLog = logger("remote-agent");
 
 /** Public (JSON-safe) view of a conversation — omits the in-memory bridge.
  *  Exposes activity metadata (lastActivityAt, idleMs, ageMs) so the UI and any
@@ -226,11 +230,11 @@ export function raiseAwsApprovalInterrupt(
       // loses the user's security decision.
       void resolveAwsRequest?.(conversationId, req.request_id, optionId === "approve", approverIdentity).catch(
         (err) => {
-          // eslint-disable-next-line no-console
-          console.error(
-            `[agent-host] AWS approval NOT recorded for ${conversationId} (request ${req.request_id}, ${optionId}):`,
-            err,
-          );
+          log.errorWith("AWS approval NOT recorded", err, {
+            conversation_id: conversationId,
+            request_id: req.request_id,
+            decision: optionId,
+          });
         },
       );
     },
@@ -279,8 +283,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       // Return the raw token + the ready-to-copy one-liner (token baked in) + the wss URL.
       return { json: { token, dockerCommand, wsUrl } };
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[remote-agent] join-token mint failed for ${ctx.user.id}:`, err);
+      remoteAgentLog.errorWith("join-token mint failed", err, { user_id: ctx.user.id });
       // 503 (dependency unavailable), naming the dependency — and deliberately NOT echoing
       // err.message: this response gets logged/screenshotted, and an error path must never
       // carry token material or internals. The full error is in the host log above.
@@ -999,7 +1002,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
         await sessions.revive(conv.id);
         bridge = sessions.get(conv.id)?.bridge;
       } catch (err) {
-        console.error(`[agent-host] aws-request could not revive ${conv.id}:`, err);
+        log.errorWith("aws-request could not revive", err, { conversation_id: conv.id });
       }
     }
     if (!bridge) return { status: 503, json: { error: "could not activate conversation to raise the approval" } };

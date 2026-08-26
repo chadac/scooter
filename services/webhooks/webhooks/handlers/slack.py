@@ -30,6 +30,7 @@ from ..responses.slack import (
 )
 
 logger = logging.getLogger(__name__)
+_C = {"component": "handlers.slack"}
 router = APIRouter()
 
 _bot_user_id: str | None = None
@@ -211,9 +212,8 @@ async def handle_slack_event(request: Request):
         if _already_handled(event_id):
             retry = request.headers.get("x-slack-retry-num", "")
             logger.info(
-                "Slack event %s already handled — dropping duplicate%s",
-                event_id,
-                f" (retry {retry})" if retry else "",
+                "event already handled, dropping duplicate",
+                extra={**_C, "source": "slack", "event_id": event_id, "retry_num": retry or None},
             )
             return {"status": "ok", "deduped": True}
         event = payload.get("event", {})
@@ -260,7 +260,10 @@ async def _format_thread_history(channel: str, thread_ts: str, up_to_ts: str) ->
     try:
         messages = await get_thread_history(channel, thread_ts)
     except Exception:
-        logger.exception("Failed to fetch Slack thread history for %s/%s", channel, thread_ts)
+        logger.exception(
+            "thread history fetch failed",
+            extra={**_C, "source": "slack", "channel": channel, "thread_ts": thread_ts},
+        )
         return ""
     bot_id = await _get_bot_id()
     lines: list[str] = []
@@ -303,7 +306,10 @@ async def _handle_mention(event: dict):
     # event (which _handle_thread_message skips, never dispatching) can't pre-empt
     # us. Keyed on the message `ts` (what the twins share), not thread_ts.
     if _message_already_dispatched(channel, ts):
-        logger.info("Slack mention %s:%s already dispatched — dropping the twin", channel, ts)
+        logger.info(
+            "message already dispatched, dropping the twin",
+            extra={**_C, "source": "slack", "channel": channel, "message_ts": ts, "event": "app_mention"},
+        )
         return
 
     res_id = _resource_id(channel, thread_ts)
@@ -413,7 +419,10 @@ async def _handle_thread_message(event: dict):
     # again here. Covers the case where the mention text was stripped/rewritten on
     # this `message` twin so the text skip above missed it (the reported duplicate).
     if _message_already_dispatched(channel, ts):
-        logger.info("Slack message %s:%s already dispatched — skipping the thread-message twin", channel, ts)
+        logger.info(
+            "message already dispatched, dropping the twin",
+            extra={**_C, "source": "slack", "channel": channel, "message_ts": ts, "event": "message"},
+        )
         return
 
     res_id = _resource_id(channel, thread_ts)
@@ -470,7 +479,10 @@ async def _background_forward(
     force-interrupts a stuck turn after the agent-host's priority timeout."""
     ok = await send_message(existing, forward_msg, priority=priority, images=images, files=files, source="slack")
     if not ok:
-        logger.warning("Failed to forward message to conversation %s", existing)
+        logger.warning(
+            "forward message to conversation failed",
+            extra={**_C, "conversation_id": existing, "source": "slack", "priority": priority},
+        )
 
 
 async def _background_create_conversation(
@@ -547,10 +559,16 @@ async def _background_create_conversation(
         for msg in messages:
             ok = await send_message(conv_id, msg, source="slack")
             if not ok:
-                logger.warning("Failed to flush pending message to conversation %s", conv_id)
+                logger.warning(
+                    "flush of pending message failed",
+                    extra={**_C, "conversation_id": conv_id, "source": "slack", "resource_id": res_id},
+                )
     except Exception:
         await _clear_pending(res_id)
-        logger.exception("Error in background conversation creation for Slack %s", res_id)
+        logger.exception(
+            "background conversation creation failed",
+            extra={**_C, "source": "slack", "resource_type": "thread", "resource_id": res_id},
+        )
 
 
 async def _clear_pending(res_id: str) -> None:
