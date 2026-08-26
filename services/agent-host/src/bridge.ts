@@ -1159,11 +1159,21 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         }
       }
       const promptBlocks = [...textBlocks, ...imageBlocks];
+        // The turn boundary, structured. A turn that produces neither a reply NOR an
+        // error left no trace at all on a real cluster — debug() only surfaces behind a
+        // flag, so the whole prompt path was silent. These two lines bracket the one
+        // call that can hang, and say which provider actually took the run.
+        log.info("acp prompt: sending", {
+          run_id: st.runId,
+          blocks: promptBlocks.length,
+          has_session: acpSessionId !== undefined,
+        });
       const { stopReason } = await acpClient!.prompt({
         sessionId: acpSessionId!,
         prompt: promptBlocks,
       });
       debug("[bridge] prompt: stopReason=%s", stopReason);
+        log.info("acp prompt: returned", { run_id: st.runId, stop_reason: stopReason });
       // The ACP prompt response can resolve before the final session/update
       // notifications have been dispatched. Drain a macrotask so trailing
       // text/reasoning chunks are processed (their messages opened) BEFORE we

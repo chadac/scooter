@@ -218,7 +218,13 @@ const persist = (s: State) => {
  *  one would become an event-log key and a k8s resource name — so the app injects a minter
  *  that calls POST /conversations. Defaults to crypto.randomUUID() so the store stays a pure,
  *  synchronously-testable module and works before the app has wired a backend. */
-let mintId: () => Promise<string | null> = async () => crypto.randomUUID();
+let mintId: () => Promise<string | null> = async () => {
+  // LOUD. This default exists so the store stays synchronously testable, but if it ever
+  // runs in the app the client invents an id the server never issued — which then reaches
+  // the URL and the stream, and the conversation cannot be found. Silent for years; say so.
+  console.warn("[sessions] mintId FELL BACK to a client UUID — setConversationMinter was not installed");
+  return crypto.randomUUID();
+};
 
 /** Install the server-backed id minter. Called once at app start. */
 export const setConversationMinter = (fn: () => Promise<string | null>) => {

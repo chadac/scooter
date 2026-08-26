@@ -154,7 +154,7 @@ cluster-platform: cluster-up
       "broker-image=agent-broker:latest" \
       "webhooks-image=agent-webhooks:latest" \
       "ui-image=agent-sandbox-ui:latest"; do
-      attr="${img%%=*}"; name="${img#*=}"
+      attr="${img%%=*}"; name="${img#*=}"; name="${name%%:*}"
       echo "==> $name"
       nix run ".#${attr}.copyTo" -- "docker-daemon:${name}"
     done
@@ -183,7 +183,12 @@ cluster-platform: cluster-up
 # cluster that does not exist (CI's is scooter-ci, cluster-up.sh's is agent-sandbox).
 _K3D_CLUSTER := env_var_or_default("K3D_CLUSTER", "agent-sandbox")
 
-_PLATFORM_IMAGES := "agent-host-image=agent-host conversation-controller-image=conversation-controller conversation-router-image=conversation-router broker-image=agent-broker webhooks-image=agent-webhooks ui-image=agent-sandbox-ui"
+# attr=image:deployment. The DEPLOYMENT is named explicitly because deriving it from the
+# image name silently failed: agent-sandbox-ui strips to "sandbox-ui" but the deployment is
+# "ui", so `ui` was rebuilt and imported and then NEVER RESTARTED — the cluster served a
+# 5-hour-old bundle while the fingerprint reported current, and several conclusions were
+# drawn against stale code before anyone checked the served asset.
+_PLATFORM_IMAGES := "agent-host-image=agent-host:agent-host conversation-controller-image=conversation-controller:conversation-controller conversation-router-image=conversation-router:conversation-router broker-image=agent-broker:agent-broker webhooks-image=agent-webhooks:agent-webhooks ui-image=agent-sandbox-ui:ui"
 
 # Print the content fingerprint of every platform image (cheap: eval, no build).
 [private]
@@ -217,7 +222,7 @@ cluster-redeploy:
     echo "rebuilding: ${changed[*]}"
     names=()
     for pair in {{_PLATFORM_IMAGES}}; do
-      attr="${pair%%=*}"; name="${pair#*=}"
+      attr="${pair%%=*}"; rest="${pair#*=}"; name="${rest%%:*}"
       for c in "${changed[@]}"; do
         [ "$c" = "$attr" ] || continue
         nix run ".#${attr}.copyTo" -- "docker-daemon:${name}:latest"
@@ -228,16 +233,17 @@ cluster-redeploy:
     # imagePullPolicy is IfNotPresent on side-loaded images, so a restart is what
     # actually picks up the new layers — `set image` would be a no-op at :latest.
     for pair in {{_PLATFORM_IMAGES}}; do
-      name="${pair#*=}"
-      dep=$(kubectl -n agent-sandbox get deploy -o name 2>/dev/null | grep -E "/(${name}|${name#agent-})$" || true)
-      [ -n "$dep" ] && kubectl -n agent-sandbox rollout restart "$dep" || true
+      rest="${pair#*=}"; dep="deployment/${rest#*:}"
+      kubectl -n agent-sandbox rollout restart "$dep" >/dev/null || true
     done
-    kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$want" --overwrite >/dev/null
     for pair in {{_PLATFORM_IMAGES}}; do
-      name="${pair#*=}"
-      dep=$(kubectl -n agent-sandbox get deploy -o name 2>/dev/null | grep -E "/(${name}|${name#agent-})$" || true)
-      [ -n "$dep" ] && kubectl -n agent-sandbox rollout status "$dep" --timeout=300s || true
+      rest="${pair#*=}"; dep="deployment/${rest#*:}"
+      kubectl -n agent-sandbox rollout status "$dep" --timeout=300s >/dev/null || true
     done
+    # STAMP ONLY AFTER THE ROLLOUTS SUCCEED. Stamping first meant a redeploy that failed
+    # to restart anything still reported "current", and the guard then cleared a stale
+    # cluster to run — which is exactly how a 5-hour-old UI bundle passed as fresh.
+    kubectl -n agent-sandbox annotate deployment/ui "scooter.dev/fingerprint=$want" --overwrite >/dev/null
     echo "redeployed"
 # Run the cluster-project specs against the local platform (port-forwards the UI).
 e2e-cluster *ARGS:
