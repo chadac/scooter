@@ -1192,3 +1192,46 @@ describe("SessionManager", () => {
     }
   });
 });
+
+
+describe("sweepIdle is OWNER-ONLY (the zombie-sandbox bug)", () => {
+  it("a non-owner neither suspends NOR probes an idle conversation", async () => {
+    // The #297 residual, observed on valhalla as three sandbox pods running 9-12h with
+    // their conversations phase=Suspended: BOTH pods held the same (dual-adopted)
+    // conversation and both swept it ~3.5s apart. The second sweeper's background-job
+    // EXEC PROBE rides the pollForReadyPod self-heal, which RESUMED the sandbox the
+    // first sweeper had just suspended — and with the conversation then evicted from
+    // every pod, nothing ever re-suspended it. The probe is the destructive half, so
+    // this asserts the non-owner does not probe AT ALL, not merely that it skips the
+    // suspend.
+    const provisioner = fakeProvisioner();
+    let probes = 0;
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      hasRunningBackgroundJob: async () => {
+        probes++;
+        return false;
+      },
+      ownershipGuard: { canWrite: () => false }, // another pod owns everything
+    });
+    const conv = await sessions.start("thread-zombie");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+
+    expect(await sessions.sweepIdle(60_000, idleAt)).not.toContain(conv.id);
+    expect(probes, "a non-owner must not fire the exec probe — the probe is what resumes").toBe(0);
+    expect((provisioner.suspend as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("the owner still sweeps normally", async () => {
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      ownershipGuard: { canWrite: () => true },
+    });
+    const conv = await sessions.start("thread-owned");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+    expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
+  });
+});

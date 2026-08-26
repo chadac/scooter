@@ -44,6 +44,7 @@ class ConversationState:
     # for alive/suspended — see the drift rule in reconcile() and
     # todo/docs/CONVERSATION_PHASE_DRIFT_RECONCILE.md.
     sandbox_mode: str | None = None
+    sandbox_ref: str | None = None  # spec.sandboxRef — the Sandbox object SuspendSandbox patches
 
 
 # --- Actions the shell will apply -----------------------------------------
@@ -97,7 +98,22 @@ class MarkSuspended:
     reason: str
 
 
-Action = NoOp | Assign | LeavePending | Detach | MarkSuspended
+@dataclass
+class SuspendSandbox:
+    """The ZOMBIE repair: phase=Suspended, placement fully released — yet the Sandbox is
+    RUNNING. Every host has evicted the conversation (that is what Suspended means), so
+    the doctrine's recovery path — "the sweep reclaims the sandbox either way" — is
+    structurally unreachable: no sweep will ever visit it again. Observed on valhalla as
+    sandbox pods running 9-12h (a racing sweeper's exec probe resumed a just-suspended
+    sandbox via the pollForReadyPod self-heal, then both pods evicted the conversation).
+
+    The loop confirms this across TWO consecutive ticks before acting: a real revive
+    patches the sandbox Running BEFORE writing phase=Assigned, so a single-tick sighting
+    can be a revive mid-flight and must not be stomped."""
+    reason: str
+
+
+Action = NoOp | Assign | LeavePending | Detach | MarkSuspended | SuspendSandbox
 
 
 def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
@@ -151,6 +167,10 @@ def reconcile(
     if conv.phase == "Suspended":
         if conv.host_pod is not None or conv.host_ip is not None:
             return Detach(reason="suspended — release placement (clear hostPod + hostIP)")
+        if conv.sandbox_mode == "Running":
+            return SuspendSandbox(
+                reason="suspended + unhosted but the Sandbox is RUNNING — zombie (or a revive mid-flight; loop confirms over two ticks)"
+            )
         return NoOp(reason="suspended — no placement to release")
 
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
