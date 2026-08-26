@@ -55,6 +55,10 @@ printf '  %s\n' "${CLAIMS[@]}"
 # ── runner helpers ───────────────────────────────────────────────────────────
 regex_escape() { python3 -c 'import re,sys; print(re.escape(sys.argv[1]))' "$1"; }
 
+# e2e specs run on the FAST project only — a full-target (cluster) claim cannot be
+# proven red-on-base here (that would need a cluster running base images), so a
+# fullOnly-gated @proves test skips on HEAD, reads as not-passing, and is flagged.
+# Prove cluster-only fixes with a unit/fast-runnable test instead.
 is_playwright() { case "$1" in test/e2e/*) return 0 ;; *) return 1 ;; esac; }
 
 # run <dir> <file> <title>; echoes verdict: pass | fail | load-error
@@ -63,7 +67,7 @@ run_one() {
   pattern=$(regex_escape "$title")
   out=$(mktemp)
   if is_playwright "$file"; then
-    (cd "$dir" && npx playwright test --project=chromium "$file" --grep "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
+    (cd "$dir" && npx playwright test --project=fast "$file" --grep "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
   else
     (cd "$dir" && npx vitest run "$file" -t "$pattern") >"$out" 2>&1 && rc=0 || rc=$?
   fi
