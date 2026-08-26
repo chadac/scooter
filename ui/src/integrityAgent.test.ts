@@ -1428,6 +1428,112 @@ describe("IntegrityAgent", () => {
     expect(agent.getMessageImages("nope")).toBeUndefined();
     agent.dispose();
   });
+
+  // --- the cluster's out-of-order tool-call shape --------------------------------
+  //
+  // TIER-1 ISOLATION of a Tier-2 failure. On k3d, a COMPLETE durable log (verified:
+  // …TOOL_CALL_START, TOOL_CALL_END, TOOL_CALL_ARGS, TOOL_CALL_RESULT, …,
+  // RUN_FINISHED) still rendered no tool card, no assistant reply, and "Working…"
+  // forever. The distinctive feature of the real sequence: the bridge surfaces the
+  // command as TOOL_CALL_ARGS only when terminal/create delivers it — AFTER
+  // TOOL_CALL_END (goose's terminal-handoff shape). This replays the EXACT captured
+  // sequence, byte-for-byte in structure, and asserts the fold survives it.
+  it("folds the cluster's exact sequence: TOOL_CALL_ARGS arriving AFTER TOOL_CALL_END", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "!echo zxcvbnm-marker" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "u1" } },
+      { kind: "event", event: { type: "REASONING_START", messageId: "re1" } },
+      { kind: "event", event: { type: "REASONING_MESSAGE_START", messageId: "re1", role: "reasoning" } },
+      { kind: "event", event: { type: "REASONING_MESSAGE_CONTENT", messageId: "re1", delta: "Planning a response…" } },
+      { kind: "event", event: { type: "REASONING_MESSAGE_END", messageId: "re1" } },
+      { kind: "event", event: { type: "REASONING_END", messageId: "re1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "call_1", toolCallName: "run: echo zxcvbnm-marker" } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "call_1" } },
+      { kind: "event", event: { type: "TOOL_CALL_ARGS", toolCallId: "call_1", delta: '{"command":"echo zxcvbnm-marker"}' } },
+      { kind: "event", event: { type: "TOOL_CALL_RESULT", toolCallId: "call_1", messageId: "tr1", content: "zxcvbnm-marker" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "ran `echo zxcvbnm-marker` (exit 0)" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "a1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+
+    const msgs = agent.messages as Array<{ role?: string; content?: unknown; toolCalls?: unknown[] }>;
+    const withTool = msgs.filter((m) => (m.toolCalls?.length ?? 0) > 0);
+    expect(withTool.length, "the tool call must survive the fold").toBeGreaterThan(0);
+    expect(
+      msgs.some((m) => m.role === "assistant" && JSON.stringify(m.content ?? "").includes("zxcvbnm-marker")),
+      "the assistant reply must survive the fold",
+    ).toBe(true);
+    expect(agent.runIsActive(), "RUN_FINISHED must end the run").toBe(false);
+    agent.dispose();
+  });
+
+
+  // Same sequence, but delivered the way the CLUSTER delivers it: the browser connects
+  // to a near-empty log, is told `synced` immediately, and the run's events then arrive
+  // LIVE, paced out over seconds, on a stream that never closes (keepalive pings). The
+  // batch-replay variant above passes; if THIS fails, the bug is in the live path.
+  it("folds the same sequence delivered LIVE after synced, paced, on an open stream", async () => {
+    const events = [
+      { type: "RUN_STARTED", threadId: "c1", runId: "r1" },
+      { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "!echo zxcvbnm-marker" },
+      { type: "TEXT_MESSAGE_END", messageId: "u1" },
+      { type: "REASONING_START", messageId: "re1" },
+      { type: "REASONING_MESSAGE_START", messageId: "re1", role: "reasoning" },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "re1", delta: "Planning a response…" },
+      { type: "REASONING_MESSAGE_END", messageId: "re1" },
+      { type: "REASONING_END", messageId: "re1" },
+      { type: "TOOL_CALL_START", toolCallId: "call_1", toolCallName: "run: echo zxcvbnm-marker" },
+      { type: "TOOL_CALL_END", toolCallId: "call_1" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "call_1", delta: '{"command":"echo zxcvbnm-marker"}' },
+      { type: "TOOL_CALL_RESULT", toolCallId: "call_1", messageId: "tr1", content: "zxcvbnm-marker" },
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "ran `echo zxcvbnm-marker` (exit 0)" },
+      { type: "TEXT_MESSAGE_END", messageId: "a1" },
+      { type: "RUN_FINISHED", threadId: "c1", runId: "r1" },
+    ];
+    const enc = new TextEncoder();
+    const liveFetch = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(enc.encode('data: {"kind":"synced"}\n\n')); // caught up on an EMPTY log
+          for (const e of events) {
+            await new Promise((r) => setTimeout(r, 25)); // paced, like a live run
+            controller.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: e })}\n\n`));
+          }
+          controller.enqueue(enc.encode(": ping\n\n"));
+          // NEVER closes — a live stream stays open.
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: liveFetch });
+    const stop = agent.renderPump();
+    // Wait for the paced delivery to complete, then settle.
+    await new Promise((r) => setTimeout(r, 25 * events.length + 600));
+
+    const msgs = agent.messages as Array<{ role?: string; content?: unknown; toolCalls?: unknown[] }>;
+    const withTool = msgs.filter((m) => (m.toolCalls?.length ?? 0) > 0);
+    expect(withTool.length, "the tool call must survive LIVE delivery").toBeGreaterThan(0);
+    expect(
+      msgs.some((m) => m.role === "assistant" && JSON.stringify(m.content ?? "").includes("zxcvbnm-marker")),
+      "the assistant reply must survive LIVE delivery",
+    ).toBe(true);
+    expect(agent.runIsActive(), "RUN_FINISHED must end the run on the LIVE path").toBe(false);
+    stop();
+    agent.dispose();
+  });
+
 });
 
 describe("seedTail + full replay must not leave DUPLICATE message ids", () => {

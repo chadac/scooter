@@ -1135,6 +1135,15 @@ export async function main(
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
     createManagementApi({
+    // The integrity stream must not sit silent on a non-owner pod: live appends only
+    // reach the OWNER's local store. Absent registry/podName => single-replica ("mine").
+    streamOwnership: conversationRegistry && podName
+      ? async (id: string) => {
+          const rec = await conversationRegistry.get(id).catch(() => undefined);
+          if (!rec?.hostPod) return "unknown" as const; // not assigned yet — serve on
+          return rec.hostPod === podName ? ("mine" as const) : ("elsewhere" as const);
+        }
+      : undefined,
       sessions,
       store,
       server,
