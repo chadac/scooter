@@ -178,6 +178,7 @@ in
                     model = { type = "string"; };
                     owner = { type = "string"; };
                     parentId = { type = "string"; };
+                    creatorPod = { type = "string"; };
                     sandboxRef = { type = "string"; };
                   };
                 };

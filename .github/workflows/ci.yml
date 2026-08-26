@@ -590,7 +590,19 @@ jobs:
           nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox rollout status deployment/ui --timeout=180s
           nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/pf.log 2>&1 &
           PF_PID=$!
-          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          # CLUSTER SAMPLER: every 15s, the node's Allocated-resources table + the pod
+          # list. A sandbox Pending on Insufficient cpu leaves NO trace in pod logs and
+          # had rolled out of the events tail by dump time in three straight failures —
+          # this keeps the resource timeline of the whole run.
+          ( while true; do
+              echo "== $(date -u +%H:%M:%S)"
+              nix shell nixpkgs#kubectl -c bash -c '
+                kubectl get pods -n agent-sandbox -o wide 2>/dev/null | grep -v Completed
+                kubectl describe nodes 2>/dev/null | grep -A8 "Allocated resources"' 
+              sleep 15
+            done >/tmp/cluster-sampler.log 2>&1 ) &
+          SAMPLER_PID=$!
+          trap 'kill "$PF_PID" "$SAMPLER_PID" 2>/dev/null || true' EXIT
           # Wait on a real GET, not the port bind — the forward accepts before nginx serves.
           for i in $(seq 1 60); do
             curl -sf -o /dev/null http://127.0.0.1:8899/ && break
@@ -607,6 +619,7 @@ jobs:
           path: |
             test-results/
             /tmp/pf.log
+            /tmp/cluster-sampler.log
           retention-days: 7
       - name: dump platform state on failure
         if: failure()
@@ -617,10 +630,12 @@ jobs:
             # (Insufficient cpu/mem, an unbindable PVC, a taint, …) — a bare `get` hides it.
             kubectl -n agent-sandbox describe deploy/agent-host || true
             kubectl -n agent-sandbox describe pods -l app=agent-host || true
-            kubectl -n agent-sandbox get events --sort-by=.lastTimestamp | tail -40 || true
-            kubectl -n agent-sandbox logs -l app=agent-host --tail=50 || true
-            kubectl -n agent-sandbox logs -l app=conversation-controller --tail=50 || true
-            kubectl -n agent-sandbox logs -l app=conversation-router --tail=50 || true
+            kubectl describe nodes || true
+            kubectl -n agent-sandbox get sandboxes.agents.x-k8s.io -o wide || true
+            kubectl -n agent-sandbox get events --sort-by=.lastTimestamp | tail -120 || true
+            kubectl -n agent-sandbox logs -l app=agent-host --tail=300 || true
+            kubectl -n agent-sandbox logs -l app=conversation-controller --tail=150 || true
+            kubectl -n agent-sandbox logs -l app=conversation-router --tail=150 || true
           '
 
       - name: tear down k3d

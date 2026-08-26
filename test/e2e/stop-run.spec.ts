@@ -73,6 +73,12 @@ test.describe("Stop button + thinking indicator", () => {
   });
 
   test("a running tool call shows a spinner; it clears when the tool finishes", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET. At Tier-2 pace this test is arithmetic-bound, not
+    // behaviour-bound: send → sandbox provision (~15-25s cold) → spinner → sleep 20 →
+    // clear lands ~45-50s after send. The 60s default + a 30s clear-assertion budget
+    // was written against the ~1s fake stack and fails on timing alone while the
+    // spinner demonstrably clears (it passes whenever provisioning is warm).
+    test.setTimeout(120_000);
     // A shell tool used to render as already "complete" the instant it started: the
     // bridge emitted a premature (empty) TOOL_CALL_RESULT on the args-only
     // in_progress update, so the folded part carried a result and assistant-ui
@@ -81,8 +87,12 @@ test.describe("Stop button + thinking indicator", () => {
     await chat.open();
     await chat.send("!sleep 20");
     await expect(page.locator('[data-testid="provider-tool-running"]')).toBeVisible({ timeout: 30_000 });
-    // When the sleep finishes the run ends and the spinner goes away.
-    await expect(page.locator('[data-testid="provider-tool-running"]')).toHaveCount(0, { timeout: 30_000 });
+    // When the sleep finishes the run ends and the spinner goes away. 60s, not 30:
+    // the spinner appears when the tool call STREAMS, but the exec then waits for a
+    // ready sandbox pod BEFORE the 20s sleep even starts — an instrumented throttled
+    // run measured 12.1s of ready-pod wait + 19.7s of sleep = the clear landing ~32s
+    // after the spinner, 2s past a 30s budget, with everything behaving correctly.
+    await expect(page.locator('[data-testid="provider-tool-running"]')).toHaveCount(0, { timeout: 60_000 });
   });
 
   test("a fast tool call never shows a lingering spinner", async ({ chat, page }) => {

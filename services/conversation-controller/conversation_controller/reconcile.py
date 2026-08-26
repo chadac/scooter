@@ -35,6 +35,7 @@ class ConversationState:
     phase: str                 # status.phase (Pending | Assigned | Orphaned) — "Pending" default
     generation: int            # status.generation (the fence epoch)
     host_ip: str | None = None # status.hostIP (owner pod IP — routing address)
+    creator_pod: str | None = None  # spec.creatorPod — where the conversation PHYSICALLY runs
     parent_id: str | None = None  # spec.parentId — a subagent co-locates on its parent's pod
     # False when the CR carries NO status.phase yet (status: null) — the shell must still
     # materialize Pending for such a CR even though `phase` defaulted to "Pending".
@@ -188,6 +189,19 @@ def reconcile(
     # Already assigned to a live, ready pod → nothing to do.
     if conv.host_pod is not None and conv.host_pod in ready_names:
         return NoOp(reason=f"host {conv.host_pod} still ready")
+
+    # PREFER THE CREATOR. The run physically lives on the pod that created the
+    # conversation (bridge, sandbox exec, local event log); a least-loaded pick that
+    # lands elsewhere splits run from owner — the run's appends get fenced off mid-run,
+    # the "owner" has nothing live to stream, and the UI sits at "Working…" forever.
+    # Bypasses the cap for the same reason a subagent pins to its parent: the work is
+    # already THERE, and assigning it away does not free that capacity.
+    if conv.creator_pod is not None and conv.creator_pod in ready_names:
+        return Assign(
+            host_pod=conv.creator_pod,
+            generation=conv.generation + 1,
+            host_ip=ip_of.get(conv.creator_pod),
+        )
 
     # Assigned to a pod that's gone/NotReady, OR never assigned → (re)assign.
     host = pick_host(pods, load, cap)

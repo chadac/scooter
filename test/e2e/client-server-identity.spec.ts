@@ -45,6 +45,16 @@ async function serverIds(
 }
 
 test.describe("client/server conversation identity", () => {
+  // CLUSTER-HONEST BUDGETS. The new-conversation test funds TWO full conversation
+  // boots in one test. The three straight CI failures here were NOT this budget in
+  // the end — they were the second sandbox being unschedulable (Guaranteed 2cpu per
+  // sandbox on a 4-vCPU runner; fixed by testing.nix's small sandboxResources) — but
+  // the budgets still must fund two sequential sandbox boots at cluster pace
+  // (instrumented runs measured 9-12s of ready-pod wait per boot under CPU
+  // pressure). NOTE: completeTurn's own poll defaults to 60s — test.setTimeout
+  // alone does NOT extend it, which made the first budget bump here a no-op.
+  test.setTimeout(240_000);
+
   test("the id in the URL is one the SERVER issued", async ({ chat, page, request, baseURL }) => {
     const base = baseURL!;
     await chat.open();
@@ -77,13 +87,13 @@ test.describe("client/server conversation identity", () => {
   test("a NEW conversation gets a server id before it appears in the URL", async ({ chat, page, request, baseURL }) => {
     const base = baseURL!;
     await chat.open();
-    await chat.completeTurn("first conversation");
+    await chat.completeTurn("first conversation", 100_000);
     const first = threadIdFromUrl(page.url());
 
     // The exact flow that broke: click New conversation, then send.
     await page.locator('[data-testid="new-session"]').click();
     await expect(chat.input()).toBeVisible({ timeout: 20_000 });
-    await chat.completeTurn("second conversation");
+    await chat.completeTurn("second conversation", 100_000);
 
     const second = threadIdFromUrl(page.url());
     expect(second, "a new conversation must get its own id").not.toBe(first);

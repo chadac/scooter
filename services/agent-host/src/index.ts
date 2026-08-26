@@ -425,6 +425,18 @@ export async function main(
         // runtime nix builds (tool installs, re-converge) + persisting them across
         // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
         // upper — the overlay still works, writes just don't persist).
+        // Sandbox pod sizing. Default (unset) = the provisioner's Guaranteed 2cpu/4Gi.
+        // SANDBOX_RESOURCES is a JSON {requests:{cpu,memory},limits:{cpu,memory}} —
+        // set by the TEST platform to small values: on a 4-vCPU CI runner the 2cpu
+        // Guaranteed default makes a SECOND concurrent sandbox unschedulable
+        // (Insufficient cpu -> Pending forever), which failed exactly the one e2e
+        // test that holds two live conversations at once.
+        sandboxResources: process.env.SANDBOX_RESOURCES
+          ? (JSON.parse(process.env.SANDBOX_RESOURCES) as {
+              requests?: { cpu?: string; memory?: string };
+              limits?: { cpu?: string; memory?: string };
+            })
+          : undefined,
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
         // Warm PVC pool: when on, claim a pre-warmed overlay upper (matching the sandbox
@@ -1135,6 +1147,15 @@ export async function main(
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
     createManagementApi({
+    // The integrity stream must not sit silent on a non-owner pod: live appends only
+    // reach the OWNER's local store. Absent registry/podName => single-replica ("mine").
+    streamOwnership: conversationRegistry && podName
+      ? async (id: string) => {
+          const rec = await conversationRegistry.get(id).catch(() => undefined);
+          if (!rec?.hostPod) return "unknown" as const; // not assigned yet — serve on
+          return rec.hostPod === podName ? ("mine" as const) : ("elsewhere" as const);
+        }
+      : undefined,
       sessions,
       store,
       server,
@@ -1649,8 +1670,13 @@ function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<v
   const ensure = createDeferredConnector(() => connectSandbox(sandbox, { ensureRunning }));
   return {
     mode: "k8s-exec" as const,
-    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0]) {
-      return (await ensure()).execute(req);
+    // FORWARD THE SIGNAL. This wrapper used to take only `req`, silently discarding the
+    // AbortSignal sandboxExec passes — so kill()'s abort never reached the k8s exec
+    // layer and waitForExit hung until the remote command exited on its own. The type
+    // let it happen because the parameter is optional: a seam narrowing a contract
+    // with nothing to say so — the same silent-drop family this tier keeps catching.
+    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0], signal?: AbortSignal) {
+      return (await ensure()).execute(req, signal);
     },
     async download(path: string) {
       return (await ensure()).download(path);

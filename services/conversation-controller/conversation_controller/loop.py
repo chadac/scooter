@@ -38,6 +38,7 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
         # absence as no-evidence, never as suspension (the creation race).
         sandbox_mode=(sandbox_modes or {}).get(ref) if ref else None,
         sandbox_ref=ref,
+        creator_pod=spec.get("creatorPod"),
         phase=st.get("phase", "Pending"),
         # Whether the CR actually carries a phase (vs. the "Pending" default above). A
         # status-less CR (status: null / no phase) needs its phase MATERIALIZED even when it

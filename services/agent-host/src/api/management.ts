@@ -68,6 +68,13 @@ function view(c: Conversation, now = Date.now()) {
 export interface ManagementDeps {
   sessions: SessionManager;
   store: ConversationStore;
+  /** Who serves this conversation's LIVE stream. "elsewhere" => another pod owns it, so
+   *  this pod's integrity stream would replay history and then sit silent forever (live
+   *  appends land on the OWNER's local store). Streams opened before the controller
+   *  assigned an owner land on a random pod ~half the time and stayed there — the
+   *  Tier-2 "no tool card / Working… forever" coin-flip. Optional: absent =
+   *  single-replica, everything is "mine". */
+  streamOwnership?: (id: string) => Promise<"mine" | "elsewhere" | "unknown">;
   server: AguiServer;
   /** Answer a pending tool permission (wired to the bridge in index.ts). `approver`
    *  is the identity of the human answering (for an AWS interrupt, the broker
@@ -755,6 +762,24 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Mark the end of the initial replay so the client knows it's caught up.
     send({ kind: "synced" });
 
+      // OWNERSHIP: this stream only carries LIVE events for a conversation THIS pod
+      // runs (onAppend is the local store). If another pod owns it — typical when the
+      // stream was opened BEFORE the controller assigned an owner, and the router
+      // therefore picked a pod at random — end the stream after the replay: the
+      // client's reconnect goes back through the router, which routes by hostIP now.
+      // Checked again periodically so a MID-STREAM reassignment also hands the viewer
+      // to the new owner instead of leaving them on a silent stream.
+      const closeIfElsewhere = async () => {
+        const where = await deps.streamOwnership?.(id).catch(() => "unknown" as const);
+        if (where === "elsewhere") {
+          try { res.write(": owner-elsewhere — reconnect\n\n"); } catch { /* closing */ }
+          res.end();
+        }
+      };
+      void closeIfElsewhere();
+      const ownershipTimer = setInterval(() => void closeIfElsewhere(), 5_000);
+      if (typeof ownershipTimer.unref === "function") ownershipTimer.unref();
+
     // SSE HEARTBEAT: an idle conversation emits no events, so without this the stream
     // goes byte-silent until the next activity. Any proxy in front (the UI's nginx has
     // proxy_read_timeout 3600s; an ingress/LB may be far stricter) then times the
@@ -771,6 +796,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
     ctx.req.on("close", () => {
       clearInterval(heartbeat);
+      clearInterval(ownershipTimer);
       unsub?.();
     });
   });

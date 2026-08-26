@@ -199,6 +199,11 @@ _fingerprint:
       attr="${pair%%=*}"
       printf '%s=%s\n' "$attr" "$(nix eval --raw ".#${attr}.drvPath" 2>/dev/null | xargs basename)"
     done
+    # The MANIFESTS too — a CRD schema change is invisible to the image fingerprints, and
+    # the apiserver PRUNES fields the live CRD does not know: creatorPod was silently
+    # stripped from every patch while all images read "current". Third deployed≠current
+    # incident; the fingerprint now covers everything the platform is made of.
+    printf 'platform-manifests=%s\n' "$(nix eval --raw ".#platform-manifests.drvPath" 2>/dev/null | xargs basename)"
 
 # Rebuild + reload ONLY the platform images whose source changed, then restart them.
 cluster-redeploy:
@@ -220,6 +225,12 @@ cluster-redeploy:
     done <<<"$want"
     if [ ${#changed[@]} -eq 0 ]; then echo "cluster is up to date"; exit 0; fi
     echo "rebuilding: ${changed[*]}"
+    for c in "${changed[@]}"; do
+      if [ "$c" = "platform-manifests" ]; then
+        echo "==> manifests changed — applying (CRDs/RBAC/env are not in any image)"
+        kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
+      fi
+    done
     names=()
     for pair in {{_PLATFORM_IMAGES}}; do
       attr="${pair%%=*}"; rest="${pair#*=}"; name="${rest%%:*}"
@@ -229,7 +240,8 @@ cluster-redeploy:
         names+=("${name}:latest")
       done
     done
-    k3d image import "${names[@]}" -c {{_K3D_CLUSTER}}
+    # A manifests-only drift rebuilds no images; k3d fatals on zero args.
+    [ ${#names[@]} -gt 0 ] && k3d image import "${names[@]}" -c {{_K3D_CLUSTER}}
     # imagePullPolicy is IfNotPresent on side-loaded images, so a restart is what
     # actually picks up the new layers — `set image` would be a no-op at :latest.
     for pair in {{_PLATFORM_IMAGES}}; do
@@ -326,8 +338,13 @@ e2e-cluster *ARGS:
     kubectl -n agent-sandbox get conversations -o yaml >"$out/conversations.yaml" 2>&1 || true
     kubectl -n agent-sandbox get events --sort-by=.lastTimestamp >"$out/events.txt" 2>&1 || true
     kubectl -n agent-sandbox describe pods >"$out/describe-pods.txt" 2>&1 || true
+    # The NODE's view: allocatable vs requested (the "Allocated resources" table) and
+    # taints/conditions. A sandbox Pending on Insufficient cpu is invisible in pod
+    # logs — only this shows the node had nothing left to give.
+    kubectl describe nodes >"$out/node.txt" 2>&1 || true
+    kubectl get sandboxes.agents.x-k8s.io -n agent-sandbox -o yaml >"$out/sandboxes.yaml" 2>&1 || true
     echo ""
-    echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt)"
+    echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt, node.txt, sandboxes.yaml)"
     du -sh "$out" 2>/dev/null | awk '{print "      total: "$1}'
     exit "$rc"
 # --- Quality ---------------------------------------------------------------

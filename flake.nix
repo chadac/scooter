@@ -300,11 +300,21 @@
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
             testing.enable = true;
-            # The cross-pod history mirror is a ReadWriteMany PVC; k3d's default
-            # local-path provisioner has NO RWX, so it never binds and agent-host stays
-            # Pending. A single-node cluster e2e doesn't need cross-pod revival anyway —
-            # disable the mirror so agent-host schedules on its emptyDir `state` alone.
-            conversationController.historyMirror.enable = false;
+            # The cross-pod history mirror, backed by the single-node hostPath escape hatch
+            # (k3d's local-path provisioner has no RWX; a hostPath PV binds the RWX claim and
+            # every pod shares the one node's directory — the same mechanism odin uses).
+            #
+            # This USED to be disabled, with the note "a single-node e2e doesn't need
+            # cross-pod revival" — written before the CI job forced CONVERSATION_POD_CAP=1 +
+            # 3 replicas, which makes cross-pod reassignment CONSTANT. With no mirror, a
+            # conversation reassigned mid-run could never be revived on its new owner: the
+            # ownership fence truncated its log (by design) and the new pod had nothing to
+            # hydrate from, so the UI sat at "Working…" forever. Found by the Tier-2
+            # browser tests.
+            conversationController.historyMirror = {
+              enable = true;
+              hostPath = "/var/lib/scooter-e2e-history";
+            };
             broker = {
               enable = true;
               image = "agent-broker:latest";

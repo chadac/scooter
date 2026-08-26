@@ -260,6 +260,18 @@ in
     # INTERNAL. Set by modules/testing.nix, never by a deploy config. It exists as an option only
     # because the production env-var block below has to read it; the guard in that module is what
     # keeps a real deploy from turning it on. See modules/testing.nix for why this inverted.
+    sandboxResources = mkOption {
+      type = types.nullOr types.attrs;
+      default = null;
+      description = ''
+        Resource requests/limits for each conversation's sandbox pod, as
+        {requests = {cpu, memory}; limits = {cpu, memory};}. null = the agent-host
+        default (Guaranteed QoS, 2 cpu / 4Gi — reserves the full amount per sandbox).
+        Set smaller values on constrained clusters (CI runners) where reserving
+        2 whole CPUs per sandbox makes a second concurrent sandbox unschedulable.
+      '';
+    };
+
     fakeAgent = mkOption {
       type = types.bool;
       default = false;
@@ -1046,6 +1058,9 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; }
+                ++ lib.optional (cfg.sandboxResources != null)
+                  # Per-sandbox pod sizing (JSON) — see the sandboxResources option.
+                  { name = "SANDBOX_RESOURCES"; value = builtins.toJSON cfg.sandboxResources; }
                 ++ lib.optionals cfg.agent.remoteAgent.enable [
                   # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
                   # The HS256 signing key for owner-bound join tokens (one server-side secret).

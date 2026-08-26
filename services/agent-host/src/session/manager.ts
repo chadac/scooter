@@ -611,6 +611,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           owner: c.spec.owner,
           parentId: c.spec.parentId,
           sandboxRef: `conv-${shortId(c.id)}`,
+          creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
         });
       }
     }
@@ -734,7 +735,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
       // failure must not fail the conversation); noop in single-replica mode. Do it
       // BEFORE the slow provision so assignment can happen while the sandbox spins up.
-      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name });
+      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name, creatorPod: deps.selfPod });
 
       // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
       // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).
@@ -782,6 +783,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // single-replica mode.
       await conversationRegistry.register(id, {
         model, owner: parent.owner, parentId, sandboxRef: entry.sandbox.name,
+        creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
       });
 
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
@@ -830,6 +832,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // idempotent (409 = already there = no-op), so this is a cheap self-heal. Fire-and-forget.
       void conversationRegistry.register(id, {
         model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+        creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
       });
       // Register the resume as ACTIVITY. Without this, lastActivityAt stays at its
       // pre-suspend value, so the idle sweep (sweepIdle) sees the conversation as
@@ -950,10 +953,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             log.errorWith("reviveFromMirror: mirror pull failed", err, { conversation_id: id });
             return false;
           });
-          if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
+          if (!pulled) {
+            // LOUD. This pod was ASSIGNED the conversation; giving up here means nobody
+            // will ever complete its (possibly truncated) run — the "Working… forever"
+            // condition the Tier-2 browser tests surfaced. Silent until 2026-08-26, which
+            // is why the assigned pod's total silence looked like the push never arriving.
+            log.warn("reviveFromMirror: assigned a conversation the mirror does not have", {
+              conversation_id: id,
+            });
+            return;
+          }
         }
         const entry = await hydrateByThread(id as ThreadId);
-        if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
+        if (!entry) {
+          log.warn("reviveFromMirror: pulled the mirror but could not reconstruct", {
+            conversation_id: id,
+          });
+          return;
+        }
         void expectedGen; // gen already enforced via the fence above + the append guard.
         await this.revive(id);
       }
@@ -1296,6 +1313,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // fire-and-forget; the controller (re)assigns the CR a host on its next reconcile.
         void conversationRegistry.register(entry.id, {
           model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+          creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
         });
         // RE-PUBLISH PHASE for a conversation hydrated as SUSPENDED. phase is otherwise only
         // written at the suspend()/revive() TRANSITION events — so a conversation that was

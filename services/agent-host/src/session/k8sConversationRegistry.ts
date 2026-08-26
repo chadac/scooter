@@ -49,6 +49,7 @@ export function createK8sConversationRegistry(
       if (spec.owner) cleanSpec.owner = spec.owner;
       if (spec.parentId) cleanSpec.parentId = spec.parentId;
       if (spec.sandboxRef) cleanSpec.sandboxRef = spec.sandboxRef;
+      if (spec.creatorPod) cleanSpec.creatorPod = spec.creatorPod;
 
       await custom
         .createNamespacedCustomObject({
