@@ -7,9 +7,19 @@
  * unreachable" bug. Tested against a fake ExecBackend, no SDK runtime.
  */
 
+import { execFileSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+
 import { describe, it, expect } from "vitest";
 
 import { sandboxToolHandlers, TOOL_ALIASES, DISABLED_BUILTINS } from "./sandboxMcp.js";
+
+/** Mirrors sandboxMcp's internal `shq` (not exported). Kept identical on purpose: the
+ *  round-trip assertion below is what proves the idiom is right. */
+/** The injection canary: created only if the quoting fails, so its absence is proof. */
+const CANARY = "/tmp/scooter-injection-canary";
+
+const shquoteForTest = (v: string): string => "'" + v.replace(/'/g, "'\\''") + "'";
 import type { ExecBackend, ExecRequest, TerminalHandle } from "./types.js";
 
 /** A fake ExecBackend recording spawn requests + serving canned file contents. */
@@ -126,6 +136,97 @@ describe("sandbox MCP tool handlers", () => {
     // The wiring the SDK query() options need to route claude's Bash into the sandbox.
     expect(TOOL_ALIASES.Bash).toBe("mcp__sandbox__bash");
     expect(TOOL_ALIASES.Read).toBe("mcp__sandbox__read");
-    expect(DISABLED_BUILTINS).toEqual(["Bash", "Read", "Edit", "Write"]);
+    expect(TOOL_ALIASES.Glob).toBe("mcp__sandbox__glob");
+    expect(TOOL_ALIASES.Grep).toBe("mcp__sandbox__grep");
+    // EVERY aliased built-in must also be disabled, or the model can call the local one
+    // and it runs in the agent-host pod instead of the sandbox. Derived rather than
+    // hard-coded, so adding an alias without disabling it fails here.
+    expect([...DISABLED_BUILTINS].sort()).toEqual(Object.keys(TOOL_ALIASES).sort());
+  });
+});
+
+/**
+ * glob + grep: the two search tools. They were previously UNWIRED — the model could
+ * call the local built-ins, which raised a headless permission prompt and hung the
+ * turn (see toolPolicy.ts). Same product assertion as the rest of this file: they must
+ * exec in the SANDBOX, and must not escape /workspace.
+ */
+describe("sandbox glob + grep", () => {
+  it("glob execs in the sandbox and confines the search to /workspace", async () => {
+    const { exec, spawns } = fakeExec({ output: "/workspace/a.ts\n/workspace/b.ts\n" });
+    const res = await sandboxToolHandlers(exec).glob({ pattern: "**/*.ts" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0]!.text).toContain("/workspace/a.ts");
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]!.command).toBe("sh");
+    expect(spawns[0]!.args?.[1]).toContain("/workspace");
+  });
+
+  it("glob REFUSES to search outside /workspace", async () => {
+    // A cwd outside the workspace does not exist in the sandbox; sandboxCwd() pins it.
+    const { exec, spawns } = fakeExec({ output: "" });
+    await sandboxToolHandlers(exec).glob({ pattern: "*.ts", path: "/etc" });
+    expect(spawns[0]!.args?.[1]).not.toContain("'/etc'");
+    expect(spawns[0]!.args?.[1]).toContain("/workspace");
+  });
+
+  it("glob caps its output so a huge tree cannot flood the context", async () => {
+    const { exec, spawns } = fakeExec({ output: "" });
+    await sandboxToolHandlers(exec).glob({ pattern: "*" });
+    expect(spawns[0]!.args?.[1]).toMatch(/head -n \d+/);
+  });
+
+  it("glob reports NO MATCH distinctly from an error", async () => {
+    const { exec } = fakeExec({ output: "" });
+    const res = await sandboxToolHandlers(exec).glob({ pattern: "*.nope" });
+    expect(res.isError).toBeFalsy(); // no match is not a failure
+    expect(res.content[0]!.text).toMatch(/no files match/i);
+  });
+
+  it("grep returns file:line:text and prefers rg when present", async () => {
+    const { exec, spawns } = fakeExec({ output: "/workspace/a.ts:12:const x = 1\n" });
+    const res = await sandboxToolHandlers(exec).grep({ pattern: "const x" });
+
+    expect(res.content[0]!.text).toContain("a.ts:12:");
+    const script = spawns[0]!.args?.[1] ?? "";
+    expect(script).toContain("command -v rg"); // falls back to grep -rnI otherwise
+    expect(script).toContain("/workspace");
+  });
+
+  it("grep quotes the pattern, so shell metacharacters cannot inject", async () => {
+    const { exec, spawns } = fakeExec({ output: "" });
+    // A quote-escape + command-separator + subshell, i.e. every shape that would break
+    // out of the argument — but deliberately INERT if the escaping ever regressed. A
+    // destructive payload would prove the same thing while doing real damage on failure,
+    // which is a bad trade for a unit test.
+    const evil = `'; touch ${CANARY}; $(id); echo '`;
+    rmSync(CANARY, { force: true }); // a leftover from an earlier run would fake a pass
+    await sandboxToolHandlers(exec).grep({ pattern: evil });
+    const script = spawns[0]!.args?.[1] ?? "";
+
+    // The payload TEXT does appear — inside quotes, which is fine. What matters is that
+    // it is INERT, so assert the escaping, not the absence of the substring: every
+    // embedded quote must be closed-escaped-reopened ('\''), the POSIX idiom that keeps
+    // sh treating the whole thing as one literal argument.
+    expect(script).toContain("'\\''");
+    // Prove INERTNESS by execution, not by pattern-matching the script text — text
+    // matching cannot tell "dangerous" from "harmless inside quotes", and an earlier
+    // version of this test got exactly that wrong. Feed the same quoting to a real sh
+    // and require the payload back as ONE literal argument.
+    const quotedPattern = shquoteForTest(evil);
+    const roundTripped = execFileSync("sh", ["-lc", `printf '%s' ${quotedPattern}`]).toString();
+    expect(roundTripped).toBe(evil);
+    expect(script).toContain(quotedPattern);
+
+    // The canary's ABSENCE is the direct evidence: if the escaping broke, the embedded
+    // `touch` would have run during the printf above and this file would exist.
+    expect(existsSync(CANARY)).toBe(false);
+  });
+
+  it("both reject an empty pattern instead of listing the whole tree", async () => {
+    const { exec } = fakeExec();
+    expect((await sandboxToolHandlers(exec).glob({ pattern: "  " })).isError).toBe(true);
+    expect((await sandboxToolHandlers(exec).grep({ pattern: "" })).isError).toBe(true);
   });
 });

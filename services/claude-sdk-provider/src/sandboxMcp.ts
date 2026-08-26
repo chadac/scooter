@@ -33,9 +33,14 @@ export const TOOL_ALIASES: Record<string, string> = {
   Read: "mcp__sandbox__read",
   Edit: "mcp__sandbox__edit",
   Write: "mcp__sandbox__write",
+  // Searching the workspace is table stakes: without these the agent can only read
+  // files it can already name. They were previously UNWIRED, so the model could call
+  // the local built-ins and hang the turn on a permission prompt (see toolPolicy.ts).
+  Glob: "mcp__sandbox__glob",
+  Grep: "mcp__sandbox__grep",
 };
 /** The built-in tools we disable so the model can't run them locally. */
-export const DISABLED_BUILTINS = ["Bash", "Read", "Edit", "Write"];
+export const DISABLED_BUILTINS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
 
 /** The agent's work happens in the sandbox workspace. goose's ACP createTerminal
  *  uses the same default: run under /workspace unless an absolute /workspace path
@@ -45,6 +50,32 @@ function sandboxCwd(cwd?: string): string {
   return cwd && cwd.startsWith("/workspace") ? cwd : DEFAULT_CWD;
 }
 
+/** Output caps: a repo-wide search can return tens of thousands of lines, which would
+ *  bury the model's context and stall the turn. The tool descriptions tell the model
+ *  results may be capped, so a truncated list is not mistaken for a complete one. */
+const GLOB_MAX = 300;
+const GREP_MAX = 200;
+
+/** Single-quote a value for `sh -lc`. */
+const shq = (v: string): string => "'" + v.replace(/'/g, "'\\''") + "'";
+
+/** Translate a glob (`**\/*.ts`, `src/*.py`) into an anchored ERE for grep. */
+function globToRegex(pattern: string): string {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return escaped.replace(/\*\*\//g, "(.*/)?").replace(/\*/g, "[^/]*").replace(/\?/g, ".") + "$";
+}
+
+/** Run a shell snippet in the sandbox and return its combined output. */
+async function runCapture(exec: ExecBackend, script: string): Promise<string> {
+  const handle = exec.spawn({ command: "sh", args: ["-lc", script], cwd: DEFAULT_CWD, env: {} });
+  let out = "";
+  handle.onOutput((c) => {
+    out += c;
+  });
+  await handle.waitForExit();
+  await handle.release();
+  return out;
+}
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 const err = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
@@ -70,6 +101,35 @@ export function sandboxToolHandlers(exec: ExecBackend) {
       return exitCode === 0 ? ok(out) : { content: [{ type: "text", text: `${out}\n[exit ${exitCode}]` }], isError: true };
     },
 
+    /** glob: match FILE PATHS under the workspace. Capped + sorted. */
+    async glob(args: { pattern: string; path?: string }): Promise<ToolResult> {
+      const pattern = (args?.pattern ?? "").trim();
+      if (!pattern) return err("glob: no pattern provided");
+      const root = sandboxCwd(args?.path);
+      // Prune the usual dependency dirs: they dominate both the result and the runtime,
+      // and a model asking for "*.ts" never means node_modules.
+      const script =
+        `find ${shq(root)} \\( -name node_modules -o -name .git -o -name dist -o -name target \\) ` +
+        `-prune -o -type f -print 2>/dev/null | grep -E ${shq(globToRegex(pattern))} | ` +
+        `sort | head -n ${GLOB_MAX}`;
+      const out = await runCapture(exec, script);
+      return ok(out.trim() ? out : `no files match ${pattern} under ${root}`);
+    },
+
+    /** grep: search file CONTENTS under the workspace. Line-capped. */
+    async grep(args: { pattern: string; path?: string; glob?: string }): Promise<ToolResult> {
+      const pattern = (args?.pattern ?? "").trim();
+      if (!pattern) return err("grep: no pattern provided");
+      const root = sandboxCwd(args?.path);
+      const include = args?.glob ? ` --include=${shq(args.glob)}` : "";
+      // rg when the image has it (faster, skips binaries); grep -rnI otherwise.
+      const script =
+        `if command -v rg >/dev/null 2>&1; then ` +
+        `rg --line-number --no-heading ${shq(pattern)} ${shq(root)} 2>/dev/null; ` +
+        `else grep -rnI${include} -e ${shq(pattern)} ${shq(root)} 2>/dev/null; fi | head -n ${GREP_MAX}`;
+      const out = await runCapture(exec, script);
+      return ok(out.trim() ? out : `no matches for ${pattern} under ${root}`);
+    },
     /** read: return the sandbox file's contents. */
     async read(args: { path: string }): Promise<ToolResult> {
       const path = args?.path;
@@ -155,6 +215,10 @@ export async function createSandboxMcpServer(exec: ExecBackend): Promise<{
         (a) => h.write(a as { path: string; content: string })),
       sdk.tool("edit", "Replace an exact unique string in a sandbox file.", { path: z.string(), old_string: z.string(), new_string: z.string() },
         (a) => h.edit(a as { path: string; old_string: string; new_string: string })),
+      sdk.tool("glob", "Find files by path pattern in the sandbox workspace (e.g. '**/*.ts'). Results are sorted and may be capped.", { pattern: z.string(), path: z.string().optional() },
+        (a) => h.glob(a as { pattern: string; path?: string })),
+      sdk.tool("grep", "Search file contents in the sandbox workspace. Returns file:line:text; results may be capped.", { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() },
+        (a) => h.grep(a as { pattern: string; path?: string; glob?: string })),
     ],
   });
 
