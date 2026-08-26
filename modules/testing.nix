@@ -79,7 +79,7 @@ in
       # genuine systemd NixOS pod even under the fake agent — a tiny memory LIMIT
       # would OOM-kill it at boot, and limits (not requests) are what kill.
       sandboxResources = lib.mkForce {
-        requests = { cpu = "250m"; memory = "64Mi"; };
+        requests = { cpu = "50m"; memory = "64Mi"; };
         limits = { cpu = "1"; memory = "1Gi"; };
       };
     };

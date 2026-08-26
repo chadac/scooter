@@ -27,6 +27,15 @@
     # so this example renders without cloud config.
     fakeAgent = true;
 
+    # Per-sandbox pod sizing. Omit (null) for the same Guaranteed default shown
+    # here — the scheduler RESERVES the full request per sandbox, so on small
+    # clusters (CI runners) size this down or a second concurrent sandbox never
+    # schedules (Insufficient cpu). An idle sandbox measures ~0 CPU / ~40Mi.
+    sandboxResources = {
+      requests = { cpu = "2"; memory = "4Gi"; };
+      limits = { cpu = "2"; memory = "4Gi"; };
+    };
+
     agent = {
       name = "Scooter"; # the agent's user-facing identity
       provider = "aws_bedrock";
