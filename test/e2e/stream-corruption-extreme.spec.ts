@@ -14,7 +14,7 @@
  */
 
 import { test, expect, snapshot, assertConsistent, assertMatchesServer } from "./fixtures.js";
-import { tier3Only } from "./tier.js";
+import { fastOnly } from "./target.js";
 import type { APIRequestContext } from "@playwright/test";
 
 const PROXY = "http://localhost:8090";
@@ -23,7 +23,7 @@ const setFault = async (r: APIRequestContext, f: Record<string, unknown>) => {
 };
 const clearFault = (r: APIRequestContext) => setFault(r, { mode: "none" });
 
-tier3Only("needs the SSE fault proxy to corrupt stream frames")("extreme stream corruption", () => {
+fastOnly("needs the SSE fault proxy to corrupt stream frames")("extreme stream corruption", () => {
   test.use({ baseURL: "http://localhost:5273" });
   test.afterEach(async ({ request }) => { await clearFault(request); });
 

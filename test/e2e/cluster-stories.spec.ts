@@ -13,9 +13,9 @@
 import { expect } from "@playwright/test";
 
 import { test } from "./fixtures.js";
-import { tier2Only } from "./tier.js";
+import { fullOnly } from "./target.js";
 
-tier2Only("needs multiple agent-host pods behind the router")(
+fullOnly("needs multiple agent-host pods behind the router")(
   "multi-pod conversation routing",
   () => {
     test("a conversation stays reachable no matter which pod the router picks", async ({ chat, page }) => {
@@ -40,7 +40,7 @@ tier2Only("needs multiple agent-host pods behind the router")(
   },
 );
 
-tier2Only("needs a real rollout to restart pods under a live conversation")(
+fullOnly("needs a real rollout to restart pods under a live conversation")(
   "a deploy during a live conversation",
   () => {
     test("a conversation survives its host pod being replaced", async ({ chat, page, request }) => {

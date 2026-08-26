@@ -1,4 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+// The FULL-target allowlist lives in test/e2e/full-specs.json — ONE source of truth
+// shared with CI's shard distribution (shard-e2e.mjs SPEC_SET=full). START SMALL,
+// WIDEN AS IT EARNS IT: add a spec once it has passed against a cluster.
+const fullSpecs: string[] = JSON.parse(
+  readFileSync(new URL("./test/e2e/full-specs.json", import.meta.url), "utf8"),
+);
 
 /**
  * Tier 3 E2E config. Two modes:
@@ -15,11 +23,12 @@ import { defineConfig, devices } from "@playwright/test";
  */
 const external = process.env.RUN_EXTERNAL_E2E === "1";
 
-// TIER 2: the same specs, against a REAL cluster (k3d in CI, or a live deployment).
-// The browser/real-server seam is otherwise untested — Tier 3 drives a UI with no real
-// cluster, and test/cluster drives a real cluster with no UI, so a bug living between
-// them is invisible to both. E2E_TIER=2 + E2E_CLUSTER_URL=<ui> selects it.
-const tier2 = process.env.E2E_TIER === "2";
+// FULL target: the same specs, against a REAL cluster (k3d in CI, or a live
+// deployment). The browser/real-server seam is otherwise untested — the fast target
+// drives a UI with no real cluster, and test/cluster drives a real cluster with no
+// UI, so a bug living between them is invisible to both.
+// E2E_TARGET=full + E2E_CLUSTER_URL=<ui> selects it.
+const full = process.env.E2E_TARGET === "full";
 const clusterUrl = process.env.E2E_CLUSTER_URL ?? "";
 
 export default defineConfig({
@@ -47,28 +56,23 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    // Tier 2 — a real cluster. Only the specs that opt in (or do not opt out) run here;
-    // see test/e2e/tier.ts. No local webServer: the stack is already up.
-    ...(tier2
+    // full — a real cluster. Only the specs that opt in (or do not opt out) run here;
+    // see test/e2e/target.ts. No local webServer: the stack is already up.
+    ...(full
       ? [
           {
-            name: "cluster",
+            name: "full",
             // START SMALL, WIDEN AS IT EARNS IT. A cluster run costs k3d startup and
-            // this tier is the one nobody watches, so 153 specs on day one buys noise,
-            // not confidence — and a flaky rarely-run tier trains everyone to dismiss
-            // it (see FLAKE_platform_smoke_empty_create_body). These are the user
-            // stories that justify the tier existing:
-            //   cluster-stories      — multi-pod + rollout; impossible in Tier 3
+            // this target is the one nobody watches, so 153 specs on day one buys
+            // noise, not confidence — and a flaky rarely-run suite trains everyone to
+            // dismiss it (see FLAKE_platform_smoke_empty_create_body). These are the
+            // user stories that justify the target existing:
+            //   cluster-stories      — multi-pod + rollout; impossible on the fake stack
             //   client-server-identity — the class that shipped (#353)
             //   refresh-history      — "send a message, see the response", across a reload
             //   stop-run             — a run starts and can be stopped, for real
             // Add a spec here once it has passed against a cluster; do not bulk-enable.
-            testMatch: [
-              /cluster-stories\.spec\.ts/,
-              /client-server-identity\.spec\.ts/,
-              /refresh-history\.spec\.ts/,
-              /stop-run\.spec\.ts/,
-            ],
+            testMatch: fullSpecs.map((f) => `**/${f}`),
             use: {
               ...devices["Desktop Chrome"],
               baseURL: clusterUrl,
@@ -80,7 +84,7 @@ export default defineConfig({
         ]
       : []),
     {
-      name: "chromium",
+      name: "fast",
       use: {
         ...devices["Desktop Chrome"],
         // On Nix the npm-downloaded browser revision often doesn't match the
@@ -94,8 +98,8 @@ export default defineConfig({
   ],
 
   // External mode targets a live deployment, so boot no local servers.
-  // Tier 2 targets a cluster that is already running, so boot nothing locally.
-  webServer: external || tier2
+  // The full target's cluster is already running, so boot nothing locally there either.
+  webServer: external || full
     ? undefined
     : [
         {

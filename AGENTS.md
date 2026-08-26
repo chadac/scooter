@@ -44,18 +44,19 @@ assume.** The tests are the spec; implementation is done seam-by-seam to turn
 them green (bridge → exec → session → provisioner → UI).
 
 ```bash
-just test-quick     # Tier 1 contract tests — fast, no cluster. Run constantly.
-just test           # FULL suite: Tier 1 + Tier 2 (cluster) + Tier 3 (E2E).
-just ci             # What CI runs: flake + manifest/lockfile/hash checks + lint + Tier 1.
+just test-quick     # unit tests — contract seams against fakes; no cluster. Run constantly.
+just test           # FULL suite: unit + cluster integration + e2e fast.
+just ci             # What CI runs: flake + manifest/lockfile/hash checks + lint + unit.
 ```
 
-Per-tier:
+Per-suite:
 
 ```bash
-just test-unit       # Tier 1  (no cluster, no network)
-just test-cluster    # Tier 2  (real k8s; auto-starts a local cluster)
-just test-e2e        # Tier 3  (Playwright through the UI; fake ACP agent)
-just test-e2e-real   # Tier 3  (one scenario with REAL goose; needs a model key)
+just test-unit       # unit             (no cluster, no network)
+just test-cluster    # cluster integration (vitest on real k8s; auto-starts one)
+just test-e2e        # e2e fast         (Playwright through the UI; fake agent)
+just e2e-full        # e2e full         (same specs against a real k3d cluster)
+just test-e2e-real   # e2e real-agent   (one scenario with REAL goose; needs a model key)
 ```
 
 While iterating, run a TARGETED subset instead of the ~25-minute full suite:
@@ -99,17 +100,22 @@ Rules of thumb:
 - Before declaring a milestone done, run the full `just test` and report the
   real result — including failures and skips. Never claim green without running.
 
-## Test tiers (see docs/TESTING.md)
+## Test suites (see docs/TESTING.md)
 
-- **Tier 1 — contract** (`services/agent-host/test/contract/`): the seams against fakes
-  (fake ACP agent, fake sandbox API). The `bridge.spec.ts` ACP→AG-UI mapping is
-  the highest-value test. Deterministic.
-- **Tier 2 — cluster** (`test/cluster/`): provisioning, suspend/resume PVC
+- **unit** (`services/agent-host/test/contract/` and friends, vitest): the seams
+  against fakes (fake ACP agent, fake sandbox API). The `bridge.spec.ts` ACP→AG-UI
+  mapping is the highest-value test. Deterministic.
+- **cluster integration** (`test/cluster/`, vitest): provisioning, suspend/resume PVC
   persistence, warm-pool latency, broker auth — on a real cluster with the
   **fake ACP agent** image. Gated `RUN_CLUSTER_TESTS=1`. Cluster-agnostic
   (`CLUSTER_PROVIDER=existing|k3s|kind|minikube|k3d`; default `k3s`).
-- **Tier 3 — E2E** (`test/e2e/`, Playwright): the UI through the whole stack.
-  Mostly fake agent; one real-Goose spec (`RUN_REAL_GOOSE=1`).
+- **e2e fast** (`test/e2e/`, Playwright, the default project): the browser, the UI,
+  and agent-host are all REAL; the agent and the sandbox/cluster are faked. Fast and
+  deterministic. One real-Goose spec (`RUN_REAL_GOOSE=1`).
+- **e2e full** (same specs, `--project=full` via `E2E_TARGET=full`): against a real
+  k3d cluster (or a live deployment). The only suite where the browser meets the real
+  server. NOT a superset of fast — fault-proxy specs run fast only. Gate specs with
+  `fastOnly(reason)` / `fullOnly(reason)` from `test/e2e/target.ts`.
 
 ## Conventions
 
@@ -138,8 +144,8 @@ Rules of thumb:
 | `modules/` | kubenix: per-conversation cold `Sandbox` (SA + 2 PVCs), agent-host, broker, webhooks, scheduler, warm pool |
 | `ui/` | assistant-ui frontend + AG-UI client library |
 | `skills/` | Markdown agent skills (`scooter-intro`, `scooter-env`, `agent-tools`, `scooter-aws`, …) |
-| `test/`, `nixos-tests/` | Tier 2 cluster + Tier 3 e2e fixtures/fakes; NixOS VM tests for the sandbox image |
-| `services/agent-host/test/` | Tier 1 contract tests |
+| `test/`, `nixos-tests/` | cluster-integration + e2e fixtures/fakes; NixOS VM tests for the sandbox image |
+| `services/agent-host/test/` | unit (contract) tests |
 | `docs/` | user-facing mkdocs site; the full `DESIGN.md`/`TESTING.md` are kept locally, outside the repo |
 
 ## Reference
