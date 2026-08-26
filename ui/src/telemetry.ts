@@ -31,6 +31,7 @@ import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BatchSpanProcessor,
+  SimpleSpanProcessor,
   TraceIdRatioBasedSampler,
   WebTracerProvider,
 } from "@opentelemetry/sdk-trace-web";
@@ -68,6 +69,17 @@ let tracer: Tracer | undefined;
  * telemetry off.
  */
 export async function initTelemetryFromServer(): Promise<void> {
+  // LOCAL DEBUGGING. With no collector — dev, or an e2e run — spans go to the browser
+  // console instead, one line each. Playwright forwards those to the test output, so a
+  // failing spec shows the same conversation lifecycle the deployed traces do, without
+  // standing up Tempo. Grep is a perfectly good query language for one test's worth.
+  //
+  // VITE_TELEMETRY_CONSOLE=1 turns it on; it is never on by default, because a chat UI
+  // emits enough spans to bury real console errors.
+  if (import.meta.env.VITE_TELEMETRY_CONSOLE === "1") {
+    initTelemetry({ enabled: true, exporter: "console" });
+    return;
+  }
   try {
     const res = await fetch("/telemetry/config.json", { cache: "no-store" });
     if (!res.ok) return;
@@ -83,7 +95,14 @@ export async function initTelemetryFromServer(): Promise<void> {
  * Start telemetry. No-op unless enabled, and never throws — a telemetry failure must not
  * take down the app it is meant to observe.
  */
-export function initTelemetry(opts: { enabled: boolean; sampleRatio?: number; version?: string }): void {
+export function initTelemetry(opts: {
+  enabled: boolean;
+  sampleRatio?: number;
+  version?: string;
+  /** "console" prints each span as a line instead of exporting OTLP — for local runs
+   *  where there is no collector. */
+  exporter?: "otlp" | "console";
+}): void {
   if (!opts.enabled || tracer) return;
   try {
     const provider = new WebTracerProvider({
@@ -93,7 +112,27 @@ export function initTelemetry(opts: { enabled: boolean; sampleRatio?: number; ve
       }),
       // Head sampling: a chat UI with a live event stream can produce a lot of spans.
       sampler: new TraceIdRatioBasedSampler(opts.sampleRatio ?? 1),
-      spanProcessors: [
+      spanProcessors: opts.exporter === "console"
+        ? [
+            // ONE LINE per span, not OTel's multi-line dump: a failing test's output
+            // should be greppable ("grep scooter.span" / "grep conversation.id_assigned")
+            // rather than something to scroll. Simple, not batched — a span that never
+            // flushes because the tab closed is exactly the one worth seeing.
+            new SimpleSpanProcessor({
+              export: (spans, cb) => {
+                for (const sp of spans) {
+                  const attrs = Object.entries(sp.attributes)
+                    .map(([k, v]) => `${k}=${String(v)}`)
+                    .join(" ");
+                  // eslint-disable-next-line no-console
+                  console.log(`scooter.span ${sp.name}${attrs ? ` ${attrs}` : ""}`);
+                }
+                cb({ code: 0 });
+              },
+              shutdown: async () => {},
+            }),
+          ]
+        : [
         new BatchSpanProcessor(new OTLPTraceExporter({ url: ENDPOINT }), {
           // Small batches, short delay: a browser tab can close at any moment, and an
           // unexported span is a lost span.
