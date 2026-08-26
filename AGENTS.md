@@ -25,6 +25,18 @@ conversations), a provider-aware model catalog, webhooks/scheduler/broker
 integrations, and a working UI are all live. Development continues via iterative
 improvements and new features.
 
+## Working in this repository
+
+**ALWAYS work inside the nix dev shell.** This repo uses `flake.nix` to provide a complete dev environment with all dependencies properly configured (playwright browsers, correct node/npm versions, test tools, etc.). The shell sets up environment variables like `PW_CHROME` that point to nix-provided binaries, ensuring playwright tests use the correct browser builds.
+
+To enter the dev shell:
+
+```bash
+nix develop --no-sandbox  # or use direnv (already configured via .envrc)
+```
+
+Once in the shell, all test commands, builds, and playwright runs will work correctly. Running tests outside the dev shell will fail with missing dependencies or version mismatches.
+
 ## ALWAYS run the tests
 
 `just` is the task runner. **Run the suite to confirm changes work — do not
