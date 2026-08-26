@@ -98,7 +98,12 @@ export type AguiEvent = AguiEventBase & { ts?: number };
 type AguiEventBase =
   // RUN_STARTED and RUN_FINISHED both REQUIRE threadId per the AG-UI schema —
   // the @ag-ui/client validates incoming events and rejects a missing threadId.
-  | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId }
+  // `host`/`gen` identify WHO started the run, so a later reader can tell a run this
+  // pod is still executing from one stranded by a previous host. Without them
+  // hasDanglingRun cannot distinguish the two, and revive-on-assign nudged a
+  // conversation's own live first run. Optional: events persisted before this
+  // existed have neither, and are treated as foreign (the old behaviour).
+  | { type: "RUN_STARTED"; threadId: ThreadId; runId: RunId; host?: string; gen?: number }
   | {
       type: "RUN_FINISHED";
       threadId: ThreadId;
@@ -372,6 +377,16 @@ export interface SessionBridge {
 export interface BridgeDeps {
   config: SessionConfig;
   exec: ExecBackend;
+  /** This pod's name (POD_NAME), stamped onto RUN_STARTED so a reader can tell a run
+   *  started HERE from one stranded by another host. Unset single-replica. */
+  selfPod?: string;
+  /** The CR generation this pod owns the conversation at, stamped alongside `selfPod`.
+   *  UNSET today: no accessor exposes it per-conversation, so a run left by an EARLIER
+   *  assignment to this same pod still reads as ours. That window needs the pod to be
+   *  reassigned away and back while a run dangles — rare, and it fails toward not
+   *  resuming rather than toward a spurious nudge. Wire this when the registry can
+   *  answer it. */
+  generation?: () => number | undefined;
   /** The conversation's chosen model (per-conversation override; undefined = deployment
    *  default). Combined with `modelCatalog` + each provider's `modelTag` to pick the model a
    *  RUN actually gets: the choice when the run's provider offers it, else that provider's
@@ -637,8 +652,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // survives persistence, so the log / tail window can order by real time instead
   // of trusting append order alone. The @ag-ui client folds by type+id and ignores
   // this extra field. Stamped once here; never re-stamped on replay.
-  const stamp = <E extends AguiEvent>(event: E): E =>
-    ("ts" in event ? event : { ...event, ts: Date.now() }) as E;
+  const stamp = <E extends AguiEvent>(event: E): E => {
+    const e = ("ts" in event ? event : { ...event, ts: Date.now() }) as E;
+    // Stamp run ORIGIN on RUN_STARTED (same rationale as `ts`: an extra field the
+    // @ag-ui client ignores, but which survives persistence). This is what lets
+    // hasDanglingRun tell "my in-flight run" from "a run a dead pod left behind".
+    if (e.type === "RUN_STARTED" && deps.selfPod && !("host" in e)) {
+      return { ...e, host: deps.selfPod, gen: deps.generation?.() } as E;
+    }
+    return e;
+  };
 
   // TRANSCRIPT RECORDER: correlate every recorded entry with THIS conversation +
   // the current run. `recordAguiOut` taps emitted AG-UI events; `recordRawInput`

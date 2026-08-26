@@ -1550,6 +1550,9 @@ export async function main(
     const bridge = createSessionBridge({
       config: { cwd, skillsDir: config.skillsDir, agent: cfg.agent, sandbox, mcpServers },
       exec,
+        // Stamped onto RUN_STARTED so a later reader can tell a run THIS pod is still
+        // executing from one stranded by a dead host — see hasDanglingRun.
+        selfPod: podName,
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
       livenessProbeMs: config.livenessProbeMs,
       // TRANSCRIPT RECORDER (test-harness, off unless TRANSCRIPT_RECORD_DIR is set):
