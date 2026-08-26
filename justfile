@@ -63,6 +63,31 @@ test-cluster: cluster-up
 test-e2e:
     npm run test:e2e
 
+# Tier 3 — a TARGETED subset for the inner loop (`just e2e <spec>`; never --workers).
+e2e *ARGS:
+    #!/usr/bin/env bash
+    # The full suite is ~25 min; one spec file is under a minute.
+    #
+    #   just e2e                          # everything
+    #   just e2e test/e2e/stop-run.spec.ts
+    #   just e2e test/e2e/a.spec.ts test/e2e/b.spec.ts
+    #   just e2e -g "queueing keeps thread"
+    #
+    # NEVER pass --workers. The suite shares ONE agent-host and its conversation
+    # state, so parallel workers interleave and the run reports green while testing
+    # nothing coherent — that produced a false "111 passed" locally against four
+    # failing CI shards. playwright.config.ts pins workers:1 for this reason; a CLI
+    # flag overrides it silently, so this rejects it rather than trusting memory.
+    #
+    # A green subset is NOT evidence the branch is green — run `just test-e2e` or
+    # let CI do it before saying so.
+    set -euo pipefail
+    if [[ " {{ARGS}} " == *" --workers"* ]]; then
+      echo "error: --workers breaks this suite (shared agent-host state). See the comment in justfile." >&2
+      exit 1
+    fi
+    npx playwright test --project=chromium {{ARGS}}
+
 # Tier 3 — E2E against a LIVE deployment (real sandbox, real exec, real Bedrock).
 # Usage: just test-e2e-external https://chat.example.com [user:pass]
 # Drives the deployed agent-host API directly; catches in-cluster failures the

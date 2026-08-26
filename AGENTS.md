@@ -58,11 +58,26 @@ just test-e2e        # Tier 3  (Playwright through the UI; fake ACP agent)
 just test-e2e-real   # Tier 3  (one scenario with REAL goose; needs a model key)
 ```
 
+While iterating, run a TARGETED subset instead of the ~25-minute full suite:
+
+```bash
+just e2e test/e2e/stop-run.spec.ts      # one file, ~45s
+just e2e test/e2e/a.spec.ts test/e2e/b.spec.ts
+just e2e -g "queueing keeps thread"     # one test by title
+```
+
+**Never pass `--workers`.** The suite shares ONE agent-host and its conversation
+state, so parallel workers interleave: the run reports green while testing nothing
+coherent. `playwright.config.ts` pins `workers: 1` for this reason and a CLI flag
+overrides it silently — `just e2e` rejects the flag outright.
+
 Rules of thumb:
 - After **any** change to `agent-host/`, run `just test-unit` before moving on.
 - After changes touching provisioning (`modules/`, `pkgs/sandbox-os/`,
   session/provisioner code), run `just test-cluster`.
-- After UI or end-to-end flow changes, run `just test-e2e`.
+- After UI or end-to-end flow changes, run `just test-e2e`. Iterate with
+  `just e2e <spec>`, but a green subset is **not** evidence the branch is green —
+  the full suite or CI decides that.
 - Before declaring a milestone done, run the full `just test` and report the
   real result — including failures and skips. Never claim green without running.
 
