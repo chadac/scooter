@@ -199,6 +199,8 @@ type Fixtures = {
    *  shared (single-process) webServer doesn't leak conversations between tests
    *  and break absolute-count assertions. */
   cleanState: void;
+  /** Auto: forwards browser telemetry spans to the test output (E2E_TELEMETRY=1). */
+  telemetryForwarding: void;
 };
 
 export const test = base.extend<Fixtures>({
@@ -206,17 +208,32 @@ export const test = base.extend<Fixtures>({
     const errors: string[] = [];
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
-      // Forward telemetry spans to the test output when E2E_TELEMETRY=1, so a failing
-      // spec shows the same conversation lifecycle the deployed traces do — without
-      // writing a bespoke probe spec for each investigation.
-      if (process.env.E2E_TELEMETRY === "1" && m.text().startsWith("scooter.span")) {
-        // eslint-disable-next-line no-console
-        console.log(`  [browser] ${m.text()}`);
-      }
     });
     page.on("pageerror", (e) => errors.push(String(e)));
     await use(errors);
   },
+
+  // Forward telemetry spans to the test output when E2E_TELEMETRY=1, so a failing spec
+  // shows the same conversation lifecycle the deployed traces do.
+  //
+  // auto:true is LOAD-BEARING. Playwright fixtures are LAZY — one instantiates only if a
+  // test destructures it. Hanging this off `consoleErrors` meant it never attached for the
+  // specs that do not request that fixture (stop-run among them), so the browser emitted
+  // the spans and nothing was listening.
+  telemetryForwarding: [
+    async ({ page }, use) => {
+      if (process.env.E2E_TELEMETRY === "1") {
+        page.on("console", (m) => {
+          if (m.text().startsWith("scooter.span")) {
+            // eslint-disable-next-line no-console
+            console.log(`  [browser] ${m.text()}`);
+          }
+        });
+      }
+      await use();
+    },
+    { auto: true },
+  ],
 
   // Runs automatically (auto: true) before every test: the e2e webServer is one
   // long-lived agent-host process whose conversation list is persisted + hydrated,

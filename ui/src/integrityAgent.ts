@@ -661,6 +661,18 @@ export class IntegrityAgent extends AbstractAgent {
       let notFoundDelay = 500;
       let firstConn = true;
       while (!closed) {
+        // No server id yet: there is nothing to connect to, so wait BEFORE doing any
+        // per-connection work. This must be the FIRST thing in the loop body — the reset
+        // below wipes the folded messages, and spinning through it every tick while
+        // waiting for an id repeatedly blanked the transcript. That is what left the
+        // Stop button's run state unrecoverable (stop-run 2/6).
+        //
+        // The pump's START is deliberately NOT deferred: bisection showed that breaks the
+        // same spec, whether the deferral is a poll or an immediate signal.
+        if (!hasId(this.cfg.conversationId)) {
+          await delay(50);
+          continue;
+        }
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
         // replay rebuilds identical state rather than doubling onto the previous
         // connection's fold (the page-refresh double-apply bug). A `Subject`
@@ -719,16 +731,7 @@ export class IntegrityAgent extends AbstractAgent {
           // reset and replayed, which is what "it restarted" looks like to a user.
           "stream.first_connection": isFirstConnection,
         });
-        // No server id yet: nothing to connect to. Wait a beat and re-check rather than
-        // streaming a placeholder (the 404-reconnect storm). This sits AFTER seedTail and
-        // the per-connection reset, so the pump's ordering is untouched — deferring the
-        // pump's START instead broke stop-run, twice, in ways a bisect caught and reading
-        // did not.
-        const url = streamUrl();
-        if (url === undefined) {
-          await delay(50);
-          continue;
-        }
+        const url = streamUrl() as string; // non-undefined: guarded at the loop head
         const outcome = await this.readConnection(
           url,
           headers,
