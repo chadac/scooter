@@ -611,6 +611,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           owner: c.spec.owner,
           parentId: c.spec.parentId,
           sandboxRef: `conv-${shortId(c.id)}`,
+          creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
         });
       }
     }
@@ -782,6 +783,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // single-replica mode.
       await conversationRegistry.register(id, {
         model, owner: parent.owner, parentId, sandboxRef: entry.sandbox.name,
+        creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
       });
 
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
@@ -830,6 +832,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // idempotent (409 = already there = no-op), so this is a cheap self-heal. Fire-and-forget.
       void conversationRegistry.register(id, {
         model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+        creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
       });
       // Register the resume as ACTIVITY. Without this, lastActivityAt stays at its
       // pre-suspend value, so the idle sweep (sweepIdle) sees the conversation as
@@ -1310,6 +1313,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // fire-and-forget; the controller (re)assigns the CR a host on its next reconcile.
         void conversationRegistry.register(entry.id, {
           model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+          creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
         });
         // RE-PUBLISH PHASE for a conversation hydrated as SUSPENDED. phase is otherwise only
         // written at the suspend()/revive() TRANSITION events — so a conversation that was
