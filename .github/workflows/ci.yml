@@ -508,6 +508,22 @@ jobs:
       # Build + import every image the fakeAgent platform-manifests reference, by bare name
       # (registryPrefix "" → local names). nix2container `.copyTo docker-daemon:` loads Docker
       # directly; k3d then imports by name. Cachix-cached so this is mostly download.
+      # The Sandbox CRD + controller. Previously unnecessary here BY ACCIDENT: the job
+      # set GOOSE_BIN=fake, which also forced a noop provisioner, so nothing ever touched
+      # the Sandbox API. Decoupling those flags (so the cluster tier tests a REAL sandbox)
+      # made this a hard dependency — without it the apiserver answers a plain-text
+      # "404 page not found" and every run ends RUN_ERROR.
+      #
+      # Same version + assets as test/support/cluster-up.sh installs locally.
+      - name: install agent-sandbox controller
+        run: |
+          set -euo pipefail
+          base="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2"
+          nix shell nixpkgs#kubectl -c bash -c "
+            kubectl apply -f '${base}/sandbox.yaml'
+            kubectl apply -f '${base}/extensions.yaml'
+            kubectl wait --for=condition=Available deploy --all -n agent-sandbox-system --timeout=180s
+          "
       - name: build + import platform images
         run: |
           set -euo pipefail

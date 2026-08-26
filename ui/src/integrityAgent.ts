@@ -695,6 +695,15 @@ export class IntegrityAgent extends AbstractAgent {
         }
         if (waitTicks > 0) {
           record("stream.id_arrived", { wait_ticks: waitTicks });
+            // SEED NOW. seedTail() runs once at start-up and returns immediately when
+            // there is no id yet, so on a BRAND-NEW conversation it never ran at all —
+            // and events emitted before this stream went live had no catch-up. The UI
+            // then rendered nothing, not even the user's own message.
+            //
+            // Seeding HERE, on the id's arrival, is the fix that does not touch when the
+            // pump starts: deferring the pump is documented above as bisected-and-wrong,
+            // and it measured worse (8 -> 13 cluster failures) when tried.
+            if (!seeded) seeded = await this.seedTail().catch(() => false);
           waitTicks = 0;
         }
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
@@ -935,7 +944,13 @@ export class IntegrityAgent extends AbstractAgent {
     // `seeded` stayed false and the first real connection wiped the visible transcript
     // rather than preserving the seeded tail. seedTail runs once, before the loop; the
     // gate has to sit before it, not inside what follows it.
-    void this.seedTail().finally(() => { if (!closed) void loop(); });
+    void this.seedTail()
+      .then((ok) => {
+        seeded = ok;
+      })
+      .finally(() => {
+        if (!closed) void loop();
+      });
     return stop;
   }
 
@@ -943,27 +958,29 @@ export class IntegrityAgent extends AbstractAgent {
    *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
    *  first paint before the full replay. Best-effort: any failure just skips the
    *  seed and the full replay paints as before. */
-  private async seedTail(runs = 8): Promise<void> {
+  private async seedTail(runs = 8): Promise<boolean> {
     try {
-      if (!hasId(this.cfg.conversationId)) return; // nothing to seed from yet
+      if (!hasId(this.cfg.conversationId)) return false; // nothing to seed from yet
       const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
       const res = await this.doFetch(url, {
         headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const body = (await res.json()) as { events?: BaseEvent[] };
       const events = body.events ?? [];
-      if (events.length === 0) return;
+      if (events.length === 0) return false;
       // Fold the tail in a THROWAWAY clone first, so a fold that yields nothing
       // renderable (e.g. the tail's final run is still in-flight — no RUN_FINISHED —
       // so the base applier produces no message state) can't blank the real thread.
       // Adopt + paint only if the fold actually produced messages.
       const folded = await this.foldTail(events);
-      if (folded.length === 0) return; // nothing renderable → let the full replay paint
+      if (folded.length === 0) return false; // nothing renderable → let the full replay paint
       this.setMessages(folded as never);
       this.notifyMessages();
+      return true;
     } catch {
       /* best-effort — the full replay will paint */
+      return false;
     }
   }
 
