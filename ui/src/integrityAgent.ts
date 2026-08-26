@@ -661,15 +661,6 @@ export class IntegrityAgent extends AbstractAgent {
       let notFoundDelay = 500;
       let firstConn = true;
       while (!closed) {
-        // WAIT, do not connect, while the conversation has no server id. This is the
-        // 404-reconnect storm's fix at the loop level: previously the pump streamed a
-        // local placeholder, got 404s, and backed off — three connects in four seconds.
-        // setConversationId() gives us one the moment creation lands, and the poll is
-        // cheap because it does no I/O.
-        if (!hasId(this.cfg.conversationId)) {
-          await delay(250);
-          continue;
-        }
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
         // replay rebuilds identical state rather than doubling onto the previous
         // connection's fold (the page-refresh double-apply bug). A `Subject`
@@ -900,7 +891,16 @@ export class IntegrityAgent extends AbstractAgent {
     // conversation shows its latest context immediately instead of waiting for the
     // whole integrity log to stream. The loop below then re-folds the full log from
     // empty and reconciles (identical fidelity — the tail used the same applier).
-    void this.seedTail().finally(() => { if (!closed) void loop(); });
+    // Wait for the server id BEFORE seeding, then seed, then loop — the original
+    // ordering, just deferred until there is something to address.
+    //
+    // Gating INSIDE the loop instead (an earlier attempt) skipped seedTail entirely, so
+    // `seeded` stayed false and the first real connection wiped the visible transcript
+    // rather than preserving the seeded tail. seedTail runs once, before the loop; the
+    // gate has to sit before it, not inside what follows it.
+    void this.awaitConversationId()
+      .then(() => (closed ? undefined : this.seedTail()))
+      .finally(() => { if (!closed) void loop(); });
     return stop;
   }
 
@@ -908,6 +908,15 @@ export class IntegrityAgent extends AbstractAgent {
    *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
    *  first paint before the full replay. Best-effort: any failure just skips the
    *  seed and the full replay paints as before. */
+  /** Resolve once the server has assigned this conversation an id. Polls rather than
+   *  subscribing, because setConversationId is a plain setter; 100ms is imperceptible and
+   *  costs no I/O. Returns immediately when an id already exists — the common case. */
+  private async awaitConversationId(): Promise<void> {
+    while (!hasId(this.cfg.conversationId)) {
+      await delay(100);
+    }
+  }
+
   private async seedTail(runs = 8): Promise<void> {
     try {
       if (!hasId(this.cfg.conversationId)) return; // nothing to seed from yet

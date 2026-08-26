@@ -99,7 +99,7 @@ export function ContextFillBar() {
 /** The inline indicator + Stop / error, rendered in the conversation (above the
  *  composer). Returns null when idle with no error. */
 export function InlineRunStatus() {
-  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, runRetrying, streamAuthError } = useConversationInterrupts();
+  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, runRetrying, streamAuthError, conversationId } = useConversationInterrupts();
 
   // Tick once a second WHILE running so the elapsed time advances — this is what
   // makes a long, silent tool call visibly "still working" instead of looking stuck.
@@ -196,7 +196,9 @@ export function InlineRunStatus() {
         // so the click is visibly acknowledged (the run's terminal event still
         // round-trips through the stream to actually clear it). If the stop failed to
         // land, re-enable so the user can retry.
-        disabled={stopping}
+        // Also disabled with no server id: there is no run to stop, so the control says
+        // so rather than firing a cancel that cannot be addressed.
+        disabled={stopping || !hasId(conversationId)}
         aria-busy={stopping}
         onClick={() => void cancel()}
         className="shrink-0 rounded-full px-3 py-0.5 font-medium"
