@@ -10,6 +10,8 @@
   "live-real-agent.spec.ts",
   "long-conversation.spec.ts",
   "multi-turn-integrity.spec.ts",
+  "multi-user.spec.ts",
+  "ownership.spec.ts",
   "refresh-history.spec.ts",
   "revive.spec.ts",
   "stop-run.spec.ts",
