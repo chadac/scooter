@@ -1317,6 +1317,12 @@ export async function main(
     jobCleanupTimer = setInterval(() => {
       for (const c of sessions.list()) {
         if (c.status !== "running") continue;
+        // OWNER-ONLY, same rule as sweepIdle (#358): a stale local entry for a
+        // conversation that moved away (or was deleted elsewhere) otherwise gets
+        // exec-probed here every sweep — each probe rides the pollForReadyPod
+        // self-heal into a resume of a sandbox that may be GONE (observed: a 404
+        // resume retried every 60s forever after the pod-move story).
+        if (ownership && !ownership.guard.canWrite(c.id)) continue;
         void jobManager.cleanup(c.id).catch(() => {});
       }
     }, config.idleSweepIntervalMs);
@@ -1337,6 +1343,8 @@ export async function main(
         // Poll conversations whose pod is up (running) — a suspended conversation's
         // completions are announced on its next revive (the watcher sees them then).
         if (c.status !== "running") continue;
+        // OWNER-ONLY — see the cleanup sweep above.
+        if (ownership && !ownership.guard.canWrite(c.id)) continue;
         void (async () => {
           const done = await jobManager!.pollCompletions(c.id).catch(() => [] as JobStatus[]);
           for (const st of done) {
