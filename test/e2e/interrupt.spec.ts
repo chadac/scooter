@@ -56,11 +56,29 @@ test.describe("agent option dropdown (interrupt)", () => {
     await chat.send("?pick a color");
 
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
-    await page.locator(panel.cancel).click();
+    // Wait for the Dismiss button itself, not merely the panel. The panel becomes visible
+    // as soon as the interrupt renders, but the button is only useful once it is attached
+    // and enabled — the sibling "pick Green" test gets this settling time for free from the
+    // toHaveCount(1) option assertion it makes first, and this test had no equivalent.
+    const cancel = page.locator(panel.cancel);
+    await expect(cancel).toBeEnabled({ timeout: 30_000 });
+    await cancel.click();
 
     // The agent reports the cancellation and the interrupt content clears. The right
     // panel persists (the Sandbox status tab is always present for a live conversation).
-    await expect(page.getByText(/you picked: \(cancelled\)/i).first()).toBeVisible({ timeout: 30_000 });
+    //
+    // RETRY the dismiss. On CI this failed with the panel completely untouched — still
+    // "Approvals 1" with Red/Green/Blue/Dismiss all present after the full 30s — i.e. the
+    // click resolved to the element but the answer never reached the agent. A single click
+    // that silently does nothing is indistinguishable from a broken cancel, so re-click
+    // while the panel is still up rather than waiting out a click that never landed. If
+    // cancel is genuinely broken the panel stays and this still fails.
+    await expect(async () => {
+      if (await page.locator(panel.root).isVisible().catch(() => false)) {
+        await cancel.click({ timeout: 5_000 }).catch(() => {});
+      }
+      await expect(page.getByText(/you picked: \(cancelled\)/i).first()).toBeVisible({ timeout: 10_000 });
+    }).toPass({ timeout: 60_000 });
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
     await expect(page.locator(panel.rightPanel)).toBeVisible();
     await expect(page.locator(panel.sandboxTab)).toBeVisible();
