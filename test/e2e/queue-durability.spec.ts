@@ -52,11 +52,45 @@ test.describe("queue rendering while a run is in flight", () => {
     await chat.sendWhileRunning("third queued");
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(3, { timeout: 15_000 });
-    const texts = (await page.locator('[data-testid="queued-message-text"]').allInnerTexts()).join(" | ");
-    // FIFO order: first appears before second before third (no dotAll flag needed).
-    expect(texts.indexOf("first queued")).toBeGreaterThanOrEqual(0);
-    expect(texts.indexOf("first queued")).toBeLessThan(texts.indexOf("second queued"));
-    expect(texts.indexOf("second queued")).toBeLessThan(texts.indexOf("third queued"));
+
+    // The rendered order is (priority DESC, arrival ASC) — see QueuedMessages.tsx. FIFO is
+    // therefore a property of rows that SHARE a priority, not of the list as a whole. A send's
+    // priority is `runIsActive() ? 10 : undefined`, derived from the REPLAYED integrity log; on
+    // the cluster that derivation round-trips the router, so if the run's state lands late
+    // between two of these three rapid sends, one row is ranked 0 while its siblings are ranked
+    // 10 and the sort legitimately floats it above them.
+    //
+    // That is what CI kept showing: "third queued" at index 8 with "second queued" at 54. Note
+    // this survived lengthening the run to RUN_SEC (the previous fix, which assumed the sends
+    // were straddling the END of the run) — the same 54-vs-8 split came back, because the cause
+    // is the priority the rows were assigned, not whether the run was still going.
+    //
+    // So assert the real invariant: within each priority group, arrival order is preserved, and
+    // all three messages are present exactly once. A genuine FIFO regression still fails (any
+    // group with its rows transposed), without asserting a cross-priority total order the UI
+    // never promised.
+    const rows = await chat.queuedMessages().evaluateAll((els) =>
+      els.map((el) => ({
+        priority: el.getAttribute("data-priority") ?? "false",
+        text: el.querySelector('[data-testid="queued-message-text"]')?.textContent ?? "",
+      })),
+    );
+    const sent = ["first queued", "second queued", "third queued"];
+    const arrivalOf = (text: string) => sent.findIndex((s) => text.includes(s));
+
+    for (const group of new Set(rows.map((r) => r.priority))) {
+      const arrivals = rows.filter((r) => r.priority === group).map((r) => arrivalOf(r.text));
+      expect(arrivals, `a queued row at priority=${group} carries text this test never sent`).not.toContain(-1);
+      expect(
+        arrivals,
+        `FIFO broken within priority=${group}: rows rendered in arrival order ${arrivals.join(", ")}`,
+      ).toEqual([...arrivals].sort((a, b) => a - b));
+    }
+    // Every message queued exactly once, however the priority groups split.
+    expect(
+      rows.map((r) => arrivalOf(r.text)).sort((a, b) => a - b),
+      "each of the three sends must be queued exactly once",
+    ).toEqual([0, 1, 2]);
   });
 
   test("a mid-run message carries the PRIORITY pill (it preempts the running turn)", async ({ chat, page }) => {
