@@ -311,12 +311,27 @@ export const test = base.extend<Fixtures>({
             // this loop can NEVER remove: it spins 50 times, gives up, and every later test
             // inherits the leftover — which is exactly how sessions.spec.ts came to fail 8/10
             // with "Expected 1, Received 2" and titles bleeding across tests.
-            if (c.starred) {
+            // FULL: unstar UNCONDITIONALLY. `starred` comes from the aggregated list, which on a
+            // multi-replica fleet can omit or stale the flag for a row served by a pod that was
+            // briefly skipped — so trusting it means a genuinely starred conversation gets a bare
+            // DELETE, 409s, and survives every one of the 50 attempts. Observed on CI: one
+            // conversation held the whole shard hostage for 3 minutes and failed 6 later specs.
+            // The PATCH is idempotent and cheap, so guessing wrong costs nothing.
+            if (c.starred || process.env.E2E_TARGET === "full") {
               await request
                 .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
                 .catch(() => undefined);
             }
-            return request.delete(`${base}/conversations/${c.id}`);
+            const del = await request.delete(`${base}/conversations/${c.id}`);
+            // A 409 means it was still starred when the DELETE landed (the unstar raced, or the
+            // flag arrived late). Unstar again and retry once — otherwise this row is immortal.
+            if (del.status() === 409) {
+              await request
+                .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
+                .catch(() => undefined);
+              return request.delete(`${base}/conversations/${c.id}`);
+            }
+            return del;
           }),
         );
         await new Promise((r) => setTimeout(r, 100));
