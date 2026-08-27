@@ -126,3 +126,21 @@ describe("danglingRunInfo — persisted cancel intent", () => {
     expect(danglingRunInfo([started("r1"), text()])).toMatchObject({ runId: "r1", cancelRequested: false });
   });
 });
+
+describe("OwnershipTracker.onGained — the settlement trigger", () => {
+  it("fires on a reassignment TO this pod, not on same-owner echoes @proves", async () => {
+    const { OwnershipTracker } = await import("../../src/session/ownershipGuard.js");
+    const t = new OwnershipTracker("me");
+    const gained: Array<[string, number]> = [];
+    t.onGained = (id, gen) => gained.push([id, gen]);
+
+    t.observe("c1", { hostPod: "other", generation: 1 }); // someone else's
+    t.observe("c1", { hostPod: "me", generation: 2 });    // moved to us -> fire
+    t.observe("c1", { hostPod: "me", generation: 2 });    // echo -> silent
+    t.observe("c2", { hostPod: "me", generation: 1 });    // boot-list reveal -> fire
+    t.observe("c1", { hostPod: "other", generation: 3 }); // moved away -> silent
+    t.observe("c1", { hostPod: "me", generation: 4 });    // back again -> fire
+
+    expect(gained).toEqual([["c1", 2], ["c2", 1], ["c1", 4]]);
+  });
+});

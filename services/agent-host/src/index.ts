@@ -676,6 +676,19 @@ export async function main(
     },
   });
 
+  // Settlement on OWNERSHIP GAIN: the CR watch is the one signal that always fires
+  // when a conversation moves to this pod (the revive push can die with the old pod;
+  // the hydrate cascade makes adoption a no-op when the entry already exists). A
+  // gained conversation with a stranded run gets it terminated (persisted cancel
+  // intent) or resume-nudged. Fire-and-forget; owner-fenced + deduped inside.
+  if (ownership) {
+    ownership.guard.onGained = (id, generation) => {
+      void sessions
+        .reconcileDanglingRun(id as SessionId, generation)
+        .catch((err) => hostLog.errorWith("ownership-gain settlement failed", err, { conversation_id: id }));
+    };
+  }
+
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
    *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
    *  OTHER read error is surfaced (don't send an unauthenticated request). */
