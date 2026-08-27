@@ -97,8 +97,12 @@ class Hook(BaseHTTPRequestHandler):
             # absent (never written on this pod) still returns 200 — the postcondition
             # "the owner pod has no local copy" is what the caller needs, not "a
             # directory was removed". Report what was there so a test artifact shows it.
+            # /bin/sh by absolute path: the agent-host image sets no PATH of its own
+            # (pkgs/agent-host-image/default.nix config.Env), so a bare `sh` depends on
+            # the container runtime's default. buildEnv links coreutils + bash into /bin,
+            # so this path is the one guaranteed to exist.
             r = sh("kubectl", "-n", NS, "exec", host, "-c", "agent-host", "--",
-                   "sh", "-c", f"ls -1 '{target}' 2>/dev/null; rm -rf '{target}'")
+                   "/bin/sh", "-c", f"ls -1 '{target}' 2>/dev/null; rm -rf '{target}'")
             if r.returncode != 0:
                 return self._reply(500, f"wipe failed on {host}: {r.stderr}")
             return self._reply(200, f"wiped {target} on {host}\nheld: {r.stdout.strip() or '(nothing)'}\n")
