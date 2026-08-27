@@ -25,7 +25,16 @@ const AT_BOTTOM_PX = 40;
 async function fillUntilScrollable(chat: Chat, minScroll = 400): Promise<number> {
   let scrollable = 0;
   for (let i = 0; i < 12 && scrollable < minScroll; i++) {
-    await chat.sendTurn(`turn number ${i} — please review something moderately long so the thread grows`);
+    // 90s per turn, not sendTurn's 45s default. On the full target every turn execs in a
+    // real sandbox and the FIRST one additionally waits for a cold pod (15-25s, longer
+    // when the CI node is briefly starved of cpu) — observed on CI: the very first turn
+    // of this fill timed out at 45s with assistantMessages still 1, failing both scroll
+    // tests before either could measure anything. The loop exits as soon as the thread
+    // is tall enough, so a larger ceiling costs no wall-clock time on a healthy run.
+    await chat.sendTurn(
+      `turn number ${i} — please review something moderately long so the thread grows`,
+      90_000,
+    );
     scrollable = await chat.scrollableHeight();
   }
   return scrollable;
@@ -36,10 +45,12 @@ test.describe("conversation scroll-lock", () => {
   // 12 sendTurns, and on the full target EVERY turn execs `echo` in a real sandbox:
   // the first turn funds a cold boot (≤25s) and each later turn costs ~5-8s (exec +
   // word-by-word streaming) — the fill alone is ~110s worst case, before the test's
-  // own scroll assertions. The 60s suite default is arithmetic-bound; 300s funds the
-  // fill plus the big-append/settle work with margin. The scroll assertions keep
-  // their tight budgets — they measure the viewport, not the cluster.
-  test.setTimeout(300_000);
+  // own scroll assertions. The 60s suite default is arithmetic-bound; 360s funds the
+  // fill plus the big-append/settle work with margin (the fill's first turn now has a
+  // 90s ceiling for the cold boot, and a tall CI viewport can need several turns before
+  // the thread is scrollable). The scroll assertions keep their tight budgets — they
+  // measure the viewport, not the cluster.
+  test.setTimeout(360_000);
 
   test("auto-follows new turns to the bottom", async ({ chat }) => {
     await chat.open();
