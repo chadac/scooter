@@ -191,17 +191,13 @@ test.describe("sidebar search + filter + label mode", () => {
     // Explicit budgets for the same reason as the search assertions above: every one of
     // these reads the aggregated list at the moment the chip is toggled, and that list is
     // allowed to be transiently partial on the full target.
-    // The chip filters on the LINK, so the sidebar's merged list must already know about it.
-    // That merge arrives on a poll, and it is a DIFFERENT poll from the one that delivered
-    // the rows — so clicking the chip the moment the rows are back can filter against a
-    // list where rowA has no link yet, which removes every row. CI showed exactly that: the
-    // sidebar read "No chats match." with the filter active, and rowA resolved to 0 for the
-    // full 30s. Waiting for the search to see the link first proves the merge has landed.
-    await page.locator(sb.search).fill("#203");
-    await expect(rowA, "the link must reach the sidebar's merged list before filtering on it")
-      .toHaveCount(1, { timeout: 60_000 });
-    await page.locator(sb.search).fill("");
-    await expect(rowB).toHaveCount(1, { timeout: 30_000 });
+    // Both rows must be BACK from the cleared search before the chip is applied. The search
+    // above emptied the list, and clearing the query repopulates it on the sidebar's own
+    // refresh — clicking the chip against a list that has not repopulated yet filters
+    // nothing into nothing. CI showed the compound state: "No chats match." with a filter
+    // still active and rowA absent for the full budget.
+    await expect(rowA, "the rows must return after the search is cleared").toHaveCount(1, { timeout: 60_000 });
+    await expect(rowB, "the rows must return after the search is cleared").toHaveCount(1, { timeout: 60_000 });
 
     await page.locator(sb.providerGithub).click();
     await expect(rowA).toHaveCount(1, { timeout: 30_000 });
