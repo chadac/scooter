@@ -360,6 +360,8 @@ typecheck:
     npm -w services/marimo-mcp run build
     npm -w services/agent-host run typecheck
     npm -w ui run typecheck
+    # The generated Drizzle schema (catches broken/drifted generation at the type level).
+    npm -w @scooter/schema run typecheck
 
 lint: typecheck
 
@@ -417,6 +419,19 @@ check-image-coverage:
 # Atlas's dev database (scripts/atlas-dev.sh) so nothing is shared.
 db_envs := "webhooks scheduler broker byoc"
 
+# Regenerate the per-language ORM bindings (@scooter/schema, scooter_schema) from
+# lib/sql/<db>/schema.sql. Uses embedded pglite only — no server. Commit the result.
+db-generate:
+    scripts/db-generate.sh
+
+# CI drift guard: regenerate the bindings and fail if the committed output differs —
+# a schema change that forgets to regenerate fails the build (like check-lockfiles).
+db-generate-check:
+    scripts/db-generate.sh
+    @git diff --exit-code -- lib/ts/scooter-schema/src lib/py/scooter-schema/src \
+      || (echo "❌ generated schema drift: lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
+    @echo "✅ generated ORM bindings are in sync with lib/sql"
+
 # Author migrations from schema.sql for every database. Only databases whose
 # schema actually changed get a new file. Usage: just db-migrate <name>
 db-migrate name:
@@ -436,7 +451,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint test-unit
+ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint db-generate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).

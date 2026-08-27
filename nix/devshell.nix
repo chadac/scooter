@@ -33,6 +33,9 @@ pkgs.mkShell {
     # `nix shell nixpkgs#postgresql_16` — so it is NOT a standing dev-shell dep. atlas
     # stays here for direct `atlas` use.
     atlas
+    # `just db-generate` runs the Drizzle side from the npm workspace (pglite) and the
+    # SQLAlchemy side via `uv run` (pinned sqlacodegen) — uv provides that.
+    uv
   ];
   shellHook = ''
     echo "kubenix-agent-manager dev shell"
