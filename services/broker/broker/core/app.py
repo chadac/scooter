@@ -57,6 +57,26 @@ def create_app() -> FastAPI:
         ))
         registry_router = create_registry_router(registry_store)
 
+    # Static shares (broker/shares/) — persistent static webpages served at /s/<uuid>/.
+    # Built when enabled; its store is init'd in the lifespan + its router mounted
+    # top-level (like /modules and /link).
+    shares_store = None
+    shares_router = None
+    if settings.shares_enabled:
+        from ..aws.store import StoreConfig
+        from ..shares.routes import create_shares_router
+        from ..shares.store import ShareStore
+
+        shares_store = ShareStore(StoreConfig(
+            dsn=settings.shares_db_dsn,
+            db_host=settings.aws_db_host, db_port=settings.aws_db_port,
+            db_user=settings.aws_db_user, db_password=settings.aws_db_password,
+            db_name=settings.aws_db_name,
+        ))
+        shares_router = create_shares_router(
+            shares_store, public_base_url=settings.shares_public_base_url
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Run providers' async startup hooks (e.g. open a DB, start a sweep).
@@ -67,6 +87,8 @@ def create_app() -> FastAPI:
             await sandbox_store.init()
         if registry_store is not None:
             await registry_store.init()
+        if shares_store is not None:
+            await shares_store.init()
         yield
         for p in providers:
             if p.on_shutdown is not None:
@@ -79,6 +101,9 @@ def create_app() -> FastAPI:
 
     if registry_router is not None:
         app.include_router(registry_router)
+
+    if shares_router is not None:
+        app.include_router(shares_router)
 
     # Deployment-default modules — GET /modules/default.tar.gz, UNAUTHENTICATED (the
     # pod fetches at boot; module Nix isn't a secret). Always mounted; serves an empty
