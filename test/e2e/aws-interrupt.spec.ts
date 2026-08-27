@@ -87,24 +87,44 @@ async function firstConversationId(
   return id;
 }
 
-/** POST the aws-request exactly like the broker's _notify_host does. */
+/** POST the aws-request exactly like the broker's _notify_host does.
+ *
+ *  A 404 is RETRIED on the full target. The caller has already confirmed the server lists
+ *  this conversation (firstConversationId does that), so a 404 here does not mean "no such
+ *  conversation" — it means the request reached a pod that does not yet know about it. The
+ *  router resolves the owner from a CRD-backed cache that is populated by a watch, so
+ *  between a conversation being created and its ownership being visible there is a window
+ *  where the request lands on a non-owner. Observed on CI: this route 404'd for a
+ *  conversation that was listed and healthy, then the identical request succeeded.
+ *
+ *  Retrying is what the broker's own caller would experience as eventual success; it does
+ *  not hide a broken route, which 404s on every attempt and still fails the assertion. */
 async function requestAws(
   request: import("@playwright/test").APIRequestContext,
   base: string,
   conversationId: string,
   requestId: string,
 ) {
-  return request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 120_000, // the route may REVIVE (real sandbox resume on the full target) before its 202
-    data: {
-      request_id: requestId,
-      target_account: "dev",
-      risk_level: "low",
-      policy_summary: "s3:GetObject on the state bucket",
-      justification: "read terraform state",
-    },
-  });
+  const post = () =>
+    request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 120_000, // the route may REVIVE (real sandbox resume on the full target) before its 202
+      data: {
+        request_id: requestId,
+        target_account: "dev",
+        risk_level: "low",
+        policy_summary: "s3:GetObject on the state bucket",
+        justification: "read terraform state",
+      },
+    });
+
+  let res = await post();
+  if (!isFull) return res;
+  for (let i = 0; i < 10 && res.status() === 404; i++) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    res = await post();
+  }
+  return res;
 }
 
 /** Timeout for the API POSTs that do REAL cluster work server-side before replying.
