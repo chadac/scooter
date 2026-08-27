@@ -29,6 +29,11 @@ import {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Wrap `s` so `sh -c` sees it as ONE literal argument, whatever it contains.
+ *  Single quotes protect everything except a single quote itself, which is emitted as
+ *  '\'' — close, escaped literal, reopen. */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
 class FakeAgent implements Agent {
   constructor(private conn: AgentSideConnection) {}
 
@@ -109,7 +114,20 @@ class FakeAgent implements Agent {
     // conversation drive arbitrary sandbox commands (incl. `agent-broker
     // test/whoami` to verify broker/IRSA auth).
     const isCommand = userText.startsWith("!");
-    const command = isCommand ? userText.slice(1).trim() : `echo ${userText}`;
+    // QUOTE the echoed text. It is arbitrary user prose being spliced into a shell line,
+    // and the platform itself injects prose the shell cannot survive unquoted: a revive
+    // prepends "[System message from resume — this is an automated platform event...]",
+    // whose brackets and backtick-free-but-keyword-bearing text made `sh -c` fail with
+    // "syntax error near unexpected token `do'". The turn then errored, the run never
+    // finished, and a queued message stayed pinned behind it forever — which surfaced as
+    // suspended-recovery's "the queue must DRAIN after the revive" failing on the full
+    // target only (the fast stack never sends a resume message).
+    //
+    // Single-quote and escape any embedded single quote ('\'' closes, escapes, reopens),
+    // so the text reaches echo as one literal argument no matter what it contains. The
+    // "!<command>" directive is deliberately NOT quoted — running a command verbatim is
+    // the whole point of that harness escape hatch.
+    const command = isCommand ? userText.slice(1).trim() : `echo ${shellQuote(userText)}`;
 
     // 1. a thought
     await u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Planning a response…" } });

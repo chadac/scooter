@@ -117,6 +117,10 @@ test.describe("settings page tabs", () => {
   });
 
   test("leaving settings returns to chat with the app still consistent", async ({ chat, page }) => {
+    // The only test in this file that runs a TURN, so the only one that funds a sandbox
+    // boot. completeTurn's default is 120s on the full target, which the 60s suite ceiling
+    // cannot contain; every other test here is pure navigation and keeps the default.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.completeTurn("a turn before visiting settings");
     const before = await snapshot(page);

@@ -223,9 +223,30 @@ maybe("multi-replica platform smoke", () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       // curlJson, not JSON.parse(curlInCluster(...)): the curl pod's output can carry a stray
       // line after the payload, which failed this exact assertion with valid data on line 1.
-      const listed = await cluster.curlJson<Array<{ id: string }>>(
-        `${AGENT_HOST}/conversations`, { timeoutMs: 30_000 },
-      );
+      //
+      // A read that does not come back as JSON at all is a TRANSPORT failure, not the
+      // single-pod bug this test pins — curlJson throws "Unexpected end of JSON input" on an
+      // empty body, which killed the test before any assertion ran (observed on CI). Retry
+      // the read a few times so the attempt measures what the router LISTED, not whether one
+      // curl came back. If it never returns JSON, rethrow — a front door that cannot answer
+      // is a real failure, just a different one, and the message says so.
+      let listed: Array<{ id: string }> | undefined;
+      let lastErr: unknown;
+      for (let read = 0; read < 5 && !listed; read++) {
+        try {
+          listed = await cluster.curlJson<Array<{ id: string }>>(
+            `${AGENT_HOST}/conversations`, { timeoutMs: 30_000 },
+          );
+        } catch (e) {
+          lastErr = e;
+          await new Promise((r) => setTimeout(r, 2_000));
+        }
+      }
+      if (!listed) {
+        throw new Error(
+          `attempt ${attempt + 1}: GET /conversations never returned JSON after 5 reads: ${String(lastErr)}`,
+        );
+      }
       const got = new Set(listed.map((c) => c.id));
       for (const id of ids) {
         expect(got.has(id), `attempt ${attempt + 1}: /conversations omitted ${id} (single-pod view?)`).toBe(true);

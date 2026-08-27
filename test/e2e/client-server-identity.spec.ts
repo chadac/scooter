@@ -44,6 +44,37 @@ async function serverIds(
   return list.map((c) => c.id);
 }
 
+/**
+ * Assert the server admits to `id` — RE-READING the list before concluding it does not.
+ *
+ * The invariant is unchanged and just as strict: a client-minted phantom id is never in
+ * the list, so it still fails, and it fails on every one of these reads. What the retry
+ * removes is a FALSE positive from the read itself. On the full target the list is served
+ * by the router's aggregation over the ready pods, which degrades to a PARTIAL list when
+ * one is slow or mid-churn — so a perfectly real conversation can be missing from a single
+ * read. Observed on CI: the URL carried ff7ec527… while one read returned only cb762ca5…,
+ * and this test reported the app's own freshly-created id as "not real".
+ *
+ * Failing here must mean "the client invented an id", which is a shipped-three-times bug.
+ * It must not also mean "one list read was short", which is normal fleet behaviour.
+ */
+async function expectServerHas(
+  request: { get: (u: string) => Promise<{ json: () => Promise<unknown> }> },
+  base: string,
+  id: string,
+  why: string,
+) {
+  let ids: string[] = [];
+  // Single read on fast (the backend is one wiped in-process stack — a miss is real).
+  const attempts = process.env.E2E_TARGET === "full" ? 10 : 1;
+  for (let i = 0; i < attempts; i++) {
+    ids = await serverIds(request, base);
+    if (ids.includes(id)) return;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  expect(ids, why).toContain(id);
+}
+
 test.describe("client/server conversation identity", () => {
   // CLUSTER-HONEST BUDGETS. The new-conversation test funds TWO full conversation
   // boots in one test. The three straight CI failures here were NOT this budget in
@@ -65,7 +96,7 @@ test.describe("client/server conversation identity", () => {
 
     // THE ASSERTION. A client-minted id passes every other test in the suite and fails
     // here — the server simply does not have it.
-    expect(await serverIds(request, base), `URL id ${urlId} must exist server-side`).toContain(urlId!);
+    await expectServerHas(request, base, urlId!, `URL id ${urlId} must exist server-side`);
   });
 
   test("the URL id survives a reload — the conversation does not vanish", async ({ chat, page, request, baseURL }) => {
@@ -80,7 +111,7 @@ test.describe("client/server conversation identity", () => {
     // The reported symptom: refresh and the conversation is gone. That happens when the
     // URL names something the server 404s, so the reload resolves to nothing.
     expect(threadIdFromUrl(page.url()), "the id must not change across a reload").toBe(before);
-    expect(await serverIds(request, base)).toContain(before!);
+    await expectServerHas(request, base, before!, `URL id ${before} must exist server-side`);
     await expect(chat.userMessages().first()).toBeVisible({ timeout: 20_000 });
   });
 
@@ -97,7 +128,7 @@ test.describe("client/server conversation identity", () => {
 
     const second = threadIdFromUrl(page.url());
     expect(second, "a new conversation must get its own id").not.toBe(first);
-    expect(await serverIds(request, base), `new-conversation URL id ${second} must be real`).toContain(second!);
+    await expectServerHas(request, base, second!, `new-conversation URL id ${second} must be real`);
   });
 
   test("the streamed conversation is the SAME one the URL names", async ({ chat, page, request, baseURL }) => {
@@ -116,6 +147,6 @@ test.describe("client/server conversation identity", () => {
     const urlId = threadIdFromUrl(page.url());
     expect(streamed.length, "the UI must have opened an integrity stream").toBeGreaterThan(0);
     expect(new Set(streamed), "every stream must target the URL's conversation").toEqual(new Set([urlId]));
-    expect(await serverIds(request, base)).toContain(urlId!);
+    await expectServerHas(request, base, urlId!, `URL id ${urlId} must exist server-side`);
   });
 });
