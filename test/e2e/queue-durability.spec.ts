@@ -11,6 +11,20 @@
 
 import { test, expect } from "./fixtures.js";
 
+// How long the run that everything QUEUES BEHIND stays in flight.
+//
+// Every test in the first describe sends one or more messages while a run is active and
+// then reads the queue. That only holds while the run is still going, and on the full
+// target the exec waits for a ready sandbox pod BEFORE the sleep starts — so a 20s run can
+// be largely spent before the first sendWhileRunning even lands. Observed on CI: the
+// three-message FIFO test found "second queued" AFTER "third queued" (indexOf 54 vs 31)
+// because the sends straddled the end of the run instead of all queueing behind it.
+//
+// 60s keeps the window open across all three sends plus the queue reads. Nothing waits for
+// the sleep to finish — each test ends mid-run and cleanState cancels it — so this costs no
+// wall-clock time.
+const RUN_SEC = 60;
+
 test.describe("queue rendering while a run is in flight", () => {
   // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target `!sleep 20`
   // runs in a REAL sandbox: the run-status bar appears as soon as the run starts, but
@@ -23,7 +37,7 @@ test.describe("queue rendering while a run is in flight", () => {
 
   test("a message sent mid-run RENDERS as a queued item (not dropped)", async ({ chat, page }) => {
     await chat.open();
-    await chat.startLongRun(20);
+    await chat.startLongRun(RUN_SEC);
     await chat.sendWhileRunning("queued while busy");
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 15_000 });
@@ -32,7 +46,7 @@ test.describe("queue rendering while a run is in flight", () => {
 
   test("THREE messages sent mid-run all queue, in FIFO order", async ({ chat, page }) => {
     await chat.open();
-    await chat.startLongRun(20);
+    await chat.startLongRun(RUN_SEC);
     await chat.sendWhileRunning("first queued");
     await chat.sendWhileRunning("second queued");
     await chat.sendWhileRunning("third queued");
@@ -47,7 +61,7 @@ test.describe("queue rendering while a run is in flight", () => {
 
   test("a mid-run message carries the PRIORITY pill (it preempts the running turn)", async ({ chat, page }) => {
     await chat.open();
-    await chat.startLongRun(20);
+    await chat.startLongRun(RUN_SEC);
     await chat.sendWhileRunning("urgent");
     await chat.openQueueTab();
     // The UI marks a send-while-running as priority (runIsActive → 10) — the pill must render.
@@ -56,7 +70,7 @@ test.describe("queue rendering while a run is in flight", () => {
 
   test("the Queue tab BADGE counts queued messages (0 → n)", async ({ chat, page }) => {
     await chat.open();
-    await chat.startLongRun(20);
+    await chat.startLongRun(RUN_SEC);
     await chat.sendWhileRunning("q1");
     await chat.sendWhileRunning("q2");
     const badge = page.locator('[data-testid="right-panel-badge-queue"]');
@@ -66,7 +80,7 @@ test.describe("queue rendering while a run is in flight", () => {
 
   test("a long queued message clamps + can be expanded (Show more)", async ({ chat, page }) => {
     await chat.open();
-    await chat.startLongRun(20);
+    await chat.startLongRun(RUN_SEC);
     const longText = Array.from({ length: 20 }, (_, i) => `line-${i} of a very long queued message`).join(" ");
     await chat.sendWhileRunning(longText);
     await chat.openQueueTab();
