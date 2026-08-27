@@ -288,6 +288,14 @@ export interface SessionManager {
    *  404s when the conversation isn't already local. DESIGN STUB — see
    *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
   reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
+  /** Settle a conversation's DANGLING last run on this pod: terminate it (persisted
+   *  cancel intent) or resume-nudge it. Owner-fenced by callers; idempotent-guarded
+   *  (one reconciliation in flight per conversation). Runs from reviveFromMirror
+   *  (the revive push) AND ensureReadable's adoption (the LAZY path — the push is
+   *  fire-and-forget by design, and when it is lost with a dying pod the adopted
+   *  conversation otherwise keeps its stranded run forever: the pod-move story's
+   *  'Working…' that never cleared, CI run 33024754713). */
+  reconcileDanglingRun(id: SessionId, expectedGen?: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
    *  the sandbox/bridge (unlike revive*). Pulls events from the mirror into local if absent,
@@ -648,6 +656,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
   const fencedDrops = new Map<SessionId, number>();
+  /** Dangling-run reconciliations in flight — reviveFromMirror and the lazy adoption
+   *  path can race on the same conversation; one settles it, the other no-ops. */
+  const danglingReconciles = new Set<SessionId>();
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
     // Persist via the onPersist channel ONLY. The bridge's emit() fires BOTH the
@@ -1012,10 +1023,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // before the model finished), re-drive it so the run completes on this host. Without
       // this the UI is stuck "thinking" forever. Same mechanism boot uses (resumeInterrupted),
       // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
+      await this.reconcileDanglingRun(id, expectedGen);
+    },
+
+    async reconcileDanglingRun(id, expectedGen) {
+      if (danglingReconciles.has(id)) return; // one settlement at a time
+      danglingReconciles.add(id);
       try {
         // Pass our identity: a run THIS pod started at THIS generation is in flight, not
         // stranded. `expectedGen` is the generation the controller assigned us at — a run
         // stamped with an earlier one was left by a previous assignment and still resumes.
+        // With no gen (the lazy adoption path) a same-host run reads as OWN and is left
+        // alone — conservative: adoption implies the entry was not in memory, so a live
+        // own run cannot be the one we would touch.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
         const dangling = danglingRunInfo(await collectEvents(store.readEvents(id)), self);
         if (dangling?.cancelRequested) {
@@ -1023,7 +1043,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // CANCEL_REQUESTED marker). Resuming it would resurrect work the user
           // killed; instead END it the way the old host would have — the reconnected
           // stream replays this terminal and the UI's run bar finally clears.
-          log.info("reviveFromMirror: dangling run was cancelled — terminating, not resuming", {
+          log.info("dangling run was cancelled — terminating, not resuming", {
             conversation_id: id,
             run_id: dangling.runId,
           });
@@ -1035,15 +1055,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             ts: Date.now(),
           });
         } else if (dangling) {
-          log.info("reviveFromMirror: resuming a dangling run", { conversation_id: id });
+          log.info("resuming a dangling run", { conversation_id: id });
           // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
           // role:user turn) which the UI hides — the nudge is internal, not a user message.
           void this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume").catch((err) =>
-            log.errorWith("reviveFromMirror: dangling-run resume failed", err, { conversation_id: id }),
+            log.errorWith("dangling-run resume failed", err, { conversation_id: id }),
           );
         }
       } catch (err) {
-        log.errorWith("reviveFromMirror: dangling-run check failed", err, { conversation_id: id });
+        log.errorWith("dangling-run check failed", err, { conversation_id: id });
+      } finally {
+        danglingReconciles.delete(id);
       }
     },
 
@@ -1062,6 +1084,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         });
       }
       const entry = await hydrateByThread(id as ThreadId);
+      // LAZY dangling-run settlement. The controller's revive push is fire-and-forget
+      // (a stale hostIP must not wedge reconcile), so when it is lost with a dying pod
+      // THIS is where a reassigned conversation first materializes on its new owner —
+      // and without settling here its stranded run spun forever (the pod-move story).
+      if (entry && ownershipGuard.canWrite(entry.id)) {
+        void this.reconcileDanglingRun(entry.id);
+      }
       return entry !== undefined;
     },
 

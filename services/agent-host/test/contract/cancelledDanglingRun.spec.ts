@@ -82,3 +82,30 @@ describe("a cancelled dangling run is TERMINATED on reassignment, not resumed", 
     expect(after, "no synthetic terminal for a run that should RESUME").toBe(before);
   });
 });
+
+describe("the LAZY adoption path settles a dangling run (lost revive push)", () => {
+  // The controller's revive push is fire-and-forget; when it dies with the old pod,
+  // ensureReadable (the UI's first read through the router) is where the new owner
+  // first materializes the conversation — and before this fix it adopted the entry
+  // WITHOUT settling the stranded run, which then spun "Working…" forever
+  // (the pod-move story, CI run 33024754713).
+  it("ensureReadable terminates a cancelled dangling run it adopts @proves", async () => {
+    const { store, dump } = seededStore("t1", [...DEAD_HOST_RUN, CANCEL]);
+    (store as { listConversations?: unknown }).listConversations = async () => [
+      { id: "t1", threadId: "t1", title: "", createdAt: 0, lastActivityAt: 0 },
+    ];
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store,
+      selfPod: "new-pod",
+      hydrateFromMirror: async () => true,
+    } as never);
+
+    expect(await sessions.ensureReadable("t1" as SessionId)).toBe(true);
+    // fire-and-forget settlement — give the microtask a beat
+    await new Promise((r) => setTimeout(r, 50));
+
+    const tail = dump().at(-1) as { type: string; cancelled?: boolean; runId?: string };
+    expect(tail).toMatchObject({ type: "RUN_FINISHED", runId: "r1", cancelled: true });
+  });
+});
