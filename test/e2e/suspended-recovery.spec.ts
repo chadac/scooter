@@ -92,7 +92,17 @@ async function requestAws(
   });
 }
 
+// CLUSTER-HONEST BUDGET, all three describes (see stop-run.spec.ts:75). Every test
+// here funds TWO sandbox boots on the full target: the opening turn provisions a real
+// sandbox (5-25s cold), suspend() destroys it, and the revive turn provisions a FRESH
+// one (another 5-25s) before its exec + streamed reply can land. Worst case (mid-run
+// suspend): open ~5s + boot ≤25s + queue work + suspend + boot ≤25s + two more turns
+// ×~10s ≈ 110s of expected work — the 60s suite default is arithmetic-bound. 240s per
+// test, matching client-server-identity.spec.ts's two-boot budget.
+const TWO_BOOT_BUDGET = 240_000;
+
 test.describe("recovered conversation — history + integrity stream", () => {
+  test.setTimeout(TWO_BOOT_BUDGET);
   test("the integrity stream serves a SUSPENDED conversation (200, full history, no silent 404 loop)", async ({
     chat,
     page,
@@ -169,6 +179,7 @@ test.describe("recovered conversation — history + integrity stream", () => {
 });
 
 test.describe("recovered conversation — sending a message revives it", () => {
+  test.setTimeout(TWO_BOOT_BUDGET); // see the arithmetic above
   test("a message sent to a SUSPENDED conversation is delivered and answered", async ({
     chat,
     page,
@@ -194,10 +205,16 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // Asserting on the unique message text is both race-free and count-independent.
     await chat.send("wake up and answer me");
 
+    // 90s, not 30: this send must first REVIVE the conversation, which on the full target
+    // provisions a fresh sandbox pod (suspend destroyed the previous one) before the message
+    // is folded into the thread. Under CONVERSATION_POD_CAP=1 that provisioning queues behind
+    // the other specs on the shard. Observed on CI: the UI still read "Working… 1m 6s" with
+    // the message in the queue — the revive in progress, not a delivery failure. The 240s
+    // ceiling (TWO_BOOT_BUDGET) is sized for exactly this.
     await expect(
       chat.userMessages().filter({ hasText: /wake up and answer me/i }),
       "the message sent to a suspended conversation must appear in the thread",
-    ).toHaveCount(1, { timeout: 30_000 });
+    ).toHaveCount(1, { timeout: 90_000 });
 
     // ...and it must actually RUN: a second assistant turn must exist.
     //
@@ -212,9 +229,12 @@ test.describe("recovered conversation — sending a message revives it", () => {
     //     when the reply renders markdown, which this turn need not.
     // So anchor on the data-slot the component actually emits — checked in the markup,
     // not guessed.
+    // 90s, not 45: on the full target the revive provisions a FRESH sandbox pod
+    // (suspend destroyed the first), so this reply sits behind a second cold boot
+    // (≤25s) + exec + word-by-word streaming — ~40s of expected work when cold.
     await expect
       .poll(async () => page.locator('[data-slot="aui_assistant-message-root"]').count(), {
-        timeout: 45_000,
+        timeout: 90_000,
       })
       .toBeGreaterThanOrEqual(2);
   });
@@ -241,10 +261,12 @@ test.describe("recovered conversation — sending a message revives it", () => {
     await chat.send("this must not get stuck"); // see the sendTurn note above
 
     await chat.openQueueTab();
+    // 60s, not 30: the row clears when the server confirms the text, which on the
+    // full target can trail the revive's fresh sandbox boot (≤25s cold) + exec.
     await expect(
       chat.queuedMessages(),
       "the queue must DRAIN after the revive — a pinned row is the reported bug",
-    ).toHaveCount(0, { timeout: 30_000 });
+    ).toHaveCount(0, { timeout: 60_000 });
   });
 
   test("a conversation suspended MID-RUN with a queued message recovers without a phantom queue", async ({
@@ -259,7 +281,12 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // persisted QUEUE_UPDATED still lists them.
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();
-    await chat.startLongRun(20);
+    // 60s, not 20: the scenario requires the suspend to land while the run is STILL in
+    // flight with the message in the bridge's in-memory queue. On the full target the exec
+    // waits for a ready sandbox pod before the sleep starts, so a 20s run can be over by
+    // the time we suspend — which quietly tests something else. Nothing waits for the
+    // sleep (the test suspends mid-run and cleanState cancels), so this costs no time.
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("queued before the suspend");
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 15_000 });
@@ -286,24 +313,59 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // The message never ran and never surfaced an error — exactly the reported "my
     // message just sits somewhere hidden". suspend() now DRAINS the queue onto the
     // conversation's persisted meta and revive() RE-ENQUEUES it, so it actually runs.
+    // 90s, not 45: the re-enqueued message has to run on the REVIVED conversation, which
+    // means a fresh bridge and — on the full target — a sandbox exec that first waits for a
+    // ready pod. That is the same cold-boot arithmetic every other revive assertion here
+    // funds; 45s was the fake stack's number.
+    //
+    // A pod RESTART during the test destroys the thing being measured. This assertion is
+    // about the SUSPEND/REVIVE path re-enqueueing the item; if the platform restarts the
+    // conversation's pod instead, the in-flight run is killed and the queue is rebuilt by
+    // the restart's own recovery, which is a different code path with no obligation to
+    // carry this item. Observed on CI: the thread held the platform's resume AND restart
+    // prose as completed turns, "after the suspend" had run normally, and only the
+    // pre-suspend item was absent.
+    //
+    // Skip on that specific evidence rather than reporting it as the pinned bug. The check
+    // requires the restart marker to actually be in the thread, so the real regression this
+    // test exists for — suspend() dropping the queue with no restart involved — has no
+    // marker and still fails.
+    const queuedItem = page.getByText(/queued before the suspend/i).first();
+    const restarted = async () =>
+      (await page.getByText(/this conversation was interrupted by a restart/i).count()) > 0;
+    let landed = false;
+    for (let i = 0; i < 90 && !landed; i++) {
+      if (await queuedItem.isVisible().catch(() => false)) { landed = true; break; }
+      if (await restarted()) break;
+      await page.waitForTimeout(1_000);
+    }
+    if (!landed && (await restarted())) {
+      test.skip(true, "the conversation's pod restarted mid-test: the queue was rebuilt by restart recovery, not by the suspend/revive path this asserts on");
+    }
     await expect(
-      page.getByText(/queued before the suspend/i).first(),
+      queuedItem,
       "a message queued when the conversation was suspended must NOT be silently lost",
-    ).toBeVisible({ timeout: 45_000 });
+    ).toBeVisible({ timeout: 15_000 });
 
     // ONLY NOW assert the queue is empty. Checked AFTER the re-enqueued message has
     // run: while it is legitimately queued/draining the count is transiently 1, so an
     // earlier check would race the very behavior this test asserts. What must not
     // survive is a PHANTOM row — one no pump will ever drain.
     await chat.openQueueTab();
+    // 90s, not 30: the re-enqueued message has to RUN before the queue can empty, and that
+    // run is a real sandbox exec on the revived conversation — the same provisioning wait
+    // every other revive assertion in this file funds. A row still draining is not the
+    // phantom this test is named for; a phantom is one no pump will ever drain, and it
+    // survives all 90s just as it survived 30.
     await expect(
       chat.queuedMessages(),
       "no phantom queued row may survive the suspend/revive",
-    ).toHaveCount(0, { timeout: 30_000 });
+    ).toHaveCount(0, { timeout: 90_000 });
   });
 });
 
 test.describe("recovered conversation — approvals after a revive", () => {
+  test.setTimeout(TWO_BOOT_BUDGET); // see the arithmetic above
   test("a NEW AWS approval raised AFTER a revive appears in the tab", async ({
     chat,
     page,
@@ -327,10 +389,16 @@ test.describe("recovered conversation — approvals after a revive", () => {
     const res = await requestAws(request, base, id, `awsreq-post-revive-${Date.now()}`);
     expect(res.status(), "the aws-request must be accepted on the revived conversation").toBe(202);
 
+    // 90s, not 30: the request is accepted (202 asserted above), so what this waits on is
+    // the interrupt reaching the BROWSER — which after a revive means the tab's stream
+    // reattaching to a brand-new bridge instance on whichever pod now owns the
+    // conversation. On the full target that hop sits behind the revive's own sandbox wait,
+    // so 30s can expire with the approval correctly raised and simply not delivered yet.
+    // Same cold-boot arithmetic every other revive assertion in this file funds.
     await expect(
       page.locator(panel.root),
       "an approval raised after a revive must appear — the reported invisible-approval bug",
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 90_000 });
     await expect(page.locator(panel.option).filter({ hasText: /approve/i })).toHaveCount(1);
   });
 
@@ -356,17 +424,21 @@ test.describe("recovered conversation — approvals after a revive", () => {
     // run-status bar, so it is count- and text-independent (both of which have already
     // misfired in this file).
     await chat.send("resume the infra task");
-    await chat.waitForIdle(45_000);
+    // 90s, not 45: this idle-wait spans the revive's fresh sandbox boot (≤25s cold)
+    // + exec + streamed reply + the trailing terminal event on the full target.
+    await chat.waitForIdle(90_000);
 
     const raised = await requestAws(request, base, id, `awsreq-durable-${Date.now()}`);
     expect(
       raised.status(),
       `aws-request must be accepted on the revived conversation (got ${raised.status()}: ${await raised.text().catch(() => "")})`,
     ).toBe(202);
+    // 90s: identical post-revive delivery hop as the test above — the approval is accepted
+    // (202 asserted) and this waits on it reaching the tab through a rebuilt bridge.
     await expect(
       page.locator(panel.root),
       "the approval must appear on the revived conversation before we test reload durability",
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 90_000 });
 
     // Plain reload (the pattern aws-interrupt.spec.ts uses for exactly this
     // assertion). A `?thread=` deep-link left the composer unmounted on CI — the
@@ -425,7 +497,10 @@ test.describe("recovered conversation — approvals after a revive", () => {
     const body = await resume.text();
     expect(body.length, "the resume stream must carry frames, not 0 bytes").toBeGreaterThan(0);
     // The decisive assertion: it RETURNED PROMPTLY. A dormant-run hang only resolves at
-    // the request timeout; the revive-before-answer path is sub-second.
-    expect(elapsed, `resume took ${elapsed}ms — a hang would run to the ~20s timeout`).toBeLessThan(8_000);
+    // the request timeout; the revive-before-answer path is sub-second on the fake
+    // stack. 12s (not 8) on cluster reality: the POST hops through the router and the
+    // revive spawns a fresh bridge/agent process first — but it does NOT wait for a
+    // sandbox pod, so a healthy answer still lands far under the 20s hang ceiling.
+    expect(elapsed, `resume took ${elapsed}ms — a hang would run to the ~20s timeout`).toBeLessThan(12_000);
   });
 });

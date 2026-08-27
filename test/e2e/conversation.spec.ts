@@ -12,6 +12,16 @@
 import { test, expect } from "./fixtures.js";
 
 test.describe("conversation happy path", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target EVERY turn —
+  // even a plain-text one — runs a real `echo` exec in the sandbox (fakeAgent.ts always
+  // createTerminal's), so each test's FIRST turn funds a sandbox boot: 5-25s cold. The
+  // multi-turn test is the worst case at the 60s default: open (~5s) + boot (≤25s) +
+  // turn 1 (~10s streamed) + turn 2 (~10s) ≈ 50s of expected work with zero headroom.
+  // 120s funds it with margin; the per-assert budgets below already suffice.
+  // 240s, not 120: the shell/tool tests below now allow 90s per assertion so a first-turn
+  // cold sandbox boot cannot expire them, and the tool test chains three of those waits.
+  test.setTimeout(240_000);
+
   test("sending a message streams an assistant reply", async ({ chat }) => {
     await chat.open();
     await chat.send("Please review the auth module");
@@ -30,7 +40,9 @@ test.describe("conversation happy path", () => {
     // verify broker/IRSA auth in cluster mode.
     await chat.send("!echo zxcvbnm-marker");
 
-    await expect(chat.toolCalls().first()).toBeVisible({ timeout: 30_000 });
+    // 90s here and below, not 30: this is the conversation's FIRST turn and a real sandbox
+    // exec on the full target, so everything it asserts sits behind a cold pod boot.
+    await expect(chat.toolCalls().first()).toBeVisible({ timeout: 90_000 });
     // The tool card shows the COMMAND the agent ran (not just an empty result) —
     // the args ride a tool_call_update, which the bridge must surface as
     // TOOL_CALL_ARGS, and the shell card renders it as "$ <command>". Scoped to the
@@ -38,16 +50,19 @@ test.describe("conversation happy path", () => {
     // guard for the "empty tool card" bug.
     await expect(
       page.locator('[data-testid="provider-tool-body"]').filter({ hasText: /echo zxcvbnm-marker/ }),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 90_000 });
     // The command output (echo's result) flows back into the reply.
-    await expect(chat.assistantMessages().last()).toContainText(/zxcvbnm-marker/i, { timeout: 30_000 });
+    await expect(chat.assistantMessages().last()).toContainText(/zxcvbnm-marker/i, { timeout: 90_000 });
   });
 
   test("!cmd evaluates shell (not a literal echo of the message)", async ({ chat }) => {
     await chat.open();
     await chat.send("!echo $((6 * 7))");
     // Proves the command runs in a shell — output is 42, not the literal text.
-    await expect(chat.assistantMessages().last()).toContainText(/\b42\b/, { timeout: 30_000 });
+    // 90s, not 30: this is the conversation's FIRST turn and it is a real sandbox exec on
+    // the full target, so the reply is behind a cold pod boot (15-25s, longer while the
+    // cluster is replacing sandboxes). 30s was priced against the fake stack's ~1s turn.
+    await expect(chat.assistantMessages().last()).toContainText(/\b42\b/, { timeout: 90_000 });
   });
 
   test("refresh (re-run) completes without an error", async ({ chat, page }) => {
