@@ -203,11 +203,23 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // Detect that specific situation and skip, rather than asserting through it. The skip is
     // narrow — it needs the restart marker actually present in the thread — so a genuine
     // "the queue vanished on reload" regression, which has no such marker, still fails below.
-    const restarted = async () =>
-      (await page.getByText(/this conversation was interrupted by a restart/i).count()) > 0;
+    // The marker can land ANYWHERE the restart's recovery message is rendered — the thread,
+    // or the QUEUE itself. CI showed the second case: the queue held exactly one row and it
+    // was the platform's restart prose, with the user's message gone. Checking only the
+    // thread meant the loop below "saw a row", proceeded, and reported the platform's
+    // recovery text as the user's lost message.
+    const RESTART = /this conversation was interrupted by a restart/i;
+    const restarted = async () => {
+      if ((await page.getByText(RESTART).count()) > 0) return true;
+      return (await snapshot(page)).queued.some((q) => RESTART.test(q));
+    };
+    // A row that is OURS — not the platform's recovery message wearing a queue row's clothes.
+    const sawOurRow = async () =>
+      (await snapshot(page)).queued.some((q) => q.includes("survives with full state"));
+
     let sawRow = false;
     for (let i = 0; i < 60 && !sawRow; i++) {
-      if ((await snapshot(page)).queued.length >= 1) { sawRow = true; break; }
+      if (await sawOurRow()) { sawRow = true; break; }
       if (await restarted()) break;
       await page.waitForTimeout(1_000);
     }
