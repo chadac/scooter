@@ -38,6 +38,10 @@ export const TOOL_REDIRECTS: Record<string, string> = {
     "The Task tool is not available here. Use the scooter-env `spawn_subagent` tool " +
     "instead: it runs the subagent in this conversation's sandbox and reports back " +
     "through the UI.",
+  AskUserQuestion:
+    "There is no interactive question channel here — the user reads this conversation " +
+    "asynchronously. State the question and the options in your REPLY, say which option " +
+    "you are proceeding with and why, and continue. Do not block waiting for an answer.",
   WebSearch: "The WebSearch tool is not available here. Use the scooter-env `web_search` tool instead.",
   WebFetch:
     "The WebFetch tool is not available here. Use the scooter-env `web_fetch` tool " +
