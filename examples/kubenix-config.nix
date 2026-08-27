@@ -177,6 +177,11 @@
       relayKey = "change-me-or-provide-via-secret";
     };
 
+    # Shared-database migrations: on deploy, a Job applies the Atlas migrations under
+    # lib/sql to each per-service database (adopting the existing tables via
+    # --baseline). On by default; shown explicitly so the render check exercises it.
+    dbMigrate.enable = true;
+
     # OpenTelemetry metrics + per-model cost attribution. OFF by default (an OTLP endpoint is
     # a deployment choice); enabled here so the render check exercises the env wiring. Prices
     # are per MILLION tokens and feed the cost metric — keep them in sync with your provider.
