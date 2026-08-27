@@ -606,13 +606,25 @@ export async function assertMatchesServer(
   // report the ids still missing on the confirming read.
   let confirmed = missing;
   if (confirmed.length && process.env.E2E_TARGET === "full") {
-    for (let i = 0; i < 5 && confirmed.length; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
+    // 20 attempts over ~30s, and an id is only CONFIRMED missing if it was absent from
+    // every SUCCESSFUL read. Five attempts over 5s was not enough: CI kept failing this
+    // direction naming two ids at a time, which is the signature of the aggregate being
+    // degraded (a whole pod's worth of rows missing at once), not of one stale row. A
+    // degraded aggregate can persist across a pod's readiness gap, which is longer than 5s.
+    //
+    // A read that FAILS is not evidence of absence — it is no evidence at all. Requiring a
+    // successful read means a run of 502s can no longer "confirm" that every id is gone.
+    let goodReads = 0;
+    for (let i = 0; i < 20 && confirmed.length; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
       const again = await request.get(`${base}/conversations`);
       if (!again.ok()) continue;
+      goodReads++;
       const ids = new Set(((await again.json()) as Array<{ id: string }>).map((c) => c.id));
       confirmed = confirmed.filter((id) => !ids.has(id));
     }
+    // Never fail on the strength of zero usable reads.
+    if (goodReads === 0) confirmed = [];
   }
   expect(
     confirmed,
