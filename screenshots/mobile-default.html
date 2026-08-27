@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mobile Default View</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-screen overflow-hidden">
+  <div class="flex h-full flex-col">
+    <!-- Header with hamburger menus -->
+    <header class="flex h-14 items-center justify-between border-b bg-background px-3">
+      <div class="flex items-center gap-2">
+        <!-- Left hamburger menu -->
+        <button class="rounded px-2 py-1.5 text-lg hover:bg-gray-100">☰</button>
+        <h1 class="text-base font-semibold">S</h1>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="rounded px-3 py-1.5 text-sm hover:bg-gray-100">⚙️</button>
+        <!-- Right hamburger menu -->
+        <button class="rounded px-2 py-1.5 text-lg hover:bg-gray-100">☰</button>
+      </div>
+    </header>
+
+    <!-- Main content - full width on mobile -->
+    <main class="flex-1 overflow-y-auto p-4 bg-gray-50">
+      <div class="space-y-4">
+        <div class="rounded-lg bg-white p-4 shadow">
+          <div class="font-semibold mb-2 text-sm">User</div>
+          <div class="text-sm">Can you make the Scooter UI mobile-friendly?</div>
+        </div>
+        <div class="rounded-lg bg-blue-50 p-4 shadow">
+          <div class="font-semibold mb-2 text-sm">Scooter</div>
+          <div class="text-sm">I'll add responsive design with hamburger menus for mobile devices. The sidebars will slide in from the sides when you tap the menu buttons.</div>
+        </div>
+        <div class="rounded-lg bg-white p-4 shadow">
+          <div class="font-semibold mb-2 text-sm">User</div>
+          <div class="text-sm">Can you include some snapshots of the new mobile UI in the PR?</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Sidebars are HIDDEN by default on mobile -->
+    <!-- Only visible when hamburger menus are tapped -->
+  </div>
+</body>
+</html>
