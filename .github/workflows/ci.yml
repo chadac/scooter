@@ -548,13 +548,17 @@ jobs:
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     env:
-      # 3 here (the link below runs 2). The shard count is not only a wall-clock knob: every
+      # 4 here (the link below runs 2). The shard count is not only a wall-clock knob: every
       # spec on a shard competes for sandbox provisioning with the others, and CI forces
       # CONVERSATION_POD_CAP=1 so each conversation needs its own pod. Packing a whole
       # allowlist onto too few shards pushes cold boots past budgets that are generous in
       # isolation — specs then fail purely waiting for a pod while behaving correctly.
-      # This link has the largest set, so it keeps the highest count.
-      E2E_FULL_SHARDS: "3"
+      #
+      # 4, not 3: at 3 the heaviest shard still lost turns to provisioning — scroll-lock's
+      # thread fill timed out with only its FIRST turn on screen, at a 90s per-turn budget,
+      # which is a pod it never got rather than a scroll bug. This link carries the whole
+      # 26-spec allowlist, so it needs the most splitting.
+      E2E_FULL_SHARDS: "4"
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
