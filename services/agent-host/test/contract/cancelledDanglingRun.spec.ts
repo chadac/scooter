@@ -109,3 +109,46 @@ describe("the LAZY adoption path settles a dangling run (lost revive push)", () 
     expect(tail).toMatchObject({ type: "RUN_FINISHED", runId: "r1", cancelled: true });
   });
 });
+
+describe("the ownership WATCH settles a stranded run (the production shape)", () => {
+  // THE test that would have caught both earlier misses in seconds instead of two
+  // 15-minute deploy-validate rounds: the entry ALREADY EXISTS on the new owner
+  // (the #297 hydrate cascade puts every conversation's entry on every pod), the
+  // revive push never arrives, and the ONLY signal of the reassignment is the
+  // ownership watch. Settlement must fire from that signal alone.
+  it("a watch-delivered gain terminates the cancelled stranded run @proves", async () => {
+    const { OwnershipTracker } = await import("../../src/session/ownershipGuard.js");
+    const tracker = new OwnershipTracker("new-pod");
+    const { store, dump } = seededStore("t1", [...DEAD_HOST_RUN, CANCEL]);
+    (store as { listConversations?: unknown }).listConversations = async () => [
+      { id: "t1", threadId: "t1", title: "", createdAt: 0, lastActivityAt: 0 },
+    ];
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store,
+      selfPod: "new-pod",
+      ownershipGuard: tracker,
+      hydrateFromMirror: async () => true,
+    } as never);
+    // the same wiring index.ts does
+    tracker.onGained = (id, gen) => {
+      void sessions.reconcileDanglingRun(id as SessionId, gen);
+    };
+    // PRODUCTION ORDER: the old pod owns it when the hydrate cascade runs, so the
+    // fence blocks every hydration-path settlement — exactly why the two earlier
+    // hooks never fired in the deployed validation rounds.
+    tracker.observe("t1", { hostPod: "dead-pod", generation: 1 });
+    expect(await sessions.ensureReadable("t1" as SessionId)).toBe(true);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(
+      dump().some((e) => (e as { type: string }).type === "RUN_FINISHED"),
+      "fenced hydration must NOT settle while another pod owns the conversation",
+    ).toBe(false);
+    // The reassignment arrives ONLY via the watch — the one signal that always fires.
+    tracker.observe("t1", { hostPod: "new-pod", generation: 2 });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const tail = dump().at(-1) as { type: string; cancelled?: boolean; runId?: string };
+    expect(tail).toMatchObject({ type: "RUN_FINISHED", runId: "r1", cancelled: true });
+  });
+});
