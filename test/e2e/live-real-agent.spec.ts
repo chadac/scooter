@@ -18,12 +18,42 @@
  */
 
 import { test, expect, snapshot, assertConsistent, checkpoint, shot, type UiSnapshot } from "./fixtures.js";
+import { fullOnly } from "./target.js";
 import type { Page } from "@playwright/test";
 
-const enabled = process.env.RUN_LIVE_E2E === "1";
-const maybe = enabled ? test.describe : test.describe.skip;
+/**
+ * Two ways to run:
+ *
+ *   LIVE (RUN_LIVE_E2E=1)  — a live deployment + a real model, as described above. Prompts are
+ *                            natural language; the model's own slowness makes the in-flight windows.
+ *   FULL target (CI k3d)   — the cluster runs the FAKE agent (GOOSE_BIN=fake, modules/testing.nix)
+ *                            over a REAL sandbox: real pods/exec, real provisioning, multi-pod
+ *                            routing. The model is deterministic but the TIMING is not — a fresh
+ *                            conversation provisions a real sandbox pod (5-25s) before its first
+ *                            exec, and a "!sleep N" directive holds a run genuinely in flight via a
+ *                            real pod exec. The assertions here are deliberately timing-agnostic,
+ *                            so the same detector holds in both modes; only the PROMPTS that induce
+ *                            slowness/tool-calls differ (see the `live ? … : …` selections below).
+ */
+const live = process.env.RUN_LIVE_E2E === "1";
+const maybe = live
+  ? test.describe
+  : fullOnly(
+      "real-cluster timing (sandbox provisioning, pod exec) is the point — the fast fake stack skips through the in-flight windows these tests probe; RUN_LIVE_E2E=1 runs them against a live deployment",
+    );
 
-// A real model turn can take a while (tool calls, cold sandbox, model latency).
+/** A prompt that keeps a run genuinely IN FLIGHT long enough to probe/queue/reload against.
+ *  Live: a real model counting slowly. Full target: the fake agent runs a REAL `sleep 15` in the
+ *  sandbox via pod exec — the same window, deterministic. 15s clears the sendWhileRunning +
+ *  queue-poll sequence with margin even when sandbox provisioning is instantaneous. */
+const slowPrompt = (tail: string) =>
+  live ? `Count slowly from 1 to 20, one number per line, then say ${tail}.` : "!sleep 15";
+
+// A real turn can take a while (tool calls, cold sandbox, model latency). CLUSTER-HONEST:
+// on the CI k3d runner a fresh conversation pays sandbox provisioning (5-25s, worse under
+// node pressure) before its first exec, plus a 15s in-flight sleep where one is induced —
+// 240s per turn absorbs all of that without weakening any assertion (they are event-driven
+// polls, not sleeps, so a fast turn costs nothing extra).
 const TURN = 240_000;
 test.setTimeout(600_000);
 
@@ -83,8 +113,13 @@ maybe("live deployment, real agent", () => {
   test("a real TOOL CALL leaves the UI consistent (real sandbox, real pods/exec)", async ({ chat, page }) => {
     await newConversation(page);
     const before = await snapshot(page);
-    // A real shell command through the real in-cluster exec path.
-    const s = await liveTurn(page, chat, "Run the shell command `echo LIVE-TOOL-OK` and tell me its output.");
+    // A real shell command through the real in-cluster exec path. (Full target: the fake
+    // agent's "!" directive runs the command verbatim in the sandbox — same exec path.)
+    const s = await liveTurn(
+      page,
+      chat,
+      live ? "Run the shell command `echo LIVE-TOOL-OK` and tell me its output." : "!echo LIVE-TOOL-OK",
+    );
     assertConsistent(s, "after a real tool call");
     expect(s.toolCards, "a real tool call rendered a card").toBeGreaterThan(before.toolCards);
     expect(s.runError, "a successful tool call leaves no error").toBeNull();
@@ -95,8 +130,8 @@ maybe("live deployment, real agent", () => {
     await newConversation(page);
     const before = await snapshot(page);
 
-    // Give the real model a genuinely slow task so there's a real in-flight window to queue behind.
-    await chat.sendWhileRunning("Count slowly from 1 to 20, one number per line, then say DONE-SLOW.");
+    // A genuinely slow task so there's a real in-flight window to queue behind.
+    await chat.sendWhileRunning(slowPrompt("DONE-SLOW"));
     // Best-effort: wait for the run to look in-flight, but don't fail if a fast turn beat us there.
     await expect(page.locator('[data-testid="run-status-bar"]'))
       .toBeVisible({ timeout: 60_000 })
@@ -124,7 +159,7 @@ maybe("live deployment, real agent", () => {
   test("a RELOAD mid-real-run re-folds correctly (no lost turn, no stuck 'working')", async ({ chat, page }) => {
     await newConversation(page);
     const before = await snapshot(page);
-    await chat.sendWhileRunning("Count slowly from 1 to 15, then say RELOAD-OK.");
+    await chat.sendWhileRunning(slowPrompt("RELOAD-OK"));
     // Do NOT require the run bar to be visible: against a real model the turn may already have
     // finished by the time we look (or may not have started yet). Reload regardless — the property
     // under test is "a reload at an arbitrary moment re-folds correctly", which is timing-agnostic.

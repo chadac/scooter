@@ -358,6 +358,12 @@ jobs:
               - 'test/e2e/aws-interrupt.spec.ts'
               - 'test/e2e/interrupt-queue-recovery.spec.ts'
               - 'test/e2e/interrupt.spec.ts'
+              # target.ts (né tier.ts — #363 renamed it and this filter went stale, so
+              # gate-mechanism changes stopped opening the gate) + the allowlist that IS
+              # the full project's testMatch + the shard planner that distributes it.
+              # The specs the allowlist currently selects — editing one must re-run the
+              # only job that executes it.
+              - 'test/e2e/live-real-agent.spec.ts'
               - 'test/e2e/fixtures.ts'
               # The full-target allowlist AND every spec on it: editing a listed spec
               # (or the list itself) must run the only job that executes it. The list
