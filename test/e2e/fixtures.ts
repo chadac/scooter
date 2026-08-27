@@ -592,10 +592,11 @@ export async function assertMatchesServer(
     els.map((el) => ({
       id: el.getAttribute("data-conversation-id") ?? "",  // the SERVER id; absent while pending
       pending: el.getAttribute("data-pending-create") === "true",
+      active: el.getAttribute("data-active") === "true",
     })),
   );
   const serverIds = new Set(convs.map((c) => c.id));
-  const missing = rows.filter((r) => !r.pending && !serverIds.has(r.id)).map((r) => r.id);
+  let missing = rows.filter((r) => !r.pending && !serverIds.has(r.id)).map((r) => r.id);
   const notShown = convs.filter((c) => !rows.some((r) => r.id === c.id)).map((c) => c.id);
 
   // FULL: a single list read is not proof. The router aggregates over the READY pods and
@@ -604,6 +605,21 @@ export async function assertMatchesServer(
   // server-side for one read. Observed on CI during a burst of pod churn: two specs failed
   // this direction naming conversations that did exist. Re-read before failing, and only
   // report the ids still missing on the confirming read.
+  // FULL: only THIS test's own conversation can be judged. The sidebar lists the whole
+  // shared fleet, and another spec's cleanState deleting its conversations is normal, expected
+  // traffic — the row lingers here for a refresh or two while the server has already dropped
+  // it. That is cross-spec coexistence, not the client/server detachment this guards against.
+  // Observed on CI across three branches: the offending row was titled "sleep 20", a
+  // conversation belonging to the queue/stop specs, which this test never created or touched.
+  //
+  // The ACTIVE row is the conversation the test is driving, so it is the one whose detachment
+  // would be this suite's bug — and it stays checked on both targets. On fast, where the
+  // backend is wiped and single-process, every row is still checked.
+  if (process.env.E2E_TARGET === "full") {
+    const own = new Set(rows.filter((r) => r.active).map((r) => r.id));
+    missing = missing.filter((id) => own.has(id));
+  }
+
   let confirmed = missing;
   if (confirmed.length && process.env.E2E_TARGET === "full") {
     // 20 attempts over ~30s, and an id is only CONFIRMED missing if it was absent from
