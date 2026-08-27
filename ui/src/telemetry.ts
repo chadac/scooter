@@ -56,6 +56,23 @@ export const ATTR = {
   reason: "scooter.reason",
 } as const;
 
+/** Matches a conversation id in a request URL. */
+const CONV_URL_RE = /\/conversations\/([0-9a-f-]{36})/;
+
+/** Bucket a request into a low-cardinality kind, so traces group by WHAT the request
+ *  was rather than by conversation id. */
+function classifyRoute(url: string): string {
+  const path = url.replace(/^https?:\/\/[^/]+/, "").replace(/\?.*$/, "");
+  if (path.endsWith("/messages")) return "send-message";
+  if (path.includes("events.integrity")) return "stream";
+  if (path.endsWith("/cancel")) return "cancel";
+  if (path.endsWith("/ready")) return "ready";
+  if (path.endsWith("/links")) return "links";
+  if (path.endsWith("/history")) return "history";
+  if (path === "/conversations") return "list-or-create";
+  return "other";
+}
+
 let tracer: Tracer | undefined;
 
 /**
@@ -152,6 +169,24 @@ export function initTelemetry(opts: {
           // Propagate trace context to our own backend ONLY. Sending traceparent to a
           // third party would leak trace ids and trip their CORS preflight.
           propagateTraceHeaderCorsUrls: [new RegExp(`^${location.origin}`)],
+          // Tag every request with its conversation and outcome, so a "my message went
+          // nowhere" report is a query rather than a guess: the send POST, its status,
+          // and the stream's own spans all carry the same conversation id.
+          applyCustomAttributesOnSpan: (span, request, result) => {
+            const url =
+              typeof request === "string" ? request : ((request as Request).url ?? String(request));
+            const conv = CONV_URL_RE.exec(url)?.[1];
+            if (conv) span.setAttribute(ATTR.conversationId, conv);
+            span.setAttribute("http.route_kind", classifyRoute(url));
+            if (result instanceof Error) {
+              span.setAttribute("http.failed", true);
+              span.setAttribute(ATTR.reason, result.message.slice(0, 200));
+            } else if (result && typeof (result as Response).status === "number") {
+              const status = (result as Response).status;
+              span.setAttribute("http.status_code", status);
+              if (status >= 400) span.setAttribute("http.failed", true);
+            }
+          },
         }),
       ],
     });
