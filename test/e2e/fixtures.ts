@@ -598,9 +598,25 @@ export async function assertMatchesServer(
   const missing = rows.filter((r) => !r.pending && !serverIds.has(r.id)).map((r) => r.id);
   const notShown = convs.filter((c) => !rows.some((r) => r.id === c.id)).map((c) => c.id);
 
+  // FULL: a single list read is not proof. The router aggregates over the READY pods and
+  // degrades to a PARTIAL list when one is slow or missing (it even logs "all upstreams
+  // failed for conversation list"), so a row the sidebar legitimately holds can look absent
+  // server-side for one read. Observed on CI during a burst of pod churn: two specs failed
+  // this direction naming conversations that did exist. Re-read before failing, and only
+  // report the ids still missing on the confirming read.
+  let confirmed = missing;
+  if (confirmed.length && process.env.E2E_TARGET === "full") {
+    for (let i = 0; i < 5 && confirmed.length; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const again = await request.get(`${base}/conversations`);
+      if (!again.ok()) continue;
+      const ids = new Set(((await again.json()) as Array<{ id: string }>).map((c) => c.id));
+      confirmed = confirmed.filter((id) => !ids.has(id));
+    }
+  }
   expect(
-    missing,
-    `${when}: sidebar shows conversation(s) the server does not have: ${missing.join(", ")}`,
+    confirmed,
+    `${when}: sidebar shows conversation(s) the server does not have: ${confirmed.join(", ")}`,
   ).toEqual([]);
   // FAST ONLY. "The sidebar shows everything the server has" holds on the single-process,
   // freshly-wiped stack, where the only conversations in existence are this test's. On the
