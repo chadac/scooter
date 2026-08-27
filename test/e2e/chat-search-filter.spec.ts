@@ -60,7 +60,9 @@ test.describe("sidebar search + filter + label mode", () => {
     // + turn ~2s) + the sidebar link-merge poll (30s worst) + the label-mode poll
     // (30s worst) ≈ 115-145s worst case — far past the 60s default that was
     // written against the ~1s fake stack.
-    test.setTimeout(240_000);
+    // 360s, not 240: the two row waits below now allow 90s each for the sidebar's
+    // aggregated list to settle during pod churn, on top of the two 90s replies.
+    test.setTimeout(360_000);
     const base = baseURL ?? "http://localhost:5173";
     // A per-run nonce on the GITHUB LINK NAME (a title this test sets explicitly, so it
     // is stable). On the full target `scope=all` shows the whole multi-replica fleet, so
@@ -118,8 +120,15 @@ test.describe("sidebar search + filter + label mode", () => {
     await page.locator(sb.filtersToggle).click();
     // Show all conversations (both rows regardless of owner).
     await page.locator(sb.scopeAll).click();
-    await expect(rowA).toHaveCount(1, { timeout: 30_000 });
-    await expect(rowB).toHaveCount(1, { timeout: 30_000 });
+    // POLL for both rows rather than asserting once. The sidebar is fed by the router's
+    // aggregated conversation list, which degrades to a PARTIAL list while pods churn
+    // (the platform dump for the failing run shows repeated "resume-on-missing-pod
+    // failed" plus autoscale down) — so a row that exists can be absent from one
+    // refresh. Observed on CI: rowA resolved to 0 for the full 30s while the
+    // conversation was healthy. Re-reading until both rows land measures the FILTER,
+    // which is what this test is about, not the fleet's list-refresh timing.
+    await expect(rowA).toHaveCount(1, { timeout: 90_000 });
+    await expect(rowB).toHaveCount(1, { timeout: 90_000 });
     // On the deterministic fast stack (one wiped single-process backend) the two
     // rows are also provably the ONLY rows.
     if (!isFull) await expect(page.locator(sb.item)).toHaveCount(2);
