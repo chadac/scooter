@@ -140,13 +140,20 @@ test.describe("queue durability across refresh + drain", () => {
 
   test("the composer is usable again after the queue fully drains", async ({ chat, page }) => {
     await chat.open();
-    await chat.send("!sleep 3");
+    // 20s, not 3. This asserts the run bar is VISIBLE and then queues behind it, so the run
+    // must still be in flight for both; on the full target the exec waits for a ready
+    // sandbox pod BEFORE the sleep starts, so a 3s run can begin and END inside that wait —
+    // the bar never renders and the test fails with everything working (observed on CI
+    // twice). Unlike the queueing tests above this one WAITS for the drain, so it uses a
+    // shorter window than RUN_SEC: long enough to outlast the boot, short enough that the
+    // drain it waits on is not needlessly slow.
+    await chat.startLongRun(20);
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("drain me");
-    // After everything settles, a fresh normal turn works first-try (no wedge). 90s:
-    // sendTurn first waits for the composer to go idle — behind the cold-boot + sleep +
-    // queued-turn tail (~40s on the full target, same arithmetic as the drain test).
-    await chat.sendTurn("a normal turn after draining", 90_000);
+    // After everything settles, a fresh normal turn works first-try (no wedge). 150s:
+    // sendTurn first waits for the composer to go idle, which is now behind the cold boot
+    // + the RUN_SEC sleep + the queued turn's own exec. 90s was priced against a 3s sleep.
+    await chat.sendTurn("a normal turn after draining", 150_000);
     await expect(chat.userMessages().filter({ hasText: "a normal turn after draining" })).toHaveCount(1);
   });
 
