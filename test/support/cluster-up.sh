@@ -70,7 +70,15 @@ bring_up_cluster() {
     minikube) ensure_cmd minikube; minikube status -p "$CLUSTER_NAME" >/dev/null 2>&1 || minikube start -p "$CLUSTER_NAME" ;;
     k3d)
       ensure_cmd k3d
-      k3d cluster list | grep -q "$CLUSTER_NAME" || k3d cluster create "$CLUSTER_NAME"
+      # New clusters get the scooter registry attached, so image delivery can use
+      # direct skopeo pushes (see k3dImages in flake.nix) instead of tarball imports.
+      # An EXISTING cluster is left as-is — attaching a registry needs a recreate;
+      # the import path keeps working either way.
+      if ! k3d cluster list | grep -q "$CLUSTER_NAME"; then
+        k3d registry list 2>/dev/null | grep -q "k3d-scooter-reg.localhost" \
+          || k3d registry create scooter-reg.localhost --port 5800
+        k3d cluster create "$CLUSTER_NAME" --registry-use k3d-scooter-reg.localhost:5800
+      fi
       # POINT KUBECTL AT IT. k3d merges into ~/.kube/config, but that write FAILS
       # silently when KUBECONFIG names a root-owned path left over from a k3s setup
       # (/etc/rancher/k3s/k3s.yaml) — the cluster comes up healthy and every kubectl

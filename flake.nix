@@ -91,6 +91,37 @@
       # needed). The claude variant bakes the UNFREE claude-code CLI, so its .outPath
       # forces an allowUnfree check — split out, resolved only under --impure +
       # NIXPKGS_ALLOW_UNFREE. Image NAMES match the canonical agent-* convention.
+      # ── k3d-registry refs for the E2E FULL cluster. The registry is created by
+      # k3d as `k3d-scooter-reg.localhost` (see ci.yml / cluster-up.sh): a
+      # `.localhost` name resolves to 127.0.0.1 on the HOST (so skopeo pushes to it
+      # straight from /nix/store — no docker-daemon load, no `k3d image import`
+      # tarball; unchanged layers are skipped by digest) and to the registry
+      # container via docker DNS INSIDE the cluster — one ref works on both sides.
+      # Content tags (not :latest) make pullPolicy IfNotPresent correct: a rebuilt
+      # image gets a new tag -> pull; an unchanged one is already present -> skip.
+      k3dRegistry = "k3d-scooter-reg.localhost:5800";
+      k3dImageRef = name: img: "${k3dRegistry}/${name}:${ghcrContentTag img}";
+      k3dImages = {
+        agentHost = k3dImageRef "agent-host" pubImages.agent-host-image;
+        ui = k3dImageRef "agent-sandbox-ui" pubImages.ui-image;
+        broker = k3dImageRef "agent-broker" pubImages.broker-image;
+        webhooks = k3dImageRef "agent-webhooks" pubImages.webhooks-image;
+        sandboxOs = k3dImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
+        conversationController = k3dImageRef "conversation-controller" pubImages.conversation-controller-image;
+        conversationRouter = k3dImageRef "conversation-router" pubImages.conversation-router-image;
+      };
+      # attr -> ref, for the push script: `nix build .#k3d-image-refs` + jq. Keyed by
+      # the FLAKE IMAGE ATTR whose `.copyTo` pushes it.
+      k3dImagePushMap = {
+        agent-host-image = k3dImages.agentHost;
+        ui-image = k3dImages.ui;
+        broker-image = k3dImages.broker;
+        webhooks-image = k3dImages.webhooks;
+        sandbox-os-image = k3dImages.sandboxOs;
+        conversation-controller-image = k3dImages.conversationController;
+        conversation-router-image = k3dImages.conversationRouter;
+      };
+
       ghcrImages = {
         agentHost = ghcrImageRef "agent-host" pubImages.agent-host-image;
         ui = ghcrImageRef "agent-sandbox-ui" pubImages.ui-image;
@@ -293,10 +324,16 @@
           # test providers, and images SIDE-LOADED into k3s so it uses bare local names
           # (registryPrefix "" overrides the module's ghcr default). This is NOT a deploy
           # manifest — it's the config the Tier-2 cluster + Tier-3 e2e suites apply.
-          platform = mkTestPlatform {
+          # Shared by the side-load render (`platform`, bare names) and the k3d-registry
+          # render (`platformK3d`, content-tagged refs) — ONE test config, two image
+          # sourcing strategies.
+          mkTestPlatformImages = imgs: mkTestPlatform {
             registryPrefix = "";
-            agentHostImage = "agent-host:latest";
-            sandboxImage = "agent-sandbox-os:latest";
+            agentHostImage = imgs.agentHost;
+            sandboxImage = imgs.sandboxOs;
+            uiImage = imgs.ui;
+            conversationController.image = imgs.conversationController;
+            conversationController.routerImage = imgs.conversationRouter;
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
             testing.enable = true;
@@ -317,15 +354,27 @@
             };
             broker = {
               enable = true;
-              image = "agent-broker:latest";
+              image = imgs.broker;
               testProvider = true; # whoami provider for the credential e2e
             };
             webhooks = {
               enable = true;
-              image = "agent-webhooks:latest";
+              image = imgs.webhooks;
               # testWebhook comes from modules/testing.nix — not repeated here.
             };
           };
+          platform = mkTestPlatformImages {
+            agentHost = "agent-host:latest";
+            sandboxOs = "agent-sandbox-os:latest";
+            ui = "agent-sandbox-ui:latest";
+            broker = "agent-broker:latest";
+            webhooks = "agent-webhooks:latest";
+            conversationController = "conversation-controller:latest";
+            conversationRouter = "conversation-router:latest";
+          };
+          # `nix build .#platform-manifests-k3d`: the SAME test platform, images pulled
+          # from the k3d-attached registry by CONTENT TAG (see k3dImages). No side-load.
+          platformK3d = mkTestPlatformImages k3dImages;
 
           # GHCR render (`nix build .#platform-manifests-ghcr`): the REAL production deploy
           # manifest — the actual agent (fakeAgent = false), NO test providers/webhooks,
@@ -454,6 +503,10 @@
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             # (e2e/local flavor: bare side-loaded image names).
             platform-manifests = platform.config.kubernetes.resultYAML;
+
+            # The k3d-registry render + the attr->ref push map for the CI/e2e-full flow.
+            platform-manifests-k3d = platformK3d.config.kubernetes.resultYAML;
+            k3d-image-refs = pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap);
 
             # nix build .#platform-manifests-ghcr  ->  the same manifests with every image
             # pinned to its published ghcr CONTENT TAG (from ghcrImages). This is the
