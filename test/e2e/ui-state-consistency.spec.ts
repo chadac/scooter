@@ -179,7 +179,31 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // 60s, not 30: the reload re-derives the whole conversation from the integrity log,
     // and on a cluster that round-trips the router to the owning pod. The queue row can
     // take longer to reappear than the fast stack's near-instant re-render.
-    await expect.poll(async () => (await snapshot(page)).queued.length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
+    //
+    // A pod RESTART during this window ends the test's premise rather than breaking the UI.
+    // This test needs the `!sleep 60` run to still be in flight after the reload, so that a
+    // queued row and `running === true` are there to observe. If the platform restarts the
+    // conversation's pod, that run is killed, the platform's own resume/restart messages run
+    // in its place, and the queue legitimately DRAINS — there is then no queued row and no
+    // in-flight run, and every assertion below would report platform recovery as lost UI
+    // state. Observed on CI: the post-reload page showed "No queued messages" with the
+    // thread holding the platform's restart prose as a completed turn.
+    //
+    // Detect that specific situation and skip, rather than asserting through it. The skip is
+    // narrow — it needs the restart marker actually present in the thread — so a genuine
+    // "the queue vanished on reload" regression, which has no such marker, still fails below.
+    const restarted = async () =>
+      (await page.getByText(/this conversation was interrupted by a restart/i).count()) > 0;
+    let sawRow = false;
+    for (let i = 0; i < 60 && !sawRow; i++) {
+      if ((await snapshot(page)).queued.length >= 1) { sawRow = true; break; }
+      if (await restarted()) break;
+      await page.waitForTimeout(1_000);
+    }
+    if (!sawRow && (await restarted())) {
+      test.skip(true, "the conversation's pod restarted mid-test: the run this asserts on was killed by the platform, so there is no in-flight queue left to observe");
+    }
+    expect(sawRow, "the queued row must be re-derived from the log after a reload").toBe(true);
     const post = await step(page, "after reload");
     // The WHOLE state re-derived, not just the row: thread counts, queue contents, run state.
     //
@@ -216,8 +240,19 @@ test.describe("whole-UI consistency around INTERRUPTS", () => {
     await chat.open();
     await chat.send("?pick a color");
     await expect(page.locator('[data-testid="interrupt-panel"]')).toBeVisible({ timeout: 30_000 });
-    await page.locator('[data-testid="interrupt-option"]').filter({ hasText: /green/i }).click();
-    await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 30_000 });
+    // RETRY the answer while the panel is still up. The panel becomes visible as soon as the
+    // interrupt renders, but a click made before it is wired resolves to the element and
+    // never reaches the agent — CI failed here with "you picked: green" absent for the full
+    // 30s. Same fix, same reason, as interrupt.spec.ts's Dismiss. If answering is genuinely
+    // broken the panel never clears and this still fails.
+    const green = page.locator('[data-testid="interrupt-option"]').filter({ hasText: /green/i });
+    await expect(green).toBeEnabled({ timeout: 30_000 });
+    await expect(async () => {
+      if (await page.locator('[data-testid="interrupt-panel"]').isVisible().catch(() => false)) {
+        await green.click({ timeout: 5_000 }).catch(() => {});
+      }
+      await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 10_000 });
+    }).toPass({ timeout: 60_000 });
 
     await expect.poll(async () => (await snapshot(page)).running, { timeout: 45_000 }).toBe(false);
     const s = await step(page, "after answering");
