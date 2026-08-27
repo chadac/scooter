@@ -534,7 +534,15 @@ jobs:
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     env:
-      E2E_FULL_SHARDS: "1"
+      # 2, not 1: this link adds the real-agent specs, and that is where the test phase
+      # stops being small relative to the per-shard cluster setup. Beyond the wall-clock
+      # argument above, the shard count is also a CONCURRENCY control: every spec on a
+      # shard competes for sandbox provisioning against the others, and CI forces
+      # CONVERSATION_POD_CAP=1 so each conversation needs its own pod. Packing the whole
+      # allowlist onto one shard is what pushed cold boots past their budgets — several
+      # specs failed here purely waiting for a pod while behaving correctly. Splitting the
+      # set halves the peak provisioning pressure.
+      E2E_FULL_SHARDS: "2"
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
