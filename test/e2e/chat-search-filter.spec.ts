@@ -8,6 +8,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { isFull } from "./target.js";
 
 const sb = {
   item: '[data-testid="session-item"]',
@@ -85,31 +86,52 @@ test.describe("sidebar search + filter + label mode", () => {
     await chat.send("just some scratch notes");
     await chat.waitForReply(/dummy agent/i, 90_000);
 
+    // Rows pinned by THEIR OWN titles, not by absolute position/count — the same
+    // shared-backend discipline linked-resources.spec.ts documents for its
+    // data-active row. On the full target the backend is a multi-replica fleet:
+    // a conversation another actor deleted can transiently resurface from a pod
+    // the aggregate list had skipped (observed on CI — three deleted smoke
+    // conversations reappeared mid-test), so an unscoped count asserts fleet
+    // hygiene, not the filter behaviour under test.
+    const rowA = page.locator(sb.item).filter({ hasText: /flaky broker/i });
+    const rowB = page.locator(sb.item).filter({ hasText: /scratch/i });
+
     // Open the advanced-filters panel (Scope / Linked / Show live inside it).
     await page.locator(sb.filtersToggle).click();
     // Show all conversations (both rows regardless of owner).
     await page.locator(sb.scopeAll).click();
-    await expect(page.locator(sb.item)).toHaveCount(2, { timeout: 30_000 });
+    await expect(rowA).toHaveCount(1, { timeout: 30_000 });
+    await expect(rowB).toHaveCount(1, { timeout: 30_000 });
+    // On the deterministic fast stack (one wiped single-process backend) the two
+    // rows are also provably the ONLY rows.
+    if (!isFull) await expect(page.locator(sb.item)).toHaveCount(2);
 
-    // (1) Keyword search matches the LINK NAME (not present in either title).
+    // (1) Keyword search matches the LINK NAME (not present in either title):
+    // the linked row stays, the plain row is filtered OUT.
     await page.locator(sb.search).fill("#203");
-    await expect(page.locator(sb.item)).toHaveCount(1, { timeout: 30_000 });
-    await expect(page.locator(sb.title).first()).toHaveText(/flaky broker/i);
+    await expect(rowA).toHaveCount(1, { timeout: 30_000 });
+    await expect(rowB).toHaveCount(0);
+    if (!isFull) await expect(page.locator(sb.item)).toHaveCount(1);
 
-    // Search matches a plain title too.
+    // Search matches a plain title too (and drops the non-matching linked row).
     await page.locator(sb.search).fill("scratch");
-    await expect(page.locator(sb.item)).toHaveCount(1);
+    await expect(rowB).toHaveCount(1);
+    await expect(rowA).toHaveCount(0);
     // A non-matching query yields the empty-state.
     await page.locator(sb.search).fill("zzz-nomatch");
     await expect(page.locator(sb.empty)).toBeVisible();
     await page.locator(sb.search).fill("");
 
-    // (2) Provider filter (icon chips): GitHub shows only the linked conversation.
+    // (2) Provider filter (icon chips): GitHub keeps the linked conversation and
+    // drops the unlinked one.
     await page.locator(sb.providerGithub).click();
-    await expect(page.locator(sb.item)).toHaveCount(1);
-    await expect(page.locator(sb.title).first()).toHaveText(/flaky broker/i);
+    await expect(rowA).toHaveCount(1);
+    await expect(rowB).toHaveCount(0);
+    if (!isFull) await expect(page.locator(sb.item)).toHaveCount(1);
     await page.locator(sb.providerGithub).click(); // toggle off
-    await expect(page.locator(sb.item)).toHaveCount(2);
+    await expect(rowB).toHaveCount(1);
+    await expect(rowA).toHaveCount(1);
+    if (!isFull) await expect(page.locator(sb.item)).toHaveCount(2);
 
     // (3) "Show" segmented control -> GitHub: the linked row shows the PR name; the
     // unlinked row falls back to its title.

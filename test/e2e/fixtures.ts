@@ -271,7 +271,31 @@ export const test = base.extend<Fixtures>({
         const res = await request.get(`${base}/conversations`);
         if (!res.ok()) break;
         const convs = (await res.json()) as Array<{ id: string; starred?: boolean }>;
-        if (convs.length === 0) break;
+        if (convs.length === 0) {
+          // FAST: one empty read is authoritative — a single agent-host process.
+          if (process.env.E2E_TARGET !== "full") break;
+          // FULL (multi-replica): an empty read is NOT proof of a clean slate. The router's
+          // GET /conversations fans out to the READY agent-host pods and degrades to a partial
+          // list when a pod is missing/slow — so a pod that briefly drops out of the endpoints
+          // takes its rows with it, and "empty" can mean "the pod still holding rows wasn't
+          // asked". Observed on CI: cleanState deleted 5 leftovers (all 204), read [], and 3 of
+          // them resurfaced 20s later from a pod the aggregate had skipped — failing the first
+          // spec on absolute row counts. Require the emptiness to be STABLE (3 consecutive
+          // empty reads, 1s apart) and go back to deleting if anything resurfaces.
+          let stable = true;
+          for (let k = 0; k < 3; k++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            const again = await request.get(`${base}/conversations`);
+            if (!again.ok()) continue; // transient read error — don't count it as dirty
+            const rows = (await again.json()) as Array<{ id: string }>;
+            if (rows.length > 0) {
+              stable = false;
+              break;
+            }
+          }
+          if (stable) break;
+          continue; // rows resurfaced — loop back into the delete pass
+        }
         await Promise.all(
           convs.map(async (c) => {
             // UNSTAR FIRST. DELETE returns 409 on a starred conversation ("unstar before
