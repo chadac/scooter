@@ -16,6 +16,7 @@
   "refresh-history.spec.ts": 20,
   "real-goose.spec.ts": 3,
   "long-conversation.spec.ts": 70,
+  "multi-turn-integrity.spec.ts": 60,
   "interrupt.spec.ts": 25,
   "revive.spec.ts": 15,
   "chat-search-filter.spec.ts": 15

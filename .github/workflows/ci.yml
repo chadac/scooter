@@ -339,6 +339,19 @@ jobs:
               - 'test/e2e/cluster-stories.spec.ts'
               - 'test/e2e/chat-search-filter.spec.ts'
               - 'test/e2e/linked-resources.spec.ts'
+              - 'test/e2e/target.ts' # the tier mechanism (was tier.ts — a stale name here kept the gate shut)
+              # The full-target ALLOWLIST + shard planner decide exactly what the full job
+              # runs — editing them without running the job is how an unverified spec
+              # would land in the allowlist. Then every spec the allowlist selects: a
+              # changed spec must run on the cluster, not just on the fake stack.
+              - 'test/e2e/support/shard-e2e.mjs'
+              - 'test/e2e/client-server-identity.spec.ts'
+              - 'test/e2e/long-conversation.spec.ts'
+              - 'test/e2e/multi-turn-integrity.spec.ts'
+              - 'test/e2e/refresh-history.spec.ts'
+              - 'test/e2e/revive.spec.ts'
+              - 'test/e2e/stop-run.spec.ts'
+              - 'test/e2e/tail-rerender.spec.ts'
               - 'test/e2e/fixtures.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'

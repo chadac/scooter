@@ -3,6 +3,10 @@
   "client-server-identity.spec.ts",
   "cluster-stories.spec.ts",
   "linked-resources.spec.ts",
+  "long-conversation.spec.ts",
+  "multi-turn-integrity.spec.ts",
   "refresh-history.spec.ts",
-  "stop-run.spec.ts"
+  "revive.spec.ts",
+  "stop-run.spec.ts",
+  "tail-rerender.spec.ts"
 ]
