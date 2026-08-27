@@ -27,7 +27,7 @@ async function fillUntilScrollable(chat: Chat, minScroll = 400): Promise<number>
   for (let i = 0; i < 12 && scrollable < minScroll; i++) {
     // 90s per turn, not sendTurn's 45s default. On the full target every turn execs in a
     // real sandbox and the FIRST one additionally waits for a cold pod (15-25s, longer
-    // when the CI node is briefly starved of cpu) — observed on CI: the very first turn
+    // when the CI node is briefly starved of cpu) — the very first turn
     // of this fill timed out at 45s with assistantMessages still 1, failing both scroll
     // tests before either could measure anything. The loop exits as soon as the thread
     // is tall enough, so a larger ceiling costs no wall-clock time on a healthy run.
@@ -92,7 +92,7 @@ test.describe("conversation scroll-lock", () => {
     // Assert on the PEAK distance across the settle window, not just the final value:
     // the library eventually crawls back to the bottom on its own (~1s of thrashing),
     // so a delayed one-shot check is vacuous. The BUG is the transient strand — pre-fix
-    // this peaks in the THOUSANDS of px (measured ~3300–4000 on a 665px viewport) while
+    // this peaks in the THOUSANDS of px (~3300–4000 on a 665px viewport) while
     // it visibly bounces; with the fix it never leaves the bottom (peak ≤ a few px). A
     // threshold of one viewport height cleanly separates the two: fixed stays well
     // under it, broken blows way past.

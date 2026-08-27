@@ -43,7 +43,7 @@ test.describe("model selection", () => {
 
   // Was QUARANTINED (fixme) — a SERVER-SIDE race: a mid-conversation switch does
   // bridge.stop() -> close() -> revive() (relaunch goose with the new GOOSE_MODEL).
-  // close() used to fire-and-forget child.kill(), so under slow timing the OLD
+  // close() fire-and-forget child.kill(), so under slow timing the OLD
   // goose could still be alive (sharing the per-conversation cwd) when the new one
   // spawned, and the reply reflected the old model. FIXED: close() now awaits the
   // child's actual exit (SIGTERM -> wait -> SIGKILL after a grace), so the old

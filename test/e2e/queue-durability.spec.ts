@@ -136,7 +136,7 @@ test.describe("queue durability across refresh + drain", () => {
     // in flight, and this test has to get through send → queue → reload → re-derive before
     // reading it. On the full target the exec waits for a ready sandbox pod before the
     // sleep even starts, so a 20s run can be over by the time the post-reload poll looks —
-    // the queue has legitimately drained and the assertion sees 0 (observed on CI: 44
+    // the queue has legitimately drained and the assertion sees 0 (44
     // polls, 0 elements). Nothing waits for this sleep to finish (the test ends mid-run and
     // cleanState cancels it), so the longer run costs no wall-clock time.
     await chat.startLongRun(60);

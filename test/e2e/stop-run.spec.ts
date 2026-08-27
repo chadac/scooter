@@ -114,7 +114,7 @@ test.describe("Stop button + thinking indicator", () => {
     // 180s, matching the describe-level ceiling: this test would otherwise LOWER its own
     // budget below the one the cold boot needs.
     test.setTimeout(180_000);
-    // A shell tool used to render as already "complete" the instant it started: the
+    // A shell tool render as already "complete" the instant it started: the
     // bridge emitted a premature (empty) TOOL_CALL_RESULT on the args-only
     // in_progress update, so the folded part carried a result and assistant-ui
     // showed no spinner while e.g. `sleep 20` ran — the agent looked idle. The
@@ -125,7 +125,7 @@ test.describe("Stop button + thinking indicator", () => {
     // When the sleep finishes the run ends and the spinner goes away. 60s, not 30:
     // the spinner appears when the tool call STREAMS, but the exec then waits for a
     // ready sandbox pod BEFORE the 20s sleep even starts — an instrumented throttled
-    // run measured 12.1s of ready-pod wait + 19.7s of sleep = the clear landing ~32s
+    // run 12.1s of ready-pod wait + 19.7s of sleep = the clear landing ~32s
     // after the spinner, 2s past a 30s budget, with everything behaving correctly.
     await expect(page.locator('[data-testid="provider-tool-running"]')).toHaveCount(0, { timeout: 60_000 });
   });
@@ -140,7 +140,7 @@ test.describe("Stop button + thinking indicator", () => {
   });
 
   test("no spurious branch picker (2/2) on a single-turn message", async ({ chat, page }) => {
-    // The render pump's reset() used to collide with the composer's optimistic
+    // The render pump's reset() collide with the composer's optimistic
     // append, making assistant-ui show a phantom "2 / 2" branch. There are no real
     // message branches in the single-source model — the picker must not appear.
     await chat.open();

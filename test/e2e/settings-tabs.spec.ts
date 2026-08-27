@@ -1,7 +1,7 @@
 /**
  * Tier 3 E2E — the Settings page's tab layout + real URLs.
  *
- * Settings used to be one long scrolling page reachable only by a header toggle. It is
+ * Settings be one long scrolling page reachable only by a header toggle. It is
  * now a left tab rail where each tab is a real path (/settings/<tab>), so this asserts
  * the things that change for a user: the tabs exist, clicking one shows only that
  * section AND updates the URL, a pasted deep-link opens the right tab after a full
@@ -103,7 +103,7 @@ test.describe("settings page tabs", () => {
     // asserting one specific branch would test a state the other deployment cannot
     // produce (my first cut did exactly that and failed for the wrong reason).
     //
-    // What matters at this level either way: the tab is NEVER BLANK. It used to `return null`
+    // What matters at this level either way: the tab is NEVER BLANK. It `return null`
     // when BYO was off, which reads as a broken page rather than "off by config".
     await page.goto("/settings/claude");
     await expect(page.locator('[data-testid="settings-panel-claude"]')).toBeVisible({ timeout: 20_000 });
@@ -113,7 +113,7 @@ test.describe("settings page tabs", () => {
     expect(text.length, "the claude tab must never render blank").toBeGreaterThan(40);
 
     // And it must not leak a raw parser error where the device list goes — /byoc/* does not exist
-    // on this stack, so the SPA catch-all returns index.html and res.json() used to throw
+    // on this stack, so the SPA catch-all returns index.html and res.json() throw
     // `Unexpected token '<', "<!doctype "...` straight into the UI.
     expect(text, "a JSON parser error must never reach the user").not.toMatch(/Unexpected token|not valid JSON/i);
   });

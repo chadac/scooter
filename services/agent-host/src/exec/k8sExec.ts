@@ -275,11 +275,9 @@ export function createK8sSandboxApiClient(
       // ── STALL WATCHDOG. The two silent-forever failure modes here are (a) the
       // pods/exec UPGRADE request that a starved kubelet never answers (exec()'s
       // promise never settles) and (b) a WS that opens but never receives a close
-      // frame. Neither had a timeout or a log line, so a hung tool call produced
-      // NOTHING between "acp prompt: sending" and the heat death of the test — three
-      // CI runs and a throttled local repro all dead-ended there. The watchdog names
-      // the stage a still-running exec is stuck in; it never kills anything (a
-      // legitimately long command must stay legal), it just refuses to be silent.
+      // frame. Without a timeout or log line, a hung tool call would produce nothing.
+      // The watchdog names the stage a still-running exec is stuck in; it never kills
+      // anything (a legitimately long command must stay legal), it just refuses to be silent.
       const startedAt = Date.now();
       let stage = "upgrade-pending"; // -> "ws-open" -> settled
       let settled = false;

@@ -26,7 +26,7 @@ test.describe("long conversation doesn't block a new one", () => {
   // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target every plain
   // turn is a REAL sandbox exec (the fake agent shells `echo <text>`), and each test
   // funds TWO conversation boots (the long one + the fresh one), each of which can
-  // wait 5-25s for a ready sandbox pod (client-server-identity measured 9-12s of
+  // wait 5-25s for a ready sandbox pod (client-server-identity 9-12s of
   // ready-pod wait per boot under CI CPU pressure). Arithmetic: boot 25s + 8 warm
   // turns x ~8s + second boot 25s + its turn ~ 120s — the 60s default fails on
   // timing alone while the behaviour under test is correct. 240s = that worst case

@@ -82,7 +82,7 @@ test.describe("multi-turn re-render (tail + replay)", () => {
     }
     await expect(chat.userMessages()).toHaveCount(markers.length, { timeout: 30_000 });
 
-    // Switch away, then back — the open path that used to strand at the top.
+    // Switch away, then back — the open path that strand at the top.
     await page.locator(sidebar.newSession).click();
     await chat.send("elsewhere");
     await chat.waitForReply(/dummy agent/i, 100_000); // second conversation boot (see above)

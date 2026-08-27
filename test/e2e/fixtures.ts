@@ -83,7 +83,7 @@ export class Chat {
    *  may be no further scroll event to fire, so the flag can trail the real position
    *  (the CI-only "arrow still enabled at the bottom" flake). An explicit
    *  scrollTo(bottom) forces a scroll event → the store recomputes; then poll the
-   *  measured distance to confirm we're actually pinned. */
+   *  the distance to confirm we're actually pinned. */
   async settleAtBottom(px = 40): Promise<void> {
     await this.viewport().evaluate((el) =>
       el.scrollTo({ top: el.scrollHeight, behavior: "instant" as ScrollBehavior }),
@@ -265,7 +265,7 @@ export const test = base.extend<Fixtures>({
       const base = baseURL ?? "http://localhost:5173";
       // SAFETY (belt-and-braces). This fixture deletes EVERY conversation to give the shared local
       // fake stack a clean slate. Run against a LIVE deployment that destroys real user data — which
-      // is exactly what happened once against odin before this guard existed.
+      // is exactly what this guard prevents.
       //
       // TWO independent gates, because one flag proved insufficient (the flag was added AFTER a run
       // had already been launched without it):
@@ -370,14 +370,11 @@ export const test = base.extend<Fixtures>({
         // several seconds after a 204. At 100ms the 50 attempts burn out in ~5s, which is
         // exactly what CI showed: four specs each failing in 6.2-6.6s naming the same
         // conversation, one the previous test had suspended. 1s gives the loop ~50s, past
-        // the observed teardown. Fast keeps 100ms — its destroy is in-process and immediate.
+        // the teardown. Fast keeps 100ms — its destroy is in-process and immediate.
         await new Promise((r) => setTimeout(r, process.env.E2E_TARGET === "full" ? 1000 : 100));
-        // FAIL LOUD on the last iteration rather than shrugging. This loop used to exhaust its 50
-        // attempts and continue silently, so an UNDELETABLE conversation (e.g. a starred one —
-        // DELETE 409s) leaked into every later test and surfaced as unrelated assertion failures
-        // ("Expected 1, Received 2", titles from another test) with no hint of the real cause.
-        // A fixture that cannot establish its precondition must say so, not hand the next test a
-        // dirty slate.
+        // FAIL LOUD on the last iteration: a fixture that cannot establish its precondition
+        // (e.g. an undeletable starred conversation returning DELETE 409s) must say so,
+        // not hand the next test a dirty slate.
         if (i === attempts - 1) {
           const left = (await (await request.get(`${base}/conversations`)).json()) as Array<{
             id: string;
@@ -736,7 +733,7 @@ export async function assertMatchesServer(
   // full target the server is a shared multi-replica fleet: it legitimately holds rows from
   // OTHER specs running against the same backend, and the sidebar's default scope shows the
   // user's own conversations rather than the whole fleet — so this direction reports normal
-  // cross-spec coexistence as a divergence (observed on CI: two unrelated conversation ids).
+  // cross-spec coexistence as a divergence.
   // The `missing` direction above is the one that catches real detachment, and it stays on
   // for both targets: a row the server does not have is always a bug.
   if (process.env.E2E_TARGET !== "full") {
