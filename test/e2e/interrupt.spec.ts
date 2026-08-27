@@ -26,7 +26,11 @@ test.describe("agent option dropdown (interrupt)", () => {
   // is fine but their SUM is not: open (~20s) + panel (~30s incl. provisioning) +
   // pick → reply (~30s) + panel-clear (~10s) ≈ 90s worst case, past the 60s
   // default while every step behaves. Assertions unchanged; only the ceiling.
-  test.beforeEach(() => test.setTimeout(120_000));
+  //
+  // 180s, not 120: the answer steps now RETRY the click (a click made before the panel is
+  // wired never reaches the agent and cannot be waited out), and their retry windows are
+  // 60-90s. Summed with the 30s panel wait that precedes them, 120s left no headroom.
+  test.beforeEach(() => test.setTimeout(180_000));
 
   test("the agent presents options; picking one resumes the run", async ({ chat, page }) => {
     await chat.open();
@@ -40,8 +44,18 @@ test.describe("agent option dropdown (interrupt)", () => {
     await expect(page.locator(panel.option).filter({ hasText: /green/i })).toHaveCount(1);
 
     // Pick "Green" -> the run resumes and the agent reports the choice.
-    await page.locator(panel.option).filter({ hasText: /green/i }).click();
-    await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 30_000 });
+    // RETRY, for the same reason the Dismiss below does: the panel is visible as soon as the
+    // interrupt renders, but a click made before it is wired resolves to the element and
+    // never reaches the agent. CI failed here with "you picked: green" absent for the full
+    // 30s. A click that did nothing cannot be waited out, so re-click while the panel is up.
+    const green = page.locator(panel.option).filter({ hasText: /green/i });
+    await expect(green).toBeEnabled({ timeout: 30_000 });
+    await expect(async () => {
+      if (await page.locator(panel.root).isVisible().catch(() => false)) {
+        await green.click({ timeout: 5_000 }).catch(() => {});
+      }
+      await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 15_000 });
+    }).toPass({ timeout: 90_000 });
 
     // The interrupt content goes away once the request is answered. The right panel
     // itself PERSISTS now (the Sandbox status tab is always present for a live
