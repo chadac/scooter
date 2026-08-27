@@ -33,7 +33,12 @@ test.describe("session selector & titles", () => {
     await chat.send("hello there");
     await chat.waitForReply(/dummy agent/i);
 
-    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 30_000 });
+    // THIS conversation's row is listed. Not an absolute list length: on the full target
+    // the backend is a shared multi-replica fleet, so a row another spec is still settling
+    // inflates the count and the assertion measures fleet hygiene rather than the feature.
+    await expect(
+      page.locator(sidebar.item).filter({ hasText: /hello there/i }),
+    ).toHaveCount(1, { timeout: 30_000 });
   });
 
   test("the agent assigns a title to the conversation", async ({ chat, page }) => {
@@ -129,7 +134,15 @@ test.describe("session selector & titles", () => {
     await chat.send("second conversation");
     await chat.waitForReply(/dummy agent/i);
 
-    await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
+    // BOTH of this test's conversations are listed as separate rows — which is what
+    // "new-session starts a FRESH conversation" means. Pinned by their own text rather
+    // than an absolute count, which a settling row from another spec inflates.
+    await expect(
+      page.locator(sidebar.item).filter({ hasText: /first conversation/i }),
+    ).toHaveCount(1, { timeout: 30_000 });
+    await expect(
+      page.locator(sidebar.item).filter({ hasText: /second conversation/i }),
+    ).toHaveCount(1, { timeout: 30_000 });
   });
 
   test("deleting a conversation removes it from the list", async ({ chat, page }) => {
@@ -194,7 +207,13 @@ test.describe("session selector & titles", () => {
     await page.locator(sidebar.newButton).click();
     await chat.send("doomed conversation");
     await chat.waitForReply(/dummy agent/i);
-    await expect(page.locator(sidebar.item)).toHaveCount(2);
+    // This test's own two rows (not an absolute length — the fleet is shared).
+    await expect(
+      page.locator(sidebar.item).filter({ hasText: /first survivor/i }),
+    ).toHaveCount(1, { timeout: 30_000 });
+    await expect(
+      page.locator(sidebar.item).filter({ hasText: /doomed/i }),
+    ).toHaveCount(1, { timeout: 30_000 });
 
     // The current (doomed) conversation's message is on screen.
     await expect(chat.userMessages().filter({ hasText: /doomed conversation/i })).toHaveCount(1);
@@ -211,8 +230,15 @@ test.describe("session selector & titles", () => {
       .click();
 
     // 30s, not 10: on the full target the DELETE also tears down the conversation's
-    // sandbox pod before the server acks and the row clears.
-    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 30_000 });
+    // sandbox pod before the server acks and the row clears. Assert the DOOMED row went
+    // away and the survivor stayed — the property under test — rather than a fleet-wide
+    // count.
+    await expect(page.locator(sidebar.item).filter({ hasText: /doomed/i })).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await expect(page.locator(sidebar.item).filter({ hasText: /first survivor/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
     await expect(chat.userMessages().filter({ hasText: /doomed conversation/i })).toHaveCount(0, {
       timeout: 30_000,
     });
@@ -235,7 +261,13 @@ test.describe("session selector & titles", () => {
     await page.locator(sidebar.newButton).click();
     await chat.send("bravo-one");
     await chat.waitForReply(/dummy agent/i);
-    await expect(page.locator(sidebar.item)).toHaveCount(2);
+    // This test's own two rows (not an absolute length — the fleet is shared).
+    await expect(page.locator(sidebar.item).filter({ hasText: /alpha-one/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await expect(page.locator(sidebar.item).filter({ hasText: /bravo-one/i })).toHaveCount(1, {
+      timeout: 30_000,
+    });
 
     // Back to A: its message must still be there (the reported resume bug —
     // sending in B must not lose A's messages).
@@ -267,13 +299,18 @@ test.describe("session selector & titles", () => {
     await page.locator(sidebar.newButton).click();
     await chat.send("persisted conversation two");
     await chat.waitForReply(/dummy agent/i);
-    await expect(page.locator(sidebar.item)).toHaveCount(2);
+    // This test's own two rows (not an absolute length — the fleet is shared).
+    const one = page.locator(sidebar.item).filter({ hasText: /persisted conversation one/i });
+    const two = page.locator(sidebar.item).filter({ hasText: /persisted conversation two/i });
+    await expect(one).toHaveCount(1, { timeout: 30_000 });
+    await expect(two).toHaveCount(1, { timeout: 30_000 });
 
     // Refresh: the sidebar must repopulate from the server (not reset to one
     // fresh in-memory session), so all conversations remain available.
     await page.reload();
     await expect(chat.input()).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
+    await expect(one).toHaveCount(1, { timeout: 30_000 });
+    await expect(two).toHaveCount(1, { timeout: 30_000 });
     await expect(page.locator(sidebar.title).filter({ hasText: /persisted conversation one/i })).toHaveCount(1);
     await expect(page.locator(sidebar.title).filter({ hasText: /persisted conversation two/i })).toHaveCount(1);
   });
@@ -304,15 +341,27 @@ test.describe("session selector & titles", () => {
     // on a page that already fetched — never recovers (observed on CI: 64 polls, 0
     // elements). This asserts the same property the test is about, just from the source of
     // truth first.
+    // scope=all: the default "mine" view filters to the caller's own + unowned rows, and
+    // a seed created through the API can be attributed differently from the browser's
+    // session. This poll is about "did the server accept and retain the seeds", so ask for
+    // everything rather than a scoped view.
+    let lastSeen = "";
     await expect
       .poll(
         async () => {
-          const res = await request.get(`${base}/conversations`);
-          if (!res.ok()) return 0;
+          const res = await request.get(`${base}/conversations?scope=all`);
+          if (!res.ok()) {
+            lastSeen = `list read failed: ${res.status()}`;
+            return 0;
+          }
           const rows = (await res.json()) as Array<{ title?: string }>;
+          lastSeen = `${rows.length} rows: ${rows.map((c) => c.title ?? "<untitled>").join(" | ")}`;
           return rows.filter((c) => /Seeded session (one|two)/i.test(c.title ?? "")).length;
         },
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+          message: () => `the seeded conversations never appeared server-side. Last list: ${lastSeen}`,
+        },
       )
       .toBe(2);
 

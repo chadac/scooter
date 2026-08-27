@@ -275,7 +275,12 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // persisted QUEUE_UPDATED still lists them.
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();
-    await chat.startLongRun(20);
+    // 60s, not 20: the scenario requires the suspend to land while the run is STILL in
+    // flight with the message in the bridge's in-memory queue. On the full target the exec
+    // waits for a ready sandbox pod before the sleep starts, so a 20s run can be over by
+    // the time we suspend — which quietly tests something else. Nothing waits for the
+    // sleep (the test suspends mid-run and cleanState cancels), so this costs no time.
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("queued before the suspend");
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 15_000 });
@@ -302,10 +307,14 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // The message never ran and never surfaced an error — exactly the reported "my
     // message just sits somewhere hidden". suspend() now DRAINS the queue onto the
     // conversation's persisted meta and revive() RE-ENQUEUES it, so it actually runs.
+    // 90s, not 45: the re-enqueued message has to run on the REVIVED conversation, which
+    // means a fresh bridge and — on the full target — a sandbox exec that first waits for a
+    // ready pod. That is the same cold-boot arithmetic every other revive assertion here
+    // funds; 45s was the fake stack's number.
     await expect(
       page.getByText(/queued before the suspend/i).first(),
       "a message queued when the conversation was suspended must NOT be silently lost",
-    ).toBeVisible({ timeout: 45_000 });
+    ).toBeVisible({ timeout: 90_000 });
 
     // ONLY NOW assert the queue is empty. Checked AFTER the re-enqueued message has
     // run: while it is legitimately queued/draining the count is transiently 1, so an

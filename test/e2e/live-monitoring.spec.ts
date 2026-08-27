@@ -62,7 +62,9 @@ test.describe("live monitoring", () => {
   // ≤25s + streamed turn ~10s ≈ 45s of expected work against the 60s suite default.
   // 120s funds it with margin. The PUSH-latency assertion below stays deliberately
   // tight — only the budget around it is cluster-priced.
-  test.setTimeout(120_000);
+  // 240s, not 120: the full-target row waits below allow the aggregated sidebar and the
+  // assign->announce hop time to settle during pod churn, on top of the streamed turn.
+  test.setTimeout(240_000);
 
   test(
     "a Slack-like conversation appears in the sidebar live (no refresh)",
@@ -100,10 +102,12 @@ test.describe("live monitoring", () => {
 
       await createExternalConversation(request, base, "review the auth module");
 
-      // Open the pushed conversation from the sidebar (the row itself arrives on the
-      // live push — same budget reasoning as the test above).
+      // Open the pushed conversation from the sidebar. Unlike the test above, this wait is
+      // NOT the push-latency measurement — it just has to reach the row before clicking it,
+      // and the subject of this test is the streamed reply's fidelity. So it gets a plain
+      // cluster-honest budget rather than the 8s used to prove the push beat the poll.
       const row = page.locator(sel.conversationRow).filter({ hasText: /auth module|slack/i }).first();
-      await expect(row).toBeVisible({ timeout: 8_000 });
+      await expect(row).toBeVisible({ timeout: isFull ? 60_000 : 8_000 });
       await row.click();
 
       // Part 1: the assistant reply (from a run THIS tab didn't start) renders
