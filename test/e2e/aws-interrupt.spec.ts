@@ -22,6 +22,33 @@ const panel = {
   message: '[data-testid="interrupt-message"]',
 };
 
+/** The id of the first listed conversation, POLLED rather than read once.
+ *
+ *  The router aggregates GET /conversations over the READY agent-host pods and degrades
+ *  to a PARTIAL — sometimes empty — list while pods churn (the platform dump for the
+ *  failing run is full of "resume-on-missing-pod failed"). Every one of these tests
+ *  creates a conversation and then needs its id, and a single read that came back []
+ *  killed the test on `list[0].id` with a bare "Cannot read properties of undefined",
+ *  which says nothing about the real cause. Retry, and fail with a sentence if it never
+ *  appears. */
+async function firstConversationId(
+  request: import("@playwright/test").APIRequestContext,
+  base: string,
+  page: import("@playwright/test").Page,
+): Promise<string> {
+  let id = "";
+  for (let i = 0; i < 30 && !id; i++) {
+    const res = await request.get(`${base}/conversations`);
+    if (res.ok()) {
+      const rows = (await res.json()) as Array<{ id: string }>;
+      if (rows.length) id = rows[0].id;
+    }
+    if (!id) await page.waitForTimeout(1000);
+  }
+  expect(id, "the conversation just created must appear in the server's list").toBeTruthy();
+  return id;
+}
+
 /** POST the aws-request exactly like the broker's _notify_host does. */
 async function requestAws(
   request: import("@playwright/test").APIRequestContext,
@@ -66,8 +93,7 @@ test.describe("AWS approval interrupt", () => {
     await chat.waitForReply(/dummy agent/i);
 
     // The conversation id (== threadId). Grab it from the conversations list.
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
     expect(conversationId).toBeTruthy();
 
     // The broker notifies the agent-host that the agent requested AWS access.
@@ -90,8 +116,7 @@ test.describe("AWS approval interrupt", () => {
     await chat.send("long-running terraform work");
     await chat.waitForReply(/dummy agent/i);
 
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
 
     // Suspend it (drops the in-memory bridge) — the idle-suspend / restart case.
     const susp = await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`, {
@@ -120,8 +145,7 @@ test.describe("AWS approval interrupt", () => {
     await chat.send("terraform apply needing AWS");
     await chat.waitForReply(/dummy agent/i);
 
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
 
     // Raise the AWS interrupt, then SUSPEND to drop the in-memory bridge (the rollout /
     // idle case). The panel is present (persisted), but the run is no longer live.
@@ -182,8 +206,7 @@ test.describe("AWS approval interrupt", () => {
     await chat.send("another terraform task");
     await chat.waitForReply(/dummy agent/i);
 
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
     await requestAws(request, base, conversationId, `awsreq-reload-${Date.now()}`);
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
 
