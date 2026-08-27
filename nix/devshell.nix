@@ -28,10 +28,11 @@ pkgs.mkShell {
     jq
     yq-go
     just
-    # DB schema: Atlas owns lib/sql; postgresql provides the ephemeral dev database
-    # its migrate diff/validate need (initdb/pg_ctl/psql via scripts/atlas-dev.sh).
+    # DB schema: Atlas owns lib/sql. Its `just db-migrate`/`db-validate` recipes need
+    # an ephemeral dev Postgres, which scripts/atlas-dev.sh pulls on demand via
+    # `nix shell nixpkgs#postgresql_16` — so it is NOT a standing dev-shell dep. atlas
+    # stays here for direct `atlas` use.
     atlas
-    postgresql_16
   ];
   shellHook = ''
     echo "kubenix-agent-manager dev shell"
