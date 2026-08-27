@@ -602,10 +602,20 @@ export async function assertMatchesServer(
     missing,
     `${when}: sidebar shows conversation(s) the server does not have: ${missing.join(", ")}`,
   ).toEqual([]);
-  expect(
-    notShown,
-    `${when}: server has conversation(s) the sidebar does not show: ${notShown.join(", ")}`,
-  ).toEqual([]);
+  // FAST ONLY. "The sidebar shows everything the server has" holds on the single-process,
+  // freshly-wiped stack, where the only conversations in existence are this test's. On the
+  // full target the server is a shared multi-replica fleet: it legitimately holds rows from
+  // OTHER specs running against the same backend, and the sidebar's default scope shows the
+  // user's own conversations rather than the whole fleet — so this direction reports normal
+  // cross-spec coexistence as a divergence (observed on CI: two unrelated conversation ids).
+  // The `missing` direction above is the one that catches real detachment, and it stays on
+  // for both targets: a row the server does not have is always a bug.
+  if (process.env.E2E_TARGET !== "full") {
+    expect(
+      notShown,
+      `${when}: server has conversation(s) the sidebar does not show: ${notShown.join(", ")}`,
+    ).toEqual([]);
+  }
   // At most one unsent "New chat" can be pending at a time — more means they are leaking.
   expect(
     rows.filter((r) => r.pending).length,
