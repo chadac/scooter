@@ -205,10 +205,16 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // Asserting on the unique message text is both race-free and count-independent.
     await chat.send("wake up and answer me");
 
+    // 90s, not 30: this send must first REVIVE the conversation, which on the full target
+    // provisions a fresh sandbox pod (suspend destroyed the previous one) before the message
+    // is folded into the thread. Under CONVERSATION_POD_CAP=1 that provisioning queues behind
+    // the other specs on the shard. Observed on CI: the UI still read "Working… 1m 6s" with
+    // the message in the queue — the revive in progress, not a delivery failure. The 240s
+    // ceiling (TWO_BOOT_BUDGET) is sized for exactly this.
     await expect(
       chat.userMessages().filter({ hasText: /wake up and answer me/i }),
       "the message sent to a suspended conversation must appear in the thread",
-    ).toHaveCount(1, { timeout: 30_000 });
+    ).toHaveCount(1, { timeout: 90_000 });
 
     // ...and it must actually RUN: a second assistant turn must exist.
     //
@@ -346,10 +352,15 @@ test.describe("recovered conversation — sending a message revives it", () => {
     // earlier check would race the very behavior this test asserts. What must not
     // survive is a PHANTOM row — one no pump will ever drain.
     await chat.openQueueTab();
+    // 90s, not 30: the re-enqueued message has to RUN before the queue can empty, and that
+    // run is a real sandbox exec on the revived conversation — the same provisioning wait
+    // every other revive assertion in this file funds. A row still draining is not the
+    // phantom this test is named for; a phantom is one no pump will ever drain, and it
+    // survives all 90s just as it survived 30.
     await expect(
       chat.queuedMessages(),
       "no phantom queued row may survive the suspend/revive",
-    ).toHaveCount(0, { timeout: 30_000 });
+    ).toHaveCount(0, { timeout: 90_000 });
   });
 });
 
