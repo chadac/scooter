@@ -1040,6 +1040,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (danglingReconciles.has(id)) return; // one settlement at a time
       danglingReconciles.add(id);
       try {
+        // PULL FIRST. On an ownership gain the watch fires within milliseconds of
+        // the reassignment — before any read has hydrated this pod's local store.
+        // The dead pod's events (including the dangling RUN_STARTED and any cancel
+        // marker) live in the MIRROR; judging from the empty local log found no
+        // dangling run and silently no-opped (deployed validation round 3). The
+        // pull is idempotent and cheap when local is already current.
+        if (deps.hydrateFromMirror && !entries.get(id)?.bridge) {
+          await deps.hydrateFromMirror(id).catch((err) =>
+            log.errorWith("dangling-run check: mirror pull failed (judging local)", err, {
+              conversation_id: id,
+            }),
+          );
+        }
         // Pass our identity: a run THIS pod started at THIS generation is in flight, not
         // stranded. `expectedGen` is the generation the controller assigned us at — a run
         // stamped with an earlier one was left by a previous assignment and still resumes.
@@ -1047,7 +1060,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // alone — conservative: adoption implies the entry was not in memory, so a live
         // own run cannot be the one we would touch.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
-        const dangling = danglingRunInfo(await collectEvents(store.readEvents(id)), self);
+        const events = await collectEvents(store.readEvents(id));
+        const dangling = danglingRunInfo(events, self);
+        if (!dangling) {
+          // NEVER silent: a wrong no-op here is indistinguishable from the hook not
+          // firing at all, which cost three deploy-validate rounds to see.
+          log.info("dangling-run check: nothing to settle", {
+            conversation_id: id,
+            events_seen: events.length,
+          });
+        }
         if (dangling?.cancelRequested) {
           // The user STOPPED this run before the old host died (the persisted
           // CANCEL_REQUESTED marker). Resuming it would resurrect work the user

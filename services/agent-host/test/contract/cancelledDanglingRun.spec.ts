@@ -119,34 +119,39 @@ describe("the ownership WATCH settles a stranded run (the production shape)", ()
   it("a watch-delivered gain terminates the cancelled stranded run @proves", async () => {
     const { OwnershipTracker } = await import("../../src/session/ownershipGuard.js");
     const tracker = new OwnershipTracker("new-pod");
-    const { store, dump } = seededStore("t1", [...DEAD_HOST_RUN, CANCEL]);
-    (store as { listConversations?: unknown }).listConversations = async () => [
-      { id: "t1", threadId: "t1", title: "", createdAt: 0, lastActivityAt: 0 },
-    ];
+    // FAITHFUL SHAPE: the new owner's LOCAL store is EMPTY — the dead pod's events
+    // live in the MIRROR and only hydrateFromMirror copies them in. The first
+    // version of this test pre-seeded the local store, which is exactly the
+    // infidelity that let a silent no-op ship: on the cluster the gain handler read
+    // an empty local log, found no dangling run, and said nothing.
+    const { store, dump } = seededStore("t1", []);
+    const mirrorEvents = [...DEAD_HOST_RUN, CANCEL];
+    let pulled = false;
+    (store as { listConversations?: unknown }).listConversations = async () =>
+      pulled ? [{ id: "t1", threadId: "t1", title: "", createdAt: 0, lastActivityAt: 0 }] : [];
     const sessions = createSessionManager({
       provisioner: fakeProvisioner(),
       store,
       selfPod: "new-pod",
       ownershipGuard: tracker,
-      hydrateFromMirror: async () => true,
+      hydrateFromMirror: async () => {
+        pulled = true;
+        for (const e of mirrorEvents) await store.appendEvent("t1" as SessionId, e);
+        return true;
+      },
     } as never);
     // the same wiring index.ts does
     tracker.onGained = (id, gen) => {
       void sessions.reconcileDanglingRun(id as SessionId, gen);
     };
-    // PRODUCTION ORDER: the old pod owns it when the hydrate cascade runs, so the
-    // fence blocks every hydration-path settlement — exactly why the two earlier
-    // hooks never fired in the deployed validation rounds.
+    // PRODUCTION ORDER, all the way down: the gain arrives via the watch within
+    // MILLISECONDS of the reassignment — before any UI read has hydrated this
+    // pod's empty local store. Settlement must therefore pull the mirror itself;
+    // reading local events at gain time finds [] and silently no-ops (the
+    // deployed round-3 failure).
     tracker.observe("t1", { hostPod: "dead-pod", generation: 1 });
-    expect(await sessions.ensureReadable("t1" as SessionId)).toBe(true);
-    await new Promise((r) => setTimeout(r, 30));
-    expect(
-      dump().some((e) => (e as { type: string }).type === "RUN_FINISHED"),
-      "fenced hydration must NOT settle while another pod owns the conversation",
-    ).toBe(false);
-    // The reassignment arrives ONLY via the watch — the one signal that always fires.
     tracker.observe("t1", { hostPod: "new-pod", generation: 2 });
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 80));
 
     const tail = dump().at(-1) as { type: string; cancelled?: boolean; runId?: string };
     expect(tail).toMatchObject({ type: "RUN_FINISHED", runId: "r1", cancelled: true });
