@@ -22,6 +22,7 @@
   "sessions.spec.ts",
   "settings-tabs.spec.ts",
   "stop-run.spec.ts",
+  "suspend-survival.spec.ts",
   "suspended-recovery.spec.ts",
   "tail-rerender.spec.ts",
   "ui-state-consistency.spec.ts"
