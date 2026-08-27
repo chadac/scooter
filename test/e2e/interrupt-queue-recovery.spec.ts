@@ -27,7 +27,14 @@ const panel = {
 // queue/answer (~15-30s) + drain + the queued/follow-up turn (~30-45s) ≈ 120-160s
 // worst case — past the 60s default on arithmetic alone while every step behaves.
 // Assertions unchanged; only the ceiling.
+//
+// The per-step waits matter as much as the ceiling. ANSWERING an interrupt resumes a
+// paused run whose exec then waits for a ready sandbox pod — on a fresh conversation
+// that is the cold boot, so "you picked: X" lands well past a 30s budget (observed on
+// CI: all three post-answer assertions timed out at 30s with the feature working).
+// Those, and the follow-up sendTurns that fund the same boot, get 90s.
 const CLUSTER_BUDGET_MS = 180_000;
+const ANSWER_BUDGET_MS = 90_000;
 
 test.describe("interrupt + queue coexistence", () => {
   test.beforeEach(() => test.setTimeout(CLUSTER_BUDGET_MS));
@@ -56,7 +63,7 @@ test.describe("interrupt + queue coexistence", () => {
     // visible, then answer → the paused run resumes, then the queued message runs.
     await page.locator(panel.approvalsTab).click();
     await page.locator(panel.option).filter({ hasText: /green/i }).click();
-    await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
     // The queue drains + the queued message becomes a real user turn.
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 30_000 });
     await expect(chat.userMessages().filter({ hasText: "run after I approve" })).toHaveCount(1, { timeout: 30_000 });
@@ -89,7 +96,7 @@ test.describe("interrupt persistence + recovery", () => {
     await expect(page.locator(panel.option)).toHaveCount(3, { timeout: 30_000 });
     // And it's still answerable after the reload.
     await page.locator(panel.option).filter({ hasText: /red/i }).click();
-    await expect(page.getByText(/you picked: red/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/you picked: red/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
   });
 
   test("after answering, the UI returns to a CLEAN sendable state (no stuck panel / working)", async ({ chat, page }) => {
@@ -97,12 +104,13 @@ test.describe("interrupt persistence + recovery", () => {
     await chat.send("?pick a color");
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
     await page.locator(panel.option).filter({ hasText: /blue/i }).click();
-    await expect(page.getByText(/you picked: blue/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/you picked: blue/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
 
     // Clean state: the interrupt panel is gone, no stuck run-status bar, and a new turn works first-try.
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
     await expect(page.locator('[data-testid="run-status-bar"]')).toHaveCount(0, { timeout: 15_000 });
-    await chat.sendTurn("a normal turn after the interrupt");
+    // 90s, not sendTurn's 45s default: same cold-boot arithmetic as the answer above.
+    await chat.sendTurn("a normal turn after the interrupt", ANSWER_BUDGET_MS);
     await expect(chat.userMessages().filter({ hasText: "a normal turn after the interrupt" })).toHaveCount(1);
   });
 
@@ -111,9 +119,11 @@ test.describe("interrupt persistence + recovery", () => {
     await chat.send("?pick a color");
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
     await page.locator(panel.cancel).click();
-    await expect(page.getByText(/you picked: \(cancelled\)/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/you picked: \(cancelled\)/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
-    await chat.sendTurn("works after a cancel");
+    // 90s, not sendTurn's 45s default: this is the conversation's FIRST completed exec (the
+    // interrupt was cancelled, so nothing has run yet), so it funds the cold sandbox boot.
+    await chat.sendTurn("works after a cancel", ANSWER_BUDGET_MS);
     await expect(chat.userMessages().filter({ hasText: "works after a cancel" })).toHaveCount(1);
   });
 });
