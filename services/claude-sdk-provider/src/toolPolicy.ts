@@ -22,8 +22,10 @@
 /** Built-ins that run IN THE SANDBOX via the aliased MCP tools (see sandboxMcp.ts). */
 export const ALIASED_BUILTINS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"] as const;
 
-/** Built-ins that are safe as-is: no sandbox access, no side effects we care about. */
-export const ALLOWED_BUILTINS = ["TodoWrite"] as const;
+/** Built-ins that are safe as-is: no sandbox access, no side effects we care about.
+ *  ToolSearch is load-bearing: the scooter-env MCP tools are DEFERRED, so denying it
+ *  leaves the model unable to enumerate the tools it was given. */
+export const ALLOWED_BUILTINS = ["TodoWrite", "ToolSearch"] as const;
 
 /**
  * Built-ins we deliberately do not support, and what to use instead. The message is

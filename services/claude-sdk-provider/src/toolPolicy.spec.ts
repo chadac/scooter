@@ -35,6 +35,12 @@ describe("decideTool", () => {
     expect(decideTool("Task", ALIASES)).toMatchObject({ reason: /spawn_subagent/ });
   });
 
+  it("allows ToolSearch — the scooter-env tools are deferred and need discovery @proves", () => {
+    // Denying it leaves the model holding an allowlist entry for a toolset it cannot
+    // enumerate, so it falls back on built-ins that are themselves denied.
+    expect(decideTool("ToolSearch", ALIASES).allow).toBe(true);
+  });
+
   it("allows TodoWrite (pure in-process state)", () => {
     expect(decideTool("TodoWrite", ALIASES).allow).toBe(true);
   });
