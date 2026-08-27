@@ -416,9 +416,21 @@ test.afterEach(async ({ request, baseURL }) => {
 //   ────────────────────────────────────────────────────── ≈ 100s expected, 240s ceiling.
 const SUSPEND_BUDGET = 240_000;
 
-// WIPE_BUDGET — as above, plus the hook's kubectl exec into the owner pod (a few
-// seconds) and a revive. No pod is replaced, so there is no rollout wait.  300s.
+// WIPE_BUDGET — the LINK wipe tests. As above, plus the hook's kubectl exec into the
+// owner pod (a few seconds). No pod is replaced, so there is no reassign wait. 300s.
 const WIPE_BUDGET = 300_000;
+
+// CONTROL_BUDGET — the wipe CONTROLS, which additionally DELETE the owner pod so the
+// in-memory entry is evicted. That adds the controller's reassign + the new owner's
+// hydrate, which the assertions poll for up to 150s. Arithmetic:
+//   build a rich conversation (boot ≤25s + turns + seeding)      ≈  50s
+// + wipe exec + pod delete                                        ≈  10s
+// + reassign + hydrate + integrity replay (polled, 150s ceiling)  ≤ 150s
+// + trailing assertions                                           ≈  10s
+//   ─────────────────────────────────────────────────────────────  ≈ 220s worst case.
+// 420s ceiling — the 300s WIPE_BUDGET would have left almost no headroom over the poll
+// alone, and a control that times out is indistinguishable from a control that failed.
+const CONTROL_BUDGET = 420_000;
 
 // ROLLOUT_BUDGET — the whole fleet is replaced: `rollout status` alone is allowed 180s
 // by the hook, then the conversation must be reassigned, hydrated from the mirror and
@@ -784,7 +796,7 @@ test.describe("survival: linked resources across the rollout WIPE of the local s
 fullOnly("needs a real pod replacement so the in-memory entry is evicted and hydrateFromMirror runs")(
   "survival: the wipe CONTROLS — what the mirror does rescue",
   () => {
-    test.setTimeout(WIPE_BUDGET);
+    test.setTimeout(CONTROL_BUDGET);
 
     test("the TRANSCRIPT survives the emptyDir wipe (hydrateFromMirror rescues events)", async ({
       chat,
