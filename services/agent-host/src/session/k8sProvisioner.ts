@@ -166,39 +166,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
 
   const sandboxName = (id: string) => `conv-${id}`;
   const saName = (id: string) => `sandbox-${id}`;
-  // The per-conversation module ConfigMap the agent-host owns: the agent's
-  // self-authored module.nix lives here (durable across suspend/resume). Mounted
-  // read-only into the pod; scooter-apply-module reads it.
+  // Reap-only: nothing creates this CM, but clusters still carry one per live
+  // conversation. destroy() drains them. Drop this once none remain.
   const moduleCmName = (id: string) => `conv-${id}-module`;
-
-  // The deployment's BASE .scooter files — read from its scooterConfigMap. Used to
-  // SEED each conversation's module CM so the deployment's injected tools land + the
-  // boot converge has real content. Returns ALL data keys, not just module.nix: the
-  // .scooter mount is a DIRECTORY (module.nix + flake.nix + the tool sources, e.g. a
-  // review-app CLI script), and the LAZY tool path resolves
-  // `path:/etc/agent-sandbox/scooter#<tool>` from the mounted flake — so module.nix
-  // ALONE (the old behavior) declares a lazy stub whose `flake.nix` isn't there, and
-  // the tool never lands on PATH (the deployment-scooter-injection bug: copy ALL keys,
-  // not just module.nix). Best-effort: no CM configured, a missing CM, or a CM with an
-  // empty/absent module.nix all yield {} (base config only) — a read failure must
-  // never block conversation creation.
-  const deploymentScooterFiles = async (cmName?: string): Promise<Record<string, string>> => {
-    if (!cmName) return {};
-    try {
-      const cm = await core.readNamespacedConfigMap({ name: cmName, namespace: ns });
-      const data = cm.data ?? {};
-      // Treat an empty/whitespace module.nix as "nothing to seed" (base config only),
-      // to preserve the prior semantics — don't seed sibling files onto a hollow module.
-      if ((data["module.nix"] ?? "").trim() === "") return {};
-      return data;
-    } catch (e) {
-      log.warn("could not read the deployment scooterConfigMap; using base config", {
-        configmap: cmName,
-        error: formatError(e),
-      });
-      return {};
-    }
-  };
 
   // Claim a WARM overlay-upper PVC from the pool for this conversation, or null if none
   // is ready for the current image tag. Optimistic label CAS via a JSON-PATCH `test` op:
@@ -316,34 +286,6 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           if (e?.code !== 409) throw e;
         });
 
-      // 1b. the per-conversation module ConfigMap (agent-host-owned). It must exist
-      // BEFORE the Sandbox so the podTemplate can mount it from pod birth (a CM
-      // created later won't appear as a volume; the kubelet only live-updates the
-      // CONTENTS of an already-mounted CM).
-      //
-      // SEED it from the deployment's .scooter files (the scooterConfigMap), NOT
-      // empty. Because this per-conv CM OWNS the converge path
-      // (/etc/agent-sandbox/scooter), the deployment's own scooter-tools mount is
-      // skipped when it's present — so if we seeded "" the deployment's injected
-      // tools (e.g. a review CLI) would NEVER land, and the boot converge would
-      // no-op on a 0-byte module. Seed ALL keys (module.nix + flake.nix + the tool
-      // sources): the lazy tool path resolves `path:/etc/agent-sandbox/scooter#<tool>`
-      // from the mounted flake, so module.nix alone leaves the stub without its
-      // flake.nix and the tool never lands on PATH. Always ensure a module.nix key
-      // exists so the converge + the merge-patch path below have something to write.
-      const seedFiles = await deploymentScooterFiles(opts.scooterConfigMap);
-      await core
-        .createNamespacedConfigMap({
-          namespace: ns,
-          body: {
-            metadata: { name: moduleCmName(id), namespace: ns },
-            data: { "module.nix": "", ...seedFiles },
-          },
-        })
-        .catch((e: { code?: number }) => {
-          if (e?.code !== 409) throw e;
-        });
-
       // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
       const name = sandboxName(id);
       // Warm-store: claim a pre-warmed overlay upper PVC for this conversation if the pool
@@ -382,7 +324,6 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
             // A claimed warm PVC → reference it by claimName (a pooled volume that outlives
             // the Sandbox); null → a fresh per-conversation volumeClaimTemplate.
             overlayClaimName,
-            moduleConfigMap: moduleCmName(id),
             pullPolicy: opts.sandboxPullPolicy,
             sandboxRuntimeClass: opts.sandboxRuntimeClass,
             resources: sandboxResources,
@@ -621,7 +562,6 @@ export function sandboxManifest(
      *  `scooter-rw` overlay upper references THIS pooled PVC by claimName instead of a
      *  fresh per-conversation volumeClaimTemplate. null/undefined → the fresh vct. */
     overlayClaimName?: string | null;
-    moduleConfigMap?: string;
     /** imagePullPolicy for the sandbox container. Defaults to "Always" (a
      *  registry-backed cluster picks up a re-pushed :latest). Set "IfNotPresent"
      *  / "Never" for a side-loaded local cluster (kind/k3s) where the image only
@@ -653,15 +593,6 @@ export function sandboxManifest(
   // per-conversation volumeClaimTemplate. The pooled PVC outlives the Sandbox (the
   // controller returns it to the pool on suspend).
   const overlayClaimName = overlayStore ? (deploy.overlayClaimName ?? null) : null;
-  // The agent-host-owned per-conversation module ConfigMap, mounted read-only at
-  // the SAME path scooterModule.dir points at (/etc/agent-sandbox/scooter), so
-  // scooter-apply-module reads the agent's self-authored module from it and the
-  // boot oneshot re-applies it on a fresh pod -> survives suspend/resume. The
-  // agent-host renders ONE final module here (deployment base + agent additions),
-  // so this REPLACES the deployment scooter-tools mount as the converge source
-  // when present.
-  const moduleCm = deploy.moduleConfigMap;
-  const moduleMountPath = "/etc/agent-sandbox/scooter";
   return {
     apiVersion: `${GROUP}/${VERSION}`,
     kind: "Sandbox",
@@ -722,9 +653,7 @@ export function sandboxManifest(
                     ]
                   : []),
                 // A deployment's injected .scooter tools (content is theirs).
-                // Skipped when the per-conversation module CM owns this path (the
-                // agent-host renders the deployment's tools into that module).
-                ...(scooter && !moduleCm
+                ...(scooter
                   ? [{ name: "scooter-tools", mountPath: "/etc/agent-sandbox/scooter", readOnly: true }]
                   : []),
                 // Deployment-named extra SA tokens (this platform names none).
@@ -738,9 +667,6 @@ export function sandboxManifest(
                 // using this as the upperdir; runtime nix builds (re-converge,
                 // in-pod installs) land here and persist across suspend/resume.
                 ...(overlayStore ? [{ name: "scooter-rw", mountPath: "/nix/.scooter-rw" }] : []),
-                // The agent-host-owned per-conversation module ConfigMap (the
-                // agent's self-authored module.nix). scooter-apply-module reads it.
-                ...(moduleCm ? [{ name: "scooter-conv", mountPath: moduleMountPath, readOnly: true }] : []),
                 // Deployment config files (filename -> contents) as a flat read-only
                 // dir. File-based so multi-line config survives the CRD controller.
                 ...(configFilesCm
@@ -793,11 +719,8 @@ export function sandboxManifest(
                   { name: "tmp", emptyDir: { medium: "Memory" } },
                 ]
               : []),
-            ...(scooter && !moduleCm
+            ...(scooter
               ? [{ name: "scooter-tools", configMap: { name: scooter } }]
-              : []),
-            ...(moduleCm
-              ? [{ name: "scooter-conv", configMap: { name: moduleCm } }]
               : []),
             ...(configFilesCm
               ? [{ name: "deploy-config", configMap: { name: configFilesCm } }]

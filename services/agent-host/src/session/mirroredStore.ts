@@ -16,7 +16,7 @@
  *      is served from the LOCAL onAppend, not the mirror).
  *
  * All READS come from LOCAL (the authority on the owning pod). Low-frequency writes
- * (meta/module/jobs/links/activity/remove) mirror per-call (no coalescing needed).
+ * (meta/jobs/links/activity/remove) mirror per-call (no coalescing needed).
  * Mirror errors are non-fatal — logged via onMirrorError; local persistence is intact.
  */
 
@@ -159,7 +159,6 @@ export function mirroredConversationStore(
       ? (id, events) => local.replaceEvents!(id, events) : undefined,
     readEventsTail: local.readEventsTail
       ? (id, runs) => local.readEventsTail!(id, runs) : undefined,
-    readModule: local.readModule ? (id) => local.readModule!(id) : undefined,
     listJobs: local.listJobs ? (id) => local.listJobs!(id) : undefined,
     listLinks: local.listLinks ? (id) => local.listLinks!(id) : undefined,
     // LIST FROM THE DURABLE STORE, not the local cache. LOCAL_STATE_PATH is an emptyDir: after a
@@ -200,9 +199,6 @@ export function mirroredConversationStore(
       : undefined,
     saveMeta: local.saveMeta
       ? async (meta) => { const p = local.saveMeta!(meta); mirrorWrite(meta.id as SessionId, () => mirror.saveMeta?.(meta)); return p; }
-      : undefined,
-    saveModule: local.saveModule
-      ? async (id, m) => { const p = local.saveModule!(id, m); mirrorWrite(id, () => mirror.saveModule?.(id, m)); return p; }
       : undefined,
     saveJob: local.saveJob
       ? async (id, job) => { const p = local.saveJob!(id, job); mirrorWrite(id, () => mirror.saveJob?.(id, job)); return p; }
@@ -274,12 +270,6 @@ export function mirroredConversationStore(
         }
       }
 
-      // 3) low-frequency extras (best-effort — a miss degrades, never blocks the revive):
-      // the agent's self-authored module (re-applied on the in-pod converge).
-      try {
-        const mod = await mirror.readModule?.(id);
-        if (mod != null) await local.saveModule?.(id, mod);
-      } catch { /* module optional */ }
       return true;
     },
 

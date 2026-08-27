@@ -100,35 +100,6 @@ describe("imageTagOf — the pool version key (must match kubenix + the controll
   });
 });
 
-describe("sandboxManifest per-conversation module ConfigMap", () => {
-  it("mounts the module CM read-only at the converge path + adds the volume", () => {
-    const m = render({ moduleConfigMap: "conv-abc-module" });
-    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
-    const mount = mounts.find((v) => v.name === "scooter-conv");
-    expect(mount?.mountPath).toBe("/etc/agent-sandbox/scooter");
-    expect(mount?.readOnly).toBe(true);
-
-    const vol = (m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-conv");
-    expect(vol?.configMap?.name).toBe("conv-abc-module");
-  });
-
-  it("does NOT mount the deployment scooter-tools at the same path when the module CM owns it", () => {
-    // Both set: the per-conversation module CM wins the converge path (the host
-    // renders the deployment's tools into the module).
-    const m = render({ moduleConfigMap: "conv-abc-module", scooterConfigMap: "deploy-tools" });
-    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
-    const atPath = mounts.filter((v) => v.mountPath === "/etc/agent-sandbox/scooter");
-    expect(atPath.map((v) => v.name)).toEqual(["scooter-conv"]); // not scooter-tools too
-  });
-
-  it("adds no module CM mount/volume when none is given", () => {
-    const m = render({});
-    const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
-    expect(mounts.find((v) => v.name === "scooter-conv")).toBeUndefined();
-    expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-conv")).toBeUndefined();
-  });
-});
-
 describe("sandboxManifest deployment config-files ConfigMap", () => {
   it("mounts the config-files CM read-only as a flat dir at /etc/agent-sandbox/config", () => {
     // File-based config injection: multi-line files (e.g. a nix.conf) survive the
