@@ -269,7 +269,15 @@ export const test = base.extend<Fixtures>({
       //    fetch (which would merge leftovers in). Poll to a true clean slate.
       for (let i = 0; i < 50; i++) {
         const res = await request.get(`${base}/conversations`);
-        if (!res.ok()) break;
+        if (!res.ok()) {
+          // FAST: the single-process server is down — nothing to wipe, tests will say so.
+          if (process.env.E2E_TARGET !== "full") break;
+          // FULL: the router 502s the list when every upstream momentarily fails to answer
+          // (its all-upstreams-failed guard). Skipping the wipe on that transient hands the
+          // next test a dirty fleet — retry instead of silently doing nothing.
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
         const convs = (await res.json()) as Array<{ id: string; starred?: boolean }>;
         if (convs.length === 0) {
           // FAST: one empty read is authoritative — a single agent-host process.
