@@ -2,23 +2,17 @@
  * Tier-2 cluster — the deployment `.scooter` INJECTION path, end to end, in the REAL
  * OCI image (the prod container topology the VM nixosTests can't reproduce).
  *
- * A deployment ships a `.scooter` ConfigMap (module.nix + flake.nix + a tool source);
- * the provisioner seeds it into the per-conversation module CM, mounted at
- * /etc/agent-sandbox/scooter. The boot unit runs `scooter-apply-module --detach`, which
- * builds+switches to (base + the mounted module) in the background. The module declares
- * the deployment's tool as a `programs.lazyTools` stub that resolves
+ * A deployment ships a `.scooter` ConfigMap (module.nix + flake.nix + a tool source),
+ * mounted at /etc/agent-sandbox/scooter. The boot unit runs `scooter-apply-module
+ * --detach`, which builds+switches to (base + the mounted module) in the background. The
+ * module declares the deployment's tool as a `programs.lazyTools` stub that resolves
  * `path:/etc/agent-sandbox/scooter#<tool>` from the mounted flake — so after the boot
  * converge the tool is on PATH (and builds on first call).
  *
- * This is the gap that let two bugs ship green:
- *   - the seed copied ONLY module.nix, not flake.nix/tool sources (the lazy stub had no
- *     flake beside it → tool never on PATH);
- *   - `scooter-apply-module --detach` used `setsid` but util-linux wasn't on the
- *     writeShellApplication PATH → the detached converge never launched, status wedged.
- * Both reproduce ONLY here (minimal container, restricted PATH, the .scooter mount);
- * the self-modify spec calls apply WITHOUT --detach and writes the module directly, so
- * it exercises neither. We assert BOTH the tool lands on PATH AND the async status
- * reaches a terminal state.
+ * Only this tier reproduces the interaction (minimal container, restricted PATH, the
+ * real .scooter mount); the self-modify spec calls apply WITHOUT --detach and writes the
+ * module directly, so it exercises neither the mount delivery nor the detach path. We
+ * assert BOTH the tool lands on PATH AND the async status reaches a terminal state.
  *
  * Uses a GENERIC fake tool ("review-app") — no deployment-specific names (scooter is
  * independent of any one deployment).

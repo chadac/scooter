@@ -763,10 +763,8 @@ in
             }
             {
               apiGroups = [ "" ];
-              # configmaps: the agent-host creates a per-conversation module ConfigMap
-              # (agent-self-modify) BEFORE the Sandbox in k8sProvisioner.create(); a
-              # missing `create configmaps` grant 403s provisioning → every new
-              # conversation hangs with no reply.
+              # configmaps: destroy() reaps the legacy per-conversation module ConfigMap
+              # that older clusters still carry. Drop the verb once none remain.
               resources = [ "serviceaccounts" "persistentvolumeclaims" "pods" "configmaps" ];
               verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
             }

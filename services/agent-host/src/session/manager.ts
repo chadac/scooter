@@ -196,14 +196,6 @@ export interface ConversationStore {
   addLink?(id: SessionId, link: ConversationLink): Promise<void>;
   /** The conversation's external resource links (for the UI panel). Optional. */
   listLinks?(id: SessionId): Promise<ConversationLink[]>;
-  /** Persist the agent-authored module.nix — the DURABLE source of truth for the
-   *  conversation's self-modified environment (survives suspend/resume + restart).
-   *  The agent-host syncs it into the per-conversation ConfigMap on modify + on
-   *  revive, so the in-pod boot re-converge restores it. Optional. */
-  saveModule?(id: SessionId, module: string): Promise<void>;
-  /** Read the saved module.nix, or null if the conversation never modified its
-   *  environment (revive skips the CM sync / re-apply for a pristine wake). */
-  readModule?(id: SessionId): Promise<string | null>;
   /** Append a background-job record (run_background). The durable registry so
    *  list_background survives an agent-host restart. Optional. */
   saveJob?(id: SessionId, job: JobRecord): Promise<void>;

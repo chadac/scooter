@@ -86,10 +86,9 @@ let
       # An EXTRA module to splice into the re-converge. Optional: with none, we build
       # the BASE config alone — which already imports local-modules (/etc/scooter/modules)
       # + broker/registry modules — so `scooter-rebuild switch` picks up the agent's
-      # authored modules WITHOUT needing a --module. The legacy per-conversation module
-      # ConfigMap (cfg.dir/module.nix) is used ONLY as a fallback when it exists and is
-      # non-empty (the old deployment path); a missing/empty CM no longer blocks the
-      # base re-converge.
+      # authored modules WITHOUT needing a --module. The DEPLOYMENT's .scooter module
+      # (cfg.dir/module.nix) is used ONLY as a fallback when it exists and is non-empty;
+      # a missing/empty one must not block the base re-converge.
       module=""
       cm_module=${lib.escapeShellArg cfg.dir}/module.nix
       detach=0
@@ -164,8 +163,8 @@ let
       # empty/whitespace, that's a no-op ONLY for that extra module — we still re-converge
       # the base config (which imports local-modules). A 0-byte file is not a valid Nix
       # module, so `import`ing it would fail the build; drop it and continue base-only.
-      # (The per-conversation module ConfigMap is seeded with a 0-byte module.nix, so this
-      # empty case is normal, not an error.)
+      # A deployment with no .scooter module.nix leaves this path empty or absent, so the
+      # empty case is normal, not an error.
       if [ -n "$module" ] && { [ ! -e "$module" ] || [ ! -s "$module" ] || [ -z "$(tr -d '[:space:]' < "$module")" ]; }; then
         echo "scooter-apply-module: extra module $module is missing/empty — re-converging base config only" >&2
         module=""
@@ -552,7 +551,15 @@ in
     dir = lib.mkOption {
       type = lib.types.str;
       default = "/etc/agent-sandbox/scooter";
-      description = "Mount path of the deployment's .scooter dir (contains module.nix).";
+      description = ''
+        Mount path of the DEPLOYMENT's .scooter dir (contains module.nix). Used only as a
+        FALLBACK extra module when no --module is passed and the file is non-empty.
+
+        NOT the agent's own modules: those live at /etc/scooter/modules (a symlink to the
+        workspace PVC) and are imported by local-modules.nix on EVERY converge. Pointing
+        this option there would double-import them — once via local-modules, once spliced
+        in as the extra --module.
+      '';
     };
 
     nixpkgs = lib.mkOption {

@@ -46,11 +46,6 @@ export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
   const linksPath = (id: SessionId) => join(root, id, "links.json");
-  // The agent-authored NixOS module for this conversation — the DURABLE source of
-  // truth for its self-modified environment (survives suspend/resume + agent-host
-  // restart on the same PVC the event log lives on). The agent-host syncs it into
-  // the per-conversation ConfigMap so the in-pod boot re-converge applies it.
-  const modulePath = (id: SessionId) => join(root, id, "module.nix");
   // The conversation's background-job registry (run_background) — small JSON index
   // of {jobId, command, startedAt}. The job's OUTPUT lives in-pod on the workspace
   // PVC; this is just the durable list so `list_background` survives a restart.
@@ -237,23 +232,6 @@ export function createFileConversationStore(root: string): ConversationStore {
     async saveMeta(meta: ConversationMeta) {
       await ensureDir(meta.id);
       await writeFileAtomic(metaPath(meta.id), JSON.stringify(meta));
-    },
-
-    /** Persist the agent-authored module.nix as the conversation's durable env
-     *  source of truth. Atomic write next to meta.json. */
-    async saveModule(id: SessionId, module: string) {
-      await ensureDir(id);
-      await writeFileAtomic(modulePath(id), module);
-    },
-
-    /** Read the saved module.nix; null when the conversation never modified its
-     *  environment (revive then skips the CM sync / re-apply — a pristine wake). */
-    async readModule(id: SessionId): Promise<string | null> {
-      try {
-        return await readFile(modulePath(id), "utf8");
-      } catch {
-        return null;
-      }
     },
 
     /** Append a background-job record to the conversation's registry (newest first). */
