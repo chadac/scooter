@@ -442,6 +442,61 @@ test.afterEach(async ({ page, consoleErrors }) => {
 export { expect };
 
 /**
+ * Seed a conversation owned by `user` (null = unowned) via the API, the way the
+ * ingress would (x-auth-user), and return the SERVER-minted id.
+ *
+ * The two targets create differently:
+ *  - fast: the agent-host handles POST /conversations itself — it stores the title
+ *    and lists the conversation immediately.
+ *  - full: the conversation-ROUTER handles the POST. It only writes the Conversation
+ *    CR — `title` is DROPPED (only owner/model/parentId reach the spec) — and NO
+ *    agent-host lists the conversation until some pod ADOPTS it, which is
+ *    request-driven (GET /conversations/:id hydrates-if-absent, management.ts:475).
+ *    So after creating, poll a read of the conversation until it appears in the
+ *    fleet list the sidebar reads.
+ *
+ * Because the title does not survive the router path, callers must locate sidebar
+ * rows by `[data-conversation-id="<id>"]`, NOT by title text. The trailing PATCH
+ * still names the row (readable screenshots on fast) but is best-effort: right
+ * after adoption the router can route it to a pod that has not adopted (404).
+ */
+export async function seedConversation(
+  request: APIRequestContext,
+  base: string,
+  user: string | null,
+  title: string,
+): Promise<string> {
+  const headers: Record<string, string> = user ? { "x-auth-user": user } : {};
+  const r = await request.post(`${base}/conversations`, { data: { title }, headers });
+  expect(r.ok(), `seed POST /conversations failed: ${r.status()}`).toBeTruthy();
+  const { id } = (await r.json()) as { id: string };
+  // CLUSTER-HONEST BUDGET: adoption is one hydrate round-trip (a CR read + a
+  // Sandbox reconcile list) on whichever pod the fallback Service picks, then the
+  // aggregated fleet list must include the adopting pod's row. That is seconds on
+  // a healthy k3d, but controller assignment + the router's ownership-cache
+  // convergence can lag under load, so give it a 45s ceiling — a ceiling, not a
+  // cost: the fast stack passes on the first iteration.
+  await expect
+    .poll(
+      async () => {
+        // Hydrate-if-absent: makes some pod adopt the CR so it becomes listable.
+        await request.get(`${base}/conversations/${id}`, { headers }).catch(() => undefined);
+        // Anonymous list — sees every conversation regardless of owner.
+        const list = await request.get(`${base}/conversations`);
+        if (!list.ok()) return false;
+        const rows = (await list.json()) as Array<{ id: string }>;
+        return rows.some((c) => c.id === id);
+      },
+      { timeout: 45_000, intervals: [500, 1_000] },
+    )
+    .toBe(true);
+  await request
+    .patch(`${base}/conversations/${id}/title`, { data: { title }, headers })
+    .catch(() => undefined);
+  return id;
+}
+
+/**
  * A WHOLE-UI STATE SNAPSHOT — every surface that can independently go wrong, read in ONE pass.
  *
  * Why this exists: asserting one fact per test (does the queue row exist?) misses the failure mode
