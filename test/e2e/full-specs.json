@@ -1,7 +1,10 @@
 [
+  "aws-interrupt.spec.ts",
   "chat-search-filter.spec.ts",
   "client-server-identity.spec.ts",
   "cluster-stories.spec.ts",
+  "interrupt-queue-recovery.spec.ts",
+  "interrupt.spec.ts",
   "linked-resources.spec.ts",
   "long-conversation.spec.ts",
   "multi-turn-integrity.spec.ts",
