@@ -22,6 +22,17 @@ export interface OwnershipGuard {
    *  pod owns it (or this pod's assignment generation is stale). Fail-OPEN on unknown
    *  (not yet in cache) so a brand-new conversation isn't blocked before its CR exists. */
   canWrite(id: SessionId): boolean;
+  /** The generation of the CACHED assignment for `id` (undefined when unobserved).
+   *  Lets a caller holding out-of-band knowledge (the controller's revive push carries
+   *  the generation it JUST wrote) tell a stale CACHE from a stale PUSH. Optional: the
+   *  allow-all guard has no cache. */
+  observedGeneration?(id: SessionId): number | undefined;
+  /** Adopt an assignment announced out-of-band: the controller POSTs /internal/revive
+   *  immediately after writing hostPod=<this pod> at `generation`, and that push
+   *  routinely arrives BEFORE the watch event for the same write. Recording it here
+   *  keeps canWrite() truthful during the lag (the watch then confirms — or, if the
+   *  CR moved on again, corrects — the entry). Optional: only the tracked guard can. */
+  adoptAssignment?(id: SessionId, generation: number): void;
 }
 
 /** A guard that always allows — the single-replica / fencing-disabled default (a no-op,
@@ -60,6 +71,17 @@ export class OwnershipTracker implements OwnershipGuard {
     if (a.hostPod === this.selfPod && !this.claimedGen.has(id)) {
       this.claimedGen.set(id, a.generation);
     }
+  }
+
+  observedGeneration(id: SessionId): number | undefined {
+    return this.assignments.get(id as string)?.generation;
+  }
+
+  adoptAssignment(id: SessionId, generation: number): void {
+    // The caller (reviveFromMirror) has verified this push is NEWER than the cached
+    // view; record this pod as owner at that generation. If the CR has since moved on
+    // yet again, the watch delivers the newer assignment and overwrites this entry.
+    this.observe(id as string, { hostPod: this.selfPod, generation });
   }
 
   canWrite(id: SessionId): boolean {

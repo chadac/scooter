@@ -944,9 +944,35 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a
       // genuinely stale push still can't advance the log (append is fenced too), and
       // reviving a conversation we don't own is a harmless read+resume that the next
-      // reconcile corrects. But a POSITIVE "another pod owns it" verdict → skip.
+      // reconcile corrects. But a POSITIVE "another pod owns it" verdict needs one more
+      // look: the controller POSTs this push IMMEDIATELY after writing hostPod=<us> at
+      // `expectedGen`, and the watch event for that same write routinely lands AFTER
+      // the push — so the cache can still name the PREVIOUS owner. That is a stale
+      // CACHE, not a stale push, and nothing ever re-pushes: dropping it left the
+      // reassigned mid-run conversation dangling forever ("Working…" until the e2e
+      // budget died — the conversation-moves-pods story, CI run 33024754713). When the
+      // push's generation is NEWER than anything the watch has shown, trust the push,
+      // adopt the assignment (the watch confirms or corrects it shortly), and proceed.
+      // A push at or below the observed generation IS stale: keep the fence — loudly,
+      // never silently (the silent drop cost this exact investigation).
       if (!ownershipGuard.canWrite(id)) {
-        return; // fenced out — not our conversation (a stale push).
+        const observed = ownershipGuard.observedGeneration?.(id);
+        const pushIsNewer =
+          expectedGen > 0 && (observed === undefined || expectedGen > observed);
+        if (!pushIsNewer || !ownershipGuard.adoptAssignment) {
+          log.warn("reviveFromMirror: fenced out (another pod owns this conversation)", {
+            conversation_id: id,
+            observed_generation: observed ?? null,
+            pushed_generation: expectedGen,
+          });
+          return; // fenced out — a genuinely stale push.
+        }
+        ownershipGuard.adoptAssignment(id, expectedGen);
+        log.info("reviveFromMirror: push is ahead of the CR watch — adopting the assignment", {
+          conversation_id: id,
+          observed_generation: observed ?? null,
+          pushed_generation: expectedGen,
+        });
       }
 
       // If NOT already live here, pull its durable state from the mirror into local, hydrate
