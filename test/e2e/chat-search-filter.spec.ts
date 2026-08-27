@@ -141,23 +141,31 @@ test.describe("sidebar search + filter + label mode", () => {
     if (!isFull) await expect(page.locator(sb.item)).toHaveCount(1);
 
     // Search matches a plain title too (and drops the non-matching linked row).
+    // Same 30s budget as the "#203" assertion above, and for the same reason: this row
+    // has to be present in the aggregated list AT THE MOMENT the query is applied, and
+    // that list degrades to a PARTIAL one while pods churn. Observed on CI: rowB
+    // resolved to 0 for the full default 15s here while its sibling assertions — the
+    // ones that were given an explicit budget — passed in the same run.
     await page.locator(sb.search).fill("scratch");
-    await expect(rowB).toHaveCount(1);
-    await expect(rowA).toHaveCount(0);
+    await expect(rowB).toHaveCount(1, { timeout: 30_000 });
+    await expect(rowA).toHaveCount(0, { timeout: 30_000 });
     // A non-matching query yields the empty-state.
     await page.locator(sb.search).fill("zzz-nomatch");
-    await expect(page.locator(sb.empty)).toBeVisible();
+    await expect(page.locator(sb.empty)).toBeVisible({ timeout: 30_000 });
     await page.locator(sb.search).fill("");
 
     // (2) Provider filter (icon chips): GitHub keeps the linked conversation and
     // drops the unlinked one.
+    // Explicit budgets for the same reason as the search assertions above: every one of
+    // these reads the aggregated list at the moment the chip is toggled, and that list is
+    // allowed to be transiently partial on the full target.
     await page.locator(sb.providerGithub).click();
-    await expect(rowA).toHaveCount(1);
-    await expect(rowB).toHaveCount(0);
+    await expect(rowA).toHaveCount(1, { timeout: 30_000 });
+    await expect(rowB).toHaveCount(0, { timeout: 30_000 });
     if (!isFull) await expect(page.locator(sb.item)).toHaveCount(1);
     await page.locator(sb.providerGithub).click(); // toggle off
-    await expect(rowB).toHaveCount(1);
-    await expect(rowA).toHaveCount(1);
+    await expect(rowB).toHaveCount(1, { timeout: 30_000 });
+    await expect(rowA).toHaveCount(1, { timeout: 30_000 });
     if (!isFull) await expect(page.locator(sb.item)).toHaveCount(2);
 
     // (3) "Show" segmented control -> GitHub: the linked row shows the PR name; the
