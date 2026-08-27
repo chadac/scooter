@@ -353,10 +353,16 @@ test.describe("recovered conversation — approvals after a revive", () => {
     const res = await requestAws(request, base, id, `awsreq-post-revive-${Date.now()}`);
     expect(res.status(), "the aws-request must be accepted on the revived conversation").toBe(202);
 
+    // 90s, not 30: the request is accepted (202 asserted above), so what this waits on is
+    // the interrupt reaching the BROWSER — which after a revive means the tab's stream
+    // reattaching to a brand-new bridge instance on whichever pod now owns the
+    // conversation. On the full target that hop sits behind the revive's own sandbox wait,
+    // so 30s can expire with the approval correctly raised and simply not delivered yet.
+    // Same cold-boot arithmetic every other revive assertion in this file funds.
     await expect(
       page.locator(panel.root),
       "an approval raised after a revive must appear — the reported invisible-approval bug",
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 90_000 });
     await expect(page.locator(panel.option).filter({ hasText: /approve/i })).toHaveCount(1);
   });
 
@@ -391,10 +397,12 @@ test.describe("recovered conversation — approvals after a revive", () => {
       raised.status(),
       `aws-request must be accepted on the revived conversation (got ${raised.status()}: ${await raised.text().catch(() => "")})`,
     ).toBe(202);
+    // 90s: identical post-revive delivery hop as the test above — the approval is accepted
+    // (202 asserted) and this waits on it reaching the tab through a rebuilt bridge.
     await expect(
       page.locator(panel.root),
       "the approval must appear on the revived conversation before we test reload durability",
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 90_000 });
 
     // Plain reload (the pattern aws-interrupt.spec.ts uses for exactly this
     // assertion). A `?thread=` deep-link left the composer unmounted on CI — the
