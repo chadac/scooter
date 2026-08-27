@@ -70,7 +70,15 @@ test.describe("linked resources panel", () => {
     expect(r.ok()).toBeTruthy();
 
     // The panel appears (poll-driven) with the link.
-    await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
+    //
+    // 90s, not 30. The panel refreshes on a 10s setInterval (LinkedResources.tsx), so 30s is
+    // only ~3 attempts, and on the full target each attempt round-trips the router to the pod
+    // that owns the conversation — a poll landing during churn returns an empty list and burns
+    // one of the three. Observed on CI: the POST above returned ok (asserted), and the panel
+    // still had not rendered when the 30s expired. 90s gives the interval ~9 attempts, which
+    // is the same "let the cluster's own refresh cadence happen" budget the sidebar row waits
+    // in chat-search-filter use.
+    await expect(page.locator(panel.root)).toBeVisible({ timeout: 90_000 });
     const item = page.locator(panel.item).filter({ hasText: /example-org\/example-app #203/i });
     await expect(item).toHaveCount(1, { timeout: 30_000 });
     // It links out to the PR.
@@ -115,7 +123,10 @@ test.describe("linked resources panel", () => {
     expect(r.ok()).toBeTruthy();
 
     // The sidebar row picks up the github badge via the /conversations merge poll.
+    // 90s for the same reason as the panel assertion above: this is a poll-driven read whose
+    // every attempt round-trips the router on the full target, so a handful of attempts is
+    // not a meaningful sample when a pod is churning.
     const icon = row.locator('[data-testid="source-icon"][data-source="github"]');
-    await expect(icon).toHaveCount(1, { timeout: 30_000 });
+    await expect(icon).toHaveCount(1, { timeout: 90_000 });
   });
 });
