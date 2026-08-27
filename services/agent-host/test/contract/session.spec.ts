@@ -747,7 +747,7 @@ describe("SessionManager", () => {
       // It revived (built the bridge) and the prompt reached the agent.
       expect(prompts).toContain("second !scooter mention");
       // Let the fire-and-forget activity write settle before teardown deletes the
-      // store dir (else a late recordActivity mkdir races rmSync -> ENOENT).
+      // store dir (else a late touch -> saveMeta mkdir races rmSync -> ENOENT).
       await new Promise((r) => setTimeout(r, 20));
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -892,20 +892,27 @@ describe("SessionManager", () => {
     }
   });
 
-  it("records last-activity metadata and persists it via the store", async () => {
+  it("records last-activity metadata and persists it via saveMeta", async () => {
+    // Activity is a FIELD of the conversation record, persisted by the same saveMeta
+    // as every other meta change.
     const provisioner = fakeProvisioner();
     const store = inMemoryStore();
-    store.recordActivity = vi.fn(async () => {});
+    const saveMeta = vi.fn(async () => {});
+    store.saveMeta = saveMeta;
     const sessions = createSessionManager({ provisioner, store });
 
     const conv = await sessions.start("thread-1");
     const t0 = sessions.get(conv.id)!.lastActivityAt;
     expect(t0).toBeGreaterThan(0);
 
+    saveMeta.mockClear();
     await sessions.promptByThread("thread-1", "hello");
 
     expect(sessions.get(conv.id)!.lastActivityAt).toBeGreaterThanOrEqual(t0);
-    expect(store.recordActivity).toHaveBeenCalledWith(conv.id, expect.any(Number));
+    // The touch persisted a meta record carrying this conversation's lastActivityAt.
+    expect(saveMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ id: conv.id, lastActivityAt: expect.any(Number) }),
+    );
   });
 
   it("sweepIdle() suspends only running conversations idle past the threshold", async () => {
@@ -937,14 +944,18 @@ describe("SessionManager", () => {
       vi.setSystemTime(0);
       const provisioner = fakeProvisioner();
       const store = inMemoryStore();
-      store.recordActivity = vi.fn(async () => {});
+      const saveMeta = vi.fn(async () => {});
+      store.saveMeta = saveMeta;
       const sessions = createSessionManager({ provisioner, store });
       const conv = await sessions.start("web-thread"); // stamped at t=0
 
       // A user is actively using the pod's web services at t=9min — the proxy touches.
       vi.setSystemTime(9 * 60_000);
       sessions.touchById(conv.id);
-      expect(store.recordActivity).toHaveBeenCalledWith(conv.id, 9 * 60_000);
+      // The touch is persisted as part of the conversation's meta record.
+      expect(saveMeta).toHaveBeenCalledWith(
+        expect.objectContaining({ id: conv.id, lastActivityAt: 9 * 60_000 }),
+      );
 
       // At t=10min with a 5min threshold: WITHOUT the touch it'd be swept (10min old),
       // but the touch reset lastActivityAt to t=9min → only 1min idle → NOT swept.

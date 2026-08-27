@@ -222,13 +222,9 @@ export function createFileConversationStore(root: string): ConversationStore {
       return next;
     },
 
-    async recordActivity(id, at) {
-      await ensureDir(id);
-      // Last-activity marker — small, overwritten; queryable by an external
-      // lifecycle manager that mounts the same PVC.
-      await writeFileAtomic(join(root, id, "activity.json"), JSON.stringify({ lastActivityAt: at }));
-    },
-
+    /** Persist the conversation record. The SOLE home of lastActivityAt — touch()
+     *  routes through here, so activity is one field of one record, not a file of
+     *  its own that can disagree with this one. */
     async saveMeta(meta: ConversationMeta) {
       await ensureDir(meta.id);
       await writeFileAtomic(metaPath(meta.id), JSON.stringify(meta));
@@ -285,8 +281,8 @@ export function createFileConversationStore(root: string): ConversationStore {
     },
 
     /** Scan the state dir and rebuild conversation metadata so the list survives
-     *  a restart. Reads meta.json (+ activity.json for a fresher lastActivityAt);
-     *  a dir with an event log but no meta still appears (best-effort defaults).
+     *  a restart. Reads meta.json (the ONLY metadata file); a dir with an event log
+     *  but no meta still appears (best-effort defaults).
      */
     async listConversations(): Promise<ConversationMeta[]> {
       let ids: string[];
@@ -315,13 +311,7 @@ export function createFileConversationStore(root: string): ConversationStore {
             continue;
           }
         }
-        let lastActivityAt = meta.lastActivityAt ?? meta.createdAt ?? 0;
-        try {
-          const act = JSON.parse(await readFile(join(root, id, "activity.json"), "utf8"));
-          if (typeof act.lastActivityAt === "number") lastActivityAt = act.lastActivityAt;
-        } catch {
-          /* no activity marker */
-        }
+        const lastActivityAt = meta.lastActivityAt ?? meta.createdAt ?? 0;
         out.push({
           id,
           threadId: meta.threadId ?? id,
