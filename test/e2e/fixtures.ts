@@ -208,6 +208,13 @@ export const test = base.extend<Fixtures>({
     const errors: string[] = [];
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
+      // Forward telemetry spans to the test output when E2E_TELEMETRY=1, so a failing
+      // spec shows the same conversation lifecycle the deployed traces do — without
+      // writing a bespoke probe spec for each investigation.
+      if (process.env.E2E_TELEMETRY === "1" && m.text().startsWith("scooter.span")) {
+        // eslint-disable-next-line no-console
+        console.log(`  [browser] ${m.text()}`);
+      }
     });
     page.on("pageerror", (e) => errors.push(String(e)));
     await use(errors);
