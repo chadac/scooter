@@ -278,7 +278,7 @@ export const Sidebar = memo(function Sidebar({ onClose }: { onClose?: () => void
     (scope === "all" ? 1 : 0) + providerFilter.length + (labelMode !== "title" ? 1 : 0);
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r bg-muted/30">
+    <aside className="flex h-full w-64 sm:w-64 flex-col border-r bg-muted/30 max-w-[85vw]">
       <div className="flex items-center justify-between p-3 lg:block">
         <Button
           variant="outline"
@@ -297,7 +297,7 @@ export const Sidebar = memo(function Sidebar({ onClose }: { onClose?: () => void
             data-testid="sidebar-close"
             aria-label="Close sidebar"
             onClick={onClose}
-            className="ml-2 lg:hidden"
+            className="ml-2 lg:hidden touch-manipulation"
           >
             ✕
           </Button>

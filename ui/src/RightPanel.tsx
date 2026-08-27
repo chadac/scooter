@@ -114,7 +114,7 @@ export function RightPanel({ onClose }: { onClose?: () => void }) {
 
   return (
     <aside
-      className="flex h-full w-80 shrink-0 flex-col border-l bg-background shadow-lg"
+      className="flex h-full w-80 sm:w-80 shrink-0 flex-col border-l bg-background shadow-lg max-w-[85vw]"
       data-testid="right-panel"
       aria-label="Sandbox status + services, approvals, and queued messages"
     >
@@ -127,7 +127,7 @@ export function RightPanel({ onClose }: { onClose?: () => void }) {
             data-testid="right-panel-close"
             aria-label="Close panel"
             onClick={onClose}
-            className="mx-2 lg:hidden"
+            className="mx-2 lg:hidden touch-manipulation"
           >
             ✕
           </Button>

@@ -62,7 +62,7 @@ export function App() {
               size="sm"
               aria-label="Toggle sidebar"
               onClick={() => setLeftSidebarOpen(!leftSidebarOpen)}
-              className="lg:hidden"
+              className="lg:hidden -ml-2 touch-manipulation"
             >
               ☰
             </Button>
@@ -80,7 +80,7 @@ export function App() {
               size="sm"
               aria-label="Toggle right panel"
               onClick={() => setRightPanelOpen(!rightPanelOpen)}
-              className="lg:hidden"
+              className="lg:hidden touch-manipulation"
             >
               ☰
             </Button>
