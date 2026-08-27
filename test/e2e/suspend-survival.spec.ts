@@ -730,11 +730,11 @@ test.describe("survival: linked resources across the rollout WIPE of the local s
         "links: emptyDir wipe",
       );
 
-      await wipeLocalState(request, conv.id);
-
-      // Suspend so the conversation is rebuilt the way a replacement pod rebuilds it
-      // (drop the bridge, then hydrate from the mirror on the next read), rather than
-      // being answered out of an in-memory entry that predates the wipe.
+      // Suspend BEFORE the wipe: the conversation must be quiesced before removing its
+      // local state dir, or active writes race the rmSync and fail with ENOENT. The
+      // wipe then proves the read path finds the mirror (the in-memory entry is still
+      // cached, so this alone does NOT force hydrateFromMirror — that needs a pod
+      // replacement to evict the entry).
       //
       // Deliberately NOT calling POST /resume: unlike suspend/DELETE/GET it has no
       // hydrate-if-absent (management.ts:550-554), so on a multi-replica fleet it 404s
@@ -742,6 +742,7 @@ test.describe("survival: linked resources across the rollout WIPE of the local s
       // this step a silent no-op exactly when it matters most. The reads below all go
       // through routes that DO hydrate, which is the same path the real UI takes.
       await suspend(request, base, conv.id);
+      await wipeLocalState(request, conv.id);
 
       const links = await serverLinks(request, base, conv.id);
       expect(
@@ -769,8 +770,8 @@ test.describe("survival: linked resources across the rollout WIPE of the local s
         "links: badge after wipe",
       );
 
-      await wipeLocalState(request, conv.id);
       await suspend(request, base, conv.id);
+      await wipeLocalState(request, conv.id);
 
       await page.goto(`/?thread=${encodeURIComponent(conv.id)}`);
       await expect(chat.input()).toBeVisible({ timeout: 40_000 });
@@ -822,8 +823,10 @@ fullOnly("needs a real pod replacement so the in-memory entry is evicted and hyd
         "transcript: emptyDir wipe",
       );
 
+      // Suspend first so the conversation is quiesced before wiping its local state.
+      // The move/pod-delete then evicts the in-memory entry, forcing hydrateFromMirror.
+      await suspend(request, base, conv.id);
       await wipeLocalState(request, conv.id);
-      // Replace the pod so the in-memory entry goes with it — see the block comment.
       const moved = await hook(request, `/move/${encodeURIComponent(conv.id)}`);
       expect(moved.ok(), `the owner pod must be deleted: ${await moved.text()}`).toBeTruthy();
 
@@ -863,6 +866,7 @@ fullOnly("needs a real pod replacement so the in-memory entry is evicted and hyd
         "meta: emptyDir wipe",
       );
 
+      await suspend(request, base, conv.id);
       await wipeLocalState(request, conv.id);
       const moved = await hook(request, `/move/${encodeURIComponent(conv.id)}`);
       expect(moved.ok(), `the owner pod must be deleted: ${await moved.text()}`).toBeTruthy();
