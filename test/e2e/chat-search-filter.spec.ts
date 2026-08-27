@@ -62,13 +62,14 @@ test.describe("sidebar search + filter + label mode", () => {
     // written against the ~1s fake stack.
     test.setTimeout(240_000);
     const base = baseURL ?? "http://localhost:5173";
-    // A per-run nonce in BOTH titles. Pinning by title is only as good as the title's
-    // uniqueness: on the full target `scope=all` shows the whole multi-replica fleet,
-    // so a bare word like "scratch" also matches leftovers from other specs (and from
-    // earlier attempts of this one, which resurface from pods the aggregate skipped).
-    // Observed on CI: searching "#203" correctly hid THIS test's plain row, but a
-    // foreign /scratch/i row was still on screen, so the toHaveCount(0) failed while
-    // the filter worked. The nonce makes each locator name exactly one conversation.
+    // A per-run nonce on the GITHUB LINK NAME (a title this test sets explicitly, so it
+    // is stable). On the full target `scope=all` shows the whole multi-replica fleet, so
+    // an unscoped title search also matches leftovers from other specs and from earlier
+    // attempts of this one — observed on CI: searching "#203" correctly hid THIS test's
+    // plain row, but a foreign /scratch/i row was still on screen and toHaveCount(0)
+    // failed while the filter worked. The nonce keeps the link-name assertions naming
+    // exactly this run's conversation. The two ROWS are pinned by server id instead
+    // (see below) — a derived conversation title is not something the test controls.
     const nonce = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
 
     // Conversation A: will be linked to a GitHub PR. 90s reply budget: cold
@@ -96,16 +97,22 @@ test.describe("sidebar search + filter + label mode", () => {
     await page.locator('[data-testid="new-session"]').click();
     await chat.send(`just some scratch notes ${nonce}`);
     await chat.waitForReply(/dummy agent/i, 90_000);
+    const threadB = await currentThreadId(page);
 
-    // Rows pinned by THEIR OWN titles, not by absolute position/count — the same
-    // shared-backend discipline linked-resources.spec.ts documents for its
-    // data-active row. On the full target the backend is a multi-replica fleet:
-    // a conversation another actor deleted can transiently resurface from a pod
-    // the aggregate list had skipped (observed on CI — three deleted smoke
-    // conversations reappeared mid-test), so an unscoped count asserts fleet
-    // hygiene, not the filter behaviour under test.
-    const rowA = page.locator(sb.item).filter({ hasText: new RegExp(`flaky broker.*${nonce}`, "i") });
-    const rowB = page.locator(sb.item).filter({ hasText: new RegExp(`scratch.*${nonce}`, "i") });
+    // Rows pinned by their SERVER ID, not by title text or absolute position — the same
+    // shared-backend discipline linked-resources.spec.ts documents for its data-active
+    // row. On the full target the backend is a multi-replica fleet: a conversation
+    // another actor deleted can transiently resurface from a pod the aggregate list had
+    // skipped (observed on CI — three deleted smoke conversations reappeared mid-test),
+    // so an unscoped count asserts fleet hygiene, not the filter behaviour under test.
+    //
+    // The id, not the title: a row's visible text is the DERIVED title (first message,
+    // sliced to 60 chars) which the agent may later OVERRIDE with its own — so matching
+    // on the prompt text is not guaranteed to keep matching (a nonce carried in the
+    // prompt did not survive into the row and every locator resolved to 0 elements).
+    // data-conversation-id is the server's own identifier and cannot drift.
+    const rowA = page.locator(`${sb.item}[data-conversation-id="${threadA}"]`);
+    const rowB = page.locator(`${sb.item}[data-conversation-id="${threadB}"]`);
 
     // Open the advanced-filters panel (Scope / Linked / Show live inside it).
     await page.locator(sb.filtersToggle).click();
@@ -146,22 +153,29 @@ test.describe("sidebar search + filter + label mode", () => {
 
     // (3) "Show" segmented control -> GitHub: the linked row shows the PR name; the
     // unlinked row falls back to its title.
+    // Assert on the pinned ROWS' own title elements, not on a fleet-wide title search:
+    // the link name is one this test set (so its nonce is reliable), but a row's DERIVED
+    // title is not something the test controls.
     await page.locator(sb.labelGithub).click();
-    await expect(
-      page.locator(sb.title).filter({ hasText: new RegExp(`example-org/example-app #203 ${nonce}`, "i") }),
-    ).toHaveCount(1, { timeout: 30_000 });
-    await expect(
-      page.locator(sb.title).filter({ hasText: new RegExp(`scratch.*${nonce}`, "i") }),
-    ).toHaveCount(1);
+    await expect(rowA.locator(sb.title)).toHaveText(
+      new RegExp(`example-org/example-app #203 ${nonce}`, "i"),
+      { timeout: 30_000 },
+    );
+    // The unlinked row has no GitHub name to show, so it falls back to its own title.
+    await expect(rowB.locator(sb.title)).not.toHaveText(
+      new RegExp(`example-org/example-app #203 ${nonce}`, "i"),
+    );
     // Under a provider the linked row doesn't have (Slack), it falls back to its title.
     await page.locator(sb.labelSlack).click();
-    await expect(
-      page.locator(sb.title).filter({ hasText: new RegExp(`example-org/example-app #203 ${nonce}`, "i") }),
-    ).toHaveCount(0);
-    // Back to the Scooter/title mode.
+    await expect(rowA.locator(sb.title)).not.toHaveText(
+      new RegExp(`example-org/example-app #203 ${nonce}`, "i"),
+      { timeout: 30_000 },
+    );
+    // Back to the Scooter/title mode: the linked row shows its conversation title again.
     await page.locator(sb.labelTitle).click();
-    await expect(
-      page.locator(sb.title).filter({ hasText: new RegExp(`flaky broker.*${nonce}`, "i") }),
-    ).toHaveCount(1);
+    await expect(rowA.locator(sb.title)).not.toHaveText(
+      new RegExp(`example-org/example-app #203 ${nonce}`, "i"),
+      { timeout: 30_000 },
+    );
   });
 });
