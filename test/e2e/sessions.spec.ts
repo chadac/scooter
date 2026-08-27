@@ -21,6 +21,13 @@ const sidebar = {
 };
 
 test.describe("session selector & titles", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Most tests here run TWO
+  // conversations — on the full target that is two sandbox boots (5-25s cold each;
+  // every fake-agent turn execs in the sandbox). Worst case (send → swap → send):
+  // open ~5s + boot A ≤25s + turn + boot B ≤25s + turn + a second turn in A + three
+  // swaps ≈ 100s of expected work against the 60s suite default. 180s with margin.
+  test.setTimeout(180_000);
+
   test("a started conversation appears in the session list", async ({ chat, page }) => {
     await chat.open();
     await chat.send("hello there");
@@ -137,7 +144,9 @@ test.describe("session selector & titles", () => {
     // Delete now shows a confirm dialog (universal) — accept it.
     page.on("dialog", (d) => d.accept());
     await page.locator(sidebar.item).first().locator(sidebar.deleteButton).click();
-    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 10_000 });
+    // 30s, not 10: on the full target the DELETE also tears down the conversation's
+    // sandbox pod before the server acks and the row clears.
+    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 30_000 });
   });
 
   test("clicking a session swaps the thread (other conversation's messages go away)", async ({ chat, page }) => {
@@ -189,7 +198,9 @@ test.describe("session selector & titles", () => {
       .locator(sidebar.deleteButton)
       .click();
 
-    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 10_000 });
+    // 30s, not 10: on the full target the DELETE also tears down the conversation's
+    // sandbox pod before the server acks and the row clears.
+    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 30_000 });
     await expect(chat.userMessages().filter({ hasText: /doomed conversation/i })).toHaveCount(0, {
       timeout: 30_000,
     });

@@ -367,6 +367,16 @@ jobs:
               - 'test/e2e/tier.ts'
               - 'test/e2e/multi-user.spec.ts'
               - 'test/e2e/ownership.spec.ts'
+              # The full-target allowlist AND every spec on it: a change to what runs
+              # (or to a spec that runs) must run the job that runs it.
+              - 'test/e2e/concurrency-divergence.spec.ts'
+              - 'test/e2e/conversation.spec.ts'
+              - 'test/e2e/live-monitoring.spec.ts'
+              - 'test/e2e/queue-durability.spec.ts'
+              - 'test/e2e/scroll-lock.spec.ts'
+              - 'test/e2e/sessions.spec.ts'
+              - 'test/e2e/settings-tabs.spec.ts'
+              - 'test/e2e/suspended-recovery.spec.ts'
               - 'test/e2e/fixtures.ts'
               # The full-target allowlist AND every spec on it: editing a listed spec
               # (or the list itself) must run the only job that executes it. The list
@@ -527,25 +537,24 @@ jobs:
 
   # e2e full is sharded with the SAME distribute -> shard-matrix -> collect shape as
   # e2e fast, so the two suites stay structurally consistent and widening the full
-  # allowlist later is a number bump, not a restructure. One shard for now: the k3d
-  # setup (~13m) dwarfs the 4-spec test phase (~4m), so more shards would multiply
-  # setup to split the small part. Bump E2E_FULL_SHARDS when the test phase outgrows
-  # the setup (each shard boots its OWN cluster — that is the price of a shard here).
+  # allowlist later is a number bump, not a restructure. Three shards now that the
+  # misc specs are enabled: the 12-spec test phase (~35-50m serial at cluster pace —
+  # suspended-recovery and concurrency alone fund two sandbox boots per test) has
+  # outgrown the ~13m k3d setup, which is the documented bump condition (each shard
+  # boots its OWN cluster — that is the price of a shard here).
   e2e-full-distribute:
     name: e2e full distribute (shard)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     env:
-      # 2, not 1: this link adds the real-agent specs, and that is where the test phase
-      # stops being small relative to the per-shard cluster setup. Beyond the wall-clock
-      # argument above, the shard count is also a CONCURRENCY control: every spec on a
-      # shard competes for sandbox provisioning against the others, and CI forces
-      # CONVERSATION_POD_CAP=1 so each conversation needs its own pod. Packing the whole
-      # allowlist onto one shard is what pushed cold boots past their budgets — several
-      # specs failed here purely waiting for a pod while behaving correctly. Splitting the
-      # set halves the peak provisioning pressure.
-      E2E_FULL_SHARDS: "2"
+      # 3 here (the link below runs 2). The shard count is not only a wall-clock knob: every
+      # spec on a shard competes for sandbox provisioning with the others, and CI forces
+      # CONVERSATION_POD_CAP=1 so each conversation needs its own pod. Packing a whole
+      # allowlist onto too few shards pushes cold boots past budgets that are generous in
+      # isolation — specs then fail purely waiting for a pod while behaving correctly.
+      # This link has the largest set, so it keeps the highest count.
+      E2E_FULL_SHARDS: "3"
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:

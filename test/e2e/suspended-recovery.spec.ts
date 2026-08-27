@@ -92,7 +92,17 @@ async function requestAws(
   });
 }
 
+// CLUSTER-HONEST BUDGET, all three describes (see stop-run.spec.ts:75). Every test
+// here funds TWO sandbox boots on the full target: the opening turn provisions a real
+// sandbox (5-25s cold), suspend() destroys it, and the revive turn provisions a FRESH
+// one (another 5-25s) before its exec + streamed reply can land. Worst case (mid-run
+// suspend): open ~5s + boot ≤25s + queue work + suspend + boot ≤25s + two more turns
+// ×~10s ≈ 110s of expected work — the 60s suite default is arithmetic-bound. 240s per
+// test, matching client-server-identity.spec.ts's two-boot budget.
+const TWO_BOOT_BUDGET = 240_000;
+
 test.describe("recovered conversation — history + integrity stream", () => {
+  test.setTimeout(TWO_BOOT_BUDGET);
   test("the integrity stream serves a SUSPENDED conversation (200, full history, no silent 404 loop)", async ({
     chat,
     page,
@@ -169,6 +179,7 @@ test.describe("recovered conversation — history + integrity stream", () => {
 });
 
 test.describe("recovered conversation — sending a message revives it", () => {
+  test.setTimeout(TWO_BOOT_BUDGET); // see the arithmetic above
   test("a message sent to a SUSPENDED conversation is delivered and answered", async ({
     chat,
     page,
@@ -212,9 +223,12 @@ test.describe("recovered conversation — sending a message revives it", () => {
     //     when the reply renders markdown, which this turn need not.
     // So anchor on the data-slot the component actually emits — checked in the markup,
     // not guessed.
+    // 90s, not 45: on the full target the revive provisions a FRESH sandbox pod
+    // (suspend destroyed the first), so this reply sits behind a second cold boot
+    // (≤25s) + exec + word-by-word streaming — ~40s of expected work when cold.
     await expect
       .poll(async () => page.locator('[data-slot="aui_assistant-message-root"]').count(), {
-        timeout: 45_000,
+        timeout: 90_000,
       })
       .toBeGreaterThanOrEqual(2);
   });
@@ -241,10 +255,12 @@ test.describe("recovered conversation — sending a message revives it", () => {
     await chat.send("this must not get stuck"); // see the sendTurn note above
 
     await chat.openQueueTab();
+    // 60s, not 30: the row clears when the server confirms the text, which on the
+    // full target can trail the revive's fresh sandbox boot (≤25s cold) + exec.
     await expect(
       chat.queuedMessages(),
       "the queue must DRAIN after the revive — a pinned row is the reported bug",
-    ).toHaveCount(0, { timeout: 30_000 });
+    ).toHaveCount(0, { timeout: 60_000 });
   });
 
   test("a conversation suspended MID-RUN with a queued message recovers without a phantom queue", async ({
@@ -304,6 +320,7 @@ test.describe("recovered conversation — sending a message revives it", () => {
 });
 
 test.describe("recovered conversation — approvals after a revive", () => {
+  test.setTimeout(TWO_BOOT_BUDGET); // see the arithmetic above
   test("a NEW AWS approval raised AFTER a revive appears in the tab", async ({
     chat,
     page,
@@ -356,7 +373,9 @@ test.describe("recovered conversation — approvals after a revive", () => {
     // run-status bar, so it is count- and text-independent (both of which have already
     // misfired in this file).
     await chat.send("resume the infra task");
-    await chat.waitForIdle(45_000);
+    // 90s, not 45: this idle-wait spans the revive's fresh sandbox boot (≤25s cold)
+    // + exec + streamed reply + the trailing terminal event on the full target.
+    await chat.waitForIdle(90_000);
 
     const raised = await requestAws(request, base, id, `awsreq-durable-${Date.now()}`);
     expect(
@@ -425,7 +444,10 @@ test.describe("recovered conversation — approvals after a revive", () => {
     const body = await resume.text();
     expect(body.length, "the resume stream must carry frames, not 0 bytes").toBeGreaterThan(0);
     // The decisive assertion: it RETURNED PROMPTLY. A dormant-run hang only resolves at
-    // the request timeout; the revive-before-answer path is sub-second.
-    expect(elapsed, `resume took ${elapsed}ms — a hang would run to the ~20s timeout`).toBeLessThan(8_000);
+    // the request timeout; the revive-before-answer path is sub-second on the fake
+    // stack. 12s (not 8) on cluster reality: the POST hops through the router and the
+    // revive spawns a fresh bridge/agent process first — but it does NOT wait for a
+    // sandbox pod, so a healthy answer still lands far under the 20s hang ceiling.
+    expect(elapsed, `resume took ${elapsed}ms — a hang would run to the ~20s timeout`).toBeLessThan(12_000);
   });
 });

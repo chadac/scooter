@@ -12,6 +12,15 @@
 import { test, expect } from "./fixtures.js";
 
 test.describe("queue rendering while a run is in flight", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target `!sleep 20`
+  // runs in a REAL sandbox: the run-status bar appears as soon as the run starts, but
+  // the reload test then pays open ~5s + queue asserts + reload + re-derive while the
+  // sleep (behind a ≤25s cold boot) is still holding the run open — ~60s of expected
+  // work at the 60s suite default. 180s funds every test here with margin; the
+  // per-assert budgets are already generous (the queue itself is server-side state,
+  // not gated on the sandbox).
+  test.setTimeout(180_000);
+
   test("a message sent mid-run RENDERS as a queued item (not dropped)", async ({ chat, page }) => {
     await chat.open();
     await chat.startLongRun(20);
@@ -68,6 +77,11 @@ test.describe("queue rendering while a run is in flight", () => {
 });
 
 test.describe("queue durability across refresh + drain", () => {
+  // CLUSTER-HONEST BUDGET — same arithmetic as the describe above, plus the drain
+  // tests' tail: boot ≤25s + sleep 3s + the queued turn (exec + streamed reply ~10s)
+  // + a follow-up turn ≈ 70s of expected work on the worst test. 180s with margin.
+  test.setTimeout(180_000);
+
   test("queued messages SURVIVE a page reload (they ride the integrity stream, not client-only)", async ({ chat, page }) => {
     await chat.open();
     await chat.startLongRun(20);
@@ -91,8 +105,11 @@ test.describe("queue durability across refresh + drain", () => {
     await chat.sendWhileRunning("run me after the sleep");
 
     // Once the sleep run + the queued run both complete, there are MORE assistant messages,
-    // and the queued item leaves the queue.
-    await expect.poll(async () => chat.assistantMessages().count(), { timeout: 45_000 }).toBeGreaterThan(before);
+    // and the queued item leaves the queue. 90s, not 45: on the full target the sleep-3
+    // run first waits for a ready sandbox pod (≤25s cold), then the queued turn runs its
+    // own exec + streamed reply (~10s) — the reply lands ~40s after the send when cold,
+    // which leaves a 45s budget no headroom under CI CPU pressure.
+    await expect.poll(async () => chat.assistantMessages().count(), { timeout: 90_000 }).toBeGreaterThan(before);
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 20_000 });
     await expect(chat.userMessages().filter({ hasText: "run me after the sleep" })).toHaveCount(1);
@@ -103,8 +120,10 @@ test.describe("queue durability across refresh + drain", () => {
     await chat.send("!sleep 3");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("drain me");
-    // After everything settles, a fresh normal turn works first-try (no wedge).
-    await chat.sendTurn("a normal turn after draining", 45_000);
+    // After everything settles, a fresh normal turn works first-try (no wedge). 90s:
+    // sendTurn first waits for the composer to go idle — behind the cold-boot + sleep +
+    // queued-turn tail (~40s on the full target, same arithmetic as the drain test).
+    await chat.sendTurn("a normal turn after draining", 90_000);
     await expect(chat.userMessages().filter({ hasText: "a normal turn after draining" })).toHaveCount(1);
   });
 

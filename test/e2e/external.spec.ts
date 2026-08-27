@@ -19,10 +19,18 @@
  */
 
 import { test, expect, request as pwRequest } from "@playwright/test";
+import { fastOnly } from "./target.js";
 
 const BASE = (process.env.AGENT_HOST_URL ?? "").replace(/\/$/, "");
 const enabled = process.env.RUN_EXTERNAL_E2E === "1" && BASE !== "";
-const maybe = enabled ? test.describe : test.describe.skip;
+// NOT on the full target (and so not in full-specs.json): this spec is the third,
+// EXTERNAL mode — it needs AGENT_HOST_URL pointing at a LIVE deployment running a
+// REAL model. On the k3d full target the fake agent merely echoes the prompt, so
+// "run this command and report its output" would pass VACUOUSLY (the sentinel/repo
+// names are already in the echoed prompt) without exercising exec or git auth at
+// all. The fastOnly wrapper records that reason; the env gate below keeps it a
+// cheap skip on the fast stack too unless RUN_EXTERNAL_E2E=1 opts in.
+const maybe = enabled ? fastOnly("external mode — see the note above") : test.describe.skip;
 
 function authHeader(): Record<string, string> {
   const ba = process.env.EXTERNAL_BASIC_AUTH;

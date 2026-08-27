@@ -12,6 +12,14 @@
 import { test, expect } from "./fixtures.js";
 
 test.describe("conversation happy path", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target EVERY turn —
+  // even a plain-text one — runs a real `echo` exec in the sandbox (fakeAgent.ts always
+  // createTerminal's), so each test's FIRST turn funds a sandbox boot: 5-25s cold. The
+  // multi-turn test is the worst case at the 60s default: open (~5s) + boot (≤25s) +
+  // turn 1 (~10s streamed) + turn 2 (~10s) ≈ 50s of expected work with zero headroom.
+  // 120s funds it with margin; the per-assert budgets below already suffice.
+  test.setTimeout(120_000);
+
   test("sending a message streams an assistant reply", async ({ chat }) => {
     await chat.open();
     await chat.send("Please review the auth module");

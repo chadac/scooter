@@ -32,6 +32,15 @@ async function fillUntilScrollable(chat: Chat, minScroll = 400): Promise<number>
 }
 
 test.describe("conversation scroll-lock", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). fillUntilScrollable sends up to
+  // 12 sendTurns, and on the full target EVERY turn execs `echo` in a real sandbox:
+  // the first turn funds a cold boot (≤25s) and each later turn costs ~5-8s (exec +
+  // word-by-word streaming) — the fill alone is ~110s worst case, before the test's
+  // own scroll assertions. The 60s suite default is arithmetic-bound; 300s funds the
+  // fill plus the big-append/settle work with margin. The scroll assertions keep
+  // their tight budgets — they measure the viewport, not the cluster.
+  test.setTimeout(300_000);
+
   test("auto-follows new turns to the bottom", async ({ chat }) => {
     await chat.open();
     const scrollable = await fillUntilScrollable(chat);
