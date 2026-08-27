@@ -19,6 +19,7 @@ from .reconcile import (
     reconcile,
     find_orphans,
     desired_replicas,
+    deletion_costs,
     demand_of,
     SuspendSandbox,
 )
@@ -64,7 +65,10 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     from the CURRENT status and update it as we assign, so a burst of Pending
     conversations spreads across pods instead of all landing on the least-loaded one."""
     pods = k8s.list_host_pods()
-    ready_names = {p.name for p in pods if p.ready}
+    # "Ready" for ASSIGNMENT excludes terminating pods: a scale-down victim reports
+    # Ready through its grace period, and assigning to it schedules the very mid-run
+    # reassignment the deletion-cost annotation exists to prevent.
+    ready_names = {p.name for p in pods if p.ready and not p.terminating}
     # One Sandbox list per tick: the DRIFT rule needs each conversation's backing
     # operatingMode (the Sandbox is the truth for alive/suspended — see MarkSuspended).
     # BEST-EFFORT, same rule the reaper documents: sandbox listing is auxiliary and must
@@ -220,8 +224,20 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     # conversations are excluded — they have no pod and revive on demand, so counting them
     # pinned the fleet at max and the pods never slept though the Sandboxes suspended.
     demand = demand_of(convs)
-    ready_pods = sum(1 for p in k8s.list_host_pods() if p.ready)
+    pods = k8s.list_host_pods()
+    ready_pods = sum(1 for p in pods if p.ready)
     current = k8s.get_agent_host_replicas()
+
+    # BEFORE any scale decision: steer scale-down victim selection. Kubernetes kills
+    # the lowest deletion-cost pods first, so pods hosting live conversations must
+    # carry their hosted-count before a scale-down can pick victims. Patch only on
+    # change (the annotation round-trips through list_host_pods).
+    for pod_name, cost in deletion_costs(pods, convs).items():
+        if next((p.deletion_cost for p in pods if p.name == pod_name), None) != cost:
+            try:
+                k8s.set_pod_deletion_cost(pod_name, cost)
+            except Exception:  # noqa: BLE001 — annotation is protective, never tick-fatal
+                logger.warning("set_pod_deletion_cost failed", extra={**_C, "pod": pod_name}, exc_info=True)
 
     target = desired_replicas(demand, cfg.pod_cap, cfg.min_replicas, cfg.max_replicas)
     per_pod = (demand / ready_pods) if ready_pods else float(demand)

@@ -24,6 +24,14 @@ class Pod:
     name: str
     ready: bool
     ip: str | None = None      # status.podIP — the routing address written into the CR (None until scheduled)
+    # controller.kubernetes.io/pod-deletion-cost currently on the pod (None = unset).
+    # Carried so the loop patches only on CHANGE, not every tick.
+    deletion_cost: int | None = None
+    # metadata.deletionTimestamp is set: the pod is on its way OUT (a scale-down
+    # victim draining gracefully). It can report Ready for its whole grace period —
+    # assigning a conversation to it just schedules another mid-run reassignment
+    # (observed: assigned 23:40:26, reassigned 23:40:34, same conversation).
+    terminating: bool = False
 
 
 @dataclass(frozen=True)
@@ -232,6 +240,23 @@ import math
 # counting as demand, so idle-suspended conversations pin the agent-host at max — the
 # "conversations still not sleeping" symptom (the pods stay up though the Sandboxes suspend).
 _NON_DEMAND_PHASES = frozenset({"Suspended"})
+
+
+def deletion_costs(pods: list[Pod], convs: list["ConversationState"]) -> dict[str, int]:
+    """Per-pod `controller.kubernetes.io/pod-deletion-cost`: the number of TOP-LEVEL
+    Assigned conversations the pod hosts (same accounting as demand_of — subagents
+    co-locate and Suspended conversations have no pod). Kubernetes deletes the
+    LOWEST-cost pods first on a Deployment scale-down, so annotating hosted-count
+    steers victim selection to EMPTY pods. Without this the victim choice was blind:
+    a scale-down 10s after a conversation was assigned killed its pod mid-run — the
+    stream died, the run's terminal event was lost, and the browser showed
+    "Working…" forever (e2e-full stop-family failures; the valhalla rollout bug).
+    """
+    counts: dict[str, int] = {p.name: 0 for p in pods}
+    for c in convs:
+        if c.phase == "Assigned" and c.host_pod in counts and c.parent_id is None:
+            counts[c.host_pod] += 1
+    return counts
 
 
 def demand_of(convs: list["ConversationState"]) -> int:
