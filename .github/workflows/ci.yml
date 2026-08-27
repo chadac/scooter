@@ -547,7 +547,14 @@ jobs:
   e2e-full-distribute:
     name: e2e full distribute (shard)
     needs: cluster-changes
-    if: needs.cluster-changes.outputs.platform == 'true'
+    # OPT-IN, not on by default. A full run builds a k3d cluster per shard (~25 min
+    # each) and the required checks are the unit/nixosTest/e2e-fast set — so the full
+    # target runs NIGHTLY, on demand, or on a PR labelled `e2e-full`.
+    if: >-
+      needs.cluster-changes.outputs.platform == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       contains(github.event.pull_request.labels.*.name, 'e2e-full'))
     runs-on: ubuntu-latest
     env:
       # 4 here (the link below runs 2). The shard count is not only a wall-clock knob: every
@@ -602,7 +609,8 @@ jobs:
   e2e-full-shard:
     name: e2e full shard ${{ matrix.shard }}
     needs: [cluster-changes, e2e-full-distribute]
-    if: needs.cluster-changes.outputs.platform == 'true'
+    # Runs only when distribute did — that job carries the opt-in decision.
+    if: needs.e2e-full-distribute.result == 'success'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false # one shard failing must not cancel the others (collect reports all)
@@ -816,7 +824,9 @@ jobs:
   e2e-full-collect:
     name: e2e full (k3d)
     needs: [cluster-changes, e2e-full-distribute, e2e-full-shard]
-    if: always() && needs.cluster-changes.outputs.platform == 'true'
+    # SKIPS (not passes) when the suite was opted out, so a green PR without the
+    # `e2e-full` label is never mistaken for one the full target verified.
+    if: always() && needs.e2e-full-distribute.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: gate on shard results
