@@ -167,8 +167,23 @@ test.describe("sidebar search + filter + label mode", () => {
     await expect(rowB).toHaveCount(1, { timeout: 30_000 });
     await expect(rowA).toHaveCount(0, { timeout: 30_000 });
     // A non-matching query yields the empty-state.
+    //
+    // Wait for THIS TEST'S rows to be filtered out first. `session-empty` only renders when
+    // the list has zero rows (Sidebar.tsx), so it cannot appear while any row is still on
+    // screen — including one whose removal is simply a re-render behind. CI failed here with
+    // conversation B's row still listed under the "zzz-nomatch" query: the filter had not
+    // repainted yet, and asserting the empty-state directly turned that into a 30s timeout
+    // that named the wrong thing. Polling the rows first makes the wait land on the filter
+    // taking effect, and keeps the empty-state assertion as the real check afterwards.
     await page.locator(sb.search).fill("zzz-nomatch");
-    await expect(page.locator(sb.empty)).toBeVisible({ timeout: 30_000 });
+    await expect(rowA).toHaveCount(0, { timeout: 30_000 });
+    await expect(rowB).toHaveCount(0, { timeout: 30_000 });
+    // The EMPTY-STATE itself is fast-only. It renders only when the sidebar has zero rows,
+    // and on the full target the list is the whole shared fleet — another spec's conversation
+    // legitimately sitting there keeps the count above zero no matter how correct this
+    // filter is. What this test owns is that ITS OWN rows are filtered out, asserted above
+    // on both targets; the empty-state is provable only where the backend holds nothing else.
+    if (!isFull) await expect(page.locator(sb.empty)).toBeVisible({ timeout: 30_000 });
     await page.locator(sb.search).fill("");
 
     // (2) Provider filter (icon chips): GitHub keeps the linked conversation and
