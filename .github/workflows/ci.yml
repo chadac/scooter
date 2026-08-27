@@ -332,9 +332,62 @@ jobs:
               # platform job says `skipping` is NOT cluster-verified.
               - '.github/workflows/ci.yml'
               - 'playwright.config.ts'
-              - 'test/e2e/tier.ts'
+              - 'test/e2e/target.ts'
+              # The full-target allowlist IS "what runs": adding/removing a spec there
+              # must run the only job that executes it.
+              - 'test/e2e/full-specs.json'
               - 'test/e2e/cluster-stories.spec.ts'
+              - 'test/e2e/chat-search-filter.spec.ts'
+              - 'test/e2e/linked-resources.spec.ts'
+              - 'test/e2e/target.ts' # the tier mechanism (was tier.ts — a stale name here kept the gate shut)
+              # The full-target ALLOWLIST + shard planner decide exactly what the full job
+              # runs — editing them without running the job is how an unverified spec
+              # would land in the allowlist. Then every spec the allowlist selects: a
+              # changed spec must run on the cluster, not just on the fake stack.
+              - 'test/e2e/support/shard-e2e.mjs'
+              - 'test/e2e/client-server-identity.spec.ts'
+              - 'test/e2e/long-conversation.spec.ts'
+              - 'test/e2e/multi-turn-integrity.spec.ts'
+              - 'test/e2e/refresh-history.spec.ts'
+              - 'test/e2e/revive.spec.ts'
+              - 'test/e2e/stop-run.spec.ts'
+              - 'test/e2e/tail-rerender.spec.ts'
+              # The full-target allowlist + every spec on it: enabling a spec (or editing
+              # an enabled one) must run the only job that executes it — otherwise the
+              # enablement PR goes green with the new spec never having met a cluster.
+              - 'test/e2e/aws-interrupt.spec.ts'
+              - 'test/e2e/interrupt-queue-recovery.spec.ts'
+              - 'test/e2e/interrupt.spec.ts'
+              # target.ts (né tier.ts — #363 renamed it and this filter went stale, so
+              # gate-mechanism changes stopped opening the gate) + the allowlist that IS
+              # the full project's testMatch + the shard planner that distributes it.
+              # The specs the allowlist currently selects — editing one must re-run the
+              # only job that executes it.
+              - 'test/e2e/live-real-agent.spec.ts'
+              - 'test/e2e/tier.ts'
+              - 'test/e2e/multi-user.spec.ts'
+              - 'test/e2e/ownership.spec.ts'
+              # The full-target allowlist AND every spec on it: a change to what runs
+              # (or to a spec that runs) must run the job that runs it.
+              - 'test/e2e/concurrency-divergence.spec.ts'
+              - 'test/e2e/conversation.spec.ts'
+              - 'test/e2e/live-monitoring.spec.ts'
+              - 'test/e2e/queue-durability.spec.ts'
+              - 'test/e2e/scroll-lock.spec.ts'
+              - 'test/e2e/sessions.spec.ts'
+              - 'test/e2e/settings-tabs.spec.ts'
+              - 'test/e2e/suspended-recovery.spec.ts'
               - 'test/e2e/fixtures.ts'
+              # The full-target allowlist AND every spec on it: editing a listed spec
+              # (or the list itself) must run the only job that executes it. The list
+              # of files here must stay in sync with test/e2e/full-specs.json.
+              - 'test/e2e/full-specs.json'
+              - 'test/e2e/client-server-identity.spec.ts'
+              - 'test/e2e/cluster-stories.spec.ts'
+              - 'test/e2e/component-coverage.spec.ts'
+              - 'test/e2e/refresh-history.spec.ts'
+              - 'test/e2e/stop-run.spec.ts'
+              - 'test/e2e/ui-state-consistency.spec.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'
               # The CREATE contract: conversations are created by the ROUTER (a CR write),
@@ -486,17 +539,28 @@ jobs:
 
   # e2e full is sharded with the SAME distribute -> shard-matrix -> collect shape as
   # e2e fast, so the two suites stay structurally consistent and widening the full
-  # allowlist later is a number bump, not a restructure. One shard for now: the k3d
-  # setup (~13m) dwarfs the 4-spec test phase (~4m), so more shards would multiply
-  # setup to split the small part. Bump E2E_FULL_SHARDS when the test phase outgrows
-  # the setup (each shard boots its OWN cluster — that is the price of a shard here).
+  # allowlist later is a number bump, not a restructure. Three shards now that the
+  # misc specs are enabled: the 12-spec test phase (~35-50m serial at cluster pace —
+  # suspended-recovery and concurrency alone fund two sandbox boots per test) has
+  # outgrown the ~13m k3d setup, which is the documented bump condition (each shard
+  # boots its OWN cluster — that is the price of a shard here).
   e2e-full-distribute:
     name: e2e full distribute (shard)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     env:
-      E2E_FULL_SHARDS: "1"
+      # 4 here (the link below runs 2). The shard count is not only a wall-clock knob: every
+      # spec on a shard competes for sandbox provisioning with the others, and CI forces
+      # CONVERSATION_POD_CAP=1 so each conversation needs its own pod. Packing a whole
+      # allowlist onto too few shards pushes cold boots past budgets that are generous in
+      # isolation — specs then fail purely waiting for a pod while behaving correctly.
+      #
+      # 4, not 3: at 3 the heaviest shard still lost turns to provisioning — scroll-lock's
+      # thread fill timed out with only its FIRST turn on screen, at a 90s per-turn budget,
+      # which is a pod it never got rather than a scroll bug. This link carries the whole
+      # 26-spec allowlist, so it needs the most splitting.
+      E2E_FULL_SHARDS: "4"
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:

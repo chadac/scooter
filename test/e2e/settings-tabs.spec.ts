@@ -21,6 +21,12 @@ const TABS = [
 ];
 
 test.describe("settings page tabs", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Settings itself is pure UI, but
+  // the round-trip test opens with a completeTurn — on the full target that funds a
+  // sandbox boot (≤25s cold) + an exec'd turn (~10s) before the settings navigation
+  // even starts, leaving the 60s suite default no headroom. 120s with margin.
+  test.setTimeout(120_000);
+
   test("the header toggle opens /settings and shows every tab", async ({ chat, page }) => {
     await chat.open();
     await page.locator('[data-testid="settings-toggle"]').click();
@@ -90,10 +96,12 @@ test.describe("settings page tabs", () => {
   });
 
   test("the Bring Your Own Claude tab always renders something actionable", async ({ page }) => {
-    // This stack runs WITH BYO enabled, so the ENABLED path is what renders here. The disabled
-    // path (a red panel + kubenix sample) is unit-tested; asserting it here would test a state
-    // this deployment cannot produce — my first cut did exactly that and failed for the wrong
-    // reason.
+    // The fast stack runs WITH BYO enabled, so the ENABLED path renders there; the full
+    // target's test platform leaves BYOC off, so the DISABLED panel (red box + kubenix
+    // sample) renders instead. Both branches emit [data-testid="claude-agent-section"]
+    // with real content, so every assertion below is deliberately branch-agnostic —
+    // asserting one specific branch would test a state the other deployment cannot
+    // produce (my first cut did exactly that and failed for the wrong reason).
     //
     // What matters at this level either way: the tab is NEVER BLANK. It used to `return null`
     // when BYO was off, which reads as a broken page rather than "off by config".
@@ -117,6 +125,10 @@ test.describe("settings page tabs", () => {
   });
 
   test("leaving settings returns to chat with the app still consistent", async ({ chat, page }) => {
+    // The only test in this file that runs a TURN, so the only one that funds a sandbox
+    // boot. completeTurn's default is 120s on the full target, which the 60s suite ceiling
+    // cannot contain; every other test here is pure navigation and keeps the default.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.completeTurn("a turn before visiting settings");
     const before = await snapshot(page);

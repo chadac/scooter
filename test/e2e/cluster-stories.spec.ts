@@ -18,6 +18,11 @@ import { fullOnly } from "./target.js";
 fullOnly("needs multiple agent-host pods behind the router")(
   "multi-pod conversation routing",
   () => {
+    // These are full-target-only by construction, so every turn here execs in a real
+    // sandbox and the first one waits for a cold pod. completeTurn's own default is 120s on
+    // this target; the 60s suite ceiling cannot contain that, so raise it.
+    test.beforeEach(() => test.setTimeout(300_000));
+
     test("a conversation stays reachable no matter which pod the router picks", async ({ chat, page }) => {
       await chat.open();
       await chat.completeTurn("first turn");
@@ -43,6 +48,9 @@ fullOnly("needs multiple agent-host pods behind the router")(
 fullOnly("needs a real rollout to restart pods under a live conversation")(
   "a deploy during a live conversation",
   () => {
+    // Same reasoning as the describe above, plus a real rollout in the middle.
+    test.beforeEach(() => test.setTimeout(300_000));
+
     test("a conversation survives its host pod being replaced", async ({ chat, page, request }) => {
       // THE REPORTED FAILURE: a rollout landed seconds after a conversation was created.
       // The stream went dead, no more events arrived, and refreshing lost it entirely.

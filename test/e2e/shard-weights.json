@@ -1,6 +1,8 @@
 {
   "_comment": "Fallback per-spec-file e2e runtimes (seconds), used to balance the CI shards when a prior run's Playwright report isn't available (first run / cache miss / new spec). Rough seed estimates — the distribute job PREFERS auto-measured durations from the last green run (see shard-e2e.mjs). Update occasionally if these drift; unlisted specs get a flat default.",
   "sessions.spec.ts": 55,
+  "component-coverage.spec.ts": 60,
+  "ui-state-consistency.spec.ts": 90,
   "stop-run.spec.ts": 35,
   "conversation.spec.ts": 30,
   "sse-resilience.spec.ts": 60,
@@ -16,7 +18,9 @@
   "refresh-history.spec.ts": 20,
   "real-goose.spec.ts": 3,
   "long-conversation.spec.ts": 70,
+  "multi-turn-integrity.spec.ts": 60,
   "interrupt.spec.ts": 25,
   "revive.spec.ts": 15,
-  "chat-search-filter.spec.ts": 15
+  "chat-search-filter.spec.ts": 15,
+  "live-real-agent.spec.ts": 300
 }

@@ -52,6 +52,19 @@ async function bothSettled(a: Page, b: Page, when: string): Promise<[UiSnapshot,
 }
 
 test.describe("two tabs on the same conversation", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Every test here opens with a
+  // completeTurn baseline — on the full target that funds a sandbox boot (5-25s cold,
+  // and every fake-agent turn execs in the sandbox) — then runs 1-2 MORE turns plus a
+  // convergence settle (up to 2×45s of polling that normally resolves in seconds).
+  // Arithmetic for the alternating test: open ~5s + boot ≤25s + 3 turns ×~10s + two
+  // cross-tab polls + settle ≈ 90s of expected work; the 60s suite default fails on
+  // timing alone.
+  //
+  // 300s, not 240: completeTurn's own default is now 120s on the full target (it waits
+  // for a ready pod BEFORE the exec, then for the run to END), and these tests chain
+  // several of them across two tabs — 240s no longer clears the worst case.
+  test.setTimeout(300_000);
+
   test("a turn sent in tab A appears in tab B without any refresh", async ({ chat, page, context, baseURL }) => {
     await chat.open();
     await chat.completeTurn("first turn from tab A");
@@ -149,8 +162,11 @@ test.describe("two tabs on the same conversation", () => {
   test("SIMULTANEOUS sends from both tabs lose neither message", async ({ chat, page, context }) => {
     // Real end-to-end work (a run draining behind a queued turn) needs more than the 60s suite
     // default — the 90s polls below were otherwise silently capped by the TEST budget, so a slower
-    // CI runner failed the test while the poll still had time left on paper.
-    test.setTimeout(180_000);
+    // CI runner failed the test while the poll still had time left on paper. 300s (not the
+    // original 180s): on the full target the baseline turn also funds a sandbox boot (≤25s)
+    // before the four 90s worst-case polls even start, and completeTurn's own default is
+    // 120s there — at 180s this line would LOWER the budget below what it needs.
+    test.setTimeout(300_000);
     await chat.open();
     await chat.completeTurn("baseline before simultaneous sends");
     const url = page.url();
