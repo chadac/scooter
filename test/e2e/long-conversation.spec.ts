@@ -41,10 +41,13 @@ test.describe("long conversation doesn't block a new one", () => {
     // Now (long conversation live in the thread) start a NEW conversation and send —
     // this must succeed on the FIRST attempt (the bug needed multiple refreshes).
     await page.locator(sidebar.newSession).click();
-    // 100s, not 45: this ONE turn funds a whole second conversation boot on the full
-    // target (new agent-host assignment + a fresh sandbox pod) before the exec runs —
-    // the same second-boot budget client-server-identity uses (100_000).
-    await chat.sendTurn("brand new conversation first-try", 100_000);
+    // 150s, not 45: this turn funds a whole SECOND conversation boot, and CI forces
+    // CONVERSATION_POD_CAP=1 so it cannot reuse the long conversation's pod — it waits for a
+    // fresh one to be scheduled. On the upper links of this stack, where the shard runs the
+    // full 26-spec allowlist, several specs are competing for that scheduling at once and the
+    // wait stretches: observed at the full 100s with the reply still not landed. The 240s
+    // ceiling above accommodates this; nothing waits on it when provisioning is prompt.
+    await chat.sendTurn("brand new conversation first-try", 150_000);
 
     // The new conversation shows exactly its own single turn + reply — the long
     // conversation's history is NOT bleeding in, and the send wasn't dropped.
@@ -71,7 +74,9 @@ test.describe("long conversation doesn't block a new one", () => {
     // conversation and send — it must work first try.
     await page.locator(sidebar.newSession).click();
     // 100s: funds the second conversation's sandbox boot (see the first test).
-    await chat.sendTurn("after-reload new conversation", 100_000);
+    // 150s, for the same reason as its sibling above: a second conversation boot under
+    // podCap=1, contended by the other specs sharing the shard.
+    await chat.sendTurn("after-reload new conversation", 150_000);
     await expect(chat.userMessages().filter({ hasText: /after-reload new conversation/i })).toHaveCount(1, {
       timeout: 30_000,
     });
