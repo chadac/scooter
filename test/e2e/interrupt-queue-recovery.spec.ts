@@ -37,6 +37,34 @@ const panel = {
 const CLUSTER_BUDGET_MS = 180_000;
 const ANSWER_BUDGET_MS = 90_000;
 
+/**
+ * Click an interrupt option (or Dismiss) until the agent's answer actually lands.
+ *
+ * The panel renders as soon as the interrupt arrives, but a click made before it is wired
+ * resolves to the element and never reaches the agent — CI failed with "you picked: green"
+ * absent for the entire budget and the panel completely untouched. Waiting longer cannot
+ * fix a click that did nothing, so re-click while the panel is still up.
+ *
+ * This does not paper over a broken answer path: the retry is conditional on the panel
+ * still being open, so an answer that never works leaves it open and still fails.
+ */
+async function answerInterrupt(
+  page: import("@playwright/test").Page,
+  option: RegExp | null,
+  expected: RegExp,
+) {
+  const target = option
+    ? page.locator(panel.option).filter({ hasText: option })
+    : page.locator(panel.cancel);
+  await expect(target).toBeEnabled({ timeout: 30_000 });
+  await expect(async () => {
+    if (await page.locator(panel.root).isVisible().catch(() => false)) {
+      await target.click({ timeout: 5_000 }).catch(() => {});
+    }
+    await expect(page.getByText(expected).first()).toBeVisible({ timeout: 15_000 });
+  }).toPass({ timeout: ANSWER_BUDGET_MS });
+}
+
 test.describe("interrupt + queue coexistence", () => {
   test.beforeEach(() => test.setTimeout(CLUSTER_BUDGET_MS));
 
@@ -63,8 +91,7 @@ test.describe("interrupt + queue coexistence", () => {
     // Switch BACK to the Approvals tab (openQueueTab moved us to Queue) so the interrupt options are
     // visible, then answer → the paused run resumes, then the queued message runs.
     await page.locator(panel.approvalsTab).click();
-    await page.locator(panel.option).filter({ hasText: /green/i }).click();
-    await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
+    await answerInterrupt(page, /green/i, /you picked: green/i);
 
     // The queued message becomes a real user turn. Asserted FIRST because it is the
     // substantive claim — the queue emptying is only meaningful if the message went
@@ -133,8 +160,7 @@ test.describe("interrupt persistence + recovery", () => {
     await chat.open();
     await chat.send("?pick a color");
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
-    await page.locator(panel.option).filter({ hasText: /blue/i }).click();
-    await expect(page.getByText(/you picked: blue/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
+    await answerInterrupt(page, /blue/i, /you picked: blue/i);
 
     // Clean state: the interrupt panel is gone, no stuck run-status bar, and a new turn works first-try.
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
@@ -148,8 +174,7 @@ test.describe("interrupt persistence + recovery", () => {
     await chat.open();
     await chat.send("?pick a color");
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
-    await page.locator(panel.cancel).click();
-    await expect(page.getByText(/you picked: \(cancelled\)/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
+    await answerInterrupt(page, null, /you picked: \(cancelled\)/i);
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
     // 90s, not sendTurn's 45s default: this is the conversation's FIRST completed exec (the
     // interrupt was cancelled, so nothing has run yet), so it funds the cold sandbox boot.
