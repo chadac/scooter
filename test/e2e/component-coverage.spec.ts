@@ -89,7 +89,7 @@ test.describe("sidebar / session components", () => {
     // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). TWO conversations, each with its
     // own first-exec sandbox wait (5-25s each on the full target): 2 × ~30s + waits ≈ 70s
     // worst — over the 60s default before the search assertions even start.
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     await chat.open();
     await chat.sendTurn("alpha searchable");
     await chat.waitForIdle();
@@ -98,7 +98,14 @@ test.describe("sidebar / session components", () => {
     await chat.waitForIdle();
     // Baseline from the ACTUAL list (the shared serial backend may carry a settling row from a
     // prior test); the property under test is "search narrows, clearing restores".
-    await expect(page.locator(sb.item)).toHaveCount(await page.locator(sb.item).count(), { timeout: 30_000 });
+    //
+    // WAIT for both rows rather than sampling the count once. The sidebar is fed by the
+    // router's aggregated list, which degrades to a partial — sometimes empty — list while
+    // pods churn, so a single sample can read 0 immediately after two successful turns
+    // (observed on CI: "Expected: > 0, Received: 0" with both conversations healthy).
+    await expect
+      .poll(async () => page.locator(sb.item).count(), { timeout: 60_000 })
+      .toBeGreaterThanOrEqual(2);
     const total = await page.locator(sb.item).count();
     expect(total, "both conversations are listed").toBeGreaterThanOrEqual(2);
 
@@ -112,10 +119,34 @@ test.describe("sidebar / session components", () => {
   test("switching between conversations swaps the transcript AND keeps the UI consistent", async ({ chat, page }) => {
     // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Two conversations = two cold
     // sandboxes on the full target (5-25s before each first exec): 2 × ~30s + the 30s
-    // switch-back poll ≈ 90s worst against a 60s default.
-    test.setTimeout(120_000);
+    // switch-back poll ≈ 90s worst against a 60s default. 180s, not 120: the id lookup and
+    // the switch-back poll below now allow the aggregated sidebar list time to settle.
+    test.setTimeout(180_000);
     await chat.open();
     await chat.sendTurn("first conversation body");
+    // Remember WHICH conversation this is. The switch-back below used `.last()`, but the
+    // sidebar lists the whole fleet ordered by recency on the full target, so the first
+    // conversation is not reliably the last row — the click landed on an unrelated
+    // conversation and the poll then read ITS transcript (observed on CI: lastUserText
+    // stayed "" for the full 30s while the transcript was intact in the conversation the
+    // test never opened). data-conversation-id is the server id and cannot drift.
+    // Poll: the row carries data-conversation-id only once the SERVER id has landed,
+    // which is asynchronous after the first send.
+    let firstId: string | null = null;
+    await expect
+      .poll(
+        async () => {
+          firstId = await page
+            .locator(`${sb.item}[data-conversation-id]`)
+            .first()
+            .getAttribute("data-conversation-id")
+            .catch(() => null);
+          return firstId;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeTruthy();
+
     await page.locator(sb.newSession).click();
     await chat.sendTurn("second conversation body");
     const onSecond = await snapshot(page);
@@ -123,9 +154,9 @@ test.describe("sidebar / session components", () => {
     expect(onSecond.userMessages, "a new conversation starts with just its own turn").toBe(1);
 
     // Switch back — the other transcript loads, and no state from the previous one leaks.
-    await page.locator(sb.item).last().click();
+    await page.locator(`${sb.item}[data-conversation-id="${firstId}"]`).click();
     await expect
-      .poll(async () => (await snapshot(page)).lastUserText, { timeout: 30_000 })
+      .poll(async () => (await snapshot(page)).lastUserText, { timeout: 60_000 })
       .toContain("first conversation body");
     const onFirst = await snapshot(page);
     assertConsistent(onFirst, "after switching back");
