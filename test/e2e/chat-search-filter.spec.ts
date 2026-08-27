@@ -62,12 +62,20 @@ test.describe("sidebar search + filter + label mode", () => {
     // written against the ~1s fake stack.
     test.setTimeout(240_000);
     const base = baseURL ?? "http://localhost:5173";
+    // A per-run nonce in BOTH titles. Pinning by title is only as good as the title's
+    // uniqueness: on the full target `scope=all` shows the whole multi-replica fleet,
+    // so a bare word like "scratch" also matches leftovers from other specs (and from
+    // earlier attempts of this one, which resurface from pods the aggregate skipped).
+    // Observed on CI: searching "#203" correctly hid THIS test's plain row, but a
+    // foreign /scratch/i row was still on screen, so the toHaveCount(0) failed while
+    // the filter worked. The nonce makes each locator name exactly one conversation.
+    const nonce = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
 
     // Conversation A: will be linked to a GitHub PR. 90s reply budget: cold
     // sandbox provision (up to ~25s, longer when the CI node is briefly out of
     // cpu) precedes the fake agent's real echo exec.
     await chat.open();
-    await chat.send("investigate the flaky broker test");
+    await chat.send(`investigate the flaky broker test ${nonce}`);
     await chat.waitForReply(/dummy agent/i, 90_000);
     const threadA = await currentThreadId(page);
     const r = await request.post(`${base}/conversations/${threadA}/links`, {
@@ -75,7 +83,10 @@ test.describe("sidebar search + filter + label mode", () => {
         source: "github",
         resourceType: "pull_request",
         url: "https://github.com/example-org/example-app/pull/203",
-        title: "example-org/example-app #203",
+        // Nonce here too: the label-mode assertions below count rows showing this LINK
+        // name, and on the shared fleet a resurfaced row from an earlier attempt would
+        // carry the identical title and break an exact count.
+        title: `example-org/example-app #203 ${nonce}`,
       },
     });
     expect(r.ok()).toBeTruthy();
@@ -83,7 +94,7 @@ test.describe("sidebar search + filter + label mode", () => {
     // Conversation B: plain, no links. Same 90s budget — under podCap=1 this
     // conversation provisions its own sandbox on another pod (no warm reuse).
     await page.locator('[data-testid="new-session"]').click();
-    await chat.send("just some scratch notes");
+    await chat.send(`just some scratch notes ${nonce}`);
     await chat.waitForReply(/dummy agent/i, 90_000);
 
     // Rows pinned by THEIR OWN titles, not by absolute position/count — the same
@@ -93,8 +104,8 @@ test.describe("sidebar search + filter + label mode", () => {
     // the aggregate list had skipped (observed on CI — three deleted smoke
     // conversations reappeared mid-test), so an unscoped count asserts fleet
     // hygiene, not the filter behaviour under test.
-    const rowA = page.locator(sb.item).filter({ hasText: /flaky broker/i });
-    const rowB = page.locator(sb.item).filter({ hasText: /scratch/i });
+    const rowA = page.locator(sb.item).filter({ hasText: new RegExp(`flaky broker.*${nonce}`, "i") });
+    const rowB = page.locator(sb.item).filter({ hasText: new RegExp(`scratch.*${nonce}`, "i") });
 
     // Open the advanced-filters panel (Scope / Linked / Show live inside it).
     await page.locator(sb.filtersToggle).click();
@@ -137,16 +148,20 @@ test.describe("sidebar search + filter + label mode", () => {
     // unlinked row falls back to its title.
     await page.locator(sb.labelGithub).click();
     await expect(
-      page.locator(sb.title).filter({ hasText: /example-org\/example-app #203/i }),
+      page.locator(sb.title).filter({ hasText: new RegExp(`example-org/example-app #203 ${nonce}`, "i") }),
     ).toHaveCount(1, { timeout: 30_000 });
-    await expect(page.locator(sb.title).filter({ hasText: /scratch/i })).toHaveCount(1);
+    await expect(
+      page.locator(sb.title).filter({ hasText: new RegExp(`scratch.*${nonce}`, "i") }),
+    ).toHaveCount(1);
     // Under a provider the linked row doesn't have (Slack), it falls back to its title.
     await page.locator(sb.labelSlack).click();
     await expect(
-      page.locator(sb.title).filter({ hasText: /example-org\/example-app #203/i }),
+      page.locator(sb.title).filter({ hasText: new RegExp(`example-org/example-app #203 ${nonce}`, "i") }),
     ).toHaveCount(0);
     // Back to the Scooter/title mode.
     await page.locator(sb.labelTitle).click();
-    await expect(page.locator(sb.title).filter({ hasText: /flaky broker/i })).toHaveCount(1);
+    await expect(
+      page.locator(sb.title).filter({ hasText: new RegExp(`flaky broker.*${nonce}`, "i") }),
+    ).toHaveCount(1);
   });
 });
