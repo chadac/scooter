@@ -67,3 +67,40 @@ fullOnly("needs a real rollout to restart pods under a live conversation")(
     });
   },
 );
+
+fullOnly("needs kubectl access to delete the owner pod mid-run")(
+  "the conversation MOVES pods mid-run",
+  () => {
+    test("the owner pod dies mid-run; the UI recovers and keeps communicating", async ({ chat, page, request }) => {
+      // THE SCALE-DOWN/ROLLOUT EVENT, ON DEMAND (e2e-full run 33015148191): the pod
+      // hosting a live run is deleted under it. The controller must reassign, the
+      // new owner must revive + finish (or cleanly resume) the stranded run, and —
+      // the part the user actually feels — the SAME browser tab must end up idle
+      // and able to run another turn. Before the deletion-cost + dangling-run
+      // fixes this exact sequence left "Working…" on screen forever.
+      test.setTimeout(300_000);
+      const hook = process.env.E2E_ROLLOUT_HOOK ?? "";
+      test.skip(!hook, "no rollout hook configured for this run");
+
+      await chat.open();
+      await chat.completeTurn("before the move", 100_000);
+      const thread = new URL(page.url()).searchParams.get("thread");
+      expect(thread, "the URL must name a conversation").toBeTruthy();
+
+      // A turn long enough that the pod deletion lands MID-run.
+      await chat.send("!sleep 15");
+      await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+      const moved = await request.post(`${hook}/move/${thread}`);
+      expect(moved.ok(), `the hook must delete the owner pod: ${await moved.text()}`).toBeTruthy();
+
+      // The run must reach a terminal state — completed by the resumed run or ended
+      // cleanly — well within the reassign + revive + resume budget. "Forever" is
+      // the bug; a bounded wait is the contract.
+      await expect(page.locator('[data-testid="run-status-bar"]')).toHaveCount(0, { timeout: 180_000 });
+
+      // And the conversation is still THIS conversation, still alive.
+      expect(new URL(page.url()).searchParams.get("thread")).toBe(thread);
+      await chat.completeTurn("after the move", 100_000);
+    });
+  },
+);

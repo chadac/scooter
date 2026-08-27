@@ -14,7 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
-import { hasDanglingRun } from "./danglingRun.js";
+import { danglingRunInfo } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
@@ -288,6 +288,14 @@ export interface SessionManager {
    *  404s when the conversation isn't already local. DESIGN STUB — see
    *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
   reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
+  /** Settle a conversation's DANGLING last run on this pod: terminate it (persisted
+   *  cancel intent) or resume-nudge it. Owner-fenced by callers; idempotent-guarded
+   *  (one reconciliation in flight per conversation). Runs from reviveFromMirror
+   *  (the revive push) AND ensureReadable's adoption (the LAZY path — the push is
+   *  fire-and-forget by design, and when it is lost with a dying pod the adopted
+   *  conversation otherwise keeps its stranded run forever: the pod-move story's
+   *  'Working…' that never cleared, CI run 33024754713). */
+  reconcileDanglingRun(id: SessionId, expectedGen?: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
    *  the sandbox/bridge (unlike revive*). Pulls events from the mirror into local if absent,
@@ -625,7 +633,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     } catch {
       /* reconcile failed — treat as suspended; revive() recreates the pod */
     }
-    return hydrateEntry(m, onCluster);
+    const hydrated = hydrateEntry(m, onCluster);
+    // LAZY dangling-run settlement, on EVERY adoption path. The first version hung
+    // this off ensureReadable only — and the pod-move repro adopted through a
+    // DIFFERENT hydrateByThread caller, so the stranded run still spun for the full
+    // budget with the fix deployed. Whatever route materializes a conversation on
+    // its new owner, the stranded-run settlement must ride along. Owner-fenced;
+    // fire-and-forget; the in-flight guard dedupes overlapping callers.
+    if (hydrated && ownershipGuard.canWrite(hydrated.id)) {
+      void api.reconcileDanglingRun(hydrated.id);
+    }
+    return hydrated;
   };
 
   // Returns the persist promise so callers that must guarantee durability (e.g.
@@ -648,6 +666,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
   const fencedDrops = new Map<SessionId, number>();
+  /** Dangling-run reconciliations in flight — reviveFromMirror and the lazy adoption
+   *  path can race on the same conversation; one settles it, the other no-ops. */
+  const danglingReconciles = new Set<SessionId>();
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
     // Persist via the onPersist channel ONLY. The bridge's emit() fires BOTH the
@@ -681,7 +702,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
         return;
       }
-      void store.appendEvent(e.id, event);
+      // NOT bare `void`: the store RETHROWS append failures after logging them
+      // (finding #4), and `void promise` leaves that rejection unhandled — which
+      // KILLS the Node process. A late event racing the conversation's deletion
+      // (cleanState, a reassignment's aftermath) made ENOENT here take down the
+      // whole agent-host mid-suite: 11 e2e-fast tests died to one stale append.
+      // The store already logged + notified observers; swallowing here loses nothing.
+      store.appendEvent(e.id, event).catch(() => {});
     });
   };
 
@@ -710,7 +737,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     await saveMeta(e);
   };
 
-  return {
+  const api: SessionManager = {
     async start(threadId, model, owner) {
       // The conversation id IS the thread id, so AG-UI events broadcast/persist
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
@@ -938,9 +965,35 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a
       // genuinely stale push still can't advance the log (append is fenced too), and
       // reviving a conversation we don't own is a harmless read+resume that the next
-      // reconcile corrects. But a POSITIVE "another pod owns it" verdict → skip.
+      // reconcile corrects. But a POSITIVE "another pod owns it" verdict needs one more
+      // look: the controller POSTs this push IMMEDIATELY after writing hostPod=<us> at
+      // `expectedGen`, and the watch event for that same write routinely lands AFTER
+      // the push — so the cache can still name the PREVIOUS owner. That is a stale
+      // CACHE, not a stale push, and nothing ever re-pushes: dropping it left the
+      // reassigned mid-run conversation dangling forever ("Working…" until the e2e
+      // budget died — the conversation-moves-pods story, CI run 33024754713). When the
+      // push's generation is NEWER than anything the watch has shown, trust the push,
+      // adopt the assignment (the watch confirms or corrects it shortly), and proceed.
+      // A push at or below the observed generation IS stale: keep the fence — loudly,
+      // never silently (the silent drop cost this exact investigation).
       if (!ownershipGuard.canWrite(id)) {
-        return; // fenced out — not our conversation (a stale push).
+        const observed = ownershipGuard.observedGeneration?.(id);
+        const pushIsNewer =
+          expectedGen > 0 && (observed === undefined || expectedGen > observed);
+        if (!pushIsNewer || !ownershipGuard.adoptAssignment) {
+          log.warn("reviveFromMirror: fenced out (another pod owns this conversation)", {
+            conversation_id: id,
+            observed_generation: observed ?? null,
+            pushed_generation: expectedGen,
+          });
+          return; // fenced out — a genuinely stale push.
+        }
+        ownershipGuard.adoptAssignment(id, expectedGen);
+        log.info("reviveFromMirror: push is ahead of the CR watch — adopting the assignment", {
+          conversation_id: id,
+          observed_generation: observed ?? null,
+          pushed_generation: expectedGen,
+        });
       }
 
       // If NOT already live here, pull its durable state from the mirror into local, hydrate
@@ -980,21 +1033,71 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // before the model finished), re-drive it so the run completes on this host. Without
       // this the UI is stuck "thinking" forever. Same mechanism boot uses (resumeInterrupted),
       // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
+      await this.reconcileDanglingRun(id, expectedGen);
+    },
+
+    async reconcileDanglingRun(id, expectedGen) {
+      if (danglingReconciles.has(id)) return; // one settlement at a time
+      danglingReconciles.add(id);
       try {
+        // PULL FIRST. On an ownership gain the watch fires within milliseconds of
+        // the reassignment — before any read has hydrated this pod's local store.
+        // The dead pod's events (including the dangling RUN_STARTED and any cancel
+        // marker) live in the MIRROR; judging from the empty local log found no
+        // dangling run and silently no-opped (deployed validation round 3). The
+        // pull is idempotent and cheap when local is already current.
+        if (deps.hydrateFromMirror && !entries.get(id)?.bridge) {
+          await deps.hydrateFromMirror(id).catch((err) =>
+            log.errorWith("dangling-run check: mirror pull failed (judging local)", err, {
+              conversation_id: id,
+            }),
+          );
+        }
         // Pass our identity: a run THIS pod started at THIS generation is in flight, not
         // stranded. `expectedGen` is the generation the controller assigned us at — a run
         // stamped with an earlier one was left by a previous assignment and still resumes.
+        // With no gen (the lazy adoption path) a same-host run reads as OWN and is left
+        // alone — conservative: adoption implies the entry was not in memory, so a live
+        // own run cannot be the one we would touch.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
-        if (hasDanglingRun(await collectEvents(store.readEvents(id)), self)) {
-          log.info("reviveFromMirror: resuming a dangling run", { conversation_id: id });
+        const events = await collectEvents(store.readEvents(id));
+        const dangling = danglingRunInfo(events, self);
+        if (!dangling) {
+          // NEVER silent: a wrong no-op here is indistinguishable from the hook not
+          // firing at all, which cost three deploy-validate rounds to see.
+          log.info("dangling-run check: nothing to settle", {
+            conversation_id: id,
+            events_seen: events.length,
+          });
+        }
+        if (dangling?.cancelRequested) {
+          // The user STOPPED this run before the old host died (the persisted
+          // CANCEL_REQUESTED marker). Resuming it would resurrect work the user
+          // killed; instead END it the way the old host would have — the reconnected
+          // stream replays this terminal and the UI's run bar finally clears.
+          log.info("dangling run was cancelled — terminating, not resuming", {
+            conversation_id: id,
+            run_id: dangling.runId,
+          });
+          await store.appendEvent(id as SessionId, {
+            type: "RUN_FINISHED",
+            threadId: dangling.threadId as never,
+            runId: dangling.runId as never,
+            cancelled: true,
+            ts: Date.now(),
+          });
+        } else if (dangling) {
+          log.info("resuming a dangling run", { conversation_id: id });
           // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
           // role:user turn) which the UI hides — the nudge is internal, not a user message.
           void this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume").catch((err) =>
-            log.errorWith("reviveFromMirror: dangling-run resume failed", err, { conversation_id: id }),
+            log.errorWith("dangling-run resume failed", err, { conversation_id: id }),
           );
         }
       } catch (err) {
-        log.errorWith("reviveFromMirror: dangling-run check failed", err, { conversation_id: id });
+        log.errorWith("dangling-run check failed", err, { conversation_id: id });
+      } finally {
+        danglingReconciles.delete(id);
       }
     },
 
@@ -1385,7 +1488,23 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             // started any run yet, so every RUN_STARTED in the log predates it and is
             // stranded by definition — even one stamped with our own pod name (a restarted
             // pod reuses it). Passing self would skip the very runs this scan resumes.
-          if (hasDanglingRun(events)) candidates.push(entry.id);
+          const info = danglingRunInfo(events);
+          if (info?.cancelRequested) {
+            // Stopped by the user before the previous process died — end it, don't redo it.
+            log.info("resumeInterrupted: dangling run was cancelled — terminating", {
+              conversation_id: entry.id,
+              run_id: info.runId,
+            });
+            await store.appendEvent(entry.id, {
+              type: "RUN_FINISHED",
+              threadId: info.threadId as never,
+              runId: info.runId as never,
+              cancelled: true,
+              ts: Date.now(),
+            });
+          } else if (info) {
+            candidates.push(entry.id);
+          }
         } catch (err) {
           // eslint-disable-next-line no-console
           log.errorWith("resumeInterrupted: reading the log failed, skipping", err, {
@@ -1541,6 +1660,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return () => subagentCompleteSubs.delete(cb);
     },
   };
+  return api;
 }
 
 /** Wall-clock ms. Wrapped so it's mockable / avoids new Date() in pure code. */

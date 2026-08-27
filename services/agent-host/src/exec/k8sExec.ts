@@ -128,6 +128,13 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
           namespace: ref.namespace,
           pod_name: ref.name,
         });
+        // 404 = the Sandbox CR itself is GONE (the conversation was deleted or its
+        // sandbox reaped). No amount of polling brings it back — fail NOW instead of
+        // spinning to the deadline, so callers (job sweeps, tool calls) see a fast,
+        // classifiable failure rather than a 90s hang per attempt.
+        if ((err as { code?: number }).code === 404) {
+          throw new Error(`sandbox ${ref.namespace}/${ref.name} is gone (404 on resume)`);
+        }
       }
       await sleep(1500);
       continue; // re-poll: the pod is now being recreated

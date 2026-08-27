@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { hasDanglingRun, lastRunCompleted } from "../../src/session/danglingRun.js";
+import { hasDanglingRun, danglingRunInfo, lastRunCompleted } from "../../src/session/danglingRun.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
 const started = (r: string): AguiEvent => ({ type: "RUN_STARTED", threadId: "c", runId: r });
@@ -102,5 +102,45 @@ describe("hasDanglingRun — run ownership", () => {
 
   it("a COMPLETED run is never dangling, whoever started it", () => {
     expect(hasDanglingRun([startedBy("r1", "agent-host-9", 4), finished("r1")], self)).toBe(false);
+  });
+});
+
+describe("danglingRunInfo — persisted cancel intent", () => {
+  // A Stop that races a scale-down/rollout: the CANCEL_REQUESTED marker is durable,
+  // the RUN_FINISHED the old host would have emitted is not. The next owner must
+  // read the intent from the log — its memory of the cancel died with the old pod.
+  const cancelReq = (r: string): AguiEvent => ({ type: "CANCEL_REQUESTED", threadId: "c", runId: r });
+
+  it("a dangling run whose tail carries its cancel marker reads cancelRequested @proves", () => {
+    const info = danglingRunInfo([started("r1"), text(), cancelReq("r1")]);
+    expect(info).toMatchObject({ runId: "r1", threadId: "c", cancelRequested: true });
+  });
+
+  it("a cancel marker for a PREVIOUS run does not taint the current dangling run @proves", () => {
+    // r1 was stopped and finished properly; r2 dangles UNstopped and must resume.
+    const info = danglingRunInfo([started("r1"), cancelReq("r1"), finished("r1"), started("r2"), text()]);
+    expect(info).toMatchObject({ runId: "r2", cancelRequested: false });
+  });
+
+  it("an uncancelled dangling run reads cancelRequested=false", () => {
+    expect(danglingRunInfo([started("r1"), text()])).toMatchObject({ runId: "r1", cancelRequested: false });
+  });
+});
+
+describe("OwnershipTracker.onGained — the settlement trigger", () => {
+  it("fires on a reassignment TO this pod, not on same-owner echoes @proves", async () => {
+    const { OwnershipTracker } = await import("../../src/session/ownershipGuard.js");
+    const t = new OwnershipTracker("me");
+    const gained: Array<[string, number]> = [];
+    t.onGained = (id, gen) => gained.push([id, gen]);
+
+    t.observe("c1", { hostPod: "other", generation: 1 }); // someone else's
+    t.observe("c1", { hostPod: "me", generation: 2 });    // moved to us -> fire
+    t.observe("c1", { hostPod: "me", generation: 2 });    // echo -> silent
+    t.observe("c2", { hostPod: "me", generation: 1 });    // boot-list reveal -> fire
+    t.observe("c1", { hostPod: "other", generation: 3 }); // moved away -> silent
+    t.observe("c1", { hostPod: "me", generation: 4 });    // back again -> fire
+
+    expect(gained).toEqual([["c1", 2], ["c2", 1], ["c1", 4]]);
   });
 });

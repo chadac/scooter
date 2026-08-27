@@ -49,6 +49,10 @@ export interface IntegrityAgentConfig extends AgentHostConfig {
    *  class). Default 25s; small values in tests. 0 disables. See
    *  todo/docs/SSE_RESILIENCE.md. */
   idleReconnectMs?: number;
+  /** Delay between cancel() 404-retries (ms). The production default (700ms × 9
+   *  attempts ≈ 5.6s) outlasts a slow controller assignment tick; tests pass a
+   *  small value so the persistent-404 path stays fast. */
+  cancelRetryDelayMs?: number;
 }
 
 /** A resume answer to a pending interrupt (permission/option choice). */
@@ -1066,12 +1070,15 @@ export class IntegrityAgent extends AbstractAgent {
     // Stop 404ing (nginx: POST …/cancel 404 in the SAME second as the run's first
     // prompt) while the run kept going and the status bar never cleared. The
     // conversation demonstrably exists — this client is streaming it — so a 404 here is
-    // the assignment window, not absence. The router's cache converges in ~a second;
-    // three spaced retries cover it. Other failures still throw immediately: cancel
-    // must never silently do nothing (#347).
+    // the assignment window, not absence. The router's cache usually converges in ~a
+    // second — but on a loaded cluster the controller tick itself can take 3-4s (CI run
+    // 33024754713: created 00:09:25.0, assigned 00:09:28.4, while 4×700ms retries gave
+    // up at +2.1s and the Stop was lost). Retry across ~5.5s to outlast a slow tick.
+    // Other failures still throw immediately: cancel must never silently do nothing
+    // (#347).
     let last = 0;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      if (attempt > 0) await delay(700);
+    for (let attempt = 0; attempt < 9; attempt++) {
+      if (attempt > 0) await delay(this.cfg.cancelRetryDelayMs ?? 700);
       const res = await this.doFetch(url, { method: "POST", headers });
       if (res.ok) return;
       last = res.status;
