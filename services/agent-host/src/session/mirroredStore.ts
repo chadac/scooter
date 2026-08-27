@@ -16,7 +16,7 @@
  *      is served from the LOCAL onAppend, not the mirror).
  *
  * All READS come from LOCAL (the authority on the owning pod). Low-frequency writes
- * (meta/jobs/links/activity/remove) mirror per-call (no coalescing needed).
+ * (meta/jobs/links/remove) mirror per-call (no coalescing needed).
  * Mirror errors are non-fatal — logged via onMirrorError; local persistence is intact.
  */
 
@@ -194,9 +194,6 @@ export function mirroredConversationStore(
     onAppendError: local.onAppendError ? (cb) => local.onAppendError!(cb) : undefined,
 
     // --- low-frequency WRITES: local awaited + mirrored per-call (fire-and-forget) ---
-    recordActivity: local.recordActivity
-      ? async (id, at) => { const p = local.recordActivity!(id, at); mirrorWrite(id, () => mirror.recordActivity?.(id, at)); return p; }
-      : undefined,
     saveMeta: local.saveMeta
       ? async (meta) => { const p = local.saveMeta!(meta); mirrorWrite(meta.id as SessionId, () => mirror.saveMeta?.(meta)); return p; }
       : undefined,

@@ -180,11 +180,9 @@ export interface ConversationStore {
   onAppendError?(cb: (id: SessionId, error: unknown) => void): () => void;
   /** Path on the conversation-state PVC where goose session data lives. */
   gooseStatePath(id: SessionId): string;
-  /** Persist last-activity (ms epoch) so it survives restarts and is queryable
-   *  by an external lifecycle manager. Optional. */
-  recordActivity?(id: SessionId, at: number): Promise<void>;
-  /** Persist conversation metadata (title/createdAt) so the list survives an
-   *  agent-host restart. Optional (in-memory stores skip it). */
+  /** Persist conversation metadata (title/createdAt/lastActivityAt) so the list
+   *  survives an agent-host restart. The sole persistence path for lastActivityAt —
+   *  touch() routes through it. Optional (in-memory stores skip it). */
   saveMeta?(meta: ConversationMeta): Promise<void>;
   /** Reconstruct all persisted conversations (for the list after a restart).
    *  Optional. */
@@ -526,9 +524,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     for (const cb of changeSubs) cb(c);
   };
 
+  // Mark the conversation active NOW and persist it. Fire-and-forget: touch() runs on
+  // the prompt path and on throttled web-service proxy traffic, so it must never block
+  // either. (`saveMeta` is declared below; touch is only CALLED after init completes.)
   const touch = (e: Entry) => {
     e.lastActivityAt = nowMs();
-    void store.recordActivity?.(e.id, e.lastActivityAt);
+    void saveMeta(e);
   };
 
   // Build an in-memory Entry from a persisted meta (no bridge; revive() spawns
