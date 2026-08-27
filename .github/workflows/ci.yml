@@ -352,6 +352,12 @@ jobs:
               - 'test/e2e/revive.spec.ts'
               - 'test/e2e/stop-run.spec.ts'
               - 'test/e2e/tail-rerender.spec.ts'
+              # The full-target allowlist + every spec on it: enabling a spec (or editing
+              # an enabled one) must run the only job that executes it — otherwise the
+              # enablement PR goes green with the new spec never having met a cluster.
+              - 'test/e2e/aws-interrupt.spec.ts'
+              - 'test/e2e/interrupt-queue-recovery.spec.ts'
+              - 'test/e2e/interrupt.spec.ts'
               - 'test/e2e/fixtures.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'

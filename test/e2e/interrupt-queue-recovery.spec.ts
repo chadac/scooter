@@ -20,7 +20,18 @@ const panel = {
   queueTab: '[data-testid="right-panel-tab-queue"]',
 };
 
+// CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target a fresh
+// conversation provisions a REAL sandbox before its first run event (~15-25s cold,
+// per the instrumented stop-run runs), and these tests chain several phases each
+// funded with its own 15-30s wait: open (~20s) + panel (~30s incl. provisioning) +
+// queue/answer (~15-30s) + drain + the queued/follow-up turn (~30-45s) ≈ 120-160s
+// worst case — past the 60s default on arithmetic alone while every step behaves.
+// Assertions unchanged; only the ceiling.
+const CLUSTER_BUDGET_MS = 180_000;
+
 test.describe("interrupt + queue coexistence", () => {
+  test.beforeEach(() => test.setTimeout(CLUSTER_BUDGET_MS));
+
   test("messages QUEUE while an approval interrupt is pending (both surfaces populated)", async ({ chat, page }) => {
     await chat.open();
     await chat.send("?pick a color");
@@ -65,6 +76,8 @@ test.describe("interrupt + queue coexistence", () => {
 });
 
 test.describe("interrupt persistence + recovery", () => {
+  test.beforeEach(() => test.setTimeout(CLUSTER_BUDGET_MS)); // same arithmetic as above
+
   test("a pending approval SURVIVES a reload (the panel reappears)", async ({ chat, page }) => {
     await chat.open();
     await chat.send("?pick a color");

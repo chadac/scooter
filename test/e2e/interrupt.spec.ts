@@ -20,6 +20,14 @@ const panel = {
 };
 
 test.describe("agent option dropdown (interrupt)", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target a fresh
+  // conversation provisions a REAL sandbox before its first run event lands
+  // (~15-25s cold, per the instrumented stop-run runs), so each phase's 30s wait
+  // is fine but their SUM is not: open (~20s) + panel (~30s incl. provisioning) +
+  // pick → reply (~30s) + panel-clear (~10s) ≈ 90s worst case, past the 60s
+  // default while every step behaves. Assertions unchanged; only the ceiling.
+  test.beforeEach(() => test.setTimeout(120_000));
+
   test("the agent presents options; picking one resumes the run", async ({ chat, page }) => {
     await chat.open();
     await chat.send("?pick a color");

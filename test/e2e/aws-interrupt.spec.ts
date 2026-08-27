@@ -14,6 +14,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { isFull } from "./target.js";
 
 const panel = {
   root: '[data-testid="interrupt-panel"]',
@@ -30,6 +31,7 @@ async function requestAws(
 ) {
   return request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
     headers: { "Content-Type": "application/json" },
+    timeout: 120_000, // the route may REVIVE (real sandbox resume on the full target) before its 202
     data: {
       request_id: requestId,
       target_account: "dev",
@@ -40,7 +42,21 @@ async function requestAws(
   });
 }
 
+/** Timeout for the API POSTs that do REAL cluster work server-side before replying.
+ *  On the full target `/suspend` awaits the sandbox suspend and `/aws-request` /
+ *  the `/agui` resume await a REVIVE (sandbox resume → ready pod, 10-30s measured
+ *  at cluster pace; see stop-run.spec.ts:75) — past Playwright's 30s APIRequest
+ *  default on arithmetic alone. The fake stack answers in milliseconds either way. */
+const API_BUDGET_MS = 120_000;
+
 test.describe("AWS approval interrupt", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Each test funds a sandbox
+  // provision (~15-25s cold) inside its first reply wait, and the suspend/revive
+  // tests add a real sandbox suspend + resume (10-30s each) — summed with the
+  // 30s panel waits that is 150-200s worst case, past the 60s default while
+  // everything behaves. Assertions unchanged; only the ceiling.
+  test.beforeEach(() => test.setTimeout(240_000));
+
   test("the approval panel appears when the broker requests AWS access", async ({ chat, page, baseURL, request }) => {
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();
@@ -78,7 +94,9 @@ test.describe("AWS approval interrupt", () => {
     const conversationId: string = list[0].id;
 
     // Suspend it (drops the in-memory bridge) — the idle-suspend / restart case.
-    const susp = await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`);
+    const susp = await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`, {
+      timeout: API_BUDGET_MS, // awaits the REAL sandbox suspend on the full target
+    });
     expect(susp.ok()).toBeTruthy();
 
     // Now the broker requests AWS. The route must revive + raise (not 404).
@@ -110,18 +128,37 @@ test.describe("AWS approval interrupt", () => {
     const reqId = `awsreq-resume-${Date.now()}`;
     expect((await requestAws(request, base, conversationId, reqId)).status()).toBe(202);
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
-    expect((await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`)).ok()).toBeTruthy();
+    expect(
+      (
+        await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`, {
+          timeout: API_BUDGET_MS, // awaits the REAL sandbox suspend on the full target
+        })
+      ).ok(),
+    ).toBeTruthy();
 
     // Answer the approval exactly like InterruptPanel.tsx does — POST /agui with resume[].
     // BEFORE the fix this never returns (0 bytes) and only unblocks when a proxy/socket
     // timeout kills the idle stream — i.e. it takes the full request timeout. The fix
-    // revives + answers (or closes with RUN_ERROR), so it returns in well under a second.
-    // ASSERT ON ELAPSED TIME: a hang resolves only at the ~15s+ timeout; the fix is
-    // sub-second. A generous 8s ceiling cleanly separates fixed (fast) from broken (hang).
+    // revives + answers (or closes with RUN_ERROR), so it returns as soon as the revive
+    // settles. ASSERT ON ELAPSED TIME: a hang resolves only at the request timeout; the
+    // fix returns FAR sooner.
+    //
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). The bounds are per-target
+    // because the legitimate work differs by ~100x, not because the assertion does:
+    //  - fast: no cluster, the revive is in-process → the fix is sub-second; 8s vs a
+    //    20s hang cleanly separates fixed from broken.
+    //  - full: the fix's revive is a REAL sandbox resume (10-30s to a ready pod, per
+    //    the instrumented stop-run runs) before the stream can close (on this target
+    //    the broker has no record of the fabricated request, so /aws/pending re-raises
+    //    nothing and the stream closes with a prompt RUN_ERROR — still a framed,
+    //    returned response, which is the property under test). 120s vs a 150s-timeout
+    //    hang keeps the same fixed/broken separation at cluster pace.
+    const hangTimeoutMs = isFull ? 150_000 : 20_000;
+    const promptReturnMs = isFull ? 120_000 : 8_000;
     const started = Date.now();
     const resume = await request.post(`${base}/agui`, {
       headers: { "Content-Type": "application/json" },
-      timeout: 20_000, // the bug hangs to here; the fix returns FAR sooner.
+      timeout: hangTimeoutMs, // the bug hangs to here; the fix returns FAR sooner.
       data: {
         threadId: conversationId,
         resume: [{ interruptId: reqId, status: "resolved", payload: { optionId: "approve" } }],
@@ -131,11 +168,12 @@ test.describe("AWS approval interrupt", () => {
     expect(resume.ok(), "the resume POST must return, not hang").toBeTruthy();
     const body = await resume.text();
     // Well-formed SSE that actually carried a terminal/answer frame — not 0 bytes. (In the
-    // fake stack, with no BROKER_URL, the revived bridge answers the re-raised interrupt.)
+    // fake stack, with no BROKER_URL, the revived bridge answers the re-raised interrupt;
+    // on the full target the frame is the RUN_ERROR described above.)
     expect(body.length, "the resume stream must carry frames, not 0 bytes").toBeGreaterThan(0);
-    // The decisive assertion: it RETURNED PROMPTLY. A dormant-run hang would only resolve
-    // at the request timeout (~20s); the fix returns in well under a second.
-    expect(elapsed, `resume took ${elapsed}ms — a hang would take ~20s`).toBeLessThan(8_000);
+    // The decisive assertion: it RETURNED PROMPTLY (at its target's pace). A dormant-run
+    // hang would only resolve at the request timeout.
+    expect(elapsed, `resume took ${elapsed}ms — a hang would take ~${hangTimeoutMs}ms`).toBeLessThan(promptReturnMs);
   });
 
   test("the AWS approval panel is still present after a page reload", async ({ chat, page, baseURL, request }) => {
