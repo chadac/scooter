@@ -364,6 +364,9 @@ jobs:
               # The specs the allowlist currently selects — editing one must re-run the
               # only job that executes it.
               - 'test/e2e/live-real-agent.spec.ts'
+              - 'test/e2e/tier.ts'
+              - 'test/e2e/multi-user.spec.ts'
+              - 'test/e2e/ownership.spec.ts'
               - 'test/e2e/fixtures.ts'
               # The full-target allowlist AND every spec on it: editing a listed spec
               # (or the list itself) must run the only job that executes it. The list
