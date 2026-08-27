@@ -170,6 +170,7 @@ def create_shares_router(
     store: ShareStore,
     *,
     public_base_url: str = "",
+    frame_ancestors: str = "'self'",
     now: Callable[[], str] = lambda: "",
 ) -> APIRouter:
     router = APIRouter()
@@ -177,6 +178,16 @@ def create_shares_router(
     def _url(uuid: str) -> str:
         base = public_base_url.rstrip("/")
         return f"{base}/s/{uuid}/" if base else f"/s/{uuid}/"
+
+    # Headers on every SERVED file. `frame-ancestors` restricts who may embed a
+    # share in an <iframe> — shares are meant to render only inside the Scooter UI,
+    # never arbitrary external sites. `X-Content-Type-Options: nosniff` stops the
+    # browser from re-interpreting a served asset as a different (executable) type.
+    def _serve_headers() -> dict[str, str]:
+        return {
+            "Content-Security-Policy": f"frame-ancestors {frame_ancestors}",
+            "X-Content-Type-Options": "nosniff",
+        }
 
     # --- management API (authed, owner-scoped) ------------------------------
     @router.post("/shares", status_code=201)
@@ -253,7 +264,7 @@ def create_shares_router(
         f = ver.files.get(rel)
         if f is None:
             raise HTTPException(status_code=404, detail="not found")
-        return Response(content=f.data, media_type=f.content_type)
+        return Response(content=f.data, media_type=f.content_type, headers=_serve_headers())
 
     @router.get("/s/{uuid}/v/{version}/{path:path}")
     async def serve_versioned(uuid: str, version: int, path: str) -> Response:

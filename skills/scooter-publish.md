@@ -110,3 +110,26 @@ open("/workspace/dashboard/index.html", "w").write(
 
 Then zip `/workspace/dashboard` and publish as above. See the **dataviz** skill
 for chart design guidance before writing chart code.
+
+## Showing a share inline in the conversation
+
+To render a published share **live inside the chat** (not just a link), emit a
+fenced `scooter-embed` block in your message. The UI turns it into a sandboxed,
+fixed-width `<iframe>` of that share:
+
+````
+```scooter-embed
+share: 7f3c2a1e-1b2c-4d5e-8f90-abcdef012345   # the UUID, or a /s/<uuid>/ path
+width: 720      # optional px (clamped to a max); omit for the default width
+height: 480     # optional px
+center: true    # optional — center the frame in the message
+```
+````
+
+Notes:
+- `share:` must be one of YOUR shares (a UUID or `/s/<uuid>/`). External URLs are
+  rejected — the embed can only ever point at a published share.
+- The frame is sandboxed (`allow-scripts`, no same-origin), so interactive JS
+  charts work but the page can't touch the conversation. The broker also sends a
+  `frame-ancestors` CSP so shares embed only in the Scooter UI, nowhere else.
+- Publish/update the share first (above), then embed it by its UUID.

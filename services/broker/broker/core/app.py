@@ -74,7 +74,9 @@ def create_app() -> FastAPI:
             db_name=settings.aws_db_name,
         ))
         shares_router = create_shares_router(
-            shares_store, public_base_url=settings.shares_public_base_url
+            shares_store,
+            public_base_url=settings.shares_public_base_url,
+            frame_ancestors=settings.shares_frame_ancestors,
         )
 
     @asynccontextmanager

@@ -168,6 +168,13 @@ class BrokerSettings(BaseSettings):
     shares_enabled: bool = False
     shares_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-shares.db"
     shares_public_base_url: str = ""
+    # Who may frame a served share in an <iframe> (CSP frame-ancestors). Shares are
+    # meant to be embedded ONLY inside the Scooter conversation UI, never arbitrary
+    # external sites, so this is a strict allowlist. Default `'self'` = same origin
+    # as the share; deployments where the UI is a different origin set this to the
+    # UI origin(s), space-separated (e.g. "https://scooter.example.com"). A served
+    # share also sends this so external embedding is blocked even if the value widens.
+    shares_frame_ancestors: str = "'self'"
 
     port: int = 8080
 

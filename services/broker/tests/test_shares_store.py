@@ -31,9 +31,11 @@ async def store():
     return s
 
 
-def _client(store, conv="conv-alice"):
+def _client(store, conv="conv-alice", frame_ancestors="'self'"):
     app = FastAPI()
-    app.include_router(create_shares_router(store, public_base_url="https://scooter.example.com"))
+    app.include_router(create_shares_router(
+        store, public_base_url="https://scooter.example.com", frame_ancestors=frame_ancestors,
+    ))
     app.dependency_overrides[authenticate] = lambda: _identity(conv)
     return TestClient(app)
 
@@ -141,6 +143,17 @@ async def test_disallowed_extension_rejected(store):
     c = _client(store)
     r = c.post("/shares", json={"files": {"run.sh": {"content_type": "text/x-sh", "b64": _b64(b"echo hi")}}})
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_serve_sets_frame_ancestors_csp(store):
+    # A served share carries a frame-ancestors CSP so only the allowed origin (the
+    # Scooter UI) can embed it in an <iframe> — never arbitrary external sites.
+    c = _client(store, frame_ancestors="https://scooter.example.com")
+    uuid = c.post("/shares", json=_inline("<h1>hi</h1>")).json()["uuid"]
+    served = c.get(f"/s/{uuid}/")
+    assert served.headers["content-security-policy"] == "frame-ancestors https://scooter.example.com"
+    assert served.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.asyncio
