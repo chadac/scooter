@@ -52,6 +52,12 @@ async function bothSettled(a: Page, b: Page, when: string): Promise<[UiSnapshot,
 }
 
 test.describe("two tabs on the same conversation", () => {
+  // completeTurn's default is 120s on the full target (it waits for a cold sandbox pod
+  // before the exec, then for the run to END). The 60s suite ceiling cannot contain that,
+  // and these tests chain several turns across two tabs. The individual test below that
+  // already sets 180s keeps its own.
+  test.beforeEach(() => test.setTimeout(300_000));
+
   test("a turn sent in tab A appears in tab B without any refresh", async ({ chat, page, context, baseURL }) => {
     await chat.open();
     await chat.completeTurn("first turn from tab A");
@@ -150,7 +156,9 @@ test.describe("two tabs on the same conversation", () => {
     // Real end-to-end work (a run draining behind a queued turn) needs more than the 60s suite
     // default — the 90s polls below were otherwise silently capped by the TEST budget, so a slower
     // CI runner failed the test while the poll still had time left on paper.
-    test.setTimeout(180_000);
+    // 300s, matching the describe-level ceiling: at 180s this line would LOWER the budget
+    // below what a 120s completeTurn plus those 90s polls needs.
+    test.setTimeout(300_000);
     await chat.open();
     await chat.completeTurn("baseline before simultaneous sends");
     const url = page.url();

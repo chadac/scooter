@@ -152,9 +152,16 @@ test.describe("sidebar search + filter + label mode", () => {
 
     // (1) Keyword search matches the LINK NAME (not present in either title):
     // the linked row stays, the plain row is filtered OUT.
+    // 90s, matching the row waits above. This is the FIRST assertion that depends on the
+    // sidebar's LINK-merge poll — "#203" appears only in the link name, never in a title —
+    // and that merge is a separate refresh from the one that delivered the rows. On a shard
+    // where this spec runs first the whole cluster is cold, so the merge lands later still.
+    // Observed on CI: rowA resolved to 0 for the full 30s as test #1 on a fresh shard.
     await page.locator(sb.search).fill("#203");
-    await expect(rowA).toHaveCount(1, { timeout: 30_000 });
-    await expect(rowB).toHaveCount(0);
+    await expect(rowA, "the link name must be searchable once the merge lands").toHaveCount(1, {
+      timeout: 90_000,
+    });
+    await expect(rowB).toHaveCount(0, { timeout: 30_000 });
     if (!isFull) await expect(page.locator(sb.item)).toHaveCount(1);
 
     // Search matches a plain title too (and drops the non-matching linked row).

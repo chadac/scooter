@@ -180,7 +180,13 @@ export class Chat {
    *  stream. Unlike `sendTurn`, this waits on the assistant-message COUNT and then on genuine idle —
    *  and unlike `waitForIdle` alone it can't return early just because the run hasn't started yet
    *  (which made corruption tests "pass through" in ~1.7s having done nothing). */
-  async completeTurn(text: string, timeout = 60_000) {
+  // The default is 60s on fast and 120s on the full target. Like sendTurn, this waits on a
+  // run that first needs a READY sandbox pod, and on a cluster that is a cold boot (5-25s,
+  // longer while the shard's other specs contend under CONVERSATION_POD_CAP=1) BEFORE the
+  // exec starts — and completeTurn then waits for the run to fully END on top of that.
+  // Observed on CI: cluster-stories' first turn failed at 59.4s, i.e. the 60s default, as
+  // test #1 on a freshly booted shard. Callers that pass an explicit timeout are unaffected.
+  async completeTurn(text: string, timeout = process.env.E2E_TARGET === "full" ? 120_000 : 60_000) {
     const before = await this.assistantMessages().count();
     await this.send(text);
     // The run must actually BEGIN before we can meaningfully wait for it to end.
