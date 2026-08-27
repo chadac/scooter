@@ -125,6 +125,13 @@ type AguiEventBase =
   // (n/N)…" banner. NOT persisted as a terminal — a following RUN_STARTED clears it (success) or, on
   // exhaustion, the final RUN_ERROR replaces it. See the pump's retry loop.
   | { type: "RUN_RETRYING"; threadId: ThreadId; attempt: number; max: number; delayMs: number; code?: string }
+  // PERSISTED CANCEL INTENT. A user Stop emits this BEFORE the kill takes effect, so
+  // the intent survives the pod: if the host dies mid-cancel (a scale-down/rollout
+  // races the Stop), the next owner's dangling-run check finds the marker and
+  // TERMINATES the run (RUN_FINISHED cancelled) instead of resume-nudging work the
+  // user already stopped. Persist-only for the UI (@ag-ui folds by type and ignores
+  // it); load-bearing for reviveFromMirror.
+  | { type: "CANCEL_REQUESTED"; threadId: ThreadId; runId: RunId }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "TEXT_MESSAGE_END"; messageId: string }
@@ -1531,6 +1538,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const run = currentRun;
       if (!run || !acpClient) return;
       run.cancelled = true;
+      // USER stops persist their intent (see CANCEL_REQUESTED in the event union).
+      // Internal cancels (model switch, priority preemption) do NOT: they cancel in
+      // order to immediately continue, and a persisted intent would make a
+      // reassignment terminate the very run their nudge starts... the marker names
+      // THIS runId, so only the run being stopped can match it later.
+      if (userInitiated) emit({ type: "CANCEL_REQUESTED", threadId: run.threadId, runId: run.runId });
       try {
         // This is what actually ends the run: killing the shell makes the prompt
         // return. session/cancel alone does not (the fake agent ignores it).

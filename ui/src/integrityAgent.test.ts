@@ -1371,8 +1371,12 @@ describe("IntegrityAgent", () => {
 
   it("cancel() still throws when the 404 persists (a truly deleted conversation)", async () => {
     const fetchSpy = vi.fn(async () => new Response("nf", { status: 404 })) as unknown as typeof fetch;
-    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    // cancelRetryDelayMs: the production 700ms × 9 attempts (~5.6s, sized to outlast a
+    // slow controller assignment tick) would blow the unit-test budget waiting on a
+    // response that never changes — compress the schedule, keep the attempt count.
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy, cancelRetryDelayMs: 5 });
     await expect(agent.cancel()).rejects.toThrow(/cancel request failed: 404/);
+    expect(fetchSpy, "all 9 attempts must fire before giving up").toHaveBeenCalledTimes(9);
     agent.dispose();
   });
 

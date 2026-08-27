@@ -676,6 +676,19 @@ export async function main(
     },
   });
 
+  // Settlement on OWNERSHIP GAIN: the CR watch is the one signal that always fires
+  // when a conversation moves to this pod (the revive push can die with the old pod;
+  // the hydrate cascade makes adoption a no-op when the entry already exists). A
+  // gained conversation with a stranded run gets it terminated (persisted cancel
+  // intent) or resume-nudged. Fire-and-forget; owner-fenced + deduped inside.
+  if (ownership) {
+    ownership.guard.onGained = (id, generation) => {
+      void sessions
+        .reconcileDanglingRun(id as SessionId, generation)
+        .catch((err) => hostLog.errorWith("ownership-gain settlement failed", err, { conversation_id: id }));
+    };
+  }
+
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
    *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
    *  OTHER read error is surfaced (don't send an unauthenticated request). */
@@ -1317,6 +1330,12 @@ export async function main(
     jobCleanupTimer = setInterval(() => {
       for (const c of sessions.list()) {
         if (c.status !== "running") continue;
+        // OWNER-ONLY, same rule as sweepIdle (#358): a stale local entry for a
+        // conversation that moved away (or was deleted elsewhere) otherwise gets
+        // exec-probed here every sweep — each probe rides the pollForReadyPod
+        // self-heal into a resume of a sandbox that may be GONE (observed: a 404
+        // resume retried every 60s forever after the pod-move story).
+        if (ownership && !ownership.guard.canWrite(c.id)) continue;
         void jobManager.cleanup(c.id).catch(() => {});
       }
     }, config.idleSweepIntervalMs);
@@ -1337,6 +1356,8 @@ export async function main(
         // Poll conversations whose pod is up (running) — a suspended conversation's
         // completions are announced on its next revive (the watcher sees them then).
         if (c.status !== "running") continue;
+        // OWNER-ONLY — see the cleanup sweep above.
+        if (ownership && !ownership.guard.canWrite(c.id)) continue;
         void (async () => {
           const done = await jobManager!.pollCompletions(c.id).catch(() => [] as JobStatus[]);
           for (const st of done) {

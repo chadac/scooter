@@ -630,6 +630,7 @@ jobs:
         env:
           E2E_TARGET: full
           E2E_CLUSTER_URL: http://127.0.0.1:8899
+          E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
           CI: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: "report-full-shard-${{ matrix.shard }}.json"
         run: |
@@ -652,7 +653,12 @@ jobs:
               sleep 15
             done >/tmp/cluster-sampler.log 2>&1 ) &
           SAMPLER_PID=$!
-          trap 'kill "$PF_PID" "$SAMPLER_PID" 2>/dev/null || true' EXIT
+          # The rollout/move hook: lets the browser specs disturb the cluster (delete
+          # the owner pod mid-run / restart the deployment) — kubectl runs HERE, not
+          # in the browser. Activates the reassignment stories.
+          nix shell nixpkgs#kubectl -c python3 test/e2e/support/rolloutHook.py 8898 >/tmp/rollout-hook.log 2>&1 &
+          HOOK_PID=$!
+          trap 'kill "$PF_PID" "$SAMPLER_PID" "$HOOK_PID" 2>/dev/null || true' EXIT
           # Wait on a real GET, not the port bind — the forward accepts before nginx serves.
           for i in $(seq 1 60); do
             curl -sf -o /dev/null http://127.0.0.1:8899/ && break
@@ -679,6 +685,7 @@ jobs:
             test-results/
             /tmp/pf.log
             /tmp/cluster-sampler.log
+            /tmp/rollout-hook.log
           retention-days: 7
       - name: dump platform state on failure
         if: failure()

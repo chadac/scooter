@@ -25,12 +25,31 @@ import type { AguiEvent } from "../bridge.js";
  * saw a spurious "interrupted by a restart" during their first message.
  */
 export function hasDanglingRun(events: AguiEvent[], self?: RunOrigin): boolean {
+  return danglingRunInfo(events, self) !== null;
+}
+
+/** The dangling run's identity + whether the user asked to STOP it before the old
+ *  host died. `cancelRequested` distinguishes "resume the stranded work" from
+ *  "the user stopped this; mark it terminal" — without it, a Stop that raced a
+ *  scale-down was resurrected by the next owner's resume nudge. */
+export interface DanglingRunInfo {
+  runId: string;
+  threadId: string;
+  cancelRequested: boolean;
+}
+
+export function danglingRunInfo(events: AguiEvent[], self?: RunOrigin): DanglingRunInfo | null {
+  let cancelled: string | undefined; // runId named by a CANCEL_REQUESTED seen in the tail
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
-    if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") return false; // last run completed
-    if (e.type === "RUN_STARTED") return !isOwnRun(e, self);
+    if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") return null; // last run completed
+    if (e.type === "CANCEL_REQUESTED") cancelled = e.runId;
+    if (e.type === "RUN_STARTED") {
+      if (isOwnRun(e, self)) return null;
+      return { runId: e.runId, threadId: e.threadId, cancelRequested: cancelled === e.runId };
+    }
   }
-  return false; // no run markers at all
+  return null; // no run markers at all
 }
 
 /** Who is asking: this pod, at the generation it owns the conversation at. */
