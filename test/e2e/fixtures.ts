@@ -334,7 +334,14 @@ export const test = base.extend<Fixtures>({
             return del;
           }),
         );
-        await new Promise((r) => setTimeout(r, 100));
+        // FULL: 1s, not 100ms, between delete passes. A conversation's destroy is async
+        // server-side (bridge stop + sandbox teardown), and a SUSPENDED one must first be
+        // hydrated back into memory before it can be ended — so it can still be listed for
+        // several seconds after a 204. At 100ms the 50 attempts burn out in ~5s, which is
+        // exactly what CI showed: four specs each failing in 6.2-6.6s naming the same
+        // conversation, one the previous test had suspended. 1s gives the loop ~50s, past
+        // the observed teardown. Fast keeps 100ms — its destroy is in-process and immediate.
+        await new Promise((r) => setTimeout(r, process.env.E2E_TARGET === "full" ? 1000 : 100));
         // FAIL LOUD on the last iteration rather than shrugging. This loop used to exhaust its 50
         // attempts and continue silently, so an UNDELETABLE conversation (e.g. a starred one —
         // DELETE 409s) leaked into every later test and surfaced as unrelated assertion failures
