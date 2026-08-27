@@ -81,18 +81,30 @@ test.describe("sidebar search + filter + label mode", () => {
     await chat.send(`investigate the flaky broker test ${nonce}`);
     await chat.waitForReply(/dummy agent/i, 90_000);
     const threadA = await currentThreadId(page);
-    const r = await request.post(`${base}/conversations/${threadA}/links`, {
-      data: {
-        source: "github",
-        resourceType: "pull_request",
-        url: "https://github.com/example-org/example-app/pull/203",
-        // Nonce here too: the label-mode assertions below count rows showing this LINK
-        // name, and on the shared fleet a resurfaced row from an earlier attempt would
-        // carry the identical title and break an exact count.
-        title: `example-org/example-app #203 ${nonce}`,
-      },
-    });
-    expect(r.ok()).toBeTruthy();
+    const linkBody = {
+      source: "github",
+      resourceType: "pull_request",
+      url: "https://github.com/example-org/example-app/pull/203",
+      // Nonce here too: the label-mode assertions below count rows showing this LINK
+      // name, and on the shared fleet a resurfaced row from an earlier attempt would
+      // carry the identical title and break an exact count.
+      title: `example-org/example-app #203 ${nonce}`,
+    };
+    // RETRY the link POST, and report the STATUS when it never takes.
+    //
+    // This is setup, not the behaviour under test — everything below asserts how the
+    // sidebar FILTERS an existing link. On CI it failed here with a bare
+    // "expect(received).toBeTruthy() / Received: false", which says nothing about why:
+    // the conversation was healthy in the snapshot (its turn had completed normally), so
+    // this was a transient write against the fleet, and the assertion threw away the one
+    // piece of evidence that would identify it. The write is idempotent enough to repeat —
+    // it names the same conversation, source, and url each time.
+    let r = await request.post(`${base}/conversations/${threadA}/links`, { data: linkBody });
+    for (let i = 0; i < 4 && !r.ok(); i++) {
+      await page.waitForTimeout(2_000);
+      r = await request.post(`${base}/conversations/${threadA}/links`, { data: linkBody });
+    }
+    expect(r.ok(), `linking conversation A failed: ${r.status()} ${await r.text().catch(() => "")}`).toBeTruthy();
 
     // Conversation B: plain, no links. Same 90s budget — under podCap=1 this
     // conversation provisions its own sandbox on another pod (no warm reuse).
