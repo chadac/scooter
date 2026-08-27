@@ -358,6 +358,12 @@ jobs:
               - 'test/e2e/aws-interrupt.spec.ts'
               - 'test/e2e/interrupt-queue-recovery.spec.ts'
               - 'test/e2e/interrupt.spec.ts'
+              # target.ts (né tier.ts — #363 renamed it and this filter went stale, so
+              # gate-mechanism changes stopped opening the gate) + the allowlist that IS
+              # the full project's testMatch + the shard planner that distributes it.
+              # The specs the allowlist currently selects — editing one must re-run the
+              # only job that executes it.
+              - 'test/e2e/live-real-agent.spec.ts'
               - 'test/e2e/fixtures.ts'
               # The full-target allowlist AND every spec on it: editing a listed spec
               # (or the list itself) must run the only job that executes it. The list
@@ -528,7 +534,15 @@ jobs:
     if: needs.cluster-changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     env:
-      E2E_FULL_SHARDS: "1"
+      # 2, not 1: this link adds the real-agent specs, and that is where the test phase
+      # stops being small relative to the per-shard cluster setup. Beyond the wall-clock
+      # argument above, the shard count is also a CONCURRENCY control: every spec on a
+      # shard competes for sandbox provisioning against the others, and CI forces
+      # CONVERSATION_POD_CAP=1 so each conversation needs its own pod. Packing the whole
+      # allowlist onto one shard is what pushed cold boots past their budgets — several
+      # specs failed here purely waiting for a pod while behaving correctly. Splitting the
+      # set halves the peak provisioning pressure.
+      E2E_FULL_SHARDS: "2"
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:

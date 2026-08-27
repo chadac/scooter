@@ -10,10 +10,23 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { fastOnly } from "./target.js";
 
 const run = process.env.RUN_REAL_GOOSE === "1";
 
-test.describe(run ? "real goose" : "real goose (skipped)", () => {
+// Env-gated everywhere: this spec exists to prove the REAL `goose acp` binary, which needs a
+// model provider (Bedrock creds). It is NOT in the full-target allowlist (test/e2e/full-specs.json)
+// and is gated out of the full project besides: CI's k3d cluster runs the fake agent
+// (GOOSE_BIN=fake, modules/testing.nix) with no provider, so the real binary can never be present
+// there — running this spec against it would "pass" by testing the fake agent under a "real goose"
+// name. The only honest run is RUN_REAL_GOOSE=1 against a stack started in real mode.
+const maybe = run
+  ? test.describe
+  : fastOnly(
+      "needs the real goose binary + a model provider — CI's full-target cluster runs GOOSE_BIN=fake; run manually with RUN_REAL_GOOSE=1 + Bedrock creds",
+    );
+
+maybe(run ? "real goose" : "real goose (skipped)", () => {
   test.skip(!run, "set RUN_REAL_GOOSE=1 + Bedrock creds + a cluster");
 
   test("real goose responds to a prompt", async ({ chat }) => {
