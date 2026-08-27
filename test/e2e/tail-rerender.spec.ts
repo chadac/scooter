@@ -24,16 +24,22 @@ test.describe("multi-turn re-render (tail + replay)", () => {
   // client-server-identity uses).
   test.setTimeout(240_000);
 
+  /** Budget for the FIRST turn of a conversation — the only one that waits for a COLD
+   *  sandbox pod before its exec starts (the arithmetic above). sendTurn's 45s default is a
+   *  bet on that boot being quick; CI lost it here at 58.7s with the tail/replay behaviour
+   *  under test perfectly correct. Later turns reuse the warm pod and keep the default. */
+  const FIRST_TURN_MS = 90_000;
+
   test("a longer conversation is populated after switching away and back", async ({ chat, page }) => {
     await chat.open();
     // Several turns → several persisted runs, so switching back goes through the
     // /tail window + full replay path (not the trivial 1-run case).
     const markers = ["alpha-111", "beta-222", "gamma-333", "delta-444", "epsilon-555"];
-    for (const m of markers) {
+    for (const [i, m] of markers.entries()) {
       // sendTurn waits for THIS turn's reply (count-based) — waitForReply matched a
       // prior turn's identical "dummy agent" reply and let the next send race an
       // unfinished run, dropping a turn (the flake).
-      await chat.sendTurn(`turn ${m}`);
+      await chat.sendTurn(`turn ${m}`, i === 0 ? FIRST_TURN_MS : undefined);
     }
     // All five user turns are present in the live thread.
     await expect(chat.userMessages()).toHaveCount(markers.length, { timeout: 30_000 });
@@ -62,8 +68,11 @@ test.describe("multi-turn re-render (tail + replay)", () => {
     // bottom. Build a thread tall enough to actually scroll first.
     await chat.open();
     const markers = ["m1-aa", "m2-bb", "m3-cc", "m4-dd", "m5-ee", "m6-ff", "m7-gg", "m8-hh"];
-    for (const m of markers) {
-      await chat.sendTurn(`turn ${m} — a moderately long line so the thread grows tall enough to scroll`);
+    for (const [i, m] of markers.entries()) {
+      await chat.sendTurn(
+        `turn ${m} — a moderately long line so the thread grows tall enough to scroll`,
+        i === 0 ? FIRST_TURN_MS : undefined,
+      );
     }
     await expect(chat.userMessages()).toHaveCount(markers.length, { timeout: 30_000 });
 
@@ -85,8 +94,9 @@ test.describe("multi-turn re-render (tail + replay)", () => {
 
   test("a longer conversation is populated after a full page reload", async ({ chat, page }) => {
     await chat.open();
-    for (const m of ["one-aaa", "two-bbb", "three-ccc", "four-ddd"]) {
-      await chat.sendTurn(`turn ${m}`); // count-based wait — no dropped turns (see fixtures)
+    for (const [i, m] of ["one-aaa", "two-bbb", "three-ccc", "four-ddd"].entries()) {
+      // count-based wait — no dropped turns (see fixtures)
+      await chat.sendTurn(`turn ${m}`, i === 0 ? FIRST_TURN_MS : undefined);
     }
     await expect(chat.userMessages()).toHaveCount(4, { timeout: 30_000 });
 
