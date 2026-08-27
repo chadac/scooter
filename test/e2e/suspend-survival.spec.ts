@@ -354,10 +354,12 @@ async function buildRichConversation(
     data: { title },
   });
   expect(titled.ok(), `setting the title must succeed (${titled.status()})`).toBeTruthy();
-  const starred = await request.patch(`${base}/conversations/${encodeURIComponent(id)}/starred`, {
+  const starRes = await request.patch(`${base}/conversations/${encodeURIComponent(id)}/starred`, {
     data: { starred: true },
   });
-  expect(starred.ok(), `starring must succeed (${starred.status()})`).toBeTruthy();
+  expect(starRes.ok(), `starring must succeed (${starRes.status()})`).toBeTruthy();
+  // Register for afterEach cleanup BEFORE any assertion below can throw.
+  starred.push(id);
 
   // PRECONDITION, not decoration. Every assertion after recovery is meaningless if the
   // artifact was never there to begin with — a seed that silently failed would make the
@@ -373,16 +375,27 @@ async function buildRichConversation(
   return { id, turns, title };
 }
 
-/** Unstar so `cleanState` can delete this conversation. A STARRED conversation returns
- *  409 on DELETE, which the fixture cannot clear — it then spins through every attempt
- *  and poisons every later spec on the shard with a leftover row. Tests here star
- *  deliberately (it is one of the artifacts under test), so each must hand the star
- *  back. Best-effort: a failure here must not mask the test's real result. */
-async function unstar(request: APIRequestContext, base: string, id: string) {
-  await request
-    .patch(`${base}/conversations/${encodeURIComponent(id)}/starred`, { data: { starred: false } })
-    .catch(() => undefined);
-}
+/** Conversations this test starred, to be unstarred in afterEach.
+ *
+ *  A starred conversation returns 409 on DELETE, so `cleanState` cannot remove it: it
+ *  exhausts every attempt and hands the leftover to every later spec on the shard.
+ *  Starring is one of the artifacts under test here, so the star MUST be handed back
+ *  even when the test fails — and several tests in this file are expected to fail
+ *  while the read paths they cover are unfixed. Cleanup therefore cannot live at the
+ *  end of a test body, which an earlier assertion failure skips. */
+const starred: string[] = [];
+
+test.afterEach(async ({ request, baseURL }) => {
+  const base = (baseURL ?? "").replace(/\/$/, "");
+  const ids = starred.splice(0);
+  for (const id of ids) {
+    // Best-effort per id, and never let one failure skip the rest: an unreachable
+    // conversation must not strand the stars of the others.
+    await request
+      .patch(`${base}/conversations/${encodeURIComponent(id)}/starred`, { data: { starred: false } })
+      .catch(() => undefined);
+  }
+});
 
 /* ─────────────────────────────── budgets ─────────────────────────────── */
 
@@ -481,7 +494,6 @@ test.describe("survival: the conversation transcript", () => {
       "the event COUNT must be unchanged too",
     ).toBe(beforeHistory.events.length);
 
-    await unstar(request, base, conv.id);
   });
 
   test("the recovered transcript renders in the UI, not just in the API", async ({
@@ -512,7 +524,6 @@ test.describe("survival: the conversation transcript", () => {
       ).toHaveCount(1, { timeout: 40_000 });
     }
 
-    await unstar(request, base, conv.id);
   });
 });
 
@@ -564,7 +575,6 @@ test.describe("survival: conversation metadata", () => {
       { timeout: 30_000 },
     );
 
-    await unstar(request, base, conv.id);
   });
 });
 
@@ -603,7 +613,6 @@ test.describe("survival: linked resources", () => {
       "both links must survive a suspend that leaves the local store in place",
     ).toEqual(LINKS.map((l) => l.url).sort());
 
-    await unstar(request, base, conv.id);
   });
 
   test("the link BADGE is still on the sidebar row after a suspend", async ({
@@ -648,7 +657,6 @@ test.describe("survival: linked resources", () => {
       "the PR link must still be clickable in the panel",
     ).toHaveCount(1, { timeout: 30_000 });
 
-    await unstar(request, base, conv.id);
   });
 });
 
@@ -723,7 +731,6 @@ test.describe("survival: linked resources across the rollout WIPE of the local s
         "links are written to the durable mirror, so a wiped local cache must NOT lose them",
       ).toEqual(LINKS.map((l) => l.url).sort());
 
-      await unstar(request, base, conv.id);
     });
 
     test("the link BADGE returns after the emptyDir wipe", async ({
@@ -759,7 +766,6 @@ test.describe("survival: linked resources across the rollout WIPE of the local s
         "the github badge must come back from the durable store after the local wipe",
       ).toHaveCount(1, { timeout: 40_000 });
 
-      await unstar(request, base, conv.id);
     });
 });
 
@@ -817,7 +823,6 @@ fullOnly("needs a real pod replacement so the in-memory entry is evicted and hyd
         )
         .toBe(turns.join("|"));
 
-      await unstar(request, base, conv.id);
     });
 
     test("TITLE and STAR survive the emptyDir wipe (meta is hydrated from the mirror)", async ({
@@ -855,7 +860,6 @@ fullOnly("needs a real pod replacement so the in-memory entry is evicted and hyd
       const row = await listRow(request, base, conv.id);
       expect(row?.starred, "the star must come back from the mirror").toBe(true);
 
-      await unstar(request, base, conv.id);
     });
   },
 );
@@ -925,7 +929,6 @@ fullOnly("needs a real rollout-restart of the agent-host Deployment")(
         "the links were written to the durable mirror — a rollout must not lose them",
       ).toEqual(LINKS.map((l) => l.url).sort());
 
-      await unstar(request, base, conv.id);
     });
   },
 );
