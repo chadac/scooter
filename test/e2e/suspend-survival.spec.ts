@@ -268,6 +268,12 @@ async function hook(
  * Two mechanisms, same postcondition:
  *   fast — `node:fs` rm. Spec files run in Node, so this is direct.
  *   full — the rollout hook execs `rm -rf` in the pod that owns the conversation.
+ *
+ * The "mirror still has it" half of the postcondition is checked directly on fast,
+ * where the mirror is a local directory. On full it is established by the CONTROLS in
+ * section 4: the transcript and meta survive this same wipe, which is only possible if
+ * the durable copy is intact. A red links test alongside green controls therefore
+ * cannot be explained by the wipe having destroyed the data.
  */
 async function wipeLocalState(request: APIRequestContext, id: string): Promise<string> {
   if (isFull) {
