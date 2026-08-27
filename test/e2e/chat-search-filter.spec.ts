@@ -104,7 +104,12 @@ test.describe("sidebar search + filter + label mode", () => {
       await page.waitForTimeout(2_000);
       r = await request.post(`${base}/conversations/${threadA}/links`, { data: linkBody });
     }
-    expect(r.ok(), `linking conversation A failed: ${r.status()} ${await r.text().catch(() => "")}`).toBeTruthy();
+    // Read the body ONLY on failure. `expect(cond, msg)` builds its message eagerly, so
+    // awaiting r.text() inline consumes the response on the SUCCESS path too.
+    if (!r.ok()) {
+      const why = await r.text().catch(() => "");
+      expect(r.ok(), `linking conversation A failed: ${r.status()} ${why}`).toBeTruthy();
+    }
 
     // Conversation B: plain, no links. Same 90s budget — under podCap=1 this
     // conversation provisions its own sandbox on another pod (no warm reuse).
