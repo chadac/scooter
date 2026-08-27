@@ -80,7 +80,11 @@ test.describe("long multi-turn conversation integrity", () => {
   test("switching AWAY to a new conversation and BACK preserves the long one's transcript", async ({ chat, page }) => {
     await chat.open();
     const N = 8;
-    for (let i = 1; i <= N; i++) await chat.sendTurn(`switchable ${i}`);
+    // A per-run nonce so the sidebar row can be found by ITS OWN title rather than by
+    // position. On the full target the sidebar lists a shared multi-replica fleet, so
+    // the long conversation is not reliably the last row.
+    const nonce = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
+    for (let i = 1; i <= N; i++) await chat.sendTurn(`switchable ${nonce} ${i}`);
     await expect(chat.userMessages()).toHaveCount(N, { timeout: 45_000 });
 
     // New conversation, one turn, then back to the first. 100s, not sendTurn's 45s
@@ -88,9 +92,18 @@ test.describe("long multi-turn conversation integrity", () => {
     // target (new agent-host assignment + a fresh sandbox pod) before its exec runs.
     await page.locator('[data-testid="new-session"]').click();
     await chat.sendTurn("a different conversation", 100_000);
-    await page.locator('[data-testid="session-item"]').last().click(); // back to the long one
+    // Back to the long one — BY TITLE, not `.last()`. The row order reflects the whole
+    // fleet (and its recency), so positional selection clicked an unrelated conversation
+    // and the assertion then read an empty thread (observed on CI: expected 8, received 0
+    // for the full 45s, with the transcript intact in the conversation it never opened).
+    const longRow = page
+      .locator('[data-testid="session-item"]')
+      .filter({ hasText: new RegExp(`switchable ${nonce}`, "i") })
+      .first();
+    await expect(longRow).toHaveCount(1, { timeout: 30_000 });
+    await longRow.click();
     // The long conversation re-renders in full (no truncation / loss on switch-back).
     await expect(chat.userMessages()).toHaveCount(N, { timeout: 45_000 });
-    await expect(chat.userMessages().filter({ hasText: `switchable ${N}` })).toHaveCount(1);
+    await expect(chat.userMessages().filter({ hasText: `switchable ${nonce} ${N}` })).toHaveCount(1);
   });
 });
