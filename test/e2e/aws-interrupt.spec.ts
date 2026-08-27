@@ -22,30 +22,68 @@ const panel = {
   message: '[data-testid="interrupt-message"]',
 };
 
-/** The id of the first listed conversation, POLLED rather than read once.
+/** The server id of the conversation THIS test is looking at, polled rather than read once.
  *
- *  The router aggregates GET /conversations over the READY agent-host pods and degrades
- *  to a PARTIAL — sometimes empty — list while pods churn (the platform dump for the
- *  failing run is full of "resume-on-missing-pod failed"). Every one of these tests
- *  creates a conversation and then needs its id, and a single read that came back []
- *  killed the test on `list[0].id` with a bare "Cannot read properties of undefined",
- *  which says nothing about the real cause. Retry, and fail with a sentence if it never
- *  appears. */
+ *  Named "first" historically; it is the CURRENT conversation, which on a shared backend is
+ *  not the same thing as the first listed one. See the body for why that distinction cost a
+ *  false "aws-request must revive an inactive conversation" failure.
+ *
+ *  Polled because the router aggregates GET /conversations over the READY agent-host pods
+ *  and degrades to a PARTIAL — sometimes empty — list while pods churn (the platform dump
+ *  for the failing run is full of "resume-on-missing-pod failed"). A single read that came
+ *  back [] used to kill the test on `list[0].id` with a bare "Cannot read properties of
+ *  undefined", which says nothing about the real cause. */
 async function firstConversationId(
   request: import("@playwright/test").APIRequestContext,
   base: string,
   page: import("@playwright/test").Page,
 ): Promise<string> {
+  // THIS test's conversation, read from the UI's own persisted selection — NOT list[0].
+  //
+  // `/conversations` is ordered newest-first across the WHOLE fleet on the full target, so
+  // index 0 is whatever conversation was created most recently by ANY spec sharing the
+  // backend. These tests then suspended and AWS-requested a stranger's conversation, which
+  // another spec's cleanState was free to delete in between — and the route correctly
+  // answered 404 for a conversation that no longer existed. CI showed exactly that: the
+  // suspend succeeded (the id was real then) and the aws-request that followed got a 404,
+  // reported as "aws-request must revive an inactive conversation", a bug that was not
+  // happening. suspended-recovery.spec.ts already reads the id this way for the same reason.
+  //
+  // `currentId` is the stable LOCAL key; the server id is recorded beside it as `serverId`
+  // (for a conversation created on its first send, currentId is a placeholder the server
+  // never issued, so suspending by it 404s).
   let id = "";
   for (let i = 0; i < 30 && !id; i++) {
+    id =
+      (await page.evaluate(() => {
+        try {
+          const raw = localStorage.getItem("kubenix-agent.sessions.v1");
+          if (!raw) return "";
+          const st = JSON.parse(raw) as {
+            currentId?: string;
+            sessions?: Array<{ id: string; serverId?: string }>;
+          };
+          return st.sessions?.find((s) => s.id === st.currentId)?.serverId ?? "";
+        } catch {
+          return "";
+        }
+      })) ?? "";
+    if (!id) await page.waitForTimeout(1000);
+  }
+  expect(id, "the conversation this test created must have a server id").toBeTruthy();
+
+  // Confirm the SERVER agrees it exists before the test acts on it. The router aggregates
+  // GET /conversations over the READY pods and degrades to a PARTIAL — sometimes empty —
+  // list while pods churn, so this is a retry, not a single read.
+  for (let i = 0; i < 30; i++) {
     const res = await request.get(`${base}/conversations`);
     if (res.ok()) {
       const rows = (await res.json()) as Array<{ id: string }>;
-      if (rows.length) id = rows[0].id;
+      if (rows.some((r) => r.id === id)) return id;
     }
-    if (!id) await page.waitForTimeout(1000);
+    await page.waitForTimeout(1000);
   }
-  expect(id, "the conversation just created must appear in the server's list").toBeTruthy();
+  expect(false, `the conversation ${id} never appeared in the server's list`).toBeTruthy();
   return id;
 }
 
