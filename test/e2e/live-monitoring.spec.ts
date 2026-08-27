@@ -105,7 +105,7 @@ test.describe("live monitoring", () => {
       // Open the pushed conversation from the sidebar. Unlike the test above, this wait is
       // NOT the push-latency measurement — it just has to reach the row before clicking it,
       // and the subject of this test is the streamed reply's fidelity. So it gets a plain
-      // cluster-honest budget rather than the 8s used to prove the push beat the poll.
+      // cluster-honest budget rather than the 8s prove the push beat the poll.
       const row = page.locator(sel.conversationRow).filter({ hasText: /auth module|slack/i }).first();
       await expect(row).toBeVisible({ timeout: isFull ? 60_000 : 8_000 });
       await row.click();

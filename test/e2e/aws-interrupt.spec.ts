@@ -31,7 +31,7 @@ const panel = {
  *  Polled because the router aggregates GET /conversations over the READY agent-host pods
  *  and degrades to a PARTIAL — sometimes empty — list while pods churn (the platform dump
  *  for the failing run is full of "resume-on-missing-pod failed"). A single read that came
- *  back [] used to kill the test on `list[0].id` with a bare "Cannot read properties of
+ *  back [] kill the test on `list[0].id` with a bare "Cannot read properties of
  *  undefined", which says nothing about the real cause. */
 async function firstConversationId(
   request: import("@playwright/test").APIRequestContext,
@@ -167,7 +167,7 @@ test.describe("AWS approval interrupt", () => {
 
   test("the panel appears even when the conversation's bridge is inactive (suspended)", async ({ chat, page, baseURL, request }) => {
     // THE reported bug: the agent hit AWS after the conversation went idle (no live
-    // bridge). The route used to 404 and the broker swallowed it → nothing appeared.
+    // bridge). The route 404 and the broker swallowed it → nothing appeared.
     // The route must now REVIVE the conversation and raise the interrupt anyway.
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();

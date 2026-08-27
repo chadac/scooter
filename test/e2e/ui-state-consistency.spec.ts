@@ -232,7 +232,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     //
     // Assert THIS TEST'S message survived, rather than that the queue is byte-identical. On
     // the full target the platform legitimately enqueues its own recovery prose when a pod
-    // restarts mid-run — observed on CI, where the post-reload queue held
+    // restarts mid-run —, where the post-reload queue held
     //   "[System: this conversation was interrupted by a restart while you were working...]"
     // and an exact toEqual reported that platform behaviour as lost user state. What this
     // test is for is that the user's queued row survives a reload, and that is asserted

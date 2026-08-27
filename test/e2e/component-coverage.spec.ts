@@ -106,7 +106,7 @@ test.describe("sidebar / session components", () => {
     // WAIT for both rows rather than sampling the count once. The sidebar is fed by the
     // router's aggregated list, which degrades to a partial — sometimes empty — list while
     // pods churn, so a single sample can read 0 immediately after two successful turns
-    // (observed on CI: "Expected: > 0, Received: 0" with both conversations healthy).
+    // ("Expected: > 0, Received: 0" with both conversations healthy).
     await expect
       .poll(async () => page.locator(sb.item).count(), { timeout: 60_000 })
       .toBeGreaterThanOrEqual(2);
@@ -140,7 +140,7 @@ test.describe("sidebar / session components", () => {
     // Remember WHICH conversation this is. The switch-back below used `.last()`, but the
     // sidebar lists the whole fleet ordered by recency on the full target, so the first
     // conversation is not reliably the last row — the click landed on an unrelated
-    // conversation and the poll then read ITS transcript (observed on CI: lastUserText
+    // conversation and the poll then read ITS transcript (lastUserText
     // stayed "" for the full 30s while the transcript was intact in the conversation the
     // test never opened). data-conversation-id is the server id and cannot drift.
     // Poll: the row carries data-conversation-id only once the SERVER id has landed,

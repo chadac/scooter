@@ -81,7 +81,7 @@ test.describe("client/server conversation identity", () => {
   // the end — they were the second sandbox being unschedulable (Guaranteed 2cpu per
   // sandbox on a 4-vCPU runner; fixed by testing.nix's small sandboxResources) — but
   // the budgets still must fund two sequential sandbox boots at cluster pace
-  // (instrumented runs measured 9-12s of ready-pod wait per boot under CPU
+  // (instrumented runs 9-12s of ready-pod wait per boot under CPU
   // pressure). NOTE: completeTurn's own poll defaults to 60s — test.setTimeout
   // alone does NOT extend it, which made the first budget bump here a no-op.
   test.setTimeout(240_000);

@@ -305,7 +305,7 @@ test.describe("recovered conversation — sending a message revives it", () => {
     ).toBeVisible({ timeout: 45_000 });
 
     // THE BUG THIS PINS: an item sitting in the bridge's in-memory queue when
-    // suspend() tears the bridge down used to be dropped on the floor — stop() never
+    // suspend() tears the bridge down be dropped on the floor — stop() never
     // drained or re-queued it, and revive() built a BRAND-NEW bridge with an empty
     // queue. The observed event log was:
     //     QUEUE_UPDATED items=['queued before the suspend']

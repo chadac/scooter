@@ -1274,7 +1274,7 @@ in
             accessModes = [ hm.accessMode ];
             resources.requests.storage = hm.size;
           }
-          # hostPath escape hatch (odin: no RWX provisioner) → bind to the
+          # hostPath escape hatch → bind to the
           # explicit PV below by class; otherwise use the given/ default class.
           // (if hm.hostPath != null
               then { storageClassName = "agent-host-history-hostpath"; }

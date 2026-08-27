@@ -156,7 +156,7 @@ test.describe("session selector & titles", () => {
 
     // Assert on THIS test's own rows, not an absolute list length. On the full target the
     // backend is a shared multi-replica fleet, so a conversation another spec is still
-    // settling can inflate the count — observed on CI: "Expected 2, Received 3" for the
+    // settling can inflate the count — "Expected 2, Received 3" for the
     // full 15s with both of this test's rows present and correct. The property under test
     // is "the deleted conversation's row goes away, the other one stays", which the
     // relative assertions below prove without asserting fleet hygiene.

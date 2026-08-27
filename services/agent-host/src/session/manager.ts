@@ -286,7 +286,7 @@ export interface SessionManager {
    *  (the revive push) AND ensureReadable's adoption (the LAZY path — the push is
    *  fire-and-forget by design, and when it is lost with a dying pod the adopted
    *  conversation otherwise keeps its stranded run forever: the pod-move story's
-   *  'Working…' that never cleared, CI run 33024754713). */
+   *  'Working…' that never cleared). */
   reconcileDanglingRun(id: SessionId, expectedGen?: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
@@ -963,7 +963,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // the push — so the cache can still name the PREVIOUS owner. That is a stale
       // CACHE, not a stale push, and nothing ever re-pushes: dropping it left the
       // reassigned mid-run conversation dangling forever ("Working…" until the e2e
-      // budget died — the conversation-moves-pods story, CI run 33024754713). When the
+      // budget died — the conversation-moves-pods story). When the
       // push's generation is NEWER than anything the watch has shown, trust the push,
       // adopt the assignment (the watch confirms or corrects it shortly), and proceed.
       // A push at or below the observed generation IS stale: keep the fence — loudly,
@@ -1001,7 +1001,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           if (!pulled) {
             // LOUD. This pod was ASSIGNED the conversation; giving up here means nobody
             // will ever complete its (possibly truncated) run — the "Working… forever"
-            // condition the Tier-2 browser tests surfaced. Silent until 2026-08-26, which
+            // condition the Tier-2 browser tests surfaced, which
             // is why the assigned pod's total silence looked like the push never arriving.
             log.warn("reviveFromMirror: assigned a conversation the mirror does not have", {
               conversation_id: id,

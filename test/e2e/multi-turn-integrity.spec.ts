@@ -12,7 +12,7 @@ test.describe("long multi-turn conversation integrity", () => {
   // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target EVERY turn —
   // plain text included — is a real sandbox exec (the fake agent shells
   // `echo <text>`), and the first turn additionally waits for the sandbox pod to be
-  // ready (5-25s cold; client-server-identity measured 9-12s under CI CPU pressure).
+  // ready (5-25s cold; client-server-identity 9-12s under CI CPU pressure).
   // Worst test here: 12 turns → boot 25s + 12 x ~8s warm exec ≈ 120s; the
   // switch-away test adds a SECOND conversation boot (+25s). The 60s default is
   // arithmetic-bound, not behaviour-bound. 240s = worst case with headroom, matching
@@ -108,7 +108,7 @@ test.describe("long multi-turn conversation integrity", () => {
     await chat.sendTurn("a different conversation", 100_000);
     // Back to the long one — BY TITLE, not `.last()`. The row order reflects the whole
     // fleet (and its recency), so positional selection clicked an unrelated conversation
-    // and the assertion then read an empty thread (observed on CI: expected 8, received 0
+    // and the assertion then read an empty thread (expected 8, received 0
     // for the full 45s, with the transcript intact in the conversation it never opened).
     const longRow = page
       .locator('[data-testid="session-item"]')

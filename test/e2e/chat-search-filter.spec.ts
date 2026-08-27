@@ -67,7 +67,7 @@ test.describe("sidebar search + filter + label mode", () => {
     // A per-run nonce on the GITHUB LINK NAME (a title this test sets explicitly, so it
     // is stable). On the full target `scope=all` shows the whole multi-replica fleet, so
     // an unscoped title search also matches leftovers from other specs and from earlier
-    // attempts of this one — observed on CI: searching "#203" correctly hid THIS test's
+    // attempts of this one — searching "#203" correctly hid THIS test's
     // plain row, but a foreign /scratch/i row was still on screen and toHaveCount(0)
     // failed while the filter worked. The nonce keeps the link-name assertions naming
     // exactly this run's conversation. The two ROWS are pinned by server id instead
