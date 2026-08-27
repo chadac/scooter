@@ -23,10 +23,10 @@ async function step(page: Page, when: string): Promise<UiSnapshot> {
 
 test.describe("whole-UI consistency through a normal turn", () => {
   test("every surface stays mutually consistent across idle → running → replied", async ({ chat, page, request, baseURL }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target the `!sleep 3`
-    // exec waits for a ready sandbox pod first (5-25s measured), so the run lasts up to
-    // ~30s; add open + the multi-surface snapshots and the worst case brushes the 60s
-    // default on arithmetic alone.
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target the exec waits
+    // for a ready sandbox pod first (5-25s measured), so the run lasts up to ~30s; add
+    // open + the multi-surface snapshots and the worst case brushes the 60s default on
+    // arithmetic alone.
     test.setTimeout(120_000);
     await chat.open();
     const idle = await step(page, "after open");
@@ -36,7 +36,13 @@ test.describe("whole-UI consistency through a normal turn", () => {
     expect(idle.runError, "a fresh conversation must have no error").toBeNull();
 
     // RUNNING: the run bar is up, the composer offers Stop (not Send), nothing else changed state.
-    await chat.send("!sleep 3");
+    // 20s, not 3: this asserts the run bar is VISIBLE, so the run must still be in flight when
+    // the assertion polls. On the full target the exec waits for a ready sandbox pod BEFORE the
+    // sleep starts, so a 3s sleep can begin and END inside that wait — the bar never renders and
+    // the test fails with everything behaving correctly (observed: "element(s) not found" after
+    // the full 30s). The same arithmetic is why stop-run.spec.ts:75 uses a 20s sleep. Nothing
+    // waits for this sleep to finish — the poll below ends the test as soon as the run does.
+    await chat.send("!sleep 20");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     const running = await step(page, "while running");
     expect(running.running).toBe(true);
@@ -45,7 +51,10 @@ test.describe("whole-UI consistency through a normal turn", () => {
     expect(running.userMessages, "the user's message renders immediately").toBeGreaterThan(idle.userMessages);
 
     // REPLIED: back to a fully idle, consistent state — no residue anywhere.
-    await expect.poll(async () => (await snapshot(page)).running, { timeout: 45_000 }).toBe(false);
+    // 60s, not 45: the poll starts once the bar is visible, but the 20s sleep above may only
+    // just have begun (the ready-pod wait precedes it), so the run can still owe ~20s of sleep
+    // plus the reply round-trip. 60s keeps a real margin inside the 120s test budget.
+    await expect.poll(async () => (await snapshot(page)).running, { timeout: 60_000 }).toBe(false);
     const done = await step(page, "after the reply");
     expect(done.composerSendable, "the composer must return to Send when idle").toBe(true);
     expect(done.queued, "the queue must be empty after the run drains").toEqual([]);
@@ -117,7 +126,13 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // moment its own poll would have. Give this one a budget larger than the work it waits on.
     test.setTimeout(180_000);
     await chat.open();
-    await chat.send("!sleep 3");
+    // 20s, not 3: the whole point is that the second message QUEUES behind an in-flight run.
+    // On the full target the exec waits for a ready sandbox pod before the sleep starts, so a
+    // 3s sleep can be over by the time sendWhileRunning fires — the message then lands on an
+    // IDLE conversation as an ordinary turn, the queue never holds it, and the conservation
+    // count comes up one short (observed: expected 2, received 1) while nothing is actually
+    // lost. A 20s sleep keeps the run in flight across the queueing window.
+    await chat.send("!sleep 20");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
@@ -145,14 +160,15 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // top of a run whose exec first waits for the sandbox (5-25s) exceeds the 60s default.
     test.setTimeout(120_000);
     await chat.open();
-    // 20s, not 6: the test asserts `running === true` AFTER the reload, so the run must
-    // outlive open→send→queue→snapshot→reload→re-derive. On the fast stack that window is
-    // a few seconds; on the full target the reload + queue re-poll alone can take ~10-15s
-    // while the sandbox wait before the sleep is as little as ~5s — a 6s sleep can END
-    // before the post-reload snapshot, failing the assertion with everything healthy.
-    // Nothing waits for this sleep to finish (the test ends mid-run; cleanState cancels
-    // it), so the longer sleep costs no wall-clock time.
-    await chat.send("!sleep 20");
+    // 60s, not 20: the test asserts the queue still holds a row and `running === true` AFTER
+    // the reload, so the run must outlive open→send→queue→snapshot→reload→re-derive. On the
+    // full target that window is far wider than it looks — a 20s sleep was still being drained
+    // before the post-reload poll could observe it (observed: queued.length stuck at 0 through
+    // the whole 30s budget, expected 1, with the queue demonstrably working). The sandbox wait
+    // precedes the sleep, so the sleep's own 20s is not the margin it appears to be. Nothing
+    // waits for this sleep to finish (the test ends mid-run; cleanState cancels it), so the
+    // longer sleep costs no wall-clock time.
+    await chat.send("!sleep 60");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();
