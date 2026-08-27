@@ -3,6 +3,7 @@
   "chat-search-filter.spec.ts",
   "client-server-identity.spec.ts",
   "cluster-stories.spec.ts",
+  "component-coverage.spec.ts",
   "interrupt-queue-recovery.spec.ts",
   "interrupt.spec.ts",
   "linked-resources.spec.ts",
@@ -11,5 +12,6 @@
   "refresh-history.spec.ts",
   "revive.spec.ts",
   "stop-run.spec.ts",
-  "tail-rerender.spec.ts"
+  "tail-rerender.spec.ts",
+  "ui-state-consistency.spec.ts"
 ]
