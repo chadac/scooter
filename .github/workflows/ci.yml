@@ -359,6 +359,16 @@ jobs:
               - 'test/e2e/interrupt-queue-recovery.spec.ts'
               - 'test/e2e/interrupt.spec.ts'
               - 'test/e2e/fixtures.ts'
+              # The full-target allowlist AND every spec on it: editing a listed spec
+              # (or the list itself) must run the only job that executes it. The list
+              # of files here must stay in sync with test/e2e/full-specs.json.
+              - 'test/e2e/full-specs.json'
+              - 'test/e2e/client-server-identity.spec.ts'
+              - 'test/e2e/cluster-stories.spec.ts'
+              - 'test/e2e/component-coverage.spec.ts'
+              - 'test/e2e/refresh-history.spec.ts'
+              - 'test/e2e/stop-run.spec.ts'
+              - 'test/e2e/ui-state-consistency.spec.ts'
               - 'services/agent-host/src/session/ownershipGuard.ts'
               - 'services/agent-host/src/session/manager.ts'
               # The CREATE contract: conversations are created by the ROUTER (a CR write),

@@ -45,6 +45,12 @@ test.describe("sidebar / session components", () => {
   });
 
   test("STARRING a conversation persists across a reload and disturbs nothing else", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Every fake-agent turn runs a real
+    // exec, and on the full target the FIRST exec of a conversation waits for its sandbox
+    // pod (5-25s measured). Worst case here: open 5s + first turn ~30s + waitForIdle +
+    // reload + the 30s re-fold poll + two star round-trips ≈ 75s — past the 60s default
+    // on arithmetic alone, with every step behaving.
+    test.setTimeout(120_000);
     await chat.open();
     await chat.sendTurn("star me");
     await chat.waitForIdle();
@@ -80,6 +86,10 @@ test.describe("sidebar / session components", () => {
   });
 
   test("SEARCH narrows the sidebar and restores the full list when cleared", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). TWO conversations, each with its
+    // own first-exec sandbox wait (5-25s each on the full target): 2 × ~30s + waits ≈ 70s
+    // worst — over the 60s default before the search assertions even start.
+    test.setTimeout(120_000);
     await chat.open();
     await chat.sendTurn("alpha searchable");
     await chat.waitForIdle();
@@ -100,6 +110,10 @@ test.describe("sidebar / session components", () => {
   });
 
   test("switching between conversations swaps the transcript AND keeps the UI consistent", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Two conversations = two cold
+    // sandboxes on the full target (5-25s before each first exec): 2 × ~30s + the 30s
+    // switch-back poll ≈ 90s worst against a 60s default.
+    test.setTimeout(120_000);
     await chat.open();
     await chat.sendTurn("first conversation body");
     await page.locator(sb.newSession).click();
@@ -174,6 +188,10 @@ test.describe("thread rendering details", () => {
   });
 
   test("tool cards + transcript SURVIVE a reload with identical counts", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). First turn waits for the sandbox
+    // (~30s worst), the second is warm (~5s), then a reload re-folds the transcript under
+    // a 45s re-mount budget: ~30 + 5 + 45 ≈ 80s worst against the 60s default.
+    test.setTimeout(120_000);
     await chat.open();
     await chat.sendTurn("!echo persist one");
     await chat.sendTurn("!echo persist two");

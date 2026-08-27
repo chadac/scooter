@@ -23,6 +23,11 @@ async function step(page: Page, when: string): Promise<UiSnapshot> {
 
 test.describe("whole-UI consistency through a normal turn", () => {
   test("every surface stays mutually consistent across idle → running → replied", async ({ chat, page, request, baseURL }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target the `!sleep 3`
+    // exec waits for a ready sandbox pod first (5-25s measured), so the run lasts up to
+    // ~30s; add open + the multi-surface snapshots and the worst case brushes the 60s
+    // default on arithmetic alone.
+    test.setTimeout(120_000);
     await chat.open();
     const idle = await step(page, "after open");
     expect(idle.running, "a fresh conversation must not claim to be running").toBe(false);
@@ -50,6 +55,12 @@ test.describe("whole-UI consistency through a normal turn", () => {
   });
 
   test("consistency holds at EVERY step of an 8-turn conversation (not just at the end)", async ({ chat, page, request, baseURL }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). EVERY fake-agent turn runs a real
+    // exec (a plain message becomes `echo <text>`), so on the full target the first turn
+    // waits for the sandbox (~30s worst) and each warm turn still costs ~5-10s of exec +
+    // streaming + the per-step snapshot: 30 + 7 × 10 ≈ 100s of legitimate work against a
+    // 60s default.
+    test.setTimeout(240_000);
     await chat.open();
     for (let i = 1; i <= 8; i++) {
       await chat.sendTurn(`consistency turn ${i}`);
@@ -74,6 +85,11 @@ test.describe("whole-UI consistency through a normal turn", () => {
 
 test.describe("whole-UI consistency around the QUEUE", () => {
   test("queueing keeps thread, queue, badge, run-state and composer mutually consistent", async ({ chat, page }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). startLongRun's 30s run-bar budget
+    // plus two sendWhileRunning retry loops (up to 10s each) plus three whole-UI
+    // snapshots leave no headroom inside the 60s default once the sandbox wait
+    // (5-25s) stretches the timeline.
+    test.setTimeout(120_000);
     await chat.open();
     await chat.startLongRun(20);
     const before = await step(page, "long run started");
@@ -125,8 +141,18 @@ test.describe("whole-UI consistency around the QUEUE", () => {
   });
 
   test("a reload mid-queue preserves EVERY surface, not just the queue rows", async ({ chat, page, request, baseURL }) => {
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75): reload + the 30s re-derive poll on
+    // top of a run whose exec first waits for the sandbox (5-25s) exceeds the 60s default.
+    test.setTimeout(120_000);
     await chat.open();
-    await chat.send("!sleep 6");
+    // 20s, not 6: the test asserts `running === true` AFTER the reload, so the run must
+    // outlive open→send→queue→snapshot→reload→re-derive. On the fast stack that window is
+    // a few seconds; on the full target the reload + queue re-poll alone can take ~10-15s
+    // while the sandbox wait before the sleep is as little as ~5s — a 6s sleep can END
+    // before the post-reload snapshot, failing the assertion with everything healthy.
+    // Nothing waits for this sleep to finish (the test ends mid-run; cleanState cancels
+    // it), so the longer sleep costs no wall-clock time.
+    await chat.send("!sleep 20");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();
