@@ -65,9 +65,24 @@ test.describe("interrupt + queue coexistence", () => {
     await page.locator(panel.approvalsTab).click();
     await page.locator(panel.option).filter({ hasText: /green/i }).click();
     await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: ANSWER_BUDGET_MS });
-    // The queue drains + the queued message becomes a real user turn.
+
+    // The queued message becomes a real user turn. Asserted FIRST because it is the
+    // substantive claim — the queue emptying is only meaningful if the message went
+    // somewhere. ANSWER_BUDGET_MS, not 30s: on the full target the drained message runs a
+    // real sandbox exec, which is the same cold-boot wait the answer above is funded for.
+    await expect(chat.userMessages().filter({ hasText: "run after I approve" })).toHaveCount(1, {
+      timeout: ANSWER_BUDGET_MS,
+    });
+
+    // ...and only then is the queue empty.
+    //
+    // Re-open the Queue tab first. The click above moved the panel to Approvals, and the
+    // tab's contents are UNMOUNTED when it is not selected — so `queuedMessages()` resolves
+    // to 0 whatever the queue actually holds, and this assertion passed vacuously. CI proved
+    // it: the failing run's snapshot has this assertion satisfied while the tab strip still
+    // reads "Queue 1". A check that cannot fail hid the state it was supposed to guard.
+    await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 30_000 });
-    await expect(chat.userMessages().filter({ hasText: "run after I approve" })).toHaveCount(1, { timeout: 30_000 });
   });
 
   test("the interrupt panel + queue tab are BOTH reachable (badges reflect their counts)", async ({ chat, page }) => {
