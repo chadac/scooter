@@ -84,6 +84,21 @@ export function parseShareEmbed(body: string): ShareEmbedParse {
   };
 }
 
+// The fence language agents author, and the hyphen-free token it is normalised to for
+// rendering. assistant-ui derives a code fence's language with /language-(\w+)/ (which
+// stops at a hyphen), so the hyphenated name can't be a componentsByLanguage key —
+// markdown-text.tsx rewrites the opening fence to this token before parsing.
+export const SHARE_EMBED_LANG = "scooter-embed";
+export const SHARE_EMBED_TOKEN = "scooterembed";
+
+const SHARE_EMBED_FENCE_RE = /^([ \t]{0,3}(?:`{3,}|~{3,}))[ \t]*scooter-embed[ \t]*$/gm;
+
+/** Rewrite each OPENING ```scooter-embed fence to ```scooterembed (body + closing fence
+ *  untouched) so assistant-ui keeps the whole language token. */
+export function preprocessShareEmbeds(text: string): string {
+  return text.replace(SHARE_EMBED_FENCE_RE, `$1${SHARE_EMBED_TOKEN}`);
+}
+
 export function ShareEmbed({ body }: { body: string }) {
   const parsed = parseShareEmbed(body);
   if (!parsed.ok) {

@@ -14,33 +14,36 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
-import { ShareEmbed } from "@/src/ShareEmbed";
+import { ShareEmbed, SHARE_EMBED_TOKEN, preprocessShareEmbeds } from "@/src/ShareEmbed";
 
 // A fenced ```scooter-embed block renders as a sandboxed iframe of a static share
 // (see ShareEmbed) instead of a code block.
-const SHARE_EMBED_LANG = "scooter-embed";
+//
+// assistant-ui owns the fenced-code render path: it forces react-markdown's `pre`/`code`
+// to its own overrides and dispatches a block with a language to the SyntaxHighlighter
+// registered for that language in `componentsByLanguage`. A user `pre` override therefore
+// NEVER sees the fence — the hook is `componentsByLanguage`. One wrinkle: assistant-ui
+// derives the language via /language-(\w+)/, which stops at a hyphen, so it can't key on
+// "scooter-embed"; preprocessShareEmbeds normalises the authored fence to a hyphen-free
+// token (SHARE_EMBED_TOKEN) and we register the renderer under THAT token.
 
-/** Flatten a code element's children (string | string[] | nodes) to raw text. */
-function codeText(children: unknown): string {
-  if (typeof children === "string") return children;
-  if (Array.isArray(children)) return children.map(codeText).join("");
-  if (children && typeof children === "object" && "props" in (children as any)) {
-    return codeText((children as any).props?.children);
-  }
-  return "";
-}
-
-function langOf(child: unknown): string | undefined {
-  const className: string = (child as any)?.props?.className ?? "";
-  return /language-([\w-]+)/.exec(className)?.[1];
-}
+// The renderer assistant-ui invokes for a `scooterembed` fence: the code body (the fence's
+// text) becomes the ShareEmbed spec; no code-chrome header.
+const shareEmbedComponentsByLanguage = {
+  [SHARE_EMBED_TOKEN]: {
+    SyntaxHighlighter: ({ code }: { code: string }) => <ShareEmbed body={code} />,
+    CodeHeader: () => null,
+  },
+};
 
 const MarkdownTextImpl = () => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
+      preprocess={preprocessShareEmbeds}
       className="aui-md"
       components={defaultComponents}
+      componentsByLanguage={shareEmbedComponentsByLanguage}
       defer
     />
   );
@@ -54,9 +57,6 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
     if (!code || isCopied) return;
     copyToClipboard(code);
   };
-
-  // The embed block renders as an iframe (see the `pre` override) — no code chrome.
-  if (language === SHARE_EMBED_LANG) return null;
 
   return (
     <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs">
@@ -256,24 +256,15 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  pre: ({ className, children, ...props }) => {
-    // A ```scooter-embed fence renders as a sandboxed share iframe, not a code block.
-    const first = Array.isArray(children) ? children[0] : children;
-    if (langOf(first) === SHARE_EMBED_LANG) {
-      return <ShareEmbed body={codeText((first as any)?.props?.children)} />;
-    }
-    return (
-      <pre
-        className={cn(
-          "aui-md-pre border-border/50 bg-muted/30 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed",
-          className,
-        )}
-        {...props}
-      >
-        {children}
-      </pre>
-    );
-  },
+  pre: ({ className, ...props }) => (
+    <pre
+      className={cn(
+        "aui-md-pre border-border/50 bg-muted/30 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed",
+        className,
+      )}
+      {...props}
+    />
+  ),
   code: function Code({ className, ...props }) {
     const isCodeBlock = useIsMarkdownCodeBlock();
     return (

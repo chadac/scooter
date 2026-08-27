@@ -9,7 +9,13 @@ import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ShareEmbed, parseShareEmbed, extractShareUuid } from "./ShareEmbed.js";
+import {
+  ShareEmbed,
+  parseShareEmbed,
+  extractShareUuid,
+  preprocessShareEmbeds,
+  SHARE_EMBED_TOKEN,
+} from "./ShareEmbed.js";
 
 const UUID = "7f3c2a1e-1b2c-4d5e-8f90-abcdef012345";
 
@@ -60,5 +66,38 @@ describe("ShareEmbed render", () => {
     const html = renderToStaticMarkup(createElement(ShareEmbed, { body: "share: nope" }));
     expect(html).toContain('data-testid="share-embed-error"');
     expect(html).not.toContain("<iframe");
+  });
+});
+
+describe("preprocessShareEmbeds", () => {
+  // assistant-ui reads a fence language via /language-(\w+)/ (stops at a hyphen), so the
+  // renderer keys on the hyphen-free SHARE_EMBED_TOKEN; the opening fence must be rewritten
+  // to it or the block renders as a plain code block (the #393 bug this guards).
+  const fence = "```";
+
+  it("rewrites the opening ```scooter-embed fence to the hyphen-free token", () => {
+    const src = `${fence}scooter-embed\nshare: ${UUID}\n${fence}`;
+    const out = preprocessShareEmbeds(src);
+    expect(out).toContain(`${fence}${SHARE_EMBED_TOKEN}\n`);
+    expect(out).not.toContain(`${fence}scooter-embed`);
+    // body + closing fence are untouched
+    expect(out).toContain(`share: ${UUID}`);
+    expect(out.endsWith(fence)).toBe(true);
+  });
+
+  it("rewrites the fence even after a preceding paragraph (the agent-reply shape)", () => {
+    const src = `some text (exit 0):\n${fence}scooter-embed\nshare: ${UUID}\n${fence}`;
+    expect(preprocessShareEmbeds(src)).toContain(`${fence}${SHARE_EMBED_TOKEN}\n`);
+  });
+
+  it("does NOT touch `scooter-embed` that isn't an opening fence", () => {
+    // inline mention, and the literal word inside prose / inline code
+    const src = "talking about scooter-embed and `scooter-embed` inline";
+    expect(preprocessShareEmbeds(src)).toBe(src);
+  });
+
+  it("leaves other fenced languages alone", () => {
+    const src = `${fence}scooter\nnot an embed\n${fence}`;
+    expect(preprocessShareEmbeds(src)).toBe(src);
   });
 });
