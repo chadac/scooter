@@ -9,6 +9,16 @@
 import { test, expect } from "./fixtures.js";
 
 test.describe("long multi-turn conversation integrity", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target EVERY turn —
+  // plain text included — is a real sandbox exec (the fake agent shells
+  // `echo <text>`), and the first turn additionally waits for the sandbox pod to be
+  // ready (5-25s cold; client-server-identity measured 9-12s under CI CPU pressure).
+  // Worst test here: 12 turns → boot 25s + 12 x ~8s warm exec ≈ 120s; the
+  // switch-away test adds a SECOND conversation boot (+25s). The 60s default is
+  // arithmetic-bound, not behaviour-bound. 240s = worst case with headroom, matching
+  // client-server-identity's two-boot budget. Per-turn waits stay at sendTurn's 45s.
+  test.setTimeout(240_000);
+
   test("12 back-and-forth turns all render (no dropped user or assistant messages)", async ({ chat }) => {
     await chat.open();
     const N = 12;
@@ -73,9 +83,11 @@ test.describe("long multi-turn conversation integrity", () => {
     for (let i = 1; i <= N; i++) await chat.sendTurn(`switchable ${i}`);
     await expect(chat.userMessages()).toHaveCount(N, { timeout: 45_000 });
 
-    // New conversation, one turn, then back to the first.
+    // New conversation, one turn, then back to the first. 100s, not sendTurn's 45s
+    // default: this one turn funds a whole SECOND conversation boot on the full
+    // target (new agent-host assignment + a fresh sandbox pod) before its exec runs.
     await page.locator('[data-testid="new-session"]').click();
-    await chat.sendTurn("a different conversation");
+    await chat.sendTurn("a different conversation", 100_000);
     await page.locator('[data-testid="session-item"]').last().click(); // back to the long one
     // The long conversation re-renders in full (no truncation / loss on switch-back).
     await expect(chat.userMessages()).toHaveCount(N, { timeout: 45_000 });
