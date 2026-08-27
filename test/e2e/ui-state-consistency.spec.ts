@@ -176,7 +176,10 @@ test.describe("whole-UI consistency around the QUEUE", () => {
 
     await page.reload();
     await chat.openQueueTab();
-    await expect.poll(async () => (await snapshot(page)).queued.length, { timeout: 30_000 }).toBe(1);
+    // 60s, not 30: the reload re-derives the whole conversation from the integrity log,
+    // and on a cluster that round-trips the router to the owning pod. The queue row can
+    // take longer to reappear than the fast stack's near-instant re-render.
+    await expect.poll(async () => (await snapshot(page)).queued.length, { timeout: 60_000 }).toBe(1);
     const post = await step(page, "after reload");
     // The WHOLE state re-derived, not just the row: thread counts, queue contents, run state.
     expect(post.queued, "queued text survived").toEqual(pre.queued);
