@@ -152,7 +152,16 @@ export class Chat {
    *  until the UI shows the working state — so a subsequent sendWhileRunning() genuinely queues. */
   async startLongRun(sec = 20) {
     await this.send(`!sleep ${sec}`);
-    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 90s on the full target, 30s on fast. The run-status bar appears when the RUN starts,
+    // and on a cluster the exec first waits for a ready sandbox pod — on a fresh conversation
+    // that is a cold boot (5-25s, and longer while the shard's other specs contend for
+    // scheduling under CONVERSATION_POD_CAP=1). Observed on CI: three queue-durability tests
+    // failed together here, each with the bar simply not up yet, which then reads downstream
+    // as "the queue is broken". Fast keeps 30s — its run starts in milliseconds, so a longer
+    // budget there would only slow a genuine hang.
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({
+      timeout: process.env.E2E_TARGET === "full" ? 90_000 : 30_000,
+    });
   }
 
   /** The durable queued-message rows (QUEUE_UPDATED-driven + optimistic). */
