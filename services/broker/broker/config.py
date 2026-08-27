@@ -159,6 +159,16 @@ class BrokerSettings(BaseSettings):
     registry_enabled: bool = False
     registry_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-registry.db"
 
+    # --- Static shares (broker/shares/) — persistent static webpages -----------
+    # Agents publish static bundles; the broker mints a UUID and serves them at
+    # /s/<uuid>/. Shares the broker DB (static_shares + static_share_versions).
+    # Off by default (SQLite dev DSN). `shares_public_base_url` is the external
+    # origin used to build the returned share URL (e.g. https://scooter.example.com);
+    # empty -> a relative /s/<uuid>/ URL.
+    shares_enabled: bool = False
+    shares_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-shares.db"
+    shares_public_base_url: str = ""
+
     port: int = 8080
 
 
