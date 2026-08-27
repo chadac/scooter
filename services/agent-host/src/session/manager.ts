@@ -633,7 +633,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     } catch {
       /* reconcile failed — treat as suspended; revive() recreates the pod */
     }
-    return hydrateEntry(m, onCluster);
+    const hydrated = hydrateEntry(m, onCluster);
+    // LAZY dangling-run settlement, on EVERY adoption path. The first version hung
+    // this off ensureReadable only — and the pod-move repro adopted through a
+    // DIFFERENT hydrateByThread caller, so the stranded run still spun for the full
+    // budget with the fix deployed. Whatever route materializes a conversation on
+    // its new owner, the stranded-run settlement must ride along. Owner-fenced;
+    // fire-and-forget; the in-flight guard dedupes overlapping callers.
+    if (hydrated && ownershipGuard.canWrite(hydrated.id)) {
+      void api.reconcileDanglingRun(hydrated.id);
+    }
+    return hydrated;
   };
 
   // Returns the persist promise so callers that must guarantee durability (e.g.
@@ -727,7 +737,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     await saveMeta(e);
   };
 
-  return {
+  const api: SessionManager = {
     async start(threadId, model, owner) {
       // The conversation id IS the thread id, so AG-UI events broadcast/persist
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
@@ -1084,13 +1094,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         });
       }
       const entry = await hydrateByThread(id as ThreadId);
-      // LAZY dangling-run settlement. The controller's revive push is fire-and-forget
-      // (a stale hostIP must not wedge reconcile), so when it is lost with a dying pod
-      // THIS is where a reassigned conversation first materializes on its new owner —
-      // and without settling here its stranded run spun forever (the pod-move story).
-      if (entry && ownershipGuard.canWrite(entry.id)) {
-        void this.reconcileDanglingRun(entry.id);
-      }
       return entry !== undefined;
     },
 
@@ -1635,6 +1638,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return () => subagentCompleteSubs.delete(cb);
     },
   };
+  return api;
 }
 
 /** Wall-clock ms. Wrapped so it's mockable / avoids new Date() in pure code. */
