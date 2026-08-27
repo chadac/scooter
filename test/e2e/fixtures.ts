@@ -282,7 +282,15 @@ export const test = base.extend<Fixtures>({
       //    actually empty. The delete + sandbox-destroy is async server-side, so
       //    proceeding immediately races the next test's first /conversations
       //    fetch (which would merge leftovers in). Poll to a true clean slate.
-      for (let i = 0; i < 50; i++) {
+      // FULL gets more attempts as well as a longer gap between them (see the delete pass
+      // below). A SUSPENDED conversation must be hydrated back into memory before it can be
+      // ended, and that revive can itself be waiting on a sandbox the cluster is busy
+      // replacing — 50 attempts at 1s was still timing out on a conversation that was not
+      // starred (the error would have said so), i.e. genuinely mid-teardown rather than
+      // undeletable. 150 attempts ≈ 150s covers it; fast keeps 50 at 100ms (~5s), which is
+      // ample for an in-process destroy.
+      const attempts = process.env.E2E_TARGET === "full" ? 150 : 50;
+      for (let i = 0; i < attempts; i++) {
         const res = await request.get(`${base}/conversations`);
         if (!res.ok()) {
           // FAST: the single-process server is down — nothing to wipe, tests will say so.
@@ -363,7 +371,7 @@ export const test = base.extend<Fixtures>({
         // ("Expected 1, Received 2", titles from another test) with no hint of the real cause.
         // A fixture that cannot establish its precondition must say so, not hand the next test a
         // dirty slate.
-        if (i === 49) {
+        if (i === attempts - 1) {
           const left = (await (await request.get(`${base}/conversations`)).json()) as Array<{
             id: string;
             starred?: boolean;
@@ -371,7 +379,7 @@ export const test = base.extend<Fixtures>({
           }>;
           if (left.length) {
             throw new Error(
-              `cleanState could not empty the server after 50 attempts. Still present: ` +
+              `cleanState could not empty the server after ${attempts} attempts. Still present: ` +
                 left.map((c) => `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}`).join(", ") +
                 `. State persists at LOCAL_STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
                 `restarts until that directory is cleared.`,

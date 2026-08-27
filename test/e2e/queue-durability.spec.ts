@@ -84,7 +84,14 @@ test.describe("queue durability across refresh + drain", () => {
 
   test("queued messages SURVIVE a page reload (they ride the integrity stream, not client-only)", async ({ chat, page }) => {
     await chat.open();
-    await chat.startLongRun(20);
+    // 60s, not 20: the queued row only exists while the run it is queued BEHIND is still
+    // in flight, and this test has to get through send → queue → reload → re-derive before
+    // reading it. On the full target the exec waits for a ready sandbox pod before the
+    // sleep even starts, so a 20s run can be over by the time the post-reload poll looks —
+    // the queue has legitimately drained and the assertion sees 0 (observed on CI: 44
+    // polls, 0 elements). Nothing waits for this sleep to finish (the test ends mid-run and
+    // cleanState cancels it), so the longer run costs no wall-clock time.
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("survive the reload");
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 15_000 });
@@ -92,7 +99,9 @@ test.describe("queue durability across refresh + drain", () => {
     await page.reload();
     await chat.openQueueTab();
     // The queued message is re-derived from the server's QUEUE_UPDATED snapshot on replay.
-    await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 20_000 });
+    // 60s, not 20: the reload re-derives from the integrity log, which on a cluster round-
+    // trips the router to the owning pod.
+    await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 60_000 });
     await expect(page.locator('[data-testid="queued-message-text"]').first()).toContainText("survive the reload");
   });
 

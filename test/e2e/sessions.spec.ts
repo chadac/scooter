@@ -139,14 +139,26 @@ test.describe("session selector & titles", () => {
     await page.locator(sidebar.newButton).click();
     await chat.send("delete this one");
     await chat.waitForReply(/dummy agent/i);
-    await expect(page.locator(sidebar.item)).toHaveCount(2);
+
+    // Assert on THIS test's own rows, not an absolute list length. On the full target the
+    // backend is a shared multi-replica fleet, so a conversation another spec is still
+    // settling can inflate the count — observed on CI: "Expected 2, Received 3" for the
+    // full 15s with both of this test's rows present and correct. The property under test
+    // is "the deleted conversation's row goes away, the other one stays", which the
+    // relative assertions below prove without asserting fleet hygiene.
+    const keepRow = page.locator(sidebar.item).filter({ hasText: /keep this one/i });
+    const deleteRow = page.locator(sidebar.item).filter({ hasText: /delete this one/i });
+    await expect(keepRow).toHaveCount(1, { timeout: 30_000 });
+    await expect(deleteRow).toHaveCount(1, { timeout: 30_000 });
 
     // Delete now shows a confirm dialog (universal) — accept it.
     page.on("dialog", (d) => d.accept());
-    await page.locator(sidebar.item).first().locator(sidebar.deleteButton).click();
+    await deleteRow.first().locator(sidebar.deleteButton).click();
     // 30s, not 10: on the full target the DELETE also tears down the conversation's
     // sandbox pod before the server acks and the row clears.
-    await expect(page.locator(sidebar.item)).toHaveCount(1, { timeout: 30_000 });
+    await expect(deleteRow).toHaveCount(0, { timeout: 30_000 });
+    // The OTHER conversation is untouched — a delete that took the wrong row would fail here.
+    await expect(keepRow).toHaveCount(1);
   });
 
   test("clicking a session swaps the thread (other conversation's messages go away)", async ({ chat, page }) => {
@@ -283,6 +295,26 @@ test.describe("session selector & titles", () => {
       data: { title: "Seeded session two" },
     });
     expect(r1.ok() && r2.ok(), "seeding /conversations failed").toBeTruthy();
+
+    // WAIT until the server itself lists both seeds before loading the page. A 201 from
+    // POST /conversations means the OWNING pod has it; on the full target the sidebar is
+    // fed by the router's AGGREGATE over the READY pods, which needs a beat to include a
+    // just-created conversation. Opening the page immediately can therefore render a list
+    // that legitimately does not have them yet, and the assertion below — a fixed 30s wait
+    // on a page that already fetched — never recovers (observed on CI: 64 polls, 0
+    // elements). This asserts the same property the test is about, just from the source of
+    // truth first.
+    await expect
+      .poll(
+        async () => {
+          const res = await request.get(`${base}/conversations`);
+          if (!res.ok()) return 0;
+          const rows = (await res.json()) as Array<{ title?: string }>;
+          return rows.filter((c) => /Seeded session (one|two)/i.test(c.title ?? "")).length;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe(2);
 
     // First visit with NO carried-over local state — a fresh page load.
     await chat.open();
