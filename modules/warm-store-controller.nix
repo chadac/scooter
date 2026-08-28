@@ -89,7 +89,11 @@ in
         metadata = { name = "warm-store-controller"; namespace = cfg.namespace; };
         rules = [
           { apiGroups = [ "" ]; resources = [ "persistentvolumeclaims" ]; verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ]; }
-          { apiGroups = [ "batch" ]; resources = [ "jobs" ]; verbs = [ "get" "list" "watch" "create" "delete" ]; }
+          # jobs/status is a SEPARATE subresource — granting `jobs` does NOT imply it. The
+          # marker-check reader polls it (_job_result -> read_namespaced_job_status), so
+          # without it every clean-marker read 403s and resolves "unknown": the pool never
+          # returns a volume and never tops one up, while #399's back-off keeps it quiet.
+          { apiGroups = [ "batch" ]; resources = [ "jobs" "jobs/status" ]; verbs = [ "get" "list" "watch" "create" "delete" ]; }
           # The upstream Sandbox CRs — READ-ONLY (return/leak signals; source of truth for suspended).
           { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" ]; }
           # Pods — READ-ONLY: which PVCs are currently mounted (RWO single-attach truth).
