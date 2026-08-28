@@ -31,6 +31,9 @@ class FakeK8s:
     def iter_pool_pvs(self):
         return iter(())
 
+    def adopt_bound_pvs(self, pvcs):
+        self.adopted = getattr(self, 'adopted', []) + list(pvcs)
+
     def list_nodes(self):
         return []
 

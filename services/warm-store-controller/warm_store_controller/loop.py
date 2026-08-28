@@ -62,6 +62,14 @@ def reconcile_once(
             reservations.release(pv.name)
             affinity[_sandbox_of_pvc(pv.claim_ref)] = pv.name
 
+    # Label the PVs behind pool PVCs we created. They do not inherit their PVC's labels and
+    # do not exist until WaitForFirstConsumer binds them, so this can only happen now — and
+    # until it does, iter_pool_pvs cannot see them.
+    try:
+        k8s.adopt_bound_pvs([w.pvc_name for w in pending])
+    except ApiException:
+        logger.exception("adopting bound PVs failed; they stay invisible until the next pass")
+
     # Recycle BEFORE allocating, so a PV freed this pass is usable in it. Skip terminating
     # ones: touching them restarts the delete->terminating->re-read spin (#399).
     for pv in pvs:

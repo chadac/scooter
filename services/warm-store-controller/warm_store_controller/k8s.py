@@ -207,21 +207,11 @@ class ControllerK8s:
         # A unique-ish suffix without Date/random (kept deterministic-friendly): the pool
         # size is small and the controller is single-writer (leader), so an index derived
         # from the current pool count is adequate; k8s generateName guarantees uniqueness.
-        pvc_name_prefix = f"warm-store-{_tag_slug(image_tag)}-"
-        pvc = core.create_namespaced_persistent_volume_claim(
-            self.namespace,
-            client.V1PersistentVolumeClaim(
-                metadata=client.V1ObjectMeta(
-                    generate_name=pvc_name_prefix,
-                    labels={LBL_WARM_STORE: image_tag, LBL_POOL_STATE: "warming"},
-                ),
-                spec=client.V1PersistentVolumeClaimSpec(
-                    access_modes=["ReadWriteOnce"],
-                    resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
-                ),
-            ),
+        pvc_name = self.create_pool_pvc(
+            image_tag,
+            generate_name=f"warm-store-{_tag_slug(image_tag)}-",
+            extra_labels={LBL_POOL_STATE: "warming"},
         )
-        pvc_name = pvc.metadata.name
         batch.create_namespaced_job(self.namespace, self._warm_job_manifest(pvc_name, image_tag))
 
     def _warm_job_manifest(self, pvc_name: str, image_tag: str) -> client.V1Job:
@@ -436,31 +426,71 @@ class ControllerK8s:
             if e.status != 409:
                 raise
 
-    def grow_pool(self, pvc_name: str, image_tag: str) -> None:
-        """Create `pvc_name` on the POOL StorageClass so a NEW Retain PV is provisioned for
-        it, and the sandbox's vct adopts the PVC.
+    def create_pool_pvc(
+        self,
+        image_tag: str,
+        *,
+        name: str | None = None,
+        generate_name: str | None = None,
+        extra_labels: dict[str, str] | None = None,
+    ) -> str:
+        """THE one way a volume enters the pool. Returns the PVC name.
 
-        This is how the pool grows from real use. Without it a cold-pool conversation gets
-        a vct-provisioned PVC on the DEFAULT class — reclaimPolicy Delete, unlabelled — so
-        its volume is destroyed on teardown and the pool can only ever be topped up by warm
-        Jobs, never by conversations that warmed a store themselves.
+        Every pool volume must be created here so it cannot miss the two things that make
+        it poolable: the POOL StorageClass (Retain — on the default Delete class the PV is
+        destroyed with its PVC and the pool can never grow) and the warm-store label.
 
-        No claimRef here: there is no existing PV to reserve. The class is
-        WaitForFirstConsumer, so binding happens where the pod lands and the PV records
-        that topology. PR #403."""
+        The PV is labelled separately once it exists: WaitForFirstConsumer means there is
+        no PV to label yet, and a dynamically-provisioned PV does NOT inherit its PVC's
+        labels (verified). adopt_bound_pvs does that on a later pass — without it a volume
+        created here survives its PVC but is invisible to iter_pool_pvs, which is worse
+        than not pooling it at all. PR #403."""
         core, _, _, _ = _apis()
-        try:
-            core.create_namespaced_persistent_volume_claim(
-                self.namespace,
-                client.V1PersistentVolumeClaim(
-                    metadata=client.V1ObjectMeta(name=pvc_name, labels={LBL_WARM_STORE: image_tag}),
-                    spec=client.V1PersistentVolumeClaimSpec(
-                        access_modes=["ReadWriteOnce"],
-                        resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
-                        storage_class_name=self.pool_storage_class,
-                    ),
+        meta = client.V1ObjectMeta(
+            labels={LBL_WARM_STORE: image_tag, **(extra_labels or {})},
+            **({"name": name} if name else {"generate_name": generate_name or ""}),
+        )
+        pvc = core.create_namespaced_persistent_volume_claim(
+            self.namespace,
+            client.V1PersistentVolumeClaim(
+                metadata=meta,
+                spec=client.V1PersistentVolumeClaimSpec(
+                    access_modes=["ReadWriteOnce"],
+                    resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
+                    storage_class_name=self.pool_storage_class,
                 ),
-            )
+            ),
+        )
+        return pvc.metadata.name
+
+    def adopt_bound_pvs(self, pvcs: list[str]) -> None:
+        """Label the PVs behind pool PVCs, so iter_pool_pvs can see them.
+
+        A dynamically-provisioned PV carries none of its PVC's labels, and does not exist
+        at all until WaitForFirstConsumer binds it — so this runs on a later pass, once the
+        volume is real. Idempotent; 404s are ignored (the PVC went away first)."""
+        core, _, _, _ = _apis()
+        for pvc_name in pvcs:
+            try:
+                pvc = core.read_namespaced_persistent_volume_claim(pvc_name, self.namespace)
+                pv_name = pvc.spec.volume_name
+                tag = (pvc.metadata.labels or {}).get(LBL_WARM_STORE)
+                if not pv_name or not tag:
+                    continue
+                pv = core.read_persistent_volume(pv_name)
+                if (pv.metadata.labels or {}).get(LBL_WARM_STORE) == tag:
+                    continue  # already adopted
+                core.patch_persistent_volume(pv_name, {"metadata": {"labels": {LBL_WARM_STORE: tag}}})
+                logger.info("adopted a PV into the pool", extra={"pv": pv_name, "pvc": pvc_name})
+            except client.ApiException as e:
+                if e.status != 404:
+                    raise
+
+    def grow_pool(self, pvc_name: str, image_tag: str) -> None:
+        """Add a volume to the pool under the name the sandbox's vct will adopt, so a
+        cold-pool conversation warms a POOL volume instead of a throwaway one."""
+        try:
+            self.create_pool_pvc(image_tag, name=pvc_name)
         except client.ApiException as e:
             if e.status != 409:  # the vct beat us to the name; it owns the volume now
                 raise
