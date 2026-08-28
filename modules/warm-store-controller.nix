@@ -58,22 +58,19 @@ in
       description = ''
         StorageClass for POOL volumes. MUST have `reclaimPolicy: Retain`: on a Delete class
         removing a PVC destroys its PV, so nothing is ever recycled and the pool silently
-        degrades to "always a fresh empty upper" with no symptom. The module creates this
-        class from `storageProvisioner` unless `createStorageClass` is false (bring your own).
+        degrades to "always a fresh empty upper" with no symptom.
+
+        Created by this module over `storageProvisioner`. Point it at a class you manage
+        yourself by also setting `storageProvisioner = null`.
       '';
     };
-    createStorageClass = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Create the Retain StorageClass. Set false to point `storageClass` at an existing one.";
-    };
     storageProvisioner = mkOption {
-      type = types.str;
+      type = types.nullOr types.str;
       default = "rancher.io/local-path";
       description = ''
-        Provisioner backing the pool StorageClass. A Retain variant of the cluster's normal
-        provisioner is the point — no new CSI driver is needed, just a second class over the
-        same one (e.g. ebs.csi.aws.com on EKS).
+        Provisioner backing the pool StorageClass — a Retain variant of the cluster's normal
+        one, so no new CSI driver is needed (e.g. `ebs.csi.aws.com` on EKS). null ⇒ do not
+        create the class; `storageClass` must then already exist.
       '';
     };
     goldenExpr = mkOption {
@@ -106,7 +103,7 @@ in
       # WaitForFirstConsumer matches the default class: the PV is provisioned where the pod
       # actually lands, and its nodeAffinity then records that topology — which is exactly
       # what the controller's placement predicate reads back when deciding reuse.
-      storageClasses = lib.mkIf wcfg.createStorageClass {
+      storageClasses = lib.mkIf (wcfg.storageProvisioner != null) {
         ${wcfg.storageClass} = {
           metadata.name = wcfg.storageClass;
           provisioner = wcfg.storageProvisioner;
