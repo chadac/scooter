@@ -59,7 +59,7 @@ export interface SandboxProvisioner {
   /** operatingMode: Suspended (drops Pod, keeps PVCs + Sandbox object). */
   suspend(ref: SandboxRef): Promise<void>;
   /** operatingMode: Running (recreates Pod, re-mounts PVCs, same SA). */
-  resume(ref: SandboxRef): Promise<SandboxRef>;
+  resume(ref: SandboxRef, threadId?: string): Promise<SandboxRef>;
   /** Delete the Sandbox + GC the per-conversation SA/RBAC. */
   destroy(ref: SandboxRef): Promise<void>;
   /** List the live per-conversation Sandboxes (name -> ref + whether its pod is
@@ -841,7 +841,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // THIS process (and a suspended Sandbox may have been GC'd). Re-create the
       // sandbox rather than resume a ref this process never owned.
       entry.sandbox = entry.sandbox.namespace
-        ? await provisioner.resume(entry.sandbox)
+        ? await provisioner.resume(entry.sandbox, entry.threadId)
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model, owner: entry.owner }) ?? entry.bridge;
       entry.status = "running";
