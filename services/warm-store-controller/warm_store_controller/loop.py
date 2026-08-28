@@ -78,6 +78,15 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
         return results
 
+    # DROP HOLDS FOR REALISED PVCs. Once the PVC exists the PV carries its own claimRef,
+    # which excludes it from selection far more reliably than our cache — so the in-process
+    # hold has done its job and must be released. Without this a hold lingers until its TTL
+    # and needlessly withholds a volume that is already correctly bound.
+    still_pending = {w.pvc_name for w in pending}
+    for pv_ in pvs:
+        if pv_.claim_ref and pv_.claim_ref not in still_pending:
+            reservations.confirm(pv_.name)
+
     # Recycle first, so a PV released this pass can be allocated in the same pass.
     for a in plan_reclaim(pvs):
         try:
@@ -100,10 +109,18 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
             results.append((a.sandbox, "vct-provision"))
             continue
         if isinstance(a, ReservePv):
-            # Hold BEFORE the write: if reserve_pv half-applies (claimRef set, PVC create
-            # failed) the PV must still be withheld from the next pass, or two sandboxes
-            # race for it. The TTL bounds the hold if we never confirm.
-            reservations.reserve(a.pv)
+            # TAKE THE PV ATOMICALLY, and only write if we won. claim() is test-and-set
+            # under one lock, so it is the single point that decides who owns this volume
+            # — no two callers can both pass and then both patch claimRef. Holding before
+            # the write also means a half-applied reserve (claimRef set, PVC create
+            # failed) still withholds the PV; the TTL bounds it if we never confirm.
+            if not reservations.claim(a.pv):
+                logger.info(
+                    "PV already claimed in-flight; the vct will provision",
+                    extra={"pv": a.pv, "sandbox": a.sandbox},
+                )
+                results.append((a.sandbox, "vct-provision"))
+                continue
             try:
                 k8s.reserve_pv(a.pv, a.pvc_name, a.sandbox)
                 results.append((a.pv, "reserve-pv"))

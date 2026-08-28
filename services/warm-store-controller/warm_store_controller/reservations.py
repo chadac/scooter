@@ -41,15 +41,33 @@ class Reservations:
         self._lock = threading.Lock()
         self._held: dict[str, float] = {}  # pv name -> expiry timestamp
 
-    def reserve(self, pv: str) -> None:
-        """Mark `pv` in-flight. Re-reserving refreshes the deadline — a PV we keep
-        choosing (because the binding has not landed yet) must not expire mid-flight."""
+    def claim(self, pv: str) -> bool:
+        """ATOMICALLY take `pv` if nobody holds it. True = it is yours, go write claimRef;
+        False = someone else has it in flight, pick another.
+
+        This is the whole point of the cache: test-and-set under ONE lock. Asking
+        `active()` and then reserving would be check-then-act — two callers can both pass
+        the check before either writes, and both go on to patch claimRef on the same PV.
+        One loses at the API, and its sandbox is left with a PVC bound to nothing.
+
+        An EXPIRED hold is treated as free, so a controller that died mid-decision does
+        not strand the volume."""
+        with self._lock:
+            deadline = self._held.get(pv)
+            if deadline is not None and deadline > self._clock.time():
+                return False
+            self._held[pv] = self._clock.time() + self._ttl
+            return True
+
+    def refresh(self, pv: str) -> None:
+        """Extend a hold we already own — for a PV we keep choosing because the binding
+        has not landed yet, so it cannot expire out from under us mid-flight."""
         with self._lock:
             self._held[pv] = self._clock.time() + self._ttl
 
     def confirm(self, pv: str) -> None:
-        """The binding is visible in the API — the PV's own claimRef now excludes it from
-        selection, so the local hold is redundant. Drop it."""
+        """The PVC is realised — the PV's own claimRef now excludes it from selection, so
+        the local hold is redundant. Drop it."""
         with self._lock:
             self._held.pop(pv, None)
 
@@ -59,7 +77,11 @@ class Reservations:
     release = confirm
 
     def active(self) -> set[str]:
-        """PV names currently in-flight, expiring anything past its deadline."""
+        """PV names currently in-flight, expiring anything past its deadline.
+
+        Read-only view, for logging/metrics and for pre-filtering candidates. NOT a
+        substitute for claim(): deciding from this and then reserving is the check-then-act
+        race claim() exists to close."""
         now = self._clock.time()
         with self._lock:
             expired = [pv for pv, deadline in self._held.items() if deadline <= now]

@@ -163,3 +163,29 @@ def test_placement_consumes_the_pool_in_the_order_the_shell_yields_it():
     )
     reconcile_once(k8s, CFG, Reservations())
     assert k8s.reserved[0][0] == "hot"
+
+
+def test_a_pv_ALREADY_claimed_in_flight_is_not_re_written():
+    # claim() is the single gate: if another caller holds the PV, we do not patch claimRef
+    # on it — the sandbox falls back to its vct instead of racing for a volume.
+    k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
+    res = Reservations()
+    res.claim("warm-1")  # somebody else got there first
+    out = reconcile_once(k8s, CFG, res)
+    assert k8s.reserved == []
+    assert ("conv-a", "vct-provision") in out
+
+
+def test_a_REALISED_pvc_drops_the_in_process_hold():
+    # Once the PVC exists the PV's own claimRef excludes it far more reliably than our
+    # cache, so the hold has done its job. Without this cleanup it lingers until the TTL
+    # and needlessly withholds a volume that is already correctly bound.
+    k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
+    res = Reservations()
+    reconcile_once(k8s, CFG, res)
+    assert res.active() == {"warm-1"}          # held while the PVC is still pending
+    # Next pass: the PVC is realised (claimRef set) and no longer pending.
+    k8s._pvs = [pv("warm-1", phase="Bound", claim_ref="scooter-rw-conv-a")]
+    k8s._pending = []
+    reconcile_once(k8s, CFG, res)
+    assert res.active() == set()               # hold released
