@@ -28,9 +28,11 @@ function fakeKc(opts: {
   pvcExists?: boolean;             // does the referenced warm-store PVC still exist?
   pvcReadError?: number;           // non-404 error code for the PVC read probe
   pvcLabels?: Record<string, string>; // labels on the referenced PVC (ownership check)
+  pvcDeleting?: boolean;           // PVC exists but has a deletionTimestamp (TERMINATING)
   casFailsFor?: string;            // CAS patches on THIS pvc name lose the race (422)
   poolReady?: string[];            // ready current-tag pool PVC names
   sandboxGetError?: number;        // fail the Sandbox read itself
+  poolListError?: number;          // fail the pool LIST (option 3) — an unreadable pool, not a cold one
 }) {
   const sandboxPatches: Array<Record<string, unknown>> = [];
   const pvcCreates: string[] = [];
@@ -47,11 +49,19 @@ function fakeKc(opts: {
     readNamespacedPersistentVolumeClaim: async () => {
       if (opts.pvcReadError) throw Object.assign(new Error("api"), { code: opts.pvcReadError });
       if (!opts.pvcExists) throw Object.assign(new Error("not found"), { code: 404 });
-      return { metadata: { labels: opts.pvcLabels ?? {} } };
+      return {
+        metadata: {
+          labels: opts.pvcLabels ?? {},
+          // A TERMINATING PVC still READS 200 (a finalizer holds it) — the deletionTimestamp
+          // is the only signal it is going away.
+          ...(opts.pvcDeleting ? { deletionTimestamp: "2026-08-27T23:00:00Z" } : {}),
+        },
+      };
     },
-    listNamespacedPersistentVolumeClaim: async () => ({
-      items: (opts.poolReady ?? []).map((name) => ({ metadata: { name, labels: {} } })),
-    }),
+    listNamespacedPersistentVolumeClaim: async () => {
+      if (opts.poolListError) throw Object.assign(new Error("api"), { code: opts.poolListError });
+      return { items: (opts.poolReady ?? []).map((name) => ({ metadata: { name, labels: {} } })) };
+    },
     patchNamespacedPersistentVolumeClaim: async (params: { name: string; body?: unknown }) => {
       pvcPatches.push(params.name); // the CAS claim / last-used stamp
       // A JSON-patch body with a `test` op models the CAS; casFailsFor makes the CAS on
@@ -153,6 +163,49 @@ describe("k8sProvisioner.resume — warm-store heal", () => {
     expect(modePatches(sandboxPatches)).toHaveLength(1);
   });
 
+  it("THE DOMINANT LIVE VARIANT: a TERMINATING claim (exists, deletionTimestamp set, labelled OURS) is re-bound, never mounted", async () => {
+    // 3 of 4 live wedges one evening said "persistentvolumeclaim … is being deleted", only 1
+    // a plain "not found". A PVC with a deletionTimestamp still READS 200 with its labels
+    // intact (a finalizer holds it), so a probe that keys on 404 alone would see claimed-by ==
+    // self, call it "ours", and bind a pod that can NEVER schedule. deletionTimestamp must beat
+    // ownership: a claim that is GOING is as lost as one that is GONE.
+    const { kc, sandboxPatches } = fakeKc({
+      volumes: [WARM("warm-store-scooter-git-9312b26-term")],
+      pvcExists: true,
+      pvcDeleting: true,
+      pvcLabels: { "scooter.io/pool-state": "claimed", "scooter.io/claimed-by": "conv-toeurt" },
+      poolReady: ["warm-store-scooter-git-9312b26-fresh"],
+    });
+    await provisioner(kc).resume({ name: "conv-toeurt", namespace: "ns" });
+
+    const vp = volumePatches(sandboxPatches);
+    expect(vp, "a terminating claim must be re-bound, not adopted").toHaveLength(1);
+    expect(JSON.stringify(vp[0])).toContain("warm-store-scooter-git-9312b26-fresh");
+    expect(JSON.stringify(vp[0])).not.toContain("-term");
+    expect(modePatches(sandboxPatches)).toHaveLength(1);
+  });
+
+  it("a TERMINATING claim labelled RECLAIMABLE (ready/unclaimed) is still re-bound, NOT CAS-reclaimed", async () => {
+    // deletionTimestamp is checked before the reclaimable branch, so we never CAS-win a volume
+    // that is being deleted (winning it would just re-strand the pod).
+    const { kc, sandboxPatches, pvcPatches } = fakeKc({
+      volumes: [WARM("warm-store-scooter-git-9312b26-term2")],
+      pvcExists: true,
+      pvcDeleting: true,
+      pvcLabels: { "scooter.io/pool-state": "ready" },
+      poolReady: ["warm-store-scooter-git-9312b26-fresh"],
+    });
+    await provisioner(kc).resume({ name: "conv-toeurt", namespace: "ns" });
+
+    // No CAS on the terminating volume itself...
+    expect(pvcPatches).not.toContain("warm-store-scooter-git-9312b26-term2");
+    // ...re-bound to a fresh one instead.
+    const vp = volumePatches(sandboxPatches);
+    expect(vp).toHaveLength(1);
+    expect(JSON.stringify(vp[0])).toContain("warm-store-scooter-git-9312b26-fresh");
+    expect(modePatches(sandboxPatches)).toHaveLength(1);
+  });
+
   it("a RETURNED-but-unclaimed PVC is CAS re-claimed IN PLACE — the sandbox gets its own store back", async () => {
     // The self-enriching pool returned this volume on suspend and nobody took it: the best
     // outcome is to win it back (same claimName, installs intact) rather than grab a fresh one.
@@ -191,20 +244,39 @@ describe("k8sProvisioner.resume — warm-store heal", () => {
     expect(modePatches(sandboxPatches)).toHaveLength(1);
   });
 
-  it("FAIL-OPEN: a transient PVC-probe error (non-404) proceeds with the plain resume", async () => {
-    // A blip must not block a revive; the pod may still schedule (the PVC may be fine).
+  // FAIL-CLOSED. These previously asserted fail-OPEN: a probe error swallowed, the mode
+  // flipped anyway. That is what turns an outage into a silent Pending pod — the wake
+  // "succeeds", the conversation never comes back, and nothing surfaces. We cannot tell a
+  // transient blip from a real one, so we must not GUESS that the volume is fine: waking
+  // onto a claim we could not verify is the exact failure this whole path exists to prevent.
+  // Throw instead, so resume() fails and the error reaches the caller (and the UI).
+
+  it("FAIL-CLOSED: an unverifiable PVC probe (non-404) throws instead of waking blind", async () => {
     const { kc, sandboxPatches } = fakeKc({
       volumes: [WARM("warm-store-scooter-git-9312b26-live")],
       pvcReadError: 503,
     });
-    await provisioner(kc).resume({ name: "conv-blip", namespace: "ns" });
+    await expect(provisioner(kc).resume({ name: "conv-blip", namespace: "ns" })).rejects.toMatchObject({ code: 503 });
+    // Critically: the mode was NOT flipped — no pod is created against an unverified claim.
+    expect(modePatches(sandboxPatches)).toHaveLength(0);
     expect(volumePatches(sandboxPatches)).toHaveLength(0);
-    expect(modePatches(sandboxPatches)).toHaveLength(1);
   });
 
-  it("FAIL-OPEN: even a failed Sandbox read still flips the mode", async () => {
+  it("FAIL-CLOSED: a failed Sandbox read throws and does NOT flip the mode", async () => {
     const { kc, sandboxPatches } = fakeKc({ sandboxGetError: 500 });
-    await provisioner(kc).resume({ name: "conv-x", namespace: "ns" });
-    expect(modePatches(sandboxPatches)).toHaveLength(1);
+    await expect(provisioner(kc).resume({ name: "conv-x", namespace: "ns" })).rejects.toMatchObject({ code: 500 });
+    expect(modePatches(sandboxPatches)).toHaveLength(0);
+  });
+
+  it("FAIL-CLOSED: exhausting every option (pool unreadable) throws rather than waking", async () => {
+    // Own claim is GONE (404) -> option 3 (any ready pool volume) errors -> nothing left.
+    // The cycle must surface that, not quietly wake onto a claim that does not exist.
+    const { kc, sandboxPatches } = fakeKc({
+      volumes: [WARM("warm-store-scooter-git-9312b26-gone")],
+      pvcReadError: 404,
+      poolListError: 503,
+    });
+    await expect(provisioner(kc).resume({ name: "conv-dry", namespace: "ns" })).rejects.toMatchObject({ code: 503 });
+    expect(modePatches(sandboxPatches)).toHaveLength(0);
   });
 });

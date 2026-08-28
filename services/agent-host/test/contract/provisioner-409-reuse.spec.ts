@@ -26,6 +26,12 @@ function fakeKc(opts: { sandboxCreate409?: boolean } = {}) {
       if (opts.sandboxCreate409) throw Object.assign(new Error("exists"), { code: 409 });
       return {};
     },
+    // The adopt path resolves a usable overlay upper before waking (ensureUsableUpper), so
+    // it READS the adopted Sandbox. This conversation is on a plain vct-made volume (no
+    // pooled warm-store claim), so the cycle finds nothing to reclaim and keeps it as-is.
+    getNamespacedCustomObject: async () => ({
+      spec: { podTemplate: { spec: { volumes: [{ name: "workspace" }] } } },
+    }),
     patchNamespacedCustomObject: async () => {
       calls.push("patch:mode"); // setOperatingMode("Running") = resume
       return {};

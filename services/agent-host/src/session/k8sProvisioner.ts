@@ -234,11 +234,14 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           throw e;
         }
       }
-      return null; // no ready PVC for this tag
+      return null; // no ready PVC for this tag — a genuinely COLD pool
     } catch (e) {
-      // A pool-read failure must NEVER block conversation creation — fall back to a fresh vct.
-      log.warn("warm-store claim failed; using a fresh upper", { error: formatError(e) });
-      return null;
+      // A pool-read FAILURE is not an empty pool. Returning null for both made an outage
+      // indistinguishable from "no warm volume available", so callers silently took the
+      // cold path and the real error never surfaced. Callers that can degrade (create())
+      // catch this themselves; callers that cannot (the wake cycle) let it propagate.
+      log.warn("warm-store: pool read failed", { error: formatError(e) });
+      throw e;
     }
   };
 
@@ -269,6 +272,154 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     );
   };
 
+  /** Why a wake can strand a conversation: the overlay upper is a POOLED volume, and the
+   *  pool reclaims it while the sandbox sleeps. A suspended Sandbox's spec still names its
+   *  claim, so waking it with a plain operatingMode flip can bind a pod to a PVC that is
+   *  gone (404), going (deletionTimestamp — a finalizer keeps it READING 200 with labels
+   *  intact), or now someone else's. The pod then Pends forever with no error anywhere
+   *  (conv-toeurt: 98 min; conv-yo5q4c: 12 min).
+   *
+   *  So a wake RESOLVES a usable upper by trying, in order:
+   *    1. OUR OWN claim, if it's still genuinely ours and healthy
+   *    2. re-claiming it from the pool, if it was returned but nobody else took it
+   *    3. any other ready pool volume for our image tag
+   *    4. a fresh empty upper
+   *  ...and if every option fails, THROWS. The upper is a /nix/store cache (the workspace
+   *  PVC holds the real work), so options 3-4 lose nothing that still exists — but "I could
+   *  not get you any volume at all" is a real failure, and the wake must not proceed as if
+   *  it succeeded. resume() awaits this and management's revive route awaits resume, so the
+   *  throw reaches the HTTP response and the UI instead of becoming a silent Pending pod. */
+  type UpperOutcome = "kept" | "reclaimed" | "rebound";
+
+  /** Classify the claim named in the spec. "ours" = keep it; "reclaimable" = returned to the
+   *  pool, try to win it back; "lost" = never mount it (terminating, 404, or another
+   *  sandbox's — RWO does not prevent a same-node double-mount, and two overlay uppers on
+   *  one disk is store corruption). A probe ERROR is NOT "lost": we cannot tell, so it
+   *  propagates rather than triggering a needless re-bind. */
+  const probeClaim = async (claim: string, nsName: string, sandboxName: string) =>
+    core
+      .readNamespacedPersistentVolumeClaim({ name: claim, namespace: nsName })
+      .then((pvc: { metadata?: { labels?: Record<string, string>; deletionTimestamp?: Date | string } }) => {
+        // TERMINATING FIRST, before ownership. A PVC being GC'd behind a finalizer
+        // (pvc-protection, or the warm-store controller's own) reads 200 with its labels
+        // fully intact, so an ownership check alone passes it and binds a pod that can
+        // never schedule ("persistentvolumeclaim … is being deleted"). Live: 3 of 4 wedges
+        // one evening were this shape, only 1 a plain "not found". GOING == GONE.
+        if (pvc.metadata?.deletionTimestamp) return "lost" as const;
+        const labels = pvc.metadata?.labels ?? {};
+        if (labels[CLAIMED_BY_LABEL] === sandboxName) return "ours" as const;
+        if (labels[POOL_STATE_LABEL] === "ready" && !labels[CLAIMED_BY_LABEL]) return "reclaimable" as const;
+        return "lost" as const;
+      })
+      .catch((e: { code?: number }) => {
+        if (e?.code === 404) return "lost" as const;
+        throw e;
+      });
+
+  /** CAS our own returned volume back out of the pool. Same test-and-set the pool claim
+   *  uses; losing the race (422/409) is a normal outcome, not an error — the caller falls
+   *  through to the next option. */
+  const reclaimOwnPvc = async (claim: string, nsName: string, sandboxName: string): Promise<boolean> => {
+    const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+    return core
+      .patchNamespacedPersistentVolumeClaim(
+        {
+          name: claim,
+          namespace: nsName,
+          body: [
+            { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
+            { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
+            { op: "add", path: ptr(CLAIMED_BY_LABEL), value: sandboxName },
+          ] as object,
+        },
+        setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
+      )
+      .then(() => true)
+      .catch((e: { code?: number }) => {
+        if (e?.code === 422 || e?.code === 409) return false; // another claimer won
+        throw e;
+      });
+  };
+
+  /** Last resort: a plain empty upper, the same shape the volumeClaimTemplate would make.
+   *  409 = a prior attempt already created it → reuse. */
+  const createPlainUpper = async (sandboxName: string, nsName: string): Promise<string> => {
+    const name = `scooter-rw-${sandboxName}`;
+    await core
+      .createNamespacedPersistentVolumeClaim({
+        namespace: nsName,
+        body: {
+          metadata: { name },
+          spec: {
+            accessModes: ["ReadWriteOnce"],
+            resources: { requests: { storage: opts.overlayStorage ?? "20Gi" } },
+          },
+        },
+      })
+      .catch((e: { code?: number }) => {
+        if (e?.code !== 409) throw e;
+      });
+    return name;
+  };
+
+  /** Point the Sandbox's scooter-rw volume at `claim`. Merge-patch replaces the volumes
+   *  array wholesale, so send the whole array with the one claimName swapped. */
+  const bindUpper = async (
+    ref: SandboxRef,
+    nsName: string,
+    volumes: Array<{ name: string; persistentVolumeClaim?: { claimName?: string } }>,
+    rw: { name: string; persistentVolumeClaim?: { claimName?: string } },
+    claim: string,
+  ): Promise<void> => {
+    const healed = volumes.map((v) => (v === rw ? { ...v, persistentVolumeClaim: { claimName: claim } } : v));
+    await custom.patchNamespacedCustomObject(
+      {
+        group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
+        body: { spec: { podTemplate: { spec: { volumes: healed } } } },
+      },
+      setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+    );
+  };
+
+  /** Resolve a usable overlay upper before waking `ref`, walking the option cycle above.
+   *  Throws if every option is exhausted. Shared by resume() AND create()'s adopt-existing
+   *  (409) branch — both wake a suspended Sandbox to Running, and either one binding a dead
+   *  claim strands the conversation. */
+  const ensureUsableUpper = async (ref: SandboxRef): Promise<UpperOutcome> => {
+    const nsName = ref.namespace || ns;
+    const sb = (await custom.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
+    })) as { spec?: { podTemplate?: { spec?: { volumes?: Array<{ name: string; persistentVolumeClaim?: { claimName?: string } }> } } } };
+    const volumes = sb.spec?.podTemplate?.spec?.volumes ?? [];
+    const rw = volumes.find(
+      (v) => v.name === "scooter-rw" && v.persistentVolumeClaim?.claimName?.startsWith("warm-store-"),
+    );
+    // Not on a pooled upper (a plain vct-made volume) → nothing the pool can reclaim.
+    if (!rw?.persistentVolumeClaim?.claimName) return "kept";
+    const claim = rw.persistentVolumeClaim.claimName;
+
+    // 1 + 2. Our own claim: keep it, or win it back if it was returned unclaimed.
+    const probe = await probeClaim(claim, nsName, ref.name);
+    if (probe === "ours") return "kept";
+    if (probe === "reclaimable" && (await reclaimOwnPvc(claim, nsName, ref.name))) {
+      log.info("wake: re-claimed our own returned warm volume", { sandbox: ref.name, volume: claim });
+      return "reclaimed";
+    }
+
+    // 3 + 4. Lost it. Take any ready pool volume for our tag, else a fresh empty upper.
+    // claimWarmStorePvc returns null ONLY for a genuinely cold pool; a pool-read FAILURE
+    // now throws (see its comment) rather than masquerading as "pool empty".
+    const fresh = (await claimWarmStorePvc(ref.name)) ?? (await createPlainUpper(ref.name, nsName));
+    await bindUpper(ref, nsName, volumes, rw, fresh);
+    log.warn("wake: warm-store claim was lost; re-bound (store cache reset)", {
+      sandbox: ref.name,
+      stale_volume: claim,
+      volume: fresh,
+      probe,
+    });
+    return "rebound";
+  };
+
   return {
     async create(id: string, threadId?: string): Promise<SandboxRef> {
       // The URL deep-links on the FULL conversation id (threadId), NOT the short
@@ -292,9 +443,16 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // is on and one is ready for our image tag. null → a fresh volumeClaimTemplate below
       // (cold pool never blocks). The claimed-by label carries the Sandbox NAME (what the
       // controller matches on for return/leak).
+      // A FRESH conversation can always degrade: it has no existing upper to lose, so a
+      // pool that is cold OR unreadable just means an empty volumeClaimTemplate below. This
+      // is the one caller that swallows a pool-read failure — the WAKE path (ensureUsableUpper)
+      // must not, because there a failure can strand an existing conversation.
       const overlayClaimName =
         (opts.overlayStore ?? false) && (opts.warmStorePool ?? false)
-          ? await claimWarmStorePvc(name)
+          ? await claimWarmStorePvc(name).catch((e) => {
+              log.warn("warm-store claim failed on create; using a fresh upper", { error: formatError(e) });
+              return null;
+            })
           : null;
       let alreadyExisted = false;
       await custom
@@ -344,6 +502,12 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // idempotent (a running Sandbox stays running); a create-from-fresh is already
       // Running.
       if (alreadyExisted) {
+        // This branch WAKES a suspended Sandbox exactly like resume() does, so it has the
+        // same warm-store hazard: the adopted spec may reference a pool volume the warm-store
+        // controller has since reclaimed, and a plain mode flip strands the pod Pending
+        // forever. Resolve a usable upper FIRST, then flip. A throw here fails the create —
+        // correct: we have no volume to run on, and a Pending pod tells the user nothing.
+        await ensureUsableUpper({ name, namespace: ns });
         await setOperatingMode({ name, namespace: ns }, "Running").catch((e) => {
           log.warn("adopted an existing Sandbox but resume failed (may already be running)", {
             sandbox: name,
@@ -365,126 +529,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
-      // HEAL A DEAD WARM-STORE CLAIM before flipping the mode. The warm pool GCs old-version
-      // volumes, but a SUSPENDED sandbox's spec still references its claim by name — so a
-      // resume after that GC recreates a pod pointing at a PVC that no longer exists: Pending
-      // forever, no error anywhere, the conversation simply never wakes (observed live:
-      // conv-toeurt, 98 minutes Pending on warm-store-…-c302957-…). The volume is a CACHE of
-      // /nix/store (the workspace PVC holds the real work) and its contents are already gone,
-      // so re-binding loses nothing that still exists: claim a fresh current-version pool
-      // volume, or create a plain upper when the pool has none. BEST-EFFORT throughout — any
-      // heal-path failure falls through to the plain mode flip (a degraded revive beats a
-      // blocked one), and a non-404 probe error is NOT treated as missing.
-      try {
-        const nsName = ref.namespace || ns;
-        const sb = (await custom.getNamespacedCustomObject({
-          group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
-        })) as { spec?: { podTemplate?: { spec?: { volumes?: Array<{ name: string; persistentVolumeClaim?: { claimName?: string } }> } } } };
-        const volumes = sb.spec?.podTemplate?.spec?.volumes ?? [];
-        const rw = volumes.find(
-          (v) => v.name === "scooter-rw" && v.persistentVolumeClaim?.claimName?.startsWith("warm-store-"),
-        );
-        if (rw?.persistentVolumeClaim?.claimName) {
-          const claim = rw.persistentVolumeClaim.claimName;
-          // EXISTENCE IS NOT OWNERSHIP. Return-on-suspend puts a cleanly-suspended sandbox's
-          // volume back in the pool (`ready`, claimed-by cleared), where any create() can
-          // CAS-claim it — while THIS spec still names it. RWO does not stop a same-node
-          // double-mount, and two overlay uppers on one disk is store corruption. So the probe
-          // reads the LABELS, not just presence:
-          //   claimed-by == this sandbox        -> genuinely ours, proceed untouched
-          //   pool-state == ready (unclaimed)   -> CAS re-claim the SAME volume (installs back)
-          //   claimed by anyone else / other    -> LOST: re-bind, never mount a contested volume
-          //   404                                -> LOST (the GC case)
-          // Transient probe errors keep the old fail-open behaviour (undefined = don't heal).
-          const probe = await core
-            .readNamespacedPersistentVolumeClaim({ name: claim, namespace: nsName })
-            .then((pvc: { metadata?: { labels?: Record<string, string> } }) => {
-              const labels = pvc.metadata?.labels ?? {};
-              if (labels[CLAIMED_BY_LABEL] === ref.name) return "ours" as const;
-              if (labels[POOL_STATE_LABEL] === "ready" && !labels[CLAIMED_BY_LABEL]) {
-                return "reclaimable" as const;
-              }
-              return "lost" as const; // someone else's claim, or warming/retiring — never mount it
-            })
-            .catch((e: { code?: number }) => (e?.code === 404 ? ("lost" as const) : ("unknown" as const)));
-
-          let reclaimWon = false;
-          if (probe === "reclaimable") {
-            // Win our own volume back: the same JSON-patch CAS the pool claim uses (`test`
-            // pool-state == ready is the atomic gate). Winning keeps the claimName — the
-            // sandbox's installs come back with it. Losing (422/409: another creator got it
-            // between our read and now) falls through to the LOST path below.
-            const ptr = (label: string) => `/metadata/labels/${label.replace(/~/g, "~0").replace(/\//g, "~1")}`;
-            reclaimWon = await core
-              .patchNamespacedPersistentVolumeClaim(
-                {
-                  name: claim,
-                  namespace: nsName,
-                  body: [
-                    { op: "test", path: ptr(POOL_STATE_LABEL), value: "ready" },
-                    { op: "replace", path: ptr(POOL_STATE_LABEL), value: "claimed" },
-                    { op: "add", path: ptr(CLAIMED_BY_LABEL), value: ref.name },
-                  ] as object,
-                },
-                setHeaderOptions("Content-Type", PatchStrategy.JsonPatch),
-              )
-              .then(() => true)
-              .catch(() => false);
-            log.info(
-              reclaimWon
-                ? "resume: re-claimed own returned warm volume"
-                : "resume: lost the re-claim race — re-binding fresh",
-              { sandbox: ref.name, volume: claim, reclaim_won: reclaimWon },
-            );
-          }
-
-          if (probe === "lost" || (probe === "reclaimable" && !reclaimWon)) {
-            let fresh = await claimWarmStorePvc(ref.name);
-            if (!fresh) {
-              // Pool cold/empty: create a plain upper (same shape the vct would have made).
-              // 409 = a prior heal attempt already created it — reuse it.
-              fresh = `scooter-rw-${ref.name}`;
-              await core
-                .createNamespacedPersistentVolumeClaim({
-                  namespace: nsName,
-                  body: {
-                    metadata: { name: fresh },
-                    spec: {
-                      accessModes: ["ReadWriteOnce"],
-                      resources: { requests: { storage: opts.overlayStorage ?? "20Gi" } },
-                    },
-                  },
-                })
-                .catch((e: { code?: number }) => {
-                  if (e?.code !== 409) throw e;
-                });
-            }
-            // Merge-patch replaces the volumes array wholesale, so send the full array with
-            // the one claimName swapped.
-            const healed = volumes.map((v) =>
-              v === rw ? { ...v, persistentVolumeClaim: { claimName: fresh! } } : v,
-            );
-            await custom.patchNamespacedCustomObject(
-              {
-                group: GROUP, version: VERSION, namespace: nsName, plural: PLURAL, name: ref.name,
-                body: { spec: { podTemplate: { spec: { volumes: healed } } } },
-              },
-              setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
-            );
-            log.warn("resume: warm-store claim no longer exists; re-bound (store cache reset)", {
-              sandbox: ref.name,
-              stale_volume: claim,
-              volume: fresh,
-            });
-          }
-        }
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        log.warn("resume: warm-store heal check failed; resuming anyway", {
-          sandbox: ref.name,
-          error: formatError(e),
-        });
-      }
+      // Resolve a usable overlay upper before waking the pod (see ensureUsableUpper).
+      // Throws if no volume can be obtained at all — resume() then fails loudly instead of
+      // returning a ref whose pod will Pend forever on a claim that no longer exists.
+      await ensureUsableUpper(ref);
       await setOperatingMode(ref, "Running");
       return ref;
     },

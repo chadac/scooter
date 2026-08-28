@@ -24,5 +24,6 @@
   "stop-run.spec.ts",
   "suspended-recovery.spec.ts",
   "tail-rerender.spec.ts",
-  "ui-state-consistency.spec.ts"
+  "ui-state-consistency.spec.ts",
+  "warm-store-heal.spec.ts"
 ]
