@@ -418,14 +418,9 @@ export interface SessionManagerDeps {
    *  mirror has no such conversation. Wired to mirroredStore.hydrateFromMirror when a mirror
    *  is configured; omitted single-replica. Used by reviveFromMirror(). */
   hydrateFromMirror?: (id: SessionId) => Promise<boolean>;
-  /** Optional (multi-replica): flush ONE conversation's buffered mirror tail to the durable
-   *  store NOW. Event appends are COALESCED (mirroredStore), so a batch can still sit in memory
-   *  when a conversation is suspended. Before, only the SIGTERM shutdown path drained the mirror —
-   *  a conversation SUSPENDED by the idle sweep and later moved to a fresh pod would hydrate from a
-   *  mirror MISSING its most recent turns (CR alive, history empty — the reported data loss).
-   *  suspend() awaits this so the mirror holds the full log before this pod can be replaced. Wired
-   *  to mirroredStore.drainMirror when a mirror is configured; omitted single-replica. */
-  drainMirror?: (id: SessionId) => Promise<void>;
+  /** Flush one conversation's coalesced mirror tail now, returning how many events were
+   *  still buffered. Undefined single-replica (no mirror). */
+  drainMirror?: (id: SessionId) => Promise<number>;
   /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
@@ -1217,25 +1212,24 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         await saveMeta(entry); // durable BEFORE the teardown — a crash here must not lose it
       }
       await entry.bridge?.stop();
-      // FLUSH THE MIRROR'S BUFFERED TAIL before this pod can be replaced. Event appends are
-      // COALESCED (mirroredStore batches them as one NFS write per window), so the most recent
-      // turns can still be buffered in THIS pod's memory when the suspend lands. The bridge is now
-      // stopped, so no more events will be produced — this is the safe point to drain. Only the
-      // SIGTERM shutdown path drained the mirror before, so a conversation suspended by the idle
-      // sweep (no process exit) kept its tail in a buffer that a later rollout/pod-move discarded:
-      // the reassigned pod then hydrated from a mirror missing those turns (CR alive + reassigned,
-      // history empty — the a609cd05/8a90fdad symptom). Best-effort: a drain failure must NOT block
-      // the suspend (the pod must still come down, else the idle sweep retries forever), but it
-      // means the durable backup lost the buffered tail, so LOG it loudly + debuggably.
+      // Flush the coalesced mirror tail while the bridge is stopped — otherwise a later pod
+      // replacement discards it and the conversation hydrates with missing turns. Best-effort:
+      // a failure must not block the suspend, or the idle sweep retries forever.
       try {
-        await deps.drainMirror?.(id);
+        const buffered = (await deps.drainMirror?.(id)) ?? 0;
+        if (buffered > 0) {
+          // Unexpected: the idle sweep suspends only IDLE conversations, so a non-empty
+          // buffer means events were still being written — the sweep raced live work, or
+          // the buffer is stale. Drained anyway; the count is the evidence.
+          log.warn("suspend: drained a non-empty mirror buffer — the conversation was not idle", {
+            conversation_id: id,
+            buffered_events: buffered,
+          });
+        }
       } catch (err) {
-        log.errorWith(
-          "suspend: mirror drain failed; the durable backup may be missing this conversation's " +
-            "most recent turns (history could be lost if this pod is now replaced)",
-          err,
-          { conversation_id: id },
-        );
+        log.errorWith("suspend: mirror drain failed; the durable backup may be missing turns", err, {
+          conversation_id: id,
+        });
       }
       await provisioner.suspend(entry.sandbox);
       entry.bridge = undefined;

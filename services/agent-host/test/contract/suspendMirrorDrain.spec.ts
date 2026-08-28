@@ -192,4 +192,26 @@ describe("suspend flushes the coalesced mirror tail (the empty-history-after-mov
       rmSync(mirrorRoot, { recursive: true, force: true });
     }
   });
+
+  it("WARNS when the drained buffer was not empty — the sweep raced live work", async () => {
+    const localRoot = mkdtempSync(join(tmpdir(), "drain-warn-local-"));
+    const mirrorRoot = mkdtempSync(join(tmpdir(), "drain-warn-mirror-"));
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { sessions } = harness(localRoot, mirrorRoot, true);
+      const conv = await sessions.start("thread-warn");
+      await sessions.prompt(conv.id, "a turn that is still buffered");
+      await sessions.suspend(conv.id);
+
+      // The idle sweep only suspends IDLE conversations, so a non-empty buffer means it
+      // raced live work. Drained anyway, but it must not pass silently.
+      const hit = warn.mock.calls.filter((a) => a.some((x) => String(x).includes("was not idle")));
+      expect(hit.length, "a non-empty buffer at suspend must be surfaced").toBeGreaterThan(0);
+      expect(JSON.stringify(hit), "the count is the evidence").toMatch(/buffered_events/);
+    } finally {
+      warn.mockRestore();
+      rmSync(localRoot, { recursive: true, force: true });
+      rmSync(mirrorRoot, { recursive: true, force: true });
+    }
+  });
 });
