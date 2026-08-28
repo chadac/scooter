@@ -59,15 +59,13 @@ class Reservations:
             self._held[pv] = self._clock.time() + self._ttl
             return True
 
-    def refresh(self, pv: str) -> None:
-        """Extend a hold we already own — for a PV we keep choosing because the binding
-        has not landed yet, so it cannot expire out from under us mid-flight."""
-        with self._lock:
-            self._held[pv] = self._clock.time() + self._ttl
-
     def confirm(self, pv: str) -> None:
         """The PVC is realised — the PV's own claimRef now excludes it from selection, so
-        the local hold is redundant. Drop it."""
+        the local hold is redundant. Drop it.
+
+        IDEMPOTENT on purpose. Dropping a hold is a converging operation: the loop calls
+        this for every realised PVC on every pass, so "already released" is the normal
+        steady state, not a caller error."""
         with self._lock:
             self._held.pop(pv, None)
 

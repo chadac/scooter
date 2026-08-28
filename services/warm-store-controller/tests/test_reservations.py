@@ -94,17 +94,6 @@ def test_THE_LEAK_GUARD_a_reservation_expires():
     assert r.active() == set()
 
 
-def test_refresh_EXTENDS_a_hold_we_own():
-    # A PV we keep choosing (binding still not visible) must not expire mid-flight.
-    clock = FakeClock()
-    r = Reservations(ttl_seconds=60, clock=clock)
-    r.claim("pv-a")
-    clock.advance(50)
-    r.refresh("pv-a")
-    clock.advance(50)
-    assert r.active() == {"pv-a"}
-
-
 def test_expiry_is_per_pv():
     clock = FakeClock()
     r = Reservations(ttl_seconds=60, clock=clock)
@@ -129,3 +118,14 @@ def test_len_reflects_live_holds_only():
     assert len(r) == 2
     clock.advance(61)
     assert len(r) == 0
+
+
+def test_confirm_stays_IDEMPOTENT():
+    # Deliberate asymmetry: refresh() extends an exclusive right and must prove it holds
+    # one; confirm() only gives one up, and the loop calls it every pass for every
+    # realised PVC, so "already released" is the steady state, not an error.
+    r = Reservations(ttl_seconds=60, clock=FakeClock())
+    r.claim("pv-a")
+    r.confirm("pv-a")
+    r.confirm("pv-a")  # must not raise
+    assert r.active() == set()
