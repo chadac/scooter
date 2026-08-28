@@ -125,6 +125,15 @@ def test_an_UNKNOWN_age_pv_sorts_last():
     assert [p.name for p in rank_candidates(pool, "conv-x")] == ["dated", "nostamp"]
 
 
+def test_TWO_sandboxes_can_prefer_the_SAME_volume():
+    # sandbox -> pv means they are separate keys; an annotation ON the PV is single-valued
+    # and could only ever record the last user.
+    aff = {"conv-x": "A", "conv-y": "A"}
+    pool = [pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")]
+    assert rank_candidates(pool, "conv-x", aff)[0].name == "A"
+    assert rank_candidates(pool, "conv-y", aff)[0].name == "A"
+
+
 def test_affinity_outranks_recency():
     pool = [pv("hot", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
     assert rank_candidates(pool, "conv-a", {"conv-a": "mine"})[0].name == "mine"

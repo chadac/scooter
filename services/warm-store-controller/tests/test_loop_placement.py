@@ -252,19 +252,32 @@ def test_affinity_is_recorded_at_BIND_time_not_reservation_time():
     assert aff == {"conv-a": "warm-1"}
 
 
-def test_a_sandbox_RECLAIMS_the_volume_it_last_used():
-    # X binds A, A is released, X asks again -> it gets A back even though B is more
-    # recently used overall.
+def test_X_RECLAIMS_A_after_Y_used_it():
+    # sandbox -> pv, so X and Y are different KEYS: Y binding A does not displace X's
+    # association. Both keep preferring A, which is what an annotation on the PV could
+    # never express (single-valued, so Y would have overwritten X forever).
     aff: dict[str, str] = {}
-    reconcile_once(
-        FakeK8s(pvs=[pv("A", phase="Bound", claim_ref="scooter-rw-conv-x")], pending=[]),
-        CFG, Reservations(), aff,
-    )
-    assert aff == {"conv-x": "A"}
+    bound = lambda who: pv("A", phase="Bound", claim_ref=f"scooter-rw-{who}")
 
+    for who in ("conv-x", "conv-y"):
+        reconcile_once(FakeK8s(pvs=[bound(who)], pending=[]), CFG, Reservations(), aff)
+    assert aff == {"conv-x": "A", "conv-y": "A"}
+
+    # X asks again and gets A back, even though B was used more recently overall.
     k8s = FakeK8s(
         pvs=[pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")],
         pending=[want("conv-x")],
     )
     reconcile_once(k8s, CFG, Reservations(), aff)
     assert k8s.reserved == [("A", "scooter-rw-conv-x", "conv-x")]
+
+
+def test_a_sandbox_that_moves_volumes_prefers_its_NEWEST():
+    # The only overwrite the dict does, and it is correct: one sandbox, one current volume.
+    aff: dict[str, str] = {}
+    for vol in ("old", "new"):
+        reconcile_once(
+            FakeK8s(pvs=[pv(vol, phase="Bound", claim_ref="scooter-rw-conv-a")], pending=[]),
+            CFG, Reservations(), aff,
+        )
+    assert aff == {"conv-a": "new"}
