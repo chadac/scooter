@@ -762,6 +762,8 @@ export class IntegrityAgent extends AbstractAgent {
             .subscribe({ error: () => resolve(), complete: () => resolve() });
         });
 
+        const connectionOpenedAt = Date.now();
+        let framesThisConnection = 0;
         record("stream.connect", {
           [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
           // A RECONNECT (false) is the interesting case: the visible transcript was just
@@ -776,6 +778,15 @@ export class IntegrityAgent extends AbstractAgent {
           (e) => {
             // The stream is alive — reset the idle-watchdog clock.
             this.lastActivityAt = Date.now();
+            // FIRST FRAME separates "connected but silent" from "delivering": a UI that looks
+            // frozen while the server streams shows a connect with no first_frame.
+            if (framesThisConnection === 0) {
+              record("stream.first_frame", {
+                [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
+                "stream.ttfb_ms": Date.now() - connectionOpenedAt,
+              });
+            }
+            framesThisConnection++;
             // Track the pending interrupt as it rides the log: a RUN_STARTED means the
             // (resumed) run is live again — clear any pending; a RUN_FINISHED with an
             // interrupt outcome pauses the run awaiting a user answer. The base
@@ -830,6 +841,14 @@ export class IntegrityAgent extends AbstractAgent {
         this.controllers.delete(controller);
         controller = undefined;
         if (closed) break;
+
+        record("stream.closed", {
+          [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
+          [ATTR.reason]: watchdogForced ? "watchdog" : String(outcome ?? "drop"),
+          "stream.frames": framesThisConnection,
+          "stream.duration_ms": Date.now() - connectionOpenedAt,
+          "stream.silent_ms": Date.now() - this.lastActivityAt,
+        });
 
         if (outcome === "auth-error") {
           // Expired ingress/auth session (401/403). Retrying immediately won't help
