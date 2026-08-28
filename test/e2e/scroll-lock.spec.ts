@@ -122,15 +122,26 @@ test.describe("conversation scroll-lock", () => {
     // before our measurement — a one-shot scrollTo + poll then flakes. Scrolling up on
     // every poll tick wins the race deterministically: once the store latches
     // isAtBottom=false, the yank stops and the distance stays open.
+    //
+    // Gate the poll on the ARROW being enabled — the store's own isAtBottom=false
+    // signal — NOT on distanceFromBottom alone. The `disabled` flag updates from a
+    // SCROLL EVENT and can trail the measured position (same trailing-flag flake that
+    // `settleAtBottom` documents, here in reverse): the poll could exit on a tick where
+    // the viewport had physically scrolled up (distance > tolerance) but the store had
+    // not yet processed the scroll event, so useStickToBottom yanked the view back down
+    // and the arrow never enabled — `toBeEnabled()` on the next line then hung the full
+    // timeout. The nightly ×5 caught this ~40% of the time (2/5 reps). Polling until the
+    // arrow itself reports enabled ties the exit condition to the signal we assert on,
+    // while the loose px check below backs it up.
     await expect
       .poll(
         async () => {
           await chat.viewport().evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }));
-          return chat.distanceFromBottom();
+          return (await chat.scrollToBottomButton().isEnabled()) && (await chat.distanceFromBottom()) > AT_BOTTOM_PX;
         },
-        { timeout: 5_000 },
+        { timeout: 10_000 },
       )
-      .toBeGreaterThan(AT_BOTTOM_PX);
+      .toBe(true);
     await expect(chat.scrollToBottomButton()).toBeEnabled();
 
     // Click the arrow — it re-engages the lock: the view returns to the bottom and the
