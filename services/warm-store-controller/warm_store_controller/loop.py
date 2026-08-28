@@ -11,7 +11,7 @@ import logging
 
 from kubernetes.client.exceptions import ApiException
 
-from .allocate import LetVctProvision, plan_allocation, plan_reclaim
+from .allocate import candidates_for, plan_reclaim
 from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
@@ -95,39 +95,51 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
     if not pending:
         return results
 
-    for a in plan_allocation(pending, pvs, nodes, reservations.in_flight_reservations()):
-        if isinstance(a, LetVctProvision):
-            # Not a failure — the cold-pool path. Logged so a pool that never places
-            # anything is visible; a safe degrade with no signal hides a broken pool.
-            logger.info("no warm PV placed; the vct will provision", extra={"sandbox": a.sandbox, "reason": a.reason})
-            results.append((a.sandbox, "vct-provision"))
-        else:
-            # Only write if we won the claim. Taking the hold BEFORE the write means a
-            # half-applied reserve still withholds the PV.
-            try:
-                reservations.claim(a.pv, a.sandbox)
-            except AlreadyClaimed as exc:
-                # The planner should have prevented this, so it means the two disagree —
-                # log it as an anomaly, but still degrade rather than fail the conversation.
-                logger.warning(
-                    "reservation conflict; the vct will provision",
-                    extra={"pv": a.pv, "sandbox": a.sandbox, "conflict": str(exc)},
-                )
-                results.append((a.sandbox, "vct-provision"))
-                continue
-            try:
-                k8s.reserve_pv(a.pv, a.pvc_name, a.sandbox)
-                results.append((a.pv, "reserve-pv"))
-                logger.info(
-                    "placed a warm PV",
-                    extra={"pv": a.pv, "pvc": a.pvc_name, "sandbox": a.sandbox, "reason": a.reason},
-                )
-            except ApiException:
-                # ROLL BACK, or the fallback loop leaks a volume on every miss.
-                logger.exception("reserve-pv failed; rolling back", extra={"pv": a.pv, "sandbox": a.sandbox})
-                try:
-                    k8s.release_pv(a.pv)
-                except ApiException:
-                    logger.exception("reserve-pv rollback FAILED — the PV may stay reserved", extra={"pv": a.pv})
-                reservations.release(a.pv)
+    for want in pending:
+        placed = _place_one(k8s, reservations, want, pvs, nodes)
+        results.append(placed)
     return results
+
+
+def _place_one(k8s, reservations, want, pvs, nodes) -> tuple[str, str]:
+    """Give ONE sandbox a warm PV, or fall back to its vct.
+
+    Selfish: walk our own ranked candidates and take the first we win. claim() is the only
+    arbiter — losing a race just means trying the next candidate, not giving up, so a
+    contended pool still places everyone it can. Nothing here coordinates with other
+    sandboxes, which is what makes this safe to run concurrently later.
+    """
+    for pv in candidates_for(want, pvs, nodes):
+        try:
+            reservations.claim(pv.name, want.sandbox)
+        except AlreadyClaimed:
+            continue  # someone holds it; try the next-best
+        try:
+            k8s.reserve_pv(pv.name, want.pvc_name, want.sandbox)
+        except ApiException:
+            # ROLL BACK, or the pool leaks a volume on every miss.
+            logger.exception("reserve-pv failed; rolling back", extra={"pv": pv.name, "sandbox": want.sandbox})
+            try:
+                k8s.release_pv(pv.name)
+            except ApiException:
+                logger.exception("reserve-pv rollback FAILED — the PV may stay reserved", extra={"pv": pv.name})
+            reservations.release(pv.name)
+            continue  # a broken PV must not cost us the whole placement
+        logger.info(
+            "placed a warm PV",
+            extra={
+                "pv": pv.name,
+                "pvc": want.pvc_name,
+                "sandbox": want.sandbox,
+                "reason": "reusing this sandbox's own warm PV"
+                if pv.last_sandbox == want.sandbox
+                else "assigning a warm pool PV",
+            },
+        )
+        return (pv.name, "reserve-pv")
+
+    # Not a failure — the cold-pool path. Logged so a pool that never places anything is
+    # visible; a safe degrade with no signal hides a broken pool.
+    logger.info("no warm PV placed; the vct will provision", extra={"sandbox": want.sandbox})
+    return (want.sandbox, "vct-provision")
+

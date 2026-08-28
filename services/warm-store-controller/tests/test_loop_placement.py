@@ -18,11 +18,12 @@ class FakeK8s:
     """Only the PV-layer surface; the PVC-layer calls return empty so the earlier phase is
     a no-op and these tests isolate placement."""
 
-    def __init__(self, pvs=(), nodes=(), pending=(), fail_reserve=False, fail_list=False):
+    def __init__(self, pvs=(), nodes=(), pending=(), fail_reserve=False, fail_list=False, fail_reserve_for=()):
         self._pvs = list(pvs)
         self._nodes = list(nodes) or [Node(name="odin", labels={"kubernetes.io/hostname": "odin"})]
         self._pending = list(pending)
         self._fail_reserve = fail_reserve
+        self._fail_reserve_for = set(fail_reserve_for)
         self._fail_list = fail_list
         self.reserved = []   # [(pv, pvc, sandbox)]
         self.released = []   # [pv]
@@ -51,7 +52,7 @@ class FakeK8s:
         return list(self._pending)
 
     def reserve_pv(self, pv, pvc_name, sandbox):
-        if self._fail_reserve:
+        if self._fail_reserve or pv in self._fail_reserve_for:
             raise ApiException(status=409, reason="Conflict")
         self.reserved.append((pv, pvc_name, sandbox))
 
@@ -199,3 +200,39 @@ def test_a_NON_api_error_is_NOT_swallowed():
 
     with pytest.raises(TypeError):
         reconcile_once(Boom(pvs=[pv("warm-1")]), CFG, Reservations())
+
+
+def test_losing_a_race_FALLS_THROUGH_to_the_next_candidate():
+    # Selfish selection's payoff: a contended PV costs us the next-best volume, not the
+    # whole placement. The old batch planner emitted one action per sandbox and gave up.
+    k8s = FakeK8s(
+        pvs=[pv("hot", last_used="2026-08-27T10:00:00Z"), pv("cold", last_used="2026-01-01T00:00:00Z")],
+        pending=[want("conv-a")],
+    )
+    res = Reservations()
+    res.claim("hot", "conv-other")  # the best candidate is taken
+    out = reconcile_once(k8s, CFG, res)
+    assert k8s.reserved == [("cold", "scooter-rw-conv-a", "conv-a")]
+    assert ("cold", "reserve-pv") in out
+
+
+def test_a_BROKEN_pv_does_not_cost_the_whole_placement():
+    # reserve_pv fails on the first candidate: roll it back and try the next, rather than
+    # dropping the sandbox to its vct with a usable volume still sitting in the pool.
+    k8s = FakeK8s(
+        pvs=[pv("bad", last_used="2026-08-27T10:00:00Z"), pv("good", last_used="2026-01-01T00:00:00Z")],
+        pending=[want("conv-a")],
+        fail_reserve_for={"bad"},
+    )
+    res = Reservations()
+    out = reconcile_once(k8s, CFG, res)
+    assert k8s.released == ["bad"]                       # rolled back
+    assert k8s.reserved == [("good", "scooter-rw-conv-a", "conv-a")]
+    assert ("good", "reserve-pv") in out
+    assert res.get_pv_owner("bad") is None               # hold dropped
+
+
+def test_every_candidate_exhausted_falls_back_to_the_vct():
+    k8s = FakeK8s(pvs=[pv("only")], pending=[want("conv-a")], fail_reserve_for={"only"})
+    out = reconcile_once(k8s, CFG, Reservations())
+    assert ("conv-a", "vct-provision") in out

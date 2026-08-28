@@ -2,14 +2,12 @@
 
 
 from warm_store_controller.allocate import (
-    LetVctProvision,
     Node,
     PendingSandbox,
     PoolPv,
     ReleasePv,
-    ReservePv,
+    candidates_for,
     node_matches,
-    plan_allocation,
     plan_reclaim,
     rank_candidates,
     usable_pvs,
@@ -139,49 +137,53 @@ def test_own_pv_beats_a_more_recently_used_one():
     assert rank_candidates(pool, "conv-a")[0].name == "mine"
 
 
-# --- allocation ------------------------------------------------------------
+# --- candidate selection ---------------------------------------------------
+# Ranking only: whether a candidate is FREE is decided by Reservations.claim() when the
+# shell takes it. Two mechanisms enforcing one invariant can disagree, and the
+# disagreement is a double-booked volume — so this layer deliberately does not exclude.
 
-def test_allocates_the_sandboxs_own_pv_when_available():
+def test_the_sandboxs_OWN_pv_is_the_first_candidate():
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
     pool = [pv("other"), pv("mine", last_sandbox="conv-a")]
-    [act] = plan_allocation([want], pool, [node("odin")], set())
-    assert isinstance(act, ReservePv)
-    assert (act.pv, act.pvc_name) == ("mine", "scooter-rw-conv-a")
-    assert "own warm PV" in act.reason
+    assert [p.name for p in candidates_for(want, pool, [node("odin")])] == ["mine", "other"]
 
 
-def test_falls_back_to_the_vct_when_the_pool_is_COLD():
-    # Not an error — this is what keeps the pool an optimization, never a dependency.
+def test_a_COLD_pool_offers_NO_candidates():
+    # The shell reads this as "fall back to the vct" — not an error, and the reason a cold
+    # pool never blocks a conversation.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
-    [act] = plan_allocation([want], [], [node("odin")], set())
-    assert isinstance(act, LetVctProvision)
+    assert candidates_for(want, [], [node("odin")]) == []
 
 
-def test_falls_back_when_every_pv_is_UNREACHABLE():
-    # The pool is non-empty but topologically useless — must still not block.
+def test_an_UNREACHABLE_pool_offers_NO_candidates():
+    # Non-empty but topologically useless: every PV is pinned to a node we cannot use.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
     pool = [pv("on-thor", node_selector_terms=hostname_terms("thor"))]
-    [act] = plan_allocation([want], pool, [node("odin")], set())
-    assert isinstance(act, LetVctProvision)
+    assert candidates_for(want, pool, [node("odin")]) == []
 
 
-def test_two_sandboxes_never_get_the_SAME_pv_in_one_pass():
-    a = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
-    b = PendingSandbox(sandbox="conv-b", image_tag=TAG, pvc_name="scooter-rw-conv-b")
-    pool = [pv("only-one")]
-    acts = plan_allocation([a, b], pool, [node("odin")], set())
-    reserved = [x for x in acts if isinstance(x, ReservePv)]
-    assert len(reserved) == 1
-    assert any(isinstance(x, LetVctProvision) for x in acts)
+def test_candidates_are_offered_in_FALLBACK_order():
+    # The shell walks this list and takes the first it wins, so losing a race costs the
+    # next-best volume rather than the whole placement.
+    want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
+    pool = [
+        pv("cold", last_used="2026-01-01T00:00:00Z"),
+        pv("hot", last_used="2026-08-27T10:00:00Z"),
+        pv("mine", last_used="2025-01-01T00:00:00Z", last_sandbox="conv-a"),
+    ]
+    assert [p.name for p in candidates_for(want, pool, [node("odin")])] == ["mine", "hot", "cold"]
 
 
-def test_IN_FLIGHT_pv_is_withheld_from_a_later_pass():
-    # THE RACE: claimRef makes the write exclusive, but a PV chosen last pass may still
-    # read Available until k8s observes the binding. Choosing it again double-books it.
-    want = PendingSandbox(sandbox="conv-b", image_tag=TAG, pvc_name="scooter-rw-conv-b")
-    pool = [pv("already-taken")]
-    [act] = plan_allocation([want], pool, [node("odin")], {"already-taken"})
-    assert isinstance(act, LetVctProvision)
+def test_candidates_EXCLUDE_unusable_pvs():
+    want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
+    pool = [
+        pv("ok"),
+        pv("wrong-tag", image_tag="other"),
+        pv("bound", phase="Bound"),
+        pv("dying", terminating=True),
+        pv("reserved", claim_ref="someone"),
+    ]
+    assert [p.name for p in candidates_for(want, pool, [node("odin")])] == ["ok"]
 
 
 # --- reclaim ---------------------------------------------------------------

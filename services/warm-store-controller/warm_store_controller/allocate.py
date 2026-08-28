@@ -67,36 +67,12 @@ class PendingSandbox:
 # --- actions ---------------------------------------------------------------
 
 @dataclass(frozen=True)
-class ReservePv:
-    """Pre-bind `pv` to `pvc_name` so the sandbox's vct adopts it. Reversible via ReleasePv."""
-
-    pv: str
-    pvc_name: str
-    sandbox: str
-    reason: str
-
-
-@dataclass(frozen=True)
 class ReleasePv:
     """Clear spec.claimRef so `pv` goes Available. Recycles a Released PV, and rolls back a
     failed reservation — a miss must leave nothing behind or the pool leaks a volume."""
 
     pv: str
     reason: str
-
-
-@dataclass(frozen=True)
-class LetVctProvision:
-    """Place nothing; the Sandbox's vct provisions a fresh empty upper. Not an error."""
-
-    sandbox: str
-    reason: str
-
-
-AllocAction = ReservePv | ReleasePv | LetVctProvision
-# What plan_allocation can emit: place a PV, or place nothing. ReleasePv is reclaim-only,
-# so callers can treat these two as exhaustive.
-PlacementAction = ReservePv | LetVctProvision
 
 
 # --- the placement predicate ----------------------------------------------
@@ -180,41 +156,18 @@ def _invert(stamp: str | None) -> tuple[int, str]:
     return (0, "".join(chr(0x7E - ord(c)) for c in stamp))
 
 
-def plan_allocation(
-    pending: list[PendingSandbox],
+def candidates_for(
+    want: PendingSandbox,
     pvs: list[PoolPv],
     nodes: list[Node],
-    in_flight: set[str],
-) -> list[PlacementAction]:
-    """Decide placement for every sandbox awaiting an upper. One action each.
+) -> list[PoolPv]:
+    """PVs this sandbox could use, best-first.
 
-    `in_flight` are PVs already chosen but whose binding k8s has not observed yet; they
-    still read Available, so without withholding them a later pass double-books them."""
-    actions: list[PlacementAction] = []
-    taken: set[str] = set(in_flight)
-
-    for want in pending:
-        candidates = [p for p in usable_pvs(pvs, nodes, want.image_tag) if p.name not in taken]
-        if not candidates:
-            actions.append(
-                LetVctProvision(
-                    sandbox=want.sandbox,
-                    reason="no usable pool PV for this tag/topology — vct provisions a fresh upper",
-                )
-            )
-            continue
-        best = rank_candidates(candidates, want.sandbox)[0]
-        taken.add(best.name)
-        own = best.last_sandbox == want.sandbox
-        actions.append(
-            ReservePv(
-                pv=best.name,
-                pvc_name=want.pvc_name,
-                sandbox=want.sandbox,
-                reason="reusing this sandbox's own warm PV" if own else "assigning a warm pool PV",
-            )
-        )
-    return actions
+    Pure ranking only — no exclusion. Whether a candidate is actually free is decided by
+    Reservations.claim() at the moment we take it, so this must NOT also try to track who
+    has what: two mechanisms enforcing one invariant can disagree, and the disagreement is
+    a double-booked volume."""
+    return rank_candidates(usable_pvs(pvs, nodes, want.image_tag), want.sandbox)
 
 
 def plan_reclaim(pvs: list[PoolPv]) -> list[ReleasePv]:
