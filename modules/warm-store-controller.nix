@@ -52,6 +52,27 @@ in
       default = "20Gi";
       description = "Size of each pool PVC (the overlay upper). Match the per-conversation scooter-rw size.";
     };
+    storageClass = mkOption {
+      type = types.str;
+      default = "warm-store-retain";
+      description = ''
+        StorageClass for POOL volumes. MUST have `reclaimPolicy: Retain`: on a Delete class
+        removing a PVC destroys its PV, so nothing is ever recycled and the pool silently
+        degrades to "always a fresh empty upper" with no symptom.
+
+        Created by this module over `storageProvisioner`. Point it at a class you manage
+        yourself by also setting `storageProvisioner = null`.
+      '';
+    };
+    storageProvisioner = mkOption {
+      type = types.nullOr types.str;
+      default = "rancher.io/local-path";
+      description = ''
+        Provisioner backing the pool StorageClass — a Retain variant of the cluster's normal
+        one, so no new CSI driver is needed (e.g. `ebs.csi.aws.com` on EKS). null ⇒ do not
+        create the class; `storageClass` must then already exist.
+      '';
+    };
     goldenExpr = mkOption {
       type = types.str;
       default = "";
@@ -78,6 +99,17 @@ in
 
   config = lib.mkIf wcfg.enable {
     kubernetes.resources = {
+      # --- the pool StorageClass (Retain) ---------------------------------
+      # WaitForFirstConsumer: the PV records the topology the predicate reads back.
+      storageClasses = lib.mkIf (wcfg.storageProvisioner != null) {
+        ${wcfg.storageClass} = {
+          metadata.name = wcfg.storageClass;
+          provisioner = wcfg.storageProvisioner;
+          reclaimPolicy = "Retain";
+          volumeBindingMode = "WaitForFirstConsumer";
+        };
+      };
+
       # --- SA + RBAC ------------------------------------------------------
       # Manage pool PVCs, run warm Jobs, watch Sandboxes (return/leak signals) + pods
       # (RWO bound-ness), and hold a leader-election Lease.
@@ -101,6 +133,22 @@ in
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
         ];
       };
+      # PVs and Nodes are CLUSTER-scoped — the namespaced Role above cannot grant them.
+      clusterRoles.warm-store-controller = {
+        metadata.name = "warm-store-controller";
+        rules = [
+          # patch = set/clear claimRef (the reservation); update = the ownership finalizer.
+          { apiGroups = [ "" ]; resources = [ "persistentvolumes" ]; verbs = [ "get" "list" "watch" "patch" "update" ]; }
+          # Nodes: READ-ONLY — the predicate matches PV nodeAffinity against node labels.
+          { apiGroups = [ "" ]; resources = [ "nodes" ]; verbs = [ "get" "list" "watch" ]; }
+        ];
+      };
+      clusterRoleBindings.warm-store-controller = {
+        metadata.name = "warm-store-controller";
+        roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "ClusterRole"; name = "warm-store-controller"; };
+        subjects = [{ kind = "ServiceAccount"; name = "warm-store-controller"; namespace = cfg.namespace; }];
+      };
+
       roleBindings.warm-store-controller = {
         metadata = { name = "warm-store-controller"; namespace = cfg.namespace; };
         roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "warm-store-controller"; };
@@ -132,6 +180,7 @@ in
                   { name = "WARM_STORE_MIN_READY"; value = toString wcfg.minReady; }
                   { name = "WARM_STORE_MAX_TOTAL"; value = toString wcfg.maxTotal; }
                   { name = "WARM_STORE_STORAGE"; value = wcfg.storage; }
+                  { name = "WARM_STORE_STORAGE_CLASS"; value = wcfg.storageClass; }
                   { name = "WARM_STORE_GOLDEN_EXPR"; value = wcfg.goldenExpr; }
                 ]
                 # The warm Job's systemd pod needs the SAME runtimeClass as the per-conversation

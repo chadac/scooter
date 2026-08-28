@@ -52,30 +52,23 @@ describe("sandboxManifest overlay-store wiring", () => {
   });
 });
 
-describe("sandboxManifest warm-store claimed PVC", () => {
-  it("references a claimed pool PVC by claimName + emits NO scooter-rw volumeClaimTemplate", () => {
-    const m = render({ overlayStore: true, overlayClaimName: "warm-store-latest-3" });
-    // The scooter-rw upper is a NAMED volume pointing at the pooled PVC...
-    const vol = (m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-rw");
-    expect(vol?.persistentVolumeClaim?.claimName).toBe("warm-store-latest-3");
-    // ...and there is NO volumeClaimTemplate for scooter-rw (a same-name vct would
-    // create a SECOND empty PVC and collide).
-    expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeUndefined();
-    // The mount is unchanged — same path, whichever backing the volume has.
+describe("sandboxManifest overlay upper — ONE uniform shape, always the vct", () => {
+  // A vct is a GENERATOR, not a fallback — one shape avoids the clobber. PR #403.
+
+  it("ALWAYS emits the scooter-rw vct and NEVER a named pool volume", () => {
+    const m = render({ overlayStore: true });
+    expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeDefined();
+    expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-rw")).toBeUndefined();
+  });
+
+  it("the mount is identical whichever PV backs the adopted claim", () => {
+    const m = render({ overlayStore: true });
     const mounts = m.spec.podTemplate.spec.containers[0].volumeMounts ?? [];
     expect(mounts.find((v) => v.name === "scooter-rw")?.mountPath).toBe("/nix/.scooter-rw");
   });
 
-  it("falls back to a fresh volumeClaimTemplate when NOT claimed (null)", () => {
-    const m = render({ overlayStore: true, overlayClaimName: null });
-    // No named PVC volume...
-    expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-rw")).toBeUndefined();
-    // ...the vct provides the fresh upper.
-    expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeDefined();
-  });
-
-  it("ignores overlayClaimName when overlayStore is off (no upper at all)", () => {
-    const m = render({ overlayStore: false, overlayClaimName: "warm-store-latest-3" });
+  it("emits no upper at all when overlayStore is off", () => {
+    const m = render({ overlayStore: false });
     expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-rw")).toBeUndefined();
     expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeUndefined();
   });

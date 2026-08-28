@@ -35,6 +35,8 @@ class Config:
     warm_job_image: str = ""
     warm_golden_expr: str = ""
     overlay_storage: str = "20Gi"
+    # Pool StorageClass; MUST be reclaimPolicy: Retain. Empty = no PV placement.
+    pool_storage_class: str = ""
     runtime_class: str = ""
     reconcile_interval: float = 10.0
     lease_seconds: int = 30
@@ -62,6 +64,7 @@ class Config:
             warm_job_image=sandbox_image,
             warm_golden_expr=os.environ.get("WARM_STORE_GOLDEN_EXPR", ""),
             overlay_storage=os.environ.get("WARM_STORE_STORAGE", "20Gi"),
+            pool_storage_class=os.environ.get("WARM_STORE_STORAGE_CLASS", ""),
             runtime_class=os.environ.get("SANDBOX_RUNTIME_CLASS", ""),
             reconcile_interval=float(os.environ.get("RECONCILE_INTERVAL_SECONDS", "10")),
             lease_seconds=int(os.environ.get("LEASE_DURATION_SECONDS", "30")),

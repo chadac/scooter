@@ -2,6 +2,7 @@
 Locks that the loop lists → reconciles → applies each action to the ControllerK8s."""
 
 from warm_store_controller.loop import reconcile_once
+from warm_store_controller.reservations import Reservations
 from warm_store_controller.reconcile import PoolPvc, SandboxRef, PoolConfig
 
 TAG = "abc123def456"
@@ -22,6 +23,19 @@ class FakeK8s:
 
     def list_pool_pvcs(self):
         return list(self._pvcs.values())
+
+    # The PV layer is not what these tests cover; an empty pool makes it a no-op.
+    def list_pending_uppers(self):
+        return []
+
+    def iter_pool_pvs(self):
+        return iter(())
+
+    def adopt_bound_pvs(self, pvcs):
+        self.adopted = getattr(self, 'adopted', []) + list(pvcs)
+
+    def list_nodes(self):
+        return []
 
     def list_sandboxes(self):
         return list(self._sandboxes)
@@ -55,7 +69,7 @@ def cfg(min_ready=1, max_total=8):
 
 def test_loop_warms_when_pool_empty():
     k = FakeK8s([], [])
-    reconcile_once(k, cfg(min_ready=2))
+    reconcile_once(k, cfg(min_ready=2), Reservations(), {})
     assert k.warmed == [TAG, TAG]
 
 
@@ -64,7 +78,7 @@ def test_loop_returns_suspended_clean_pvc():
         [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False)],
         [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="clean")],
     )
-    reconcile_once(k, cfg(min_ready=1))
+    reconcile_once(k, cfg(min_ready=1), Reservations(), {})
     assert ("p1", "ready", {"scooter.io/claimed-by": None}) in k.relabels
 
 
@@ -73,7 +87,7 @@ def test_loop_discards_unclean_return():
         [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False)],
         [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="unclean")],
     )
-    reconcile_once(k, cfg(min_ready=0))
+    reconcile_once(k, cfg(min_ready=0), Reservations(), {})
     assert "p1" in k.deletes
 
 
@@ -84,7 +98,7 @@ def test_loop_does_not_redelete_terminating_pvc():
         [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False, terminating=True)],
         [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="unclean")],
     )
-    reconcile_once(k, cfg(min_ready=0))
+    reconcile_once(k, cfg(min_ready=0), Reservations(), {})
     assert "p1" not in k.deletes
 
 
@@ -94,13 +108,13 @@ def test_loop_unknown_marker_does_not_delete():
         [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False)],
         [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="unknown")],
     )
-    reconcile_once(k, cfg(min_ready=0))
+    reconcile_once(k, cfg(min_ready=0), Reservations(), {})
     assert k.deletes == []
 
 
 def test_loop_gcs_retired_tag():
     k = FakeK8s([PoolPvc("r-old", OLD, "ready")], [])
-    reconcile_once(k, cfg(min_ready=0))
+    reconcile_once(k, cfg(min_ready=0), Reservations(), {})
     assert "r-old" in k.deletes
 
 
@@ -112,5 +126,5 @@ def test_loop_one_bad_action_does_not_abort_pass():
 
     k = Boom([PoolPvc("r-old", OLD, "ready")], [])
     # retired-tag delete raises; the pass still completes (min_ready top-up still runs).
-    reconcile_once(k, cfg(min_ready=1))
+    reconcile_once(k, cfg(min_ready=1), Reservations(), {})
     assert k.warmed == [TAG]  # top-up applied despite the delete failure
