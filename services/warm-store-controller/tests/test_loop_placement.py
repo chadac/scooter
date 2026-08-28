@@ -170,7 +170,7 @@ def test_a_pv_ALREADY_claimed_in_flight_is_not_re_written():
     # on it — the sandbox falls back to its vct instead of racing for a volume.
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
-    res.claim("warm-1")  # somebody else got there first
+    res.claim("warm-1", "conv-other")  # somebody else got there first
     out = reconcile_once(k8s, CFG, res)
     assert k8s.reserved == []
     assert ("conv-a", "vct-provision") in out

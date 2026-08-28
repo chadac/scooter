@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from .allocate import LetVctProvision, ReleasePv, ReservePv, plan_allocation, plan_reclaim
+from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
 logger = logging.getLogger("loop")
@@ -114,10 +115,16 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
             # — no two callers can both pass and then both patch claimRef. Holding before
             # the write also means a half-applied reserve (claimRef set, PVC create
             # failed) still withholds the PV; the TTL bounds it if we never confirm.
-            if not reservations.claim(a.pv):
-                logger.info(
-                    "PV already claimed in-flight; the vct will provision",
-                    extra={"pv": a.pv, "sandbox": a.sandbox},
+            try:
+                reservations.claim(a.pv, a.sandbox)
+            except AlreadyClaimed as exc:
+                # The planner is supposed to prevent this (it withholds in-flight PVs and
+                # emits one action per sandbox), so reaching here means the two disagree.
+                # Log it as the anomaly it is — but still degrade to the vct rather than
+                # failing the conversation.
+                logger.warning(
+                    "reservation conflict; the vct will provision",
+                    extra={"pv": a.pv, "sandbox": a.sandbox, "conflict": str(exc)},
                 )
                 results.append((a.sandbox, "vct-provision"))
                 continue

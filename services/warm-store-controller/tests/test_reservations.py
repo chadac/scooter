@@ -1,6 +1,14 @@
-"""Tier 1 — the in-flight reservation set (no cluster, fake clock)."""
+"""Tier 1 — in-flight (sandbox ↔ PV) reservations (no cluster, fake clock).
 
-from warm_store_controller.reservations import Reservations
+A reservation is a PAIR, and both directions are enforced: one PV never goes to two
+sandboxes, and one sandbox never holds two PVs.
+"""
+
+import threading
+
+import pytest
+
+from warm_store_controller.reservations import AlreadyClaimed, Reservations
 
 
 class FakeClock:
@@ -14,118 +22,200 @@ class FakeClock:
         self.now += secs
 
 
-def test_a_claimed_pv_is_active():
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    assert r.claim("pv-a") is True
+def res(ttl=60, clock=None):
+    return Reservations(ttl_seconds=ttl, clock=clock or FakeClock())
+
+
+# --- the pair --------------------------------------------------------------
+
+def test_a_claim_records_BOTH_directions():
+    r = res()
+    got = r.claim("pv-a", "conv-1")
+    assert (got.pv, got.sandbox) == ("pv-a", "conv-1")
+    assert r.holder_of("pv-a") == "conv-1"
+    assert r.pv_for("conv-1") == "pv-a"
     assert r.active() == {"pv-a"}
 
 
-def test_THE_MUTUAL_EXCLUSION_a_second_claim_LOSES():
-    # The core guarantee: claim() is test-and-set under one lock, so exactly one caller
-    # can own a PV. Check-then-act (ask active(), then reserve) would let both through.
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    assert r.claim("pv-a") is True
-    assert r.claim("pv-a") is False
+def test_ONE_PV_ONE_SANDBOX_a_second_sandbox_is_refused():
+    # Two sandboxes on one overlay upper is store corruption; RWO does not prevent a
+    # same-node double-mount, so this is the guard that does.
+    r = res()
+    r.claim("pv-a", "conv-1")
+    with pytest.raises(AlreadyClaimed, match="already claimed by sandbox 'conv-1'"):
+        r.claim("pv-a", "conv-2")
 
 
-def test_an_EXPIRED_hold_can_be_re_claimed():
-    # A controller that died mid-decision must not strand the volume forever.
+def test_ONE_SANDBOX_ONE_PV_a_second_volume_is_refused():
+    # The first PV would be stranded: claimRef'd to a PVC nobody creates, withheld from
+    # the pool until its TTL lapses.
+    r = res()
+    r.claim("pv-a", "conv-1")
+    with pytest.raises(AlreadyClaimed, match="already holds 'pv-a'"):
+        r.claim("pv-b", "conv-1")
+
+
+def test_re_claiming_the_SAME_pair_is_idempotent_and_refreshes():
+    # The only way to extend a hold — and only a caller that can name the pair it already
+    # owns can do it. A sandbox we keep choosing must not expire mid-flight.
     clock = FakeClock()
-    r = Reservations(ttl_seconds=60, clock=clock)
-    assert r.claim("pv-a") is True
-    clock.advance(61)
-    assert r.claim("pv-a") is True
+    r = res(clock=clock)
+    r.claim("pv-a", "conv-1")
+    clock.advance(50)
+    r.claim("pv-a", "conv-1")
+    clock.advance(50)
+    assert r.active() == {"pv-a"}  # would have lapsed at 60 without the refresh
 
 
-def test_a_confirmed_pv_can_be_claimed_again():
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    r.claim("pv-a")
+def test_a_released_pv_can_go_to_a_DIFFERENT_sandbox():
+    r = res()
+    r.claim("pv-a", "conv-1")
     r.confirm("pv-a")
-    assert r.claim("pv-a") is True
+    r.claim("pv-a", "conv-2")
+    assert r.holder_of("pv-a") == "conv-2"
 
 
-def test_concurrent_claims_yield_exactly_ONE_winner():
-    # Hammer it from many threads: the invariant is one winner, never two.
-    import threading
-
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    wins, lock = [], threading.Lock()
-    start = threading.Barrier(16)
-
-    def go():
-        start.wait()
-        if r.claim("contested"):
-            with lock:
-                wins.append(1)
-
-    threads = [threading.Thread(target=go) for _ in range(16)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert sum(wins) == 1
-
-
-def test_confirm_drops_the_hold():
-    # Once the binding is visible, the PV's own claimRef excludes it — the local hold is
-    # redundant and must not linger.
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    r.claim("pv-a")
+def test_a_released_sandbox_can_take_a_DIFFERENT_pv():
+    r = res()
+    r.claim("pv-a", "conv-1")
     r.confirm("pv-a")
-    assert r.active() == set()
+    r.claim("pv-b", "conv-1")
+    assert r.pv_for("conv-1") == "pv-b"
 
 
-def test_release_rolls_back_a_failed_reservation():
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    r.claim("pv-a")
-    r.release("pv-a")
-    assert r.active() == set()
-
+# --- expiry ----------------------------------------------------------------
 
 def test_THE_LEAK_GUARD_a_reservation_expires():
-    # A controller that dies between reserve and observe would otherwise strand this PV
-    # as permanently in-flight: never allocated, never reclaimed, invisible to the pool.
+    # A controller dying between claim and observe would otherwise strand this PV as
+    # permanently in-flight: never allocated, never reclaimed, invisible to the pool.
     clock = FakeClock()
-    r = Reservations(ttl_seconds=60, clock=clock)
-    r.claim("pv-a")
+    r = res(clock=clock)
+    r.claim("pv-a", "conv-1")
     clock.advance(59)
     assert r.active() == {"pv-a"}
     clock.advance(2)
     assert r.active() == set()
 
 
-def test_expiry_is_per_pv():
+def test_an_EXPIRED_reservation_frees_BOTH_sides():
     clock = FakeClock()
-    r = Reservations(ttl_seconds=60, clock=clock)
-    r.claim("old")
+    r = res(clock=clock)
+    r.claim("pv-a", "conv-1")
+    clock.advance(61)
+    assert r.holder_of("pv-a") is None
+    assert r.pv_for("conv-1") is None
+    r.claim("pv-a", "conv-2")          # the PV is free for another sandbox...
+    r.claim("pv-b", "conv-1")          # ...and conv-1 is free to take another PV
+    assert r.holder_of("pv-a") == "conv-2"
+    assert r.pv_for("conv-1") == "pv-b"
+
+
+def test_expiry_is_per_reservation():
+    clock = FakeClock()
+    r = res(clock=clock)
+    r.claim("old", "conv-1")
     clock.advance(40)
-    r.claim("new")
+    r.claim("new", "conv-2")
     clock.advance(30)  # old is 70s in (expired), new is 30s in
     assert r.active() == {"new"}
 
 
-def test_confirming_an_unknown_pv_is_a_noop():
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    r.confirm("never-seen")  # must not raise
-    assert r.active() == set()
-
-
-def test_len_reflects_live_holds_only():
+def test_expiring_a_stale_entry_does_not_clobber_the_sandboxs_LIVE_one():
+    # conv-1's first PV lapses, then it legitimately takes another. Sweeping the stale
+    # entry must not drop the live reverse-index entry with it.
     clock = FakeClock()
-    r = Reservations(ttl_seconds=60, clock=clock)
-    r.claim("a")
-    r.claim("b")
-    assert len(r) == 2
+    r = res(clock=clock)
+    r.claim("pv-old", "conv-1")
     clock.advance(61)
-    assert len(r) == 0
+    r.claim("pv-new", "conv-1")
+    assert r.pv_for("conv-1") == "pv-new"
+    r.active()  # force a sweep
+    assert r.pv_for("conv-1") == "pv-new"
+
+
+# --- release ---------------------------------------------------------------
+
+def test_confirm_drops_the_reservation_both_ways():
+    r = res()
+    r.claim("pv-a", "conv-1")
+    r.confirm("pv-a")
+    assert r.active() == set()
+    assert r.holder_of("pv-a") is None
+    assert r.pv_for("conv-1") is None
+
+
+def test_release_rolls_back_a_failed_reservation():
+    r = res()
+    r.claim("pv-a", "conv-1")
+    r.release("pv-a")
+    assert r.active() == set()
 
 
 def test_confirm_stays_IDEMPOTENT():
-    # Deliberate asymmetry: refresh() extends an exclusive right and must prove it holds
-    # one; confirm() only gives one up, and the loop calls it every pass for every
-    # realised PVC, so "already released" is the steady state, not an error.
-    r = Reservations(ttl_seconds=60, clock=FakeClock())
-    r.claim("pv-a")
+    # Deliberate asymmetry with claim(): the loop calls confirm for every realised PVC on
+    # every pass, so "already released" is the steady state, not an error.
+    r = res()
+    r.claim("pv-a", "conv-1")
     r.confirm("pv-a")
-    r.confirm("pv-a")  # must not raise
+    r.confirm("pv-a")
+    r.confirm("never-seen")
     assert r.active() == set()
+
+
+# --- concurrency -----------------------------------------------------------
+
+def test_concurrent_claims_on_one_PV_yield_exactly_ONE_winner():
+    r = res()
+    wins, lock = [], threading.Lock()
+    start = threading.Barrier(16)
+
+    def go(i):
+        start.wait()
+        try:
+            r.claim("contested", f"conv-{i}")
+        except AlreadyClaimed:
+            return
+        with lock:
+            wins.append(i)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(wins) == 1
+    assert r.holder_of("contested") == f"conv-{wins[0]}"
+
+
+def test_concurrent_claims_by_one_SANDBOX_yield_exactly_ONE_winner():
+    # The other direction: one sandbox racing for several PVs must end up holding one.
+    r = res()
+    wins, lock = [], threading.Lock()
+    start = threading.Barrier(16)
+
+    def go(i):
+        start.wait()
+        try:
+            r.claim(f"pv-{i}", "conv-1")
+        except AlreadyClaimed:
+            return
+        with lock:
+            wins.append(i)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(wins) == 1
+    assert r.pv_for("conv-1") == f"pv-{wins[0]}"
+
+
+def test_len_reflects_live_reservations_only():
+    clock = FakeClock()
+    r = res(clock=clock)
+    r.claim("a", "conv-1")
+    r.claim("b", "conv-2")
+    assert len(r) == 2
+    clock.advance(61)
+    assert len(r) == 0
