@@ -62,7 +62,7 @@ def test_loop_warms_when_pool_empty():
 def test_loop_returns_suspended_clean_pvc():
     k = FakeK8s(
         [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False)],
-        [SandboxRef("conv-a", TAG, suspended=True, clean_unmount=True)],
+        [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="clean")],
     )
     reconcile_once(k, cfg(min_ready=1))
     assert ("p1", "ready", {"scooter.io/claimed-by": None}) in k.relabels
@@ -71,10 +71,31 @@ def test_loop_returns_suspended_clean_pvc():
 def test_loop_discards_unclean_return():
     k = FakeK8s(
         [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False)],
-        [SandboxRef("conv-a", TAG, suspended=True, clean_unmount=False)],
+        [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="unclean")],
     )
     reconcile_once(k, cfg(min_ready=0))
     assert "p1" in k.deletes
+
+
+def test_loop_does_not_redelete_terminating_pvc():
+    # The whole loop, end to end: a claimed PVC that is already Terminating, with an `unclean`
+    # sandbox, must NOT be deleted again (the spin that pinned pool volumes in Terminating).
+    k = FakeK8s(
+        [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False, terminating=True)],
+        [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="unclean")],
+    )
+    reconcile_once(k, cfg(min_ready=0))
+    assert "p1" not in k.deletes
+
+
+def test_loop_unknown_marker_does_not_delete():
+    # A suspended sandbox whose marker read was inconclusive → the loop backs off, no delete.
+    k = FakeK8s(
+        [PoolPvc("p1", TAG, "claimed", claimed_by="conv-a", bound_to_pod=False)],
+        [SandboxRef("conv-a", TAG, suspended=True, unmount_marker="unknown")],
+    )
+    reconcile_once(k, cfg(min_ready=0))
+    assert k.deletes == []
 
 
 def test_loop_gcs_retired_tag():

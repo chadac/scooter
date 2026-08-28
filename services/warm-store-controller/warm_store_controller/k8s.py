@@ -101,6 +101,9 @@ class ControllerK8s:
                     last_used=annotations.get(ANN_LAST_USED),
                     bound_to_pod=name in bound,
                     warm_job_status=warm_status.get(name),
+                    # A PVC mid-deletion still lists (its finalizer holds it) with its labels
+                    # intact — reconcile must recognise it as already-resolved and not re-act.
+                    terminating=pvc.metadata.deletion_timestamp is not None,
                 )
             )
         return out
@@ -137,34 +140,45 @@ class ControllerK8s:
         for cr in resp.get("items", []):
             conv_id, image_tag = self._sandbox_identity(cr)
             suspended = (cr.get("spec", {}).get("operatingMode", "Running") != "Running")
-            clean = self.read_clean_marker(conv_id) if suspended else True
+            marker = self.read_unmount_marker(conv_id) if suspended else "clean"
             out.append(
-                SandboxRef(conv_id=conv_id, image_tag=image_tag, suspended=suspended, clean_unmount=clean)
+                SandboxRef(conv_id=conv_id, image_tag=image_tag, suspended=suspended, unmount_marker=marker)
             )
         return out
 
-    def read_clean_marker(self, conv_id: str) -> bool:
-        """True iff the sandbox left its clean-shutdown marker on the claimed PVC (graceful
-        stop). The overlay upper is RWO + single-attach, so the marker can't be read while a
-        pod holds it — this is only called AFTER the pod is gone (bound_to_pod False). We read
-        it by finding the pool PVC claimed by this conv and checking for the marker via a
-        short-lived reader pod that mounts it RO.
+    def read_unmount_marker(self, conv_id: str) -> str:
+        """Resolve the overlay's clean-shutdown marker on a suspended conv's claimed PVC, as a
+        TRI-STATE: "clean" (marker present), "unclean" (the check ran and the marker was
+        DEFINITIVELY absent), or "unknown" (could not determine). The overlay upper is RWO +
+        single-attach, so the marker can't be read while a pod holds it — this is only called
+        after the pod is gone.
 
-        The reader-pod round-trip is I/O-heavy; the loop only calls this for a suspended conv
-        whose PVC is unbound, so it's bounded by the suspend rate. Returns False on any error
-        (fail-safe: an unreadable marker is treated as unclean → the PVC is discarded, never
-        returned dirty)."""
+        A failure to READ is NOT evidence the volume is dirty, so it maps to "unknown" (the loop
+        then backs off and retries, never deletes). Two "unknown" cases matter especially:
+          - the PVC is already TERMINATING: we must NOT spawn a marker-check Job against it (that
+            Job can never schedule — the claim is being deleted — so it would time out and, under
+            the old code, be misread as "unclean" → another delete → the self-sustaining spin);
+          - the claimed PVC can't be found: nothing to read, and nothing to delete.
+        """
         pvc = self._pool_pvc_claimed_by(conv_id)
         if pvc is None:
-            return False
+            # Can't locate the claim → cannot decide, and there is nothing to return/discard.
+            return "unknown"
+        if pvc.metadata.deletion_timestamp is not None:
+            # Already being deleted — do NOT create a doomed marker-check Job; it is resolved.
+            logger.info(
+                "clean-marker skipped: claim is terminating",
+                extra={"conversation_id": conv_id, "pvc": pvc.metadata.name},
+            )
+            return "unknown"
         try:
-            return self._marker_present(pvc)
+            return self._marker_result(pvc.metadata.name)
         except client.ApiException as e:
             logger.warning(
-                "clean-marker read failed, treating as unclean",
-                extra={"conversation_id": conv_id, "pvc": pvc, "error": format_error(e)},
+                "clean-marker read failed; treating as UNKNOWN (backing off, not deleting)",
+                extra={"conversation_id": conv_id, "pvc": pvc.metadata.name, "error": format_error(e)},
             )
-            return False
+            return "unknown"
 
     # --- apply -------------------------------------------------------------
     def warm_new(self, image_tag: str) -> None:
@@ -297,16 +311,20 @@ class ControllerK8s:
                     bound.add(vol.persistent_volume_claim.claim_name)
         return bound
 
-    def _pool_pvc_claimed_by(self, conv_id: str) -> str | None:
-        """Name of the pool PVC claimed by this conversation, or None."""
+    def _pool_pvc_claimed_by(self, conv_id: str):
+        """The pool PVC object claimed by this conversation, or None. Returns the object (not
+        just the name) so callers can inspect metadata.deletion_timestamp (terminating?)."""
         core, _, _, _ = _apis()
         sel = f"{LBL_POOL_STATE}=claimed,{LBL_CLAIMED_BY}={conv_id}"
         items = core.list_namespaced_persistent_volume_claim(self.namespace, label_selector=sel).items
-        return items[0].metadata.name if items else None
+        return items[0] if items else None
 
-    def _marker_present(self, pvc: str) -> bool:
-        """Check for CLEAN_MARKER_PATH on `pvc` via a short-lived reader pod that mounts it
-        RO and tests the file. Returns the pod's success (marker present) / failure."""
+    def _marker_result(self, pvc: str) -> str:
+        """Check for CLEAN_MARKER_PATH on `pvc` via a short-lived reader Job that mounts it RO
+        and tests the file. TRI-STATE: "clean" (Job Completed → marker present), "unclean" (Job
+        Failed → the file was definitively absent), "unknown" (the Job never reached a terminal
+        state within the deadline — e.g. it could not schedule). Only a DEFINITIVE Failed maps
+        to unclean; a timeout is unknown so the loop backs off instead of destroying the PVC."""
         _, _, batch, _ = _apis()
         job = client.V1Job(
             metadata=client.V1ObjectMeta(generate_name="warm-marker-check-"),
@@ -341,8 +359,11 @@ class ControllerK8s:
         )
         created = batch.create_namespaced_job(self.namespace, job)
         # The loop polls the Job to Complete/Failed; kept simple here (the caller is off the
-        # hot path). A Complete Job == marker present; Failed == absent/unclean.
-        return _job_succeeded(created.metadata.name, self.namespace)
+        # hot path). Complete → marker present (clean); Failed → absent (unclean); neither
+        # within the deadline → unknown (back off, do not delete).
+        return {"succeeded": "clean", "failed": "unclean"}.get(
+            _job_result(created.metadata.name, self.namespace), "unknown"
+        )
 
     def _sandbox_identity(self, cr: dict) -> tuple[str, str]:
         """(conv_id, image_tag) for a Sandbox CR. conv_id == the Sandbox NAME (what the
@@ -384,16 +405,19 @@ def _tag_slug(image_tag: str) -> str:
     return slug or "untagged"
 
 
-def _job_succeeded(name: str, namespace: str, timeout_s: float = 60.0, clock=time) -> bool:
-    """Poll a Job to terminal state; True iff it Completed (succeeded). False on Failed/timeout.
-    Used by the marker-check reader Job (a Complete run == the marker file is present)."""
+def _job_result(name: str, namespace: str, timeout_s: float = 60.0, clock=time) -> str:
+    """Poll a Job to terminal state as a TRI-STATE: "succeeded" (Completed), "failed"
+    (definitively Failed), or "unknown" (neither within the deadline — e.g. the pod could not
+    schedule because its claim is terminating). Used by the marker-check reader Job: a timeout
+    must NOT be read as "failed" (which the caller maps to unclean → delete) — it is unknown, so
+    the caller backs off instead of destroying a volume it never actually inspected."""
     _, _, batch, _ = _apis()
     deadline = clock.time() + timeout_s
     while clock.time() < deadline:
         st = batch.read_namespaced_job_status(name, namespace).status
         if st is not None and (st.succeeded or 0) >= 1:
-            return True
+            return "succeeded"
         if st is not None and (st.failed or 0) >= 1:
-            return False
+            return "failed"
         clock.sleep(1.5)
-    return False
+    return "unknown"
