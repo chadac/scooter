@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 
+from dataclasses import dataclass
+
 from .reconcile import (
     ConversationState,
     Assign,
@@ -51,11 +53,38 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
     )
 
 
-# ZOMBIE two-tick confirmation. A real revive patches the Sandbox Running BEFORE writing
-# phase=Assigned, so one sighting of (Suspended, unhosted, Running) can be a revive
-# mid-flight. Act only on the SECOND consecutive sighting; a controller restart merely
-# re-arms the confirmation. Module-level: one controller process, one loop.
-_zombie_suspects: set[str] = set()
+# ZOMBIE repair — backoff + terminal resolution. Module-level state: one controller process,
+# one loop.
+#
+# A zombie is (phase=Suspended, unhosted, Sandbox operatingMode=Running) — reconcile returns
+# SuspendSandbox for it. The naive repair re-issued the SAME suspend every tick: if the suspend
+# never takes — which is exactly why a sandbox is a zombie (a racing sweeper's exec probe keeps
+# reviving the pod via the pollForReadyPod self-heal) — the conversation re-armed and was
+# re-suspended every ~5s forever (production: the same sandboxes re-detected + re-suspended
+# indefinitely). So instead:
+#   1. TWO-TICK CONFIRMATION (unchanged) — a real revive patches the Sandbox Running BEFORE
+#      writing phase=Assigned, so one sighting can be a revive mid-flight and must not be acted
+#      on. Act only on the second consecutive sighting.
+#   2. BACKOFF — after issuing a suspend, wait a few ticks before the next one (never re-issue
+#      every tick).
+#   3. TERMINAL ESCALATION — after N suspends that don't take, stop fighting the upstream resume
+#      race: force-delete the Sandbox (reclaims the leaked running pod) and mark the conversation
+#      Failed (a terminal phase reconcile then leaves inert; an operator investigates). Logged
+#      ONCE, not per tick.
+_ZOMBIE_CONFIRM_TICKS = 2          # consecutive sightings before the first suspend (false-positive guard)
+_ZOMBIE_SUSPEND_BACKOFF_TICKS = 3  # ticks to wait between suspends (no re-issue every tick)
+_ZOMBIE_MAX_SUSPENDS = 3           # bounded suspend attempts before the terminal escalation
+
+
+@dataclass
+class _ZombieProgress:
+    confirms: int = 0       # consecutive ticks reconcile flagged this conversation as a zombie
+    suspends: int = 0       # suspend patches issued so far
+    cooldown: int = 0       # ticks remaining before the next suspend is allowed (backoff window)
+    resolved: bool = False  # terminal escalation done — take no further action, and do NOT re-log
+
+
+_zombie_progress: dict[str, _ZombieProgress] = {}
 
 
 def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
@@ -97,27 +126,81 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     convs.sort(key=lambda c: c.parent_id is not None)
 
     results: list[tuple[str, str]] = []
+    # Conversations flagged as zombies THIS pass — used to reset the per-conversation
+    # confirmation/backoff state for any that are no longer zombies (a false-positive revive,
+    # or a resolved-and-now-terminal conversation).
+    zombie_flagged: set[str] = set()
     for c in convs:
         action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
             results.append((c.name, "noop"))
             continue
         if isinstance(action, SuspendSandbox):
-            if c.name in _zombie_suspects and c.sandbox_ref:
-                _zombie_suspects.discard(c.name)
-                logger.warning(
-                    "zombie sandbox — re-suspending",
-                    extra={**_C, "conversation_id": c.name, "sandbox": c.sandbox_ref, "reason": action.reason},
-                )
-                k8s.suspend_sandbox(c.sandbox_ref)
-                results.append((c.name, "suspend-sandbox"))
-            else:
-                _zombie_suspects.add(c.name)
+            zombie_flagged.add(c.name)
+            prog = _zombie_progress.setdefault(c.name, _ZombieProgress())
+
+            # Terminal already reached — the escalation force-deleted the Sandbox and marked the
+            # conversation Failed. Do nothing, and do NOT re-log (resolution is logged once).
+            if prog.resolved:
+                results.append((c.name, "zombie-resolved"))
+                continue
+
+            prog.confirms += 1
+
+            # TWO-TICK CONFIRMATION: a single sighting can be a revive mid-flight — only a
+            # suspect, no action yet.
+            if prog.confirms < _ZOMBIE_CONFIRM_TICKS:
                 logger.info(
                     "zombie sandbox suspect — confirming next tick",
                     extra={**_C, "conversation_id": c.name, "sandbox": c.sandbox_ref or ""},
                 )
                 results.append((c.name, "suspend-sandbox-suspect"))
+                continue
+
+            # BACKOFF: within the wait window after a suspend — hold, do not re-issue.
+            if prog.cooldown > 0:
+                prog.cooldown -= 1
+                results.append((c.name, "suspend-sandbox-backoff"))
+                continue
+
+            # TERMINAL ESCALATION: N suspends have not taken. Stop fighting the resume race —
+            # force-delete the Sandbox (reclaims the leaked running pod) and mark the
+            # conversation Failed. Logged ONCE.
+            if prog.suspends >= _ZOMBIE_MAX_SUSPENDS:
+                if c.sandbox_ref:
+                    k8s.force_delete_sandbox(c.sandbox_ref)
+                k8s.patch_status(c.name, {"phase": "Failed"})
+                prog.resolved = True
+                logger.error(
+                    "zombie sandbox unresolved — escalating (force-delete Sandbox + mark conversation Failed)",
+                    extra={
+                        **_C,
+                        "conversation_id": c.name,
+                        "sandbox": c.sandbox_ref or "",
+                        "suspend_attempts": prog.suspends,
+                        "reason": action.reason,
+                    },
+                )
+                results.append((c.name, "zombie-escalated"))
+                continue
+
+            # Issue one bounded suspend and open the backoff window.
+            prog.suspends += 1
+            prog.cooldown = _ZOMBIE_SUSPEND_BACKOFF_TICKS
+            logger.warning(
+                "zombie sandbox — re-suspending",
+                extra={
+                    **_C,
+                    "conversation_id": c.name,
+                    "sandbox": c.sandbox_ref or "",
+                    "attempt": prog.suspends,
+                    "max_attempts": _ZOMBIE_MAX_SUSPENDS,
+                    "reason": action.reason,
+                },
+            )
+            if c.sandbox_ref:
+                k8s.suspend_sandbox(c.sandbox_ref)
+            results.append((c.name, "suspend-sandbox"))
             continue
         if isinstance(action, Detach):
             # A SUSPENDED conversation that still carries stale placement → release it (the
@@ -198,6 +281,13 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                     extra={**_C, "conversation_id": c.name, "fallback": "lazy-revive"},
                     exc_info=True,
                 )
+
+    # Reset zombie state for any conversation NOT flagged this pass: this resets the two-tick
+    # confirmation on a false positive (a revive mid-flight), and GCs a resolved record once the
+    # conversation is terminal (Failed → reconcile no longer returns SuspendSandbox for it).
+    for name in list(_zombie_progress.keys()):
+        if name not in zombie_flagged:
+            del _zombie_progress[name]
 
     return results
 
