@@ -23,6 +23,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRouter, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
+import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
@@ -744,9 +745,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // for synchronous in-memory stores.)
     await store.flush?.(id);
 
-    // Replay persisted history with checksums.
-    if (store.readEventsWithChecksum) {
-      for await (const c of store.readEventsWithChecksum(id)) {
+    // Replay persisted history with checksums, from the DURABLE store. Reading the
+    // local-only log here replayed NOTHING on a pod whose emptyDir was wiped by a restart:
+    // the conversation is in memory (hydrate loads meta from the mirror) so this route's
+    // guard passes, but its events were never pulled, and the stream honestly reported
+    // `synced` with zero events. Observed live: every one of 123 conversations after a
+    // rollout, each with a full mirrored log. PR #405.
+    // NB: call through `store` — these are object methods that use `this` internally, so a
+    // detached reference (`const replay = store.x`) loses the binding at runtime.
+    const replay = store.readEventsDurableWithChecksum
+      ? (i: SessionId) => store.readEventsDurableWithChecksum!(i)
+      : store.readEventsWithChecksum
+        ? (i: SessionId) => store.readEventsWithChecksum!(i)
+        : undefined;
+    if (replay) {
+      for await (const c of replay(id)) {
         seen.add(c.checksum);
         send({ kind: "event", ...c });
       }

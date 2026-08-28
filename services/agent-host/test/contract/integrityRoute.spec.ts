@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { mirroredConversationStore } from "../../src/session/mirroredStore.js";
 import { createFileConversationStore } from "../../src/session/fileStore.js";
 import { createManagementApi } from "../../src/api/management.js";
 import type { SessionManager } from "../../src/session/manager.js";
@@ -178,6 +179,66 @@ describe("events.integrity — ownership", () => {
         expect(stream.ended(), `a "${where}" stream must stay open`).toBe(false);
         stream.close();
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("THE REGRESSION: replays the MIRROR's log when local is empty (post-rollout)", async () => {
+    // LOCAL_STATE_PATH is an emptyDir, so a restart leaves the local log empty while the
+    // mirror keeps the history. Replaying from local streamed `synced` and nothing else —
+    // the UI rendered an empty conversation whose events were intact all along.
+    const localRoot = mkdtempSync(join(tmpdir(), "integrity-local-"));
+    const mirrorRoot = mkdtempSync(join(tmpdir(), "integrity-mirror-"));
+    try {
+      const id = "conv-rollout";
+      const mirror = createFileConversationStore(mirrorRoot);
+      await mirror.appendEvent(id, userMsg("from-the-mirror"));
+      // Local is a DIFFERENT, empty root — exactly the post-restart shape.
+      const store = mirroredConversationStore(createFileConversationStore(localRoot), mirror);
+      const api = createManagementApi({
+        sessions: stubSessions(id),
+        store,
+        server: stubServer,
+        answerPermission: async () => {},
+      });
+      const stream = startIntegrity(api, id);
+      await new Promise((r) => setTimeout(r, 120));
+      stream.close();
+      expect(stream.body()).toContain("from-the-mirror");
+      expect(stream.body()).toContain('"kind":"synced"');
+    } finally {
+      rmSync(localRoot, { recursive: true, force: true });
+      rmSync(mirrorRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("ensureReadable still pulls the mirror for a conversation already IN MEMORY", async () => {
+    // hydrate() loads META from the mirror at startup, so every conversation is an entry
+    // while its events were never pulled. Returning true on the entry alone skipped the
+    // pull for exactly the conversations that needed it.
+    const root = mkdtempSync(join(tmpdir(), "integrity-known-"));
+    try {
+      const id = "conv-known";
+      let pulls = 0;
+      const sessions = {
+        // In memory (hydrated) — but its events are NOT local.
+        get: () => undefined,
+        ensureReadable: async () => {
+          pulls++;
+          return true;
+        },
+      } as unknown as SessionManager;
+      const api = createManagementApi({
+        sessions,
+        store: createFileConversationStore(root),
+        server: stubServer,
+        answerPermission: async () => {},
+      });
+      const stream = startIntegrity(api, id);
+      await new Promise((r) => setTimeout(r, 80));
+      stream.close();
+      expect(pulls).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
