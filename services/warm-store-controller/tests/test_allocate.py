@@ -9,11 +9,12 @@ from warm_store_controller.allocate import (
     candidates_for,
     node_matches,
     plan_reclaim,
-    rank_candidates,
     usable_pvs,
 )
 
 TAG = "scooter-git-abc123"
+WANT_A = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
+WANT_X = PendingSandbox(sandbox="conv-x", image_tag=TAG, pvc_name="scooter-rw-conv-x")
 
 
 def hostname_terms(*hosts):
@@ -29,6 +30,14 @@ def zone_terms(*zones):
 
 def pv(name, **kw):
     return PoolPv(name=name, image_tag=kw.pop("image_tag", TAG), phase=kw.pop("phase", "Available"), **kw)
+
+
+def names(want, pool, affinity=None, nodes=None):
+    return [p.name for p in candidates_for(want, pool, nodes or [node("odin")], affinity)]
+
+
+def first(want, pool, affinity=None):
+    return next(iter(names(want, pool, affinity)), None)
 
 
 def node(name, **labels):
@@ -106,7 +115,7 @@ def test_usable_excludes_a_pv_no_LIVE_node_can_reach():
 
 def test_a_volume_this_sandbox_warmed_wins_even_when_least_recently_used():
     pool = [pv("fresh", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
-    assert rank_candidates(pool, "conv-a", {"conv-a": "mine"})[0].name == "mine"
+    assert first(WANT_A, pool, {"conv-a": "mine"}) == "mine"
 
 
 def test_otherwise_MOST_recently_used_first():
@@ -115,26 +124,26 @@ def test_otherwise_MOST_recently_used_first():
         pv("recent", last_used="2026-08-27T10:00:00Z"),
         pv("old", last_used="2026-01-01T00:00:00Z"),
     ]
-    assert [p.name for p in rank_candidates(pool, "conv-x")] == ["recent", "old"]
+    assert names(WANT_X, pool) == ["recent", "old"]
 
 
 def test_an_UNKNOWN_age_pv_sorts_last():
     # Least attractive to reuse, most attractive to reap.
     pool = [pv("nostamp"), pv("dated", last_used="2026-01-01T00:00:00Z")]
-    assert [p.name for p in rank_candidates(pool, "conv-x")] == ["dated", "nostamp"]
+    assert names(WANT_X, pool) == ["dated", "nostamp"]
 
 
 def test_TWO_sandboxes_can_prefer_the_SAME_volume():
     # Separate keys — an annotation ON the PV records only the last user.
     aff = {"conv-x": "A", "conv-y": "A"}
     pool = [pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")]
-    assert rank_candidates(pool, "conv-x", aff)[0].name == "A"
-    assert rank_candidates(pool, "conv-y", aff)[0].name == "A"
+    assert first(WANT_X, pool, aff) == "A"
+    assert first(PendingSandbox(sandbox="conv-y", image_tag=TAG, pvc_name="p"), pool, aff) == "A"
 
 
 def test_affinity_outranks_recency():
     pool = [pv("hot", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
-    assert rank_candidates(pool, "conv-a", {"conv-a": "mine"})[0].name == "mine"
+    assert first(WANT_A, pool, {"conv-a": "mine"}) == "mine"
 
 
 # --- candidate selection: ranking only. Freeness is decided by claim(), not here.
@@ -143,20 +152,20 @@ def test_the_sandboxs_OWN_pv_is_the_first_candidate():
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
     pool = [pv("other"), pv("mine")]
     aff = {"conv-a": "mine"}
-    assert [p.name for p in candidates_for(want, pool, [node("odin")], aff)] == ["mine", "other"]
+    assert names(want, pool, aff) == ["mine", "other"]
 
 
 def test_a_COLD_pool_offers_NO_candidates():
     # The shell reads this as "fall back to the vct" — a cold pool never blocks.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
-    assert candidates_for(want, [], [node("odin")]) == []
+    assert names(want, []) == []
 
 
 def test_an_UNREACHABLE_pool_offers_NO_candidates():
     # Non-empty but topologically useless: every PV is pinned to a node we cannot use.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
     pool = [pv("on-thor", node_selector_terms=hostname_terms("thor"))]
-    assert candidates_for(want, pool, [node("odin")]) == []
+    assert names(want, pool) == []
 
 
 def test_candidates_are_offered_in_FALLBACK_order():
@@ -168,7 +177,7 @@ def test_candidates_are_offered_in_FALLBACK_order():
         pv("hot", last_used="2026-08-27T10:00:00Z"),
         pv("mine", last_used="2025-01-01T00:00:00Z"),
     ]
-    assert [p.name for p in candidates_for(want, pool, [node("odin")], aff)] == ["mine", "hot", "cold"]
+    assert names(want, pool, aff) == ["mine", "hot", "cold"]
 
 
 def test_candidates_EXCLUDE_unusable_pvs():
@@ -180,7 +189,7 @@ def test_candidates_EXCLUDE_unusable_pvs():
         pv("dying", terminating=True),
         pv("reserved", claim_ref="someone"),
     ]
-    assert [p.name for p in candidates_for(want, pool, [node("odin")])] == ["ok"]
+    assert names(want, pool) == ["ok"]
 
 
 # --- reclaim ---------------------------------------------------------------

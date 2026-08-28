@@ -12,6 +12,7 @@ todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 # Ownership marker: ownerReferences cannot own a cluster-scoped PV. PR #403.
@@ -118,46 +119,33 @@ def usable_pvs(pvs: list[PoolPv], nodes: list[Node], image_tag: str) -> list[Poo
     ]
 
 
-def rank_candidates(pvs: list[PoolPv], sandbox: str, affinity: dict[str, str] | None = None) -> list[PoolPv]:
-    """Best-first: the volume this sandbox last used, then most-recently-used overall.
-
-    MRU, not LRU. Spreading load keeps every volume marginally warm and nothing safely
-    reapable; concentrating reuse on the hot set makes those genuinely warm and lets the
-    cold tail age out. Ties break on name for determinism."""
-    mine = (affinity or {}).get(sandbox)
-    return sorted(
-        pvs,
-        key=lambda p: (
-            0 if p.name == mine else 1,
-            _invert(p.last_used),
-            p.name,
-        ),
-    )
-
-
-def _invert(stamp: str | None) -> tuple[int, str]:
-    """Sort key that puts NEWER first while keeping the rest of the tuple ascending.
-    (0, "") for a missing stamp sorts it LAST — an unknown-age volume is the least
-    attractive to reuse and the most attractive to reap."""
-    if not stamp:
-        return (1, "")
-    # Complement each char so an ascending sort yields newest-first. PR #403.
-    return (0, "".join(chr(0x7E - ord(c)) for c in stamp))
-
-
 def candidates_for(
     want: PendingSandbox,
     pvs: list[PoolPv],
     nodes: list[Node],
     affinity: dict[str, str] | None = None,
-) -> list[PoolPv]:
-    """PVs this sandbox could use, best-first.
+) -> Iterator[PoolPv]:
+    """PVs this sandbox could use, best-first: the one it last used, then most-recently-used.
 
-    Pure ranking only — no exclusion. Whether a candidate is actually free is decided by
-    Reservations.claim() at the moment we take it, so this must NOT also try to track who
-    has what: two mechanisms enforcing one invariant can disagree, and the disagreement is
-    a double-booked volume."""
-    return rank_candidates(usable_pvs(pvs, nodes, want.image_tag), want.sandbox, affinity)
+    A generator — the shell takes the first it wins, so the tail is usually never built.
+
+    Ranking only, no exclusion: whether a candidate is FREE is decided by
+    Reservations.claim() when the shell takes it. Two mechanisms enforcing one invariant
+    can disagree, and the disagreement is a double-booked volume.
+
+    MRU, not LRU — see PR #403. An unknown last_used sorts last: least attractive to
+    reuse, most attractive to reap.
+    """
+    usable = usable_pvs(pvs, nodes, want.image_tag)
+    mine = (affinity or {}).get(want.sandbox)
+    for pv in usable:
+        if pv.name == mine:
+            yield pv
+            break
+    # `or ""` puts an undated PV at the end; name breaks ties for a stable order.
+    for pv in sorted(usable, key=lambda p: (p.last_used or "", p.name), reverse=True):
+        if pv.name != mine:
+            yield pv
 
 
 def plan_reclaim(pvs: list[PoolPv]) -> list[ReleasePv]:
