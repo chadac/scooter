@@ -310,16 +310,8 @@ class ControllerK8s:
     # See PR #403 and todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 
     def iter_pool_pvs(self) -> Iterator[PoolPv]:
-        """Pool PVs, MOST-RECENTLY-USED FIRST, as a generator — so placement's first
-        usable candidate is also its best.
-
-        MRU concentrates reuse on a hot set (genuinely warm) and lets the cold tail age
-        out, so a reaper can retire it on age alone; LRU keeps everything lukewarm and
-        nothing reapable. Sorted client-side because the k8s API has no server-side sort
-        and PVs take almost no field selectors; bounded by maxTotal. Recency = our
-        last-used annotation, else status.lastPhaseTransitionTime, else oldest.
-
-        nodeAffinity is passed through VERBATIM — the pure core evaluates it. PR #403."""
+        """Pool PVs, most-recently-used first. Sorted client-side (the k8s API has no
+        server-side sort); nodeAffinity passed through verbatim. PR #403."""
         core, _, _, _ = _apis()
         items = list(core.list_persistent_volume(label_selector=LBL_WARM_STORE).items)
         items.sort(key=self._recency_key, reverse=True)
@@ -412,10 +404,7 @@ class ControllerK8s:
 
     def reserve_pv(self, pv: str, pvc_name: str, sandbox: str) -> None:
         """Pre-bind `pv` to `pvc_name` and create that PVC so the vct adopts it.
-
-        claimRef FIRST, then the PVC — reversed, the PVC could bind some other volume
-        before we point it at ours. No ownerReferences by design (a vct-adopted PVC gets
-        none either); the PV finalizer owns this volume's lifetime. PR #403."""
+        claimRef FIRST — reversed, the PVC could bind some other volume. PR #403."""
         core, _, _, _ = _apis()
         core.patch_persistent_volume(
             pv,

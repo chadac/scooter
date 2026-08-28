@@ -1,12 +1,7 @@
 """PV placement — the pure decision core for handing a sandbox a warm overlay upper.
 
-The controller pre-creates the PVC under the name the sandbox's vct would generate,
-pre-bound via `claimRef` to a PV it chose, and the vct ADOPTS it. Placing nothing is a
-valid outcome: the vct then provisions a fresh empty upper, so the pool never blocks a
-conversation.
-
-One predicate covers every storage driver — a PV states its own topology in
-`spec.nodeAffinity` as standard `nodeSelectorTerms`. See PR #403 and
+The controller pre-creates the PVC the sandbox's vct will adopt, pre-bound via `claimRef`.
+Placing nothing is valid: the vct then provisions a fresh upper. See PR #403 and
 todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 """
 
@@ -70,11 +65,7 @@ class ReleasePv:
 # --- the placement predicate ----------------------------------------------
 
 def node_matches(terms: list[dict], node: Node) -> bool:
-    """Does `node` satisfy a PV's required nodeSelectorTerms? Terms are OR'd,
-    matchExpressions within a term AND'd; no terms = no constraint.
-
-    Supports only the operators volume topology uses (In, NotIn, Exists, DoesNotExist).
-    Anything unrecognised fails CLOSED — see _expr_matches. PR #403."""
+    """Does `node` satisfy a PV's nodeSelectorTerms? Terms OR'd, expressions AND'd."""
     if not terms:
         return True
     for term in terms:
@@ -125,17 +116,7 @@ def candidates_for(
     nodes: list[Node],
     affinity: dict[str, str] | None = None,
 ) -> Iterator[PoolPv]:
-    """PVs this sandbox could use, best-first: the one it last used, then most-recently-used.
-
-    A generator — the shell takes the first it wins, so the tail is usually never built.
-
-    Ranking only, no exclusion: whether a candidate is FREE is decided by
-    Reservations.claim() when the shell takes it. Two mechanisms enforcing one invariant
-    can disagree, and the disagreement is a double-booked volume.
-
-    MRU, not LRU — see PR #403. An unknown last_used sorts last: least attractive to
-    reuse, most attractive to reap.
-    """
+    """PVs this sandbox could use, best-first. Ranking only — claim() decides freeness."""
     usable = usable_pvs(pvs, nodes, want.image_tag)
     mine = (affinity or {}).get(want.sandbox)
     for pv in usable:

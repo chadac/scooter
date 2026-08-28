@@ -1,11 +1,5 @@
-"""In-flight PV reservations: a sandbox (claimer) paired with a PV (claimee).
-
-Exclusion is decided HERE, under one lock, before anything touches the API — `claimRef`
-makes the WRITE exclusive but not the READ current, so a PV we just patched still lists
-as `Available` until k8s catches up. See PR #403.
-
-In-process state, not a distributed lock (leader election makes the controller
-single-writer); the mutex guards the reconcile loop against any future watch callback.
+"""In-flight PV reservations: a sandbox paired with a PV, excluded locally before the API
+sees anything (a just-patched PV still reads Available). See PR #403.
 """
 
 from __future__ import annotations
@@ -29,14 +23,7 @@ class Reservation:
 
 
 class Reservations:
-    """In-flight (sandbox ↔ PV) reservations, each expiring after `ttl_seconds`.
-
-    :param ttl_seconds: how long a reservation survives without being released. Should
-        comfortably exceed a reconcile interval — long enough for the binding to become
-        visible, short enough that a crash does not strand the volume for long.
-    :param clock: injectable time source (tests pass a fake; the module never calls
-        time.time() directly elsewhere).
-    """
+    """In-flight (sandbox ↔ PV) reservations, each expiring after `ttl_seconds`."""
 
     def __init__(self, ttl_seconds: float = 120.0, clock=time) -> None:
         self._ttl = ttl_seconds
@@ -47,10 +34,7 @@ class Reservations:
 
     def claim(self, pv: str, sandbox: str) -> Reservation:
         """Reserve `pv` for `sandbox`; raises AlreadyClaimed if either side is taken.
-
-        Re-claiming the SAME pair refreshes the deadline — the only way to extend a hold,
-        and only a caller naming the pair it already owns can do it. Expired reservations
-        read as absent. See PR #403."""
+        Re-claiming the same pair refreshes the deadline. PR #403."""
         with self._lock:
             now = self._clock.time()
             self._expire(now)

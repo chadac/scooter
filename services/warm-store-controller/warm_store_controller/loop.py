@@ -24,13 +24,8 @@ def reconcile_once(
     reservations=None,
     affinity: dict[str, str] | None = None,
 ) -> list[tuple[str, str]]:
-    """One reconcile pass over the pool. Returns [(target, action_kind)] for logging/tests.
-    Applies each action via the ControllerK8s; a per-action failure is logged and skipped so
-    one bad PVC can't stall the whole pass.
-
-    `reservations` (optional) is the in-flight PV set. Omitted, PV placement is skipped
-    entirely and every sandbox falls through to its vct — the safe degrade, and what keeps
-    older call sites (and tests) working unchanged."""
+    """One reconcile pass. Returns [(target, action_kind)]; a per-action failure is logged
+    and skipped. No `reservations` = no PV placement (every sandbox falls to its vct)."""
     pvcs = k8s.list_pool_pvcs()
     sandboxes = k8s.list_sandboxes()
     actions = reconcile(pvcs, sandboxes, cfg)
@@ -66,9 +61,7 @@ def reconcile_once(
 
 def _place_volumes(k8s, reservations, affinity: dict[str, str] | None = None) -> list[tuple[str, str]]:
     """Hand warm PVs to Sandboxes awaiting an upper; recycle PVs whose PVC is gone.
-
-    Every failure is safe: an unplaced sandbox gets a fresh upper from its vct. So errors
-    are logged and skipped, never raised — the pool must never block a conversation."""
+    Errors are logged, never raised — the pool must never block a conversation."""
     results: list[tuple[str, str]] = []
     try:
         # pending FIRST so an idle cluster does not list PVs and nodes every interval.
@@ -115,13 +108,8 @@ def _sandbox_of_pvc(pvc_name: str) -> str:
 
 
 def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> tuple[str, str]:
-    """Give ONE sandbox a warm PV, or fall back to its vct.
-
-    Selfish: walk our own ranked candidates and take the first we win. claim() is the only
-    arbiter — losing a race just means trying the next candidate, not giving up, so a
-    contended pool still places everyone it can. Nothing here coordinates with other
-    sandboxes, which is what makes this safe to run concurrently later.
-    """
+    """Give ONE sandbox a warm PV, or fall back to its vct. Selfish: take the first
+    candidate we win, so a lost race costs the next-best volume, not the placement."""
     for pv in candidates_for(want, pvs, nodes, affinity):
         try:
             reservations.claim(pv.name, want.sandbox)
