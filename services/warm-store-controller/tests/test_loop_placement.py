@@ -40,8 +40,7 @@ class FakeK8s:
     def iter_pool_pvs(self):
         if self._fail_list:
             raise ApiException(status=503, reason="Service Unavailable")
-        # A GENERATOR, like the real one — so a caller that materialises it works, and one
-        # that stops early also works.
+        # A GENERATOR, like the real one.
         yield from self._pvs
 
     def list_nodes(self):
@@ -131,8 +130,7 @@ def test_an_IN_FLIGHT_pv_is_not_re_placed_on_the_next_pass():
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
     reconcile_once(k8s, CFG, res)
-    # Same PV still reads Available (the binding has not landed) — a second pass must not
-    # hand it to another sandbox.
+    # Still reads Available (binding not landed) — a second pass must not re-hand it.
     k8s._pending = [want("conv-b")]
     out = reconcile_once(k8s, CFG, res)
     assert len(k8s.reserved) == 1
@@ -148,16 +146,14 @@ def test_placement_is_SKIPPED_entirely_without_a_reservation_set():
 
 
 def test_an_IDLE_cluster_does_not_list_nodes():
-    # Nothing pending -> nothing to place, so skip the node listing entirely. Otherwise an
-    # idle cluster pays for a full node list every reconcile interval, forever.
+    # Nothing pending -> skip the node listing; an idle cluster should not pay for it.
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[])
     reconcile_once(k8s, CFG, Reservations())
     assert k8s.node_lists == 0
 
 
 def test_placement_consumes_the_pool_in_the_order_the_shell_yields_it():
-    # The shell yields MRU-first, so the first usable candidate is already the best one.
-    # Two equally-valid PVs: the one the shell yields first must win.
+    # The shell yields MRU-first, so the first usable candidate is the best one.
     k8s = FakeK8s(
         pvs=[pv("hot", last_used="2026-08-27T10:00:00Z"), pv("cold", last_used="2026-01-01T00:00:00Z")],
         pending=[want("conv-a")],
@@ -177,8 +173,7 @@ def test_a_pv_ALREADY_claimed_in_flight_is_not_re_written():
 
 
 def test_a_REALISED_pvc_drops_the_in_process_hold():
-    # The PV's own claimRef now excludes it, so the hold is done; without this cleanup it
-    # lingers until the TTL, withholding an already-bound volume.
+    # The PV's claimRef now excludes it; without cleanup the hold lingers to its TTL.
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
     reconcile_once(k8s, CFG, res)
@@ -191,9 +186,7 @@ def test_a_REALISED_pvc_drops_the_in_process_hold():
 
 
 def test_a_NON_api_error_is_NOT_swallowed():
-    # We catch ApiException, not Exception: a cluster error is expected and degrades to the
-    # vct, but a bug in our own code (TypeError, KeyError, ...) must surface rather than
-    # masquerading as "the pool had nothing".
+    # ApiException degrades to the vct; OUR bugs must surface, not look like a cold pool.
     class Boom(FakeK8s):
         def list_pending_uppers(self):
             raise TypeError("bug in our own code")
@@ -203,8 +196,7 @@ def test_a_NON_api_error_is_NOT_swallowed():
 
 
 def test_losing_a_race_FALLS_THROUGH_to_the_next_candidate():
-    # Selfish selection's payoff: a contended PV costs us the next-best volume, not the
-    # whole placement. The old batch planner emitted one action per sandbox and gave up.
+    # Selfish selection's payoff: a contended PV costs the next-best, not the placement.
     k8s = FakeK8s(
         pvs=[pv("hot", last_used="2026-08-27T10:00:00Z"), pv("cold", last_used="2026-01-01T00:00:00Z")],
         pending=[want("conv-a")],
@@ -217,8 +209,7 @@ def test_losing_a_race_FALLS_THROUGH_to_the_next_candidate():
 
 
 def test_a_BROKEN_pv_does_not_cost_the_whole_placement():
-    # reserve_pv fails on the first candidate: roll it back and try the next, rather than
-    # dropping the sandbox to its vct with a usable volume still sitting in the pool.
+    # Roll back the broken candidate and try the next, not straight to the vct.
     k8s = FakeK8s(
         pvs=[pv("bad", last_used="2026-08-27T10:00:00Z"), pv("good", last_used="2026-01-01T00:00:00Z")],
         pending=[want("conv-a")],
@@ -239,8 +230,7 @@ def test_every_candidate_exhausted_falls_back_to_the_vct():
 
 
 def test_affinity_is_recorded_at_BIND_time_not_reservation_time():
-    # A reservation that never binds means the sandbox wrote nothing, so calling it that
-    # sandbox's warm store would send it back to a cold disk later.
+    # A reservation that never binds wrote nothing — see PR #403.
     aff: dict[str, str] = {}
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     reconcile_once(k8s, CFG, Reservations(), aff)
@@ -253,9 +243,7 @@ def test_affinity_is_recorded_at_BIND_time_not_reservation_time():
 
 
 def test_X_RECLAIMS_A_after_Y_used_it():
-    # sandbox -> pv, so X and Y are different KEYS: Y binding A does not displace X's
-    # association. Both keep preferring A, which is what an annotation on the PV could
-    # never express (single-valued, so Y would have overwritten X forever).
+    # X and Y are different KEYS, so Y binding A does not displace X. PR #403.
     aff: dict[str, str] = {}
     bound = lambda who: pv("A", phase="Bound", claim_ref=f"scooter-rw-{who}")
 

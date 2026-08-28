@@ -100,8 +100,7 @@ in
   config = lib.mkIf wcfg.enable {
     kubernetes.resources = {
       # --- the pool StorageClass (Retain) ---------------------------------
-      # WaitForFirstConsumer: the PV is provisioned where the pod lands, and its
-      # nodeAffinity records that topology — what the placement predicate reads back.
+      # WaitForFirstConsumer: the PV records the topology the predicate reads back.
       storageClasses = lib.mkIf (wcfg.storageProvisioner != null) {
         ${wcfg.storageClass} = {
           metadata.name = wcfg.storageClass;
@@ -130,8 +129,7 @@ in
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
         ];
       };
-      # PVs and Nodes are CLUSTER-scoped, so the namespaced Role above cannot grant them.
-      # Kept separate and minimal so each blast radius is obvious.
+      # PVs and Nodes are CLUSTER-scoped — the namespaced Role above cannot grant them.
       clusterRoles.warm-store-controller = {
         metadata.name = "warm-store-controller";
         rules = [

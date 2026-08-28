@@ -80,11 +80,7 @@ def _place_volumes(k8s, reservations, affinity: dict[str, str] | None = None) ->
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
         return results
 
-    # A BOUND PV is one a sandbox is genuinely using, so this is where affinity is
-    # recorded — not at reservation time, where a claim that never binds would falsely
-    # mark the volume as that sandbox's warm store. It is also where the local hold is
-    # done: the PV's own claimRef excludes it now, and keeping the hold would withhold an
-    # already-bound volume until the TTL.
+    # BOUND = genuinely in use: record affinity here, not at reservation. PR #403.
     still_pending = {w.pvc_name for w in pending}
     for pv_ in pvs:
         if pv_.claim_ref and pv_.claim_ref not in still_pending:
@@ -155,8 +151,7 @@ def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> tuple[str, str]
         )
         return (pv.name, "reserve-pv")
 
-    # Not a failure — the cold-pool path. Logged so a pool that never places anything is
-    # visible; a safe degrade with no signal hides a broken pool.
+    # Not a failure. Logged so a pool that never places anything stays visible.
     logger.info("no warm PV placed; the vct will provision", extra={"sandbox": want.sandbox})
     return (want.sandbox, "vct-provision")
 

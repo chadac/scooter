@@ -14,16 +14,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# The finalizer that makes a pool PV the controller's exclusively. ownerReferences CANNOT
-# work here: a PV is cluster-scoped and a namespaced owner is rejected at GC time with
-# `OwnerRefInvalidNamespace ... does not exist in namespace ""` (verified — the PV simply
-# survives). A finalizer gives the same guarantee positively: nothing reaps a pool PV out
-# from under us until we remove it.
+# Ownership marker: ownerReferences cannot own a cluster-scoped PV. PR #403.
 PV_FINALIZER = "scooter.io/warm-store"
 
-# PV labels/annotations. Keyed by image tag for the same reason PVCs were: the upper is an
-# overlay whose LOWER is the sandbox image, so a PV warmed against one tag is meaningless
-# (and corrupting) under another.
+# Keyed by image tag: the upper is an overlay whose LOWER is that image.
 LBL_WARM_STORE = "scooter.io/warm-store"      # image content tag — the version key
 ANN_LAST_USED = "scooter.io/last-used"        # rfc3339, for LRU
 
@@ -35,8 +29,7 @@ class PoolPv:
     name: str
     image_tag: str
     phase: str                       # Available | Bound | Released | Failed
-    # spec.nodeAffinity's required nodeSelectorTerms, verbatim. The shape is identical
-    # across drivers, which is what lets one predicate serve all of them.
+    # spec.nodeAffinity's required nodeSelectorTerms, verbatim — identical across drivers.
     node_selector_terms: list[dict] = field(default_factory=list)
     last_used: str | None = None
     claim_ref: str | None = None     # spec.claimRef.name when reserved/bound
@@ -148,8 +141,7 @@ def _invert(stamp: str | None) -> tuple[int, str]:
     attractive to reuse and the most attractive to reap."""
     if not stamp:
         return (1, "")
-    # Invert lexicographic order by complementing each character within the rfc3339
-    # alphabet, so a plain ascending sort yields descending timestamps.
+    # Complement each char so an ascending sort yields newest-first. PR #403.
     return (0, "".join(chr(0x7E - ord(c)) for c in stamp))
 
 

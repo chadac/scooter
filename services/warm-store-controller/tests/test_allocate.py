@@ -75,8 +75,7 @@ def test_exists_and_notin():
 
 
 def test_UNKNOWN_operator_does_not_match():
-    # A constraint we cannot evaluate must never read as "satisfied" — that is how a pod
-    # gets bound to a volume it cannot reach.
+    # "satisfied" for an unreadable constraint = a pod bound to an unreachable volume.
     weird = [{"matchExpressions": [{"key": "k", "operator": "Gt", "values": ["1"]}]}]
     assert node_matches(weird, node("odin", k="5")) is False
 
@@ -126,8 +125,7 @@ def test_an_UNKNOWN_age_pv_sorts_last():
 
 
 def test_TWO_sandboxes_can_prefer_the_SAME_volume():
-    # sandbox -> pv means they are separate keys; an annotation ON the PV is single-valued
-    # and could only ever record the last user.
+    # Separate keys — an annotation ON the PV records only the last user.
     aff = {"conv-x": "A", "conv-y": "A"}
     pool = [pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")]
     assert rank_candidates(pool, "conv-x", aff)[0].name == "A"
@@ -139,10 +137,7 @@ def test_affinity_outranks_recency():
     assert rank_candidates(pool, "conv-a", {"conv-a": "mine"})[0].name == "mine"
 
 
-# --- candidate selection ---------------------------------------------------
-# Ranking only: whether a candidate is FREE is decided by Reservations.claim() when the
-# shell takes it. Two mechanisms enforcing one invariant can disagree, and the
-# disagreement is a double-booked volume — so this layer deliberately does not exclude.
+# --- candidate selection: ranking only. Freeness is decided by claim(), not here.
 
 def test_the_sandboxs_OWN_pv_is_the_first_candidate():
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
@@ -152,8 +147,7 @@ def test_the_sandboxs_OWN_pv_is_the_first_candidate():
 
 
 def test_a_COLD_pool_offers_NO_candidates():
-    # The shell reads this as "fall back to the vct" — not an error, and the reason a cold
-    # pool never blocks a conversation.
+    # The shell reads this as "fall back to the vct" — a cold pool never blocks.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
     assert candidates_for(want, [], [node("odin")]) == []
 
@@ -166,8 +160,7 @@ def test_an_UNREACHABLE_pool_offers_NO_candidates():
 
 
 def test_candidates_are_offered_in_FALLBACK_order():
-    # The shell walks this list and takes the first it wins, so losing a race costs the
-    # next-best volume rather than the whole placement.
+    # The shell takes the first it wins, so a lost race costs the next-best volume.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
     aff = {"conv-a": "mine"}
     pool = [
@@ -204,15 +197,13 @@ def test_a_TERMINATING_released_pv_is_left_alone():
 
 
 def test_matchFields_term_is_SKIPPED_not_evaluated():
-    # Documented gap, pinned so it stays deliberate: unevaluatable -> unusable, never
-    # mis-placed. Unreachable today (volume topology emits no matchFields).
+    # Pinned gap: unevaluatable -> unusable, never mis-placed. Unreachable today.
     terms = [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["odin"]}]}]
     assert node_matches(terms, node("odin")) is False
 
 
 def test_a_matchFields_term_does_not_veto_a_sibling_LABEL_term():
-    # Terms are OR'd: skipping the unevaluatable one must not suppress a term we CAN
-    # confirm, or one exotic term would strand an otherwise usable PV.
+    # Terms are OR'd: skipping one must not suppress a term we CAN confirm.
     terms = [
         {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["thor"]}]},
         {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["odin"]}]},

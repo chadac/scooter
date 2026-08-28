@@ -108,8 +108,7 @@ class Reservations:
         stale = [pv for pv, res in self._by_pv.items() if res.expires_at <= now]
         for pv in stale:
             res = self._by_pv.pop(pv)
-            # Only if it still points at THIS reservation — the sandbox may since have
-            # been given a different, live one. PR #403.
+            # Only if it still points at THIS reservation. PR #403.
             if self._by_sandbox.get(res.sandbox) is res:
                 del self._by_sandbox[res.sandbox]
 

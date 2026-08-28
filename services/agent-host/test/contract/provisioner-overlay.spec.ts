@@ -53,8 +53,7 @@ describe("sandboxManifest overlay-store wiring", () => {
 });
 
 describe("sandboxManifest overlay upper — ONE uniform shape, always the vct", () => {
-  // A vct is a GENERATOR, not a fallback: paired with a same-named volume it silently
-  // wins and orphans the pooled one. One shape avoids that. PR #403.
+  // A vct is a GENERATOR, not a fallback — one shape avoids the clobber. PR #403.
 
   it("ALWAYS emits the scooter-rw vct and NEVER a named pool volume", () => {
     const m = render({ overlayStore: true });

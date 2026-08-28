@@ -32,10 +32,8 @@ SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
 
-# Pool PVC labels (see todo/docs/WARM_STORE_PVC_MANAGER.md). LBL_WARM_STORE / ANN_LAST_USED
-# / ANN_LAST_USED are imported from allocate.py — ONE definition shared by the PVC layer
-# and the PV layer, so the two can never drift apart on the key that identifies a pool
-# volume.
+# Pool PVC labels. LBL_WARM_STORE / ANN_LAST_USED come from allocate.py — one definition
+# shared by the PVC and PV layers so they cannot drift.
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed
 LBL_WARM_PVC = "scooter.io/warm-pvc"       # on a warm Job: the PVC name it warms (PVC↔Job link)
@@ -84,9 +82,8 @@ class ControllerK8s:
     # the host cgroup ns and let the sandbox churn the node's /kubepods tree — the host-logout
     # bug). MUST match the per-conversation sandboxRuntimeClass. Empty → cluster default.
     runtime_class: str = ""
-    # StorageClass for POOL volumes. MUST have reclaimPolicy: Retain — with the default
-    # Delete class, removing a PVC destroys its PV and nothing is ever recycled, so the
-    # whole reuse model silently degrades to "always a fresh empty upper".
+    # Pool StorageClass. MUST be reclaimPolicy: Retain, or deleting a PVC destroys its PV
+    # and nothing is ever recycled.
     pool_storage_class: str = ""
 
     # --- observe -----------------------------------------------------------
@@ -309,11 +306,8 @@ class ControllerK8s:
             if e.status != 404:
                 raise
 
-    # --- PV placement (the controller owns volumes end to end) -------------
-    # The agent-host no longer claims anything: it always attaches the scooter-rw vct, so
-    # placement happens at the PV<->PVC binding layer. We pre-create the PVC under the name
-    # the vct WILL generate, pre-bound to a PV via claimRef, and the vct adopts it.
-    # See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
+    # --- PV placement: pre-create the PVC the vct will adopt, pre-bound via claimRef.
+    # See PR #403 and todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 
     def iter_pool_pvs(self) -> Iterator[PoolPv]:
         """Pool PVs, MOST-RECENTLY-USED FIRST, as a generator — so placement's first
@@ -432,8 +426,7 @@ class ControllerK8s:
                 },
             },
         )
-        # 409 = a prior pass already created it (or the vct just did). Either way the name
-        # is taken by the claim we want; the claimRef above decides which PV it gets.
+        # 409 = already created; the claimRef above still decides which PV it gets.
         try:
             core.create_namespaced_persistent_volume_claim(
                 self.namespace,

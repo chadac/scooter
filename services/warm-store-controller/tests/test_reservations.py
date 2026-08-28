@@ -113,8 +113,7 @@ def test_expiry_is_per_reservation():
 
 
 def test_expiring_a_stale_entry_does_not_clobber_the_sandboxs_LIVE_one():
-    # conv-1's first PV lapses, then it legitimately takes another. Sweeping the stale
-    # entry must not drop the live reverse-index entry with it.
+    # Sweeping conv-1's lapsed entry must not drop its live one.
     clock = FakeClock()
     r = res(clock=clock)
     r.claim("pv-old", "conv-1")
