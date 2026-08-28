@@ -1,6 +1,7 @@
 """Tier 1 — the PURE placement core (no cluster)."""
 
 
+from warm_store_controller.affinity import Affinity
 from warm_store_controller.allocate import (
     Node,
     PendingSandbox,
@@ -105,12 +106,31 @@ def test_usable_excludes_a_pv_no_LIVE_node_can_reach():
 
 # --- ranking ---------------------------------------------------------------
 
-def test_own_pv_wins_even_when_least_recently_used():
-    pool = [
-        pv("fresh", last_used="2026-08-27T10:00:00Z", last_sandbox="other"),
-        pv("mine", last_used="2026-01-01T00:00:00Z", last_sandbox="conv-a"),
-    ]
-    assert rank_candidates(pool, "conv-a")[0].name == "mine"
+def test_a_volume_this_sandbox_warmed_wins_even_when_least_recently_used():
+    aff = Affinity()
+    aff.record("mine", "conv-a")
+    pool = [pv("fresh", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
+    assert rank_candidates(pool, "conv-a", aff)[0].name == "mine"
+
+
+def test_MULTIPLE_sandboxes_can_each_prefer_the_SAME_volume():
+    # The annotation could not express this: X uses A, Y uses A, and X's association was
+    # overwritten forever even though A may still hold X's builds.
+    aff = Affinity()
+    aff.record("A", "conv-x")
+    aff.record("A", "conv-y")
+    pool = [pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")]
+    assert rank_candidates(pool, "conv-x", aff)[0].name == "A"
+    assert rank_candidates(pool, "conv-y", aff)[0].name == "A"
+
+
+def test_a_sandbox_prefers_its_MOST_RECENTLY_used_volume():
+    # Ordinal, not boolean: both are warm for this sandbox, but the newer one more so.
+    aff = Affinity()
+    aff.record("older", "conv-a")
+    aff.record("newer", "conv-a")
+    pool = [pv("older"), pv("newer")]
+    assert [p.name for p in rank_candidates(pool, "conv-a", aff)] == ["newer", "older"]
 
 
 def test_otherwise_MOST_recently_used_first():
@@ -128,13 +148,11 @@ def test_an_UNKNOWN_age_pv_sorts_last():
     assert [p.name for p in rank_candidates(pool, "conv-x")] == ["dated", "nostamp"]
 
 
-def test_own_pv_beats_a_more_recently_used_one():
-    # Ownership outranks recency: the sandbox's own volume holds ITS builds.
-    pool = [
-        pv("hot", last_used="2026-08-27T10:00:00Z", last_sandbox="other"),
-        pv("mine", last_used="2026-01-01T00:00:00Z", last_sandbox="conv-a"),
-    ]
-    assert rank_candidates(pool, "conv-a")[0].name == "mine"
+def test_affinity_outranks_recency():
+    aff = Affinity()
+    aff.record("mine", "conv-a")
+    pool = [pv("hot", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
+    assert rank_candidates(pool, "conv-a", aff)[0].name == "mine"
 
 
 # --- candidate selection ---------------------------------------------------
@@ -144,8 +162,10 @@ def test_own_pv_beats_a_more_recently_used_one():
 
 def test_the_sandboxs_OWN_pv_is_the_first_candidate():
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
-    pool = [pv("other"), pv("mine", last_sandbox="conv-a")]
-    assert [p.name for p in candidates_for(want, pool, [node("odin")])] == ["mine", "other"]
+    aff = Affinity()
+    aff.record("mine", "conv-a")
+    pool = [pv("other"), pv("mine")]
+    assert [p.name for p in candidates_for(want, pool, [node("odin")], aff)] == ["mine", "other"]
 
 
 def test_a_COLD_pool_offers_NO_candidates():
@@ -166,12 +186,14 @@ def test_candidates_are_offered_in_FALLBACK_order():
     # The shell walks this list and takes the first it wins, so losing a race costs the
     # next-best volume rather than the whole placement.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
+    aff = Affinity()
+    aff.record("mine", "conv-a")
     pool = [
         pv("cold", last_used="2026-01-01T00:00:00Z"),
         pv("hot", last_used="2026-08-27T10:00:00Z"),
-        pv("mine", last_used="2025-01-01T00:00:00Z", last_sandbox="conv-a"),
+        pv("mine", last_used="2025-01-01T00:00:00Z"),
     ]
-    assert [p.name for p in candidates_for(want, pool, [node("odin")])] == ["mine", "hot", "cold"]
+    assert [p.name for p in candidates_for(want, pool, [node("odin")], aff)] == ["mine", "hot", "cold"]
 
 
 def test_candidates_EXCLUDE_unusable_pvs():

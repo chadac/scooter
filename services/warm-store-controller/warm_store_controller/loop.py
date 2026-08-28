@@ -11,6 +11,7 @@ import logging
 
 from kubernetes.client.exceptions import ApiException
 
+from .affinity import _NO_AFFINITY
 from .allocate import candidates_for, plan_reclaim
 from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
@@ -18,7 +19,7 @@ from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 logger = logging.getLogger("loop")
 
 
-def reconcile_once(k8s, cfg: PoolConfig, reservations=None) -> list[tuple[str, str]]:
+def reconcile_once(k8s, cfg: PoolConfig, reservations=None, affinity=None) -> list[tuple[str, str]]:
     """One reconcile pass over the pool. Returns [(target, action_kind)] for logging/tests.
     Applies each action via the ControllerK8s; a per-action failure is logged and skipped so
     one bad PVC can't stall the whole pass.
@@ -55,11 +56,11 @@ def reconcile_once(k8s, cfg: PoolConfig, reservations=None) -> list[tuple[str, s
             )
 
     if reservations is not None:
-        results.extend(_place_volumes(k8s, reservations))
+        results.extend(_place_volumes(k8s, reservations, affinity))
     return results
 
 
-def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
+def _place_volumes(k8s, reservations, affinity=None) -> list[tuple[str, str]]:
     """Hand warm PVs to Sandboxes awaiting an upper; recycle PVs whose PVC is gone.
 
     Every failure is safe: an unplaced sandbox gets a fresh upper from its vct. So errors
@@ -75,12 +76,17 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
         return results
 
-    # Once the PVC exists the PV's own claimRef excludes it, so the local hold is done.
-    # Without this it lingers until the TTL, withholding an already-bound volume.
+    # A BOUND PV is one a sandbox is genuinely using, so this is where affinity is
+    # recorded — not at reservation time, where a claim that never binds would falsely
+    # mark the volume as that sandbox's warm store. It is also where the local hold is
+    # done: the PV's own claimRef excludes it now, and keeping the hold would withhold an
+    # already-bound volume until the TTL.
     still_pending = {w.pvc_name for w in pending}
     for pv_ in pvs:
         if pv_.claim_ref and pv_.claim_ref not in still_pending:
             reservations.release(pv_.name)
+            if affinity is not None:
+                affinity.record(pv_.name, _sandbox_of_pvc(pv_.claim_ref))
 
     # Recycle first, so a PV released this pass can be allocated in the same pass.
     for a in plan_reclaim(pvs):
@@ -96,12 +102,19 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
         return results
 
     for want in pending:
-        placed = _place_one(k8s, reservations, want, pvs, nodes)
+        placed = _place_one(k8s, reservations, want, pvs, nodes, affinity)
         results.append(placed)
     return results
 
 
-def _place_one(k8s, reservations, want, pvs, nodes) -> tuple[str, str]:
+def _sandbox_of_pvc(pvc_name: str) -> str:
+    """The sandbox a `scooter-rw-<sandbox>` PVC belongs to. The name is the contract
+    between us and the vct (it generates exactly this), so it is the binding's only
+    record of who owns the volume."""
+    return pvc_name[len("scooter-rw-"):] if pvc_name.startswith("scooter-rw-") else pvc_name
+
+
+def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> tuple[str, str]:
     """Give ONE sandbox a warm PV, or fall back to its vct.
 
     Selfish: walk our own ranked candidates and take the first we win. claim() is the only
@@ -109,7 +122,7 @@ def _place_one(k8s, reservations, want, pvs, nodes) -> tuple[str, str]:
     contended pool still places everyone it can. Nothing here coordinates with other
     sandboxes, which is what makes this safe to run concurrently later.
     """
-    for pv in candidates_for(want, pvs, nodes):
+    for pv in candidates_for(want, pvs, nodes, affinity):
         try:
             reservations.claim(pv.name, want.sandbox)
         except AlreadyClaimed:
@@ -131,8 +144,8 @@ def _place_one(k8s, reservations, want, pvs, nodes) -> tuple[str, str]:
                 "pv": pv.name,
                 "pvc": want.pvc_name,
                 "sandbox": want.sandbox,
-                "reason": "reusing this sandbox's own warm PV"
-                if pv.last_sandbox == want.sandbox
+                "reason": "reusing a volume this sandbox has warmed"
+                if affinity is not None and affinity.rank_of(pv.name, want.sandbox) < _NO_AFFINITY
                 else "assigning a warm pool PV",
             },
         )

@@ -5,6 +5,7 @@ Locks the behaviours keeping the pool an optimization, not a dependency."""
 import pytest
 from kubernetes.client.exceptions import ApiException
 
+from warm_store_controller.affinity import _NO_AFFINITY, Affinity
 from warm_store_controller.allocate import Node, PendingSandbox, PoolPv
 from warm_store_controller.loop import reconcile_once
 from warm_store_controller.reconcile import PoolConfig
@@ -236,3 +237,39 @@ def test_every_candidate_exhausted_falls_back_to_the_vct():
     k8s = FakeK8s(pvs=[pv("only")], pending=[want("conv-a")], fail_reserve_for={"only"})
     out = reconcile_once(k8s, CFG, Reservations())
     assert ("conv-a", "vct-provision") in out
+
+
+def test_affinity_is_recorded_at_BIND_time_not_reservation_time():
+    # A reservation that never binds means the sandbox wrote nothing, so calling it that
+    # sandbox's warm store would send it back to a cold disk later.
+    aff = Affinity()
+    k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
+    reconcile_once(k8s, CFG, Reservations(), aff)
+    assert aff.rank_of("warm-1", "conv-a") == _NO_AFFINITY   # reserved, not yet bound
+    # Next pass: the PVC is realised.
+    k8s._pvs = [pv("warm-1", phase="Bound", claim_ref="scooter-rw-conv-a")]
+    k8s._pending = []
+    reconcile_once(k8s, CFG, Reservations(), aff)
+    assert aff.rank_of("warm-1", "conv-a") == 0
+
+
+def test_X_RECLAIMS_A_after_Y_used_it():
+    # The full sequence the annotation could not express:
+    #   X binds A -> A released -> Y binds A -> A released -> X asks again, gets A.
+    aff = Affinity()
+    bound = lambda who: pv("A", phase="Bound", claim_ref=f"scooter-rw-{who}")
+
+    for who in ("conv-x", "conv-y"):
+        reconcile_once(FakeK8s(pvs=[bound(who)], pending=[]), CFG, Reservations(), aff)
+
+    # Both retain affinity for A; a single-valued annotation would have kept only conv-y.
+    assert aff.rank_of("A", "conv-x") < _NO_AFFINITY
+    assert aff.rank_of("A", "conv-y") < _NO_AFFINITY
+
+    # X asks again: it gets A back even though B was used more recently overall.
+    k8s = FakeK8s(
+        pvs=[pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")],
+        pending=[want("conv-x")],
+    )
+    reconcile_once(k8s, CFG, Reservations(), aff)
+    assert k8s.reserved == [("A", "scooter-rw-conv-x", "conv-x")]

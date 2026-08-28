@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .affinity import Affinity
+
 # The finalizer that makes a pool PV the controller's exclusively. ownerReferences CANNOT
 # work here: a PV is cluster-scoped and a namespaced owner is rejected at GC time with
 # `OwnerRefInvalidNamespace ... does not exist in namespace ""` (verified — the PV simply
@@ -26,7 +28,6 @@ PV_FINALIZER = "scooter.io/warm-store"
 # (and corrupting) under another.
 LBL_WARM_STORE = "scooter.io/warm-store"      # image content tag — the version key
 ANN_LAST_USED = "scooter.io/last-used"        # rfc3339, for LRU
-ANN_LAST_SANDBOX = "scooter.io/last-sandbox"  # the sandbox that last used this PV
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,6 @@ class PoolPv:
     # across drivers, which is what lets one predicate serve all of them.
     node_selector_terms: list[dict] = field(default_factory=list)
     last_used: str | None = None
-    last_sandbox: str | None = None  # ANN_LAST_SANDBOX — drives preferential reuse
     claim_ref: str | None = None     # spec.claimRef.name when reserved/bound
     terminating: bool = False
 
@@ -127,18 +127,18 @@ def usable_pvs(pvs: list[PoolPv], nodes: list[Node], image_tag: str) -> list[Poo
     ]
 
 
-def rank_candidates(pvs: list[PoolPv], sandbox: str) -> list[PoolPv]:
-    """Best-first. The sandbox's OWN previous PV wins — that is its warm store, already
-    holding its builds. Otherwise MOST-recently-used.
+def rank_candidates(pvs: list[PoolPv], sandbox: str, affinity: Affinity | None = None) -> list[PoolPv]:
+    """Best-first: volumes this sandbox has used (most recent of those first), then
+    most-recently-used overall.
 
-    MRU, not LRU. Spreading load across the pool keeps every volume marginally warm and
-    none properly warm, and leaves nothing safely reapable. Concentrating reuse on the
-    hot set makes those volumes genuinely warm and lets the cold tail age out untouched,
-    so a reaper can retire it on age alone. Ties break on name for determinism."""
+    MRU, not LRU. Spreading load keeps every volume marginally warm and nothing safely
+    reapable; concentrating reuse on the hot set makes those genuinely warm and lets the
+    cold tail age out. Ties break on name for determinism."""
+    rank = affinity.rank_of if affinity else (lambda _pv, _sandbox: 0)
     return sorted(
         pvs,
         key=lambda p: (
-            0 if p.last_sandbox == sandbox else 1,
+            rank(p.name, sandbox),
             _invert(p.last_used),
             p.name,
         ),
@@ -160,6 +160,7 @@ def candidates_for(
     want: PendingSandbox,
     pvs: list[PoolPv],
     nodes: list[Node],
+    affinity: Affinity | None = None,
 ) -> list[PoolPv]:
     """PVs this sandbox could use, best-first.
 
@@ -167,7 +168,7 @@ def candidates_for(
     Reservations.claim() at the moment we take it, so this must NOT also try to track who
     has what: two mechanisms enforcing one invariant can disagree, and the disagreement is
     a double-booked volume."""
-    return rank_candidates(usable_pvs(pvs, nodes, want.image_tag), want.sandbox)
+    return rank_candidates(usable_pvs(pvs, nodes, want.image_tag), want.sandbox, affinity)
 
 
 def plan_reclaim(pvs: list[PoolPv]) -> list[ReleasePv]:

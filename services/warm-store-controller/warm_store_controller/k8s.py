@@ -17,7 +17,6 @@ from kubernetes import client, config
 
 from .logging_config import format_error
 from .allocate import (
-    ANN_LAST_SANDBOX,
     ANN_LAST_USED,
     LBL_WARM_STORE,
     Node,
@@ -34,7 +33,7 @@ SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
 
 # Pool PVC labels (see todo/docs/WARM_STORE_PVC_MANAGER.md). LBL_WARM_STORE / ANN_LAST_USED
-# / ANN_LAST_SANDBOX are imported from allocate.py — ONE definition shared by the PVC layer
+# / ANN_LAST_USED are imported from allocate.py — ONE definition shared by the PVC layer
 # and the PV layer, so the two can never drift apart on the key that identifies a pool
 # volume.
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
@@ -356,7 +355,6 @@ class ControllerK8s:
                 phase=(pv.status.phase if pv.status else "") or "",
                 node_selector_terms=terms,
                 last_used=annotations.get(ANN_LAST_USED),
-                last_sandbox=annotations.get(ANN_LAST_SANDBOX),
                 claim_ref=(spec.claim_ref.name if spec.claim_ref else None),
                 terminating=meta.deletion_timestamp is not None,
             )
@@ -430,10 +428,7 @@ class ControllerK8s:
             {
                 "spec": {"claimRef": {"namespace": self.namespace, "name": pvc_name}},
                 "metadata": {
-                    "annotations": {
-                        ANN_LAST_SANDBOX: sandbox,
-                        ANN_LAST_USED: _now_rfc3339(),
-                    }
+                    "annotations": {ANN_LAST_USED: _now_rfc3339()}
                 },
             },
         )
