@@ -21,6 +21,7 @@ CRITICAL: NO task_id or owner attributes — unbounded cardinality.
 from __future__ import annotations
 
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider, ObservableGauge
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
@@ -116,23 +117,28 @@ class _OTelMetricsSink(MetricsSink):
         self._task_count_disabled = 0
         self._due_backlog_count = 0
 
-        def _observe_tasks(observer):
-            observer.observe(self._task_count_enabled, {"enabled": "true"})
-            observer.observe(self._task_count_disabled, {"enabled": "false"})
-
-        def _observe_backlog(observer):
-            observer.observe(self._due_backlog_count)
-
         meter.create_observable_gauge(
             "scheduler_tasks",
-            callbacks=[_observe_tasks],
+            callbacks=[self._observe_tasks],
             description="Task count by enabled status.",
         )
         meter.create_observable_gauge(
             "scheduler_due_backlog",
-            callbacks=[_observe_backlog],
+            callbacks=[self._observe_backlog],
             description="Number of tasks currently overdue.",
         )
+
+    # OTel observable-gauge callbacks. The SDK hands each a CallbackOptions and expects it to
+    # RETURN (or yield) Observation objects — CallbackOptions has no `.observe()`, so the old
+    # `observer.observe(...)` form raised AttributeError every collection cycle.
+    def _observe_tasks(self, options: CallbackOptions) -> list[Observation]:
+        return [
+            Observation(self._task_count_enabled, {"enabled": "true"}),
+            Observation(self._task_count_disabled, {"enabled": "false"}),
+        ]
+
+    def _observe_backlog(self, options: CallbackOptions) -> list[Observation]:
+        return [Observation(self._due_backlog_count)]
 
     def fire_completed(self, *, status: str, duration_ms: float) -> None:
         self._fires.add(1, {"status": status})

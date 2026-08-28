@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
@@ -124,6 +125,47 @@ async def test_tick_with_no_due_tasks_still_increments_ticks_total(store, metric
 
     value = _get_metric_value(metrics_reader, "scheduler_ticks_total", {"outcome": "ok"})
     assert value == 1
+
+
+def _observations(result):
+    """Normalize a callback's return (a list/iterable of Observations) to a list."""
+    assert result is not None, "an observable-gauge callback must RETURN observations, not None"
+    return list(result)
+
+
+def test_observable_gauge_callbacks_return_observations(metrics_sink):
+    """CONTRACT (red before the fix): an OTel observable-gauge callback is handed a
+    CallbackOptions and MUST RETURN/yield Observation objects. The old code called
+    `observer.observe(...)` — CallbackOptions has no `.observe`, so invoking the callback
+    raised AttributeError every collection cycle (≈2000+ error logs/day). Invoke the
+    callbacks directly with a real CallbackOptions and assert the returned Observations."""
+    metrics_sink.set_task_counts(enabled=5, disabled=2)
+    metrics_sink.set_due_backlog(count=3)
+
+    opts = CallbackOptions()
+
+    task_obs = _observations(metrics_sink._observe_tasks(opts))
+    for o in task_obs:
+        assert isinstance(o, Observation), f"expected Observation, got {type(o).__name__}"
+    by_enabled = {dict(o.attributes)["enabled"]: o.value for o in task_obs}
+    assert by_enabled == {"true": 5, "false": 2}
+
+    backlog_obs = _observations(metrics_sink._observe_backlog(opts))
+    assert len(backlog_obs) == 1
+    assert isinstance(backlog_obs[0], Observation)
+    assert backlog_obs[0].value == 3
+
+
+def test_observable_gauges_collect_through_the_reader(metrics_reader, metrics_sink):
+    """End-to-end: a real collection cycle (which hands each callback a CallbackOptions)
+    surfaces the gauge values. With the old `.observe()` bug the callback raised, the SDK
+    dropped the gauges, and get_metrics_data() returned no scheduler_tasks points at all."""
+    metrics_sink.set_task_counts(enabled=7, disabled=1)
+    metrics_sink.set_due_backlog(count=4)
+
+    assert _get_metric_value(metrics_reader, "scheduler_tasks", {"enabled": "true"}) == 7
+    assert _get_metric_value(metrics_reader, "scheduler_tasks", {"enabled": "false"}) == 1
+    assert _get_metric_value(metrics_reader, "scheduler_due_backlog") == 4
 
 
 @pytest.mark.asyncio
