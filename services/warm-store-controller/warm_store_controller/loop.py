@@ -11,22 +11,22 @@ import logging
 
 from kubernetes.client.exceptions import ApiException
 
-from .allocate import candidates_for
-from .reservations import AlreadyClaimed
+from .allocate import Node, PendingSandbox, PoolPv, candidates_for
+from .reservations import AlreadyClaimed, Reservations
+from .k8s import ControllerK8s
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
 logger = logging.getLogger("loop")
 
 
 def reconcile_once(
-    k8s,
+    k8s: ControllerK8s,
     cfg: PoolConfig,
-    reservations=None,
-    affinity: dict[str, str] | None = None,
+    reservations: Reservations,
+    affinity: dict[str, str],
 ) -> None:
     """One reconcile pass. A per-action failure is logged and skipped, so one bad volume
-    cannot stall the rest. No `reservations` = no PV placement (sandboxes fall to their
-    vct)."""
+    cannot stall the rest."""
     for a in reconcile(k8s.list_pool_pvcs(), k8s.list_sandboxes(), cfg):
         try:
             if isinstance(a, WarmNew):
@@ -44,9 +44,6 @@ def reconcile_once(
                 extra={"action": type(a).__name__, "target": getattr(a, "pvc", None) or getattr(a, "image_tag", None)},
             )
 
-    if reservations is None:
-        return
-
     # --- PV placement. Every failure below degrades to "the vct provisions a fresh
     # upper", so errors are logged and skipped: the pool must never block a conversation.
     try:
@@ -63,8 +60,7 @@ def reconcile_once(
     for pv in pvs:
         if pv.claim_ref and pv.claim_ref not in still_pending:
             reservations.release(pv.name)
-            if affinity is not None:
-                affinity[_sandbox_of_pvc(pv.claim_ref)] = pv.name
+            affinity[_sandbox_of_pvc(pv.claim_ref)] = pv.name
 
     # Recycle BEFORE allocating, so a PV freed this pass is usable in it. Skip terminating
     # ones: touching them restarts the delete->terminating->re-read spin (#399).
@@ -89,7 +85,14 @@ def _sandbox_of_pvc(pvc_name: str) -> str:
     return pvc_name[len("scooter-rw-"):] if pvc_name.startswith("scooter-rw-") else pvc_name
 
 
-def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> None:
+def _place_one(
+    k8s: ControllerK8s,
+    reservations: Reservations,
+    want: PendingSandbox,
+    pvs: list[PoolPv],
+    nodes: list[Node],
+    affinity: dict[str, str],
+) -> None:
     """Give ONE sandbox a warm PV, or fall back to its vct. Selfish: take the first
     candidate we win, so a lost race costs the next-best volume, not the placement."""
     for pv in candidates_for(want, pvs, nodes, affinity):
@@ -115,7 +118,7 @@ def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> None:
                 "pvc": want.pvc_name,
                 "sandbox": want.sandbox,
                 "reason": "reusing a volume this sandbox has warmed"
-                if (affinity or {}).get(want.sandbox) == pv.name
+                if affinity.get(want.sandbox) == pv.name
                 else "assigning a warm pool PV",
             },
         )
