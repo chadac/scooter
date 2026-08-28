@@ -183,3 +183,24 @@ def test_released_pvs_go_back_to_the_pool():
 def test_a_TERMINATING_released_pv_is_left_alone():
     # Already resolved; touching it restarts the delete->terminating->re-read spin (#399).
     assert plan_reclaim([pv("dying", phase="Released", terminating=True)]) == []
+
+
+def test_matchFields_term_is_SKIPPED_not_evaluated():
+    # A documented gap, pinned so it stays deliberate. matchFields keys on node metadata
+    # (e.g. metadata.name) rather than labels; we do not evaluate it, so a term using it
+    # cannot be confirmed and is skipped -> the PV reads as unusable rather than being
+    # mis-placed. Volume topology does not emit matchFields, so this is unreachable today.
+    # The Go port removes the gap entirely (nodeaffinity.Match handles it upstream) —
+    # see todo/draft/PORT_WARM_STORE_CONTROLLER_TO_GO.md.
+    terms = [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["odin"]}]}]
+    assert node_matches(terms, node("odin")) is False
+
+
+def test_a_matchFields_term_does_not_veto_a_sibling_LABEL_term():
+    # Terms are OR'd: skipping the unevaluatable one must not suppress a term we CAN
+    # confirm, or one exotic term would strand an otherwise usable PV.
+    terms = [
+        {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["thor"]}]},
+        {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["odin"]}]},
+    ]
+    assert node_matches(terms, node("odin")) is True
