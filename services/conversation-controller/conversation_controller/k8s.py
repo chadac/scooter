@@ -213,6 +213,20 @@ class ControllerK8s:
         except client.ApiException as e:
             _ignore_404(e)
 
+    def force_delete_sandbox(self, name: str) -> None:
+        """Terminal zombie escalation: delete the Sandbox CR outright (cascades its pod + vct
+        PVCs) to reclaim a sandbox that refuses to suspend after N bounded attempts. Distinct
+        from the reaper's delete_sandbox_tree — the owning Conversation still exists (marked
+        Failed by the loop), so we drop ONLY the Sandbox, not its SA / module ConfigMap.
+        404-tolerant: already-gone is the goal; a non-404 propagates so the loop retries."""
+        _, custom, _ = _apis()
+        try:
+            custom.delete_namespaced_custom_object(
+                SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL, name
+            )
+        except client.ApiException as e:
+            _ignore_404(e)
+
     def list_sandboxes(self) -> list["SandboxRef"]:
         """Every per-conversation Sandbox, as (name, age_seconds) for the reaper decision."""
         _, custom, _ = _apis()

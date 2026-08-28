@@ -149,6 +149,13 @@ def reconcile(
     ready_names = {p.name for p in pods if p.ready}
     ip_of = {p.name: p.ip for p in pods}  # pod name → its status.podIP (routing address)
 
+    # TERMINAL. Failed is the zombie-repair escalation's dead end: after N bounded suspends
+    # that never took, the loop force-deleted the Sandbox and marked the conversation Failed
+    # (see loop._zombie_progress). Take NO further action — never (re)assign it, never re-flag
+    # it as a zombie. An operator investigates via the Failed phase; it counts as no demand.
+    if conv.phase == "Failed":
+        return NoOp(reason="failed — terminal, no action")
+
     # SUSPENDED conversations need NO pod — the agent-host set phase=Suspended (idle-suspend).
     # Respect it: never (re)assign a suspended conversation, and RELEASE any stale placement it
     # still carries (suspend() writes phase but not hostPod/hostIP, so a just-suspended conv
@@ -239,7 +246,8 @@ import math
 # WITHOUT this exclusion the fleet never scales down: every conversation ever created keeps
 # counting as demand, so idle-suspended conversations pin the agent-host at max — the
 # "conversations still not sleeping" symptom (the pods stay up though the Sandboxes suspend).
-_NON_DEMAND_PHASES = frozenset({"Suspended"})
+# Failed is terminal (the zombie escalation gave up on it) — it has no pod either.
+_NON_DEMAND_PHASES = frozenset({"Suspended", "Failed"})
 
 
 def deletion_costs(pods: list[Pod], convs: list["ConversationState"]) -> dict[str, int]:
