@@ -49,7 +49,7 @@ echo "pattern=$pattern" >>"$GITHUB_OUTPUT"
 # malformed body can't inject arbitrary shell args into the run step.
 specs_raw="$(
   printf '%s\n' "$body" \
-    | grep -iE '^[[:space:]]*flake-specs:' \
+    | { grep -iE '^[[:space:]]*flake-specs:' || true; } \
     | head -n1 \
     | sed -E 's/^[[:space:]]*[Ff]lake-specs:[[:space:]]*//'
 )"
