@@ -53,15 +53,6 @@ class PendingSandbox:
 
 # --- actions ---------------------------------------------------------------
 
-@dataclass(frozen=True)
-class ReleasePv:
-    """Clear spec.claimRef so `pv` goes Available. Recycles a Released PV, and rolls back a
-    failed reservation — a miss must leave nothing behind or the pool leaks a volume."""
-
-    pv: str
-    reason: str
-
-
 # --- the placement predicate ----------------------------------------------
 
 def node_matches(terms: list[dict], node: Node) -> bool:
@@ -127,13 +118,3 @@ def candidates_for(
     for pv in sorted(usable, key=lambda p: (p.last_used or "", p.name), reverse=True):
         if pv.name != mine:
             yield pv
-
-
-def plan_reclaim(pvs: list[PoolPv]) -> list[ReleasePv]:
-    """Released PVs go back to the pool. k8s will not rebind one while its claimRef still
-    names the late PVC, so skipping this silently stops all recycling."""
-    return [
-        ReleasePv(pv=pv.name, reason="PVC gone — return to the pool")
-        for pv in pvs
-        if pv.phase == "Released" and not pv.terminating
-    ]

@@ -11,7 +11,7 @@ import logging
 
 from kubernetes.client.exceptions import ApiException
 
-from .allocate import candidates_for, plan_reclaim
+from .allocate import candidates_for
 from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
@@ -23,30 +23,20 @@ def reconcile_once(
     cfg: PoolConfig,
     reservations=None,
     affinity: dict[str, str] | None = None,
-) -> list[tuple[str, str]]:
-    """One reconcile pass. Returns [(target, action_kind)]; a per-action failure is logged
-    and skipped. No `reservations` = no PV placement (every sandbox falls to its vct)."""
-    pvcs = k8s.list_pool_pvcs()
-    sandboxes = k8s.list_sandboxes()
-    actions = reconcile(pvcs, sandboxes, cfg)
-
-    results: list[tuple[str, str]] = []
-    for a in actions:
+) -> None:
+    """One reconcile pass. A per-action failure is logged and skipped, so one bad volume
+    cannot stall the rest. No `reservations` = no PV placement (sandboxes fall to their
+    vct)."""
+    for a in reconcile(k8s.list_pool_pvcs(), k8s.list_sandboxes(), cfg):
         try:
             if isinstance(a, WarmNew):
                 k8s.warm_new(a.image_tag)
-                results.append((a.image_tag, "warm"))
                 logger.info("warming a new pool PVC", extra={"image_tag": a.image_tag})
             elif isinstance(a, Relabel):
                 k8s.relabel(a.pvc, a.state, a.labels)
-                results.append((a.pvc, "relabel"))
-                logger.info(
-                    "relabel pool PVC",
-                    extra={"pvc": a.pvc, "state": a.state, "labels": a.labels},
-                )
+                logger.info("relabel pool PVC", extra={"pvc": a.pvc, "state": a.state, "labels": a.labels})
             elif isinstance(a, DeletePvc):
                 k8s.delete_pvc(a.pvc)
-                results.append((a.pvc, "delete"))
                 logger.info("delete pool PVC", extra={"pvc": a.pvc, "reason": a.reason})
         except Exception:  # noqa: BLE001 — one failed action must not abort the pass
             logger.exception(
@@ -54,50 +44,42 @@ def reconcile_once(
                 extra={"action": type(a).__name__, "target": getattr(a, "pvc", None) or getattr(a, "image_tag", None)},
             )
 
-    if reservations is not None:
-        results.extend(_place_volumes(k8s, reservations, affinity))
-    return results
+    if reservations is None:
+        return
 
-
-def _place_volumes(k8s, reservations, affinity: dict[str, str] | None = None) -> list[tuple[str, str]]:
-    """Hand warm PVs to Sandboxes awaiting an upper; recycle PVs whose PVC is gone.
-    Errors are logged, never raised — the pool must never block a conversation."""
-    results: list[tuple[str, str]] = []
+    # --- PV placement. Every failure below degrades to "the vct provisions a fresh
+    # upper", so errors are logged and skipped: the pool must never block a conversation.
     try:
         # pending FIRST so an idle cluster does not list PVs and nodes every interval.
         pending = k8s.list_pending_uppers()
-        # Materialised: reclaim must see EVERY PV. Already MRU-sorted for placement.
         pvs = list(k8s.iter_pool_pvs())
         nodes = k8s.list_nodes() if pending else []
     except ApiException:
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
-        return results
+        return
 
     # BOUND = genuinely in use: record affinity here, not at reservation. PR #403.
     still_pending = {w.pvc_name for w in pending}
-    for pv_ in pvs:
-        if pv_.claim_ref and pv_.claim_ref not in still_pending:
-            reservations.release(pv_.name)
+    for pv in pvs:
+        if pv.claim_ref and pv.claim_ref not in still_pending:
+            reservations.release(pv.name)
             if affinity is not None:
-                affinity[_sandbox_of_pvc(pv_.claim_ref)] = pv_.name
+                affinity[_sandbox_of_pvc(pv.claim_ref)] = pv.name
 
-    # Recycle first, so a PV released this pass can be allocated in the same pass.
-    for a in plan_reclaim(pvs):
+    # Recycle BEFORE allocating, so a PV freed this pass is usable in it. Skip terminating
+    # ones: touching them restarts the delete->terminating->re-read spin (#399).
+    for pv in pvs:
+        if pv.phase != "Released" or pv.terminating:
+            continue
         try:
-            k8s.release_pv(a.pv)
-            reservations.release(a.pv)
-            results.append((a.pv, "release-pv"))
-            logger.info("returned a PV to the pool", extra={"pv": a.pv, "reason": a.reason})
+            k8s.release_pv(pv.name)
+            reservations.release(pv.name)
+            logger.info("returned a PV to the pool", extra={"pv": pv.name})
         except ApiException:
-            logger.exception("release-pv failed", extra={"pv": a.pv})
-
-    if not pending:
-        return results
+            logger.exception("release-pv failed", extra={"pv": pv.name})
 
     for want in pending:
-        placed = _place_one(k8s, reservations, want, pvs, nodes, affinity)
-        results.append(placed)
-    return results
+        _place_one(k8s, reservations, want, pvs, nodes, affinity)
 
 
 def _sandbox_of_pvc(pvc_name: str) -> str:
@@ -107,7 +89,7 @@ def _sandbox_of_pvc(pvc_name: str) -> str:
     return pvc_name[len("scooter-rw-"):] if pvc_name.startswith("scooter-rw-") else pvc_name
 
 
-def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> tuple[str, str]:
+def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> None:
     """Give ONE sandbox a warm PV, or fall back to its vct. Selfish: take the first
     candidate we win, so a lost race costs the next-best volume, not the placement."""
     for pv in candidates_for(want, pvs, nodes, affinity):
@@ -137,9 +119,8 @@ def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> tuple[str, str]
                 else "assigning a warm pool PV",
             },
         )
-        return (pv.name, "reserve-pv")
+        return
 
     # Not a failure. Logged so a pool that never places anything stays visible.
     logger.info("no warm PV placed; the vct will provision", extra={"sandbox": want.sandbox})
-    return (want.sandbox, "vct-provision")
 

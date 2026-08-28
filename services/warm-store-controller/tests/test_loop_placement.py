@@ -70,18 +70,16 @@ def want(sandbox):
 def test_places_a_warm_pv_and_holds_it_in_flight():
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
-    out = reconcile_once(k8s, CFG, res)
+    reconcile_once(k8s, CFG, res)
     assert k8s.reserved == [("warm-1", "scooter-rw-conv-a", "conv-a")]
-    assert ("warm-1", "reserve-pv") in out
     # Held so the NEXT pass cannot select it before the binding is visible.
     assert res.in_flight_reservations() == {"warm-1"}
 
 
 def test_a_COLD_pool_falls_through_to_the_vct():
     k8s = FakeK8s(pvs=[], pending=[want("conv-a")])
-    out = reconcile_once(k8s, CFG, Reservations())
+    reconcile_once(k8s, CFG, Reservations())
     assert k8s.reserved == []
-    assert ("conv-a", "vct-provision") in out
 
 
 def test_an_UNREACHABLE_pv_falls_through_to_the_vct():
@@ -90,9 +88,8 @@ def test_an_UNREACHABLE_pv_falls_through_to_the_vct():
         {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["thor"]}]}
     ])
     k8s = FakeK8s(pvs=[on_thor], pending=[want("conv-a")])
-    out = reconcile_once(k8s, CFG, Reservations())
+    reconcile_once(k8s, CFG, Reservations())
     assert k8s.reserved == []
-    assert ("conv-a", "vct-provision") in out
 
 
 def test_a_FAILED_reservation_ROLLS_BACK_and_does_not_leak_the_pv():
@@ -106,24 +103,21 @@ def test_a_FAILED_reservation_ROLLS_BACK_and_does_not_leak_the_pv():
 
 def test_a_LISTING_failure_never_blocks_a_conversation():
     k8s = FakeK8s(fail_list=True, pending=[want("conv-a")])
-    out = reconcile_once(k8s, CFG, Reservations())  # must not raise
+    reconcile_once(k8s, CFG, Reservations())  # must not raise
     assert k8s.reserved == []
-    assert out == []
 
 
 def test_released_pvs_are_recycled_before_allocating():
     # A PV freed this pass must be usable in the SAME pass, not one interval later.
     k8s = FakeK8s(pvs=[pv("done", phase="Released")], pending=[])
-    out = reconcile_once(k8s, CFG, Reservations())
+    reconcile_once(k8s, CFG, Reservations())
     assert k8s.released == ["done"]
-    assert ("done", "release-pv") in out
 
 
 def test_two_pending_sandboxes_never_share_a_pv():
     k8s = FakeK8s(pvs=[pv("only-one")], pending=[want("conv-a"), want("conv-b")])
-    out = reconcile_once(k8s, CFG, Reservations())
-    assert len(k8s.reserved) == 1
-    assert sum(1 for _, kind in out if kind == "vct-provision") == 1
+    reconcile_once(k8s, CFG, Reservations())
+    assert len(k8s.reserved) == 1   # the other sandbox fell through to its vct
 
 
 def test_an_IN_FLIGHT_pv_is_not_re_placed_on_the_next_pass():
@@ -132,17 +126,15 @@ def test_an_IN_FLIGHT_pv_is_not_re_placed_on_the_next_pass():
     reconcile_once(k8s, CFG, res)
     # Still reads Available (binding not landed) — a second pass must not re-hand it.
     k8s._pending = [want("conv-b")]
-    out = reconcile_once(k8s, CFG, res)
-    assert len(k8s.reserved) == 1
-    assert ("conv-b", "vct-provision") in out
+    reconcile_once(k8s, CFG, res)
+    assert len(k8s.reserved) == 1   # conv-b fell through to its vct
 
 
 def test_placement_is_SKIPPED_entirely_without_a_reservation_set():
     # The safe degrade: older call sites keep working and simply do no placement.
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
-    out = reconcile_once(k8s, CFG)
+    reconcile_once(k8s, CFG)
     assert k8s.reserved == []
-    assert out == []
 
 
 def test_an_IDLE_cluster_does_not_list_nodes():
@@ -167,9 +159,8 @@ def test_a_pv_ALREADY_claimed_in_flight_is_not_re_written():
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
     res.claim("warm-1", "conv-other")  # somebody else got there first
-    out = reconcile_once(k8s, CFG, res)
+    reconcile_once(k8s, CFG, res)
     assert k8s.reserved == []
-    assert ("conv-a", "vct-provision") in out
 
 
 def test_a_REALISED_pvc_drops_the_in_process_hold():
@@ -203,9 +194,8 @@ def test_losing_a_race_FALLS_THROUGH_to_the_next_candidate():
     )
     res = Reservations()
     res.claim("hot", "conv-other")  # the best candidate is taken
-    out = reconcile_once(k8s, CFG, res)
+    reconcile_once(k8s, CFG, res)
     assert k8s.reserved == [("cold", "scooter-rw-conv-a", "conv-a")]
-    assert ("cold", "reserve-pv") in out
 
 
 def test_a_BROKEN_pv_does_not_cost_the_whole_placement():
@@ -216,17 +206,16 @@ def test_a_BROKEN_pv_does_not_cost_the_whole_placement():
         fail_reserve_for={"bad"},
     )
     res = Reservations()
-    out = reconcile_once(k8s, CFG, res)
+    reconcile_once(k8s, CFG, res)
     assert k8s.released == ["bad"]                       # rolled back
     assert k8s.reserved == [("good", "scooter-rw-conv-a", "conv-a")]
-    assert ("good", "reserve-pv") in out
     assert res.get_pv_owner("bad") is None               # hold dropped
 
 
 def test_every_candidate_exhausted_falls_back_to_the_vct():
     k8s = FakeK8s(pvs=[pv("only")], pending=[want("conv-a")], fail_reserve_for={"only"})
-    out = reconcile_once(k8s, CFG, Reservations())
-    assert ("conv-a", "vct-provision") in out
+    reconcile_once(k8s, CFG, Reservations())
+    assert k8s.reserved == []   # every candidate failed -> the vct provisions
 
 
 def test_affinity_is_recorded_at_BIND_time_not_reservation_time():
@@ -269,3 +258,10 @@ def test_a_sandbox_that_moves_volumes_prefers_its_NEWEST():
             CFG, Reservations(), aff,
         )
     assert aff == {"conv-a": "new"}
+
+
+def test_a_TERMINATING_released_pv_is_left_alone():
+    # Already resolved; touching it restarts the delete->terminating->re-read spin (#399).
+    k8s = FakeK8s(pvs=[pv("dying", phase="Released", terminating=True)], pending=[])
+    reconcile_once(k8s, CFG, Reservations())
+    assert k8s.released == []

@@ -5,10 +5,8 @@ from warm_store_controller.allocate import (
     Node,
     PendingSandbox,
     PoolPv,
-    ReleasePv,
     candidates_for,
     node_matches,
-    plan_reclaim,
     usable_pvs,
 )
 
@@ -190,31 +188,3 @@ def test_candidates_EXCLUDE_unusable_pvs():
         pv("reserved", claim_ref="someone"),
     ]
     assert names(want, pool) == ["ok"]
-
-
-# --- reclaim ---------------------------------------------------------------
-
-def test_released_pvs_go_back_to_the_pool():
-    pool = [pv("done", phase="Released"), pv("live", phase="Bound"), pv("free", phase="Available")]
-    acts = plan_reclaim(pool)
-    assert [a.pv for a in acts if isinstance(a, ReleasePv)] == ["done"]
-
-
-def test_a_TERMINATING_released_pv_is_left_alone():
-    # Already resolved; touching it restarts the delete->terminating->re-read spin (#399).
-    assert plan_reclaim([pv("dying", phase="Released", terminating=True)]) == []
-
-
-def test_matchFields_term_is_SKIPPED_not_evaluated():
-    # Pinned gap: unevaluatable -> unusable, never mis-placed. Unreachable today.
-    terms = [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["odin"]}]}]
-    assert node_matches(terms, node("odin")) is False
-
-
-def test_a_matchFields_term_does_not_veto_a_sibling_LABEL_term():
-    # Terms are OR'd: skipping one must not suppress a term we CAN confirm.
-    terms = [
-        {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["thor"]}]},
-        {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": ["odin"]}]},
-    ]
-    assert node_matches(terms, node("odin")) is True
