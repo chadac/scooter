@@ -185,9 +185,7 @@ describe("events.integrity — ownership", () => {
   });
 
   it("THE REGRESSION: replays the MIRROR's log when local is empty (post-rollout)", async () => {
-    // LOCAL_STATE_PATH is an emptyDir, so a restart leaves the local log empty while the
-    // mirror keeps the history. Replaying from local streamed `synced` and nothing else —
-    // the UI rendered an empty conversation whose events were intact all along.
+    // Local wiped by a restart, mirror intact — the post-rollout shape.
     const localRoot = mkdtempSync(join(tmpdir(), "integrity-local-"));
     const mirrorRoot = mkdtempSync(join(tmpdir(), "integrity-mirror-"));
     try {
@@ -214,9 +212,7 @@ describe("events.integrity — ownership", () => {
   });
 
   it("ensureReadable still pulls the mirror for a conversation already IN MEMORY", async () => {
-    // hydrate() loads META from the mirror at startup, so every conversation is an entry
-    // while its events were never pulled. Returning true on the entry alone skipped the
-    // pull for exactly the conversations that needed it.
+    // In memory (hydrate loaded META) but its events are NOT local.
     const root = mkdtempSync(join(tmpdir(), "integrity-known-"));
     try {
       const id = "conv-known";

@@ -158,10 +158,8 @@ export interface ConversationStore {
    *  the chain. Computed deterministically from the persisted log order, so it
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
-  /** Checksummed replay from the DURABLE store (local, else mirror). The integrity stream
-   *  prefers this: the local log is an emptyDir and is EMPTY after a rollout, so replaying
-   *  from it streams `synced` with no events for a conversation whose history is intact in
-   *  the mirror. Optional — a store with no mirror only has the local reader. */
+  /** Checksummed replay from the DURABLE store (local, else mirror) — what the integrity
+   *  stream reads. Optional: a store with no mirror only has the local reader. PR #405. */
   readEventsDurableWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
   /** REPLACE a conversation's entire event log with `events` (atomic rewrite), resetting the rolling
    *  integrity checksum. Used ONLY by content-based mirror reconciliation (hydrateFromMirror) when the
@@ -1100,12 +1098,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     },
 
     async ensureReadable(id) {
-      // Being in memory does NOT mean the history is here. hydrate() loads META from the
-      // mirror at startup, so every conversation is an entry — while its events.jsonl was
-      // never pulled into the (emptyDir, wiped-by-restart) local store. Returning true on
-      // the entry alone is what let the integrity stream replay an empty log and report
-      // `synced` for a conversation with thousands of mirrored events. So: known conversations
-      // still take the mirror pull, which is a cheap no-op once the log is local. PR #405.
+      // In memory != history is here: hydrate loads META only, so a known conversation
+      // still takes the pull (a no-op once the log is local). PR #405.
       const known = entries.get(id) !== undefined;
       // Pull its durable state (meta + events) from the mirror into local if a mirror is
       // configured — so a reconnecting UI (GET events / events.integrity) can read history

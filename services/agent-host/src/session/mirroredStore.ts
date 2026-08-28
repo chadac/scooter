@@ -122,8 +122,7 @@ export function mirroredConversationStore(
    *  stub (a different pod owned + mirrored later runs). Reading plain `readEvents` (local-only) there
    *  made the model start from a BLANK slate after any restart. See the revive-reinjection bug. */
   readEventsDurable: (id: SessionId) => AsyncIterable<AguiEvent>;
-  /** Checksummed durable replay — see readEventsDurable. The integrity stream reads
-   *  THIS, not readEventsWithChecksum (local-only, empty after a rollout). */
+  /** Checksummed durable replay — what the integrity stream reads. PR #405. */
   readEventsDurableWithChecksum: (id: SessionId) => AsyncIterable<ChecksummedEvent>;
 } {
   const onErr = opts.onMirrorError ?? ((id, e) =>
@@ -282,11 +281,7 @@ export function mirroredConversationStore(
     // extra. NOTE: coarse LENGTH comparison — a truly DIVERGENT local (a fork, not a prefix) is
     // reconciled by CONTENT in hydrateFromMirror (see PR2); here we only need "don't reinject from an
     // empty/short local".
-    // Checksummed DURABLE replay — the same local-vs-mirror choice as readEventsDurable,
-    // with the rolling checksum chained over whichever log wins. The integrity stream needs
-    // this: chaining over the LOCAL-only reader replays an empty log on a pod whose emptyDir
-    // was wiped, so a conversation with thousands of mirrored events streams `synced` and
-    // nothing else.
+    // The rolling checksum chained over whichever log readEventsDurable picks. PR #405.
     async *readEventsDurableWithChecksum(id: SessionId): AsyncIterable<ChecksummedEvent> {
       let prev = EMPTY_CHECKSUM;
       for await (const event of this.readEventsDurable(id)) {

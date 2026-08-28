@@ -745,14 +745,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // for synchronous in-memory stores.)
     await store.flush?.(id);
 
-    // Replay persisted history with checksums, from the DURABLE store. Reading the
-    // local-only log here replayed NOTHING on a pod whose emptyDir was wiped by a restart:
-    // the conversation is in memory (hydrate loads meta from the mirror) so this route's
-    // guard passes, but its events were never pulled, and the stream honestly reported
-    // `synced` with zero events. Observed live: every one of 123 conversations after a
-    // rollout, each with a full mirrored log. PR #405.
-    // NB: call through `store` — these are object methods that use `this` internally, so a
-    // detached reference (`const replay = store.x`) loses the binding at runtime.
+    // Replay from the DURABLE store; local-only replays nothing on a wiped emptyDir.
+    // Called THROUGH `store`: these methods use `this`, so a detached ref breaks. PR #405.
     const replay = store.readEventsDurableWithChecksum
       ? (i: SessionId) => store.readEventsDurableWithChecksum!(i)
       : store.readEventsWithChecksum

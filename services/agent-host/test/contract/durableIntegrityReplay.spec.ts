@@ -1,17 +1,6 @@
 /**
- * Tier 1 contract — history must survive a pod restart.
- *
- * LOCAL_STATE_PATH is an emptyDir: a rollout wipes it. hydrate() reloads META from the
- * mirror at startup, so every conversation reappears in the list with its title — while
- * its events.jsonl is NOT pulled. Two bugs made that unreadable rather than merely cold:
- *
- *   1. ensureReadable returned true on the in-memory entry alone, so the mirror pull was
- *      skipped for exactly the conversations that needed it.
- *   2. the integrity stream replayed via readEventsWithChecksum — LOCAL only — so it
- *      honestly reported `synced` with zero events.
- *
- * Observed live on scooter.chadac.me: 123 conversations in memory, 0 event logs local,
- * 3714 events (1.7 MB) sitting in the mirror for the one being read.
+ * Tier 1 contract — history must survive a pod restart (LOCAL_STATE_PATH is an emptyDir).
+ * See PR #405.
  */
 
 import { describe, it, expect } from "vitest";
@@ -97,9 +86,7 @@ describe("ensureReadable pulls the mirror even for a KNOWN conversation", () => 
     }) as never;
 
   it("THE REGRESSION: an in-memory entry does NOT skip the pull", async () => {
-    // hydrate() loads META from the mirror at startup, so the entry exists while its
-    // events were never pulled. Short-circuiting on the entry alone left exactly those
-    // conversations with an unreadable history.
+    // The entry exists (hydrate loaded META) while its events were never pulled.
     let pulls = 0;
     const sessions = createSessionManager({
       provisioner: fakeProvisioner(),
