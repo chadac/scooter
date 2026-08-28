@@ -436,6 +436,35 @@ class ControllerK8s:
             if e.status != 409:
                 raise
 
+    def grow_pool(self, pvc_name: str, image_tag: str) -> None:
+        """Create `pvc_name` on the POOL StorageClass so a NEW Retain PV is provisioned for
+        it, and the sandbox's vct adopts the PVC.
+
+        This is how the pool grows from real use. Without it a cold-pool conversation gets
+        a vct-provisioned PVC on the DEFAULT class — reclaimPolicy Delete, unlabelled — so
+        its volume is destroyed on teardown and the pool can only ever be topped up by warm
+        Jobs, never by conversations that warmed a store themselves.
+
+        No claimRef here: there is no existing PV to reserve. The class is
+        WaitForFirstConsumer, so binding happens where the pod lands and the PV records
+        that topology. PR #403."""
+        core, _, _, _ = _apis()
+        try:
+            core.create_namespaced_persistent_volume_claim(
+                self.namespace,
+                client.V1PersistentVolumeClaim(
+                    metadata=client.V1ObjectMeta(name=pvc_name, labels={LBL_WARM_STORE: image_tag}),
+                    spec=client.V1PersistentVolumeClaimSpec(
+                        access_modes=["ReadWriteOnce"],
+                        resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
+                        storage_class_name=self.pool_storage_class,
+                    ),
+                ),
+            )
+        except client.ApiException as e:
+            if e.status != 409:  # the vct beat us to the name; it owns the volume now
+                raise
+
     def release_pv(self, pv: str) -> None:
         """Return `pv` to the pool by clearing spec.claimRef — k8s will not rebind a
         Released PV while it still names its late PVC. Also the reservation rollback."""

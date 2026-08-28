@@ -74,8 +74,12 @@ def reconcile_once(
         except ApiException:
             logger.exception("release-pv failed", extra={"pv": pv.name})
 
+    # Pool size for the growth cap below. Counted ONCE per pass: _place_one grows it as it
+    # goes, and re-listing per sandbox would let a burst blow past max_total.
+    pool_size = sum(1 for pv in pvs if not pv.terminating)
     for want in pending:
-        _place_one(k8s, reservations, want, pvs, nodes, affinity)
+        if _place_one(k8s, reservations, want, pvs, nodes, affinity, cfg.max_total - pool_size):
+            pool_size += 1
 
 
 def _sandbox_of_pvc(pvc_name: str) -> str:
@@ -92,9 +96,11 @@ def _place_one(
     pvs: list[PoolPv],
     nodes: list[Node],
     affinity: dict[str, str],
-) -> None:
-    """Give ONE sandbox a warm PV, or fall back to its vct. Selfish: take the first
-    candidate we win, so a lost race costs the next-best volume, not the placement."""
+    headroom: int,
+) -> bool:
+    """Give ONE sandbox a warm PV, or grow the pool, or fall back to its vct. Selfish: take
+    the first candidate we win, so a lost race costs the next-best volume, not the
+    placement. Returns True if it grew the pool."""
     for pv in candidates_for(want, pvs, nodes, affinity):
         try:
             reservations.claim(pv.name, want.sandbox)
@@ -122,8 +128,21 @@ def _place_one(
                 else "assigning a warm pool PV",
             },
         )
-        return
+        return False
 
-    # Not a failure. Logged so a pool that never places anything stays visible.
-    logger.info("no warm PV placed; the vct will provision", extra={"sandbox": want.sandbox})
+    # No warm volume for us. Under the cap, take a POOL-class PVC instead of letting the
+    # vct make one on the default class: a default-class volume is Delete-reclaimed and
+    # unlabelled, so it dies with the sandbox and the pool never grows from real use.
+    if headroom > 0:
+        try:
+            k8s.grow_pool(want.pvc_name, want.image_tag)
+            logger.info("grew the warm pool", extra={"sandbox": want.sandbox, "pvc": want.pvc_name})
+            return True
+        except ApiException:
+            logger.exception("grow-pool failed; the vct will provision", extra={"sandbox": want.sandbox})
+            return False
+
+    # At the cap: let the vct provision an ordinary volume on the default class.
+    logger.info("pool at capacity; the vct will provision", extra={"sandbox": want.sandbox})
+    return False
 

@@ -26,6 +26,7 @@ class FakeK8s:
         self._fail_reserve_for = set(fail_reserve_for)
         self._fail_list = fail_list
         self.reserved = []   # [(pv, pvc, sandbox)]
+        self.grown = []      # [(pvc, image_tag)] — pool-class PVCs we created
         self.released = []   # [pv]
         self.node_lists = 0  # how many times we asked the API for nodes
 
@@ -57,6 +58,9 @@ class FakeK8s:
 
     def release_pv(self, pv):
         self.released.append(pv)
+
+    def grow_pool(self, pvc_name, image_tag):
+        self.grown.append((pvc_name, image_tag))
 
 
 def pv(name, **kw):
@@ -208,7 +212,8 @@ def test_a_BROKEN_pv_does_not_cost_the_whole_placement():
 def test_every_candidate_exhausted_falls_back_to_the_vct():
     k8s = FakeK8s(pvs=[pv("only")], pending=[want("conv-a")], fail_reserve_for={"only"})
     reconcile_once(k8s, CFG, Reservations(), {})
-    assert k8s.reserved == []   # every candidate failed -> the vct provisions
+    assert k8s.reserved == []
+    assert k8s.grown == [("scooter-rw-conv-a", TAG)]   # under the cap -> grow instead
 
 
 def test_affinity_is_recorded_at_BIND_time_not_reservation_time():
@@ -258,3 +263,39 @@ def test_a_TERMINATING_released_pv_is_left_alone():
     k8s = FakeK8s(pvs=[pv("dying", phase="Released", terminating=True)], pending=[])
     reconcile_once(k8s, CFG, Reservations(), {})
     assert k8s.released == []
+
+
+def test_a_COLD_pool_GROWS_instead_of_letting_the_vct_provision():
+    # A vct-made volume lands on the DEFAULT class: Delete-reclaimed and unlabelled, so it
+    # dies with the sandbox. Taking a pool-class PVC instead is how the pool grows from
+    # real use rather than only from warm Jobs.
+    k8s = FakeK8s(pvs=[], pending=[want("conv-a")])
+    reconcile_once(k8s, CFG, Reservations(), {})
+    assert k8s.grown == [("scooter-rw-conv-a", TAG)]
+
+
+def test_AT_CAPACITY_the_vct_provisions():
+    pool = [pv(f"pv{i}") for i in range(CFG.max_total)]
+    # All existing PVs are for another tag, so none is a candidate, but they still count
+    # toward the cap.
+    k8s = FakeK8s(pvs=[pv(f"pv{i}", image_tag="other") for i in range(CFG.max_total)],
+                  pending=[want("conv-a")])
+    reconcile_once(k8s, CFG, Reservations(), {})
+    assert k8s.grown == []      # at the cap -> ordinary vct volume
+    assert k8s.reserved == []
+
+
+def test_growth_STOPS_at_the_cap_within_one_pass():
+    # The cap is computed once per pass, so a burst of pending sandboxes cannot each see
+    # the same headroom and collectively blow past max_total.
+    existing = [pv(f"pv{i}", image_tag="other") for i in range(CFG.max_total - 1)]
+    k8s = FakeK8s(pvs=existing, pending=[want("conv-a"), want("conv-b"), want("conv-c")])
+    reconcile_once(k8s, CFG, Reservations(), {})
+    assert len(k8s.grown) == 1   # one slot of headroom, one growth
+
+
+def test_a_warm_PV_is_preferred_over_growing():
+    k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
+    reconcile_once(k8s, CFG, Reservations(), {})
+    assert k8s.reserved == [("warm-1", "scooter-rw-conv-a", "conv-a")]
+    assert k8s.grown == []
