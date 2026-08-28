@@ -16,11 +16,7 @@ from dataclasses import dataclass
 
 
 class AlreadyClaimed(RuntimeError):
-    """A reservation conflicts with one that already stands.
-
-    Raised, not returned: both cases are caller BUGS (the planner hands out at most one PV
-    per sandbox, never the same PV twice per pass), so a silent False would surface as a
-    quiet mis-placement. PR #403."""
+    """A reservation conflicts with one that already stands."""
 
 
 @dataclass(frozen=True)
