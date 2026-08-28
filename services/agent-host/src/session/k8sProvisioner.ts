@@ -147,6 +147,8 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   };
 
   const sandboxName = (id: string) => `conv-${id}`;
+  /** Inverse of sandboxName — recover the conversation id from a Sandbox ref. */
+  const convIdOf = (name: string) => (name.startsWith("conv-") ? name.slice("conv-".length) : name);
   const saName = (id: string) => `sandbox-${id}`;
   // Reap-only: nothing creates this CM, but clusters still carry one per live
   // conversation. destroy() drains them. Drop this once none remain.
@@ -264,8 +266,17 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       await setOperatingMode(ref, "Suspended").catch(ignoreDeleteNotFound);
     },
 
-    async resume(ref: SandboxRef): Promise<SandboxRef> {
-      await setOperatingMode(ref, "Running");
+    async resume(ref: SandboxRef, threadId?: string): Promise<SandboxRef> {
+      // A Sandbox that is GONE cannot be resumed — there is nothing to patch. Recreate it
+      // rather than surface a raw 404: the conversation's work lives on the workspace PVC,
+      // which outlives the Sandbox. Mirrors suspend()'s 404 tolerance. PR #404.
+      try {
+        await setOperatingMode(ref, "Running");
+      } catch (e) {
+        if ((e as { code?: number })?.code !== 404) throw e;
+        log.warn("resume: the Sandbox is gone; recreating it", { sandbox: ref.name });
+        return await this.create(convIdOf(ref.name), threadId);
+      }
       return ref;
     },
 
