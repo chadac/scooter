@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 
+from kubernetes.client.exceptions import ApiException
+
 from .allocate import LetVctProvision, ReleasePv, ReservePv, plan_allocation, plan_reclaim
 from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
@@ -69,7 +71,7 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
         # Materialised: reclaim must see EVERY PV. Already MRU-sorted for placement.
         pvs = list(k8s.iter_pool_pvs())
         nodes = k8s.list_nodes() if pending else []
-    except Exception:  # noqa: BLE001 — a listing failure must not stall the pass
+    except ApiException:
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
         return results
 
@@ -87,7 +89,7 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
             reservations.release(a.pv)
             results.append((a.pv, "release-pv"))
             logger.info("returned a PV to the pool", extra={"pv": a.pv, "reason": a.reason})
-        except Exception:  # noqa: BLE001
+        except ApiException:
             logger.exception("release-pv failed", extra={"pv": a.pv})
 
     if not pending:
@@ -121,12 +123,12 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
                     "placed a warm PV",
                     extra={"pv": a.pv, "pvc": a.pvc_name, "sandbox": a.sandbox, "reason": a.reason},
                 )
-            except Exception:  # noqa: BLE001
+            except ApiException:
                 # ROLL BACK, or the fallback loop leaks a volume on every miss.
                 logger.exception("reserve-pv failed; rolling back", extra={"pv": a.pv, "sandbox": a.sandbox})
                 try:
                     k8s.release_pv(a.pv)
-                except Exception:  # noqa: BLE001
+                except ApiException:
                     logger.exception("reserve-pv rollback FAILED — the PV may stay reserved", extra={"pv": a.pv})
                 reservations.release(a.pv)
     return results

@@ -2,6 +2,9 @@
 
 Locks the behaviours keeping the pool an optimization, not a dependency."""
 
+import pytest
+from kubernetes.client.exceptions import ApiException
+
 from warm_store_controller.allocate import Node, PendingSandbox, PoolPv
 from warm_store_controller.loop import reconcile_once
 from warm_store_controller.reconcile import PoolConfig
@@ -35,7 +38,7 @@ class FakeK8s:
     # PV-layer
     def iter_pool_pvs(self):
         if self._fail_list:
-            raise RuntimeError("api down")
+            raise ApiException(status=503, reason="Service Unavailable")
         # A GENERATOR, like the real one — so a caller that materialises it works, and one
         # that stops early also works.
         yield from self._pvs
@@ -49,7 +52,7 @@ class FakeK8s:
 
     def reserve_pv(self, pv, pvc_name, sandbox):
         if self._fail_reserve:
-            raise RuntimeError("patch rejected")
+            raise ApiException(status=409, reason="Conflict")
         self.reserved.append((pv, pvc_name, sandbox))
 
     def release_pv(self, pv):
@@ -184,3 +187,15 @@ def test_a_REALISED_pvc_drops_the_in_process_hold():
     k8s._pending = []
     reconcile_once(k8s, CFG, res)
     assert res.in_flight_reservations() == set()               # hold released
+
+
+def test_a_NON_api_error_is_NOT_swallowed():
+    # We catch ApiException, not Exception: a cluster error is expected and degrades to the
+    # vct, but a bug in our own code (TypeError, KeyError, ...) must surface rather than
+    # masquerading as "the pool had nothing".
+    class Boom(FakeK8s):
+        def list_pending_uppers(self):
+            raise TypeError("bug in our own code")
+
+    with pytest.raises(TypeError):
+        reconcile_once(Boom(pvs=[pv("warm-1")]), CFG, Reservations())
