@@ -1359,8 +1359,17 @@ export async function main(
             const more = st.truncated ? `\n(output truncated — full log: check_background("${st.jobId}"))` : "";
             // A SYSTEM message (source "background job") — the standard decoration is
             // added by the bridge, so no manual [System] prefix here.
+            // A DIED job never wrote an exit code (its process was killed first), so say
+            // that rather than reporting the synthesized 137 as if the command had failed
+            // on its own — the agent should know the work was interrupted, not that it ran
+            // and exited non-zero.
+            const headline = st.died
+              ? `Background job \`${st.jobId}\` (${st.command}) was KILLED before it finished ` +
+                `(the sandbox restarted or the process was terminated). Its output stops wherever it died, ` +
+                `and it did NOT complete — re-run it if you still need the result.`
+              : `Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.`;
             const text =
-              `Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.\n` +
+              `${headline}\n` +
               (tail ? `Recent output:\n${tail}${more}\n\n` : "") +
               `React to this result if it's relevant to your task; otherwise acknowledge briefly.`;
             await sessions
