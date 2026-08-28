@@ -26,6 +26,7 @@ class FakeK8s:
         self._fail_list = fail_list
         self.reserved = []   # [(pv, pvc, sandbox)]
         self.released = []   # [pv]
+        self.node_lists = 0  # how many times we asked the API for nodes
 
     # PVC-layer (unused here)
     def list_pool_pvcs(self):
@@ -35,12 +36,15 @@ class FakeK8s:
         return []
 
     # PV-layer
-    def list_pool_pvs(self):
+    def iter_pool_pvs(self):
         if self._fail_list:
             raise RuntimeError("api down")
-        return list(self._pvs)
+        # A GENERATOR, like the real one — so a caller that materialises it works, and one
+        # that stops early also works.
+        yield from self._pvs
 
     def list_nodes(self):
+        self.node_lists += 1
         return list(self._nodes)
 
     def list_pending_uppers(self):
@@ -140,3 +144,22 @@ def test_placement_is_SKIPPED_entirely_without_a_reservation_set():
     out = reconcile_once(k8s, CFG)
     assert k8s.reserved == []
     assert out == []
+
+
+def test_an_IDLE_cluster_does_not_list_nodes():
+    # Nothing pending -> nothing to place, so skip the node listing entirely. Otherwise an
+    # idle cluster pays for a full node list every reconcile interval, forever.
+    k8s = FakeK8s(pvs=[pv("warm-1")], pending=[])
+    reconcile_once(k8s, CFG, Reservations())
+    assert k8s.node_lists == 0
+
+
+def test_placement_consumes_the_pool_in_the_order_the_shell_yields_it():
+    # The shell yields MRU-first, so the first usable candidate is already the best one.
+    # Two equally-valid PVs: the one the shell yields first must win.
+    k8s = FakeK8s(
+        pvs=[pv("hot", last_used="2026-08-27T10:00:00Z"), pv("cold", last_used="2026-01-01T00:00:00Z")],
+        pending=[want("conv-a")],
+    )
+    reconcile_once(k8s, CFG, Reservations())
+    assert k8s.reserved[0][0] == "hot"

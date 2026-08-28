@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from kubernetes import client, config
@@ -315,15 +316,38 @@ class ControllerK8s:
     # the vct WILL generate, pre-bound to a PV via claimRef, and the vct adopts it.
     # See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 
-    def list_pool_pvs(self) -> list[PoolPv]:
-        """Every pool PV (carries the warm-store label), in the pure PoolPv shape.
+    def iter_pool_pvs(self) -> Iterator[PoolPv]:
+        """Pool PVs (carrying the warm-store label), MOST-RECENTLY-USED FIRST.
+
+        A GENERATOR so a caller that only needs the first usable candidate stops there
+        instead of converting the whole pool. Placement is exactly that shape: rank, take
+        the best match, done.
+
+        MRU, not LRU. Spreading load across the pool (LRU) keeps every volume marginally
+        warm and none of them properly warm, and leaves nothing safely reapable. Preferring
+        the most recently used concentrates reuse onto a small hot set — those volumes get
+        genuinely warm, and the cold tail goes untouched long enough to be reaped on age
+        alone. The pool converges on "a few well-warmed volumes" rather than "many
+        lukewarm ones".
+
+        Sorting is CLIENT-side by necessity: the k8s API has no server-side sort, and PVs
+        accept only metadata.name/namespace as field selectors (status.phase is rejected),
+        so there is nothing to push down. The listing is bounded by maxTotal, so this is a
+        sort of tens of items, not a scan.
+
+        Recency key: our own last-used annotation when present (it tracks ALLOCATION, which
+        is what we actually care about), else status.lastPhaseTransitionTime, which k8s
+        maintains and which at least orders by when the volume last changed hands. Neither
+        present sorts last — an unknown-age volume is the least attractive to reuse and the
+        most attractive to reap.
 
         nodeAffinity is passed through VERBATIM rather than interpreted here — the pure
         core evaluates it, and the shape is identical across drivers (local-path keys on
         kubernetes.io/hostname, EBS on topology.ebs.csi.aws.com/zone)."""
         core, _, _, _ = _apis()
-        out: list[PoolPv] = []
-        for pv in core.list_persistent_volume(label_selector=LBL_WARM_STORE).items:
+        items = list(core.list_persistent_volume(label_selector=LBL_WARM_STORE).items)
+        items.sort(key=self._recency_key, reverse=True)
+        for pv in items:
             meta, spec = pv.metadata, pv.spec
             labels = meta.labels or {}
             annotations = meta.annotations or {}
@@ -343,19 +367,35 @@ class ControllerK8s:
                         ],
                     }
                 )
-            out.append(
-                PoolPv(
-                    name=meta.name,
-                    image_tag=labels.get(LBL_WARM_STORE, ""),
-                    phase=(pv.status.phase if pv.status else "") or "",
-                    node_selector_terms=terms,
-                    last_used=annotations.get(ANN_LAST_USED),
-                    last_sandbox=annotations.get(ANN_LAST_SANDBOX),
-                    claim_ref=(spec.claim_ref.name if spec.claim_ref else None),
-                    terminating=meta.deletion_timestamp is not None,
-                )
+            yield PoolPv(
+                name=meta.name,
+                image_tag=labels.get(LBL_WARM_STORE, ""),
+                phase=(pv.status.phase if pv.status else "") or "",
+                node_selector_terms=terms,
+                last_used=annotations.get(ANN_LAST_USED),
+                last_sandbox=annotations.get(ANN_LAST_SANDBOX),
+                claim_ref=(spec.claim_ref.name if spec.claim_ref else None),
+                terminating=meta.deletion_timestamp is not None,
             )
-        return out
+
+    @staticmethod
+    def _recency_key(pv) -> str:
+        """When this PV was last handed out. Our annotation first (it tracks ALLOCATION),
+        then k8s's phase-transition time, then "" — unknown sorts oldest under reverse."""
+        annotations = (pv.metadata.annotations or {})
+        stamp = annotations.get(ANN_LAST_USED)
+        if stamp:
+            return stamp
+        transition = getattr(pv.status, "last_phase_transition_time", None) if pv.status else None
+        if transition is None:
+            return ""
+        # rfc3339 strings sort lexicographically; datetimes need normalising to the same.
+        return transition if isinstance(transition, str) else transition.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def list_pool_pvs(self) -> list[PoolPv]:
+        """Materialised iter_pool_pvs, for callers that genuinely need the whole pool
+        (reclaim sweeps every Released volume; placement does not)."""
+        return list(self.iter_pool_pvs())
 
     def list_nodes(self) -> list[Node]:
         """Schedulable nodes, reduced to the labels a PV's nodeAffinity can match on.

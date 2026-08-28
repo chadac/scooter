@@ -119,12 +119,30 @@ def test_own_pv_wins_even_when_least_recently_used():
     assert rank_candidates(pool, "conv-a")[0].name == "mine"
 
 
-def test_otherwise_least_recently_used_first():
+def test_otherwise_MOST_recently_used_first():
+    # MRU, not LRU. Concentrating reuse on the hot set makes those volumes genuinely warm
+    # and lets the cold tail age out untouched, so a reaper can retire it on age alone.
+    # LRU would keep every volume lukewarm and nothing safely reapable.
     pool = [
         pv("recent", last_used="2026-08-27T10:00:00Z"),
         pv("old", last_used="2026-01-01T00:00:00Z"),
     ]
-    assert [p.name for p in rank_candidates(pool, "conv-x")] == ["old", "recent"]
+    assert [p.name for p in rank_candidates(pool, "conv-x")] == ["recent", "old"]
+
+
+def test_an_UNKNOWN_age_pv_sorts_last():
+    # Least attractive to reuse, most attractive to reap.
+    pool = [pv("nostamp"), pv("dated", last_used="2026-01-01T00:00:00Z")]
+    assert [p.name for p in rank_candidates(pool, "conv-x")] == ["dated", "nostamp"]
+
+
+def test_own_pv_beats_a_more_recently_used_one():
+    # Ownership outranks recency: the sandbox's own volume holds ITS builds.
+    pool = [
+        pv("hot", last_used="2026-08-27T10:00:00Z", last_sandbox="other"),
+        pv("mine", last_used="2026-01-01T00:00:00Z", last_sandbox="conv-a"),
+    ]
+    assert rank_candidates(pool, "conv-a")[0].name == "mine"
 
 
 # --- allocation ------------------------------------------------------------

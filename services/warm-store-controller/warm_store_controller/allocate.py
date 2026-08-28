@@ -171,17 +171,32 @@ def usable_pvs(pvs: list[PoolPv], nodes: list[Node], image_tag: str) -> list[Poo
 
 
 def rank_candidates(pvs: list[PoolPv], sandbox: str) -> list[PoolPv]:
-    """Best-first. The sandbox's OWN previous PV comes first — that is its warm store,
-    already holding its builds. Then least-recently-used, so the pool spreads rather than
-    hammering one volume. Ties break on name for determinism across reconciles."""
+    """Best-first. The sandbox's OWN previous PV wins — that is its warm store, already
+    holding its builds. Otherwise MOST-recently-used.
+
+    MRU, not LRU. Spreading load across the pool keeps every volume marginally warm and
+    none properly warm, and leaves nothing safely reapable. Concentrating reuse on the
+    hot set makes those volumes genuinely warm and lets the cold tail age out untouched,
+    so a reaper can retire it on age alone. Ties break on name for determinism."""
     return sorted(
         pvs,
         key=lambda p: (
             0 if p.last_sandbox == sandbox else 1,
-            p.last_used or "",
+            _invert(p.last_used),
             p.name,
         ),
     )
+
+
+def _invert(stamp: str | None) -> tuple[int, str]:
+    """Sort key that puts NEWER first while keeping the rest of the tuple ascending.
+    (0, "") for a missing stamp sorts it LAST — an unknown-age volume is the least
+    attractive to reuse and the most attractive to reap."""
+    if not stamp:
+        return (1, "")
+    # Invert lexicographic order by complementing each character within the rfc3339
+    # alphabet, so a plain ascending sort yields descending timestamps.
+    return (0, "".join(chr(0x7E - ord(c)) for c in stamp))
 
 
 def plan_allocation(

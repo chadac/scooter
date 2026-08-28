@@ -65,9 +65,15 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
     an optimization and must never be able to block a conversation from starting."""
     results: list[tuple[str, str]] = []
     try:
-        pvs = k8s.list_pool_pvs()
-        nodes = k8s.list_nodes()
+        # Nothing to place -> only reclaim needs the pool, and reclaim is cheap to skip
+        # when there is nothing Released either. Check pending FIRST so an idle cluster
+        # does not list PVs and nodes every interval for no reason.
         pending = k8s.list_pending_uppers()
+        # Reclaim must see EVERY PV (any of them may be Released), so this one is
+        # materialised. Placement below consumes it already sorted MRU-first, so the
+        # first usable candidate is also the best one.
+        pvs = list(k8s.iter_pool_pvs())
+        nodes = k8s.list_nodes() if pending else []
     except Exception:  # noqa: BLE001 — a listing failure must not stall the pass
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
         return results
