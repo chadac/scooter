@@ -158,6 +158,9 @@ export interface ConversationStore {
    *  the chain. Computed deterministically from the persisted log order, so it
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
+  /** Checksummed replay from the DURABLE store (local, else mirror) — what the integrity
+   *  stream reads. Optional: a store with no mirror only has the local reader. PR #405. */
+  readEventsDurableWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
   /** REPLACE a conversation's entire event log with `events` (atomic rewrite), resetting the rolling
    *  integrity checksum. Used ONLY by content-based mirror reconciliation (hydrateFromMirror) when the
    *  local log has DIVERGED from the durable mirror (a fork, not a prefix) — the mirror wins, so local
@@ -1095,8 +1098,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     },
 
     async ensureReadable(id) {
-      // Already known to this pod → readable.
-      if (entries.get(id)) return true;
+      // In memory != history is here: hydrate loads META only, so a known conversation
+      // still takes the pull (a no-op once the log is local). PR #405.
+      const known = entries.get(id) !== undefined;
       // Pull its durable state (meta + events) from the mirror into local if a mirror is
       // configured — so a reconnecting UI (GET events / events.integrity) can read history
       // even after the owner pod moved (rollout) or the CR was cleared. READ-ONLY: no
@@ -1108,6 +1112,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           return false;
         });
       }
+      // A known conversation is readable even if the pull found nothing new.
+      if (known) return true;
       const entry = await hydrateByThread(id as ThreadId);
       return entry !== undefined;
     },
