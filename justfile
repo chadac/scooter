@@ -353,11 +353,13 @@ e2e-full *ARGS:
 
 typecheck:
     npm install
-    # agent-host imports @scooter/claude-sdk-provider AND @scooter/marimo-mcp; build
-    # them first so their dist/ (types + js) exist for agent-host's NodeNext
-    # resolution. (Nix builds each separately; this is the plain-npm/CI path.)
+    # agent-host imports @scooter/claude-sdk-provider, @scooter/marimo-mcp AND
+    # @scooter/schema; build them first so their dist/ (types + js) exist for
+    # agent-host's NodeNext resolution. (Nix builds each separately; this is the
+    # plain-npm/CI path.)
     npm -w services/claude-sdk-provider run build
     npm -w services/marimo-mcp run build
+    npm -w @scooter/schema run build
     npm -w services/agent-host run typecheck
     npm -w ui run typecheck
     # The generated Drizzle schema (catches broken/drifted generation at the type level).
@@ -377,7 +379,8 @@ check-lockfiles:
     npm install --package-lock-only --workspaces --include-workspace-root
     npm install --package-lock-only --prefix ui --workspaces=false
     npm install --package-lock-only --prefix services/agent-host --workspaces=false
-    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json \
+    npm install --package-lock-only --prefix lib/ts/scooter-schema --workspaces=false
+    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json lib/ts/scooter-schema/package-lock.json \
       || (echo "❌ lockfile drift: a package.json changed without regenerating the lockfile. Run 'nix develop -c just check-lockfiles' and commit the result." && exit 1)
     @echo "✅ lockfiles are in sync with package.json"
 
@@ -402,6 +405,7 @@ check-npm-hashes:
     }
     check ui/package-lock.json ui/default.nix
     check services/agent-host/package-lock.json services/agent-host/default.nix
+    check lib/ts/scooter-schema/package-lock.json lib/ts/scooter-schema/default.nix
     [ "$fail" -eq 0 ] && echo "✅ npmDepsHash values match their lockfiles"
     exit "$fail"
 

@@ -181,7 +181,12 @@
           # agent-host symlinks it into node_modules and mounts its tools.
           marimoMcp = pkgs.callPackage ./services/marimo-mcp { };
 
-          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp; };
+          # The generated @scooter/schema package (Drizzle tables + ownership guard, from
+          # lib/sql via `just db-generate`). Same isolation pattern: agent-host symlinks it
+          # into node_modules and resourceMapping.ts imports its typed tables.
+          scooterSchemaJs = pkgs.callPackage ./lib/ts/scooter-schema { };
+
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp scooterSchemaJs; };
 
           # Bring-your-own-Claude container app: drives the user's LOCAL Claude via the SAME
           # claudeSdkProvider, tunnels tool-exec to the cloud sandbox. Bakes the (unfree) claude CLI.
@@ -498,6 +503,9 @@
 
             # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
             scooter-schema = scooterSchema;
+
+            # nix build .#scooter-schema-js  ->  generated Drizzle schema package (tsc)
+            scooter-schema-js = scooterSchemaJs;
 
             # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
             remote-agent = remoteAgent;

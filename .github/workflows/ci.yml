@@ -98,6 +98,13 @@ jobs:
       - name: python service tests (nix build runs pytest)
         run: nix build .#broker .#webhooks .#scheduler .#conversation-controller .#warm-store-controller .#scooter-schema --print-build-logs
 
+      # The generated Drizzle schema package + the agent-host that symlinks it in.
+      # Building .#agentHost under nix exercises the @scooter/schema image integration
+      # (tsc resolves the import via the nix symlink) — a failure surface the plain-npm
+      # `just typecheck` can't see, since it resolves @scooter/schema from the workspace.
+      - name: agent-host + generated Drizzle schema (nix)
+        run: nix build .#scooter-schema-js .#agentHost --print-build-logs
+
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface
   # the nixosTests never touch (they build the NixOS toplevel, not the image) and the
