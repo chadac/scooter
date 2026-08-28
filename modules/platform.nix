@@ -897,9 +897,16 @@ in
                 # that then fell over). Memory-limited to protect the node; no cpu
                 # limit (bursty provisioning uses spare CPU). agent-host hosts goose +
                 # drives provisioning, so it gets the largest platform reservation.
+                # Memory scales with ACTIVE conversations, not with the process: each one
+                # holds its hydrated event log and spawns an agent CLI with its own heap
+                # (measured ~190 MiB per active conversation; a replica with four sat at
+                # 784 MiB). At 1 GiB a fifth conversation OOM-killed the pod, and a
+                # restart re-resumed every dangling run at once and killed it again.
+                # 2 GiB covers the ~5 conversations a replica hosts, with the request at
+                # half so the scheduler packs on steady state rather than on the burst.
                 resources = lib.mkDefault {
-                  requests = { cpu = "250m"; memory = "512Mi"; };
-                  limits = { memory = "1Gi"; };
+                  requests = { cpu = "250m"; memory = "1Gi"; };
+                  limits = { memory = "2Gi"; };
                 };
                 ports = [{ containerPort = 8080; name = "agui"; }];
                 env = [
