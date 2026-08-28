@@ -9,15 +9,20 @@ from __future__ import annotations
 
 import logging
 
+from .allocate import LetVctProvision, ReleasePv, ReservePv, plan_allocation, plan_reclaim
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
 logger = logging.getLogger("loop")
 
 
-def reconcile_once(k8s, cfg: PoolConfig) -> list[tuple[str, str]]:
+def reconcile_once(k8s, cfg: PoolConfig, reservations=None) -> list[tuple[str, str]]:
     """One reconcile pass over the pool. Returns [(target, action_kind)] for logging/tests.
     Applies each action via the ControllerK8s; a per-action failure is logged and skipped so
-    one bad PVC can't stall the whole pass."""
+    one bad PVC can't stall the whole pass.
+
+    `reservations` (optional) is the in-flight PV set. Omitted, PV placement is skipped
+    entirely and every sandbox falls through to its vct — the safe degrade, and what keeps
+    older call sites (and tests) working unchanged."""
     pvcs = k8s.list_pool_pvcs()
     sandboxes = k8s.list_sandboxes()
     actions = reconcile(pvcs, sandboxes, cfg)
@@ -45,4 +50,67 @@ def reconcile_once(k8s, cfg: PoolConfig) -> list[tuple[str, str]]:
                 "action failed",
                 extra={"action": type(a).__name__, "target": getattr(a, "pvc", None) or getattr(a, "image_tag", None)},
             )
+
+    if reservations is not None:
+        results.extend(_place_volumes(k8s, reservations))
+    return results
+
+
+def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
+    """Hand warm PVs to Sandboxes still waiting for their overlay upper, and recycle PVs
+    whose PVC is gone.
+
+    Failure is ALWAYS safe here: a sandbox we do not place simply gets a fresh empty upper
+    from its vct. So a per-action error is logged and skipped, never raised — the pool is
+    an optimization and must never be able to block a conversation from starting."""
+    results: list[tuple[str, str]] = []
+    try:
+        pvs = k8s.list_pool_pvs()
+        nodes = k8s.list_nodes()
+        pending = k8s.list_pending_uppers()
+    except Exception:  # noqa: BLE001 — a listing failure must not stall the pass
+        logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
+        return results
+
+    # Recycle first, so a PV released this pass can be allocated in the same pass.
+    for a in plan_reclaim(pvs):
+        try:
+            k8s.release_pv(a.pv)
+            reservations.release(a.pv)
+            results.append((a.pv, "release-pv"))
+            logger.info("returned a PV to the pool", extra={"pv": a.pv, "reason": a.reason})
+        except Exception:  # noqa: BLE001
+            logger.exception("release-pv failed", extra={"pv": a.pv})
+
+    if not pending:
+        return results
+
+    for a in plan_allocation(pending, pvs, nodes, reservations.active()):
+        if isinstance(a, LetVctProvision):
+            # Not a failure — the designed cold-pool path. Logged so a pool that is never
+            # placing anything is VISIBLE rather than quietly useless (the whole point of
+            # the RBAC incident: a safe degrade with no signal hides a broken pool).
+            logger.info("no warm PV placed; the vct will provision", extra={"sandbox": a.sandbox, "reason": a.reason})
+            results.append((a.sandbox, "vct-provision"))
+            continue
+        if isinstance(a, ReservePv):
+            # Hold BEFORE the write: if reserve_pv half-applies (claimRef set, PVC create
+            # failed) the PV must still be withheld from the next pass, or two sandboxes
+            # race for it. The TTL bounds the hold if we never confirm.
+            reservations.reserve(a.pv)
+            try:
+                k8s.reserve_pv(a.pv, a.pvc_name, a.sandbox)
+                results.append((a.pv, "reserve-pv"))
+                logger.info(
+                    "placed a warm PV",
+                    extra={"pv": a.pv, "pvc": a.pvc_name, "sandbox": a.sandbox, "reason": a.reason},
+                )
+            except Exception:  # noqa: BLE001
+                # ROLL BACK, or the fallback loop leaks a volume on every miss.
+                logger.exception("reserve-pv failed; rolling back", extra={"pv": a.pv, "sandbox": a.sandbox})
+                try:
+                    k8s.release_pv(a.pv)
+                except Exception:  # noqa: BLE001
+                    logger.exception("reserve-pv rollback FAILED — the PV may stay reserved", extra={"pv": a.pv})
+                reservations.release(a.pv)
     return results

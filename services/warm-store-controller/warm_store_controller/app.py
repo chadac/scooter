@@ -13,6 +13,7 @@ from .leader import LeaderElector
 from .logging_config import configure_logging
 from .loop import reconcile_once
 from .reconcile import PoolConfig
+from .reservations import Reservations
 
 SERVICE = "warm-store-controller"
 logger = logging.getLogger("app")
@@ -25,7 +26,12 @@ def run(cfg: Config, stop: threading.Event) -> None:
         warm_golden_expr=cfg.warm_golden_expr,
         overlay_storage=cfg.overlay_storage,
         runtime_class=cfg.runtime_class,
+        pool_storage_class=cfg.pool_storage_class,
     )
+    # In-flight PV holds, owned by the loop for the process's lifetime (leader election
+    # makes this single-writer). TTL well over a reconcile interval: long enough for a
+    # binding to become visible, short enough that a crash cannot strand a volume.
+    reservations = Reservations(ttl_seconds=max(120.0, cfg.reconcile_interval * 6))
     elector = LeaderElector(cfg.namespace, cfg.lease_name, cfg.identity, cfg.lease_seconds)
     pool_cfg = PoolConfig(
         current_image_tag=cfg.current_image_tag,
@@ -39,7 +45,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
             if leader:
                 if not was_leader:
                     logger.info("became leader", extra={"identity": cfg.identity})
-                reconcile_once(k8s, pool_cfg)
+                reconcile_once(k8s, pool_cfg, reservations)
             elif was_leader:
                 logger.info("lost leadership, standing by", extra={"identity": cfg.identity})
             was_leader = leader

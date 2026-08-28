@@ -9,11 +9,20 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 from kubernetes import client, config
 
 from .logging_config import format_error
+from .allocate import (
+    ANN_LAST_SANDBOX,
+    ANN_LAST_USED,
+    LBL_WARM_STORE,
+    Node,
+    PendingSandbox,
+    PoolPv,
+)
 from .reconcile import PoolPvc, SandboxRef, WarmJobStatus
 
 logger = logging.getLogger("k8s")
@@ -23,13 +32,12 @@ SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
 
-# Pool PVC labels (see todo/docs/WARM_STORE_PVC_MANAGER.md).
-LBL_WARM_STORE = "scooter.io/warm-store"   # image content tag (the version key)
+# Pool PVC labels (see todo/docs/WARM_STORE_PVC_MANAGER.md). LBL_WARM_STORE / ANN_LAST_USED
+# / ANN_LAST_SANDBOX are imported from allocate.py — ONE definition shared by the PVC layer
+# and the PV layer, so the two can never drift apart on the key that identifies a pool
+# volume.
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed
-# last-used is an ANNOTATION, not a label — an rfc3339 timestamp's colons are illegal in a
-# label value (the claim's label patch would 422). Read for LRU from annotations.
-ANN_LAST_USED = "scooter.io/last-used"     # rfc3339, for LRU
 LBL_WARM_PVC = "scooter.io/warm-pvc"       # on a warm Job: the PVC name it warms (PVC↔Job link)
 POOL_SELECTOR = LBL_POOL_STATE             # any PVC carrying a pool-state is a pool PVC
 
@@ -76,6 +84,10 @@ class ControllerK8s:
     # the host cgroup ns and let the sandbox churn the node's /kubepods tree — the host-logout
     # bug). MUST match the per-conversation sandboxRuntimeClass. Empty → cluster default.
     runtime_class: str = ""
+    # StorageClass for POOL volumes. MUST have reclaimPolicy: Retain — with the default
+    # Delete class, removing a PVC destroys its PV and nothing is ever recycled, so the
+    # whole reuse model silently degrades to "always a fresh empty upper".
+    pool_storage_class: str = ""
 
     # --- observe -----------------------------------------------------------
     def list_pool_pvcs(self) -> list[PoolPvc]:
@@ -297,6 +309,167 @@ class ControllerK8s:
             if e.status != 404:
                 raise
 
+    # --- PV placement (the controller owns volumes end to end) -------------
+    # The agent-host no longer claims anything: it always attaches the scooter-rw vct, so
+    # placement happens at the PV<->PVC binding layer. We pre-create the PVC under the name
+    # the vct WILL generate, pre-bound to a PV via claimRef, and the vct adopts it.
+    # See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
+
+    def list_pool_pvs(self) -> list[PoolPv]:
+        """Every pool PV (carries the warm-store label), in the pure PoolPv shape.
+
+        nodeAffinity is passed through VERBATIM rather than interpreted here — the pure
+        core evaluates it, and the shape is identical across drivers (local-path keys on
+        kubernetes.io/hostname, EBS on topology.ebs.csi.aws.com/zone)."""
+        core, _, _, _ = _apis()
+        out: list[PoolPv] = []
+        for pv in core.list_persistent_volume(label_selector=LBL_WARM_STORE).items:
+            meta, spec = pv.metadata, pv.spec
+            labels = meta.labels or {}
+            annotations = meta.annotations or {}
+            terms: list[dict] = []
+            na = getattr(spec, "node_affinity", None)
+            required = getattr(na, "required", None) if na else None
+            for term in (getattr(required, "node_selector_terms", None) or []):
+                terms.append(
+                    {
+                        "matchExpressions": [
+                            {"key": e.key, "operator": e.operator, "values": list(e.values or [])}
+                            for e in (term.match_expressions or [])
+                        ],
+                        "matchFields": [
+                            {"key": e.key, "operator": e.operator, "values": list(e.values or [])}
+                            for e in (getattr(term, "match_fields", None) or [])
+                        ],
+                    }
+                )
+            out.append(
+                PoolPv(
+                    name=meta.name,
+                    image_tag=labels.get(LBL_WARM_STORE, ""),
+                    phase=(pv.status.phase if pv.status else "") or "",
+                    node_selector_terms=terms,
+                    last_used=annotations.get(ANN_LAST_USED),
+                    last_sandbox=annotations.get(ANN_LAST_SANDBOX),
+                    claim_ref=(spec.claim_ref.name if spec.claim_ref else None),
+                    terminating=meta.deletion_timestamp is not None,
+                )
+            )
+        return out
+
+    def list_nodes(self) -> list[Node]:
+        """Schedulable nodes, reduced to the labels a PV's nodeAffinity can match on.
+
+        `schedulable` excludes cordoned nodes: a PV pinned to a cordoned node is NOT usable,
+        and offering it would place a pod that can never schedule — the exact wedge this
+        redesign removes."""
+        core, _, _, _ = _apis()
+        out: list[Node] = []
+        for n in core.list_node().items:
+            unschedulable = bool(getattr(n.spec, "unschedulable", False))
+            out.append(
+                Node(name=n.metadata.name, labels=n.metadata.labels or {}, schedulable=not unschedulable)
+            )
+        return out
+
+    def list_pending_uppers(self) -> list[PendingSandbox]:
+        """Running Sandboxes whose `scooter-rw` PVC does not exist yet — the ones we can
+        still place a warm PV for.
+
+        Timing is everything: once the vct has provisioned, the PVC exists and the decision
+        is made. We only act in the window before that. Missing the window is harmless — the
+        conversation gets a fresh empty upper, which is the designed fallback."""
+        core, custom, _, _ = _apis()
+        existing = {
+            pvc.metadata.name
+            for pvc in core.list_namespaced_persistent_volume_claim(self.namespace).items
+        }
+        resp = custom.list_namespaced_custom_object(
+            SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL
+        )
+        out: list[PendingSandbox] = []
+        for cr in resp.get("items", []):
+            if (cr.get("spec", {}).get("operatingMode", "Running") != "Running"):
+                continue
+            name, image_tag = self._sandbox_identity(cr)
+            # Only Sandboxes that actually declare a scooter-rw vct want an upper.
+            vcts = cr.get("spec", {}).get("volumeClaimTemplates") or []
+            if not any((v.get("metadata") or {}).get("name") == "scooter-rw" for v in vcts):
+                continue
+            pvc_name = f"scooter-rw-{name}"
+            if pvc_name in existing:
+                continue  # already provisioned or already placed
+            out.append(PendingSandbox(sandbox=name, image_tag=image_tag, pvc_name=pvc_name))
+        return out
+
+    def reserve_pv(self, pv: str, pvc_name: str, sandbox: str) -> None:
+        """Pre-bind `pv` to `pvc_name` and create that PVC so the vct adopts it.
+
+        Order matters. claimRef FIRST: it reserves the PV for exactly this one claim, so no
+        other PVC can bind it in the gap. Only then create the PVC. Reversed, the PVC could
+        bind some other volume before we point it at ours.
+
+        The PVC is created WITHOUT ownerReferences deliberately — a vct-adopted PVC gets
+        none either (verified), and the controller owns this volume's lifetime via the PV
+        finalizer, not via k8s GC."""
+        core, _, _, _ = _apis()
+        core.patch_persistent_volume(
+            pv,
+            {
+                "spec": {"claimRef": {"namespace": self.namespace, "name": pvc_name}},
+                "metadata": {
+                    "annotations": {
+                        ANN_LAST_SANDBOX: sandbox,
+                        ANN_LAST_USED: _now_rfc3339(),
+                    }
+                },
+            },
+        )
+        # 409 = a prior pass already created it (or the vct just did). Either way the name
+        # is taken by the claim we want; the claimRef above decides which PV it gets.
+        try:
+            core.create_namespaced_persistent_volume_claim(
+                self.namespace,
+                client.V1PersistentVolumeClaim(
+                    metadata=client.V1ObjectMeta(
+                        name=pvc_name,
+                        labels={LBL_WARM_STORE: self._pv_tag(pv)},
+                    ),
+                    spec=client.V1PersistentVolumeClaimSpec(
+                        access_modes=["ReadWriteOnce"],
+                        resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
+                        storage_class_name=self.pool_storage_class,
+                        volume_name=pv,
+                    ),
+                ),
+            )
+        except client.ApiException as e:
+            if e.status != 409:
+                raise
+
+    def release_pv(self, pv: str) -> None:
+        """Return `pv` to the pool by clearing spec.claimRef.
+
+        Used for BOTH recycling a Released PV and rolling back a reservation that did not
+        work out. A Released PV still names its late PVC, and k8s will not rebind it while
+        that dangling reference stands — so without this the pool silently stops recycling
+        and every wake falls through to a fresh empty upper."""
+        core, _, _, _ = _apis()
+        try:
+            core.patch_persistent_volume(pv, {"spec": {"claimRef": None}})
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
+
+    def _pv_tag(self, pv: str) -> str:
+        """The image tag a PV was warmed against, read back for the PVC's label."""
+        core, _, _, _ = _apis()
+        try:
+            obj = core.read_persistent_volume(pv)
+        except client.ApiException:
+            return ""
+        return (obj.metadata.labels or {}).get(LBL_WARM_STORE, "")
+
     # --- helpers -----------------------------------------------------------
     def _claim_names_bound_to_live_pods(self) -> set[str]:
         """PVC names currently mounted by a non-terminal pod (the RWO single-attach truth —
@@ -379,6 +552,11 @@ class ControllerK8s:
 
 
 # --- module-level pure helpers (unit-testable without k8s) ------------------
+
+def _now_rfc3339() -> str:
+    """UTC rfc3339, for the last-used LRU stamp."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _tag_of(image_ref: str) -> str:
     """The tag portion of an OCI ref — the part after the LAST ':' that isn't a port. Mirrors
