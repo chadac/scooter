@@ -11,7 +11,6 @@ import logging
 
 from kubernetes.client.exceptions import ApiException
 
-from .affinity import _NO_AFFINITY
 from .allocate import candidates_for, plan_reclaim
 from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
@@ -19,7 +18,12 @@ from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 logger = logging.getLogger("loop")
 
 
-def reconcile_once(k8s, cfg: PoolConfig, reservations=None, affinity=None) -> list[tuple[str, str]]:
+def reconcile_once(
+    k8s,
+    cfg: PoolConfig,
+    reservations=None,
+    affinity: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
     """One reconcile pass over the pool. Returns [(target, action_kind)] for logging/tests.
     Applies each action via the ControllerK8s; a per-action failure is logged and skipped so
     one bad PVC can't stall the whole pass.
@@ -60,7 +64,7 @@ def reconcile_once(k8s, cfg: PoolConfig, reservations=None, affinity=None) -> li
     return results
 
 
-def _place_volumes(k8s, reservations, affinity=None) -> list[tuple[str, str]]:
+def _place_volumes(k8s, reservations, affinity: dict[str, str] | None = None) -> list[tuple[str, str]]:
     """Hand warm PVs to Sandboxes awaiting an upper; recycle PVs whose PVC is gone.
 
     Every failure is safe: an unplaced sandbox gets a fresh upper from its vct. So errors
@@ -86,7 +90,7 @@ def _place_volumes(k8s, reservations, affinity=None) -> list[tuple[str, str]]:
         if pv_.claim_ref and pv_.claim_ref not in still_pending:
             reservations.release(pv_.name)
             if affinity is not None:
-                affinity.record(pv_.name, _sandbox_of_pvc(pv_.claim_ref))
+                affinity[_sandbox_of_pvc(pv_.claim_ref)] = pv_.name
 
     # Recycle first, so a PV released this pass can be allocated in the same pass.
     for a in plan_reclaim(pvs):
@@ -145,7 +149,7 @@ def _place_one(k8s, reservations, want, pvs, nodes, affinity) -> tuple[str, str]
                 "pvc": want.pvc_name,
                 "sandbox": want.sandbox,
                 "reason": "reusing a volume this sandbox has warmed"
-                if affinity is not None and affinity.rank_of(pv.name, want.sandbox) < _NO_AFFINITY
+                if (affinity or {}).get(want.sandbox) == pv.name
                 else "assigning a warm pool PV",
             },
         )

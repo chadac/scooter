@@ -12,7 +12,6 @@ from .k8s import ControllerK8s
 from .leader import LeaderElector
 from .logging_config import configure_logging
 from .loop import reconcile_once
-from .affinity import Affinity
 from .reconcile import PoolConfig
 from .reservations import Reservations
 
@@ -33,9 +32,11 @@ def run(cfg: Config, stop: threading.Event) -> None:
     # makes this single-writer). TTL well over a reconcile interval: long enough for a
     # binding to become visible, short enough that a crash cannot strand a volume.
     reservations = Reservations(ttl_seconds=max(120.0, cfg.reconcile_interval * 6))
-    # Which volumes a sandbox has actually used, for preferential placement. In-memory:
-    # losing it on restart costs one cycle of hit rate, never correctness.
-    affinity = Affinity()
+    # sandbox -> the PV it last used, for preferential placement. Recorded when a PV is
+    # seen BOUND, so a reservation that never binds leaves no trace. In-memory: losing it
+    # on restart costs one cycle of hit rate, never correctness (claimRef is what enforces
+    # exclusivity; this only orders candidates).
+    affinity: dict[str, str] = {}
     elector = LeaderElector(cfg.namespace, cfg.lease_name, cfg.identity, cfg.lease_seconds)
     pool_cfg = PoolConfig(
         current_image_tag=cfg.current_image_tag,

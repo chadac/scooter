@@ -1,7 +1,6 @@
 """Tier 1 — the PURE placement core (no cluster)."""
 
 
-from warm_store_controller.affinity import Affinity
 from warm_store_controller.allocate import (
     Node,
     PendingSandbox,
@@ -107,30 +106,8 @@ def test_usable_excludes_a_pv_no_LIVE_node_can_reach():
 # --- ranking ---------------------------------------------------------------
 
 def test_a_volume_this_sandbox_warmed_wins_even_when_least_recently_used():
-    aff = Affinity()
-    aff.record("mine", "conv-a")
     pool = [pv("fresh", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
-    assert rank_candidates(pool, "conv-a", aff)[0].name == "mine"
-
-
-def test_MULTIPLE_sandboxes_can_each_prefer_the_SAME_volume():
-    # The annotation could not express this: X uses A, Y uses A, and X's association was
-    # overwritten forever even though A may still hold X's builds.
-    aff = Affinity()
-    aff.record("A", "conv-x")
-    aff.record("A", "conv-y")
-    pool = [pv("A", last_used="2026-01-01T00:00:00Z"), pv("B", last_used="2026-08-27T10:00:00Z")]
-    assert rank_candidates(pool, "conv-x", aff)[0].name == "A"
-    assert rank_candidates(pool, "conv-y", aff)[0].name == "A"
-
-
-def test_a_sandbox_prefers_its_MOST_RECENTLY_used_volume():
-    # Ordinal, not boolean: both are warm for this sandbox, but the newer one more so.
-    aff = Affinity()
-    aff.record("older", "conv-a")
-    aff.record("newer", "conv-a")
-    pool = [pv("older"), pv("newer")]
-    assert [p.name for p in rank_candidates(pool, "conv-a", aff)] == ["newer", "older"]
+    assert rank_candidates(pool, "conv-a", {"conv-a": "mine"})[0].name == "mine"
 
 
 def test_otherwise_MOST_recently_used_first():
@@ -149,10 +126,8 @@ def test_an_UNKNOWN_age_pv_sorts_last():
 
 
 def test_affinity_outranks_recency():
-    aff = Affinity()
-    aff.record("mine", "conv-a")
     pool = [pv("hot", last_used="2026-08-27T10:00:00Z"), pv("mine", last_used="2026-01-01T00:00:00Z")]
-    assert rank_candidates(pool, "conv-a", aff)[0].name == "mine"
+    assert rank_candidates(pool, "conv-a", {"conv-a": "mine"})[0].name == "mine"
 
 
 # --- candidate selection ---------------------------------------------------
@@ -162,9 +137,8 @@ def test_affinity_outranks_recency():
 
 def test_the_sandboxs_OWN_pv_is_the_first_candidate():
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
-    aff = Affinity()
-    aff.record("mine", "conv-a")
     pool = [pv("other"), pv("mine")]
+    aff = {"conv-a": "mine"}
     assert [p.name for p in candidates_for(want, pool, [node("odin")], aff)] == ["mine", "other"]
 
 
@@ -186,8 +160,7 @@ def test_candidates_are_offered_in_FALLBACK_order():
     # The shell walks this list and takes the first it wins, so losing a race costs the
     # next-best volume rather than the whole placement.
     want = PendingSandbox(sandbox="conv-a", image_tag=TAG, pvc_name="scooter-rw-conv-a")
-    aff = Affinity()
-    aff.record("mine", "conv-a")
+    aff = {"conv-a": "mine"}
     pool = [
         pv("cold", last_used="2026-01-01T00:00:00Z"),
         pv("hot", last_used="2026-08-27T10:00:00Z"),

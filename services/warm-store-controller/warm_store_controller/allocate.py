@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .affinity import Affinity
-
 # The finalizer that makes a pool PV the controller's exclusively. ownerReferences CANNOT
 # work here: a PV is cluster-scoped and a namespaced owner is rejected at GC time with
 # `OwnerRefInvalidNamespace ... does not exist in namespace ""` (verified — the PV simply
@@ -127,18 +125,17 @@ def usable_pvs(pvs: list[PoolPv], nodes: list[Node], image_tag: str) -> list[Poo
     ]
 
 
-def rank_candidates(pvs: list[PoolPv], sandbox: str, affinity: Affinity | None = None) -> list[PoolPv]:
-    """Best-first: volumes this sandbox has used (most recent of those first), then
-    most-recently-used overall.
+def rank_candidates(pvs: list[PoolPv], sandbox: str, affinity: dict[str, str] | None = None) -> list[PoolPv]:
+    """Best-first: the volume this sandbox last used, then most-recently-used overall.
 
     MRU, not LRU. Spreading load keeps every volume marginally warm and nothing safely
     reapable; concentrating reuse on the hot set makes those genuinely warm and lets the
     cold tail age out. Ties break on name for determinism."""
-    rank = affinity.rank_of if affinity else (lambda _pv, _sandbox: 0)
+    mine = (affinity or {}).get(sandbox)
     return sorted(
         pvs,
         key=lambda p: (
-            rank(p.name, sandbox),
+            0 if p.name == mine else 1,
             _invert(p.last_used),
             p.name,
         ),
@@ -160,7 +157,7 @@ def candidates_for(
     want: PendingSandbox,
     pvs: list[PoolPv],
     nodes: list[Node],
-    affinity: Affinity | None = None,
+    affinity: dict[str, str] | None = None,
 ) -> list[PoolPv]:
     """PVs this sandbox could use, best-first.
 
