@@ -1,29 +1,11 @@
-"""In-flight PV reservations — who has claimed what, and the exclusion rules.
+"""In-flight PV reservations: a sandbox (claimer) paired with a PV (claimee).
 
-A reservation is a PAIR: a sandbox (the claimer) and a PV (the claimee). Both directions
-matter, so this class owns both rather than leaving one to the caller:
+Exclusion is decided HERE, under one lock, before anything touches the API — `claimRef`
+makes the WRITE exclusive but not the READ current, so a PV we just patched still lists
+as `Available` until k8s catches up. See PR #403.
 
-- **One PV, one sandbox.** Two sandboxes must never be handed the same volume. RWO does
-  not save us — a same-node double-mount of one overlay upper is store corruption.
-- **One sandbox, one PV.** A sandbox that already holds a reservation must not take a
-  second. The first would be stranded: `claimRef`'d to a PVC nobody creates, withheld
-  from the pool until its TTL lapses.
-
-Why a local cache rather than asking the API. `claimRef` makes the WRITE exclusive, but
-not the READ current: between issuing the patch and k8s reflecting the binding, the PV
-still lists as `Available` with no `claimRef`. Deciding from that is check-then-act — two
-callers both see it free, both patch, one loses, and its sandbox is left with a PVC bound
-to nothing. So exclusion is decided HERE, under one lock, before anything touches the API.
-
-Reservations expire. Without a TTL a controller that dies between claiming and observing
-leaks that PV as permanently in-flight — never allocated, never reclaimed, invisible to
-the pool. The TTL bounds that to one window: worst case we re-select a PV whose patch did
-land, and `claimRef` rejects the loser. A recoverable double-select beats a volume leaked
-forever.
-
-Leader election makes the controller single-writer, so this is in-process state, not a
-distributed lock. The mutex still matters: the reconcile loop and any future watch
-callback touch it from different threads.
+In-process state, not a distributed lock (leader election makes the controller
+single-writer); the mutex guards the reconcile loop against any future watch callback.
 """
 
 from __future__ import annotations
@@ -36,11 +18,9 @@ from dataclasses import dataclass
 class AlreadyClaimed(RuntimeError):
     """A reservation conflicts with one that already stands.
 
-    Raised rather than returned because both cases are caller BUGS, not conditions to
-    branch on: the planner is supposed to hand out at most one PV per sandbox, and never
-    the same PV twice in a pass. A silent False would let that mistake through as a quiet
-    mis-placement instead of surfacing it.
-    """
+    Raised, not returned: both cases are caller BUGS (the planner hands out at most one PV
+    per sandbox, never the same PV twice per pass), so a silent False would surface as a
+    quiet mis-placement. PR #403."""
 
 
 @dataclass(frozen=True)
@@ -70,21 +50,11 @@ class Reservations:
         self._by_sandbox: dict[str, Reservation] = {}
 
     def claim(self, pv: str, sandbox: str) -> Reservation:
-        """Reserve `pv` for `sandbox`. Returns the reservation; raises AlreadyClaimed if
-        either side is already spoken for.
+        """Reserve `pv` for `sandbox`; raises AlreadyClaimed if either side is taken.
 
-        Both checks and the write happen under ONE lock — that atomicity is the whole
-        point. Checking and then writing separately lets two callers both pass before
-        either commits.
-
-        Re-claiming the SAME pair is idempotent and refreshes the deadline: a sandbox we
-        keep choosing (because its binding has not landed yet) must not expire mid-flight.
-        That is the only way to extend a hold, and only a caller that can name the pair it
-        already owns can do it.
-
-        EXPIRED reservations on either side read as absent, so a controller that died
-        mid-decision strands neither the volume nor the sandbox.
-        """
+        Re-claiming the SAME pair refreshes the deadline — the only way to extend a hold,
+        and only a caller naming the pair it already owns can do it. Expired reservations
+        read as absent. See PR #403."""
         with self._lock:
             now = self._clock.time()
             self._expire(now)
@@ -107,15 +77,9 @@ class Reservations:
             return res
 
     def release(self, pv: str) -> None:
-        """Give up the reservation on `pv`, both directions.
-
-        Two callers, one operation: the PVC was realised (the PV's own claimRef now
-        excludes it, so the local reservation is redundant), or the write failed and we
-        are rolling back. Locally those are the same act — stop withholding it.
-
-        IDEMPOTENT on purpose, unlike claim(). Releasing is a converging operation: the
-        loop calls this for every realised PVC on every pass, so "already released" is the
-        normal steady state, not a caller error."""
+        """Give up the reservation on `pv`, both directions — whether the PVC was realised
+        or a failed write is rolling back. IDEMPOTENT, unlike claim(): the loop calls this
+        for every realised PVC every pass, so "already released" is the steady state."""
         with self._lock:
             res = self._by_pv.pop(pv, None)
             if res is not None and self._by_sandbox.get(res.sandbox) is res:
@@ -136,11 +100,9 @@ class Reservations:
             return res.pv if res else None
 
     def in_flight_reservations(self) -> set[str]:
-        """Reserved PV names.
-
-        Read-only view, for logging/metrics and for pre-filtering candidates. NOT a
-        substitute for claim(): deciding from this and then claiming is the check-then-act
-        race claim() exists to close."""
+        """Reserved PV names — a read-only view for logging and pre-filtering. NOT a
+        substitute for claim(): deciding from this, then claiming, is the check-then-act
+        race claim() closes."""
         with self._lock:
             self._expire(self._clock.time())
             return set(self._by_pv)
@@ -150,8 +112,8 @@ class Reservations:
         stale = [pv for pv, res in self._by_pv.items() if res.expires_at <= now]
         for pv in stale:
             res = self._by_pv.pop(pv)
-            # Clear the reverse index only if it still points at THIS reservation — the
-            # sandbox may since have been given a different, live one.
+            # Only if it still points at THIS reservation — the sandbox may since have
+            # been given a different, live one. PR #403.
             if self._by_sandbox.get(res.sandbox) is res:
                 del self._by_sandbox[res.sandbox]
 

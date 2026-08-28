@@ -116,22 +116,17 @@ AllocAction = ReservePv | ReleasePv | LetVctProvision
 # --- the placement predicate ----------------------------------------------
 
 def node_matches(terms: list[dict], node: Node) -> bool:
-    """Does `node` satisfy a PV's required nodeSelectorTerms? Terms are OR'd; the
-    matchExpressions within a term are AND'd — standard k8s semantics. No terms = no
-    constraint (matches anything).
+    """Does `node` satisfy a PV's required nodeSelectorTerms? Terms are OR'd,
+    matchExpressions within a term AND'd; no terms = no constraint.
 
-    Deliberately supports only the operators a volume topology actually uses (In, NotIn,
-    Exists, DoesNotExist). An UNKNOWN operator returns False rather than being ignored:
-    treating a constraint we do not understand as "satisfied" is how you bind a pod to a
-    volume it cannot reach.
-    """
+    Supports only the operators volume topology uses (In, NotIn, Exists, DoesNotExist).
+    Anything unrecognised fails CLOSED — see _expr_matches. PR #403."""
     if not terms:
         return True
     for term in terms:
         exprs = term.get("matchExpressions") or []
         fields = term.get("matchFields") or []
-        # matchFields keys on node metadata (e.g. metadata.name) rather than labels; we
-        # do not evaluate it, so a term that uses it cannot be confirmed -> skip the term.
+        # matchFields keys on node metadata, not labels; unevaluatable -> skip the term.
         if fields:
             continue
         if all(_expr_matches(e, node) for e in exprs):
@@ -151,7 +146,7 @@ def _expr_matches(expr: dict, node: Node) -> bool:
         return key in node.labels
     if op == "DoesNotExist":
         return key not in node.labels
-    return False  # unknown operator: cannot confirm, so do not claim a match
+    return False  # unknown operator: fail closed (do not place) rather than mis-place
 
 
 def usable_pvs(pvs: list[PoolPv], nodes: list[Node], image_tag: str) -> list[PoolPv]:

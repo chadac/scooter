@@ -518,15 +518,10 @@ export function sandboxManifest(
           },
         },
         // The overlay-store upper PVC (disk-backed; persists runtime builds across
-        // suspend/resume). ALWAYS present when the overlay-store image is in use — never
-        // conditional on a pool claim. A vct is a GENERATOR, not a fallback: pairing one
-        // with a same-named volume does not error, the vct SILENTLY WINS and the named
-        // (pooled) volume is orphaned. So we never name a pool volume at all; the
-        // warm-store-controller places a warm PV by pre-binding the PVC this vct adopts,
-        // and if it places nothing the vct provisions a fresh empty upper. That keeps the
-        // pool a pure optimization and leaves every Sandbox ONE uniform shape — important
-        // because spec.volumeClaimTemplates is IMMUTABLE, so a shape chosen at birth can
-        // never be changed. See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
+        // suspend/resume). ALWAYS emitted, never conditional on a pool claim: one uniform
+        // Sandbox shape, which matters because spec.volumeClaimTemplates is IMMUTABLE.
+        // The warm-store-controller places a warm PV by pre-binding the PVC this vct
+        // adopts; if it places nothing, the vct provisions a fresh empty upper. PR #403.
         ...(overlayStore
           ? [
               {

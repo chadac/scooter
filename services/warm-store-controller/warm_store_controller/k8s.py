@@ -445,13 +445,9 @@ class ControllerK8s:
     def reserve_pv(self, pv: str, pvc_name: str, sandbox: str) -> None:
         """Pre-bind `pv` to `pvc_name` and create that PVC so the vct adopts it.
 
-        Order matters. claimRef FIRST: it reserves the PV for exactly this one claim, so no
-        other PVC can bind it in the gap. Only then create the PVC. Reversed, the PVC could
-        bind some other volume before we point it at ours.
-
-        The PVC is created WITHOUT ownerReferences deliberately — a vct-adopted PVC gets
-        none either (verified), and the controller owns this volume's lifetime via the PV
-        finalizer, not via k8s GC."""
+        claimRef FIRST, then the PVC — reversed, the PVC could bind some other volume
+        before we point it at ours. No ownerReferences by design (a vct-adopted PVC gets
+        none either); the PV finalizer owns this volume's lifetime. PR #403."""
         core, _, _, _ = _apis()
         core.patch_persistent_volume(
             pv,
