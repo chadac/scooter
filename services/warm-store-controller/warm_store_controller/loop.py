@@ -86,7 +86,7 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
     still_pending = {w.pvc_name for w in pending}
     for pv_ in pvs:
         if pv_.claim_ref and pv_.claim_ref not in still_pending:
-            reservations.confirm(pv_.name)
+            reservations.release(pv_.name)
 
     # Recycle first, so a PV released this pass can be allocated in the same pass.
     for a in plan_reclaim(pvs):
@@ -101,7 +101,7 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
     if not pending:
         return results
 
-    for a in plan_allocation(pending, pvs, nodes, reservations.active()):
+    for a in plan_allocation(pending, pvs, nodes, reservations.in_flight_reservations()):
         if isinstance(a, LetVctProvision):
             # Not a failure — the designed cold-pool path. Logged so a pool that is never
             # placing anything is VISIBLE rather than quietly useless (the whole point of
@@ -114,7 +114,7 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
             # under one lock, so it is the single point that decides who owns this volume
             # — no two callers can both pass and then both patch claimRef. Holding before
             # the write also means a half-applied reserve (claimRef set, PVC create
-            # failed) still withholds the PV; the TTL bounds it if we never confirm.
+            # failed) still withholds the PV; the TTL bounds it if we never release.
             try:
                 reservations.claim(a.pv, a.sandbox)
             except AlreadyClaimed as exc:

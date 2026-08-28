@@ -74,7 +74,7 @@ def test_places_a_warm_pv_and_holds_it_in_flight():
     assert k8s.reserved == [("warm-1", "scooter-rw-conv-a", "conv-a")]
     assert ("warm-1", "reserve-pv") in out
     # Held so the NEXT pass cannot select it before the binding is visible.
-    assert res.active() == {"warm-1"}
+    assert res.in_flight_reservations() == {"warm-1"}
 
 
 def test_a_COLD_pool_falls_through_to_the_vct():
@@ -101,7 +101,7 @@ def test_a_FAILED_reservation_ROLLS_BACK_and_does_not_leak_the_pv():
     res = Reservations()
     reconcile_once(k8s, CFG, res)
     assert k8s.released == ["warm-1"]      # claimRef cleared
-    assert res.active() == set()           # hold dropped
+    assert res.in_flight_reservations() == set()           # hold dropped
 
 
 def test_a_LISTING_failure_never_blocks_a_conversation():
@@ -183,9 +183,9 @@ def test_a_REALISED_pvc_drops_the_in_process_hold():
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
     reconcile_once(k8s, CFG, res)
-    assert res.active() == {"warm-1"}          # held while the PVC is still pending
+    assert res.in_flight_reservations() == {"warm-1"}          # held while the PVC is still pending
     # Next pass: the PVC is realised (claimRef set) and no longer pending.
     k8s._pvs = [pv("warm-1", phase="Bound", claim_ref="scooter-rw-conv-a")]
     k8s._pending = []
     reconcile_once(k8s, CFG, res)
-    assert res.active() == set()               # hold released
+    assert res.in_flight_reservations() == set()               # hold released

@@ -55,7 +55,7 @@ class Reservation:
 class Reservations:
     """In-flight (sandbox ↔ PV) reservations, each expiring after `ttl_seconds`.
 
-    :param ttl_seconds: how long a reservation survives without confirmation. Should
+    :param ttl_seconds: how long a reservation survives without being released. Should
         comfortably exceed a reconcile interval — long enough for the binding to become
         visible, short enough that a crash does not strand the volume for long.
     :param clock: injectable time source (tests pass a fake; the module never calls
@@ -106,9 +106,12 @@ class Reservations:
             self._by_sandbox[sandbox] = res
             return res
 
-    def confirm(self, pv: str) -> None:
-        """The PVC is realised — the PV's own claimRef now excludes it from selection, so
-        the local reservation is redundant. Drop it, both directions.
+    def release(self, pv: str) -> None:
+        """Give up the reservation on `pv`, both directions.
+
+        Two callers, one operation: the PVC was realised (the PV's own claimRef now
+        excludes it, so the local reservation is redundant), or the write failed and we
+        are rolling back. Locally those are the same act — stop withholding it.
 
         IDEMPOTENT on purpose, unlike claim(). Releasing is a converging operation: the
         loop calls this for every realised PVC on every pass, so "already released" is the
@@ -118,26 +121,21 @@ class Reservations:
             if res is not None and self._by_sandbox.get(res.sandbox) is res:
                 del self._by_sandbox[res.sandbox]
 
-    # Rollback and confirmation are the same operation locally (stop withholding it); they
-    # differ only in what the caller does to the PV. Named separately so call sites read
-    # as intent rather than as a shared primitive.
-    release = confirm
-
-    def holder_of(self, pv: str) -> str | None:
+    def get_pv_owner(self, pv: str) -> str | None:
         """Which sandbox holds `pv`, if any. Expired reservations read as free."""
         with self._lock:
             self._expire(self._clock.time())
             res = self._by_pv.get(pv)
             return res.sandbox if res else None
 
-    def pv_for(self, sandbox: str) -> str | None:
+    def get_pv_for_pod(self, sandbox: str) -> str | None:
         """Which PV `sandbox` holds, if any. Expired reservations read as free."""
         with self._lock:
             self._expire(self._clock.time())
             res = self._by_sandbox.get(sandbox)
             return res.pv if res else None
 
-    def active(self) -> set[str]:
+    def in_flight_reservations(self) -> set[str]:
         """Reserved PV names.
 
         Read-only view, for logging/metrics and for pre-filtering candidates. NOT a
@@ -157,5 +155,3 @@ class Reservations:
             if self._by_sandbox.get(res.sandbox) is res:
                 del self._by_sandbox[res.sandbox]
 
-    def __len__(self) -> int:
-        return len(self.active())
