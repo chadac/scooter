@@ -11,7 +11,7 @@ import logging
 
 from kubernetes.client.exceptions import ApiException
 
-from .allocate import LetVctProvision, ReleasePv, ReservePv, plan_allocation, plan_reclaim
+from .allocate import LetVctProvision, plan_allocation, plan_reclaim
 from .reservations import AlreadyClaimed
 from .reconcile import PoolConfig, WarmNew, Relabel, DeletePvc, reconcile
 
@@ -101,8 +101,7 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
             # anything is visible; a safe degrade with no signal hides a broken pool.
             logger.info("no warm PV placed; the vct will provision", extra={"sandbox": a.sandbox, "reason": a.reason})
             results.append((a.sandbox, "vct-provision"))
-            continue
-        if isinstance(a, ReservePv):
+        else:
             # Only write if we won the claim. Taking the hold BEFORE the write means a
             # half-applied reserve still withholds the PV.
             try:

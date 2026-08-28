@@ -94,6 +94,9 @@ class LetVctProvision:
 
 
 AllocAction = ReservePv | ReleasePv | LetVctProvision
+# What plan_allocation can emit: place a PV, or place nothing. ReleasePv is reclaim-only,
+# so callers can treat these two as exhaustive.
+PlacementAction = ReservePv | LetVctProvision
 
 
 # --- the placement predicate ----------------------------------------------
@@ -182,12 +185,12 @@ def plan_allocation(
     pvs: list[PoolPv],
     nodes: list[Node],
     in_flight: set[str],
-) -> list[AllocAction]:
+) -> list[PlacementAction]:
     """Decide placement for every sandbox awaiting an upper. One action each.
 
     `in_flight` are PVs already chosen but whose binding k8s has not observed yet; they
     still read Available, so without withholding them a later pass double-books them."""
-    actions: list[AllocAction] = []
+    actions: list[PlacementAction] = []
     taken: set[str] = set(in_flight)
 
     for want in pending:
@@ -214,7 +217,7 @@ def plan_allocation(
     return actions
 
 
-def plan_reclaim(pvs: list[PoolPv]) -> list[AllocAction]:
+def plan_reclaim(pvs: list[PoolPv]) -> list[ReleasePv]:
     """Released PVs go back to the pool. k8s will not rebind one while its claimRef still
     names the late PVC, so skipping this silently stops all recycling."""
     return [
