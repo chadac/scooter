@@ -1,8 +1,4 @@
-"""Tier 1 — the PURE placement core (no cluster).
-Covers the propose -> verify -> fall back cycle, the topology predicate that makes one
-rule serve every driver, preferential reuse, and the reservation set that closes the
-select-vs-patch race.
-"""
+"""Tier 1 — the PURE placement core (no cluster)."""
 
 
 from warm_store_controller.allocate import (
@@ -120,9 +116,7 @@ def test_own_pv_wins_even_when_least_recently_used():
 
 
 def test_otherwise_MOST_recently_used_first():
-    # MRU, not LRU. Concentrating reuse on the hot set makes those volumes genuinely warm
-    # and lets the cold tail age out untouched, so a reaper can retire it on age alone.
-    # LRU would keep every volume lukewarm and nothing safely reapable.
+    # MRU: a hot set gets genuinely warm and the cold tail ages out reapably.
     pool = [
         pv("recent", last_used="2026-08-27T10:00:00Z"),
         pv("old", last_used="2026-01-01T00:00:00Z"),
@@ -204,12 +198,8 @@ def test_a_TERMINATING_released_pv_is_left_alone():
 
 
 def test_matchFields_term_is_SKIPPED_not_evaluated():
-    # A documented gap, pinned so it stays deliberate. matchFields keys on node metadata
-    # (e.g. metadata.name) rather than labels; we do not evaluate it, so a term using it
-    # cannot be confirmed and is skipped -> the PV reads as unusable rather than being
-    # mis-placed. Volume topology does not emit matchFields, so this is unreachable today.
-    # The Go port removes the gap entirely (nodeaffinity.Match handles it upstream) —
-    # see todo/draft/PORT_WARM_STORE_CONTROLLER_TO_GO.md.
+    # Documented gap, pinned so it stays deliberate: unevaluatable -> unusable, never
+    # mis-placed. Unreachable today (volume topology emits no matchFields).
     terms = [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["odin"]}]}]
     assert node_matches(terms, node("odin")) is False
 

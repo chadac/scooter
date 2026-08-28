@@ -317,33 +317,16 @@ class ControllerK8s:
     # See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 
     def iter_pool_pvs(self) -> Iterator[PoolPv]:
-        """Pool PVs (carrying the warm-store label), MOST-RECENTLY-USED FIRST.
+        """Pool PVs, MOST-RECENTLY-USED FIRST, as a generator — so placement's first
+        usable candidate is also its best.
 
-        A GENERATOR so a caller that only needs the first usable candidate stops there
-        instead of converting the whole pool. Placement is exactly that shape: rank, take
-        the best match, done.
+        MRU concentrates reuse on a hot set (genuinely warm) and lets the cold tail age
+        out, so a reaper can retire it on age alone; LRU keeps everything lukewarm and
+        nothing reapable. Sorted client-side because the k8s API has no server-side sort
+        and PVs take almost no field selectors; bounded by maxTotal. Recency = our
+        last-used annotation, else status.lastPhaseTransitionTime, else oldest.
 
-        MRU, not LRU. Spreading load across the pool (LRU) keeps every volume marginally
-        warm and none of them properly warm, and leaves nothing safely reapable. Preferring
-        the most recently used concentrates reuse onto a small hot set — those volumes get
-        genuinely warm, and the cold tail goes untouched long enough to be reaped on age
-        alone. The pool converges on "a few well-warmed volumes" rather than "many
-        lukewarm ones".
-
-        Sorting is CLIENT-side by necessity: the k8s API has no server-side sort, and PVs
-        accept only metadata.name/namespace as field selectors (status.phase is rejected),
-        so there is nothing to push down. The listing is bounded by maxTotal, so this is a
-        sort of tens of items, not a scan.
-
-        Recency key: our own last-used annotation when present (it tracks ALLOCATION, which
-        is what we actually care about), else status.lastPhaseTransitionTime, which k8s
-        maintains and which at least orders by when the volume last changed hands. Neither
-        present sorts last — an unknown-age volume is the least attractive to reuse and the
-        most attractive to reap.
-
-        nodeAffinity is passed through VERBATIM rather than interpreted here — the pure
-        core evaluates it, and the shape is identical across drivers (local-path keys on
-        kubernetes.io/hostname, EBS on topology.ebs.csi.aws.com/zone)."""
+        nodeAffinity is passed through VERBATIM — the pure core evaluates it. PR #403."""
         core, _, _, _ = _apis()
         items = list(core.list_persistent_volume(label_selector=LBL_WARM_STORE).items)
         items.sort(key=self._recency_key, reverse=True)
@@ -399,10 +382,7 @@ class ControllerK8s:
 
     def list_nodes(self) -> list[Node]:
         """Schedulable nodes, reduced to the labels a PV's nodeAffinity can match on.
-
-        `schedulable` excludes cordoned nodes: a PV pinned to a cordoned node is NOT usable,
-        and offering it would place a pod that can never schedule — the exact wedge this
-        redesign removes."""
+        Cordoned nodes are excluded — a PV pinned to one would place an unschedulable pod."""
         core, _, _, _ = _apis()
         out: list[Node] = []
         for n in core.list_node().items:
@@ -413,12 +393,8 @@ class ControllerK8s:
         return out
 
     def list_pending_uppers(self) -> list[PendingSandbox]:
-        """Running Sandboxes whose `scooter-rw` PVC does not exist yet — the ones we can
-        still place a warm PV for.
-
-        Timing is everything: once the vct has provisioned, the PVC exists and the decision
-        is made. We only act in the window before that. Missing the window is harmless — the
-        conversation gets a fresh empty upper, which is the designed fallback."""
+        """Running Sandboxes whose `scooter-rw` PVC does not exist yet — the window before
+        the vct provisions. Missing it is harmless: the conversation gets a fresh upper."""
         core, custom, _, _ = _apis()
         existing = {
             pvc.metadata.name
@@ -484,12 +460,8 @@ class ControllerK8s:
                 raise
 
     def release_pv(self, pv: str) -> None:
-        """Return `pv` to the pool by clearing spec.claimRef.
-
-        Used for BOTH recycling a Released PV and rolling back a reservation that did not
-        work out. A Released PV still names its late PVC, and k8s will not rebind it while
-        that dangling reference stands — so without this the pool silently stops recycling
-        and every wake falls through to a fresh empty upper."""
+        """Return `pv` to the pool by clearing spec.claimRef — k8s will not rebind a
+        Released PV while it still names its late PVC. Also the reservation rollback."""
         core, _, _, _ = _apis()
         try:
             core.patch_persistent_volume(pv, {"spec": {"claimRef": None}})

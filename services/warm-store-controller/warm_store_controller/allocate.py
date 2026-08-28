@@ -1,25 +1,13 @@
 """PV placement — the pure decision core for handing a sandbox a warm overlay upper.
 
-The agent-host no longer claims volumes. It always attaches the `scooter-rw`
-volumeClaimTemplate, so every Sandbox has ONE shape. Warm placement happens at the
-PV<->PVC binding layer instead: this controller pre-creates the PVC under the name the
-vct would generate (`scooter-rw-<sandbox>`), pre-bound via `claimRef` to a PV it chose,
-and the vct ADOPTS it. If we place nothing, the vct provisions a fresh empty upper — so
-the pool stays a pure optimization and a cold (or entirely down) pool never blocks a
+The controller pre-creates the PVC under the name the sandbox's vct would generate,
+pre-bound via `claimRef` to a PV it chose, and the vct ADOPTS it. Placing nothing is a
+valid outcome: the vct then provisions a fresh empty upper, so the pool never blocks a
 conversation.
 
-Why the binding layer and not the PVC layer: a vct is a GENERATOR, not a fallback.
-Pairing one with a same-named volume does not error — the vct SILENTLY WINS and the
-pooled volume is orphaned. And `spec.volumeClaimTemplates` is IMMUTABLE, so the old
-"omit the vct when claimed" trick froze each Sandbox's shape at birth with no way back.
-
-Placement is PROPOSE -> VERIFY -> COMMIT -> FALL BACK. We do not model node-local vs.
-EBS-AZ vs. capacity as separate rules: a PV states its own placement constraint in
-`spec.nodeAffinity` as standard `nodeSelectorTerms` (local-path keys on
-`kubernetes.io/hostname`, EBS on `topology.ebs.csi.aws.com/zone`), so ONE predicate
-covers every driver — including constraints nobody enumerated.
-
-See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
+One predicate covers every storage driver — a PV states its own topology in
+`spec.nodeAffinity` as standard `nodeSelectorTerms`. See PR #403 and
+todo/draft/WARM_STORE_PV_OWNERSHIP.md.
 """
 
 from __future__ import annotations
@@ -68,9 +56,8 @@ class Node:
 
 @dataclass(frozen=True)
 class PendingSandbox:
-    """A Sandbox that wants an upper: Running, overlay-store on, and its `scooter-rw`
-    PVC does not exist yet. `pvc_name` is what the vct WILL generate — we must create it
-    under exactly that name for the adoption to happen."""
+    """A Sandbox awaiting an upper. `pvc_name` is what its vct WILL generate — the PVC must
+    be created under exactly that name for adoption to happen."""
 
     sandbox: str
     image_tag: str
@@ -81,8 +68,7 @@ class PendingSandbox:
 
 @dataclass(frozen=True)
 class ReservePv:
-    """Pre-bind `pv` to `pvc_name` (patch spec.claimRef) and create that PVC. The vct then
-    adopts it instead of provisioning. Reversible: see ReleasePv."""
+    """Pre-bind `pv` to `pvc_name` so the sandbox's vct adopts it. Reversible via ReleasePv."""
 
     pv: str
     pvc_name: str
@@ -92,10 +78,8 @@ class ReservePv:
 
 @dataclass(frozen=True)
 class ReleasePv:
-    """Return `pv` to the pool: clear spec.claimRef so it goes Available. Used both to
-    recycle a Released PV and to ROLL BACK a reservation that failed to schedule — a
-    failed candidate must leave nothing behind, or the fallback loop leaks a volume on
-    every miss."""
+    """Clear spec.claimRef so `pv` goes Available. Recycles a Released PV, and rolls back a
+    failed reservation — a miss must leave nothing behind or the pool leaks a volume."""
 
     pv: str
     reason: str
@@ -103,8 +87,7 @@ class ReleasePv:
 
 @dataclass(frozen=True)
 class LetVctProvision:
-    """Place nothing — no suitable PV. The Sandbox's vct provisions a fresh empty upper.
-    Not an error: this is the cold-pool path, and it is why the pool never blocks."""
+    """Place nothing; the Sandbox's vct provisions a fresh empty upper. Not an error."""
 
     sandbox: str
     reason: str
@@ -200,17 +183,10 @@ def plan_allocation(
     nodes: list[Node],
     in_flight: set[str],
 ) -> list[AllocAction]:
-    """Decide placement for every sandbox awaiting an upper.
+    """Decide placement for every sandbox awaiting an upper. One action each.
 
-    `in_flight` is the reservation set: PVs whose claimRef patch has been issued but whose
-    binding k8s has not yet observed. claimRef makes the WRITE exclusive, but two
-    decisions in one pass (or across a fast pair of passes) could still select the same
-    Available PV before either patch lands — so a chosen PV is withheld from every later
-    choice. The shell owns the set's TTL: a crash mid-decision must not strand a PV as
-    permanently 'in flight'.
-
-    Pure: returns actions, applies nothing. One action per pending sandbox.
-    """
+    `in_flight` are PVs already chosen but whose binding k8s has not observed yet; they
+    still read Available, so without withholding them a later pass double-books them."""
     actions: list[AllocAction] = []
     taken: set[str] = set(in_flight)
 
@@ -239,12 +215,8 @@ def plan_allocation(
 
 
 def plan_reclaim(pvs: list[PoolPv]) -> list[AllocAction]:
-    """Released PVs (their PVC is gone) go back to the pool by clearing claimRef.
-
-    A Released PV still names its late PVC in claimRef, and k8s will NOT rebind it while
-    that dangling reference stands — so without this the pool silently stops recycling
-    and every wake falls through to a fresh empty upper.
-    """
+    """Released PVs go back to the pool. k8s will not rebind one while its claimRef still
+    names the late PVC, so skipping this silently stops all recycling."""
     return [
         ReleasePv(pv=pv.name, reason="PVC gone — return to the pool")
         for pv in pvs

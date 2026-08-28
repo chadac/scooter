@@ -265,11 +265,6 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     },
 
     async resume(ref: SandboxRef): Promise<SandboxRef> {
-      // The overlay upper comes from this Sandbox's volumeClaimTemplate, which never
-      // changes and is never named by us — so there is no pool claim to go stale while
-      // the sandbox sleeps, and nothing to heal before waking. Placement of a WARM volume
-      // (if any) is the warm-store-controller's job, done by pre-binding the PVC this vct
-      // adopts. See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
       await setOperatingMode(ref, "Running");
       return ref;
     },

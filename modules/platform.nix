@@ -918,10 +918,6 @@ in
                   # the stable ordinal name (agent-host-<n>).
                   { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
-                  # NOTE: no WARM_STORE_POOL flag. The agent-host does not claim pool
-                  # volumes any more — it always attaches the scooter-rw vct, and the
-                  # warm-store-controller places a warm PV by pre-binding the PVC that vct
-                  # adopts. See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
                   # imagePullPolicy for the per-conversation sandbox pods — mirror the
                   # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always
                   # for a registry). Without this the provisioner defaults to "Always",

@@ -1,8 +1,4 @@
-"""Tier 1 — in-flight (sandbox ↔ PV) reservations (no cluster, fake clock).
-
-A reservation is a PAIR, and both directions are enforced: one PV never goes to two
-sandboxes, and one sandbox never holds two PVs.
-"""
+"""Tier 1 — in-flight (sandbox ↔ PV) reservations (no cluster, fake clock)."""
 
 import threading
 
@@ -38,8 +34,7 @@ def test_a_claim_records_BOTH_directions():
 
 
 def test_ONE_PV_ONE_SANDBOX_a_second_sandbox_is_refused():
-    # Two sandboxes on one overlay upper is store corruption; RWO does not prevent a
-    # same-node double-mount, so this is the guard that does.
+    # RWO does not stop a same-node double-mount; two uppers on one disk is corruption.
     r = res()
     r.claim("pv-a", "conv-1")
     with pytest.raises(AlreadyClaimed, match="already claimed by sandbox 'conv-1'"):
@@ -47,8 +42,7 @@ def test_ONE_PV_ONE_SANDBOX_a_second_sandbox_is_refused():
 
 
 def test_ONE_SANDBOX_ONE_PV_a_second_volume_is_refused():
-    # The first PV would be stranded: claimRef'd to a PVC nobody creates, withheld from
-    # the pool until its TTL lapses.
+    # The first PV would strand: claimRef'd to a PVC nobody creates.
     r = res()
     r.claim("pv-a", "conv-1")
     with pytest.raises(AlreadyClaimed, match="already holds 'pv-a'"):
@@ -56,8 +50,7 @@ def test_ONE_SANDBOX_ONE_PV_a_second_volume_is_refused():
 
 
 def test_re_claiming_the_SAME_pair_is_idempotent_and_refreshes():
-    # The only way to extend a hold — and only a caller that can name the pair it already
-    # owns can do it. A sandbox we keep choosing must not expire mid-flight.
+    # The only way to extend a hold, and only by naming the pair you already own.
     clock = FakeClock()
     r = res(clock=clock)
     r.claim("pv-a", "conv-1")
@@ -86,8 +79,7 @@ def test_a_released_sandbox_can_take_a_DIFFERENT_pv():
 # --- expiry ----------------------------------------------------------------
 
 def test_THE_LEAK_GUARD_a_reservation_expires():
-    # A controller dying between claim and observe would otherwise strand this PV as
-    # permanently in-flight: never allocated, never reclaimed, invisible to the pool.
+    # A controller dying mid-decision would otherwise strand this PV forever.
     clock = FakeClock()
     r = res(clock=clock)
     r.claim("pv-a", "conv-1")
@@ -152,8 +144,7 @@ def test_release_rolls_back_a_failed_reservation():
 
 
 def test_release_stays_IDEMPOTENT():
-    # Deliberate asymmetry with claim(): the loop calls release for every realised PVC on
-    # every pass, so "already released" is the steady state, not an error.
+    # The loop calls this every pass, so "already released" is the steady state.
     r = res()
     r.claim("pv-a", "conv-1")
     r.release("pv-a")

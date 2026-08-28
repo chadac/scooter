@@ -58,31 +58,23 @@ def reconcile_once(k8s, cfg: PoolConfig, reservations=None) -> list[tuple[str, s
 
 
 def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
-    """Hand warm PVs to Sandboxes still waiting for their overlay upper, and recycle PVs
-    whose PVC is gone.
+    """Hand warm PVs to Sandboxes awaiting an upper; recycle PVs whose PVC is gone.
 
-    Failure is ALWAYS safe here: a sandbox we do not place simply gets a fresh empty upper
-    from its vct. So a per-action error is logged and skipped, never raised — the pool is
-    an optimization and must never be able to block a conversation from starting."""
+    Every failure is safe: an unplaced sandbox gets a fresh upper from its vct. So errors
+    are logged and skipped, never raised — the pool must never block a conversation."""
     results: list[tuple[str, str]] = []
     try:
-        # Nothing to place -> only reclaim needs the pool, and reclaim is cheap to skip
-        # when there is nothing Released either. Check pending FIRST so an idle cluster
-        # does not list PVs and nodes every interval for no reason.
+        # pending FIRST so an idle cluster does not list PVs and nodes every interval.
         pending = k8s.list_pending_uppers()
-        # Reclaim must see EVERY PV (any of them may be Released), so this one is
-        # materialised. Placement below consumes it already sorted MRU-first, so the
-        # first usable candidate is also the best one.
+        # Materialised: reclaim must see EVERY PV. Already MRU-sorted for placement.
         pvs = list(k8s.iter_pool_pvs())
         nodes = k8s.list_nodes() if pending else []
     except Exception:  # noqa: BLE001 — a listing failure must not stall the pass
         logger.exception("PV placement: listing failed; sandboxes fall back to their vct")
         return results
 
-    # DROP HOLDS FOR REALISED PVCs. Once the PVC exists the PV carries its own claimRef,
-    # which excludes it from selection far more reliably than our cache — so the in-process
-    # hold has done its job and must be released. Without this a hold lingers until its TTL
-    # and needlessly withholds a volume that is already correctly bound.
+    # Once the PVC exists the PV's own claimRef excludes it, so the local hold is done.
+    # Without this it lingers until the TTL, withholding an already-bound volume.
     still_pending = {w.pvc_name for w in pending}
     for pv_ in pvs:
         if pv_.claim_ref and pv_.claim_ref not in still_pending:
@@ -103,25 +95,19 @@ def _place_volumes(k8s, reservations) -> list[tuple[str, str]]:
 
     for a in plan_allocation(pending, pvs, nodes, reservations.in_flight_reservations()):
         if isinstance(a, LetVctProvision):
-            # Not a failure — the designed cold-pool path. Logged so a pool that is never
-            # placing anything is VISIBLE rather than quietly useless (the whole point of
-            # the RBAC incident: a safe degrade with no signal hides a broken pool).
+            # Not a failure — the cold-pool path. Logged so a pool that never places
+            # anything is visible; a safe degrade with no signal hides a broken pool.
             logger.info("no warm PV placed; the vct will provision", extra={"sandbox": a.sandbox, "reason": a.reason})
             results.append((a.sandbox, "vct-provision"))
             continue
         if isinstance(a, ReservePv):
-            # TAKE THE PV ATOMICALLY, and only write if we won. claim() is test-and-set
-            # under one lock, so it is the single point that decides who owns this volume
-            # — no two callers can both pass and then both patch claimRef. Holding before
-            # the write also means a half-applied reserve (claimRef set, PVC create
-            # failed) still withholds the PV; the TTL bounds it if we never release.
+            # Only write if we won the claim. Taking the hold BEFORE the write means a
+            # half-applied reserve still withholds the PV.
             try:
                 reservations.claim(a.pv, a.sandbox)
             except AlreadyClaimed as exc:
-                # The planner is supposed to prevent this (it withholds in-flight PVs and
-                # emits one action per sandbox), so reaching here means the two disagree.
-                # Log it as the anomaly it is — but still degrade to the vct rather than
-                # failing the conversation.
+                # The planner should have prevented this, so it means the two disagree —
+                # log it as an anomaly, but still degrade rather than fail the conversation.
                 logger.warning(
                     "reservation conflict; the vct will provision",
                     extra={"pv": a.pv, "sandbox": a.sandbox, "conflict": str(exc)},

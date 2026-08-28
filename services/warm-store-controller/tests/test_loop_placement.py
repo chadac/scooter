@@ -1,9 +1,6 @@
 """Tier 1 — the PV-placement phase of the reconcile loop, against a fake k8s.
 
-Locks the behaviours that keep the pool an OPTIMIZATION rather than a dependency: every
-failure path still lets the sandbox's vct provision, a half-applied reservation rolls
-back, and nothing is ever double-booked.
-"""
+Locks the behaviours keeping the pool an optimization, not a dependency."""
 
 from warm_store_controller.allocate import Node, PendingSandbox, PoolPv
 from warm_store_controller.loop import reconcile_once
@@ -166,8 +163,7 @@ def test_placement_consumes_the_pool_in_the_order_the_shell_yields_it():
 
 
 def test_a_pv_ALREADY_claimed_in_flight_is_not_re_written():
-    # claim() is the single gate: if another caller holds the PV, we do not patch claimRef
-    # on it — the sandbox falls back to its vct instead of racing for a volume.
+    # claim() is the gate: a PV held elsewhere is never patched, we fall back to the vct.
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
     res.claim("warm-1", "conv-other")  # somebody else got there first
@@ -177,9 +173,8 @@ def test_a_pv_ALREADY_claimed_in_flight_is_not_re_written():
 
 
 def test_a_REALISED_pvc_drops_the_in_process_hold():
-    # Once the PVC exists the PV's own claimRef excludes it far more reliably than our
-    # cache, so the hold has done its job. Without this cleanup it lingers until the TTL
-    # and needlessly withholds a volume that is already correctly bound.
+    # The PV's own claimRef now excludes it, so the hold is done; without this cleanup it
+    # lingers until the TTL, withholding an already-bound volume.
     k8s = FakeK8s(pvs=[pv("warm-1")], pending=[want("conv-a")])
     res = Reservations()
     reconcile_once(k8s, CFG, res)

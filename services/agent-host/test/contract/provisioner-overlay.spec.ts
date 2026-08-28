@@ -53,25 +53,12 @@ describe("sandboxManifest overlay-store wiring", () => {
 });
 
 describe("sandboxManifest overlay upper — ONE uniform shape, always the vct", () => {
-  // The agent-host does not place warm volumes. It always emits the scooter-rw vct and
-  // NEVER a named pool volume, so every Sandbox has the same shape.
-  //
-  // Why this matters (the incident): a vct is a GENERATOR, not a fallback. Pairing one
-  // with a same-named volume does not error — the vct SILENTLY WINS, the pod mounts the
-  // vct's PVC, and the pooled volume is orphaned Pending while still labelled claimed-by.
-  // The old code avoided that by OMITTING the vct whenever it claimed a pool PVC, which
-  // left pool-born conversations with no fallback at all. spec.volumeClaimTemplates is
-  // IMMUTABLE (a CEL rule on the CRD), so that shape was frozen at birth and the escape
-  // hatch could never be added back: lose the claim and the conversation Pends forever
-  // (conv-toeurt 98 min, conv-yo5q4c 12 min).
-  //
-  // Warm placement now happens at the PV<->PVC binding layer: the warm-store-controller
-  // pre-binds the PVC that this vct ADOPTS. See todo/draft/WARM_STORE_PV_OWNERSHIP.md.
+  // A vct is a GENERATOR, not a fallback: paired with a same-named volume it silently
+  // wins and orphans the pooled one. One shape avoids that. PR #403.
 
   it("ALWAYS emits the scooter-rw vct and NEVER a named pool volume", () => {
     const m = render({ overlayStore: true });
     expect(m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw")).toBeDefined();
-    // No named volume => nothing for the pool to strand, and nothing to heal on wake.
     expect((m.spec.podTemplate.spec.volumes ?? []).find((v) => v.name === "scooter-rw")).toBeUndefined();
   });
 

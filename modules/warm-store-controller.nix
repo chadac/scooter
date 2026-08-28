@@ -100,9 +100,8 @@ in
   config = lib.mkIf wcfg.enable {
     kubernetes.resources = {
       # --- the pool StorageClass (Retain) ---------------------------------
-      # WaitForFirstConsumer matches the default class: the PV is provisioned where the pod
-      # actually lands, and its nodeAffinity then records that topology — which is exactly
-      # what the controller's placement predicate reads back when deciding reuse.
+      # WaitForFirstConsumer: the PV is provisioned where the pod lands, and its
+      # nodeAffinity records that topology — what the placement predicate reads back.
       storageClasses = lib.mkIf (wcfg.storageProvisioner != null) {
         ${wcfg.storageClass} = {
           metadata.name = wcfg.storageClass;
@@ -131,17 +130,14 @@ in
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
         ];
       };
-      # PVs and Nodes are CLUSTER-scoped — a namespaced Role cannot grant them, so PV
-      # placement needs its own ClusterRole. Kept minimal and separate from the namespaced
-      # Role above so the blast radius of each is obvious.
+      # PVs and Nodes are CLUSTER-scoped, so the namespaced Role above cannot grant them.
+      # Kept separate and minimal so each blast radius is obvious.
       clusterRoles.warm-store-controller = {
         metadata.name = "warm-store-controller";
         rules = [
-          # Pool PVs: list/watch to see the pool, patch to set/clear claimRef (the
-          # reservation), update to manage the finalizer that makes them ours exclusively.
+          # patch = set/clear claimRef (the reservation); update = the ownership finalizer.
           { apiGroups = [ "" ]; resources = [ "persistentvolumes" ]; verbs = [ "get" "list" "watch" "patch" "update" ]; }
-          # Nodes: READ-ONLY. The placement predicate matches a PV's nodeAffinity against
-          # node labels, and must skip cordoned nodes (a PV pinned to one is unusable).
+          # Nodes: READ-ONLY — the predicate matches PV nodeAffinity against node labels.
           { apiGroups = [ "" ]; resources = [ "nodes" ]; verbs = [ "get" "list" "watch" ]; }
         ];
       };
