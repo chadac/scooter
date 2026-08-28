@@ -190,7 +190,8 @@ function useStickToBottom() {
     const CHASE_MAX_FRAMES = 120; // ~2s @ 60fps — a hard stop, not the common path
     const CHASE_STABLE_FRAMES = 3; // scrollHeight unchanged this many frames → settled
     const chase = () => {
-      if (chaseFrame !== null) cancelAnimationFrame(chaseFrame);
+      // Don't restart a running chase; it self-extends. Why re-arming thrashes rAF: PR #402.
+      if (chaseFrame !== null) return;
       let frames = 0;
       let stableFrames = 0;
       let lastHeight = -1;
@@ -256,7 +257,15 @@ function useStickToBottom() {
       pin(); // synchronous follow (see the ResizeObserver note) + the chase tail
       chase();
     });
-    mo.observe(el, { childList: true, subtree: true });
+    // Observe only new-message mounts, not the whole subtree. Why subtree:true janks: PR #402.
+    const messageGroup = el.querySelector<HTMLElement>(
+      '[data-slot="aui_message-group"]',
+    );
+    if (messageGroup) {
+      mo.observe(messageGroup, { childList: true, subtree: false });
+    } else {
+      mo.observe(el, { childList: true, subtree: true }); // group not mounted yet — fall back
+    }
 
     // Land at the tail on first paint + chase the async history replay's late layout.
     chase();
