@@ -18,9 +18,16 @@ sanitized->original map so the name Bedrock echoes back in its RESPONSE is resto
 the real name before goose dispatches it to MCP (else the tool wouldn't be found).
 toolResult blocks pair by tool_use_id (not name), so they need no change.
 
+`_` is ALLOWED by the target regex, so it must pass through as itself rather than be
+treated as a separator — otherwise a legitimate `ext__tool` name collapses to `ext_tool`
+and the sanitized name no longer round-trips. (This patch's own
+test_bedrock_tool_name_valid_is_unchanged asserts exactly that; it never ran because the
+patch was wired through `cargoPatches`, which buildRustPackage silently drops for a
+`finalAttrs` package — see the flake comment on `agent`.)
+
 Upstream note: the analogous OpenAI Responses formatter already sanitizes function-call
 names (block/goose#10344); the Bedrock formatter was missed. Carry this as a downstream
-overrideAttrs/cargoPatches patch until an upstream-fixed goose is pinned.
+overrideAttrs patch until an upstream-fixed goose is pinned.
 
 --- a/crates/goose/src/providers/formats/bedrock.rs
 +++ b/crates/goose/src/providers/formats/bedrock.rs
@@ -49,7 +56,7 @@ overrideAttrs/cargoPatches patch until an upstream-fixed goose is pinned.
 +    let mut out = String::with_capacity(name.len());
 +    let mut last_us = false;
 +    for c in name.chars() {
-+        if c.is_ascii_alphanumeric() || c == '-' {
++        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
 +            out.push(c);
 +            last_us = false;
 +        } else if !last_us {

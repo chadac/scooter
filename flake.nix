@@ -168,8 +168,17 @@
           # Maps it to goose's existing Thinking/RedactedThinking variants (in) and
           # replays signed reasoning back (out), which Bedrock requires unmodified in
           # multi-turn. See pkgs/goose/bedrock-reasoning-content.patch.
+          # NOTE: these go in `patches`, NOT `cargoPatches`. nixpkgs' goose-cli is a
+          # `buildRustPackage (finalAttrs: ...)`, and buildRustPackage computes
+          # `patches = cargoPatches ++ patches` from the ORIGINAL args — so a
+          # cargoPatches entry added via overrideAttrs never reaches `patches` and is
+          # silently DROPPED (`nix eval .#agent.patches` -> []). The build still
+          # succeeds and the binary still differs from stock (other override effects),
+          # so this fails silently: bedrock-tool-name-sanitize.patch had been inert
+          # this whole time, and the reasoning fix appeared to deploy while Grok kept
+          # failing with the exact error it was supposed to fix.
           agent = pkgs.goose-cli.overrideAttrs (old: {
-            cargoPatches = (old.cargoPatches or [ ]) ++ [
+            patches = (old.patches or [ ]) ++ [
               ./pkgs/goose/bedrock-tool-name-sanitize.patch
               ./pkgs/goose/bedrock-reasoning-content.patch
             ];
