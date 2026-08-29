@@ -161,9 +161,17 @@
           # cargoHash. Remove when an upstream-fixed goose is pinned (the OpenAI side is
           # already fixed in block/goose#10344; the Bedrock side was missed). See
           # pkgs/goose/bedrock-tool-name-sanitize.patch + todo/GOOSE_BEDROCK_PATCH.md.
+          #
+          # SECOND Bedrock patch: goose's Bedrock formatter has no match arm for
+          # `reasoningContent`, so a reasoning model — xAI Grok reasons by DEFAULT —
+          # fails EVERY turn with "Unsupported content block type from Bedrock".
+          # Maps it to goose's existing Thinking/RedactedThinking variants (in) and
+          # replays signed reasoning back (out), which Bedrock requires unmodified in
+          # multi-turn. See pkgs/goose/bedrock-reasoning-content.patch.
           agent = pkgs.goose-cli.overrideAttrs (old: {
             cargoPatches = (old.cargoPatches or [ ]) ++ [
               ./pkgs/goose/bedrock-tool-name-sanitize.patch
+              ./pkgs/goose/bedrock-reasoning-content.patch
             ];
           });
 
