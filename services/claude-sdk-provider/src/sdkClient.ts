@@ -141,6 +141,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
   const terminalCreatedCbs = new Set<(id: string, command: string, args: string[]) => void>();
   let permissionHandler: ((req: PermissionRequest) => Promise<PermissionAnswer>) | undefined;
+  /** Monotonic suffix so each permission request gets its own id (see canUseTool). */
+  let permissionSeq = 0;
 
   let sessionId = "";
   let active: SdkQuery | undefined; // the in-flight query() for cancel()
@@ -249,9 +251,15 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
         };
       }
       if (!permissionHandler) return { behavior: "allow", updatedInput: input };
+      // UNIQUE per request. The bridge keys pendingPermissions by toolCallId, so reusing
+      // the tool NAME made two concurrent calls to the same tool collide: the second
+      // `set` evicted the first, whose promise then never resolved — the tool call hung
+      // with no TOOL_CALL_RESULT and the agent reported it as "rejected". The SDK does
+      // not hand us its tool_use id here, so mint one. PR #413.
+      const permissionId = `perm-${toolName}-${++permissionSeq}`;
       const ans = await permissionHandler({
         sessionId,
-        toolCallId: toolName,
+        toolCallId: permissionId,
         title: toolName,
         options: [
           { optionId: "allow", name: "Allow", kind: "allow_once" },
