@@ -379,8 +379,9 @@ check-lockfiles:
     npm install --package-lock-only --workspaces --include-workspace-root
     npm install --package-lock-only --prefix ui --workspaces=false
     npm install --package-lock-only --prefix services/agent-host --workspaces=false
+    npm install --package-lock-only --prefix services/byoc-controller --workspaces=false
     npm install --package-lock-only --prefix lib/ts/scooter-schema --workspaces=false
-    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json lib/ts/scooter-schema/package-lock.json \
+    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json services/byoc-controller/package-lock.json lib/ts/scooter-schema/package-lock.json \
       || (echo "❌ lockfile drift: a package.json changed without regenerating the lockfile. Run 'nix develop -c just check-lockfiles' and commit the result." && exit 1)
     @echo "✅ lockfiles are in sync with package.json"
 
@@ -405,6 +406,7 @@ check-npm-hashes:
     }
     check ui/package-lock.json ui/default.nix
     check services/agent-host/package-lock.json services/agent-host/default.nix
+    check services/byoc-controller/package-lock.json services/byoc-controller/default.nix
     check lib/ts/scooter-schema/package-lock.json lib/ts/scooter-schema/default.nix
     [ "$fail" -eq 0 ] && echo "✅ npmDepsHash values match their lockfiles"
     exit "$fail"

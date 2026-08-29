@@ -250,7 +250,7 @@
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
           # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
-          byocController = pkgs.callPackage ./services/byoc-controller { };
+          byocController = pkgs.callPackage ./services/byoc-controller { inherit scooterSchemaJs; };
 
           # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
