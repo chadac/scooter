@@ -95,13 +95,17 @@ let
   modelsJson = mEnvVal "AGENT_MODELS_JSON";
   gooseModel = mEnvVal "GOOSE_MODEL";
   parsedModels = if modelsJson == "" then [ ] else builtins.fromJSON modelsJson;
+  grokEntry = builtins.filter (m: m.id == "us.xai.grok-4.6") parsedModels;
   sonnetEntry = builtins.filter (m: m.id == "us.anthropic.claude-sonnet-4-6") parsedModels;
   mdProblems =
     (if parsedModels != [ ] then [ ] else [ "host.env.AGENT_MODELS_JSON (model catalog not rendered)" ])
-    ++ (if gooseModel == "us.anthropic.claude-sonnet-4-6" then [ ]
-        else [ "GOOSE_MODEL should be the default (sonnet), got '${gooseModel}'" ])
-    ++ (if sonnetEntry != [ ] && (builtins.head sonnetEntry).default && (builtins.head sonnetEntry).hint != "" then [ ]
-        else [ "AGENT_MODELS_JSON: sonnet should be default:true with a hint" ]);
+    ++ (if gooseModel == "us.xai.grok-4.6" then [ ]
+        else [ "GOOSE_MODEL should be the default (grok), got '${gooseModel}'" ])
+    ++ (if grokEntry != [ ] && (builtins.head grokEntry).default && (builtins.head grokEntry).hint != "" then [ ]
+        else [ "AGENT_MODELS_JSON: grok should be default:true with a hint" ])
+    # A NON-default entry must still render (with its hint) and must NOT be marked default.
+    ++ (if sonnetEntry != [ ] && !(builtins.head sonnetEntry).default && (builtins.head sonnetEntry).hint != "" then [ ]
+        else [ "AGENT_MODELS_JSON: sonnet should render as a non-default entry with a hint" ]);
 
   # broker.aws (enabled in the example) must stamp a checksum/aws-accounts annotation
   # on the broker pod template, so editing an account rolls the pod (a ConfigMap

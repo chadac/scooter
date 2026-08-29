@@ -79,3 +79,43 @@ describe("pricing — computeCost", () => {
     expect(c.priced).toBe(true);
   });
 });
+
+describe("pricing — Grok 4.6 (the default Bedrock model)", () => {
+  // The rates the example/module ship for `us.xai.grok-4.6` (Bedrock `us.` Geo CRIS
+  // tier). Bedrock prompt caching on Grok is IMPLICIT: cache reads bill, cache
+  // WRITES do not — so the entry carries no cachedWritePerMillion.
+  const GROK: PriceTable = {
+    "us.xai.grok-4.6": {
+      inputPerMillion: 2.2,
+      outputPerMillion: 6.6,
+      cachedReadPerMillion: 0.55,
+    },
+  };
+
+  it("prices input, output and cached reads at the Bedrock rates", () => {
+    // 1M in @ $2.20 + 1M out @ $6.60 + 1M cache-read @ $0.55 = $9.35
+    const c = computeCost(
+      "us.xai.grok-4.6",
+      { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedReadTokens: 1_000_000 },
+      GROK,
+    );
+    expect(c.priced).toBe(true);
+    expect(c.inputCost).toBeCloseTo(2.2, 6);
+    expect(c.outputCost).toBeCloseTo(6.6, 6);
+    expect(c.cachedReadCost).toBeCloseTo(0.55, 6);
+    expect(c.totalCost).toBeCloseTo(9.35, 6);
+  });
+
+  it("bills no cache-write (Bedrock caching on Grok is implicit)", () => {
+    const c = computeCost("us.xai.grok-4.6", { cachedWriteTokens: 1_000_000 }, GROK);
+    expect(c.cachedWriteCost).toBe(0);
+    expect(c.totalCost).toBe(0);
+  });
+
+  it("is cheaper per output token than the Anthropic models it defaults over", () => {
+    const usage = { inputTokens: 100_000, outputTokens: 100_000 };
+    const grok = computeCost("us.xai.grok-4.6", usage, GROK).totalCost;
+    const opus = computeCost("claude-opus", usage, TABLE).totalCost;
+    expect(grok).toBeLessThan(opus);
+  });
+});

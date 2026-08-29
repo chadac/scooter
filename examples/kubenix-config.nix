@@ -45,12 +45,15 @@
       # `hint` guides the agent's own model choice (surfaced by the list_models MCP tool).
       availableModels = {
         goose = {
-          "us.anthropic.claude-sonnet-4-6" = {
+          "us.xai.grok-4.6" = {
             default = true;
-            hint = "Fast + cheap. Use for simple edits, config/CI fixes, straightforward PRs.";
+            hint = "Cheapest per token (~$2.20/$6.60 per 1M in/out) with a 500K context. Default workhorse: coding, long-running agentic tasks, large-context reads.";
+          };
+          "us.anthropic.claude-sonnet-4-6" = {
+            hint = "Mid-cost ($3/$15). Prefer over Grok when the task benefits from prompt caching — long conversations re-reading the same context bill cached input at a tenth of fresh.";
           };
           "us.anthropic.claude-opus-4-8" = {
-            hint = "Slow + powerful. Escalate for architecture, novel implementations, hard debugging.";
+            hint = "Slow + expensive ($15/$75). Escalate only for architecture, novel implementations, hard debugging.";
           };
         };
         # The user's own container runs API ids, never Bedrock ids.
@@ -184,11 +187,20 @@
       enable = true;
       environment = "example";
       env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://otel-collector.observability:4317";
-      pricing."us.anthropic.claude-sonnet-4-6" = {
-        inputPerMillion = 3.0;
-        outputPerMillion = 15.0;
-        cachedReadPerMillion = 0.3;
-        cachedWritePerMillion = 3.75;
+      pricing = {
+        # Grok 4.6 (us. Geo CRIS tier). No cache-WRITE charge on Bedrock: caching is
+        # implicit, so only fresh input, output, and cache reads bill.
+        "us.xai.grok-4.6" = {
+          inputPerMillion = 2.20;
+          outputPerMillion = 6.60;
+          cachedReadPerMillion = 0.55;
+        };
+        "us.anthropic.claude-sonnet-4-6" = {
+          inputPerMillion = 3.0;
+          outputPerMillion = 15.0;
+          cachedReadPerMillion = 0.3;
+          cachedWritePerMillion = 3.75;
+        };
       };
     };
 

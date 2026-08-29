@@ -330,7 +330,8 @@ in
         example = literalExpression ''
           {
             goose = {
-              "us.anthropic.claude-sonnet-4-6" = { default = true; hint = "Fast + cheap."; };
+              "us.xai.grok-4.6" = { default = true; hint = "Cheapest + 500K context."; };
+              "us.anthropic.claude-sonnet-4-6" = { hint = "Mid-cost; prompt caching."; };
               "us.anthropic.claude-opus-4-8" = { hint = "Slow + powerful."; };
             };
             byoc."claude-sonnet-4-5" = { default = true; hint = "The user's own subscription."; };
@@ -625,6 +626,7 @@ in
             {
               "us.anthropic.claude-opus-4-7" = { inputPerMillion = 15.0; outputPerMillion = 75.0; cachedReadPerMillion = 1.5; };
               "us.anthropic.claude-sonnet-4-6" = { inputPerMillion = 3.0; outputPerMillion = 15.0; };
+              "us.xai.grok-4.6" = { inputPerMillion = 2.20; outputPerMillion = 6.60; cachedReadPerMillion = 0.55; };
             }
           '';
           description = ''
