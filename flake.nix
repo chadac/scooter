@@ -151,35 +151,29 @@
           # The ACP agent the agent-host runs (first target: Goose).
           # Runs OUTSIDE the sandbox. Provider-agnostic later; selected by attr.
           #
-          # DOWNSTREAM PATCH: sanitize Bedrock tool names to `[a-zA-Z0-9_-]+`. Goose
-          # leaks an MCP tool's display name ("<Extension>: <Title Case>") into the
-          # Bedrock converse request's toolUse.name on session resume, which Bedrock
-          # rejects (ValidationException) — permanently wedging the conversation. The
-          # patch sanitizes at the 3 outbound sites (tool def + both toolUse blocks)
-          # with a lossless map so the returned name restores for MCP dispatch. Applied
-          # via cargoPatches so it slots into the vendored-deps build without touching
-          # cargoHash. Remove when an upstream-fixed goose is pinned (the OpenAI side is
-          # already fixed in block/goose#10344; the Bedrock side was missed). See
-          # pkgs/goose/bedrock-tool-name-sanitize.patch + todo/GOOSE_BEDROCK_PATCH.md.
-          #
-          # SECOND Bedrock patch: goose's Bedrock formatter has no match arm for
+          # DOWNSTREAM PATCH: goose's Bedrock formatter has no match arm for
           # `reasoningContent`, so a reasoning model — xAI Grok reasons by DEFAULT —
-          # fails EVERY turn with "Unsupported content block type from Bedrock".
-          # Maps it to goose's existing Thinking/RedactedThinking variants (in) and
-          # replays signed reasoning back (out), which Bedrock requires unmodified in
-          # multi-turn. See pkgs/goose/bedrock-reasoning-content.patch.
-          # NOTE: these go in `patches`, NOT `cargoPatches`. nixpkgs' goose-cli is a
-          # `buildRustPackage (finalAttrs: ...)`, and buildRustPackage computes
-          # `patches = cargoPatches ++ patches` from the ORIGINAL args — so a
-          # cargoPatches entry added via overrideAttrs never reaches `patches` and is
-          # silently DROPPED (`nix eval .#agent.patches` -> []). The build still
-          # succeeds and the binary still differs from stock (other override effects),
-          # so this fails silently: bedrock-tool-name-sanitize.patch had been inert
-          # this whole time, and the reasoning fix appeared to deploy while Grok kept
-          # failing with the exact error it was supposed to fix.
+          # fails EVERY turn with "Unsupported content block type from Bedrock". On
+          # tool-calling turns Grok returns reasoningContent -> redactedContent
+          # (encrypted bytes), so this is not an edge case: it is every response.
+          # The patch maps it to goose's existing Thinking/RedactedThinking variants
+          # (inbound) and replays signed reasoning back (outbound), which Bedrock
+          # requires unmodified in a multi-turn conversation. Drop it when an
+          # upstream-fixed goose is pinned — block/goose#6192 fixed the analogous
+          # OPENAI-compatible formatter; the Bedrock one was missed and still carries
+          # a comment asserting "Bedrock doesn't use this format".
+          # See pkgs/goose/bedrock-reasoning-content.patch.
+          #
           agent = pkgs.goose-cli.overrideAttrs (old: {
+            # `patches`, NOT `cargoPatches`. nixpkgs' goose-cli is a
+            # `buildRustPackage (finalAttrs: ...)`, and buildRustPackage computes
+            # `patches = cargoPatches ++ patches` from the ORIGINAL args — so a
+            # cargoPatches entry added via overrideAttrs never reaches `patches` and is
+            # silently DROPPED (`nix eval .#agent.patches` -> []). The build still
+            # succeeds and the binary still differs from stock (other override effects),
+            # so it fails invisibly: the reasoning fix below appeared to deploy for a
+            # full release while Grok kept failing with the exact error it fixes.
             patches = (old.patches or [ ]) ++ [
-              ./pkgs/goose/bedrock-tool-name-sanitize.patch
               ./pkgs/goose/bedrock-reasoning-content.patch
             ];
           });
