@@ -60,17 +60,6 @@ class PendingMessages(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
 
 
-class RemoteAgents(Base):
-    __tablename__ = 'remote_agents'
-    __table_args__ = (
-        PrimaryKeyConstraint('owner', name='remote_agents_pkey'),
-    )
-
-    owner: Mapped[str] = mapped_column(Text, primary_key=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'offline'::text"))
-    last_seen: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
-
-
 class ResourceLinks(Base):
     __tablename__ = 'resource_links'
     __table_args__ = (

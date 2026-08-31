@@ -325,6 +325,22 @@ function webhooksResourceDsn(): string {
   return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
 }
 
+/** DSN for the BYOC database. agent-host writes byoc.remote_agents (the liveness badge)
+ *  alongside byoc-controller (which owns session_id) — one table, two writers, rather than
+ *  the two unsynchronised copies this replaced. Deliberately NOT derived from the webhooks
+ *  DSN: this must not disappear when webhooks is disabled. PR #423. */
+function byocResourceDsn(): string {
+  const explicit = process.env.BYOC_DB_DSN;
+  if (explicit) return explicit;
+  const pw = process.env.BYOC_DB_PASSWORD;
+  if (!pw) return "";
+  const host = process.env.BYOC_DB_HOST ?? "agent-shared-db";
+  const port = process.env.BYOC_DB_PORT ?? "5432";
+  const name = process.env.BYOC_DB_NAME ?? "byoc";
+  const user = process.env.BYOC_DB_USER ?? "byoc";
+  return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
+}
+
 /** Parse an optional static id->email map from AUTH_SUB_EMAIL_MAP ("sub=email"
  *  pairs, comma or semicolon separated). Undefined when unset/empty. Used to seed
  *  identity email resolution for a known set of users (e.g. before the learned
@@ -522,7 +538,7 @@ export async function main(
   // DURABLE binding on the shared Postgres (same DSN as the identity store): persist an owner's
   // online/offline so the "Connected" badge is correct across replicas + survives a restart (the
   // in-memory registry lives on one replica). Absent DSN → in-memory only (badge = local live conn).
-  const remoteAgentDsn = webhooksResourceDsn();
+  const remoteAgentDsn = byocResourceDsn();
   const remoteAgentStore =
     remoteAgentJoinSecret && remoteAgentDsn ? createPgRemoteAgentStore({ dsn: remoteAgentDsn }) : undefined;
   const remoteAgentRegistry = remoteAgentJoinSecret

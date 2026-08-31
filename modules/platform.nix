@@ -1134,7 +1134,18 @@ in
                   { name = "WEBHOOKS_DB_NAME"; value = "webhooks"; }
                   { name = "WEBHOOKS_DB_USER"; value = "webhooks"; }
                   { name = "WEBHOOKS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-webhooks"; key = "password"; }; }
-                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; });
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; })
+                # The BYOC database: agent-host writes byoc.remote_agents (the liveness
+                # badge) alongside byoc-controller, which owns session_id. Gated on BYOC
+                # being enabled — NOT on webhooks: agent-host's own tables must not vanish
+                # because an unrelated service is off (the failure this whole chain fixes).
+                ++ lib.optionals cfg.byoc.enable ([
+                  { name = "BYOC_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "BYOC_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "BYOC_DB_NAME"; value = "byoc"; }
+                  { name = "BYOC_DB_USER"; value = "byoc"; }
+                  { name = "BYOC_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-byoc"; key = "password"; }; }
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "BYOC_DB_SSLMODE"; value = cfg.postgres.sslmode; });
                 volumeMounts = [
                   # Per-pod hot history (RWO volumeClaimTemplate).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }
