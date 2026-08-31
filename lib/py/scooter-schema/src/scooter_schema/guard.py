@@ -5,7 +5,7 @@ another database's tables. NOT generated.
 
 from __future__ import annotations
 
-DATABASES = ("webhooks", "scheduler", "broker", "byoc")
+DATABASES = ("webhooks", "scheduler", "broker", "byoc", "agent_host")
 
 
 def check_database(actual: str, expected: str) -> None:

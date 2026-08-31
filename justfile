@@ -466,7 +466,7 @@ check-image-coverage:
 # per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
 # computed from schema.sql. Each recipe spins its own EPHEMERAL local Postgres as
 # Atlas's dev database (scripts/atlas-dev.sh) so nothing is shared.
-db_envs := "webhooks scheduler broker byoc"
+db_envs := "webhooks scheduler broker byoc agent_host"
 
 # Regenerate the per-language ORM bindings (@scooter/schema, scooter_schema) from
 # lib/sql/<db>/schema.sql. Uses embedded pglite only — no server. Commit the result.

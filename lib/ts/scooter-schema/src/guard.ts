@@ -9,7 +9,7 @@
  */
 
 /** The database names this package models — the atlas envs under lib/sql. */
-export const DATABASES = ["webhooks", "scheduler", "broker", "byoc"] as const;
+export const DATABASES = ["webhooks", "scheduler", "broker", "byoc", "agent_host"] as const;
 export type Database = (typeof DATABASES)[number];
 
 /** Minimal shape of a node-postgres Pool/Client — just enough to run one query. */

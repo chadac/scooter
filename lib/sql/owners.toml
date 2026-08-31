@@ -56,3 +56,10 @@ owner = "byoc-controller"
 # byoc-controller owns session_id; agent-host writes the status/last_seen badge.
 remote_agents        = { writers = ["byoc-controller", "agent-host"], readers = [] }
 remote_agent_devices = { writers = ["byoc-controller"], readers = [] }
+
+[agent_host]
+owner = "agent-host"
+
+[agent_host.tables]
+# The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
+conversation_jobs = { writers = ["agent-host"], readers = [] }
