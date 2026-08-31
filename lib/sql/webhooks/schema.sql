@@ -49,8 +49,17 @@ CREATE TABLE "resource_links" (
   "source"          character varying NOT NULL,
   "resource_type"   character varying NOT NULL,
   "resource_id"     character varying NOT NULL,
+  -- agent-host writes these three; webhooks posts a bare link and they stay NULL.
+  -- Nullable so a webhooks-written row is still valid.
+  "url"             text NULL,
+  "title"           text NULL,
+  "ref"             jsonb NULL,
   "created_at"      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("id"),
+  -- GLOBAL, not per-conversation: webhooks' get_conversation_for_resource routes an
+  -- incoming Slack/GitHub/Jira event to THE conversation for a resource and reads with
+  -- scalar_one_or_none(), which raises on a second row. Scoping this per-conversation
+  -- would let one resource map to several conversations and break that routing.
   CONSTRAINT "resource_links_source_resource_type_resource_id_key" UNIQUE ("source", "resource_type", "resource_id")
 );
 

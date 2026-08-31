@@ -163,7 +163,30 @@ export function mirroredConversationStore(
     readEventsTail: local.readEventsTail
       ? (id, runs) => local.readEventsTail!(id, runs) : undefined,
     listJobs: local.listJobs ? (id) => local.listJobs!(id) : undefined,
-    listLinks: local.listLinks ? (id) => local.listLinks!(id) : undefined,
+    // Links answer "what is this conversation attached to?", so they come from the
+    // DURABLE store for the same reason listConversations does: LOCAL_STATE_PATH is an
+    // emptyDir, and after a rollout it is empty while the mirror still holds every link.
+    // Unioned with local, because the mirror write is async and coalesced — a just-added
+    // link must not blink out of the panel while it settles. Deduped on the same identity
+    // the file store writes under (url, else title), so a link in BOTH appears once.
+    listLinks:
+      local.listLinks || mirror.listLinks
+        ? async (id) => {
+            const [durable, cached] = await Promise.all([
+              Promise.resolve(mirror.listLinks?.(id) ?? []).catch((err) => {
+                // An unreadable mirror must degrade to local, never blank the panel.
+                log.errorWith("listLinks failed (serving local only)", err, { conversation_id: id });
+                return [] as ConversationLink[];
+              }),
+              Promise.resolve(local.listLinks?.(id) ?? []).catch(() => [] as ConversationLink[]),
+            ]);
+            const byKey = new Map<string, ConversationLink>();
+            for (const l of [...durable, ...cached]) {
+              byKey.set(`${l.source}|${l.resourceType}|${l.url ?? l.title ?? ""}`, l);
+            }
+            return [...byKey.values()];
+          }
+        : undefined,
     // LIST FROM THE DURABLE STORE, not the local cache. LOCAL_STATE_PATH is an emptyDir: after a
     // rollout it is EMPTY, so delegating here made every replica report zero conversations while
     // the mirror held the full history (measured on odin: 59 durable vs 0 local, all five replicas
