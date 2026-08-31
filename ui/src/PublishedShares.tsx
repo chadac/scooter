@@ -2,21 +2,10 @@
  * Published-shares panel (SCAFFOLD) — the static pages an agent published from
  * this conversation, each a stable /s/<uuid>/ link that persists past the session.
  *
- * ⚠️ PLACEHOLDER: the data source is not wired yet. Two options under discussion,
- * pending the broker `shares` subsystem (services/broker/broker/shares/) and the
- * upcoming declarative schema:
- *
- *   A. Auto-link on publish — the broker attaches each published share to the
- *      conversation via the existing autolink path, so shares already surface in
- *      <LinkedResources/> with a "share" source. If we go this way, this dedicated
- *      panel is unnecessary; delete it and add a SourceBadge for shares instead.
- *   B. Dedicated endpoint — agent-host proxies `GET /shares` (broker, owner-scoped
- *      by the conversation's SA identity) and exposes it to the UI as
- *      `loadShares(conversationId)`. This panel then polls it like LinkedResources.
- *
- * This component intentionally has NO wiring yet (renders null) so it compiles and
- * ships without affecting the app until we pick A or B. Replace `loadShares` with
- * the real client call and mount it in <RightPanel/>.
+ * ⚠️ PLACEHOLDER: the UI data source isn't wired yet, so this renders null and
+ * ships inert. Two options (reuse the autolink → <LinkedResources/>, or a dedicated
+ * agent-host `GET /shares` this panel polls) are weighed on PR #393. Replace
+ * `loadShares` with the real client call and mount in <RightPanel/> once picked.
  */
 
 import { useEffect, useState } from "react";

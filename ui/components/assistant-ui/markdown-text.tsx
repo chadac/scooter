@@ -17,15 +17,11 @@ import { cn } from "@/lib/utils";
 import { ShareEmbed, SHARE_EMBED_TOKEN, preprocessShareEmbeds } from "@/src/ShareEmbed";
 
 // A fenced ```scooter-embed block renders as a sandboxed iframe of a static share
-// (see ShareEmbed) instead of a code block.
-//
-// assistant-ui owns the fenced-code render path: it forces react-markdown's `pre`/`code`
-// to its own overrides and dispatches a block with a language to the SyntaxHighlighter
-// registered for that language in `componentsByLanguage`. A user `pre` override therefore
-// NEVER sees the fence — the hook is `componentsByLanguage`. One wrinkle: assistant-ui
-// derives the language via /language-(\w+)/, which stops at a hyphen, so it can't key on
-// "scooter-embed"; preprocessShareEmbeds normalises the authored fence to a hyphen-free
-// token (SHARE_EMBED_TOKEN) and we register the renderer under THAT token.
+// (see ShareEmbed), registered under `componentsByLanguage` — the only hook, since
+// assistant-ui owns the fenced-code render path and a `pre` override never sees the
+// fence. The token MUST be hyphen-free (assistant-ui keys language on /language-(\w+)/,
+// which stops at a hyphen), so preprocessShareEmbeds rewrites the authored fence to
+// SHARE_EMBED_TOKEN. Why this hook + rewrite: PR #393.
 
 // The renderer assistant-ui invokes for a `scooterembed` fence: the code body (the fence's
 // text) becomes the ShareEmbed spec; no code-chrome header.

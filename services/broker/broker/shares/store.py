@@ -6,20 +6,14 @@ snapshot of the bundle's files. The root URL serves the latest version; updating
 a share adds a new version and keeps the UUID. Backed by the shared broker
 Postgres (SQLAlchemy async), mirroring broker/registry/store.py.
 
-The tables (static_shares, static_share_versions) are declared in
-lib/sql/broker/schema.sql (source of truth), created by the db-migrator
-(atlas migrate apply), and consumed here via the generated scooter_schema.broker
-models — this store never issues schema DDL. Everything OUTSIDE this file talks
-to `ShareStore` through its dataclass API (Share / ShareVersion / ShareFile) and
-never touches a row. Two placeholder choices remain, both contained behind that API:
+Schema constraint: the tables (static_shares, static_share_versions) live in
+lib/sql/broker/schema.sql and are created by the db-migrator — this store issues
+no DDL, only reads/writes rows via the generated scooter_schema.broker models.
+Callers use the dataclass API (Share / ShareVersion / ShareFile), never a row.
 
-  * File bytes are stored inline as base64 in a JSON blob on Postgres. That is
-    fine for small bundles but the intended production backend is object storage
-    (S3/MinIO) with the row holding only a storage prefix + manifest. Swapping
-    that is a change to `_encode_files`/`_decode_files` + the version row, still
-    behind this same API.
-  * `owner` is the publishing conversation id (the broker has no human-user
-    identity yet — same limitation the module registry notes as #127).
+Two placeholders remain, both behind that API: inline base64 file bytes (intended
+backend: object storage) and `owner` = conversation id (no human identity yet, cf.
+#127). Rationale on PR #393.
 """
 
 from __future__ import annotations
@@ -32,10 +26,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-# Generated ORM models for the broker DB (lib/sql/broker/schema.sql -> scooter_schema).
-# Aliased to this store's private row names so the query helpers below are unchanged.
-# The tables are CREATED by the db-migrator (atlas migrate apply), never here — this
-# store only reads/writes rows through these models.
+# Generated ORM models (lib/sql/broker/schema.sql -> scooter_schema), aliased to this
+# store's private row names so the query helpers below read unchanged.
 from scooter_schema.broker import (
     StaticShares as _ShareRow,
     StaticShareVersions as _VersionRow,
