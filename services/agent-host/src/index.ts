@@ -35,6 +35,7 @@ import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
 import type { ConversationStore, ConversationLink } from "./session/manager.js";
 import { createPgLinkStore } from "./session/linkStore.js";
+import { createPgMetaStore } from "./session/metaStore.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
@@ -534,6 +535,7 @@ export async function main(
   // disk keep showing and get backfilled. Without a DSN we stay on files — the pg-less mode
   // must keep working.
   const sharedDsn = webhooksResourceDsn();
+  const agentHostDsn = agentHostResourceDsn();
   const linkStore = sharedDsn
     ? createPgLinkStore({
         dsn: sharedDsn,
@@ -544,23 +546,65 @@ export async function main(
     : undefined;
   hostLog.info("link store selected", { backend: linkStore ? "postgres" : "file" });
 
-  // Decorate rather than replace, so every existing store.addLink / store.listLinks
-  // caller (the panel, the list enrichment, the agent tools) moves without change.
-  // Delegate through the ORIGINAL for everything else: several file-store methods call
-  // their siblings via `this`, so they must keep resolving against the object they were
-  // defined on rather than this wrapper.
-  const store: ConversationStore = linkStore
-    ? new Proxy(fileStore, {
-        get(target, prop, receiver) {
-          if (prop === "addLink") {
-            return (id: SessionId, link: ConversationLink) => linkStore.addLink(id, link);
-          }
-          if (prop === "listLinks") return (id: SessionId) => linkStore.listLinks(id);
-          const value = Reflect.get(target, prop, receiver);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
+  // Conversation metadata (the sidebar list, and what hydrate rebuilds each conversation
+  // from). Postgres makes listing a QUERY instead of a per-conversation meta.json read,
+  // and takes the list off the emptyDir that every rollout wipes. Seeded once from the
+  // file store when the table is empty, so an existing deployment's history is there on
+  // the first boot after cutting over.
+  // The agent_host database, NOT the webhooks one: agent-host is the only writer, and
+  // webhooksResourceDsn() is gated on cfg.webhooks.enable — borrowing it would make the
+  // conversation list vanish whenever an unrelated service is turned off.
+  const metaStore = agentHostDsn
+    ? createPgMetaStore({
+        dsn: agentHostDsn,
+        legacy: fileStore.listConversations
+          ? { listConversations: () => fileStore.listConversations!() }
+          : undefined,
       })
-    : fileStore;
+    : undefined;
+  hostLog.info("conversation metadata store selected", { backend: metaStore ? "postgres" : "file" });
+
+  // Decorate rather than replace, so every existing caller (the panel, the list
+  // enrichment, hydrate, the agent tools) moves without change. Delegate through the
+  // ORIGINAL for everything else: several file-store methods call their siblings via
+  // `this`, so they must keep resolving against the object they were defined on rather
+  // than this wrapper.
+  //
+  // The event log stays on the file store — it is the one artifact that belongs there.
+  // saveMeta writes BOTH: Postgres is authoritative for the list, and the file copy keeps
+  // the mirror's per-conversation directory self-describing for recovery.
+  const overrides: Partial<ConversationStore> = {
+    ...(linkStore
+      ? {
+          addLink: (id: SessionId, link: ConversationLink) => linkStore.addLink(id, link),
+          listLinks: (id: SessionId) => linkStore.listLinks(id),
+        }
+      : {}),
+    ...(metaStore
+      ? {
+          saveMeta: async (meta) => {
+            await metaStore.saveMeta(meta);
+            await fileStore.saveMeta?.(meta);
+          },
+          listConversations: () => metaStore.listConversations(),
+          removeConversation: async (id: SessionId) => {
+            await metaStore.removeConversation(id);
+            await fileStore.removeConversation?.(id);
+          },
+        }
+      : {}),
+  };
+  const store: ConversationStore =
+    Object.keys(overrides).length > 0
+      ? new Proxy(fileStore, {
+          get(target, prop, receiver) {
+            const override = overrides[prop as keyof ConversationStore];
+            if (override) return override;
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        })
+      : fileStore;
   // Image/media assets (uploaded images) live alongside the event log on the
   // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const assets = createPvcAssetStore({
@@ -844,7 +888,7 @@ export async function main(
         updateJob: store.updateJob ? (id, job) => store.updateJob!(id, job) : undefined,
       }
     : undefined;
-  const jobsDsn = agentHostResourceDsn();
+  const jobsDsn = agentHostDsn;
   // NO DATABASE => NO REGISTRY. Falling back to the file registry would silently resume
   // using the emptyDir-backed jobs.json this store exists to escape — a conversation's
   // jobs vanish on the next rollout and nothing says so. Losing the ability to START a

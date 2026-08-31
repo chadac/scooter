@@ -28,3 +28,35 @@ CREATE TABLE "conversation_jobs" (
 
 -- list() is always scoped to one conversation and ordered newest-first.
 CREATE INDEX "conversation_jobs_by_conv" ON "conversation_jobs" ("conversation_id", "started_at" DESC);
+
+-- Conversation METADATA — the sidebar list and everything the host needs to rehydrate a
+-- conversation without opening its event log: title, model, owner, star, parent.
+--
+-- Why it is not a file: meta.json lived in LOCAL_STATE_PATH, an emptyDir wiped on every
+-- rollout, so a redeploy emptied the conversation list until a mirror hydrate refilled it.
+--
+-- bigint epoch-ms timestamps, matching ConversationMeta in TypeScript. pending_queue is
+-- jsonb: the queued-message list is read and written whole, never queried into.
+CREATE TABLE "conversations" (
+  "id"               text NOT NULL,
+  "thread_id"        text NOT NULL,
+  -- No DEFAULT: the store always supplies a title (`meta.title ?? ""`), so a database
+  -- default would be dead weight. It also trips a drizzle-kit introspection bug that
+  -- emits `text().default(')` for an empty-string default, which does not compile.
+  "title"            text NOT NULL,
+  "created_at"       bigint NOT NULL,
+  "last_activity_at" bigint NOT NULL,
+  "model"            text NULL,
+  "owner"            text NULL,
+  "parent_id"        text NULL,
+  "user_titled"      boolean NULL,
+  "starred"          boolean NULL,
+  "pending_queue"    jsonb NULL,
+  PRIMARY KEY ("id")
+);
+
+-- The sidebar lists newest-active first.
+CREATE INDEX "conversations_by_activity" ON "conversations" ("last_activity_at" DESC);
+
+-- Per-owner filtering for the conversation list.
+CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");

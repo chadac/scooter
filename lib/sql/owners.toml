@@ -65,3 +65,5 @@ owner = "agent-host"
 [agent_host.tables]
 # The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
 conversation_jobs = { writers = ["agent-host"], readers = [] }
+# Conversation metadata: the sidebar list + rehydration fields.
+conversations     = { writers = ["agent-host"], readers = [] }
