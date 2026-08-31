@@ -365,6 +365,26 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("a 401 surfaces the auth error EVEN WHILE REPLAYING (never behind the replay guard)", async () => {
+    // The regression this pins: deferring RuntimeProvider.push's state until replay ends
+    // also deferred the auth banner — but a 401 means the stream never reaches `synced`,
+    // so isReplaying() stays true forever and the banner never shows. That is exactly the
+    // "expired ingress auth surfaces a clear error, not a silent hang" e2e, which caught
+    // it. Error/connection state must be read BEFORE the guard; only progress state after.
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: "c1",
+      fetchImpl: (async () => new Response("Unauthorized", { status: 401 })) as unknown as typeof fetch,
+    });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 400));
+    // Still replaying (no `synced` ever arrives on a 401) — and the error IS visible.
+    expect(agent.isReplaying()).toBe(true);
+    expect(agent.getStreamAuthError()).toBe(true);
+    stop();
+    agent.dispose();
+  });
+
   it("an IN-FLIGHT run is still reported the moment replay ends (the silent-run case)", async () => {
     // The guard must not resurrect the bug it replaced: a conversation whose last run is
     // in flight but SILENT (blocked on a long tool call, no streaming) showed no thinking

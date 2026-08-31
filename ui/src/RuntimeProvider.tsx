@@ -477,9 +477,18 @@ function ConversationRuntime({
       // visibilitychange) re-folds the whole log from empty, so every historical
       // RUN_STARTED / CONTEXT_USAGE / TOOL_CALL_START walked these forward in turn and
       // the user watched the context bar and progress dot animate through history.
-      // Suppressed here and pushed once when replay ends — the agent clears `replaying`
+      // Suppressed and pushed once when replay ends — the agent clears `replaying`
       // BEFORE its final notifyMessages(), so that push lands with the settled tail and
       // the in-flight case above still resolves correctly.
+      //
+      // ONLY the log-derived PROGRESS state is deferred. Connection/error state is NOT:
+      // a 401 sets the auth flag and notifies while the stream is still replaying (it
+      // never reaches `synced`), so deferring that hides the banner behind a replay that
+      // will never finish — the "expired ingress auth surfaces a clear error, not a
+      // silent hang" case. Same for a run error and a retry banner.
+      setRunError(agent.getRunError());
+      setRunRetrying(agent.getRunRetrying());
+      setStreamAuthError(agent.getStreamAuthError());
       if (agent.isReplaying()) return;
       const active = agent.runIsActive();
       setIsRunning(active);
@@ -489,9 +498,6 @@ function ConversationRuntime({
       setContextTokens(agent.contextTokens());
       if (!active) setCancelState("idle"); // run idle → drop optimistic stopping/failed
       setInterrupts(agent.getPendingInterrupts());
-      setRunError(agent.getRunError());
-      setRunRetrying(agent.getRunRetrying());
-      setStreamAuthError(agent.getStreamAuthError());
       const serverQueue = agent.getQueuedMessages();
       setQueuedMessages(serverQueue);
       // Clear an optimistic pending send once the SERVER has confirmed it — either it's now in
