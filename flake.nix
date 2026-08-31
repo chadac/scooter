@@ -224,7 +224,7 @@
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
-          webhooks = pkgs.callPackage ./services/webhooks { };
+          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {
