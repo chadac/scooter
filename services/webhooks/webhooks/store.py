@@ -13,7 +13,18 @@ from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import DatabaseSettings
-from .models import Base, ConversationMap, CredentialScope, JiraTicket, PendingMessage, ResourceLink
+
+# Models are the generated, single-source-of-truth ORM classes for the webhooks
+# database (lib/sql/webhooks/schema.sql -> scooter_schema). The generator pluralizes
+# class names; alias to this store's long-standing singular names so the query
+# helpers below are unchanged. Why: PR #412.
+from scooter_schema.webhooks import (
+    ConversationMap,
+    CredentialScopes as CredentialScope,
+    JiraTickets as JiraTicket,
+    PendingMessages as PendingMessage,
+    ResourceLinks as ResourceLink,
+)
 
 logger = logging.getLogger(__name__)
 _C = {"component": "store"}
@@ -26,7 +37,11 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 async def init_db(settings: DatabaseSettings | None = None) -> None:
-    """Initialize the async engine and create tables."""
+    """Initialize the async engine.
+
+    Tables are NOT created here: they are provisioned by the declarative schema +
+    Atlas migrate job (lib/sql/webhooks/schema.sql). See PR #412.
+    """
     global _engine, _session_factory
     if settings is None:
         settings = DatabaseSettings()
@@ -44,8 +59,6 @@ async def init_db(settings: DatabaseSettings | None = None) -> None:
         pool_recycle=1800,  # recycle connections older than 30 min
     )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     logger.info("database initialized", extra={**_C, "db_host": settings.db_host})
 
 

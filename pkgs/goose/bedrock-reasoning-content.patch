@@ -1,0 +1,197 @@
+Handle Bedrock reasoningContent blocks (unblocks xAI Grok).
+
+Reasoning models on Bedrock return a `reasoningContent` block alongside their text
+/ toolUse blocks. xAI Grok 4.6 reasons by DEFAULT (effort low|medium|high|xhigh),
+so it emits one on essentially EVERY response — including tool-calling turns.
+
+goose's Bedrock formatter had no match arm for it, so every turn fell through to
+the catch-all and killed the whole response:
+
+  Execution error: Unsupported content block type from Bedrock
+
+That makes Grok (and any other reasoning model on Bedrock) unusable through the
+aws_bedrock provider, even though the Converse call itself succeeds — the failure
+is purely in goose's response parsing.
+
+Fix, both directions:
+
+  * INBOUND (from_bedrock_content_block): map ReasoningContent -> the existing
+    MessageContent::Thinking / RedactedThinking variants (goose already has these;
+    the Anthropic formatter uses them). RedactedContent is kept as base64 rather
+    than dropped. An unknown future reasoning variant is skipped, not fatal.
+
+  * OUTBOUND (to_bedrock_message_content): replay a Thinking block that carries a
+    signature as a reasoningContent block. Bedrock requires the reasoning text and
+    its signature be passed back UNMODIFIED in a multi-turn conversation, so the
+    previous behaviour (collapse to an empty text block) silently discarded the
+    model's reasoning context on every subsequent turn. Thinking WITHOUT a
+    signature did not come from Bedrock, so it keeps the old empty-text behaviour
+    rather than sending something Bedrock would reject.
+
+Upstream note: block/goose#6192 added reasoning_content to the OPENAI-compatible
+formatter (DeepSeek-style APIs); the Bedrock Converse formatter was missed and
+still carries a comment asserting "Bedrock doesn't use this format". Carry this as
+a downstream cargoPatches patch until an upstream-fixed goose is pinned.
+--- a/crates/goose/src/providers/formats/bedrock.rs
++++ b/crates/goose/src/providers/formats/bedrock.rs
+@@ -55,13 +55,34 @@
+         MessageContent::Image(image) => {
+             bedrock::ContentBlock::Image(to_bedrock_image(&image.data, &image.mime_type)?)
+         }
+-        MessageContent::Thinking(_) => {
+-            // Thinking blocks are not supported in Bedrock - skip
+-            bedrock::ContentBlock::Text("".to_string())
++        // Round-trip reasoning back to Bedrock. Bedrock's own docs require that a
++        // reasoning block passed back in a multi-turn conversation carry its text
++        // AND signature unmodified, so a thinking block that came from Bedrock is
++        // replayed as a reasoningContent block rather than being dropped. A block
++        // with no signature did not come from Bedrock (e.g. an Anthropic-format
++        // session replayed against this provider) — send an empty text block for
++        // those, as before, since Bedrock would reject an unsigned one.
++        MessageContent::Thinking(thinking) if !thinking.signature.is_empty() => {
++            bedrock::ContentBlock::ReasoningContent(
++                bedrock::ReasoningContentBlock::ReasoningText(
++                    bedrock::ReasoningTextBlock::builder()
++                        .text(thinking.thinking.clone())
++                        .signature(thinking.signature.clone())
++                        .build()?,
++                ),
++            )
+         }
+-        MessageContent::RedactedThinking(_) => {
+-            // Redacted thinking blocks are not supported in Bedrock - skip
+-            bedrock::ContentBlock::Text("".to_string())
++        MessageContent::Thinking(_) => bedrock::ContentBlock::Text("".to_string()),
++        MessageContent::RedactedThinking(redacted) => {
++            match base64::engine::general_purpose::STANDARD.decode(&redacted.data) {
++                Ok(bytes) => bedrock::ContentBlock::ReasoningContent(
++                    bedrock::ReasoningContentBlock::RedactedContent(
++                        aws_smithy_types::Blob::new(bytes),
++                    ),
++                ),
++                // Not base64 (so not ours) — skip rather than fail the turn.
++                Err(_) => bedrock::ContentBlock::Text("".to_string()),
++            }
+         }
+         MessageContent::SystemNotification(_) => {
+             bail!("SystemNotification should not get passed to the provider")
+@@ -336,6 +357,28 @@
+             // Filtered upstream in from_bedrock_message
+             bail!("CachePoint blocks should have been filtered out during message processing")
+         }
++        // Reasoning models on Bedrock (e.g. xAI Grok, which reasons by DEFAULT)
++        // return a reasoningContent block on essentially every response. Without
++        // this arm every single turn fell through to the catch-all below and
++        // failed with "Unsupported content block type from Bedrock", making those
++        // models unusable through the Bedrock provider.
++        bedrock::ContentBlock::ReasoningContent(reasoning) => match reasoning {
++            bedrock::ReasoningContentBlock::ReasoningText(text) => MessageContent::thinking(
++                text.text.clone(),
++                text.signature.clone().unwrap_or_default(),
++            ),
++            // Encrypted/redacted reasoning: keep it as opaque base64 rather than
++            // dropping it, mirroring how the Anthropic format treats redacted
++            // thinking.
++            bedrock::ReasoningContentBlock::RedactedContent(blob) => {
++                MessageContent::redacted_thinking(
++                    base64::engine::general_purpose::STANDARD.encode(blob.as_ref()),
++                )
++            }
++            // A reasoning variant added by a newer Bedrock API than this SDK knows.
++            // Skip it rather than failing the whole turn.
++            _ => MessageContent::text(""),
++        },
+         _ => bail!("Unsupported content block type from Bedrock"),
+     })
+ }
+@@ -532,7 +575,90 @@
+         Ok(())
+     }
+ 
++    /// THE REGRESSION: a reasoning model (xAI Grok reasons by default) returns a
++    /// reasoningContent block on nearly every response. Before this arm existed it
++    /// hit the catch-all and failed the whole turn with
++    /// "Unsupported content block type from Bedrock".
++    #[test]
++    fn test_from_bedrock_content_block_reasoning_text() -> Result<()> {
++        let block = bedrock::ContentBlock::ReasoningContent(
++            bedrock::ReasoningContentBlock::ReasoningText(
++                bedrock::ReasoningTextBlock::builder()
++                    .text("step by step")
++                    .signature("sig-abc")
++                    .build()?,
++            ),
++        );
++
++        match from_bedrock_content_block(&block)? {
++            MessageContent::Thinking(t) => {
++                assert_eq!(t.thinking, "step by step");
++                assert_eq!(t.signature, "sig-abc");
++            }
++            other => panic!("expected Thinking, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn test_from_bedrock_content_block_redacted_reasoning() -> Result<()> {
++        let block = bedrock::ContentBlock::ReasoningContent(
++            bedrock::ReasoningContentBlock::RedactedContent(aws_smithy_types::Blob::new(
++                b"secret".to_vec(),
++            )),
++        );
++
++        match from_bedrock_content_block(&block)? {
++            MessageContent::RedactedThinking(r) => {
++                let decoded = base64::engine::general_purpose::STANDARD.decode(&r.data)?;
++                assert_eq!(decoded, b"secret");
++            }
++            other => panic!("expected RedactedThinking, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    /// Bedrock requires reasoning be replayed with text + signature UNMODIFIED in a
++    /// multi-turn conversation, so a signed Thinking block must round-trip rather
++    /// than collapse to an empty text block.
+     #[test]
++    fn test_reasoning_round_trips_back_to_bedrock() -> Result<()> {
++        let original = bedrock::ContentBlock::ReasoningContent(
++            bedrock::ReasoningContentBlock::ReasoningText(
++                bedrock::ReasoningTextBlock::builder()
++                    .text("because X")
++                    .signature("sig-1")
++                    .build()?,
++            ),
++        );
++
++        let round_tripped = to_bedrock_message_content(&from_bedrock_content_block(&original)?)?;
++
++        match round_tripped {
++            bedrock::ContentBlock::ReasoningContent(
++                bedrock::ReasoningContentBlock::ReasoningText(t),
++            ) => {
++                assert_eq!(t.text, "because X");
++                assert_eq!(t.signature.as_deref(), Some("sig-1"));
++            }
++            other => panic!("expected ReasoningContent, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    /// Thinking with NO signature did not come from Bedrock (e.g. an Anthropic-format
++    /// session replayed here) — Bedrock would reject an unsigned reasoning block, so
++    /// it keeps the old skip-as-empty-text behaviour.
++    #[test]
++    fn test_unsigned_thinking_is_skipped_outbound() -> Result<()> {
++        let content = MessageContent::thinking("no signature", "");
++        match to_bedrock_message_content(&content)? {
++            bedrock::ContentBlock::Text(t) => assert_eq!(t, ""),
++            other => panic!("expected empty Text, got {other:?}"),
++        }
++        Ok(())
++    }
++
+     fn test_from_bedrock_content_block_cache_point() {
+         // Create a cache point block with the required type field
+         let cache_point = bedrock::CachePointBlock::builder()

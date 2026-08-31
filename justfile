@@ -353,13 +353,17 @@ e2e-full *ARGS:
 
 typecheck:
     npm install
-    # agent-host imports @scooter/claude-sdk-provider AND @scooter/marimo-mcp; build
-    # them first so their dist/ (types + js) exist for agent-host's NodeNext
-    # resolution. (Nix builds each separately; this is the plain-npm/CI path.)
+    # agent-host imports @scooter/claude-sdk-provider, @scooter/marimo-mcp AND
+    # @scooter/schema; build them first so their dist/ (types + js) exist for
+    # agent-host's NodeNext resolution. (Nix builds each separately; this is the
+    # plain-npm/CI path.)
     npm -w services/claude-sdk-provider run build
     npm -w services/marimo-mcp run build
+    npm -w @scooter/schema run build
     npm -w services/agent-host run typecheck
     npm -w ui run typecheck
+    # The generated Drizzle schema (catches broken/drifted generation at the type level).
+    npm -w @scooter/schema run typecheck
 
 lint: typecheck
 
@@ -375,7 +379,9 @@ check-lockfiles:
     npm install --package-lock-only --workspaces --include-workspace-root
     npm install --package-lock-only --prefix ui --workspaces=false
     npm install --package-lock-only --prefix services/agent-host --workspaces=false
-    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json \
+    npm install --package-lock-only --prefix services/byoc-controller --workspaces=false
+    npm install --package-lock-only --prefix lib/ts/scooter-schema --workspaces=false
+    @git diff --exit-code -- package-lock.json ui/package-lock.json services/agent-host/package-lock.json services/byoc-controller/package-lock.json lib/ts/scooter-schema/package-lock.json \
       || (echo "❌ lockfile drift: a package.json changed without regenerating the lockfile. Run 'nix develop -c just check-lockfiles' and commit the result." && exit 1)
     @echo "✅ lockfiles are in sync with package.json"
 
@@ -400,6 +406,8 @@ check-npm-hashes:
     }
     check ui/package-lock.json ui/default.nix
     check services/agent-host/package-lock.json services/agent-host/default.nix
+    check services/byoc-controller/package-lock.json services/byoc-controller/default.nix
+    check lib/ts/scooter-schema/package-lock.json lib/ts/scooter-schema/default.nix
     [ "$fail" -eq 0 ] && echo "✅ npmDepsHash values match their lockfiles"
     exit "$fail"
 
@@ -410,7 +418,46 @@ check-npm-hashes:
 check-image-coverage:
     @scripts/check-image-coverage.sh
 
-ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint test-unit
+# --- Database schema (Atlas) ------------------------------------------------
+# The shared Postgres schema is declared in lib/sql/<db>/schema.sql (one env per
+# per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
+# computed from schema.sql. Each recipe spins its own EPHEMERAL local Postgres as
+# Atlas's dev database (scripts/atlas-dev.sh) so nothing is shared.
+db_envs := "webhooks scheduler broker byoc"
+
+# Regenerate the per-language ORM bindings (@scooter/schema, scooter_schema) from
+# lib/sql/<db>/schema.sql. Uses embedded pglite only — no server. Commit the result.
+db-generate:
+    scripts/db-generate.sh
+
+# CI drift guard: regenerate the bindings and fail if the committed output differs —
+# a schema change that forgets to regenerate fails the build (like check-lockfiles).
+db-generate-check:
+    scripts/db-generate.sh
+    @git diff --exit-code -- lib/ts/scooter-schema/src lib/py/scooter-schema/src \
+      || (echo "❌ generated schema drift: lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
+    @echo "✅ generated ORM bindings are in sync with lib/sql"
+
+# Author migrations from schema.sql for every database. Only databases whose
+# schema actually changed get a new file. Usage: just db-migrate <name>
+db-migrate name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for env in {{db_envs}}; do
+      echo "== $env =="
+      scripts/atlas-dev.sh migrate diff {{name}} --env "$env"
+    done
+
+# Validate every database's migration directory (order, checksums, replayability).
+db-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for env in {{db_envs}}; do
+      echo "== $env =="
+      scripts/atlas-dev.sh migrate validate --env "$env"
+    done
+
+ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint db-generate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).

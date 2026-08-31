@@ -138,6 +138,7 @@
         conversationController = ghcrImageRef "conversation-controller" pubImages.conversation-controller-image;
         conversationRouter = ghcrImageRef "conversation-router" pubImages.conversation-router-image;
         warmStoreController = ghcrImageRef "warm-store-controller" pubImages.warm-store-controller-image;
+        dbMigrator = ghcrImageRef "agent-db-migrator" pubImages.db-migrator-image;
       };
       ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
     in
@@ -151,19 +152,30 @@
           # The ACP agent the agent-host runs (first target: Goose).
           # Runs OUTSIDE the sandbox. Provider-agnostic later; selected by attr.
           #
-          # DOWNSTREAM PATCH: sanitize Bedrock tool names to `[a-zA-Z0-9_-]+`. Goose
-          # leaks an MCP tool's display name ("<Extension>: <Title Case>") into the
-          # Bedrock converse request's toolUse.name on session resume, which Bedrock
-          # rejects (ValidationException) — permanently wedging the conversation. The
-          # patch sanitizes at the 3 outbound sites (tool def + both toolUse blocks)
-          # with a lossless map so the returned name restores for MCP dispatch. Applied
-          # via cargoPatches so it slots into the vendored-deps build without touching
-          # cargoHash. Remove when an upstream-fixed goose is pinned (the OpenAI side is
-          # already fixed in block/goose#10344; the Bedrock side was missed). See
-          # pkgs/goose/bedrock-tool-name-sanitize.patch + todo/GOOSE_BEDROCK_PATCH.md.
+          # DOWNSTREAM PATCH: goose's Bedrock formatter has no match arm for
+          # `reasoningContent`, so a reasoning model — xAI Grok reasons by DEFAULT —
+          # fails EVERY turn with "Unsupported content block type from Bedrock". On
+          # tool-calling turns Grok returns reasoningContent -> redactedContent
+          # (encrypted bytes), so this is not an edge case: it is every response.
+          # The patch maps it to goose's existing Thinking/RedactedThinking variants
+          # (inbound) and replays signed reasoning back (outbound), which Bedrock
+          # requires unmodified in a multi-turn conversation. Drop it when an
+          # upstream-fixed goose is pinned — block/goose#6192 fixed the analogous
+          # OPENAI-compatible formatter; the Bedrock one was missed and still carries
+          # a comment asserting "Bedrock doesn't use this format".
+          # See pkgs/goose/bedrock-reasoning-content.patch.
+          #
           agent = pkgs.goose-cli.overrideAttrs (old: {
-            cargoPatches = (old.cargoPatches or [ ]) ++ [
-              ./pkgs/goose/bedrock-tool-name-sanitize.patch
+            # `patches`, NOT `cargoPatches`. nixpkgs' goose-cli is a
+            # `buildRustPackage (finalAttrs: ...)`, and buildRustPackage computes
+            # `patches = cargoPatches ++ patches` from the ORIGINAL args — so a
+            # cargoPatches entry added via overrideAttrs never reaches `patches` and is
+            # silently DROPPED (`nix eval .#agent.patches` -> []). The build still
+            # succeeds and the binary still differs from stock (other override effects),
+            # so it fails invisibly: the reasoning fix below appeared to deploy for a
+            # full release while Grok kept failing with the exact error it fixes.
+            patches = (old.patches or [ ]) ++ [
+              ./pkgs/goose/bedrock-reasoning-content.patch
             ];
           });
 
@@ -180,7 +192,12 @@
           # agent-host symlinks it into node_modules and mounts its tools.
           marimoMcp = pkgs.callPackage ./services/marimo-mcp { };
 
-          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp; };
+          # The generated @scooter/schema package (Drizzle tables + ownership guard, from
+          # lib/sql via `just db-generate`). Same isolation pattern: agent-host symlinks it
+          # into node_modules and resourceMapping.ts imports its typed tables.
+          scooterSchemaJs = pkgs.callPackage ./lib/ts/scooter-schema { };
+
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp scooterSchemaJs; };
 
           # Bring-your-own-Claude container app: drives the user's LOCAL Claude via the SAME
           # claudeSdkProvider, tunnels tool-exec to the cloud sandbox. Bakes the (unfree) claude CLI.
@@ -207,12 +224,17 @@
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
-          webhooks = pkgs.callPackage ./services/webhooks { };
+          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {
             inherit pkgs lib n2c webhooks;
           };
+
+          # Generated SQLAlchemy models for the shared databases (from lib/sql via
+          # `just db-generate`). Imported by the Python services; its nix build runs
+          # pytest + pythonImportsCheck (proves the generated models are valid).
+          scooterSchema = pkgs.callPackage ./lib/py/scooter-schema { };
 
           # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
           # spawning a fresh conversation per run via the agent-host /agui. See
@@ -239,7 +261,7 @@
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
           # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
-          byocController = pkgs.callPackage ./services/byoc-controller { };
+          byocController = pkgs.callPackage ./services/byoc-controller { inherit scooterSchemaJs; };
 
           # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
@@ -269,6 +291,13 @@
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
             inherit pkgs lib n2c broker;
+          };
+
+          # Shared-DB migration Job image: Atlas CLI + lib/sql migrations + a driver
+          # that `atlas migrate apply --baseline`s each per-service database. See
+          # modules/db-migrate.nix.
+          dbMigratorImage = import ./pkgs/db-migrator-image {
+            inherit pkgs lib n2c;
           };
 
           # Broker tools (agent-broker / git-credential-broker / scooter-aws*),
@@ -337,6 +366,10 @@
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
             testing.enable = true;
+            # No migration Job in the cluster/e2e renders: the services still self-create
+            # their tables, so migrations aren't needed for tests, and this keeps the
+            # agent-db-migrator image out of the side-load/k3d push set.
+            dbMigrate.enable = false;
             # The cross-pod history mirror, backed by the single-node hostPath escape hatch
             # (k3d's local-path provisioner has no RWX; a hostPath PV binds the RWX claim and
             # every pod shares the one node's directory — the same mechanism odin uses).
@@ -470,11 +503,20 @@
             # nix build .#broker-image  ->  broker OCI image
             broker-image = brokerImage.image;
 
+            # nix build .#db-migrator-image  ->  shared-DB migration Job image
+            db-migrator-image = dbMigratorImage.image;
+
             # nix build .#webhooks-image  ->  webhooks OCI image
             webhooks-image = webhooksImage.image;
 
             # nix build .#scheduler-image  ->  scheduler OCI image
             scheduler-image = schedulerImage.image;
+
+            # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
+            scooter-schema = scooterSchema;
+
+            # nix build .#scooter-schema-js  ->  generated Drizzle schema package (tsc)
+            scooter-schema-js = scooterSchemaJs;
 
             # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
             remote-agent = remoteAgent;
@@ -583,6 +625,7 @@
             broker.image = lib.mkDefault ghcrImages.broker;
             webhooks.image = lib.mkDefault ghcrImages.webhooks;
             scheduler.image = lib.mkDefault ghcrImages.scheduler;
+            dbMigrate.image = lib.mkDefault ghcrImages.dbMigrator;
           };
         };
       };

@@ -16,10 +16,16 @@
  * factory returns undefined and the tools fall back to `ref` alone.
  */
 
+import { and, eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { webhooks } from "@scooter/schema";
+
 import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
 
 import type { ResourceMapping } from "./agentTools.js";
+
+const { conversationMap } = webhooks;
 
 const log = logger("resourceLookup");
 
@@ -44,27 +50,39 @@ export interface ResourceLookup {
  */
 export function createResourceLookup(config: ResourceLookupConfig): ResourceLookup {
   // Hardened pool (idleTimeoutMillis + keepAlive) so a stale idle connection never
-  // hangs a query — see db/pgPool.ts.
+  // hangs a query — see db/pgPool.ts. The Drizzle client is a thin typed wrapper over
+  // this same pool; a column rename in lib/sql (regenerated into @scooter/schema) is now
+  // a compile error here, not a silent runtime failure. Why: PR #392 chain.
   const pool = createPgPool("resourceLookup", { connectionString: config.dsn, max: 3 });
+  const db = drizzle(pool);
 
   return {
     async lookup(conversationId, source) {
       try {
-        const res = await pool.query(
-          `SELECT source, resource_type, resource_id, slack_channel, slack_ts
-             FROM conversation_map
-            WHERE conversation_id = $1 AND source = $2
-            LIMIT 1`,
-          [conversationId, source],
-        );
-        const row = res.rows[0];
+        const rows = await db
+          .select({
+            source: conversationMap.source,
+            resourceType: conversationMap.resourceType,
+            resourceId: conversationMap.resourceId,
+            slackChannel: conversationMap.slackChannel,
+            slackTs: conversationMap.slackTs,
+          })
+          .from(conversationMap)
+          .where(
+            and(
+              eq(conversationMap.conversationId, conversationId),
+              eq(conversationMap.source, source),
+            ),
+          )
+          .limit(1);
+        const row = rows[0];
         if (!row) return undefined;
         return {
           source: row.source,
-          resourceType: row.resource_type,
-          resourceId: row.resource_id,
-          slackChannel: row.slack_channel ?? undefined,
-          slackTs: row.slack_ts ?? undefined,
+          resourceType: row.resourceType,
+          resourceId: row.resourceId,
+          slackChannel: row.slackChannel ?? undefined,
+          slackTs: row.slackTs ?? undefined,
         };
       } catch (err) {
         log.error("query failed (falling back to ref-only)", {

@@ -1,0 +1,19 @@
+[project]
+name = "scooter-schema"
+version = "0.0.0"
+license = "MIT"
+description = "Generated SQLAlchemy models for Scooter's shared databases (GENERATED from lib/sql/*/schema.sql by `just db-generate`)."
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy[asyncio]",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = ["pytest"]

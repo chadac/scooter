@@ -31,6 +31,7 @@ declare -A KIND=(
   [agent-host-image]=closure
   [broker-image]=closure
   [webhooks-image]=closure
+  [db-migrator-image]=closure
   [ui-image]=closure
   [scheduler-image]=closure
   [byoc-controller-image]=closure
