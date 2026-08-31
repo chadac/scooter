@@ -3,7 +3,8 @@
 
 from typing import Optional
 
-from sqlalchemy import BigInteger, Index, PrimaryKeyConstraint, Text
+from sqlalchemy import BigInteger, Boolean, Index, PrimaryKeyConstraint, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -22,3 +23,24 @@ class ConversationJobs(Base):
     command: Mapped[str] = mapped_column(Text, nullable=False)
     started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     notified_at: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+
+class Conversations(Base):
+    __tablename__ = 'conversations'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='conversations_pkey'),
+        Index('conversations_by_activity', 'last_activity_at'),
+        Index('conversations_by_owner', 'owner')
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_activity_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(Text)
+    owner: Mapped[Optional[str]] = mapped_column(Text)
+    parent_id: Mapped[Optional[str]] = mapped_column(Text)
+    user_titled: Mapped[Optional[bool]] = mapped_column(Boolean)
+    starred: Mapped[Optional[bool]] = mapped_column(Boolean)
+    pending_queue: Mapped[Optional[dict]] = mapped_column(JSONB)
