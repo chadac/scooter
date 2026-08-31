@@ -320,6 +320,71 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("the PROGRESS/CONTEXT indicators do not replay their history on reconnect", async () => {
+    // Tab-back fires visibilitychange -> the pump aborts and reconnects -> the fresh
+    // stream re-folds the WHOLE log from empty. RuntimeProvider.push updated isRunning /
+    // activeTool / contextFill on every push "even during replay", so each historical
+    // CONTEXT_USAGE / TOOL_CALL_START walked the indicators forward and the user watched
+    // them animate through history.
+    //
+    // A pending-interrupt change notifies subscribers WITHOUT the replay guard that
+    // covers ordinary message folds (integrityAgent.ts:395), so push() genuinely runs
+    // mid-replay — verified: two notifies arrive with isReplaying()===true, the first
+    // carrying fill=0.05. That is why the guard has to live in push() too.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 10_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "early_tool" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1", outcome: { type: "interrupt", interrupts: [{ id: "i1", reason: "confirmation", message: "ok?" }] } } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "t1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 120_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r2" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    const samples: Array<{ fill: number | null }> = [];
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsub(); stop(); resolve(); };
+      const { unsubscribe: unsub } = agent.subscribe({
+        onMessagesChanged: () => {
+          clearTimeout(timer); timer = setTimeout(done, 150);
+          // Model RuntimeProvider.push EXACTLY: it returns early while replaying.
+          if (agent.isReplaying()) return;
+          samples.push({ fill: agent.contextFill() });
+        },
+      });
+      setTimeout(done, 1200);
+    });
+    // The INTERMEDIATE reading (10k/200k = 0.05) must never reach the indicators.
+    expect(samples.some((s) => s.fill !== null && Math.abs(s.fill - 0.05) < 1e-9)).toBe(false);
+    // ...and the settled tail IS correct once replay ends.
+    expect(agent.contextFill()).toBeCloseTo(0.6, 5);
+    agent.dispose();
+  });
+
+  it("an IN-FLIGHT run is still reported the moment replay ends (the silent-run case)", async () => {
+    // The guard must not resurrect the bug it replaced: a conversation whose last run is
+    // in flight but SILENT (blocked on a long tool call, no streaming) showed no thinking
+    // indicator. The log ends with RUN_STARTED and no terminal, so runIsActive() must be
+    // true at `synced` — the one push that does run.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "slow_build" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 600));
+    expect(agent.isReplaying()).toBe(false);
+    expect(agent.runIsActive()).toBe(true);        // the thinking dot stays on
+    expect(agent.activeTool()).toBe("slow_build"); // ...and names what it is doing
+    stop();
+    agent.dispose();
+  });
+
   it("an external (ext-) interrupt SURVIVES a concurrent goose run's RUN_STARTED/RUN_FINISHED", async () => {
     // The AWS-request bug: raiseInterrupt emits RUN_FINISHED(runId ext-aws1); the
     // still-live goose run then emits its own RUN_STARTED/RUN_FINISHED (no

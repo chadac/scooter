@@ -467,14 +467,20 @@ function ConversationRuntime({
     let disposed = false;
     const push = () => {
       if (disposed) return;
-      // LOG-DERIVED STATE (run-in-flight, interrupts, error, queue) updates on EVERY
-      // push — even during replay / a suppressed message reset. It's cheap (no thread
-      // reset) and MUST stay in sync, or the thinking dot / Stop button / approvals go
-      // stale. The bug this fixes: opening a conversation whose last run is in-flight
-      // but SILENT (blocked on a long tool call, no streaming) showed no thinking
-      // indicator, because the message-render guards below returned before isRunning
-      // was ever set. runIsActive() is derived from the replayed log, so it's correct
-      // here regardless of the render guards.
+      // LOG-DERIVED STATE (run-in-flight, interrupts, error, queue) MUST stay in sync,
+      // or the thinking dot / Stop button / approvals go stale. The bug that requires
+      // it: opening a conversation whose last run is in-flight but SILENT (blocked on a
+      // long tool call, no streaming) showed no thinking indicator, because the
+      // message-render guards below returned before isRunning was ever set.
+      //
+      // But it must not update DURING a replay. A reconnect (tab-back fires one via
+      // visibilitychange) re-folds the whole log from empty, so every historical
+      // RUN_STARTED / CONTEXT_USAGE / TOOL_CALL_START walked these forward in turn and
+      // the user watched the context bar and progress dot animate through history.
+      // Suppressed here and pushed once when replay ends — the agent clears `replaying`
+      // BEFORE its final notifyMessages(), so that push lands with the settled tail and
+      // the in-flight case above still resolves correctly.
+      if (agent.isReplaying()) return;
       const active = agent.runIsActive();
       setIsRunning(active);
       setActiveTool(agent.activeTool());
@@ -508,12 +514,6 @@ function ConversationRuntime({
         return next.length === cur.length ? cur : next;
       });
 
-      // MESSAGE RESET is what the guards protect. While REPLAYING history (on open /
-      // switch / reconnect), don't reset the thread on every folded event — that
-      // visibly builds the history top-down. Skip until the stream's `synced` marker,
-      // which fires one final render with the whole history. Live events after that
-      // render per-event as usual.
-      if (agent.isReplaying()) return;
       // Guard against a SHRINKING reset within THIS conversation. A reconnect
       // re-folds agent.messages from empty (0,1,2,…back up to N); a reset applied
       // while that fold is still climbing hands assistant-ui a SHORTER list than it
