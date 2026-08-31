@@ -1,0 +1,52 @@
+# Ownership manifest for the shared databases.
+#
+# For each (database, table): the WRITER service and the read-only READER services.
+# This is the one reviewable place that records who may write what — the schema
+# itself (schema.sql) says WHAT the tables are; this says WHO owns them.
+#
+# Enforcement:
+#   - Runtime: assert_database()/assertDatabase() (scooter_schema / @scooter/schema)
+#     make a service fail fast if its DSN points at a database it doesn't own.
+#   - Per-database code boundary: a service imports only the database module(s) it
+#     may touch, so it cannot reference another database's tables.
+#   - Manifest integrity: test_ownership.py checks this file lists exactly the
+#     tables each schema.sql defines, so it can't silently drift.
+# The finer writer/reader distinction is informal (documented here) for now.
+#
+# Single-owner holds for scheduler/broker/byoc (their Postgres role owns only that
+# database). The webhooks database is co-owned: webhooks owns the webhook tables,
+# agent-host writes user_identity + remote_agents (and reads conversation_map /
+# resource_links) using the same role — table-level ownership, noted below.
+
+[webhooks]
+owner = "webhooks"
+
+[webhooks.tables]
+conversation_map  = { writer = "webhooks",   readers = ["agent-host"] }
+jira_tickets      = { writer = "webhooks",   readers = [] }
+resource_links    = { writer = "webhooks",   readers = ["agent-host"] }
+pending_messages  = { writer = "webhooks",   readers = [] }
+credential_scopes = { writer = "webhooks",   readers = [] }
+user_identity     = { writer = "agent-host", readers = ["webhooks"] }
+remote_agents     = { writer = "agent-host", readers = [] }
+
+[scheduler]
+owner = "scheduler"
+
+[scheduler.tables]
+scheduled_tasks = { writer = "scheduler", readers = [] }
+task_runs       = { writer = "scheduler", readers = [] }
+
+[broker]
+owner = "broker"
+
+[broker.tables]
+sandbox_size        = { writer = "broker", readers = [] }
+permission_requests = { writer = "broker", readers = [] }
+module_registry     = { writer = "broker", readers = [] }
+
+[byoc]
+owner = "byoc-controller"
+
+[byoc.tables]
+remote_agents = { writer = "byoc-controller", readers = [] }

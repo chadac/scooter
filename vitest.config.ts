@@ -26,6 +26,16 @@ export default defineConfig({
         },
       },
       {
+        // @scooter/schema — the GENERATED Drizzle schema. Its units guard the two
+        // hand-written pieces: the ownership manifest stays in sync with the
+        // schemas (ownership.spec) and the runtime db guard (guard.spec).
+        test: {
+          name: "scooter-schema",
+          include: ["lib/ts/scooter-schema/src/**/*.spec.ts"],
+          environment: "node",
+        },
+      },
+      {
         // The BYO-Claude container (runs on the USER'S machine). Its wire handling is contract-
         // tested against the frames the controller actually emits — the two ends previously
         // disagreed on the permission payload shape while both suites passed.
