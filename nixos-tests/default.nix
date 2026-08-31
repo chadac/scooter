@@ -58,4 +58,9 @@ in
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's
   # own VM overlay — so this VM test exercises the real mechanism.
   dev-env-overlay-store = runTest ./overlay-store.nix;
+  # Nix-declared git config base with writable override layer: a read-only base
+  # (in /nix/store) included from the writable /workspace/.gitconfig, so git config
+  # is both reproducible (deployment-controlled) AND writable (agent can override).
+  # Tests [include] ordering, inheritance, restart survival, and credential.helper.
+  dev-env-git-config = runTest ./git-config.nix;
 }

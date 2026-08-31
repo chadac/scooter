@@ -57,6 +57,35 @@ in
       default = "/workspace";
       description = "The HOME the agent-host execs with — where git/aws config is written.";
     };
+
+    git = {
+      userName = lib.mkOption {
+        type = lib.types.str;
+        default = "Scooter";
+        description = "Default git user.name for all sandboxes in this deployment.";
+      };
+
+      userEmail = lib.mkOption {
+        type = lib.types.str;
+        default = "scooter@scooter.local";
+        description = "Default git user.email for all sandboxes in this deployment.";
+      };
+
+      extraConfig = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+        default = {};
+        example = lib.literalExpression ''
+          {
+            core.pager = "less -R";
+            color.ui = "auto";
+          }
+        '';
+        description = ''
+          Additional git config sections to include in the Nix-declared base.
+          Nested attrset shape: { section.key = "value"; }.
+        '';
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -65,9 +94,9 @@ in
       awscli   # a lazy nix-stubs shim (realises awscli2 on first `aws` call)
     ];
 
-    # configure_git_broker: point git's credential helper at the broker, once the
-    # broker URL is known. Writes $HOME/.gitconfig (HOME = /workspace, set by the
-    # provisioner). Best-effort, like the old entrypoint.
+    # configure_git_broker: Write Nix-declared git config defaults to /workspace/.gitconfig,
+    # but ONLY if they're not already set (idempotent). Agent writes override and persist
+    # across restarts.
     systemd.services.scooter-git-broker = {
       description = "Configure git credential helper -> broker";
       wantedBy = [ "multi-user.target" ];
@@ -76,17 +105,38 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      # BROKER_URL comes from the container env; systemd PID 1 keeps it in its
-      # environ (only HOME is reset), so we read it from there. We write the
-      # gitconfig to the AGENT's HOME (cfg.home) explicitly via --file, since
-      # --global would target systemd's HOME=/root, not where the agent reads.
       script = ''
-        broker_url=$(tr '\0' '\n' < /proc/1/environ | sed -n 's/^BROKER_URL=//p' | head -1 || true)
-        if [ -n "$broker_url" ]; then
-          mkdir -p ${lib.escapeShellArg cfg.home}
-          ${pkgs.git}/bin/git config --file ${lib.escapeShellArg "${cfg.home}/.gitconfig"} credential.helper broker || true
-          echo "git credential helper -> broker ($broker_url) in ${cfg.home}/.gitconfig"
+        set -euo pipefail
+
+        GITCONFIG=${lib.escapeShellArg "${cfg.home}/.gitconfig"}
+        GIT="${pkgs.git}/bin/git config --file $GITCONFIG"
+
+        mkdir -p ${lib.escapeShellArg cfg.home}
+
+        # Write Nix-declared defaults if not already set (agent writes win).
+        if ! $GIT --get user.name >/dev/null 2>&1; then
+          $GIT user.name ${lib.escapeShellArg cfg.git.userName}
+          echo "set user.name=${cfg.git.userName}"
         fi
+
+        if ! $GIT --get user.email >/dev/null 2>&1; then
+          $GIT user.email ${lib.escapeShellArg cfg.git.userEmail}
+          echo "set user.email=${cfg.git.userEmail}"
+        fi
+
+        # Write extraConfig defaults (each section.key), but only if not set.
+        ${lib.concatStrings (lib.mapAttrsToList (section: keys:
+          lib.concatStrings (lib.mapAttrsToList (key: value: ''
+            if ! $GIT --get ${lib.escapeShellArg "${section}.${key}"} >/dev/null 2>&1; then
+              $GIT ${lib.escapeShellArg "${section}.${key}"} ${lib.escapeShellArg value}
+              echo "set ${section}.${key}=${value}"
+            fi
+          '') keys)
+        ) cfg.git.extraConfig)}
+
+        # Set credential.helper=broker (ALWAYS, overriding extraConfig if present).
+        $GIT credential.helper broker
+        echo "set credential.helper=broker"
       '';
     };
 
