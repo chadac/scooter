@@ -50,6 +50,9 @@ in
   # The scooter-rebuild entrypoint CLI: module new/list/show/edit/rm on /etc/scooter/modules
   # + dispatch to switch/status. A real VM boot (CLI + file ops); the full rebuild is Tier-2.
   dev-env-scooter-rebuild = runTest ./scooter-rebuild.nix;
+  # Lock validation for scooter-rebuild: prevents stranded "building" status from
+  # blocking boot/switches. Tests PID validation, stale-lock clearing, boot reset.
+  dev-env-scooter-rebuild-lock = runTest ./scooter-rebuild-lock.nix;
   # The shared-registry module fetch: registry-modules.nix reads the attached-ids file,
   # fetches those modules from the broker (?ids=), + imports them. Fast eval-check.
   dev-env-registry-modules = runTest ./registry-modules.nix;
