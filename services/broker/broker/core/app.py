@@ -63,10 +63,6 @@ def create_app() -> FastAPI:
         for p in providers:
             if p.on_startup is not None:
                 await p.on_startup()
-        if sandbox_store is not None:
-            await sandbox_store.init()
-        if registry_store is not None:
-            await registry_store.init()
         yield
         for p in providers:
             if p.on_shutdown is not None:

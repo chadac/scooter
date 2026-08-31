@@ -24,6 +24,9 @@ from broker.core.auth import authenticate  # noqa: E402
 from broker.core.types import Identity  # noqa: E402
 from broker.transports.aws_permissions import AwsPermissions  # noqa: E402
 
+from conftest import create_schema
+from broker.aws import store as aws_store
+
 REGISTRY = {
     "dev": {"account_id": "123", "broker_role_arn": "arn:...:base", "enabled": True,
             "allowed_policy": {"Statement": [{"Action": ["s3:*"], "Resource": ["*"]}]}},
@@ -76,7 +79,7 @@ def _app(tmp_path):
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        await store.init()
+        await create_schema(store, aws_store._Base)
         yield
 
     app = FastAPI(lifespan=lifespan)
@@ -185,7 +188,7 @@ def test_can_approve_route_reflects_the_openfga_check(tmp_path):
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        await store.init()
+        await create_schema(store, aws_store._Base)
         yield
 
     app = FastAPI(lifespan=lifespan)
@@ -223,7 +226,7 @@ def test_approve_requires_approver_identity(tmp_path):
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        await store.init()
+        await create_schema(store, aws_store._Base)
         yield
 
     app = FastAPI(lifespan=lifespan)

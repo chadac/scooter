@@ -55,16 +55,6 @@ class SandboxSizeStore:
         )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
-    async def init(self) -> None:
-        """Create tables ONLY on SQLite (tests). On Postgres the Atlas migrations under
-        lib/sql own the schema — a service that also creates tables silently diverges
-        from the declared one, which is how remote_agent_devices ran for months with no
-        migration at all."""
-        if self._engine.dialect.name != "sqlite":
-            return
-        async with self._engine.begin() as conn:
-            await conn.run_sync(_Base.metadata.create_all)
-
     async def get(self, conversation_id: str) -> SandboxResources | None:
         async with self._session() as s:
             row = await s.get(_SizeRow, conversation_id)

@@ -12,11 +12,13 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from scheduler.metrics import create_metrics
 from scheduler.store import Store
 
+from conftest import sqlite_store
+
+
 
 @pytest_asyncio.fixture
 async def store():
-    s = Store("sqlite+aiosqlite:///:memory:")
-    await s.init()
+    s = await sqlite_store()
     yield s
     await s.dispose()
 
