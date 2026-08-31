@@ -410,6 +410,32 @@ check-npm-hashes:
 check-image-coverage:
     @scripts/check-image-coverage.sh
 
+# --- Database schema (Atlas) ------------------------------------------------
+# The shared Postgres schema is declared in lib/sql/<db>/schema.sql (one env per
+# per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
+# computed from schema.sql. Each recipe spins its own EPHEMERAL local Postgres as
+# Atlas's dev database (scripts/atlas-dev.sh) so nothing is shared.
+db_envs := "webhooks scheduler broker byoc"
+
+# Author migrations from schema.sql for every database. Only databases whose
+# schema actually changed get a new file. Usage: just db-migrate <name>
+db-migrate name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for env in {{db_envs}}; do
+      echo "== $env =="
+      scripts/atlas-dev.sh migrate diff {{name}} --env "$env"
+    done
+
+# Validate every database's migration directory (order, checksums, replayability).
+db-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for env in {{db_envs}}; do
+      echo "== $env =="
+      scripts/atlas-dev.sh migrate validate --env "$env"
+    done
+
 ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
