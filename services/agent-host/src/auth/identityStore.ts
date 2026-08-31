@@ -16,11 +16,17 @@
  * map wired, this is a passthrough.
  */
 
+import { desc, eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { webhooks } from "@scooter/schema";
+
 import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
 import { normalizeEmail } from "./email.js";
 
 import type { AsyncIdentityResolver, UserContext } from "./identity.js";
+
+const { userIdentity } = webhooks;
 
 const log = logger("identityStore");
 
@@ -108,10 +114,12 @@ export interface PgIdentityStoreConfig {
 }
 
 /**
- * Postgres IdentityStore over a `user_identity(id, email, name, updated_at)` table
- * on the shared DB. Lazy pool; CREATE TABLE IF NOT EXISTS on first use so no
- * migration is required. All errors are swallowed (best-effort) — a DB blip
- * degrades to "no learned email", never breaks a request.
+ * Postgres IdentityStore over the generated webhooks.user_identity table on the shared
+ * DB, via the @scooter/schema Drizzle client. The table + its lower(email) index are
+ * declared in lib/sql/webhooks/schema.sql and provisioned by the migrate job, so this
+ * store no longer self-CREATEs them — a column rename there is a compile error here. All
+ * errors are swallowed (best-effort) — a DB blip degrades to "no learned email", never
+ * breaks a request. Why: PR #407 chain.
  */
 export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentityStore {
   // Hardened pool (idleTimeoutMillis + keepAlive) so a stale idle connection is
@@ -119,37 +127,17 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
   // 5s stall on a dead connection previously pushed /healthz past the readiness
   // probe and took the whole UI down. See db/pgPool.ts.
   const pool = createPgPool("identityStore", { connectionString: config.dsn, max: 2 });
-
-  let ensured: Promise<void> | undefined;
-  const ensureTable = (): Promise<void> => {
-    ensured ??= pool
-      .query(
-        `CREATE TABLE IF NOT EXISTS user_identity (
-           id text PRIMARY KEY,
-           email text,
-           name text,
-           updated_at timestamptz NOT NULL DEFAULT now()
-         )`,
-      )
-      // A case-insensitive email index so the reverse lookup (getByEmail) is a
-      // single indexed scan. Separate statement (IF NOT EXISTS, idempotent).
-      .then(() =>
-        pool.query(`CREATE INDEX IF NOT EXISTS user_identity_email_lower ON user_identity (lower(email))`),
-      )
-      .then(() => undefined)
-      .catch((e) => {
-        log.error("ensure table failed (identity enrichment off)", { error: formatError(e) });
-        ensured = undefined; // allow a retry on the next call
-      });
-    return ensured;
-  };
+  const db = drizzle(pool);
 
   return {
     async get(id) {
       try {
-        await ensureTable();
-        const res = await pool.query(`SELECT email, name FROM user_identity WHERE id = $1 LIMIT 1`, [id]);
-        const row = res.rows[0];
+        const rows = await db
+          .select({ email: userIdentity.email, name: userIdentity.name })
+          .from(userIdentity)
+          .where(eq(userIdentity.id, id))
+          .limit(1);
+        const row = rows[0];
         if (!row) return undefined;
         return { email: row.email ?? undefined, name: row.name ?? undefined };
       } catch (e) {
@@ -159,20 +147,23 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
     },
     async put(id, rec) {
       try {
-        await ensureTable();
         // Store the NORMALIZED email (lowercase, trimmed, +tag dropped) so the same
         // mailbox is one value regardless of the cosmetic form a provider handed us —
         // getByEmail matches against the same normalization. A blank/absent email → null.
         const email = rec.email ? normalizeEmail(rec.email) || null : null;
-        await pool.query(
-          `INSERT INTO user_identity (id, email, name, updated_at)
-             VALUES ($1, $2, $3, now())
-           ON CONFLICT (id) DO UPDATE SET
-             email = COALESCE(EXCLUDED.email, user_identity.email),
-             name = COALESCE(EXCLUDED.name, user_identity.name),
-             updated_at = now()`,
-          [id, email, rec.name ?? null],
-        );
+        // COALESCE(excluded, existing) so a later sighting without an email/name keeps
+        // the value we already learned — same semantics as the prior ON CONFLICT.
+        await db
+          .insert(userIdentity)
+          .values({ id, email, name: rec.name ?? null, updatedAt: sql`now()` })
+          .onConflictDoUpdate({
+            target: userIdentity.id,
+            set: {
+              email: sql`coalesce(excluded.email, ${userIdentity.email})`,
+              name: sql`coalesce(excluded.name, ${userIdentity.name})`,
+              updatedAt: sql`now()`,
+            },
+          });
       } catch (e) {
         log.error("put failed (mapping not learned)", { user_id: id, error: formatError(e) });
       }
@@ -183,15 +174,16 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
       const e = normalizeEmail(email);
       if (!e) return undefined;
       try {
-        await ensureTable();
         // Emails are stored normalized; the lower() is belt-and-suspenders for any
         // legacy row written before normalization. Most-recently-updated wins if shared.
-        const res = await pool.query(
-          `SELECT id FROM user_identity WHERE lower(email) = lower($1) ORDER BY updated_at DESC LIMIT 1`,
-          [e],
-        );
-        const row = res.rows[0];
-        return row ? { id: row.id as string } : undefined;
+        const rows = await db
+          .select({ id: userIdentity.id })
+          .from(userIdentity)
+          .where(sql`lower(${userIdentity.email}) = lower(${e})`)
+          .orderBy(desc(userIdentity.updatedAt))
+          .limit(1);
+        const row = rows[0];
+        return row ? { id: row.id } : undefined;
       } catch (err) {
         log.error("getByEmail failed (no match)", { error: formatError(err) });
         return undefined;
@@ -199,17 +191,21 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
     },
     async list(limit = 500) {
       try {
-        await ensureTable();
-        const res = await pool.query(
-          `SELECT id, email, name, updated_at FROM user_identity
-             ORDER BY updated_at DESC LIMIT $1`,
-          [limit],
-        );
-        return res.rows.map((row) => ({
-          id: row.id as string,
+        const rows = await db
+          .select({
+            id: userIdentity.id,
+            email: userIdentity.email,
+            name: userIdentity.name,
+            updatedAt: userIdentity.updatedAt,
+          })
+          .from(userIdentity)
+          .orderBy(desc(userIdentity.updatedAt))
+          .limit(limit);
+        return rows.map((row) => ({
+          id: row.id,
           email: row.email ?? undefined,
           name: row.name ?? undefined,
-          updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
+          updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : undefined,
         }));
       } catch (e) {
         log.error("list failed", { error: formatError(e) });
