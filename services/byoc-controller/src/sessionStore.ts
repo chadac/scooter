@@ -147,85 +147,59 @@ export function createMemoryDeviceStore(): DeviceStore {
  * failure here would mean "unknown device" -> a working laptop silently rejected; swallowing a
  * write failure on deregister would mean a revoked key still authenticating. Errors propagate so
  * the caller fails closed and loudly.
- *
- * Still on hand-written SQL (and self-CREATEs remote_agent_devices): that table is NOT yet in
- * lib/sql/byoc/schema.sql, so there is no generated @scooter/schema table to adopt. Follow-up: add
- * remote_agent_devices to the byoc baseline schema, regenerate, then convert this store too. Why:
- * PR #407 chain.
  */
 export function createPgDeviceStore(config: PgSessionStoreConfig): DeviceStore {
   const pool = new Pool({ connectionString: config.dsn, max: 4, keepAlive: true });
-  let ready: Promise<void> | undefined;
+  const db = drizzle(pool);
 
-  const ensure = (): Promise<void> => {
-    ready ??= (async () => {
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS remote_agent_devices (
-           id          text PRIMARY KEY,
-           owner       text NOT NULL,
-           public_key  text NOT NULL,
-           label       text,
-           created_at  timestamptz NOT NULL DEFAULT now(),
-           last_seen   timestamptz NOT NULL DEFAULT now()
-         )`,
-      );
-      // The hot query is "this owner's devices" (cap enforcement + the settings list).
-      await pool.query(
-        `CREATE INDEX IF NOT EXISTS remote_agent_devices_owner_idx ON remote_agent_devices (owner)`,
-      );
-    })().catch((err) => {
-      ready = undefined; // let a later call retry rather than wedging on one bad startup
-      throw err;
-    });
-    return ready;
-  };
-
-  const toRow = (r: { id: string; owner: string; public_key: string; label: string | null; last_seen: Date }): DeviceRow => ({
+  const toRow = (r: typeof byoc.remoteAgentDevices.$inferSelect): DeviceRow => ({
     id: r.id,
     owner: r.owner,
-    publicKey: r.public_key,
+    publicKey: r.publicKey,
     label: r.label ?? undefined,
-    lastSeen: Math.floor(r.last_seen.getTime() / 1000),
+    // The generated binding maps timestamptz with mode:'string', so this is an ISO
+    // string and not a Date — the hand-written store called .getTime() on it.
+    lastSeen: Math.floor(new Date(r.lastSeen).getTime() / 1000),
   });
 
   return {
     async add(d) {
-      await ensure();
-      await pool.query(
-        `INSERT INTO remote_agent_devices (id, owner, public_key, label, last_seen)
-         VALUES ($1, $2, $3, $4, to_timestamp($5))`,
-        [d.id, d.owner, d.publicKey, d.label ?? null, d.lastSeen],
-      );
+      await db.insert(byoc.remoteAgentDevices).values({
+        id: d.id,
+        owner: d.owner,
+        publicKey: d.publicKey,
+        label: d.label ?? null,
+        lastSeen: sql`to_timestamp(${d.lastSeen})`,
+      });
     },
 
     async listByOwner(owner) {
-      await ensure();
-      const r = await pool.query(
-        `SELECT id, owner, public_key, label, last_seen FROM remote_agent_devices WHERE owner = $1`,
-        [owner],
-      );
-      return r.rows.map(toRow);
+      const rows = await db
+        .select()
+        .from(byoc.remoteAgentDevices)
+        .where(eq(byoc.remoteAgentDevices.owner, owner));
+      return rows.map(toRow);
     },
 
     async getById(id) {
-      await ensure();
-      const r = await pool.query(
-        `SELECT id, owner, public_key, label, last_seen FROM remote_agent_devices WHERE id = $1`,
-        [id],
-      );
-      return r.rows[0] ? toRow(r.rows[0]) : undefined;
+      const rows = await db
+        .select()
+        .from(byoc.remoteAgentDevices)
+        .where(eq(byoc.remoteAgentDevices.id, id));
+      return rows[0] ? toRow(rows[0]) : undefined;
     },
 
     async remove(id) {
-      await ensure();
-      await pool.query(`DELETE FROM remote_agent_devices WHERE id = $1`, [id]);
+      await db.delete(byoc.remoteAgentDevices).where(eq(byoc.remoteAgentDevices.id, id));
     },
 
     async touch(id, at) {
-      await ensure();
       // last_seen drives BOTH the settings list and which device gets evicted at the cap, so a
       // missed touch would make an active laptop look idle and cost it its slot.
-      await pool.query(`UPDATE remote_agent_devices SET last_seen = to_timestamp($2) WHERE id = $1`, [id, at]);
+      await db
+        .update(byoc.remoteAgentDevices)
+        .set({ lastSeen: sql`to_timestamp(${at})` })
+        .where(eq(byoc.remoteAgentDevices.id, id));
     },
 
     async close() {
