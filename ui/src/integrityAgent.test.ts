@@ -321,16 +321,8 @@ describe("IntegrityAgent", () => {
   });
 
   it("the PROGRESS/CONTEXT indicators do not replay their history on reconnect", async () => {
-    // Tab-back fires visibilitychange -> the pump aborts and reconnects -> the fresh
-    // stream re-folds the WHOLE log from empty. RuntimeProvider.push updated isRunning /
-    // activeTool / contextFill on every push "even during replay", so each historical
-    // CONTEXT_USAGE / TOOL_CALL_START walked the indicators forward and the user watched
-    // them animate through history.
-    //
-    // A pending-interrupt change notifies subscribers WITHOUT the replay guard that
-    // covers ordinary message folds (integrityAgent.ts:395), so push() genuinely runs
-    // mid-replay — verified: two notifies arrive with isReplaying()===true, the first
-    // carrying fill=0.05. That is why the guard has to live in push() too.
+    // A pending-interrupt change notifies WITHOUT integrityAgent's own replay guard,
+    // so push() really does run mid-replay — hence the guard there too.
     const frames = [
       { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
       { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 10_000, contextWindow: 200_000 } },
@@ -358,19 +350,14 @@ describe("IntegrityAgent", () => {
       });
       setTimeout(done, 1200);
     });
-    // The INTERMEDIATE reading (10k/200k = 0.05) must never reach the indicators.
+    // 10k/200k = 0.05 is the intermediate reading; only the settled tail may show.
     expect(samples.some((s) => s.fill !== null && Math.abs(s.fill - 0.05) < 1e-9)).toBe(false);
-    // ...and the settled tail IS correct once replay ends.
     expect(agent.contextFill()).toBeCloseTo(0.6, 5);
     agent.dispose();
   });
 
   it("a 401 surfaces the auth error EVEN WHILE REPLAYING (never behind the replay guard)", async () => {
-    // The regression this pins: deferring RuntimeProvider.push's state until replay ends
-    // also deferred the auth banner — but a 401 means the stream never reaches `synced`,
-    // so isReplaying() stays true forever and the banner never shows. That is exactly the
-    // "expired ingress auth surfaces a clear error, not a silent hang" e2e, which caught
-    // it. Error/connection state must be read BEFORE the guard; only progress state after.
+    // A 401 never reaches `synced`, so a deferred banner is a banner that never shows.
     const agent = createIntegrityAgent({
       baseUrl: "http://host",
       conversationId: "c1",
@@ -378,7 +365,6 @@ describe("IntegrityAgent", () => {
     });
     const stop = agent.renderPump();
     await new Promise((r) => setTimeout(r, 400));
-    // Still replaying (no `synced` ever arrives on a 401) — and the error IS visible.
     expect(agent.isReplaying()).toBe(true);
     expect(agent.getStreamAuthError()).toBe(true);
     stop();
@@ -386,10 +372,8 @@ describe("IntegrityAgent", () => {
   });
 
   it("an IN-FLIGHT run is still reported the moment replay ends (the silent-run case)", async () => {
-    // The guard must not resurrect the bug it replaced: a conversation whose last run is
-    // in flight but SILENT (blocked on a long tool call, no streaming) showed no thinking
-    // indicator. The log ends with RUN_STARTED and no terminal, so runIsActive() must be
-    // true at `synced` — the one push that does run.
+    // The log ends with RUN_STARTED and no terminal, so runIsActive() must be true at
+    // `synced` — the one push that does run.
     const frames = [
       { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
       { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "slow_build" } },

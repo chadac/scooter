@@ -467,29 +467,12 @@ function ConversationRuntime({
     let disposed = false;
     const push = () => {
       if (disposed) return;
-      // LOG-DERIVED STATE (run-in-flight, interrupts, error, queue) MUST stay in sync,
-      // or the thinking dot / Stop button / approvals go stale. The bug that requires
-      // it: opening a conversation whose last run is in-flight but SILENT (blocked on a
-      // long tool call, no streaming) showed no thinking indicator, because the
-      // message-render guards below returned before isRunning was ever set.
-      //
-      // But it must not update DURING a replay. A reconnect (tab-back fires one via
-      // visibilitychange) re-folds the whole log from empty, so every historical
-      // RUN_STARTED / CONTEXT_USAGE / TOOL_CALL_START walked these forward in turn and
-      // the user watched the context bar and progress dot animate through history.
-      // Suppressed and pushed once when replay ends — the agent clears `replaying`
-      // BEFORE its final notifyMessages(), so that push lands with the settled tail and
-      // the in-flight case above still resolves correctly.
-      //
-      // ONLY the log-derived PROGRESS state is deferred. Connection/error state is NOT:
-      // a 401 sets the auth flag and notifies while the stream is still replaying (it
-      // never reaches `synced`), so deferring that hides the banner behind a replay that
-      // will never finish — the "expired ingress auth surfaces a clear error, not a
-      // silent hang" case. Same for a run error and a retry banner.
+      // Error state first: a 401 never reaches `synced`, so anything below the guard
+      // would be deferred forever and the banner would never show.
       setRunError(agent.getRunError());
       setRunRetrying(agent.getRunRetrying());
       setStreamAuthError(agent.getStreamAuthError());
-      if (agent.isReplaying()) return;
+      if (agent.isReplaying()) return; // else a reconnect animates the indicators through history
       const active = agent.runIsActive();
       setIsRunning(active);
       setActiveTool(agent.activeTool());
