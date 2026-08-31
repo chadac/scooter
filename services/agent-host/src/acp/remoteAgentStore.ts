@@ -12,12 +12,12 @@
 
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { webhooks } from "@scooter/schema";
+import { byoc } from "@scooter/schema";
 
 import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
 
-const { remoteAgents } = webhooks;
+const { remoteAgents } = byoc;
 
 const log = logger("remoteAgentStore");
 
@@ -43,10 +43,12 @@ export interface PgRemoteAgentStoreConfig {
   dsn: string;
 }
 
-/** Postgres-backed store on the shared DB via the generated @scooter/schema Drizzle client.
- *  The `remote_agents` table is provisioned by the declarative webhooks schema + migrate job
- *  (lib/sql/webhooks/schema.sql), so this store no longer self-CREATEs it — a column rename
- *  there is a compile error here. All errors swallowed (best-effort). Why: PR #407 chain. */
+/** Postgres-backed store on the BYOC database via the generated @scooter/schema Drizzle
+ *  client. `remote_agents` used to exist twice — a webhooks copy written here and a byoc
+ *  copy written by byoc-controller, same entity, no synchronisation. There is now one
+ *  table (lib/sql/byoc/schema.sql) with two writers: byoc-controller owns session_id, this
+ *  store owns the status/last_seen badge. It never touches session_id, so the two writers
+ *  cannot clobber each other. All errors swallowed (best-effort). PR #423. */
 export function createPgRemoteAgentStore(config: PgRemoteAgentStoreConfig): RemoteAgentStore {
   const pool = createPgPool("remoteAgentStore", { connectionString: config.dsn, max: 2 });
   const db = drizzle(pool);

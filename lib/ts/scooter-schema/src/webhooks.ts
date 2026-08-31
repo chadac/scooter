@@ -61,9 +61,3 @@ export const userIdentity = pgTable("user_identity", {
 }, (table) => [
 	index("user_identity_email_lower").using("btree", sql`lower(email)`),
 ]);
-
-export const remoteAgents = pgTable("remote_agents", {
-	owner: text().primaryKey().notNull(),
-	status: text().default('offline').notNull(),
-	lastSeen: timestamp("last_seen", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-});

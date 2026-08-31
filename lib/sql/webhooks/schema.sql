@@ -5,9 +5,9 @@
 -- `just db-generate`. Edit tables HERE, never in a service's inline DDL.
 --
 -- Consumers: webhooks (writes all tables) and agent-host, which connects to THIS
--- database for identity enrichment (user_identity), the conversation_map fallback
--- lookup, and the remote-agent badge (remote_agents — no session_id here; the
--- byoc copy of remote_agents carries that). Column types mirror production: the
+-- database for identity enrichment (user_identity) and the conversation_map fallback
+-- lookup. The remote-agent badge is NOT here — it lives on byoc.remote_agents, which
+-- agent-host and byoc-controller both write. Column types mirror production: the
 -- SQLAlchemy tables are `character varying`, the agent-host raw-DDL tables `text`.
 -- See todo/draft/DECLARATIVE_SCHEMA_ATLAS.md.
 
@@ -74,12 +74,3 @@ CREATE TABLE "user_identity" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "user_identity_email_lower" ON "user_identity" ((lower(email)));
-
--- Per-owner BYO-Claude remote-agent badge (agent-host acp/remoteAgentStore.ts).
--- No session_id in this database — that column lives on the byoc copy.
-CREATE TABLE "remote_agents" (
-  "owner"     text NOT NULL,
-  "status"    text NOT NULL DEFAULT 'offline',
-  "last_seen" timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY ("owner")
-);

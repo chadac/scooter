@@ -1,3 +1,4 @@
-h1:+KffyGzKwgsa0i6QGnLy5cqcLGkwMtSrat+1Rcd7k+w=
+h1:yASCFPhPVKJrbzsowVsKN1n6RGPCUy440g3T4bjckWM=
 20260827201645_baseline.sql h1:zNw15JekMclwgYbNG/qmgGf760GMymUkklSk9EKk56k=
 20260831175021_drop_credential_scopes.sql h1:+z1tP/F2Bc87D9g6tYuuJnBt8v7oB99uCnHSeMlCaTk=
+20260831181922_drop_webhooks_remote_agents.sql h1:t0sFBenrqcqErMJTWEOzQ9Lt5yEoMX1wsagBujsFW/4=
