@@ -102,8 +102,8 @@ jobs:
       # Building .#agentHost under nix exercises the @scooter/schema image integration
       # (tsc resolves the import via the nix symlink) — a failure surface the plain-npm
       # `just typecheck` can't see, since it resolves @scooter/schema from the workspace.
-      - name: agent-host + generated Drizzle schema (nix)
-        run: nix build .#scooter-schema-js .#agentHost --print-build-logs
+      - name: agent-host + byoc-controller + generated Drizzle schema (nix)
+        run: nix build .#scooter-schema-js .#agentHost .#byoc-controller --print-build-logs
 
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface
