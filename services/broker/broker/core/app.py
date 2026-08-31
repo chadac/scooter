@@ -58,8 +58,8 @@ def create_app() -> FastAPI:
         registry_router = create_registry_router(registry_store)
 
     # Static shares (broker/shares/) — persistent static webpages served at /s/<uuid>/.
-    # Built when enabled; its store is init'd in the lifespan + its router mounted
-    # top-level (like /modules and /link).
+    # Built when enabled; its router is mounted top-level (like /modules and /link).
+    # The store issues no schema DDL — its tables are owned by the db-migrator.
     shares_store = None
     shares_router = None
     if settings.shares_enabled:

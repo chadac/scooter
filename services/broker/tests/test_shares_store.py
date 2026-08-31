@@ -12,6 +12,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from scooter_schema.broker import Base as _SchemaBase, StaticShares, StaticShareVersions
+
 from broker.aws.store import StoreConfig
 from broker.core.auth import authenticate
 from broker.core.types import Identity
@@ -27,7 +29,14 @@ def _identity(conv: str) -> Identity:
 @pytest.fixture
 async def store():
     s = ShareStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
-    await s.init()
+    # Production schema is created by the db-migrator (atlas migrate apply); the
+    # store never issues DDL. Tests run against throwaway SQLite, so build the two
+    # tables here from the generated models to give the store something to query.
+    async with s._engine.begin() as conn:
+        await conn.run_sync(
+            _SchemaBase.metadata.create_all,
+            tables=[StaticShares.__table__, StaticShareVersions.__table__],
+        )
     return s
 
 

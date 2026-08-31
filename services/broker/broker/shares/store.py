@@ -6,10 +6,12 @@ snapshot of the bundle's files. The root URL serves the latest version; updating
 a share adds a new version and keeps the UUID. Backed by the shared broker
 Postgres (SQLAlchemy async), mirroring broker/registry/store.py.
 
-⚠️ PLACEHOLDER SCHEMA — a declarative-schema refactor is expected to replace the
-tables below. Everything OUTSIDE this file talks to `ShareStore` through its
-dataclass API (Share / ShareVersion / ShareFile) and never touches a row, so the
-refactor should be contained here. Two placeholder choices flagged for that work:
+The tables (static_shares, static_share_versions) are declared in
+lib/sql/broker/schema.sql (source of truth), created by the db-migrator
+(atlas migrate apply), and consumed here via the generated scooter_schema.broker
+models — this store never issues schema DDL. Everything OUTSIDE this file talks
+to `ShareStore` through its dataclass API (Share / ShareVersion / ShareFile) and
+never touches a row. Two placeholder choices remain, both contained behind that API:
 
   * File bytes are stored inline as base64 in a JSON blob on Postgres. That is
     fine for small bundles but the intended production backend is object storage
@@ -32,8 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 # Generated ORM models for the broker DB (lib/sql/broker/schema.sql -> scooter_schema).
 # Aliased to this store's private row names so the query helpers below are unchanged.
+# The tables are CREATED by the db-migrator (atlas migrate apply), never here — this
+# store only reads/writes rows through these models.
 from scooter_schema.broker import (
-    Base as _SchemaBase,
     StaticShares as _ShareRow,
     StaticShareVersions as _VersionRow,
 )
@@ -148,7 +151,8 @@ def _to_version(row: _VersionRow) -> ShareVersion:
 class ShareStore:
     """Persists static shares + their versions. Async (asyncpg/aiosqlite).
 
-    This is the ONLY class that knows the schema. Callers use the dataclass API.
+    Reads/writes rows through the generated scooter_schema.broker models; it does
+    NOT create tables (the db-migrator owns schema). Callers use the dataclass API.
     """
 
     def __init__(self, config: StoreConfig) -> None:
@@ -161,16 +165,6 @@ class ShareStore:
             pool_recycle=1800,
         )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
-
-    async def init(self) -> None:
-        # Create only THIS store's two tables. The generated Base carries every
-        # broker table; scoping the create keeps init from touching tables other
-        # stores own. checkfirst (default) makes it a no-op on the Atlas-managed DB.
-        async with self._engine.begin() as conn:
-            await conn.run_sync(
-                _SchemaBase.metadata.create_all,
-                tables=[_ShareRow.__table__, _VersionRow.__table__],
-            )
 
     async def get(self, uuid: str) -> Share | None:
         async with self._session() as s:
