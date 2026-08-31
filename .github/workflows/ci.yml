@@ -96,7 +96,7 @@ jobs:
       # added a required `owner` arg; #322 branched earlier and called the old
       # signature) landed on main with 8 failing tests and nothing to catch it.
       - name: python service tests (nix build runs pytest)
-        run: nix build .#broker .#webhooks .#scheduler .#conversation-controller .#warm-store-controller --print-build-logs
+        run: nix build .#broker .#webhooks .#scheduler .#conversation-controller .#warm-store-controller .#scooter-schema --print-build-logs
 
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface

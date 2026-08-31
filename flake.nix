@@ -226,6 +226,11 @@
             inherit pkgs lib n2c webhooks;
           };
 
+          # Generated SQLAlchemy models for the shared databases (from lib/sql via
+          # `just db-generate`). Imported by the Python services; its nix build runs
+          # pytest + pythonImportsCheck (proves the generated models are valid).
+          scooterSchema = pkgs.callPackage ./lib/py/scooter-schema { };
+
           # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
           # spawning a fresh conversation per run via the agent-host /agui. See
           # services/scheduler/ + todo/SCHEDULED_TASKS.md.
@@ -501,6 +506,9 @@
 
             # nix build .#scheduler-image  ->  scheduler OCI image
             scheduler-image = schedulerImage.image;
+
+            # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
+            scooter-schema = scooterSchema;
 
             # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
             remote-agent = remoteAgent;
