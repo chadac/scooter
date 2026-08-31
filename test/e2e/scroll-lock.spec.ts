@@ -105,7 +105,7 @@ test.describe("conversation scroll-lock", () => {
     await expect(chat.scrollToBottomButton()).toBeDisabled({ timeout: 10_000 });
   });
 
-  test("scrolling up releases the lock; the arrow re-engages it", async ({ chat }) => {
+  test("scrolling up releases the lock; the arrow re-engages it", async ({ chat, page }) => {
     await chat.open();
     const scrollable = await fillUntilScrollable(chat);
     expect(scrollable, "thread never grew tall enough to scroll").toBeGreaterThan(0);
@@ -142,6 +142,18 @@ test.describe("conversation scroll-lock", () => {
         { timeout: 10_000 },
       )
       .toBe(true);
+
+    // Wait for scroll events from the poll to settle. The poll's final iteration scrolled
+    // to top=0, and assistant-ui's isAtBottom flag updates from scroll events asynchronously —
+    // a late event can flip the flag after our poll has already exited and read isEnabled=true,
+    // causing useStickToBottom to yank the viewport back to the bottom and hide the arrow
+    // mid-click. The nightly ×5 caught this: iteration #3 hung for 6.1 minutes waiting for
+    // the button to become visible again (it had become hidden right as the click started).
+    // A 300ms settle window lets the store process the poll's final scroll event before we
+    // assert or click.
+    await page.waitForTimeout(300);
+
+    // Re-verify the button is still enabled after the settle window.
     await expect(chat.scrollToBottomButton()).toBeEnabled();
 
     // Click the arrow — it re-engages the lock: the view returns to the bottom and the
