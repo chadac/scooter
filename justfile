@@ -100,6 +100,49 @@ test-e2e-external url basic_auth="":
 test-e2e-real:
     RUN_REAL_GOOSE=1 npm run test:e2e -- real-goose
 
+# --- Randomized test order (flake detection) -------------------------------
+# Test order randomization surfaces ordering-dependent flakes that pass when run
+# in one order but fail in another. Set a seed to make a failing run reproducible.
+
+# unit tests with randomized order. Pass TEST_SEED=<number> to reproduce a run.
+test-unit-randomized seed="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SEED="${TEST_SEED:-{{seed}}}"
+    [ -z "$SEED" ] && SEED=$(date +%s)
+    echo "🎲 Running unit tests with randomized order (seed: $SEED)"
+    echo "   Reproduce with: just test-unit-randomized $SEED"
+    echo "   Or: TEST_SEED=$SEED just test-unit-randomized"
+    echo ""
+    TEST_RANDOMIZE=1 TEST_SEED="$SEED" npm test
+
+# e2e tests with randomized file order. Pass E2E_SEED=<number> to reproduce a run.
+test-e2e-randomized *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Same --workers guard as the normal e2e recipe.
+    if [[ " {{ARGS}} " == *" --workers"* ]]; then
+      echo "error: --workers breaks this suite (shared agent-host state). See the comment in justfile." >&2
+      exit 1
+    fi
+    node scripts/run-e2e-randomized.mjs {{ARGS}}
+
+# cluster tests with randomized order. Pass TEST_SEED=<number> to reproduce a run.
+test-cluster-randomized seed="": cluster-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SEED="${TEST_SEED:-{{seed}}}"
+    [ -z "$SEED" ] && SEED=$(date +%s)
+    echo "🎲 Running cluster tests with randomized order (seed: $SEED)"
+    echo "   Reproduce with: just test-cluster-randomized $SEED"
+    echo "   Or: TEST_SEED=$SEED just test-cluster-randomized"
+    echo ""
+    TEST_RANDOMIZE=1 TEST_SEED="$SEED" \
+      RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 RUN_WEBHOOKS_TESTS=1 \
+      CLUSTER_PROVIDER={{cluster_provider}} \
+      BROKER_NS=agent-sandbox PLATFORM_NS=agent-sandbox \
+      npm run test:cluster
+
 # Just the broker IRSA cluster tests.
 test-broker: cluster-up
     RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 BROKER_NS=agent-sandbox \
