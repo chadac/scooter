@@ -741,6 +741,10 @@ export async function main(
     // Revive-on-assign (multi-replica rollout): pull a reassigned conversation's state
     // from the mirror. Only when a mirror is configured. See ROLLOUT_DRAIN_AND_POD_IP.md.
     hydrateFromMirror: mirroredStore ? (id) => mirroredStore.hydrateFromMirror(id) : undefined,
+    // Flush a conversation's coalesced mirror tail when it is suspended, so the idle sweep can't
+    // leave the most recent turns buffered-but-unmirrored before a rollout moves the conversation
+    // to a fresh pod (CR alive, history empty). Only when a mirror is configured. See suspend().
+    drainMirror: mirroredStore ? (id) => mirroredStore.drainMirror(id) : undefined,
     conversationRegistry,
     // CR-DRIVEN HYDRATION (multi-replica): with selfPod set, hydrate() adopts every Conversation
     // the controller assigned to THIS pod instead of replaying the ephemeral local store. Unset

@@ -89,10 +89,17 @@ class CoalescingMirror {
   }
 
   /** Flush all buffers + await every in-flight mirror chain (clean-shutdown drain). */
-  async drain(id?: SessionId): Promise<void> {
+  /** Returns how many events were still buffered when the drain started. */
+  async drain(id?: SessionId): Promise<number> {
     const ids = id ? [id] : [...new Set([...this.buffers.keys(), ...this.chains.keys()])];
-    for (const i of ids) { this.clearTimer(i); this.flush(i); }
+    let buffered = 0;
+    for (const i of ids) {
+      buffered += this.buffers.get(i)?.length ?? 0;
+      this.clearTimer(i);
+      this.flush(i);
+    }
     await Promise.all(ids.map((i) => this.chains.get(i) ?? Promise.resolve()));
+    return buffered;
   }
 
   private clearTimer(id: SessionId): void {
@@ -112,7 +119,7 @@ export function mirroredConversationStore(
   mirror: ConversationStore,
   opts: MirrorOptions = {},
 ): ConversationStore & {
-  drainMirror: (id?: SessionId) => Promise<void>;
+  drainMirror: (id?: SessionId) => Promise<number>;
   /** Pull one conversation's durable state MIRROR→LOCAL (revive-on-assign). Returns false
    *  if the mirror has no such conversation. See the method + ROLLOUT_DRAIN_AND_POD_IP.md. */
   hydrateFromMirror: (id: SessionId) => Promise<boolean>;

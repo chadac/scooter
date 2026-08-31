@@ -421,6 +421,9 @@ export interface SessionManagerDeps {
    *  mirror has no such conversation. Wired to mirroredStore.hydrateFromMirror when a mirror
    *  is configured; omitted single-replica. Used by reviveFromMirror(). */
   hydrateFromMirror?: (id: SessionId) => Promise<boolean>;
+  /** Flush one conversation's coalesced mirror tail now, returning how many events were
+   *  still buffered. Undefined single-replica (no mirror). */
+  drainMirror?: (id: SessionId) => Promise<number>;
   /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
@@ -1215,6 +1218,25 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         await saveMeta(entry); // durable BEFORE the teardown — a crash here must not lose it
       }
       await entry.bridge?.stop();
+      // Flush the coalesced mirror tail while the bridge is stopped — otherwise a later pod
+      // replacement discards it and the conversation hydrates with missing turns. Best-effort:
+      // a failure must not block the suspend, or the idle sweep retries forever.
+      try {
+        const buffered = (await deps.drainMirror?.(id)) ?? 0;
+        if (buffered > 0) {
+          // Unexpected: the idle sweep suspends only IDLE conversations, so a non-empty
+          // buffer means events were still being written — the sweep raced live work, or
+          // the buffer is stale. Drained anyway; the count is the evidence.
+          log.warn("suspend: drained a non-empty mirror buffer — the conversation was not idle", {
+            conversation_id: id,
+            buffered_events: buffered,
+          });
+        }
+      } catch (err) {
+        log.errorWith("suspend: mirror drain failed; the durable backup may be missing turns", err, {
+          conversation_id: id,
+        });
+      }
       await provisioner.suspend(entry.sandbox);
       entry.bridge = undefined;
       entry.status = "suspended";
