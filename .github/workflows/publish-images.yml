@@ -65,6 +65,7 @@ jobs:
           - { name: agent-broker, attr: broker-image, unfree: false }
           - { name: agent-scheduler, attr: scheduler-image, unfree: false }
           - { name: agent-webhooks, attr: webhooks-image, unfree: false }
+          - { name: agent-db-migrator, attr: db-migrator-image, unfree: false }
           # claude variant bakes the unfree claude-code CLI → allowUnfree + --impure.
           - { name: agent-host-claude, attr: agent-host-image-claude, unfree: true }
           # The BYO-Claude container users `docker run` from the Settings one-liner. This is
@@ -167,6 +168,7 @@ jobs:
           - { image: agent-broker, attr: broker-image }
           - { image: agent-scheduler, attr: scheduler-image }
           - { image: agent-webhooks, attr: webhooks-image }
+          - { image: agent-db-migrator, attr: db-migrator-image }
           - { image: agent-host-claude, attr: agent-host-image-claude, unfree: true }
           - { image: agent-sandbox-os, attr: sandbox-os-image }
           - { image: remote-agent, attr: remote-agent-image, unfree: true }

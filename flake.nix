@@ -138,6 +138,7 @@
         conversationController = ghcrImageRef "conversation-controller" pubImages.conversation-controller-image;
         conversationRouter = ghcrImageRef "conversation-router" pubImages.conversation-router-image;
         warmStoreController = ghcrImageRef "warm-store-controller" pubImages.warm-store-controller-image;
+        dbMigrator = ghcrImageRef "agent-db-migrator" pubImages.db-migrator-image;
       };
       ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
     in
@@ -282,6 +283,13 @@
             inherit pkgs lib n2c broker;
           };
 
+          # Shared-DB migration Job image: Atlas CLI + lib/sql migrations + a driver
+          # that `atlas migrate apply --baseline`s each per-service database. See
+          # modules/db-migrate.nix.
+          dbMigratorImage = import ./pkgs/db-migrator-image {
+            inherit pkgs lib n2c;
+          };
+
           # Broker tools (agent-broker / git-credential-broker / scooter-aws*),
           # prebuilt — always needed, so baked into the sandbox image (the read-only
           # lower of its overlay store). The sandbox-os config callPackages these
@@ -348,6 +356,10 @@
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
             testing.enable = true;
+            # No migration Job in the cluster/e2e renders: the services still self-create
+            # their tables, so migrations aren't needed for tests, and this keeps the
+            # agent-db-migrator image out of the side-load/k3d push set.
+            dbMigrate.enable = false;
             # The cross-pod history mirror, backed by the single-node hostPath escape hatch
             # (k3d's local-path provisioner has no RWX; a hostPath PV binds the RWX claim and
             # every pod shares the one node's directory — the same mechanism odin uses).
@@ -481,6 +493,9 @@
             # nix build .#broker-image  ->  broker OCI image
             broker-image = brokerImage.image;
 
+            # nix build .#db-migrator-image  ->  shared-DB migration Job image
+            db-migrator-image = dbMigratorImage.image;
+
             # nix build .#webhooks-image  ->  webhooks OCI image
             webhooks-image = webhooksImage.image;
 
@@ -594,6 +609,7 @@
             broker.image = lib.mkDefault ghcrImages.broker;
             webhooks.image = lib.mkDefault ghcrImages.webhooks;
             scheduler.image = lib.mkDefault ghcrImages.scheduler;
+            dbMigrate.image = lib.mkDefault ghcrImages.dbMigrator;
           };
         };
       };
