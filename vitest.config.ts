@@ -17,6 +17,13 @@ export default defineConfig({
     // Always print per-test names + pass/fail (so a single run shows exactly
     // what failed — no need to re-run with --reporter=verbose).
     reporters: process.env.CI ? ["default"] : ["verbose"],
+    // Test order randomization to surface ordering-dependent flakes.
+    // Enable with TEST_RANDOMIZE=1; set a specific seed with TEST_SEED=<number>.
+    // A fixed seed makes flake reproduction deterministic.
+    sequence: {
+      shuffle: process.env.TEST_RANDOMIZE === "1",
+      seed: process.env.TEST_SEED ? parseInt(process.env.TEST_SEED, 10) : Date.now(),
+    },
     projects: [
       {
         test: {
