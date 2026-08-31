@@ -30,7 +30,9 @@ owner = "webhooks"
 [webhooks.tables]
 conversation_map  = { writers = ["webhooks"],   readers = ["agent-host"] }
 jira_tickets      = { writers = ["webhooks"],   readers = [] }
-resource_links    = { writers = ["webhooks"],   readers = ["agent-host"] }
+# Webhooks OWNS this table; agent-host also WRITES it (the conversation link panel).
+# Two writers, one table — the same shape as byoc.remote_agents.
+resource_links    = { writers = ["webhooks", "agent-host"], readers = [] }
 pending_messages  = { writers = ["webhooks"],   readers = [] }
 user_identity     = { writers = ["agent-host"], readers = ["webhooks"] }
 

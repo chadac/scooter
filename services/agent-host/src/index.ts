@@ -33,7 +33,8 @@ import { createFileConversationStore } from "./session/fileStore.js";
 import { mirroredConversationStore } from "./session/mirroredStore.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
-import type { ConversationStore } from "./session/manager.js";
+import type { ConversationStore, ConversationLink } from "./session/manager.js";
+import { createPgLinkStore } from "./session/linkStore.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
@@ -524,7 +525,42 @@ export async function main(
         },
       })
     : undefined;
-  const store: ConversationStore = mirroredStore ?? localStore;
+  const fileStore: ConversationStore = mirroredStore ?? localStore;
+
+  // Linked resources (the GitHub PR / Slack thread panel) come from Postgres when a DSN
+  // is configured. They cannot live in the file store: listLinks read LOCAL_STATE_PATH, an
+  // emptyDir every rollout wipes, so a conversation's PR links became permanently
+  // invisible. The file store is passed as the read-through source, so links still only on
+  // disk keep showing and get backfilled. Without a DSN we stay on files — the pg-less mode
+  // must keep working.
+  const sharedDsn = webhooksResourceDsn();
+  const linkStore = sharedDsn
+    ? createPgLinkStore({
+        dsn: sharedDsn,
+        legacy: fileStore.listLinks
+          ? { listLinks: (id) => fileStore.listLinks!(id) }
+          : undefined,
+      })
+    : undefined;
+  hostLog.info("link store selected", { backend: linkStore ? "postgres" : "file" });
+
+  // Decorate rather than replace, so every existing store.addLink / store.listLinks
+  // caller (the panel, the list enrichment, the agent tools) moves without change.
+  // Delegate through the ORIGINAL for everything else: several file-store methods call
+  // their siblings via `this`, so they must keep resolving against the object they were
+  // defined on rather than this wrapper.
+  const store: ConversationStore = linkStore
+    ? new Proxy(fileStore, {
+        get(target, prop, receiver) {
+          if (prop === "addLink") {
+            return (id: SessionId, link: ConversationLink) => linkStore.addLink(id, link);
+          }
+          if (prop === "listLinks") return (id: SessionId) => linkStore.listLinks(id);
+          const value = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      })
+    : fileStore;
   // Image/media assets (uploaded images) live alongside the event log on the
   // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const assets = createPvcAssetStore({

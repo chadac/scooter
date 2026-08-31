@@ -5,6 +5,7 @@ from typing import Optional
 import datetime
 
 from sqlalchemy import DateTime, Index, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -73,6 +74,9 @@ class ResourceLinks(Base):
     resource_type: Mapped[str] = mapped_column(String, nullable=False)
     resource_id: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    title: Mapped[Optional[str]] = mapped_column(Text)
+    ref: Mapped[Optional[dict]] = mapped_column(JSONB)
 
 
 class UserIdentity(Base):
