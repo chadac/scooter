@@ -1,7 +1,8 @@
 // Atlas config for the Scooter shared schemas.
 //
 // Tables are partitioned across per-service databases on one Postgres server
-// (webhooks, scheduler, broker, byoc) — so there is one Atlas env per database,
+// (webhooks, scheduler, broker, byoc, agent_host) — so there is one Atlas env per
+// database,
 // each with its own schema.sql (the desired end-state) and migrations/ dir.
 //
 // Atlas needs a throwaway "dev" Postgres to normalize each schema and compute
@@ -51,6 +52,17 @@ env "byoc" {
   src = "file://byoc/schema.sql"
   dev = var.dev_url
   migration { dir = "file://byoc/migrations" }
+  format {
+    migrate {
+      diff = "{{ sql . \"  \" }}"
+    }
+  }
+}
+
+env "agent_host" {
+  src = "file://agent_host/schema.sql"
+  dev = var.dev_url
+  migration { dir = "file://agent_host/migrations" }
   format {
     migrate {
       diff = "{{ sql . \"  \" }}"

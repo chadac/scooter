@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-ENVS="webhooks scheduler broker byoc"
+ENVS="webhooks scheduler broker byoc agent_host"
 TS_OUT="lib/ts/scooter-schema/src"
 PY_OUT="lib/py/scooter-schema/src/scooter_schema"
 SQLACODEGEN_VERSION="4.0.4"

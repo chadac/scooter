@@ -15,8 +15,8 @@
  *   <JOBS_DIR>/<jobId>/status   the exit code, written ONCE the process exits
  *   <JOBS_DIR>/<jobId>/pid      the detached process pid (for a future kill)
  *
- * A small per-conversation registry lives on the agent-host STATE PVC (via the
- * ConversationStore) so `list` knows a conversation's jobs across a restart.
+ * A small per-conversation registry (Postgres) records which jobs exist, so `list`
+ * knows a conversation's jobs across a restart or a move to another replica.
  *
  * The agent can poll (check()/list()), AND a completion-WATCHER pushes a "job
  * finished" turn when a job exits: pollCompletions() returns newly-exited jobs
@@ -28,7 +28,7 @@
 import type { SandboxApiClient } from "../exec/sandboxExec.js";
 import type { SessionId } from "../types.js";
 
-/** A background job's persisted registry entry (agent-host state PVC). */
+/** A background job's persisted registry entry. */
 export interface JobRecord {
   jobId: string;
   command: string;
@@ -97,8 +97,8 @@ export interface KillResult {
   outcome: "killed" | "already-exited" | "unknown";
 }
 
-/** Persist/read the per-conversation job registry (agent-host state PVC in prod;
- *  a fake in tests). Optional methods so an in-memory store can omit them. */
+/** Persist/read the per-conversation job registry (Postgres in prod; a fake in
+ *  tests). Optional methods so an in-memory store can omit them. */
 export interface JobRegistry {
   saveJob(id: SessionId, job: JobRecord): Promise<void>;
   listJobs(id: SessionId): Promise<JobRecord[]>;
@@ -111,7 +111,7 @@ export interface JobRegistry {
 export interface JobManagerDeps {
   /** Resolve a conversation's exec client (the same seam moduleManager uses). */
   client: (id: SessionId) => SandboxApiClient | Promise<SandboxApiClient>;
-  /** Durable per-conversation job registry (state PVC). */
+  /** Durable per-conversation job registry. */
   registry: JobRegistry;
   /** The in-pod jobs dir (on the workspace PVC). Default JOBS_DIR. */
   jobsDir?: string;

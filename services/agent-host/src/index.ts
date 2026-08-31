@@ -49,7 +49,8 @@ import { writeHints, loadSkills, assembleHints } from "./agent/skills.js";
 import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
-import { createJobManager, type JobStatus } from "./session/jobManager.js";
+import { createJobManager, type JobStatus, type JobRegistry } from "./session/jobManager.js";
+import { createPgJobStore } from "./session/jobStore.js";
 import { createMcpEndpoint, type MarimoToolsWiring } from "./agent/mcpServer.js";
 import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
@@ -338,6 +339,22 @@ function byocResourceDsn(): string {
   const port = process.env.BYOC_DB_PORT ?? "5432";
   const name = process.env.BYOC_DB_NAME ?? "byoc";
   const user = process.env.BYOC_DB_USER ?? "byoc";
+  return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
+}
+
+/** DSN for the agent_host database — the tables agent-host owns and writes
+ *  (conversation_jobs today). Deliberately NOT derived from webhooksResourceDsn(): that
+ *  gates on cfg.webhooks.enable, and agent-host's own state must not disappear because an
+ *  unrelated service is disabled. See todo/draft/SHARED_DB_TABLE_OWNERSHIP.md. */
+function agentHostResourceDsn(): string {
+  const explicit = process.env.AGENT_HOST_DB_DSN;
+  if (explicit) return explicit;
+  const pw = process.env.AGENT_HOST_DB_PASSWORD;
+  if (!pw) return "";
+  const host = process.env.AGENT_HOST_DB_HOST ?? "agent-shared-db";
+  const port = process.env.AGENT_HOST_DB_PORT ?? "5432";
+  const name = process.env.AGENT_HOST_DB_NAME ?? "agent_host";
+  const user = process.env.AGENT_HOST_DB_USER ?? "agent_host";
   return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
 }
 
@@ -774,21 +791,43 @@ export async function main(
     }
   };
 
-  // Background jobs (run_background): the agent starts a long command detached in
-  // its sandbox and keeps working. Gated to a real sandbox with a durable registry.
-  // The registry is the state PVC (store).
-  const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!store.saveJob;
+  // Background jobs (run_background): the agent starts a long command detached in its
+  // sandbox and keeps working. The job's OUTPUT stays in-pod on the workspace PVC; only
+  // this small registry — which jobs a conversation has — is stored here.
+  //
+  // Postgres when a DSN is configured. The file store cannot hold it: LOCAL_STATE_PATH is
+  // an emptyDir every rollout wipes, and nothing hydrates jobs back from the mirror, so a
+  // conversation's jobs vanish whenever its pod moves. The file registry is passed as the
+  // read-through source, so a conversation whose jobs are still only on disk lists them
+  // and gets backfilled. Without a DSN we stay on the file store — an agent-host with no
+  // database must keep working.
+  const fileJobRegistry: JobRegistry | undefined = store.saveJob
+    ? {
+        saveJob: (id, job) => store.saveJob!(id, job),
+        listJobs: (id) => store.listJobs!(id),
+        updateJob: store.updateJob ? (id, job) => store.updateJob!(id, job) : undefined,
+      }
+    : undefined;
+  const jobsDsn = agentHostResourceDsn();
+  // NO DATABASE => NO REGISTRY. Falling back to the file registry would silently resume
+  // using the emptyDir-backed jobs.json this store exists to escape — a conversation's
+  // jobs vanish on the next rollout and nothing says so. Losing the ability to START a
+  // background job is honest; losing the record of one already running is not. With no
+  // registry, jobsEnabled is false and run_background is simply unavailable.
+  const jobRegistry = jobsDsn ? createPgJobStore({ dsn: jobsDsn, legacy: fileJobRegistry }) : undefined;
+  hostLog.info("background-job registry", {
+    backend: jobRegistry ? "postgres" : "none",
+    ...(jobRegistry ? {} : { reason: "no agent_host DSN — background jobs are disabled" }),
+  });
+
+  const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!jobRegistry;
   const jobManager = jobsEnabled
     ? createJobManager({
         client: (id) => {
           const sb = sessions.get(id as SessionId)!.sandbox;
           return deferredSandboxApi(sb, () => provisioner.resume(sb).then(() => {}));
         },
-        registry: {
-          saveJob: (id, job) => store.saveJob!(id as SessionId, job),
-          listJobs: (id) => store.listJobs!(id as SessionId),
-          updateJob: store.updateJob ? (id, job) => store.updateJob!(id as SessionId, job) : undefined,
-        },
+        registry: jobRegistry!,
         cleanupTtlMs: Number(process.env.BACKGROUND_JOB_TTL_MS ?? 10 * 60 * 1000),
       })
     : undefined;

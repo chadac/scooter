@@ -718,6 +718,11 @@ in
   };
 
   config = {
+    # The agent_host database: the tables agent-host OWNS (conversation_jobs). The
+    # provisioning Job creates the db + an `agent_host` role that owns it, and writes the
+    # password to `agent-pg-agent-host`.
+    agentSandbox.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
+
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define
     # `deployments` / `services`, and a shallow `//` update would replace the
     # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
@@ -1145,7 +1150,18 @@ in
                   { name = "BYOC_DB_NAME"; value = "byoc"; }
                   { name = "BYOC_DB_USER"; value = "byoc"; }
                   { name = "BYOC_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-byoc"; key = "password"; }; }
-                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "BYOC_DB_SSLMODE"; value = cfg.postgres.sslmode; });
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "BYOC_DB_SSLMODE"; value = cfg.postgres.sslmode; })
+                # The agent_host database: the tables agent-host OWNS (conversation_jobs,
+                # conversations). Wired whenever Postgres is configured — NOT behind
+                # another service's enable flag, or agent-host's own state disappears when
+                # that service is off. See todo/draft/SHARED_DB_TABLE_OWNERSHIP.md.
+                ++ [
+                  { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "AGENT_HOST_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "AGENT_HOST_DB_NAME"; value = "agent_host"; }
+                  { name = "AGENT_HOST_DB_USER"; value = "agent_host"; }
+                  { name = "AGENT_HOST_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-agent-host"; key = "password"; }; }
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 volumeMounts = [
                   # Per-pod hot history (RWO volumeClaimTemplate).
                   { name = "state"; mountPath = "/var/lib/agent-host"; }

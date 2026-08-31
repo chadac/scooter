@@ -22,7 +22,7 @@ let
 
   # The databases that have an Atlas schema here AND are provisioned in this deploy
   # (postgres.nix only lists a consumer when its feature is enabled).
-  candidates = [ "webhooks" "scheduler" "broker" "byoc" ];
+  candidates = [ "webhooks" "scheduler" "broker" "byoc" "agent_host" ];
   enabledEnvs = builtins.filter (e: pcfg.consumers ? ${e}) candidates;
 in
 {
