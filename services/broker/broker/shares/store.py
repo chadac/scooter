@@ -27,9 +27,16 @@ import json
 import uuid as uuidlib
 from dataclasses import dataclass, field
 
-from sqlalchemy import Integer, String, Text, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# Generated ORM models for the broker DB (lib/sql/broker/schema.sql -> scooter_schema).
+# Aliased to this store's private row names so the query helpers below are unchanged.
+from scooter_schema.broker import (
+    Base as _SchemaBase,
+    StaticShares as _ShareRow,
+    StaticShareVersions as _VersionRow,
+)
 
 from ..aws.store import StoreConfig  # reuse the shared-DB DSN assembly
 
@@ -116,34 +123,6 @@ def _decode_files(blob: str) -> dict[str, ShareFile]:
     }
 
 
-class _Base(DeclarativeBase):
-    pass
-
-
-class _ShareRow(_Base):
-    __tablename__ = "static_shares"
-
-    uuid: Mapped[str] = mapped_column(String, primary_key=True)
-    owner: Mapped[str] = mapped_column(String, index=True)
-    conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
-    description: Mapped[str] = mapped_column(Text, default="")
-    visibility: Mapped[str] = mapped_column(String, default="public", index=True)
-    latest_version: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[str] = mapped_column(String, default="")
-    updated_at: Mapped[str] = mapped_column(String, default="")
-
-
-class _VersionRow(_Base):
-    __tablename__ = "static_share_versions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    share_uuid: Mapped[str] = mapped_column(String, index=True)
-    version: Mapped[int] = mapped_column(Integer)
-    entry_point: Mapped[str] = mapped_column(String, default="index.html")
-    files_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[str] = mapped_column(String, default="")
-
-
 def _to_share(row: _ShareRow) -> Share:
     return Share(
         uuid=row.uuid,
@@ -184,8 +163,14 @@ class ShareStore:
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def init(self) -> None:
+        # Create only THIS store's two tables. The generated Base carries every
+        # broker table; scoping the create keeps init from touching tables other
+        # stores own. checkfirst (default) makes it a no-op on the Atlas-managed DB.
         async with self._engine.begin() as conn:
-            await conn.run_sync(_Base.metadata.create_all)
+            await conn.run_sync(
+                _SchemaBase.metadata.create_all,
+                tables=[_ShareRow.__table__, _VersionRow.__table__],
+            )
 
     async def get(self, uuid: str) -> Share | None:
         async with self._session() as s:

@@ -64,3 +64,31 @@ CREATE TABLE "module_registry" (
 CREATE UNIQUE INDEX "ix_module_registry_name" ON "module_registry" ("name");
 CREATE INDEX "ix_module_registry_owner" ON "module_registry" ("owner");
 CREATE INDEX "ix_module_registry_visibility" ON "module_registry" ("visibility");
+
+-- Published static shares — metadata head row (shares/store.py).
+CREATE TABLE "static_shares" (
+  "uuid"            character varying NOT NULL,
+  "owner"           character varying NOT NULL,
+  "conversation_id" character varying NOT NULL,
+  "description"     text NOT NULL,
+  "visibility"      character varying NOT NULL,
+  "latest_version"  integer NOT NULL,
+  "created_at"      character varying NOT NULL,
+  "updated_at"      character varying NOT NULL,
+  PRIMARY KEY ("uuid")
+);
+CREATE INDEX "ix_static_shares_owner" ON "static_shares" ("owner");
+CREATE INDEX "ix_static_shares_conversation_id" ON "static_shares" ("conversation_id");
+CREATE INDEX "ix_static_shares_visibility" ON "static_shares" ("visibility");
+
+-- One immutable snapshot of a share's files per version (shares/store.py).
+CREATE TABLE "static_share_versions" (
+  "id"          serial NOT NULL,
+  "share_uuid"  character varying NOT NULL,
+  "version"     integer NOT NULL,
+  "entry_point" character varying NOT NULL,
+  "files_json"  text NOT NULL,
+  "created_at"  character varying NOT NULL,
+  PRIMARY KEY ("id")
+);
+CREATE INDEX "ix_static_share_versions_share_uuid" ON "static_share_versions" ("share_uuid");
