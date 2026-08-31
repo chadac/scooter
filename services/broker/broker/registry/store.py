@@ -104,10 +104,6 @@ class ModuleRegistryStore:
         )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
-    async def init(self) -> None:
-        async with self._engine.begin() as conn:
-            await conn.run_sync(_Base.metadata.create_all)
-
     async def get(self, ref: str) -> Module | None:
         """Resolve a module by EITHER its numeric id OR its name (GitHub-style). A
         purely-numeric ref is looked up by id; otherwise by name."""

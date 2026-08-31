@@ -17,6 +17,9 @@ from broker.aws.models import RequestStatus, StsCredentials
 from broker.aws.service import PermissionService, ServiceConfig, RequestError
 from broker.aws.store import PermissionStore, StoreConfig
 
+from conftest import create_schema
+from broker.aws import store as aws_store
+
 
 # --- fakes ----------------------------------------------------------------
 class FakeIam(IamProvisioner):
@@ -88,7 +91,7 @@ async def make_service(tmp_path, iam=None):
     cfg = StoreConfig()
     cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"  # local SQLite for tests
     store = PermissionStore(cfg)
-    await store.init()
+    await create_schema(store, aws_store._Base)
     svc = PermissionService(
         store=store,
         iam=iam or FakeIam(),

@@ -8,11 +8,13 @@ import pytest_asyncio
 from scheduler.store import Store
 from scheduler.cron import InvalidSchedule
 
+from conftest import sqlite_store
+
+
 
 @pytest_asyncio.fixture
 async def store():
-    s = Store("sqlite+aiosqlite:///:memory:")
-    await s.init()
+    s = await sqlite_store()
     yield s
     await s.dispose()
 

@@ -6,14 +6,16 @@ from __future__ import annotations
 
 import pytest
 
-from broker.aws.store import StoreConfig
 from broker.registry.store import ModuleRegistryStore
+
+from conftest import create_schema, sqlite_config
+from broker.registry import store as registry_store
 
 
 @pytest.fixture
 async def store():
-    s = ModuleRegistryStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
-    await s.init()
+    s = ModuleRegistryStore(sqlite_config())
+    await create_schema(s, registry_store._Base)
     return s
 
 

@@ -4,11 +4,26 @@
 from typing import Optional
 import datetime
 
-from sqlalchemy import DateTime, PrimaryKeyConstraint, Text, text
+from sqlalchemy import DateTime, Index, PrimaryKeyConstraint, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
+
+
+class RemoteAgentDevices(Base):
+    __tablename__ = 'remote_agent_devices'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='remote_agent_devices_pkey'),
+        Index('remote_agent_devices_owner_idx', 'owner')
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+    last_seen: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+    label: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class RemoteAgents(Base):

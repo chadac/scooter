@@ -252,7 +252,6 @@ def aws() -> Provider:
             )
 
     async def on_startup() -> None:
-        await store.init()
         await seed_approver_tuples()
         async def sweep_loop() -> None:
             while True:

@@ -12,11 +12,13 @@ import pytest_asyncio
 import scheduler.app as appmod
 from scheduler.store import Store
 
+from conftest import sqlite_store
+
+
 
 @pytest_asyncio.fixture
 async def client(monkeypatch):
-    store = Store("sqlite+aiosqlite:///:memory:")
-    await store.init()
+    store = await sqlite_store()
     appmod.app.state.store = store
 
     async def fake_spawn(prompt, *, title, owner, client=None):

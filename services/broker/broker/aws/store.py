@@ -161,10 +161,6 @@ class PermissionStore:
         )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
-    async def init(self) -> None:
-        async with self._engine.begin() as conn:
-            await conn.run_sync(_Base.metadata.create_all)
-
     async def insert(self, request: PermissionRequest) -> None:
         async with self._session() as s, s.begin():
             s.add(_Row(**_row_kwargs(request)))

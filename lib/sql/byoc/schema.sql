@@ -16,3 +16,20 @@ CREATE TABLE "remote_agents" (
   "session_id" text NULL,
   PRIMARY KEY ("owner")
 );
+
+-- A registered BYOC device (a laptop running the remote agent). The row IS the
+-- credential: public_key authenticates the device, so reads and writes here fail
+-- closed rather than degrading. Was self-CREATEd by byoc-controller at boot until
+-- it was declared here.
+CREATE TABLE "remote_agent_devices" (
+  "id"          text NOT NULL,
+  "owner"       text NOT NULL,
+  "public_key"  text NOT NULL,
+  "label"       text NULL,
+  "created_at"  timestamptz NOT NULL DEFAULT now(),
+  "last_seen"   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id")
+);
+
+-- The hot query is "this owner's devices" (cap enforcement + the settings list).
+CREATE INDEX "remote_agent_devices_owner_idx" ON "remote_agent_devices" ("owner");

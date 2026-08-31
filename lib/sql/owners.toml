@@ -49,3 +49,4 @@ owner = "byoc-controller"
 
 [byoc.tables]
 remote_agents = { writer = "byoc-controller", readers = [] }
+remote_agent_devices = { writer = "byoc-controller", readers = [] }
