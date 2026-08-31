@@ -26,7 +26,6 @@ conversation_map  = { writer = "webhooks",   readers = ["agent-host"] }
 jira_tickets      = { writer = "webhooks",   readers = [] }
 resource_links    = { writer = "webhooks",   readers = ["agent-host"] }
 pending_messages  = { writer = "webhooks",   readers = [] }
-credential_scopes = { writer = "webhooks",   readers = [] }
 user_identity     = { writer = "agent-host", readers = ["webhooks"] }
 remote_agents     = { writer = "agent-host", readers = [] }
 
