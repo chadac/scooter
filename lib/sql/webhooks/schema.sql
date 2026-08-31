@@ -65,17 +65,6 @@ CREATE TABLE "pending_messages" (
   PRIMARY KEY ("id")
 );
 
--- Which credentials a conversation may access (broker auth).
-CREATE TABLE "credential_scopes" (
-  "id"              serial NOT NULL,
-  "conversation_id" character varying NOT NULL,
-  "provider"        character varying NOT NULL,
-  "scope"           character varying NOT NULL,
-  "created_at"      timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY ("id"),
-  CONSTRAINT "credential_scopes_conversation_id_provider_scope_key" UNIQUE ("conversation_id", "provider", "scope")
-);
-
 -- Learned sub->email identity enrichment (agent-host auth/identityStore.ts).
 CREATE TABLE "user_identity" (
   "id"         text NOT NULL,

@@ -53,16 +53,6 @@ export const pendingMessages = pgTable("pending_messages", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 });
 
-export const credentialScopes = pgTable("credential_scopes", {
-	id: serial().primaryKey().notNull(),
-	conversationId: varchar("conversation_id").notNull(),
-	provider: varchar().notNull(),
-	scope: varchar().notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	unique("credential_scopes_conversation_id_provider_scope_key").on(table.scope, table.provider, table.conversationId),
-]);
-
 export const userIdentity = pgTable("user_identity", {
 	id: text().primaryKey().notNull(),
 	email: text(),
