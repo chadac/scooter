@@ -19,7 +19,8 @@ let
 
   runScript = pkgs.writeShellApplication {
     name = "agent-db-migrate";
-    runtimeInputs = [ pkgs.atlas pkgs.coreutils ];
+    # gnugrep is REQUIRED: apply_env greps for "not clean". Why: PR #420.
+    runtimeInputs = [ pkgs.atlas pkgs.coreutils pkgs.gnugrep ];
     text = ''
       # SQL_DIR defaults to the baked migrations; overridable for local runs.
       SQL_DIR="''${SQL_DIR:-${sqlPayload}}"
