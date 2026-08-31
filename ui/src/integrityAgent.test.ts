@@ -320,6 +320,75 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("the PROGRESS/CONTEXT indicators do not replay their history on reconnect", async () => {
+    // A pending-interrupt change notifies WITHOUT integrityAgent's own replay guard,
+    // so push() really does run mid-replay — hence the guard there too.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 10_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "early_tool" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1", outcome: { type: "interrupt", interrupts: [{ id: "i1", reason: "confirmation", message: "ok?" }] } } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "t1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 120_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r2" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    const samples: Array<{ fill: number | null }> = [];
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsub(); stop(); resolve(); };
+      const { unsubscribe: unsub } = agent.subscribe({
+        onMessagesChanged: () => {
+          clearTimeout(timer); timer = setTimeout(done, 150);
+          // Model RuntimeProvider.push EXACTLY: it returns early while replaying.
+          if (agent.isReplaying()) return;
+          samples.push({ fill: agent.contextFill() });
+        },
+      });
+      setTimeout(done, 1200);
+    });
+    // 10k/200k = 0.05 is the intermediate reading; only the settled tail may show.
+    expect(samples.some((s) => s.fill !== null && Math.abs(s.fill - 0.05) < 1e-9)).toBe(false);
+    expect(agent.contextFill()).toBeCloseTo(0.6, 5);
+    agent.dispose();
+  });
+
+  it("a 401 surfaces the auth error EVEN WHILE REPLAYING (never behind the replay guard)", async () => {
+    // A 401 never reaches `synced`, so a deferred banner is a banner that never shows.
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: "c1",
+      fetchImpl: (async () => new Response("Unauthorized", { status: 401 })) as unknown as typeof fetch,
+    });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(agent.isReplaying()).toBe(true);
+    expect(agent.getStreamAuthError()).toBe(true);
+    stop();
+    agent.dispose();
+  });
+
+  it("an IN-FLIGHT run is still reported the moment replay ends (the silent-run case)", async () => {
+    // The log ends with RUN_STARTED and no terminal, so runIsActive() must be true at
+    // `synced` — the one push that does run.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "slow_build" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 600));
+    expect(agent.isReplaying()).toBe(false);
+    expect(agent.runIsActive()).toBe(true);        // the thinking dot stays on
+    expect(agent.activeTool()).toBe("slow_build"); // ...and names what it is doing
+    stop();
+    agent.dispose();
+  });
+
   it("an external (ext-) interrupt SURVIVES a concurrent goose run's RUN_STARTED/RUN_FINISHED", async () => {
     // The AWS-request bug: raiseInterrupt emits RUN_FINISHED(runId ext-aws1); the
     // still-live goose run then emits its own RUN_STARTED/RUN_FINISHED (no
