@@ -20,7 +20,6 @@ from .config import DatabaseSettings
 # helpers below are unchanged. Why: PR #412.
 from scooter_schema.webhooks import (
     ConversationMap,
-    CredentialScopes as CredentialScope,
     JiraTickets as JiraTicket,
     PendingMessages as PendingMessage,
     ResourceLinks as ResourceLink,
@@ -458,50 +457,3 @@ async def clear_conversation(
             "resource_id": resource_id,
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# Credential scope helpers (used by broker)
-# ---------------------------------------------------------------------------
-
-
-async def add_credential_scope(
-    conversation_id: str, provider: str, scope: str
-) -> bool:
-    """Grant a conversation access to a credential scope. Returns True if new."""
-    async with get_session() as session:
-        existing = (
-            await session.execute(
-                select(CredentialScope).where(
-                    CredentialScope.conversation_id == conversation_id,
-                    CredentialScope.provider == provider,
-                    CredentialScope.scope == scope,
-                )
-            )
-        ).scalar_one_or_none()
-
-        if existing:
-            return False
-
-        session.add(CredentialScope(
-            conversation_id=conversation_id,
-            provider=provider,
-            scope=scope,
-        ))
-        return True
-
-
-async def get_credential_scopes(
-    conversation_id: str, provider: str
-) -> list[str]:
-    """Get all scopes a conversation has for a provider."""
-    async with get_session() as session:
-        rows = (
-            await session.execute(
-                select(CredentialScope).where(
-                    CredentialScope.conversation_id == conversation_id,
-                    CredentialScope.provider == provider,
-                )
-            )
-        ).scalars().all()
-        return [r.scope for r in rows]

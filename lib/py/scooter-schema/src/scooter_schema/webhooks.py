@@ -33,20 +33,6 @@ class ConversationMap(Base):
     slack_ts: Mapped[Optional[str]] = mapped_column(String)
 
 
-class CredentialScopes(Base):
-    __tablename__ = 'credential_scopes'
-    __table_args__ = (
-        PrimaryKeyConstraint('id', name='credential_scopes_pkey'),
-        UniqueConstraint('conversation_id', 'provider', 'scope', name='credential_scopes_conversation_id_provider_scope_key')
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    conversation_id: Mapped[str] = mapped_column(String, nullable=False)
-    provider: Mapped[str] = mapped_column(String, nullable=False)
-    scope: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
-
-
 class JiraTickets(Base):
     __tablename__ = 'jira_tickets'
     __table_args__ = (
