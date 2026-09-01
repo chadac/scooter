@@ -19,7 +19,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import { chainNext, EMPTY_CHECKSUM } from "../agui/integrity.js";
 import { formatError, logger } from "../log.js";
-import { backfillConversation } from "./pgEventStore.js";
+import { backfillConversation } from "./eventStore.js";
 import type { AguiEvent } from "../bridge.js";
 import type { SessionId } from "../types.js";
 

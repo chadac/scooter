@@ -30,7 +30,7 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { createPgEventStore, withPgEvents } from "./session/pgEventStore.js";
+import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
 import type { ConversationStore, ConversationLink } from "./session/manager.js";

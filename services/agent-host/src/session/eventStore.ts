@@ -1,14 +1,9 @@
 /**
- * The conversation EVENT LOG on Postgres — the durable replacement for
- * events.jsonl. Stage 2 (design): signatures and contracts only, no bodies.
+ * The conversation EVENT LOG. One table, no second copy — the rows ARE the log,
+ * so there is nothing to reconcile.
  *
- * Replaces fileStore's event half AND the whole mirroredStore layer. There is no
- * second copy, so there is no divergence to reconcile: the table IS the log.
- * See todo/draft/EVENT_LOG_IN_POSTGRES.md for the measurements behind this.
- *
- * NOT a notification bus. agent-host stays the source of truth for live events:
- * onAppend fires in-process after a durable insert, exactly as the file store
- * does today. No LISTEN/NOTIFY, no triggers.
+ * NOT a notification bus: onAppend fires in-process after a committed insert.
+ * No LISTEN/NOTIFY, no triggers.
  */
 
 import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
@@ -22,7 +17,7 @@ import type { AguiEvent } from "../bridge.js";
 import type { ChecksummedEvent } from "./manager.js";
 import type { SessionId } from "../types.js";
 
-const log = logger("pgEventStore");
+const log = logger("eventStore");
 const { conversationEvents } = agent_host;
 
 export interface PgEventStoreConfig {
@@ -101,7 +96,7 @@ export interface PgEventStore {
 }
 
 export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
-  const ownPool = config.db ? undefined : createPgPool("pgEventStore", { connectionString: config.dsn!, max: 4 });
+  const ownPool = config.db ? undefined : createPgPool("eventStore", { connectionString: config.dsn!, max: 4 });
   const db: NodePgDatabase = config.db ?? drizzle(ownPool!);
 
   // Per-conversation write chain. appendEvent is `void`-called for a burst of

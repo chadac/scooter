@@ -101,7 +101,7 @@ describe("eventBackfill — verification", () => {
     try {
       const { db } = fakeDb();
       // A store whose chain drifts: same row count, different checksum.
-      const store = await import("../../src/session/pgEventStore.js");
+      const store = await import("../../src/session/eventStore.js");
       const spy = vi
         .spyOn(store, "backfillConversation")
         .mockResolvedValue({ conversationId: "conv-a" as never, rows: 2, finalChecksum: "deadbeef" });
