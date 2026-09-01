@@ -67,3 +67,5 @@ owner = "agent-host"
 conversation_jobs = { writers = ["agent-host"], readers = [] }
 # Conversation metadata: the sidebar list + rehydration fields.
 conversations     = { writers = ["agent-host"], readers = [] }
+# The conversation event log. Replaces events.jsonl + the NFS mirror.
+conversation_events = { writers = ["agent-host"], readers = [] }

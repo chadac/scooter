@@ -2,13 +2,28 @@
 # Regenerate after a schema change; CI fails on drift (just db-generate-check).
 
 from typing import Optional
+import datetime
 
-from sqlalchemy import BigInteger, Boolean, Index, PrimaryKeyConstraint, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, PrimaryKeyConstraint, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
+
+
+class ConversationEvents(Base):
+    __tablename__ = 'conversation_events'
+    __table_args__ = (
+        PrimaryKeyConstraint('conversation_id', 'seq', name='conversation_events_pkey'),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    checksum: Mapped[str] = mapped_column(Text, nullable=False)
+    prev_checksum: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
 
 
 class ConversationJobs(Base):
