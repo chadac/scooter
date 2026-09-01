@@ -34,13 +34,17 @@ let
       #                                  --baseline to adopt the tables the services
       #                                  already created without re-running the baseline
       # Any OTHER failure (DB/role not ready) is surfaced so the caller retries.
+      #
+      # `ver` is EMPTY for a database that has no baseline migration — one this repo
+      # created, so there is no pre-Atlas state to adopt and only the plain apply can
+      # ever be right. Adoption is then skipped, not the database.
       apply_env() {
         local dir="$1" url="$2" ver="$3" out
         if out="$(atlas migrate apply --dir "$dir" --url "$url" 2>&1)"; then
           printf '%s\n' "$out" | tail -1
           return 0
         fi
-        if printf '%s' "$out" | grep -q "not clean"; then
+        if [ -n "$ver" ] && printf '%s' "$out" | grep -q "not clean"; then
           atlas migrate apply --dir "$dir" --url "$url" --baseline "$ver"
           return $?
         fi
@@ -57,11 +61,20 @@ let
         for f in "$SQL_DIR/$env/migrations"/*_baseline.sql; do
           [ -e "$f" ] && baseline_file="$f" && break
         done
-        if [ -z "$baseline_file" ]; then
-          echo "[$env] no baseline migration found — skipping"
+        # A database with migrations but NO baseline was created by this repo, so
+        # there is nothing pre-Atlas to adopt — apply it plainly. Skipping here
+        # instead left agent_host empty while its services expected the tables.
+        # Only a database with no migrations at all has nothing to do.
+        if [ -z "$baseline_file" ] && ! compgen -G "$SQL_DIR/$env/migrations/*.sql" >/dev/null; then
+          echo "[$env] no migrations found — skipping"
           continue
         fi
-        baseline_version="$(basename "$baseline_file")"; baseline_version="''${baseline_version%%_*}"
+        baseline_version=""
+        if [ -n "$baseline_file" ]; then
+          baseline_version="$(basename "$baseline_file")"; baseline_version="''${baseline_version%%_*}"
+        else
+          echo "[$env] no baseline — applying migrations directly (repo-created database)"
+        fi
         dir="file://$SQL_DIR/$env/migrations"
         url="postgres://$env:$pw@$DB_HOST:$DB_PORT/$env?sslmode=$SSL"
         echo "[$env] applying migrations"
