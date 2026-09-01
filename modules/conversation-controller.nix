@@ -136,6 +136,25 @@ in
           an RWX class (EFS/NFS) on a real cluster. Ignored when hostPath is set.
         '';
       };
+      retainForMigration = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Keep the mirror PVC provisioned while the event log migrates to
+          Postgres, even once agent-host has stopped writing to it.
+
+          The migration reads every conversation's events.jsonl OUT of this
+          volume, so it must outlive the cutover: deleting the PVC in the same
+          change that stops using it would destroy the only copy of any history
+          the backfill had not yet loaded. Set this true BEFORE the cutover
+          deploy, verify the backfill reported every conversation, then set it
+          false (and drop the option) to reclaim the volume.
+
+          Independent of `enable`: with enable = false and this true, the PVC
+          exists but nothing mounts it — which is exactly the post-cutover,
+          pre-reclaim state.
+        '';
+      };
       hostPath = mkOption {
         type = types.nullOr types.str;
         default = null;

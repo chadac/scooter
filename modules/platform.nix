@@ -1287,7 +1287,10 @@ in
         };
       };
     }
-    (lib.mkIf cfg.conversationController.historyMirror.enable (
+    # The PVC is provisioned when the mirror is IN USE, or when it is being kept
+    # alive purely so the Postgres migration can read history out of it.
+    (lib.mkIf (cfg.conversationController.historyMirror.enable
+               || cfg.conversationController.historyMirror.retainForMigration) (
       let hm = cfg.conversationController.historyMirror; in {
         # Shared history-mirror PVC — ONE ReadWriteMany volume every agent-host
         # pod appends its events to (async, off the hot path). After a
