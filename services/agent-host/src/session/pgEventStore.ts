@@ -57,13 +57,24 @@ export interface PgEventStore {
   readEventsWithChecksum(id: SessionId): AsyncIterable<ChecksummedEvent>;
 
   /**
-   * The last `runs` runs, matching tailByRuns EXACTLY — which orders by each
-   * event's `ts` (stable tie-break on append order) BEFORE windowing on
-   * RUN_STARTED. Append order != time order across an agent-host restart seam,
-   * so this is NOT `ORDER BY seq DESC LIMIT n` and NOT a `seq >= boundary`
-   * range; both window across the seam and render scrambled history.
+   * The events from the last `runs` runs — a fast first-paint window.
    *
-   * Returns the window in TIME order, as tailByRuns does.
+   * ORDERED BY seq, NOT by ts. `seq` is the single ordering in this store: it is
+   * assigned in emission order by the one pod that owns the conversation, so it
+   * IS the chronology. The file store had to sort by `ts` first because a log
+   * concatenated runs from separate processes across a restart and append order
+   * could disagree with time; a monotonic per-conversation counter has no such
+   * seam, which is why this store does not inherit that complexity.
+   *
+   * Windowed on RUN_STARTED boundaries, NOT a raw "last N events": the tail must
+   * fold identically to a full replay, and slicing mid-run can cut a
+   * TEXT_MESSAGE_START from its END and render a half-message.
+   *
+   * Two index scans, no window function (measured on a 6k-event conversation):
+   *   1. boundary — ORDER BY seq DESC, filter type=RUN_STARTED, OFFSET runs-1
+   *      LIMIT 1  → Index Scan Backward, reads ~`runs` rows
+   *   2. window   — WHERE seq >= boundary ORDER BY seq  → Index Scan, ~67 rows
+   * That is ~75 rows read instead of all 6,046.
    */
   readEventsTail(id: SessionId, runs: number): Promise<AguiEvent[]>;
 

@@ -29,7 +29,6 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import { createPgEventStore, backfillConversation } from "../../src/session/pgEventStore.js";
 import { chainNext, EMPTY_CHECKSUM } from "../../src/agui/integrity.js";
-import { tailByRuns } from "../../src/session/eventWindow.js";
 import type { ChecksummedEvent } from "../../src/session/manager.js";
 import type { AguiEvent } from "../../src/bridge.js";
 import type { SessionId } from "../../src/types.js";
@@ -212,30 +211,40 @@ describe.skipIf(!implemented)("pgEventStore — the tail", () => {
     expect(tail.map((e) => (e as { runId?: string }).runId).filter(Boolean)).toEqual(["r3"]);
   });
 
-  it("THE RESTART SEAM: the window is by TIME, not append order", async () => {
-    // A conversation that survived restarts concatenates runs from separate
-    // processes, so append order != chronology. Scanning back for the last N
-    // RUN_STARTED in seq order windows across the seam and renders scrambled
-    // history — the bug tailByRuns' orderByTime exists to prevent.
+  it("orders by SEQ, not ts — seq IS the chronology in this store", async () => {
+    // The file store sorted by `ts` first because a log concatenated runs from
+    // separate processes across a restart, so append order could disagree with
+    // time. A monotonic per-conversation counter has no such seam: seq is
+    // assigned in emission order by the single owning pod. Here the ts values
+    // are deliberately out of order to prove seq wins.
     const { db } = fakeDb();
     const s = store(db);
-    const scrambled = [...run(1, 100), ...run(3, 300), ...run(2, 200)]; // appended out of chronology
-    for (const e of scrambled) await s.appendEvent(CONV, e);
+    const misleading = [...run(1, 300), ...run(2, 100)]; // appended 1 then 2, but ts says otherwise
+    for (const e of misleading) await s.appendEvent(CONV, e);
 
-    // The contract IS tailByRuns: same input, same window.
-    expect(await s.readEventsTail(CONV, 1)).toEqual(tailByRuns(scrambled, 1));
-    expect(await s.readEventsTail(CONV, 2)).toEqual(tailByRuns(scrambled, 2));
+    const tail = await s.readEventsTail(CONV, 1);
+    expect(tail.map((e) => (e as { runId?: string }).runId).filter(Boolean)).toEqual(["r2"]);
   });
 
-  it("returns the window in TIME order, as tailByRuns does", async () => {
+  it("windows on RUN boundaries, never mid-run", async () => {
+    // A raw "last N events" could cut a TEXT_MESSAGE_START from its END and
+    // render a half-message. The tail must fold identically to a full replay.
     const { db } = fakeDb();
     const s = store(db);
-    const scrambled = [...run(1, 100), ...run(3, 300), ...run(2, 200)];
-    for (const e of scrambled) await s.appendEvent(CONV, e);
+    for (const e of [...run(1), ...run(2)]) await s.appendEvent(CONV, e);
 
-    const tail = await s.readEventsTail(CONV, 2);
-    const ts = tail.map((e) => (e as { ts?: number }).ts).filter((t): t is number => t !== undefined);
-    expect(ts).toEqual([...ts].sort((a, b) => a - b));
+    const tail = await s.readEventsTail(CONV, 1);
+    expect(tail[0].type, "a window must begin at a RUN_STARTED").toBe("RUN_STARTED");
+    const starts = tail.filter((e) => e.type === "TEXT_MESSAGE_START").length;
+    const ends = tail.filter((e) => e.type === "TEXT_MESSAGE_END").length;
+    expect(starts).toBe(ends); // no half-messages
+  });
+
+  it("asking for more runs than exist returns the whole log", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    for (const e of run(1)) await s.appendEvent(CONV, e);
+    expect(await s.readEventsTail(CONV, 99)).toHaveLength(4);
   });
 
   it("runs <= 0 returns nothing; a conversation with no events returns []", async () => {
