@@ -60,3 +60,29 @@ CREATE INDEX "conversations_by_activity" ON "conversations" ("last_activity_at" 
 
 -- Per-owner filtering for the conversation list.
 CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");
+
+-- The conversation EVENT LOG — the durable replacement for events.jsonl on the
+-- wiped emptyDir, and for the NFS mirror that existed only to survive that.
+-- There is no second copy, so there is no divergence to reconcile.
+--
+-- `seq` is per-conversation and assigned by the writing pod (one pod owns a
+-- conversation at a time). The PK is the backstop, NOT just an index: if that
+-- assumption is ever violated the second writer gets a unique violation instead
+-- of silently interleaving. Inserts here must never ON CONFLICT DO NOTHING.
+--
+-- The PK also serves both reads: `WHERE conversation_id = $1 ORDER BY seq` is a
+-- range scan over adjacent rows, and the tail walks the same index.
+--
+-- checksum/prev_checksum are STORED, never recomputed from `event`: jsonb does
+-- not preserve key order and canonicalize() sorts only top-level keys, so a
+-- chain re-derived from the column could never match the writer's. These two
+-- columns are the only copy of that truth.
+CREATE TABLE "conversation_events" (
+  "conversation_id" text   NOT NULL,
+  "seq"             bigint NOT NULL,
+  "event"           jsonb  NOT NULL,
+  "checksum"        text   NOT NULL,
+  "prev_checksum"   text   NOT NULL,
+  "created_at"      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("conversation_id", "seq")
+);
