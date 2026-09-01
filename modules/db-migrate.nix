@@ -22,8 +22,21 @@ let
 
   # The databases that have an Atlas schema here AND are provisioned in this deploy
   # (postgres.nix only lists a consumer when its feature is enabled).
-  candidates = [ "webhooks" "scheduler" "broker" "byoc" "agent_host" ];
-  enabledEnvs = builtins.filter (e: pcfg.consumers ? ${e}) candidates;
+  #
+  # Matched on the CONSUMER KEY, which is not always the database name: agent-host
+  # registers `consumers.agent-host = { db = "agent_host"; … }`. The key names the
+  # per-consumer Secret (agent-pg-<key>); `c.db` names the database, the role, and
+  # the lib/sql directory. Keying the filter on the db name instead silently drops
+  # agent-host, whose tables NOTHING then creates (its stores stopped self-creating
+  # in #425) — so the Job must iterate keys and resolve `c.db` for everything else.
+  candidates = [ "webhooks" "scheduler" "broker" "byoc" "agent-host" ];
+  enabledKeys = builtins.filter (k: pcfg.consumers ? ${k}) candidates;
+  # key -> the database/role/sql-dir name.
+  dbOf = k: pcfg.consumers.${k}.db;
+  # DB NAME -> the env var the migrator script looks up. Mirror the script's own
+  # `tr '[:lower:]-' '[:upper:]_'` so the two always agree; a bare lib.toUpper would
+  # emit AGENT-HOST_DB_PASSWORD for a hyphenated name, which is not a legal env name.
+  pwEnvOf = db: "${lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] db)}_DB_PASSWORD";
 in
 {
   options.agentSandbox.dbMigrate = with lib; {
@@ -44,12 +57,12 @@ in
     };
   };
 
-  config = lib.mkIf (mcfg.enable && enabledEnvs != [ ]) {
+  config = lib.mkIf (mcfg.enable && enabledKeys != [ ]) {
     kubernetes.resources.jobs.agent-db-migrate = {
       metadata = {
         name = "agent-db-migrate";
         namespace = ns;
-        annotations."agent-sandbox/migrates" = lib.concatStringsSep "," enabledEnvs;
+        annotations."agent-sandbox/migrates" = lib.concatStringsSep "," (map dbOf enabledKeys);
       };
       spec = {
         # Generous retries: the per-consumer databases/roles are created by the
@@ -65,15 +78,18 @@ in
             env = [
               { name = "DB_HOST"; value = pcfg.host; }
               { name = "DB_PORT"; value = toString pcfg.port; }
-              { name = "DB_ENVS"; value = lib.concatStringsSep " " enabledEnvs; }
+              { name = "DB_ENVS"; value = lib.concatStringsSep " " (map dbOf enabledKeys); }
             ]
             ++ lib.optional (pcfg.sslmode != null) { name = "DB_SSLMODE"; value = pcfg.sslmode; }
+            # The script derives its var name from the DB name in DB_ENVS, while the
+            # Secret is named for the consumer KEY — so resolve each side separately
+            # rather than assuming they are the same string.
             ++ map
-              (e: {
-                name = "${lib.toUpper e}_DB_PASSWORD";
-                valueFrom.secretKeyRef = { name = "agent-pg-${e}"; key = "password"; };
+              (k: {
+                name = pwEnvOf (dbOf k);
+                valueFrom.secretKeyRef = { name = "agent-pg-${k}"; key = "password"; };
               })
-              enabledEnvs;
+              enabledKeys;
           };
         };
       };
