@@ -3,6 +3,7 @@
 import pytest
 
 import conversation_controller.loop as loop_mod
+from conversation_controller.logging_config import forget_warned
 from conversation_controller.loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
 from conversation_controller.reconcile import Pod, SandboxRef
 
@@ -16,6 +17,7 @@ def _reset_zombie_state():
         state = getattr(loop_mod, attr, None)
         if state is not None:
             state.clear()
+    forget_warned()
     yield
     for attr in ("_zombie_progress", "_zombie_suspects"):
         state = getattr(loop_mod, attr, None)
@@ -554,3 +556,50 @@ def test_zombie_resolution_is_logged_once(caplog):
             reconcile_once(k, cap=10)
     escalations = [r for r in caplog.records if "escalat" in r.getMessage().lower()]
     assert len(escalations) == 1, f"escalation must be logged once, saw {len(escalations)}"
+
+
+
+
+# --- phase-drift repair: log de-dupe -----------------------------------------
+# The repair re-runs every tick; un-de-duped that was ~5.6k warns/24h from 2 convs.
+
+def _drifting_k8s(names=("drifted",)):
+    """Conversations whose drift never clears — a live owner racing the controller."""
+    from conversation_controller.reconcile import SandboxRef
+
+    return FakeK8s(
+        pods=[Pod("a", True, ip="10.0.0.1")],
+        convs=[_cr(n, host="a", phase="Assigned", gen=3, sandbox_ref=f"sb-{n}") for n in names],
+        sandboxes=[SandboxRef(name=f"sb-{n}", age_seconds=1000.0, operating_mode="Suspended") for n in names],
+    )
+
+
+def _rearm(k8s, name="drifted"):
+    k8s._convs[name]["status"].update({"phase": "Assigned", "hostPod": "a", "hostIP": "10.0.0.1"})
+
+
+def _drift(caplog, level):
+    return [r for r in caplog.records if r.message == "phase drift repaired" and r.levelname == level]
+
+
+def test_THE_SPAM_a_persistent_drift_warns_once_but_is_still_REPAIRED_every_pass(caplog):
+    caplog.set_level("DEBUG")
+    k8s = _drifting_k8s()
+    for _ in range(5):
+        reconcile_once(k8s, cap=10)
+        _rearm(k8s)
+
+    assert len(_drift(caplog, "WARNING")) == 1   # not one per tick
+    # Quieting the LOG must not quiet the FIX.
+    assert len([p for p in k8s.patches if p[1].get("phase") == "Suspended"]) == 5
+
+
+def test_a_drift_that_CLEARS_and_returns_is_loud_again(caplog):
+    # Suppression must not be permanent, and must not mask a different conversation.
+    caplog.set_level("DEBUG")
+    k8s = _drifting_k8s()
+    reconcile_once(k8s, cap=10)          # drifted -> warn
+    reconcile_once(k8s, cap=10)          # clean pass -> forgotten
+    _rearm(k8s)
+    reconcile_once(k8s, cap=10)          # drifts again -> loud
+    assert len(_drift(caplog, "WARNING")) == 2
