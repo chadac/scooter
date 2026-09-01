@@ -965,13 +965,6 @@ in
                   # → the sandbox churns the host /kubepods.slice tree → node instability
                   # / host logout). Unset ⇒ cluster default runtime.
                   { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
-                ++ lib.optional cfg.conversationController.historyMirror.enable
-                  # The shared cross-pod history mirror (async, off the hot path).
-                  # Present ⇒ mirroredStore wraps the local fileStore: every event
-                  # is also appended (coalesced, fire-and-forget) to this RWX
-                  # volume so another pod can revive the conversation after a
-                  # reassignment. See mirroredStore.ts + the CRD design doc.
-                  { name = "MIRROR_STATE_PATH"; value = "/var/lib/agent-history/conversations"; }
                 ++ lib.optional (cfg.retentionMaxAgeMs > 0)
                   # Auto-delete unstarred conversations inactive past the window
                   # (0/default = off, so absent unless a deployment opts in).
@@ -1170,9 +1163,7 @@ in
                   # The image's /tmp is read-only (nix store). goose needs a
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
-                ] ++ lib.optional cfg.conversationController.historyMirror.enable
-                  # Shared cross-pod history mirror (RWX). MIRROR_STATE_PATH lives here.
-                  { name = "history-mirror"; mountPath = "/var/lib/agent-history"; }
+                ]
                 ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
@@ -1206,9 +1197,7 @@ in
                 { name = "state"; emptyDir = { }; }
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
-              ] ++ lib.optional cfg.conversationController.historyMirror.enable
-                # The one shared RWX mirror PVC (all pods mount it).
-                { name = "history-mirror"; persistentVolumeClaim.claimName = "agent-host-history"; }
+              ]
               ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })

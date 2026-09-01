@@ -745,13 +745,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // for synchronous in-memory stores.)
     await store.flush?.(id);
 
-    // Replay from the DURABLE store; local-only replays nothing on a wiped emptyDir.
-    // Called THROUGH `store`: these methods use `this`, so a detached ref breaks. PR #405.
-    const replay = store.readEventsDurableWithChecksum
-      ? (i: SessionId) => store.readEventsDurableWithChecksum!(i)
-      : store.readEventsWithChecksum
-        ? (i: SessionId) => store.readEventsWithChecksum!(i)
-        : undefined;
+    // Called THROUGH `store`: these methods use `this`, so a detached ref breaks.
+    const replay = store.readEventsWithChecksum
+      ? (i: SessionId) => store.readEventsWithChecksum!(i)
+      : undefined;
     if (replay) {
       for await (const c of replay(id)) {
         seen.add(c.checksum);

@@ -291,3 +291,28 @@ export async function backfillConversation(
   }
   return { conversationId: id, rows: seq, finalChecksum: checksum };
 }
+
+/**
+ * Overlay a PgEventStore's event methods onto a base ConversationStore.
+ *
+ * The event log is the only thing that moved: assets and goose state still live
+ * on the state volume, so the base store stays for those. This is a narrow
+ * seam, not a Proxy — the event methods are named explicitly so adding one to
+ * ConversationStore is a compile error here rather than a silent fall-through
+ * to the file implementation the migration was meant to replace.
+ */
+export function withPgEvents<T extends object>(base: T, events: PgEventStore): T {
+  return {
+    ...base,
+    appendEvent: events.appendEvent.bind(events),
+    flush: events.flush.bind(events),
+    readEvents: events.readEvents.bind(events),
+    readEventsWithChecksum: events.readEventsWithChecksum.bind(events),
+    readEventsTail: events.readEventsTail.bind(events),
+    onAppend: events.onAppend.bind(events),
+    onAppendError: events.onAppendError.bind(events),
+    // Deliberately NOT overridden: removeConversation must drop BOTH the rows
+    // and the on-volume assets, so the base store's version runs and the caller
+    // is responsible for the event rows (see index.ts).
+  } as T;
+}
