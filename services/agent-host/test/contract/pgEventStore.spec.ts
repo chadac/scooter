@@ -15,13 +15,7 @@
  *
  * Runs against a REAL drizzle client over an in-memory Postgres double, so the
  * store's generated-model queries are exercised rather than a hand-rolled shim.
- *
- * SKIPPED until Stage 5 fills in pgEventStore — they currently fail with
- * "not implemented", which is correct but would break CI. Drop the gate (set
- * RUN_PG_EVENT_STORE=1 to run them meanwhile) as the implementation lands; a
- * test that never runs is worse than no test, so this MUST be removed then.
  */
-const implemented = process.env.RUN_PG_EVENT_STORE === "1";
 
 import { describe, it, expect } from "vitest";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -53,7 +47,7 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
   const client = {
     async query(cfg: { text: string; values?: unknown[] } | string, params: unknown[] = []) {
       const text = typeof cfg === "string" ? cfg : cfg.text;
-      const values = (typeof cfg === "string" ? params : (cfg.values ?? params)) as unknown[];
+      const values = ((typeof cfg === "string" ? params : (cfg.values ?? params)) ?? []) as unknown[];
       if (fail) {
         const e = fail;
         fail = undefined;
@@ -64,12 +58,18 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
         const [conversation_id, seq, event, checksum, prev_checksum] = values as [
           string, number, unknown, string, string,
         ];
+        // drizzle SERIALIZES jsonb to a string before binding; Postgres returns
+        // it parsed. Model that, or every event->>'type' filter sees a string.
+        const parsed = typeof event === "string" ? JSON.parse(event) : event;
         // The PK is a CORRECTNESS backstop, not just an index: a second writer
-        // must collide loudly rather than interleave silently.
+        // must collide loudly rather than interleave silently. Honour ON
+        // CONFLICT the way Postgres does, so a store that adds
+        // onConflictDoNothing is CAUGHT rather than silently passing.
         if (rows.some((r) => r.conversation_id === conversation_id && r.seq === seq)) {
+          if (/ON CONFLICT/i.test(text)) return { rows: [], rowCount: 0 }; // silently skipped
           throw Object.assign(new Error(`duplicate key value violates unique constraint`), { code: "23505" });
         }
-        rows.push({ conversation_id, seq, event, checksum, prev_checksum });
+        rows.push({ conversation_id, seq, event: parsed, checksum, prev_checksum });
         return { rows: [], rowCount: 1 };
       }
       if (head.startsWith("DELETE")) {
@@ -79,12 +79,37 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
         return { rows: [], rowCount: before - rows.length };
       }
       if (head.startsWith("SELECT")) {
-        const [conversation_id] = values as [string];
-        const out = rows
+        // drizzle asks for rowMode:"array": positional values in SELECT order.
+        // The store issues four shapes; model each by what the SQL selects.
+        const conversation_id = values[0] as string;
+        let mine = rows
           .filter((r) => r.conversation_id === conversation_id)
-          .sort((a, b) => (a.seq as number) - (b.seq as number))
-          .map((r) => [r.seq, r.event, r.checksum, r.prev_checksum]);
-        return { rows: out, rowCount: out.length };
+          .sort((a, b) => (a.seq as number) - (b.seq as number));
+
+        // head(): newest row, seq + checksum only.
+        if (/ORDER BY .*"?SEQ"? DESC/i.test(text) && !/RUN_STARTED/i.test(text)) {
+          const last = mine[mine.length - 1];
+          return { rows: last ? [[last.seq, last.checksum]] : [], rowCount: last ? 1 : 0 };
+        }
+        // tail step 1: the RUN_STARTED boundary, newest-first with an OFFSET.
+        if (/RUN_STARTED/i.test(text)) {
+          // drizzle emits "... limit $2 offset $3", and OMITS the offset when it
+          // is 0 — so params are [conv, limit] or [conv, limit, offset].
+          const starts = mine.filter((r) => (r.event as { type?: string }).type === "RUN_STARTED").reverse();
+          const hit = starts[Number(values[2] ?? 0)];
+          return { rows: hit ? [[hit.seq]] : [], rowCount: hit ? 1 : 0 };
+        }
+        // tail step 2: the window from a boundary seq.
+        if (/>=/.test(text)) {
+          const from = Number(values[1]);
+          mine = mine.filter((r) => (r.seq as number) >= from);
+          return { rows: mine.map((r) => [r.event]), rowCount: mine.length };
+        }
+        // full replay: event + the two checksum columns.
+        return {
+          rows: mine.map((r) => [r.event, r.checksum, r.prev_checksum]),
+          rowCount: mine.length,
+        };
       }
       throw new Error(`unexpected sql: ${text}`);
     },
@@ -94,7 +119,7 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
 
 const store = (db: NodePgDatabase) => createPgEventStore({ db });
 
-describe.skipIf(!implemented)("pgEventStore — ordering", () => {
+describe("pgEventStore — ordering", () => {
   it("THE INVARIANT: a burst of fire-and-forget appends lands in EMISSION order", async () => {
     // appendEvent is called as `void store.appendEvent(...)` for every streamed
     // token, so concurrent awaits must not interleave. A scrambled log (END
@@ -124,22 +149,29 @@ describe.skipIf(!implemented)("pgEventStore — ordering", () => {
   it("a PK collision SURFACES — it must never be swallowed as ON CONFLICT DO NOTHING", async () => {
     // One pod owns a conversation, but canWrite() fails OPEN on an unobserved
     // one, so the invariant has a known hole. A second writer must be loud.
+    // Both stores seed their counter from the table, so a rival that starts
+    // LATER picks up the right seq — that is correct, not a collision. The real
+    // hazard is two writers holding STALE cached heads: a partitioned old owner
+    // keeps appending from the seq it remembers while the new owner advances.
+    // Model that by letting both cache the same head before either writes.
     const { db } = fakeDb();
-    const s = store(db);
+    const a = store(db);
+    const b = store(db);
     const errors: unknown[] = [];
-    s.onAppendError((_id, e) => errors.push(e));
+    a.onAppendError((_id, e) => errors.push(e));
+    b.onAppendError((_id, e) => errors.push(e));
 
-    await s.appendEvent(CONV, run(1)[0]);
-    // A second store sharing the db restarts its counter at 1 → same (conv, seq).
-    const rival = store(db);
-    await rival.appendEvent(CONV, run(2)[0]).catch((e) => errors.push(e));
-    await s.flush(CONV);
+    // Both seed head = seq 0 concurrently, so both compute seq 1.
+    await Promise.all([
+      a.appendEvent(CONV, run(1)[0]).catch(() => {}),
+      b.appendEvent(CONV, run(2)[0]).catch(() => {}),
+    ]);
 
     expect(errors.length, "a duplicate (conversation_id, seq) must not be silent").toBeGreaterThan(0);
   });
 });
 
-describe.skipIf(!implemented)("pgEventStore — the integrity chain", () => {
+describe("pgEventStore — the integrity chain", () => {
   it("onAppend and readEventsWithChecksum agree exactly", async () => {
     const { db } = fakeDb();
     const s = store(db);
@@ -201,7 +233,7 @@ describe.skipIf(!implemented)("pgEventStore — the integrity chain", () => {
   });
 });
 
-describe.skipIf(!implemented)("pgEventStore — the tail", () => {
+describe("pgEventStore — the tail", () => {
   it("returns only the last N runs", async () => {
     const { db } = fakeDb();
     const s = store(db);
@@ -255,7 +287,7 @@ describe.skipIf(!implemented)("pgEventStore — the tail", () => {
   });
 });
 
-describe.skipIf(!implemented)("pgEventStore — durability contracts", () => {
+describe("pgEventStore — durability contracts", () => {
   it("THE SUBAGENT RACE: flush() awaits appends enqueued so far", async () => {
     // A subagent's RUN_FINISHED fires onEvent (→ report completion → read)
     // BEFORE the fire-and-forget insert lands, so lastRunCompleted() saw no
@@ -308,7 +340,7 @@ describe.skipIf(!implemented)("pgEventStore — durability contracts", () => {
   });
 });
 
-describe.skipIf(!implemented)("backfillConversation — the one-shot migration", () => {
+describe("backfillConversation — the one-shot migration", () => {
   const lines = run(1).map((e) => JSON.stringify(e));
 
   it("reproduces the chain the file store would have computed", async () => {
