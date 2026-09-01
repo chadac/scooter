@@ -55,16 +55,6 @@ describe("LOCAL_STATE_PATH", () => {
     expect(configFromEnv().localStatePath).toBe("/tmp/new");
   });
 
-  it("keeps the durable record SEPARATE from the local cache", () => {
-    // The bug this whole document/rename exists for: conflating these two is what made an
-    // ephemeral store look authoritative.
-    process.env.LOCAL_STATE_PATH = "/tmp/local-cache";
-    process.env.MIRROR_STATE_PATH = "/tmp/durable";
-    const cfg = configFromEnv();
-    expect(cfg.localStatePath).toBe("/tmp/local-cache");
-    expect(cfg.mirrorStatePath).toBe("/tmp/durable");
-    expect(cfg.localStatePath).not.toBe(cfg.mirrorStatePath);
-  });
 
   it("falls back to a default when neither is set (dev/local)", () => {
     expect(configFromEnv().localStatePath).toMatch(/\S/);

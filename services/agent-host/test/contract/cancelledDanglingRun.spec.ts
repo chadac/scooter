@@ -55,7 +55,6 @@ describe("a cancelled dangling run is TERMINATED on reassignment, not resumed", 
       provisioner: fakeProvisioner(),
       store,
       selfPod: "new-pod",
-      hydrateFromMirror: async () => true,
     } as never);
     const conv = await sessions.start("t1" as never);
 
@@ -71,7 +70,6 @@ describe("a cancelled dangling run is TERMINATED on reassignment, not resumed", 
       provisioner: fakeProvisioner(),
       store,
       selfPod: "new-pod",
-      hydrateFromMirror: async () => true,
     } as never);
     const conv = await sessions.start("t1" as never);
     const before = dump().filter((e) => (e as { type: string }).type === "RUN_FINISHED").length;
@@ -98,7 +96,6 @@ describe("the LAZY adoption path settles a dangling run (lost revive push)", () 
       provisioner: fakeProvisioner(),
       store,
       selfPod: "new-pod",
-      hydrateFromMirror: async () => true,
     } as never);
 
     expect(await sessions.ensureReadable("t1" as SessionId)).toBe(true);
@@ -111,34 +108,24 @@ describe("the LAZY adoption path settles a dangling run (lost revive push)", () 
 });
 
 describe("the ownership WATCH settles a stranded run (the production shape)", () => {
-  // THE test that would have caught both earlier misses in seconds instead of two
-  // 15-minute deploy-validate rounds: the entry ALREADY EXISTS on the new owner
-  // (the #297 hydrate cascade puts every conversation's entry on every pod), the
-  // revive push never arrives, and the ONLY signal of the reassignment is the
-  // ownership watch. Settlement must fire from that signal alone.
+  // The entry ALREADY EXISTS on the new owner, the revive push never arrives, and the
+  // ONLY signal of the reassignment is the ownership watch. Settlement must fire from
+  // that signal alone.
   it("a watch-delivered gain terminates the cancelled stranded run @proves", async () => {
     const { OwnershipTracker } = await import("../../src/session/ownershipGuard.js");
     const tracker = new OwnershipTracker("new-pod");
-    // FAITHFUL SHAPE: the new owner's LOCAL store is EMPTY — the dead pod's events
-    // live in the MIRROR and only hydrateFromMirror copies them in. The first
-    // version of this test pre-seeded the local store, which is exactly the
-    // infidelity that let a silent no-op ship: on the cluster the gain handler read
-    // an empty local log, found no dangling run, and said nothing.
-    const { store, dump } = seededStore("t1", []);
-    const mirrorEvents = [...DEAD_HOST_RUN, CANCEL];
-    let pulled = false;
-    (store as { listConversations?: unknown }).listConversations = async () =>
-      pulled ? [{ id: "t1", threadId: "t1", title: "", createdAt: 0, lastActivityAt: 0 }] : [];
+    // FAITHFUL SHAPE: the dead pod's events are already visible to the new owner —
+    // one store, readable from any pod. What must NOT be assumed is that the entry
+    // was hydrated locally; the gain handler has to judge from the store.
+    const { store, dump } = seededStore("t1", [...DEAD_HOST_RUN, CANCEL]);
+    (store as { listConversations?: unknown }).listConversations = async () => [
+      { id: "t1", threadId: "t1", title: "", createdAt: 0, lastActivityAt: 0 },
+    ];
     const sessions = createSessionManager({
       provisioner: fakeProvisioner(),
       store,
       selfPod: "new-pod",
       ownershipGuard: tracker,
-      hydrateFromMirror: async () => {
-        pulled = true;
-        for (const e of mirrorEvents) await store.appendEvent("t1" as SessionId, e);
-        return true;
-      },
     } as never);
     // the same wiring index.ts does
     tracker.onGained = (id, gen) => {

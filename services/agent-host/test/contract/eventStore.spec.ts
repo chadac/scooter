@@ -1,9 +1,8 @@
 /**
  * Tier 1 contract — the conversation event log on Postgres.
  *
- * Stage 3 of the PoC process: these are written against the DESIGN and fail
- * until Stage 5 implements it. They encode the invariants the file store proved
- * over many incidents, so a Postgres store that passes them is a safe swap.
+ * These encode the invariants the file store proved over many incidents, so a
+ * store that passes them is a safe replacement for it.
  *
  * Each test names the failure it prevents. The four that matter most:
  *   - ORDER under fire-and-forget appends (a scrambled log breaks replay AND
@@ -21,7 +20,7 @@ import { describe, it, expect } from "vitest";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
-import { createPgEventStore, backfillConversation } from "../../src/session/pgEventStore.js";
+import { createPgEventStore, backfillConversation } from "../../src/session/eventStore.js";
 import { chainNext, EMPTY_CHECKSUM } from "../../src/agui/integrity.js";
 import type { ChecksummedEvent } from "../../src/session/manager.js";
 import type { AguiEvent } from "../../src/bridge.js";
@@ -119,7 +118,7 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
 
 const store = (db: NodePgDatabase) => createPgEventStore({ db });
 
-describe("pgEventStore — ordering", () => {
+describe("eventStore — ordering", () => {
   it("THE INVARIANT: a burst of fire-and-forget appends lands in EMISSION order", async () => {
     // appendEvent is called as `void store.appendEvent(...)` for every streamed
     // token, so concurrent awaits must not interleave. A scrambled log (END
@@ -171,7 +170,7 @@ describe("pgEventStore — ordering", () => {
   });
 });
 
-describe("pgEventStore — the integrity chain", () => {
+describe("eventStore — the integrity chain", () => {
   it("onAppend and readEventsWithChecksum agree exactly", async () => {
     const { db } = fakeDb();
     const s = store(db);
@@ -233,7 +232,7 @@ describe("pgEventStore — the integrity chain", () => {
   });
 });
 
-describe("pgEventStore — the tail", () => {
+describe("eventStore — the tail", () => {
   it("returns only the last N runs", async () => {
     const { db } = fakeDb();
     const s = store(db);
@@ -287,7 +286,7 @@ describe("pgEventStore — the tail", () => {
   });
 });
 
-describe("pgEventStore — durability contracts", () => {
+describe("eventStore — durability contracts", () => {
   it("THE SUBAGENT RACE: flush() awaits appends enqueued so far", async () => {
     // A subagent's RUN_FINISHED fires onEvent (→ report completion → read)
     // BEFORE the fire-and-forget insert lands, so lastRunCompleted() saw no

@@ -30,7 +30,7 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { mirroredConversationStore } from "./session/mirroredStore.js";
+import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
 import type { ConversationStore, ConversationLink } from "./session/manager.js";
@@ -92,21 +92,14 @@ export interface AgentHostConfig {
   port: number;
   namespace: string;
   sandboxImage: string;
-  /** EPHEMERAL local cache of the AG-UI event log for the conversations THIS pod is
-   *  serving. Backed by an emptyDir in cluster — it does NOT survive a restart, despite
-   *  what the old name (STATE_PATH) and this comment used to claim. The durable record is
-   *  `mirrorStatePath`; the source of truth for a conversation's existence/ownership/
-   *  liveness is the Conversation CR. Nothing answering "which conversations exist?" may
-   *  depend on this path. See docs/CONVERSATION_STATE_MODEL.md. */
+  /** EPHEMERAL per-pod volume: uploaded ASSETS and goose state. Backed by an emptyDir in
+   *  cluster, so it does NOT survive a restart. The event log used to live here too (and
+   *  its durable copy on an NFS mirror) — both are now Postgres. Assets have not moved
+   *  yet; they are blobs, not rows. The source of truth for a conversation's
+   *  existence/ownership/liveness is the Conversation CR. Nothing answering "which
+   *  conversations exist?" may depend on this path. See
+   *  docs/CONVERSATION_STATE_MODEL.md. */
   localStatePath: string;
-  /** The DURABLE conversation record (RWX/NFS PVC): history, transcripts, queue state.
-   *  Survives the pod, so ANOTHER pod can revive a conversation from it (the multi-replica
-   *  story). When set, the store becomes a mirroredConversationStore: local is the hot path
-   *  for reads/writes, and a coalesced async copy of every write is shipped here.
-   *  "MIRROR" is a legacy name — this is the persistent store, not a backup of one. Unset =
-   *  single local store (dev/single-replica). See mirroredStore.ts +
-   *  CONVERSATION_CRD_AND_HISTORY.md + docs/CONVERSATION_STATE_MODEL.md. */
-  mirrorStatePath?: string;
   /** Ephemeral scratch for the agent process: goose's per-conversation cwd
    *  (sessions DB + .goosehints). The real work execs into the sandbox, so this
    *  is throwaway — an emptyDir, NOT the durable PVC. */
@@ -206,7 +199,6 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     localStatePath: process.env.LOCAL_STATE_PATH ?? process.env.STATE_PATH ?? defaultStatePath,
     // The DURABLE conversation record (RWX PVC): history, transcripts, queue. Survives the
     // pod. "MIRROR" is a legacy name — it is the persistent store, not a backup.
-    mirrorStatePath: process.env.MIRROR_STATE_PATH || undefined,
     scratchPath: process.env.SCRATCH_PATH ?? defaultScratchPath,
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
@@ -505,28 +497,17 @@ export async function main(
   // FATAL (else goose silently runs tools in the agent-host pod — finding #1);
   // on a fake/dev sandbox there's no real goose, so it's best-effort.
   ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
-  // Conversation store: LOCAL fileStore (hot-path authority). When MIRROR_STATE_PATH is
-  // set, wrap it so every write is also mirrored (async, coalesced, non-blocking) to a
-  // second fileStore on the RWX/NFS volume — so another pod can revive from the mirror
-  // (multi-replica). drainMirror is awaited by main()'s returned shutdown fn, so a
-  // graceful stop ships the mirror's tail (near-RPO-0 on a planned rollout — pairs with
-  // the SIGTERM drain #248). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md.
+  // The event log lives in Postgres; the file store keeps what is still on the state
+  // volume (assets, goose state). NO FILE FALLBACK: without a DSN the event log is
+  // unavailable rather than silently written to an emptyDir every rollout wipes.
   const localStore = createFileConversationStore(config.localStatePath);
-  const mirroredStore = config.mirrorStatePath
-    ? mirroredConversationStore(localStore, createFileConversationStore(config.mirrorStatePath), {
-        // A mirror-write failure is NON-fatal (local is intact) but must not vanish:
-        // it means the backup is diverging from the authority, so surface it debuggably
-        // (full error + stack) AND on the persistence-error metric — same treatment as a
-        // local durable-append failure (store.onAppendError below).
-        onMirrorError: (conversationId, err) => {
-          logger("mirror").errorWith("backup write failed; local intact, mirror diverging", err, {
-            conversation_id: conversationId,
-          });
-          metrics.persistenceError?.({ conversationId });
-        },
-      })
+  const eventStore = agentHostResourceDsn()
+    ? createPgEventStore({ dsn: agentHostResourceDsn() })
     : undefined;
-  const fileStore: ConversationStore = mirroredStore ?? localStore;
+  hostLog.info("conversation event log", { backend: eventStore ? "postgres" : "none" });
+  const fileStore: ConversationStore = eventStore
+    ? withPgEvents(localStore, eventStore)
+    : localStore;
 
   // Linked resources (the GitHub PR / Slack thread panel) come from Postgres when a DSN
   // is configured. They cannot live in the file store: listLinks read LOCAL_STATE_PATH, an
@@ -738,13 +719,6 @@ export async function main(
     provisioner,
     store,
     ownershipGuard: ownership?.guard,
-    // Revive-on-assign (multi-replica rollout): pull a reassigned conversation's state
-    // from the mirror. Only when a mirror is configured. See ROLLOUT_DRAIN_AND_POD_IP.md.
-    hydrateFromMirror: mirroredStore ? (id) => mirroredStore.hydrateFromMirror(id) : undefined,
-    // Flush a conversation's coalesced mirror tail when it is suspended, so the idle sweep can't
-    // leave the most recent turns buffered-but-unmirrored before a rollout moves the conversation
-    // to a fresh pod (CR alive, history empty). Only when a mirror is configured. See suspend().
-    drainMirror: mirroredStore ? (id) => mirroredStore.drainMirror(id) : undefined,
     conversationRegistry,
     // CR-DRIVEN HYDRATION (multi-replica): with selfPod set, hydrate() adopts every Conversation
     // the controller assigned to THIS pod instead of replaying the ephemeral local store. Unset
@@ -1588,23 +1562,6 @@ export async function main(
     await metrics.shutdown();
     await server.close();
     ownership?.stop(); // end the Conversation-CRD watch (multi-replica only)
-    // Flush the NFS mirror's buffered tail before exit so a PLANNED rollout ships every
-    // event to the backup (near-RPO-0); an unclean crash loses at most the in-flight
-    // batch. No-op when the mirror is off. Best-effort — never BLOCK the exit on it, but
-    // a drain failure means the backup just lost its buffered tail (exactly the data a
-    // planned rollout was trying to preserve), so LOG it loudly + debuggably (full error
-    // + stack) instead of swallowing — a silent failure here is undiagnosable after the
-    // pod is gone.
-    if (mirroredStore) {
-      try {
-        await mirroredStore.drainMirror();
-      } catch (err) {
-        hostLog.errorWith(
-            "mirror drain failed on shutdown; the NFS backup may be missing its buffered tail (data loss on this rollout)",
-            err,
-          );
-      }
-    }
   };
 
   // --- helpers ---
@@ -1648,7 +1605,7 @@ export async function main(
     // goose's per-conversation cwd is EPHEMERAL scratch (sessions DB +
     // .goosehints) — the agent's real file/terminal work execs into the sandbox
     // via the ExecBackend, not here. So it lives under scratchPath (an emptyDir),
-    // NOT the local state cache. (The durable event log lives on mirrorStatePath.)
+    // NOT the local state cache. (The durable event log lives in Postgres.)
     const cwd = join(config.scratchPath, conversationId, "agent-cwd");
     mkdirSync(cwd, { recursive: true });
     // Inject the agent identity (Scooter) + skills as goose's .goosehints in its
@@ -1795,16 +1752,9 @@ export async function main(
       // for this conversation (the bridge snapshots it before the current turn).
       loadHistory: async () => {
         const events: AguiEvent[] = [];
-        // Read the DURABLE history (the mirror when local is behind), NOT local-only. On a
-        // restart/rollout this pod's LOCAL emptyDir is wiped or a stale stub, so reading local here
-        // reinjected an EMPTY transcript → the model started from a blank slate + re-introduced
-        // itself. readEventsDurable yields the mirror's superset when local is short. (Falls back to
-        // plain readEvents when no mirror is configured — local IS durable then.) See the
-        // revive-reinjection bug.
-        const readHistory = mirroredStore
-          ? mirroredStore.readEventsDurable(conversationId as SessionId)
-          : store.readEvents(conversationId as SessionId);
-        for await (const e of readHistory) events.push(e);
+        // Reading a stale local log here used to reinject an EMPTY transcript, so the
+        // model started from a blank slate (the revive-reinjection bug).
+        for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
         // If the conversation was COMPACTED, resume from [summary recap + events after
         // the latest marker] so the revived session's context is the compacted one
         // (real token reduction). No marker → full log, unchanged.

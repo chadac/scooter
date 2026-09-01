@@ -1,14 +1,9 @@
 /**
- * The conversation EVENT LOG on Postgres — the durable replacement for
- * events.jsonl. Stage 2 (design): signatures and contracts only, no bodies.
+ * The conversation EVENT LOG. One table, no second copy — the rows ARE the log,
+ * so there is nothing to reconcile.
  *
- * Replaces fileStore's event half AND the whole mirroredStore layer. There is no
- * second copy, so there is no divergence to reconcile: the table IS the log.
- * See todo/draft/EVENT_LOG_IN_POSTGRES.md for the measurements behind this.
- *
- * NOT a notification bus. agent-host stays the source of truth for live events:
- * onAppend fires in-process after a durable insert, exactly as the file store
- * does today. No LISTEN/NOTIFY, no triggers.
+ * NOT a notification bus: onAppend fires in-process after a committed insert.
+ * No LISTEN/NOTIFY, no triggers.
  */
 
 import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
@@ -22,7 +17,7 @@ import type { AguiEvent } from "../bridge.js";
 import type { ChecksummedEvent } from "./manager.js";
 import type { SessionId } from "../types.js";
 
-const log = logger("pgEventStore");
+const log = logger("eventStore");
 const { conversationEvents } = agent_host;
 
 export interface PgEventStoreConfig {
@@ -101,7 +96,7 @@ export interface PgEventStore {
 }
 
 export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
-  const ownPool = config.db ? undefined : createPgPool("pgEventStore", { connectionString: config.dsn!, max: 4 });
+  const ownPool = config.db ? undefined : createPgPool("eventStore", { connectionString: config.dsn!, max: 4 });
   const db: NodePgDatabase = config.db ?? drizzle(ownPool!);
 
   // Per-conversation write chain. appendEvent is `void`-called for a burst of
@@ -290,4 +285,29 @@ export async function backfillConversation(
     });
   }
   return { conversationId: id, rows: seq, finalChecksum: checksum };
+}
+
+/**
+ * Overlay a PgEventStore's event methods onto a base ConversationStore.
+ *
+ * The event log is the only thing that moved: assets and goose state still live
+ * on the state volume, so the base store stays for those. This is a narrow
+ * seam, not a Proxy — the event methods are named explicitly so adding one to
+ * ConversationStore is a compile error here rather than a silent fall-through
+ * to the file implementation the migration was meant to replace.
+ */
+export function withPgEvents<T extends object>(base: T, events: PgEventStore): T {
+  return {
+    ...base,
+    appendEvent: events.appendEvent.bind(events),
+    flush: events.flush.bind(events),
+    readEvents: events.readEvents.bind(events),
+    readEventsWithChecksum: events.readEventsWithChecksum.bind(events),
+    readEventsTail: events.readEventsTail.bind(events),
+    onAppend: events.onAppend.bind(events),
+    onAppendError: events.onAppendError.bind(events),
+    // Deliberately NOT overridden: removeConversation must drop BOTH the rows
+    // and the on-volume assets, so the base store's version runs and the caller
+    // is responsible for the event rows (see index.ts).
+  } as T;
 }
