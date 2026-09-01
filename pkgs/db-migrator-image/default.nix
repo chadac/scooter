@@ -34,10 +34,7 @@ let
       #                                  --baseline to adopt the tables the services
       #                                  already created without re-running the baseline
       # Any OTHER failure (DB/role not ready) is surfaced so the caller retries.
-      #
-      # `ver` is EMPTY for a database that has no baseline migration — one this repo
-      # created, so there is no pre-Atlas state to adopt and only the plain apply can
-      # ever be right. Adoption is then skipped, not the database.
+      # Empty `ver` = no baseline = nothing to adopt, so skip that retry.
       apply_env() {
         local dir="$1" url="$2" ver="$3" out
         if out="$(atlas migrate apply --dir "$dir" --url "$url" 2>&1)"; then
@@ -61,11 +58,13 @@ let
         for f in "$SQL_DIR/$env/migrations"/*_baseline.sql; do
           [ -e "$f" ] && baseline_file="$f" && break
         done
-        # A database with migrations but NO baseline was created by this repo, so
-        # there is nothing pre-Atlas to adopt — apply it plainly. Skipping here
-        # instead left agent_host empty while its services expected the tables.
-        # Only a database with no migrations at all has nothing to do.
-        if [ -z "$baseline_file" ] && ! compgen -G "$SQL_DIR/$env/migrations/*.sql" >/dev/null; then
+        # No baseline just means nothing to adopt; only an empty dir is skipped.
+        # Glob, not `compgen` — absent in this image's bash. Why: PR #429.
+        any_migration=""
+        for f in "$SQL_DIR/$env/migrations"/*.sql; do
+          [ -e "$f" ] && any_migration="$f" && break
+        done
+        if [ -z "$any_migration" ]; then
           echo "[$env] no migrations found — skipping"
           continue
         fi
