@@ -140,3 +140,49 @@ describe("MESSAGE_EVENTS", () => {
     }
   });
 });
+
+describe("windowed folds agree with the whole-log fold", () => {
+  const ev = (o: Record<string, unknown>) => o as unknown as AguiEvent;
+
+  it("ends the assistant turn, so a later tool call does not attach to it", () => {
+    // openAssistant must be cleared at TEXT_MESSAGE_END. While it was not, every
+    // tool call in a conversation attached to the last-opened assistant message
+    // (89 on one message in the real log), and folding a WINDOW of the same log
+    // produced different messages than folding all of it.
+    const out = foldToMessages([
+      ev({ type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }),
+      ev({ type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "first" }),
+      ev({ type: "TEXT_MESSAGE_END", messageId: "a1" }),
+      ev({ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" }),
+      ev({ type: "TOOL_CALL_END", toolCallId: "t1" }),
+    ]);
+    const a1 = out.find((m) => m.id === "a1");
+    expect(a1?.toolCalls ?? [], "closed turn must not absorb the later tool call").toEqual([]);
+    expect(out.some((m) => (m.toolCalls ?? []).some((c) => c.id === "t1"))).toBe(true);
+  });
+
+  it("folds the same messages whether the log is split or whole", () => {
+    // The property the scroll-back paging depends on: a page boundary must not
+    // change what the fold produces.
+    const log = [
+      ev({ type: "RUN_STARTED", runId: "r1" }),
+      ev({ type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }),
+      ev({ type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "one" }),
+      ev({ type: "TEXT_MESSAGE_END", messageId: "a1" }),
+      ev({ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" }),
+      ev({ type: "TOOL_CALL_END", toolCallId: "t1" }),
+      ev({ type: "TOOL_CALL_RESULT", toolCallId: "t1", content: "ok" }),
+      ev({ type: "RUN_FINISHED", runId: "r1" }),
+      ev({ type: "RUN_STARTED", runId: "r2" }),
+      ev({ type: "TEXT_MESSAGE_START", messageId: "a2", role: "assistant" }),
+      ev({ type: "TEXT_MESSAGE_CONTENT", messageId: "a2", delta: "two" }),
+      ev({ type: "TEXT_MESSAGE_END", messageId: "a2" }),
+      ev({ type: "RUN_FINISHED", runId: "r2" }),
+    ];
+    const whole = foldToMessages(log);
+    const cut = log.findIndex((e, i) => i > 0 && e.type === "RUN_STARTED");
+    const split = [...foldToMessages(log.slice(0, cut)), ...foldToMessages(log.slice(cut))];
+    expect(split.map((m) => m.id)).toEqual(whole.map((m) => m.id));
+    expect(split.length).toBe(whole.length);
+  });
+});

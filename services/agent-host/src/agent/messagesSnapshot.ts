@@ -59,6 +59,13 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
       case "REASONING_MESSAGE_START":
         open(e.messageId, "reasoning");
         break;
+      case "TEXT_MESSAGE_END":
+        // Close the assistant turn: a tool call that starts AFTER it belongs to the
+        // next turn, not this one. Without this every tool call in the conversation
+        // attaches to the last-opened assistant message (89 on one message in a real
+        // log), and a windowed fold of the same log disagrees with the whole-log fold.
+        if (openAssistant?.id === e.messageId) openAssistant = undefined;
+        break;
       case "TEXT_MESSAGE_CONTENT":
       case "REASONING_MESSAGE_CONTENT": {
         // CONTENT with no preceding START: a log can begin mid-message (a truncated
