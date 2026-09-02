@@ -345,6 +345,11 @@ function ConversationRuntime({
       const rawImages = imagesFromContent(content);
       const images: OutboundImage[] = [];
       for (const raw of rawImages) {
+        // Defensive: ensure we have valid mimeType and data before constructing the data URL
+        if (!raw.mimeType || !raw.data) {
+          console.warn("[RuntimeProvider] Skipping image with missing mimeType or data:", raw);
+          continue;
+        }
         const scaled = await downscaleImage(`data:${raw.mimeType};base64,${raw.data}`).catch(() => raw);
         if (scaled) images.push(scaled);
       }

@@ -40,10 +40,22 @@ export function imagesFromContent(content: unknown): OutboundImage[] {
     if (!part || typeof part !== "object") continue;
     const p = part as { type?: string; image?: string; data?: string; mimeType?: string };
     if (p.type !== "image") continue;
-    if (p.data && p.mimeType) out.push({ data: p.data, mimeType: p.mimeType });
-    else if (typeof p.image === "string") {
-      const parsed = p.image.startsWith("data:") ? parseDataUrl(p.image) : null;
-      if (parsed) out.push(parsed);
+    // Direct { data, mimeType } format (our own shape)
+    if (p.data && p.mimeType) {
+      out.push({ data: p.data, mimeType: p.mimeType });
+    }
+    // assistant-ui { image: <data-url> } format
+    else if (typeof p.image === "string" && p.image.length > 0) {
+      // Handle data: URLs (the expected format)
+      if (p.image.startsWith("data:")) {
+        const parsed = parseDataUrl(p.image);
+        if (parsed) out.push(parsed);
+      }
+      // Defensive: handle blob: URLs by skipping (browser creates these for pasted images
+      // but they should be converted to data URLs by the attachment adapter)
+      else if (p.image.startsWith("blob:")) {
+        console.warn("[imageUpload] Skipping blob URL - attachment adapter should convert to data URL:", p.image.slice(0, 50));
+      }
     }
   }
   return out;
@@ -59,6 +71,12 @@ export async function downscaleImage(
   dataUrl: string,
   maxBytes = CLIENT_IMAGE_MAX_BYTES,
 ): Promise<OutboundImage | null> {
+  // Defensive: ensure dataUrl is actually a string
+  if (typeof dataUrl !== "string" || dataUrl.length === 0) {
+    console.warn("[imageUpload] downscaleImage called with invalid dataUrl:", typeof dataUrl);
+    return null;
+  }
+
   const src = parseDataUrl(dataUrl);
   if (!src) return null;
   // No canvas (SSR/tests) — pass through; the server still enforces the cap.
@@ -76,14 +94,29 @@ export async function downscaleImage(
   canvas.height = h;
   const ctx = canvas.getContext("2d");
   if (!ctx) return src;
-  ctx.drawImage(img, 0, 0, w, h);
+  
+  try {
+    ctx.drawImage(img, 0, 0, w, h);
+  } catch (e) {
+    console.warn("[imageUpload] Failed to draw image to canvas:", e);
+    return src;
+  }
 
   for (const q of [0.9, 0.8, 0.7, 0.6]) {
-    const out = parseDataUrl(canvas.toDataURL("image/jpeg", q));
-    if (out && base64Bytes(out.data) <= maxBytes) return out;
+    try {
+      const out = parseDataUrl(canvas.toDataURL("image/jpeg", q));
+      if (out && base64Bytes(out.data) <= maxBytes) return out;
+    } catch (e) {
+      console.warn("[imageUpload] Failed to encode image at quality", q, e);
+    }
   }
   // Last resort: the smallest-quality encode (server may still reject; UI warns).
-  return parseDataUrl(canvas.toDataURL("image/jpeg", 0.5)) ?? src;
+  try {
+    return parseDataUrl(canvas.toDataURL("image/jpeg", 0.5)) ?? src;
+  } catch (e) {
+    console.warn("[imageUpload] Failed final encode attempt:", e);
+    return src;
+  }
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
