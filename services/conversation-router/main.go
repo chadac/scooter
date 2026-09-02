@@ -72,6 +72,27 @@ func main() {
 	cache := NewOwnershipCache()
 	go cache.Run(ctx, dyn, cfg.namespace)
 
+	// Read-only Postgres handle on the agent_host database (conversation metadata). Optional:
+	// when no DSN is configured the router proxies exactly as before. Opened once here and held
+	// for the process; the fleet-aggregate list will read from it in a follow-up.
+	if dsn := storeDSNFromEnv(); dsn != "" {
+		store, err := OpenStore(ctx, dsn)
+		if err != nil {
+			log.Warn("postgres read store unavailable (proxy continues)", errAttr(err))
+		} else {
+			defer store.Close()
+			// Prove the SELECT grant at boot — a mis-provisioned read-only role fails HERE
+			// (loudly) rather than silently when the list is first served.
+			vctx, vcancel := context.WithTimeout(ctx, verifyTimeout)
+			if n, err := store.CountConversations(vctx); err != nil {
+				log.Warn("postgres read store verify failed (proxy continues)", errAttr(err))
+			} else {
+				log.Info("postgres read store connected", slog.Int64("conversations", n))
+			}
+			vcancel()
+		}
+	}
+
 	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
 	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator)}
 	go func() {

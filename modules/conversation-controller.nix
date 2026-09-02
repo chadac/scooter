@@ -351,7 +351,17 @@ in
                   { name = "AGENT_HOST_SERVICE"; value = "agent-host-pods"; }
                   { name = "UPSTREAM_PORT"; value = "8080"; }
                   { name = "LISTEN_ADDR"; value = ":8080"; }
-                ];
+                  # READ-ONLY handle on the agent_host database (conversation metadata). Same
+                  # AGENT_HOST_DB_* names agent-host reads, but the credentials are the router's
+                  # own `conversation_router` role — granted only SELECT and pinned
+                  # default_transaction_read_only (see modules/postgres.nix readers). Lets the
+                  # router serve the durable conversation list without fanning out to every pod.
+                  { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "AGENT_HOST_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "AGENT_HOST_DB_NAME"; value = "agent_host"; }
+                  { name = "AGENT_HOST_DB_USER"; value = "conversation_router"; }
+                  { name = "AGENT_HOST_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-router"; key = "password"; }; }
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 resources = lib.mkDefault {
                   requests = { cpu = "50m"; memory = "64Mi"; };
