@@ -85,6 +85,7 @@ type ConnectionOutcome = "not-found" | "closed" | "error" | "auth-error";
 /** A stable empty-queue reference (so getQueuedMessages returns the SAME array
  *  each idle call — a fresh [] every render would defeat React memoization). */
 const EMPTY_QUEUE: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+const EMPTY_INTERRUPTS: readonly PendingInterrupt[] = [];
 
 export class IntegrityAgent extends AbstractAgent {
   private readonly cfg: IntegrityAgentConfig;
@@ -193,11 +194,15 @@ export class IntegrityAgent extends AbstractAgent {
     if (this.contextUsedTokens == null || !this.contextWindow) return null;
     return Math.min(1, this.contextUsedTokens / this.contextWindow);
   }
-  /** {used, total} tokens for a tooltip, or null. */
+  /** {used, total} tokens for a tooltip, or null. Cached so an unchanged reading keeps
+   *  its identity — useState bails out only on Object.is. */
   contextTokens(): { used: number; total: number } | null {
     if (this.contextUsedTokens == null || !this.contextWindow) return null;
-    return { used: this.contextUsedTokens, total: this.contextWindow };
+    const c = this.lastContextTokens;
+    if (c && c.used === this.contextUsedTokens && c.total === this.contextWindow) return c;
+    return (this.lastContextTokens = { used: this.contextUsedTokens, total: this.contextWindow });
   }
+  private lastContextTokens: { used: number; total: number } | null = null;
   private trackContext(e: BaseEvent): boolean {
     const ev = e as unknown as { type?: string; usedTokens?: number; contextWindow?: number };
     if (ev.type !== "CONTEXT_USAGE") return false;
@@ -358,8 +363,20 @@ export class IntegrityAgent extends AbstractAgent {
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
-    return [...this.pendingApprovals.values()];
+    // Stable identity when empty (the common case): the caller feeds this straight to
+    // useState, which bails out only on Object.is — a fresh [] re-renders every notify.
+    if (this.pendingApprovals.size === 0) return EMPTY_INTERRUPTS;
+    const next = [...this.pendingApprovals.values()];
+    if (
+      this.lastInterrupts.length === next.length &&
+      next.every((v, i) => v === this.lastInterrupts[i])
+    ) {
+      return this.lastInterrupts;
+    }
+    this.lastInterrupts = next;
+    return next;
   }
+  private lastInterrupts: readonly PendingInterrupt[] = EMPTY_INTERRUPTS;
 
   /** Update the unified pendingInterrupts map from a single log event:
    *   - RUN_FINISHED(outcome=interrupt) ADDS each interrupt (goose OR ext-) by id;
