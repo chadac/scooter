@@ -69,3 +69,5 @@ conversation_jobs = { writers = ["agent-host"], readers = [] }
 conversations     = { writers = ["agent-host"], readers = [] }
 # The conversation event log. Replaces events.jsonl + the NFS mirror.
 conversation_events = { writers = ["agent-host"], readers = [] }
+# Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.
+conversation_assets = { writers = ["agent-host"], readers = [] }
