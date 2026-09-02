@@ -321,23 +321,28 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           // NOT invoke canUseTool for our allowed/aliased tools, so we can't deny a
           // tool there. Instead, when the agent ISSUES a tool call (a `tool_use`
           // block → a `tool_call` update), if a higher-priority item is now waiting
-          // (a subagent result, a priority message), INTERRUPT the query so the turn
-          // ends cleanly — the agent goes idle and the queued item injects on the
-          // next turn, instead of spinning in a check_subagent loop that blocks the
-          // very result it awaits.
+          // (a subagent result, a priority message), END the turn cleanly by stopping
+          // consumption of the query stream — the agent goes idle and the queued item
+          // injects on the next turn, instead of spinning in a check_subagent loop
+          // that blocks the very result it awaits.
           //
           // We key on `tool_call` (the CALL), NOT `tool_call_update` (the RESULT):
           // verified from a recorded real transcript that the SDK sends tool_result
           // in a `user` message the adapter drops — so tool_call_update is NEVER
           // emitted for claude, and the old hook never fired (the production bug).
-          // The tool_call fires reliably. Interrupting at the call cancels THIS tool
-          // before it runs; that's the intended back-pressure (don't start the next
-          // tool when a priority item is waiting) — the interrupted call re-issues
-          // on the resumed turn after the priority item is handled.
+          // The tool_call fires reliably.
+          //
+          // CRITICAL: we do NOT call q.interrupt() here — that sends "user stopped"
+          // / "tool rejected" signals the agent can't distinguish from a real user
+          // action (the bug in #453). Instead we just break, abandoning the stream.
+          // The SDK session is preserved via sdkSessionId and resumes on the next
+          // turn, so the in-flight tool call naturally re-issues after the priority
+          // item is handled. Breaking cleanly (vs interrupt) prevents spurious
+          // interrupt/denial signals from reaching the agent during notification
+          // delivery.
           if (deps.shouldYield?.() && updates.some((u) => u.sessionUpdate === "tool_call")) {
-            debug("[sdk] back-pressure: yielding turn (priority item waiting) — interrupting query");
+            debug("[sdk] back-pressure: yielding turn (priority item waiting) — ending stream");
             stopReason = "end_turn";
-            await q.interrupt?.().catch(() => {});
             break;
           }
         }
