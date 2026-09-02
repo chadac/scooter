@@ -57,6 +57,7 @@ const SessionRow = memo(function SessionRow({
   active,
   editing,
   labelMode,
+  onClose,
 }: {
   session: import("./sessions.js").Session;
   depth: number;
@@ -69,6 +70,7 @@ const SessionRow = memo(function SessionRow({
   // state was dropped when a background merge re-rendered/remounted the row mid-edit).
   editing: boolean;
   labelMode: LabelMode;
+  onClose?: () => void;
 }) {
   const [draft, setDraft] = useState(s.title);
 
@@ -188,7 +190,10 @@ const SessionRow = memo(function SessionRow({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => sessionStore.switchTo(s.id)}
+          onClick={() => {
+            sessionStore.switchTo(s.id);
+            onClose?.();
+          }}
           onDoubleClick={openRename}
           className={cn("min-w-0 flex-1 justify-start truncate", active && "font-medium")}
           title={`${s.title} — double-click to rename`}
@@ -257,7 +262,7 @@ const SessionRow = memo(function SessionRow({
 // mode "input never appears"). With the merge frozen during edit (mergeFromServer)
 // AND the parent storm gone, the ONLY thing that re-renders the sidebar mid-rename is
 // the user's own setEditing/clearEditing — nothing can drop or detach the input.
-export const Sidebar = memo(function Sidebar() {
+export const Sidebar = memo(function Sidebar({ onClose }: { onClose?: () => void }) {
   const state = useSessions();
   const { currentId, editingId, scope, query, providerFilter, labelMode } = state;
   // Hierarchy: each parent followed by its subagents (depth 1). filteredSessions
@@ -273,17 +278,30 @@ export const Sidebar = memo(function Sidebar() {
     (scope === "all" ? 1 : 0) + providerFilter.length + (labelMode !== "title" ? 1 : 0);
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r bg-muted/30">
-      <div className="p-3">
+    <aside className="flex h-full w-64 sm:w-64 flex-col border-r bg-muted/30 max-w-[85vw]">
+      <div className="flex items-center justify-between p-3 lg:block">
         <Button
           variant="outline"
           size="sm"
           data-testid="new-session"
           onClick={() => sessionStore.newSession()}
-          className="w-full"
+          className="flex-1 lg:w-full"
         >
           + New conversation
         </Button>
+        {/* Close button for mobile */}
+        {onClose && (
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="sidebar-close"
+            aria-label="Close sidebar"
+            onClick={onClose}
+            className="ml-2 lg:hidden touch-manipulation"
+          >
+            ✕
+          </Button>
+        )}
       </div>
       {/* Keyword search over the title + linked-resource names. */}
       <div className="px-3 pb-2">
@@ -441,6 +459,7 @@ export const Sidebar = memo(function Sidebar() {
             active={s.id === currentId}
             editing={s.id === editingId}
             labelMode={labelMode}
+            onClose={onClose}
           />
         ))}
       </nav>

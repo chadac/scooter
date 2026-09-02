@@ -4,6 +4,7 @@
  * live as the agent works in the sandbox.
  */
 
+import React from "react";
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
 import { Sidebar } from "./Sidebar.js";
 import { RightPanel } from "./RightPanel.js";
@@ -46,15 +47,43 @@ function ConversationArea() {
 
 export function App() {
   const view = useView();
+  const [leftSidebarOpen, setLeftSidebarOpen] = React.useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = React.useState(false);
+
   return (
     <RuntimeProvider>
       <div className="flex h-dvh flex-col">
         <header className="flex items-center justify-between gap-3 border-b px-4 py-3 text-sm">
-          <div>
-            <strong>Scooter</strong>
-            <span className="text-muted-foreground"> — your agent, running in a Nix sandbox</span>
+          <div className="flex items-center gap-2">
+            {/* Mobile menu toggle for left sidebar */}
+            <Button
+              data-testid="mobile-menu-left"
+              variant="ghost"
+              size="sm"
+              aria-label="Toggle sidebar"
+              onClick={() => setLeftSidebarOpen(!leftSidebarOpen)}
+              className="lg:hidden -ml-2 touch-manipulation"
+            >
+              ☰
+            </Button>
+            <div>
+              <strong className="hidden sm:inline">Scooter</strong>
+              <strong className="sm:hidden">S</strong>
+              <span className="hidden md:inline text-muted-foreground"> — your agent, running in a Nix sandbox</span>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Mobile menu toggle for right panel - visible on mobile when there are items */}
+            <Button
+              data-testid="mobile-menu-right"
+              variant="ghost"
+              size="sm"
+              aria-label="Toggle right panel"
+              onClick={() => setRightPanelOpen(!rightPanelOpen)}
+              className="lg:hidden touch-manipulation"
+            >
+              ☰
+            </Button>
             {/* Settings (scheduled tasks, …). Toggles the main pane. */}
             <Button
               data-testid="settings-toggle"
@@ -77,8 +106,27 @@ export function App() {
             <SettingsPage />
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1">
-            <Sidebar />
+          <div className="flex min-h-0 flex-1 relative">
+            {/* Mobile overlay backdrop */}
+            {(leftSidebarOpen || rightPanelOpen) && (
+              <div
+                className="fixed inset-0 z-20 bg-black/50 lg:hidden"
+                onClick={() => {
+                  setLeftSidebarOpen(false);
+                  setRightPanelOpen(false);
+                }}
+                aria-hidden="true"
+              />
+            )}
+            
+            {/* Left Sidebar - slides in on mobile */}
+            <div className={cn(
+              "fixed inset-y-0 left-0 z-30 lg:relative lg:z-0 transition-transform duration-300 lg:translate-x-0",
+              leftSidebarOpen ? "translate-x-0" : "-translate-x-full"
+            )}>
+              <Sidebar onClose={() => setLeftSidebarOpen(false)} />
+            </div>
+
             <main className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1">
                 {/* Provider "post" tool calls (slack/github/gitlab/jira) render as
@@ -92,11 +140,14 @@ export function App() {
                 <ConversationArea />
               </div>
             </main>
-            {/* Right-side tabbed panel: Approvals (AG-UI interrupts — a gate the user
-                can't miss; auto-focused on a new one) + Queue (messages waiting behind
-                the active run, moved off the main column so a backlog no longer eats
-                the screen). Collapses entirely when both are empty. */}
-            <RightPanel />
+            
+            {/* Right Panel - slides in on mobile */}
+            <div className={cn(
+              "fixed inset-y-0 right-0 z-30 lg:relative lg:z-0 transition-transform duration-300 lg:translate-x-0",
+              rightPanelOpen ? "translate-x-0" : "translate-x-full"
+            )}>
+              <RightPanel onClose={() => setRightPanelOpen(false)} />
+            </div>
           </div>
         )}
       </div>
