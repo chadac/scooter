@@ -1494,3 +1494,62 @@ describe("clarifyRunError (context-overflow → clear message)", () => {
     expect(clarifyRunError(raw)).toBe(raw);
   });
 });
+
+/**
+ * A WEDGED SESSION must not be retried through.
+ *
+ * Conversation af7fe988 died this way: a cancel left the SDK session broken, and the
+ * pump re-drove the SAME cached session 5 times. Every attempt was dead-on-arrival
+ * ([ede_diagnostic] result_type=user, no ACP activity), and the user's message was
+ * re-persisted on each one — 6 copies in the log for a single prompt.
+ */
+describe("a wedged run recreates the agent session", () => {
+  const mk = (agent: ReturnType<typeof createFakeAcpAgent>, over: Record<string, unknown> = {}) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    let made = 0;
+    const bridge = createSessionBridge({
+      config: { cwd: "/w", skillsDir: "/s", agent: { command: "f", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      // A FACTORY: each call is a fresh session. Counting calls tells us whether the
+      // pump re-initialized or reused the wedged one.
+      acpClient: () => {
+        made++;
+        return Promise.resolve(acpClientFromTransport(agent.transport, exec));
+      },
+      firstActivityTimeoutMs: 25,
+      deathRetryMax: 2,
+      deathRetryBaseMs: 1,
+      ...over,
+    } as never);
+    return { bridge, sessions: () => made };
+  };
+
+  it("THE FIX: a dead-on-arrival run does not retry through the SAME session", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([]); // emits nothing
+    agent.gate();       // ...and hangs
+    const { bridge, sessions } = mk(agent);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" } as never);
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(sessions(), "each wedged attempt must mint a FRESH session").toBeGreaterThan(1);
+  });
+
+  it("does NOT re-persist the user's message on a retry", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate();
+    const { bridge } = mk(agent);
+    // onPersist, not onEvent: the user's message is written to the LOG, and it is the
+    // log that a retry was duplicating.
+    const seen: Array<{ type: string; delta?: string }> = [];
+    bridge.onPersist((e: { type: string; delta?: string }) => seen.push(e));
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "the only copy" } as never);
+    await new Promise((r) => setTimeout(r, 400));
+
+    const copies = seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT" && e.delta === "the only copy");
+    expect(copies.length, "the prompt is logged once, not once per attempt").toBe(1);
+  });
+});
