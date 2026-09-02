@@ -61,4 +61,3 @@ nav:
       - reference/options/index.md
   - Internals:
       - Conversation state model: CONVERSATION_STATE_MODEL.md
-      - Multimodal images: MULTIMODAL_IMAGES.md
