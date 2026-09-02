@@ -170,6 +170,11 @@ export interface ConversationStore {
   readEventsTail?(id: SessionId, runs: number): Promise<AguiEvent[]>;
   /** The last `limit` events by seq — a size-bounded first-paint window. Optional. */
   readEventsTailByCount?(id: SessionId, limit: number): Promise<AguiEvent[]>;
+  readEventsBefore?(
+    id: SessionId,
+    beforeSeq: number,
+    limit: number,
+  ): Promise<{ events: AguiEvent[]; firstSeq: number; done: boolean }>;
   /** Subscribe to events as they are durably appended, each carrying its rolling
    *  checksum (folded in persisted order). This is the authority the live
    *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's

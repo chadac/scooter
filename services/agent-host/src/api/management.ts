@@ -14,6 +14,7 @@
  *   POST   /conversations/:id/messages     prompt {text}
  *   GET    /conversations/:id/events       SSE stream
  *   GET    /conversations/:id/history      the event log
+ *   GET    /conversations/:id/messages     older messages, paged back by seq
  *   POST   /conversations/:id/permission/:toolCallId  {optionId}
  */
 
@@ -26,6 +27,13 @@ import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../s
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
+import {
+  alignPageToRun,
+  foldToMessages,
+  MESSAGE_EVENTS,
+  splitForInitialSnapshot,
+} from "../agent/messagesSnapshot.js";
+
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
@@ -688,6 +696,45 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json: { events, ...(wantRuns ? { runs: Math.min(runsParam, 100) } : {}) } };
   });
 
+  r.get("/conversations/:id/messages", async (ctx) => {
+    // Older history, paged backwards for the scroll-up load. `before` is the seq the
+    // client currently starts at (from the snapshot's fromSeq, then this response's);
+    // the reply is the window immediately before it, folded to messages.
+    const before = Number(ctx.query.get("before"));
+    const limitParam = Number(ctx.query.get("limit"));
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 5000) : 1200;
+    if (!Number.isFinite(before) || before <= 1) {
+      return { json: { messages: [], fromSeq: 1, done: true } };
+    }
+    if (!store.readEventsBefore) {
+      // No paging reader (in-memory tests): serve from the full log.
+      const all: AguiEvent[] = [];
+      for await (const e of store.readEvents(ctx.params.id)) all.push(e);
+      const end = Math.max(0, Math.min(before - 1, all.length));
+      const start = Math.max(0, end - limit);
+      const window = all.slice(start, end);
+      const drop = start === 0 ? 0 : alignPageToRun(window);
+      return {
+        json: {
+          messages: foldToMessages(window.slice(drop)),
+          fromSeq: start + 1 + drop,
+          done: start === 0,
+        },
+      };
+    }
+    const { events, firstSeq, done } = await store.readEventsBefore(ctx.params.id, before, limit);
+    // Start the page at a run boundary so a run split across the seam is folded by
+    // exactly one page, not opened by both.
+    const drop = done ? 0 : alignPageToRun(events);
+    return {
+      json: {
+        messages: foldToMessages(events.slice(drop)),
+        fromSeq: firstSeq + drop,
+        done,
+      },
+    };
+  });
+
   r.get("/conversations/:id/events", async (ctx) => {
     // Ensure history is local first (a reconnect may land on a non-owner pod after a
     // rollout / cleared CR) so onAttach's store.readEvents replays the full log. Read-only.
@@ -750,9 +797,31 @@ export function createManagementApi(deps: ManagementDeps): Router {
       ? (i: SessionId) => store.readEventsWithChecksum!(i)
       : undefined;
     if (replay) {
+      // History goes as ONE snapshot, not N events: the client's applier rebuilds the
+      // message list per event and deep-clones it on each emit, so a long conversation
+      // costs O(n²) (15,062 clones for 4,000 events, measured). Events that carry no
+      // message state (RUN_*, QUEUE_UPDATED, CONTEXT_USAGE, SYSTEM_MESSAGE) are still
+      // replayed individually — the client derives run/queue/context state from them.
+      const history: AguiEvent[] = [];
       for await (const c of replay(id)) {
         seen.add(c.checksum);
-        send({ kind: "event", ...c });
+        history.push(c.event);
+      }
+      // Only the trailing window is painted up front; older history pages in on
+      // scroll. Mounting a whole long thread is one synchronous ~900ms commit that
+      // blocks the composer (~34 React fibers per message).
+      const { tail, fromSeq, hasOlder } = splitForInitialSnapshot(history);
+      const messages = foldToMessages(tail);
+      if (messages.length > 0) {
+        send({
+          kind: "event",
+          event: { type: "MESSAGES_SNAPSHOT", messages, ...(hasOlder ? { fromSeq } : {}) },
+        });
+      }
+      // Non-message events replay from the FULL history: run/queue/context state is
+      // cumulative, so windowing it would leave the client's trackers out of date.
+      for (const e of history) {
+        if (!MESSAGE_EVENTS.has(e.type)) send({ kind: "event", event: e });
       }
     }
     // Flush anything that arrived during replay, then go live.

@@ -6,7 +6,7 @@
  * No LISTEN/NOTIFY, no triggers.
  */
 
-import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { agent_host } from "@scooter/schema";
 
@@ -84,6 +84,18 @@ export interface PgEventStore {
   /** The last `limit` events by `seq`, trimmed forward to a boundary so the window
    *  never starts mid-message. May return fewer than `limit`. */
   readEventsTailByCount(id: SessionId, limit: number): Promise<AguiEvent[]>;
+
+  /** The `limit` events immediately BEFORE `beforeSeq`, oldest-first, for paging
+   *  older history in. `firstSeq` is the lowest seq returned — pass it back as the
+   *  next `beforeSeq` — and `done` is true once the window reaches the start of the
+   *  log. Unlike the tail readers this does NOT trim to a boundary: the caller is
+   *  stitching onto a window it already holds, so a run split across the seam stays
+   *  whole. */
+  readEventsBefore(
+    id: SessionId,
+    beforeSeq: number,
+    limit: number,
+  ): Promise<{ events: AguiEvent[]; firstSeq: number; done: boolean }>;
 
   /** Live durable appends, in-process. The authority the integrity SSE
    *  broadcasts. Fires only AFTER the row is committed. Returns unsubscribe. */
@@ -228,6 +240,20 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       return trimToBoundary(rows.reverse().map((r) => r.event as AguiEvent));
     },
 
+    async readEventsBefore(id, beforeSeq, limit) {
+      if (limit <= 0 || beforeSeq <= 1) return { events: [], firstSeq: beforeSeq, done: true };
+      const rows = await db
+        .select({ seq: conversationEvents.seq, event: conversationEvents.event })
+        .from(conversationEvents)
+        .where(and(eq(conversationEvents.conversationId, id), lt(conversationEvents.seq, beforeSeq)))
+        .orderBy(desc(conversationEvents.seq))
+        .limit(limit);
+      rows.reverse();
+      const events = rows.map((r) => r.event as AguiEvent);
+      const firstSeq = rows[0] ? Number(rows[0].seq) : beforeSeq;
+      return { events, firstSeq, done: rows.length < limit || firstSeq <= 1 };
+    },
+
     onAppend(cb) {
       appendListeners.push(cb);
       return () => {
@@ -328,6 +354,7 @@ export function withPgEvents<T extends object>(base: T, events: PgEventStore): T
     readEventsWithChecksum: events.readEventsWithChecksum.bind(events),
     readEventsTail: events.readEventsTail.bind(events),
     readEventsTailByCount: events.readEventsTailByCount.bind(events),
+    readEventsBefore: events.readEventsBefore.bind(events),
     onAppend: events.onAppend.bind(events),
     onAppendError: events.onAppendError.bind(events),
     // Deliberately NOT overridden: removeConversation must drop BOTH the rows

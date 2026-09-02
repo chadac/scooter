@@ -38,6 +38,20 @@ export type SandboxState = "running" | "suspended" | "ended" | "starting" | "unk
 
 /** Everything the Sandbox tab needs: live pod status (fetched for the current
  *  conversation), a resume action with progress, and the service list + controls. */
+/** Whether a services poll returned the same list, field by field. Exported for
+ *  the regression test on the 4s poll's identity churn. */
+export const sameServices = (a: WebService[], b: WebService[]) =>
+  a.length === b.length &&
+  a.every((x, i) => {
+    const y = b[i];
+    return (
+      x.name === y.name &&
+      x.displayName === y.displayName &&
+      x.url === y.url &&
+      x.running === y.running
+    );
+  });
+
 export function useSandboxStatus() {
   const { currentId } = useSessions();
   const [serverStatus, setServerStatus] = useState<string | undefined>(undefined);
@@ -67,7 +81,10 @@ export function useSandboxStatus() {
       (id) => loadWebServices({ baseUrl: BASE_URL }, id),
       [] as Awaited<ReturnType<typeof loadWebServices>>,
     );
-    if (svcs) setServices(svcs);
+    // Keep the previous array when the poll returns the same services. A fresh
+    // reference re-renders every consumer of this hook — including the one that
+    // wraps the whole thread — on each 4s tick.
+    if (svcs) setServices((prev) => (sameServices(prev, svcs) ? prev : svcs));
   }, [currentId]);
 
   useEffect(() => {

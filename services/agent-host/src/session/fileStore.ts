@@ -187,6 +187,30 @@ export function createFileConversationStore(root: string): ConversationStore {
       return trimToBoundary(all.slice(-limit));
     },
 
+    async readEventsBefore(id, beforeSeq, limit) {
+      // The file has no seq column: a line's 1-based position IS its seq, matching
+      // the Postgres store's per-conversation counter.
+      if (limit <= 0 || beforeSeq <= 1) return { events: [], firstSeq: beforeSeq, done: true };
+      let data: string;
+      try {
+        data = await readFile(logPath(id), "utf8");
+      } catch (e) {
+        if (isENOENT(e)) return { events: [], firstSeq: beforeSeq, done: true };
+        throw e;
+      }
+      const all = data
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as AguiEvent);
+      const end = Math.min(beforeSeq - 1, all.length); // exclusive upper bound, 1-based
+      const start = Math.max(0, end - limit);
+      return {
+        events: all.slice(start, end),
+        firstSeq: start + 1,
+        done: start === 0,
+      };
+    },
+
     async readEventsTail(id, runs) {
       // The RECENT tail only: the events from the last `runs` runs, for a fast
       // first paint on a LONG conversation. We read the file (one syscall), parse
