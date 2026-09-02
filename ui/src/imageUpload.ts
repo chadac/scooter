@@ -33,7 +33,7 @@ export function base64Bytes(b64: string): number {
  * stores an image part as { type: "image", image: <data-url> }; we also accept our
  * own { type: "image", data, mimeType } shape. Non-image parts are ignored.
  */
-export function imagesFromContent(content: unknown): OutboundImage[] {
+export async function imagesFromContent(content: unknown): Promise<OutboundImage[]> {
   if (!Array.isArray(content)) return [];
   const out: OutboundImage[] = [];
   for (const part of content) {
@@ -51,10 +51,16 @@ export function imagesFromContent(content: unknown): OutboundImage[] {
         const parsed = parseDataUrl(p.image);
         if (parsed) out.push(parsed);
       }
-      // Defensive: handle blob: URLs by skipping (browser creates these for pasted images
-      // but they should be converted to data URLs by the attachment adapter)
+      // Convert blob: URLs to data: URLs (browser creates these for pasted images)
       else if (p.image.startsWith("blob:")) {
-        console.warn("[imageUpload] Skipping blob URL - attachment adapter should convert to data URL:", p.image.slice(0, 50));
+        console.log("[imageUpload] Converting blob URL to data URL:", p.image.slice(0, 50));
+        try {
+          const dataUrl = await blobUrlToDataUrl(p.image);
+          const parsed = parseDataUrl(dataUrl);
+          if (parsed) out.push(parsed);
+        } catch (e) {
+          console.warn("[imageUpload] Failed to convert blob URL:", e);
+        }
       }
     }
   }
@@ -125,5 +131,20 @@ function loadImage(url: string): Promise<HTMLImageElement> {
     img.onload = () => resolve(img);
     img.onerror = reject;
     img.src = url;
+  });
+}
+
+/**
+ * Convert a blob: URL to a data: URL by fetching the blob and reading it as base64.
+ * Used when SimpleImageAttachmentAdapter creates blob URLs for pasted images.
+ */
+async function blobUrlToDataUrl(blobUrl: string): Promise<string> {
+  const response = await fetch(blobUrl);
+  const blob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
   });
 }

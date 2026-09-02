@@ -342,7 +342,7 @@ function ConversationRuntime({
           : "";
       // Downscale each attached image under the client cap before sending (the
       // agent-host also hard-rejects over its cap).
-      const rawImages = imagesFromContent(content);
+      const rawImages = await imagesFromContent(content);
       const images: OutboundImage[] = [];
       for (const raw of rawImages) {
         // Defensive: ensure we have valid mimeType and data before constructing the data URL
