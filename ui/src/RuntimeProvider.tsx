@@ -162,6 +162,12 @@ export interface InterruptContextValue {
   contextFill: number | null;
   /** {used,total} context tokens for the fill-bar tooltip, or null. */
   contextTokens: { used: number; total: number } | null;
+  /** True while older history remains to page in — the initial snapshot paints
+   *  only the trailing window. */
+  hasOlderHistory: boolean;
+  /** Fetch + prepend the next older page. Resolves with how many messages were
+   *  added (0 when there is no more, or on failure). */
+  loadOlderHistory: () => Promise<number>;
   /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
   cancel: () => Promise<void>;
   /** Optimistic Stop-button feedback (the run's terminal event round-trips through
@@ -204,6 +210,8 @@ export const InterruptContext = createContext<InterruptContextValue>({
   runStartedAt: null,
   contextFill: null,
   contextTokens: null,
+  hasOlderHistory: false,
+  loadOlderHistory: async () => 0,
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
@@ -454,6 +462,7 @@ function ConversationRuntime({
     ReadonlyArray<{ id: string; text: string; priority: number }>
   >([]);
   const [renderTick, setRenderTick] = useState(0);
+  const [hasOlder, setHasOlder] = useState(false);
   // Highest message count applied so far — suppresses a SHRINKING reset during a
   // reconnect re-fold (see push() below). Reset per conversation (this component
   // remounts on currentId).
@@ -476,6 +485,7 @@ function ConversationRuntime({
       // Error state first: a 401 never reaches `synced`, so anything below the guard
       // would be deferred forever and the banner would never show.
       setRunError(agent.getRunError());
+      setHasOlder(agent.hasOlderHistory());
       setRunRetrying(agent.getRunRetrying());
       setStreamAuthError(agent.getStreamAuthError());
       if (agent.isReplaying()) return; // else a reconnect animates the indicators through history
@@ -616,6 +626,13 @@ function ConversationRuntime({
     return extras.length === 0 ? queuedMessages : [...queuedMessages, ...extras];
   }, [queuedMessages, optimisticSends]);
 
+  // Stable identity: the thread's scroll handler holds this in an effect dep.
+  const loadOlder = useCallback(async () => {
+    const n = await agent.loadOlderHistory();
+    setHasOlder(agent.hasOlderHistory());
+    return n;
+  }, [agent]);
+
   const interruptValue = useMemo<InterruptContextValue>(
     () => ({
       interrupts,
@@ -627,6 +644,8 @@ function ConversationRuntime({
       runStartedAt,
       contextFill,
       contextTokens,
+      hasOlderHistory: hasOlder,
+      loadOlderHistory: loadOlder,
       cancel: doCancel,
       cancelState,
       runError,
@@ -635,7 +654,7 @@ function ConversationRuntime({
       queuedMessages: renderedQueue,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, runRetrying, streamAuthError, renderedQueue, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, hasOlder, loadOlder, doCancel, cancelState, runError, runRetrying, streamAuthError, renderedQueue, renderTick],
   );
 
   return (

@@ -138,6 +138,61 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
  *  bottom across a few frames of reflow — and restoring the store's isAtBottom so the
  *  library re-engages too. NB: this pairs with removing `scroll-smooth` from the
  *  viewport (see below) — instant pins don't fight a CSS scroll animation. */
+/** Page older history in as the user scrolls toward the top.
+ *
+ *  The initial snapshot paints only the trailing window, so the top of the
+ *  viewport is a seam, not the start of the conversation. When it comes into
+ *  reach we fetch the next older page and PREPEND it — which grows scrollHeight
+ *  above the current position, so the content under the user's eye would jump
+ *  down by exactly that growth. Restoring scrollTop by the delta keeps it still.
+ *
+ *  Never fires while pinned to the bottom: that is the streaming case, where the
+ *  user is reading the newest output and a prepend is pure cost. */
+function useLoadOlderOnScroll() {
+  const { hasOlderHistory, loadOlderHistory } = useConversationInterrupts();
+  const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
+
+  useEffect(() => {
+    if (!hasOlderHistory || !hasMessages) return;
+    const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+    if (!el) return;
+
+    let loading = false;
+    const TRIGGER_PX = 600; // start fetching before the seam is actually visible
+
+    const maybeLoad = async () => {
+      if (loading) return;
+      if (el.scrollTop > TRIGGER_PX) return;
+      // At the very bottom we are following a live run; leave history alone.
+      if (el.scrollHeight - el.scrollTop - el.clientHeight <= 2) return;
+      loading = true;
+      const before = el.scrollHeight;
+      try {
+        const added = await loadOlderHistory();
+        if (added > 0) {
+          // Hold the viewport still across the prepend. Two frames: React commits
+          // the taller list first, and the height is only correct after layout.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const grew = el.scrollHeight - before;
+              if (grew > 0) el.scrollTop += grew;
+              loading = false;
+            });
+          });
+          return;
+        }
+      } catch {
+        /* best-effort — a later scroll retries */
+      }
+      loading = false;
+    };
+
+    el.addEventListener("scroll", maybeLoad, { passive: true });
+    void maybeLoad(); // the seam may already be in reach on first paint
+    return () => el.removeEventListener("scroll", maybeLoad);
+  }, [hasOlderHistory, loadOlderHistory, hasMessages]);
+}
+
 function useStickToBottom() {
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const store = useThreadViewportStore();
@@ -287,6 +342,7 @@ function useStickToBottom() {
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   useStickToBottom();
+  useLoadOlderOnScroll();
 
   return (
     <ThreadPrimitive.Root

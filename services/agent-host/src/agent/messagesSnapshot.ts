@@ -126,3 +126,58 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
   // Drop framing that produced nothing renderable (an opened-but-empty message).
   return out.filter((m) => m.content !== "" || (m.toolCalls?.length ?? 0) > 0 || m.role === "tool");
 }
+
+/** How many trailing messages the initial snapshot paints. The rest of the
+ *  history pages in on scroll. Each rendered message costs ~34 React fibers, so a
+ *  full 1,555-message thread mounts ~53,000 of them in one synchronous,
+ *  non-interruptible commit and the composer stays unclickable while it runs. */
+export const INITIAL_SNAPSHOT_MESSAGES = 200;
+
+/** Split `events` at the point where the last `messages` messages begin.
+ *
+ *  Returns the trailing slice to fold into the initial snapshot plus the 1-based
+ *  seq of its first event, which the client passes back to page older history in.
+ *
+ *  The cut lands on a run boundary so the folded window cannot open a message
+ *  mid-stream: a slice starting inside a tool call renders a dangling card. */
+export function splitForInitialSnapshot(
+  events: AguiEvent[],
+  messages = INITIAL_SNAPSHOT_MESSAGES,
+): { tail: AguiEvent[]; fromSeq: number; hasOlder: boolean } {
+  if (messages <= 0 || events.length === 0) {
+    return { tail: events, fromSeq: 1, hasOlder: false };
+  }
+  const OPENS = new Set(["TEXT_MESSAGE_START", "REASONING_START", "REASONING_MESSAGE_START"]);
+  let seen = 0;
+  let cut = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const t = events[i].type as string;
+    if (OPENS.has(t) || t === "TOOL_CALL_RESULT") {
+      seen++;
+      if (seen > messages) {
+        cut = i;
+        break;
+      }
+    }
+  }
+  if (cut === 0) return { tail: events, fromSeq: 1, hasOlder: false };
+  let boundary = cut;
+  for (let i = cut; i < events.length; i++) {
+    if (events[i].type === "RUN_STARTED") {
+      boundary = i;
+      break;
+    }
+  }
+  if (boundary === 0) return { tail: events, fromSeq: 1, hasOlder: false };
+  return { tail: events.slice(boundary), fromSeq: boundary + 1, hasOlder: true };
+}
+
+/** The offset of the first RUN_STARTED in a backward page, so the page begins at a
+ *  whole run. The caller drops that many events and advances its cursor by the
+ *  same amount, keeping coverage complete. 0 when the window holds no
+ *  RUN_STARTED — it is mid-run either way, and dropping it all would lose
+ *  history. */
+export function alignPageToRun(events: AguiEvent[]): number {
+  const i = events.findIndex((e) => e.type === "RUN_STARTED");
+  return i > 0 ? i : 0;
+}
