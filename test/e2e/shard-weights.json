@@ -7,6 +7,7 @@
   "conversation.spec.ts": 30,
   "sse-resilience.spec.ts": 60,
   "model-selection.spec.ts": 25,
+  "image-upload.spec.ts": 15,
   "scroll-lock.spec.ts": 20,
   "ownership.spec.ts": 20,
   "multi-user.spec.ts": 35,
