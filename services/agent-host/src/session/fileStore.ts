@@ -10,6 +10,7 @@ import { appendFile, mkdir, readFile, writeFile, rename, readdir, rm } from "nod
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
+import { trimToBoundary } from "./eventStore.js";
 import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionId } from "../types.js";
@@ -168,6 +169,22 @@ export function createFileConversationStore(root: string): ConversationStore {
       for (const line of data.split("\n")) {
         if (line.trim()) yield JSON.parse(line) as AguiEvent;
       }
+    },
+
+    async readEventsTailByCount(id, limit) {
+      if (limit <= 0) return [];
+      let data: string;
+      try {
+        data = await readFile(logPath(id), "utf8");
+      } catch (e) {
+        if (isENOENT(e)) return [];
+        throw e;
+      }
+      const all = data
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as AguiEvent);
+      return trimToBoundary(all.slice(-limit));
     },
 
     async readEventsTail(id, runs) {

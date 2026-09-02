@@ -25,6 +25,7 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
+import { trimToBoundary } from "../session/eventStore.js";
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
@@ -682,7 +683,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       // Stores without a tail reader (in-memory tests): the logs are tiny.
       const all: AguiEvent[] = [];
       for await (const e of store.readEvents(ctx.params.id)) all.push(e);
-      events = wantRuns ? tailByRuns(all, Math.min(runsParam, 100)) : all.slice(-300);
+      events = wantRuns ? tailByRuns(all, Math.min(runsParam, 100)) : trimToBoundary(all.slice(-300));
     }
     return { json: { events, ...(wantRuns ? { runs: Math.min(runsParam, 100) } : {}) } };
   });
