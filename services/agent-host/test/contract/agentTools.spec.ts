@@ -405,3 +405,93 @@ describe("agent-tools: get_slack_context", () => {
     expect(text).toContain("1712.3");
   });
 });
+
+/**
+ * Replying into an ALREADY-RESOLVED review thread.
+ *
+ * GitHub sends no webhook when a human resolves a thread, so a reply the agent was
+ * asked for minutes ago can land on a closed conversation and read as noise.
+ */
+describe("github_comment — resolved review threads", () => {
+  /** A broker that answers each call in order (GraphQL probe, then the POST). */
+  function seqBroker(responses: BrokerResponse[]): BrokerClient & { calls: string[] } {
+    const calls: string[] = [];
+    let i = 0;
+    return {
+      calls,
+      call: vi.fn(async (_c: string, _m: string, path: string) => {
+        calls.push(path);
+        return responses[Math.min(i++, responses.length - 1)];
+      }),
+    } as never;
+  }
+
+  const graphql = (threads: unknown) => ({
+    status: 200,
+    raw: "{}",
+    // NOTE: BrokerResponse.data, not .body — an earlier cut read .body and so
+    // silently answered "not resolved" for every thread, failing open always.
+    data: { data: { repository: { pullRequest: { reviewThreads: { nodes: threads } } } } },
+  });
+  const thread = (id: number, isResolved: boolean) => ({
+    isResolved,
+    comments: { nodes: [{ databaseId: id }] },
+  });
+
+  it("THE FIX: does NOT post into a resolved thread", async () => {
+    const broker = seqBroker([graphql([thread(555, true)])]);
+    const res = await handleGithubComment({ broker } as never, ctxWith([githubLink()]), {
+      body: "late reply",
+      in_reply_to: 555,
+    });
+    expect(res.isError).toBe(true);
+    expect(broker.calls.some((p) => p.includes("/replies"))).toBe(false);
+  });
+
+  it("posts normally into an OPEN thread", async () => {
+    const broker = seqBroker([graphql([thread(555, false)]), { status: 201, raw: "{}", data: {} }]);
+    const res = await handleGithubComment({ broker } as never, ctxWith([githubLink()]), {
+      body: "on it",
+      in_reply_to: 555,
+    });
+    expect(res.isError).toBeFalsy();
+    expect(broker.calls.some((p) => p.includes("/replies"))).toBe(true);
+  });
+
+  it("FAILS OPEN: a non-2xx GraphQL response still posts the reply", async () => {
+    // A missed reply is worse than a stale one — the human asked for it.
+    const broker = seqBroker([{ status: 500, raw: "boom", data: undefined }, { status: 201, raw: "{}", data: {} }]);
+    const res = await handleGithubComment({ broker } as never, ctxWith([githubLink()]), {
+      body: "still posting",
+      in_reply_to: 555,
+    });
+    expect(res.isError).toBeFalsy();
+    expect(broker.calls.some((p) => p.includes("/replies"))).toBe(true);
+  });
+
+  it("FAILS OPEN: a THROWN broker error still posts the reply", async () => {
+    // The 500 case above never reaches the catch (call resolves). This one does —
+    // without it, flipping the catch to fail CLOSED passes every test.
+    let n = 0;
+    const calls: string[] = [];
+    const broker = {
+      call: vi.fn(async (_c: string, _m: string, path: string) => {
+        calls.push(path);
+        if (n++ === 0) throw new Error("network down");
+        return { status: 201, raw: "{}", data: {} };
+      }),
+    };
+    const res = await handleGithubComment({ broker } as never, ctxWith([githubLink()]), {
+      body: "still posting",
+      in_reply_to: 555,
+    });
+    expect(res.isError).toBeFalsy();
+    expect(calls.some((p) => p.includes("/replies"))).toBe(true);
+  });
+
+  it("a PR-level comment skips the check entirely (no in_reply_to)", async () => {
+    const broker = seqBroker([{ status: 201, raw: "{}", data: {} }]);
+    await handleGithubComment({ broker } as never, ctxWith([githubLink()]), { body: "general note" });
+    expect(broker.calls.some((p) => p.includes("graphql"))).toBe(false);
+  });
+});

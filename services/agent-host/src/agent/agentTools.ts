@@ -367,6 +367,46 @@ export async function handleGitlabComment(
 }
 
 /** Comment on the conversation's GitHub PR/issue (owner/repo/number inferred). */
+/**
+ * Is the review thread containing `commentId` resolved?
+ *
+ * FAILS OPEN — any error answers false, so the reply still posts. A missed reply is
+ * worse than a stale one: the human asked for it. Uses GraphQL (the REST API does not
+ * expose thread resolution) through the broker's existing /github proxy.
+ */
+async function isThreadResolved(
+  deps: AgentToolsDeps,
+  ctx: ToolContext,
+  owner: string,
+  repo: string,
+  number: number,
+  commentId: number,
+): Promise<boolean> {
+  const query = `query($owner:String!,$repo:String!,$number:Int!){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$number){
+        reviewThreads(first:100){ nodes { isResolved comments(first:100){ nodes { databaseId } } } }
+      }
+    }
+  }`;
+  try {
+    const res = await deps.broker.call(ctx.conversationId, "POST", "/github/graphql", {
+      query,
+      variables: { owner, repo, number },
+    });
+    // BrokerResponse.data is the parsed JSON body (NOT .body — that field does not exist).
+    const threads =
+      (res.data as { data?: { repository?: { pullRequest?: { reviewThreads?: { nodes?: unknown[] } } } } } | undefined)
+        ?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    for (const t of threads as Array<{ isResolved?: boolean; comments?: { nodes?: Array<{ databaseId?: number }> } }>) {
+      if ((t.comments?.nodes ?? []).some((c) => c.databaseId === commentId)) return t.isResolved === true;
+    }
+    return false; // thread not found — post rather than swallow
+  } catch {
+    return false;
+  }
+}
+
 export async function handleGithubComment(
   deps: AgentToolsDeps,
   ctx: ToolContext,
@@ -383,6 +423,19 @@ export async function handleGithubComment(
     );
   }
   const { owner, repo, number } = target;
+  // GitHub sends no webhook when a human RESOLVES a review thread, so a reply the
+  // agent was asked for minutes ago can land on a thread that is already closed —
+  // which reads as noise on the PR. Check first.
+  if (args.in_reply_to !== undefined) {
+    const resolved = await isThreadResolved(deps, ctx, owner, repo, number, args.in_reply_to);
+    if (resolved) {
+      return err(
+        `That review thread (comment ${args.in_reply_to}) has been RESOLVED, so the reply ` +
+          `was not posted — it would be noise on a closed conversation. If you still need to ` +
+          `say something, post it as a PR-level comment (github_comment without in_reply_to).`,
+      );
+    }
+  }
   // A review-comment reply uses a different endpoint; a plain comment posts to the
   // issue/PR comments. Default = a new issue comment.
   const path = args.in_reply_to
