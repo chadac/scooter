@@ -168,6 +168,8 @@ export interface ConversationStore {
    *  fast first-paint window on a long conversation stays cheap. Optional (an
    *  in-memory store can fall back to reading all of readEvents). */
   readEventsTail?(id: SessionId, runs: number): Promise<AguiEvent[]>;
+  /** The last `limit` events by seq — a size-bounded first-paint window. Optional. */
+  readEventsTailByCount?(id: SessionId, limit: number): Promise<AguiEvent[]>;
   /** Subscribe to events as they are durably appended, each carrying its rolling
    *  checksum (folded in persisted order). This is the authority the live
    *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's

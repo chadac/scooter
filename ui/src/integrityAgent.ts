@@ -981,10 +981,10 @@ export class IntegrityAgent extends AbstractAgent {
    *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
    *  first paint before the full replay. Best-effort: any failure just skips the
    *  seed and the full replay paints as before. */
-  private async seedTail(runs = 8): Promise<boolean> {
+  private async seedTail(limit = 300): Promise<boolean> {
     try {
       if (!hasId(this.cfg.conversationId)) return false; // nothing to seed from yet
-      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
+      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?limit=${limit}`;
       const res = await this.doFetch(url, {
         headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
       });
