@@ -1001,6 +1001,8 @@ in
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ]
+                ++ lib.optional cfg.conversationController.assets.enable
+                  { name = "ASSETS_PATH"; value = "/var/lib/agent-assets"; }
                 ++ lib.optional cfg.byoc.traceTunnel
                   # Per-frame tracing of the BYOC MCP tunnel (method, direction, bytes,
                   # status, correlated by stream). Off by default — it is per-frame and
@@ -1215,6 +1217,8 @@ in
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
                 ]
+                ++ lib.optional cfg.conversationController.assets.enable
+                  { name = "assets"; mountPath = "/var/lib/agent-assets"; }
                 ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
@@ -1249,6 +1253,8 @@ in
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
               ]
+              ++ lib.optional cfg.conversationController.assets.enable
+                  { name = "assets"; persistentVolumeClaim.claimName = "agent-host-assets"; }
               ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
@@ -1365,6 +1371,22 @@ in
         };
       }
     ))
+    (lib.mkIf cfg.conversationController.assets.enable {
+      # Dedicated assets PVC for uploaded images. BYTES-ONLY: asset metadata
+      # (conversation_id, asset_id, mime_type, size, sha256_hash, created_at) lives
+      # in Postgres; the PVC holds only the raw image data, keyed by asset_id.
+      # ReadWriteOnce (single writer): the agent-host deployment is the only writer.
+      persistentVolumeClaims.agent-host-assets = {
+        metadata = { name = "agent-host-assets"; namespace = cfg.namespace; };
+        spec = {
+          accessModes = [ "ReadWriteOnce" ];
+          resources.requests.storage = cfg.conversationController.assets.size;
+        }
+        // lib.optionalAttrs (cfg.conversationController.assets.storageClassName != null) {
+          storageClassName = cfg.conversationController.assets.storageClassName;
+        };
+      };
+    })
     (lib.mkIf cfg.ui.enable {
       # Conversation UI — nginx serving the assistant-ui build and proxying the
       # agent-host API on the same origin (so the browser's /agui SSE + /sessions

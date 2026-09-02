@@ -12,6 +12,22 @@ class Base(DeclarativeBase):
     pass
 
 
+class ConversationAssets(Base):
+    __tablename__ = 'conversation_assets'
+    __table_args__ = (
+        PrimaryKeyConstraint('conversation_id', 'asset_id', name='conversation_assets_pkey'),
+        Index('conversation_assets_by_conv', 'conversation_id'),
+        Index('conversation_assets_by_id', 'asset_id')
+    )
+
+    conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    asset_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    mime_type: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+
+
 class ConversationEvents(Base):
     __tablename__ = 'conversation_events'
     __table_args__ = (

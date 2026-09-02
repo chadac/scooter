@@ -74,3 +74,5 @@ conversations     = { writers = ["agent-host"], readers = ["conversation-router"
 # these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
 # read them.
 conversation_events = { writers = ["agent-host"], readers = [] }
+# Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.
+conversation_assets = { writers = ["agent-host"], readers = [] }

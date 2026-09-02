@@ -86,3 +86,33 @@ CREATE TABLE "conversation_events" (
   "created_at"      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("conversation_id", "seq")
 );
+
+-- Conversation ASSETS (images, future: other media) — metadata only.
+-- The asset BYTES live on the dedicated assets PVC (/var/lib/agent-assets),
+-- keyed by asset_id. This table holds the metadata: what exists, for which
+-- conversation, when, how big, what type. Clean separation: queryable metadata
+-- in Postgres, efficient blob storage on disk.
+--
+-- asset_id is content-addressed (SHA-256 prefix + extension), so identical
+-- uploads dedupe automatically. The bytes are written once per unique content;
+-- metadata rows can reference the same asset_id (different conversations
+-- pasting the same image).
+--
+-- Lifecycle: assets are conversation-scoped. When a conversation is deleted,
+-- its asset metadata rows are removed. A separate GC job (future) removes
+-- orphaned bytes (asset_id on disk with no referencing metadata row).
+CREATE TABLE "conversation_assets" (
+  "conversation_id" text   NOT NULL,
+  "asset_id"        text   NOT NULL,
+  "mime_type"       text   NOT NULL,
+  "size_bytes"      bigint NOT NULL,
+  "sha256_hash"     text   NOT NULL,
+  "created_at"      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("conversation_id", "asset_id")
+);
+
+-- Find all assets for a conversation (for clear/replay).
+CREATE INDEX "conversation_assets_by_conv" ON "conversation_assets" ("conversation_id");
+
+-- Find orphaned asset_ids (bytes on disk with no metadata row) for GC.
+CREATE INDEX "conversation_assets_by_id" ON "conversation_assets" ("asset_id");
