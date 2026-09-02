@@ -334,8 +334,18 @@ export interface SessionManager {
    *  (vscode/marimo/terminal) through the reverse proxy. No-op if the conversation
    *  isn't in memory (nothing to keep alive). */
   touchById(id: SessionId): void;
-  /** All conversations, newest first. */
+  /** All conversations THIS POD holds in memory, newest first. A per-pod slice in a
+   *  multi-replica deployment — use listAll() for the durable, fleet-consistent list. */
   list(): Conversation[];
+  /** The AUTHORITATIVE conversation list for the read API (GET /conversations and the
+   *  /conversations/events snapshot), assembled from the DURABLE stores rather than this
+   *  pod's in-memory `entries`: Postgres metadata (title/starred/owner/model/timestamps)
+   *  joined with the Conversation CR for existence + liveness. Every pod therefore answers
+   *  byte-identically, so the router's fleet merge can no longer flip a server-owned field
+   *  (e.g. `starred`) between refreshes when a non-owner pod holds a stale in-memory copy.
+   *  Single-replica (no CR registry) or on a store/CR read error, falls back to list() —
+   *  there is no fan-out there, so nothing to reconcile. Newest first. */
+  listAll(): Promise<Conversation[]>;
   /** Set a conversation's title (e.g. agent-assigned). */
   /** Set a conversation's title FROM THE AGENT (the <title> marker) and persist it.
    *  A NO-OP once the user has renamed the conversation (userTitled) — the user's
@@ -1259,6 +1269,55 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return [...entries.values()]
         .sort((a, b) => b.createdAt - a.createdAt)
         .map(toConversation);
+    },
+
+    async listAll() {
+      // Single-replica (no CRs): the in-memory map IS the source of truth and there is no
+      // router fan-out to make it diverge, so keep today's behavior exactly.
+      if (!deps.selfPod) return api.list();
+      try {
+        // The two DURABLE sources, read together: Postgres metadata + every Conversation CR.
+        const [metas, crs] = await Promise.all([
+          store.listConversations?.() ?? Promise.resolve([]),
+          conversationRegistry.list(),
+        ]);
+        // The CR is the source of truth for EXISTENCE and liveness (docs/CONVERSATION_STATE_MODEL.md).
+        // A durable-store row with no CR was ended — end() deletes the store record and the CR — so
+        // omit it rather than resurrect a ghost. `phase` drives status UNIFORMLY across every pod
+        // (Suspended -> "suspended", Assigned/Pending -> "running"), which is what makes each pod's
+        // list byte-identical and kills the starred-flap the fleet merge produced.
+        const crById = new Map(crs.map((c) => [c.id, c] as const));
+        const out: Conversation[] = [];
+        for (const m of metas) {
+          const record = crById.get(m.id);
+          if (!record) continue;
+          out.push({
+            id: m.id,
+            threadId: m.threadId,
+            // A read PROJECTION, not an adoption: no live bridge, and a synthesized sandbox ref so
+            // view() stays shape-complete. The owner pod's GET /conversations/:id and the SSE
+            // upserts carry the live sandbox/bridge detail; the list never needed it.
+            sandbox: { name: `conv-${shortId(m.threadId)}`, namespace: "" },
+            bridge: undefined,
+            status: record.phase === "Suspended" ? "suspended" : "running",
+            title: m.title,
+            createdAt: m.createdAt,
+            lastActivityAt: m.lastActivityAt,
+            model: m.model,
+            owner: m.owner,
+            parentId: m.parentId,
+            userTitled: m.userTitled,
+            starred: m.starred,
+          });
+        }
+        return out.sort((a, b) => b.createdAt - a.createdAt);
+      } catch (err) {
+        // Degrade, don't blank: a store/CR read failure falls back to this pod's in-memory view
+        // rather than answering an empty sidebar. The router still merges the fleet so the list
+        // stays populated; it just loses the cross-pod consistency guarantee for this one poll.
+        log.errorWith("listAll: durable list failed, falling back to in-memory", err, {});
+        return api.list();
+      }
     },
 
     setTitle(id, title) {

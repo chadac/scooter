@@ -417,7 +417,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   r.get("/conversations", async (ctx) => {
     const now = Date.now();
-    const list = sessions.list().filter(visibleFilter(ctx));
+    // listAll() reads the DURABLE stores (Postgres meta + the Conversation CR), so every pod in
+    // the fleet answers identically and the router's merge can't flip `starred`/title between
+    // refreshes from a stale in-memory copy on a non-owner pod. See manager.listAll().
+    const list = (await sessions.listAll()).filter(visibleFilter(ctx));
     const json = await Promise.all(list.map((c) => withSources(c, now)));
     return { json };
   });
@@ -442,10 +445,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
     const send = (frame: unknown) => res.write(`data: ${JSON.stringify(frame)}\n\n`);
 
     // Initial snapshot: the visible list, each enriched with its link sources
-    // (same shape as GET /conversations).
+    // (same shape as GET /conversations). Durable-store backed (listAll) so the snapshot every
+    // fleet pod sends is identical — otherwise a stale non-owner snapshot re-asserts an old
+    // `starred` on each reconnect, which is half of the star-flap. Live CHANGES still ride the
+    // per-pod onConversationChange upserts below (emitted by the owner, so always fresh).
     const now = Date.now();
     const conversations = await Promise.all(
-      sessions.list().filter(visible).map((c) => withSources(c, now)),
+      (await sessions.listAll()).filter(visible).map((c) => withSources(c, now)),
     );
     send({ kind: "snapshot", conversations });
 

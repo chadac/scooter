@@ -66,6 +66,7 @@ function fakeSessions(): SessionManager {
       [...store.values()].find((c) => shortHash === shortIdOf(c.threadId)),
     ),
     list: () => [...store.values()],
+    listAll: async () => [...store.values()],
     setTitle: vi.fn((id, title) => {
       const c = store.get(id);
       // Mirror the real no-op-once-user-titled behavior so route tests are faithful.
@@ -221,12 +222,15 @@ describe("management API", () => {
   it("GET /conversations exposes parentId so the UI can nest subagents", async () => {
     const s = fakeSessions();
     // c1 is top-level (no parentId); add a subagent child of c1.
+    const rowsWithChild = [
+      conv({ id: "c1", threadId: "c1", title: "Parent" }),
+      conv({ id: "sub1", threadId: "sub1", title: "Subagent", parentId: "c1" as any }),
+    ];
+    // GET /conversations serves from listAll() (durable-store backed), so override THAT.
     const withChild: SessionManager = {
       ...s,
-      list: () => [
-        conv({ id: "c1", threadId: "c1", title: "Parent" }),
-        conv({ id: "sub1", threadId: "sub1", title: "Subagent", parentId: "c1" as any }),
-      ],
+      list: () => rowsWithChild,
+      listAll: async () => rowsWithChild,
     };
     const api = createManagementApi({ sessions: withChild, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { json } = await call(api, "GET", "/conversations");
