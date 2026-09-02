@@ -61,6 +61,20 @@ let
     defaultFor = lib.filter (p: providerDefaults.${p} == id) (lib.attrNames providerDefaults);
   }) modelIds);
   hasModels = modelIds != [ ];
+
+  # Platform skills, each paired with the capability it documents. A skill whose gate
+  # is false is NOT shipped: the agent should not read instructions for a route that
+  # 404s. Deployment `skills` win on a filename collision, so an operator can always
+  # override one of ours.
+  bcfg = config.agentSandbox.broker;
+  gatedSkills = {
+    "scooter-grafana.md" = bcfg.grafana.enable;
+  };
+  builtins' = lib.optionalAttrs cfg.agent.builtinSkills (
+    lib.mapAttrs' (file: _: lib.nameValuePair file (builtins.readFile (./skills + "/${file}")))
+      (lib.filterAttrs (_: gate: gate) gatedSkills)
+  );
+  allSkills = builtins' // cfg.agent.skills;
 in
 {
   # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
@@ -427,6 +441,19 @@ in
         type = types.str;
         default = "Scooter";
         description = "Display name the agent goes by (AGENT_NAME) — its identity in the UI + prompt.";
+      };
+      # Skills the platform SHIPS, each gated on the capability it documents. A skill
+      # for a service that is not wired teaches the agent to attempt something that
+      # 404s, then to misread that 404 as the feature being broken — which is exactly
+      # how the grafana skill sent an agent chasing a `loki/` path that never existed.
+      builtinSkills = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Ship the platform's own skills, each only when the capability it documents
+          is enabled (e.g. scooter-grafana only with broker.grafana.enable). Set false
+          to supply every skill yourself via `skills`.
+        '';
       };
       skills = mkOption {
         type = types.attrsOf types.str;
@@ -1213,10 +1240,10 @@ in
       # Agent skills (filename -> markdown), injected per conversation as
       # .goosehints. Edit this (the option) to add/change a skill — no image
       # rebuild. Only rendered when skills are configured.
-      configMaps = lib.optionalAttrs (cfg.agent.skills != { }) {
+      configMaps = lib.optionalAttrs (allSkills != { }) {
         agent-skills = {
           metadata = { name = "agent-skills"; namespace = cfg.namespace; };
-          data = cfg.agent.skills;
+          data = allSkills;
         };
       } // lib.optionalAttrs (cfg.deployTools.configFiles != { }) {
         # Deployment config FILES (filename -> contents), mounted as a flat dir at
