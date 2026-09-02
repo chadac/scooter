@@ -1008,6 +1008,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         closeOpenText(st);
         closeOpenReasoning(st);
         outcome = "error";
+        // LOUD: the RUN_ERROR below tells the USER to check these logs, so this must be
+        // in them. Without it a wedged-then-retried run leaves no trace at all — the
+        // only evidence is a "prompt: sending" with no matching "returned".
+        log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
+          run_id: st.runId,
+          waited_ms: firstActivityTimeoutMs,
+          retryable: true,
+        });
         emit({
           type: "RUN_ERROR",
           message:
@@ -1042,6 +1050,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           closeOpenText(st);
           closeOpenReasoning(st);
           outcome = "error";
+          // LOUD, same reason as the DOA watchdog: the user is told to check these logs.
+          log.warn("run wedged: the agent process died without a terminal event", {
+            run_id: st.runId,
+            saw_activity: st.sawActivity,
+            retryable: true,
+          });
           emit({
             type: "RUN_ERROR",
             message:
@@ -1349,10 +1363,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           let res = await runPrompt(batch[0].input, inputs);
           for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
             const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
+            // A run that fails and silently succeeds on retry looks to the user like
+            // "it failed once" with nothing to point at afterwards.
+            log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
             emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
             await new Promise((r) => setTimeout(r, delayMs));
             if (closed) break; // bridge stopped while backing off — abandon the retry
             res = await runPrompt(batch[0].input, inputs);
+          }
+          if (res.retryable) {
+            log.error("run FAILED after exhausting retries", { attempts: RETRY_MAX });
           }
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
