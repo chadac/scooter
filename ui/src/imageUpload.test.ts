@@ -85,10 +85,10 @@ describe("imagesFromContent: blob URL conversion", () => {
           // Create a simple base64 data URL from the blob
           const result = `data:${blob.type};base64,bW9ja2VkYmxvYmRhdGE=`; // "mockedblobdata"
           Object.defineProperty(this, "result", { value: result, writable: true });
-          this.onload?.({ target: this } as ProgressEvent<FileReader>);
+          this.onloadend?.({ target: this } as ProgressEvent<FileReader>);
         }, 0);
       }),
-      onload: null as ((ev: ProgressEvent<FileReader>) => void) | null,
+      onloadend: null as ((ev: ProgressEvent<FileReader>) => void) | null,
       onerror: null as ((ev: ProgressEvent<FileReader>) => void) | null,
       result: null as string | null,
     } as Partial<FileReader>;
@@ -213,7 +213,6 @@ describe("imagesFromContent: blob URL conversion", () => {
 
     expect(consoleWarn).toHaveBeenCalledWith(
       expect.stringContaining("[imageUpload] Failed to convert blob URL"),
-      expect.any(String),
       expect.any(Error)
     );
 
