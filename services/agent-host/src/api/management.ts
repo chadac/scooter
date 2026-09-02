@@ -25,6 +25,7 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
+import { trimToBoundary } from "../session/eventStore.js";
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
@@ -666,26 +667,25 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.get("/conversations/:id/tail", async (ctx) => {
-    // A fast first-paint window: the events from the last N runs (default 8), so a
-    // client opening a LONG conversation can render the latest context instantly
-    // instead of waiting for the whole log to stream + fold. Windowed on RUN
-    // boundaries so every message/tool call in the tail is complete and folds
-    // identically to a full replay — the client then reconciles against the full
-    // integrity stream with no visible change. NOT checksummed (a partial window).
+    // A fast first-paint window, bounded by EVENT COUNT (`limit`, default 300).
+    // `runs` still works for callers that want run-aligned windows.
+    const limitParam = Number(ctx.query.get("limit"));
     const runsParam = Number(ctx.query.get("runs"));
-    const runs = Number.isFinite(runsParam) && runsParam > 0 ? Math.min(runsParam, 100) : 8;
-    // Fast path: read ONLY the tail (scan from the end, parse the window). Falls
-    // back to reading + windowing the whole log for stores without the tail reader
-    // (in-memory test stores) — those logs are tiny so the cost is irrelevant.
+    const wantRuns = Number.isFinite(runsParam) && runsParam > 0;
+
     let events: AguiEvent[];
-    if (store.readEventsTail) {
-      events = await store.readEventsTail(ctx.params.id, runs);
+    if (wantRuns && store.readEventsTail) {
+      events = await store.readEventsTail(ctx.params.id, Math.min(runsParam, 100));
+    } else if (!wantRuns && store.readEventsTailByCount) {
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 2000) : 300;
+      events = await store.readEventsTailByCount(ctx.params.id, limit);
     } else {
+      // Stores without a tail reader (in-memory tests): the logs are tiny.
       const all: AguiEvent[] = [];
       for await (const e of store.readEvents(ctx.params.id)) all.push(e);
-      events = tailByRuns(all, runs);
+      events = wantRuns ? tailByRuns(all, Math.min(runsParam, 100)) : trimToBoundary(all.slice(-300));
     }
-    return { json: { events, runs } };
+    return { json: { events, ...(wantRuns ? { runs: Math.min(runsParam, 100) } : {}) } };
   });
 
   r.get("/conversations/:id/events", async (ctx) => {

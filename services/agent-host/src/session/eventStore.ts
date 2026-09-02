@@ -81,6 +81,10 @@ export interface PgEventStore {
    */
   readEventsTail(id: SessionId, runs: number): Promise<AguiEvent[]>;
 
+  /** The last `limit` events by `seq`, trimmed forward to a boundary so the window
+   *  never starts mid-message. May return fewer than `limit`. */
+  readEventsTailByCount(id: SessionId, limit: number): Promise<AguiEvent[]>;
+
   /** Live durable appends, in-process. The authority the integrity SSE
    *  broadcasts. Fires only AFTER the row is committed. Returns unsubscribe. */
   onAppend(cb: (id: SessionId, event: ChecksummedEvent) => void): () => void;
@@ -213,6 +217,17 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       return rows.map((r) => r.event as AguiEvent);
     },
 
+    async readEventsTailByCount(id, limit) {
+      if (limit <= 0) return [];
+      const rows = await db
+        .select({ event: conversationEvents.event })
+        .from(conversationEvents)
+        .where(eq(conversationEvents.conversationId, id))
+        .orderBy(desc(conversationEvents.seq))
+        .limit(limit);
+      return trimToBoundary(rows.reverse().map((r) => r.event as AguiEvent));
+    },
+
     onAppend(cb) {
       appendListeners.push(cb);
       return () => {
@@ -296,6 +311,14 @@ export async function backfillConversation(
  * ConversationStore is a compile error here rather than a silent fall-through
  * to the file implementation the migration was meant to replace.
  */
+/** Drop leading events that cannot open a message — the client's fold discards a
+ *  window that starts mid-item. */
+export function trimToBoundary(events: AguiEvent[]): AguiEvent[] {
+  const OPENS = new Set(["RUN_STARTED", "TEXT_MESSAGE_START", "TOOL_CALL_START", "SYSTEM_MESSAGE"]);
+  const i = events.findIndex((e) => OPENS.has(e.type as string));
+  return i <= 0 ? (i === 0 ? events : []) : events.slice(i);
+}
+
 export function withPgEvents<T extends object>(base: T, events: PgEventStore): T {
   return {
     ...base,
@@ -304,6 +327,7 @@ export function withPgEvents<T extends object>(base: T, events: PgEventStore): T
     readEvents: events.readEvents.bind(events),
     readEventsWithChecksum: events.readEventsWithChecksum.bind(events),
     readEventsTail: events.readEventsTail.bind(events),
+    readEventsTailByCount: events.readEventsTailByCount.bind(events),
     onAppend: events.onAppend.bind(events),
     onAppendError: events.onAppendError.bind(events),
     // Deliberately NOT overridden: removeConversation must drop BOTH the rows

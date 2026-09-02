@@ -85,6 +85,14 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
           .filter((r) => r.conversation_id === conversation_id)
           .sort((a, b) => (a.seq as number) - (b.seq as number));
 
+        // tail-by-count: newest N, selecting ONLY "event" (head() selects seq+checksum,
+        // so the projection is what tells these two DESC queries apart).
+        if (/ORDER BY .*"?SEQ"? DESC/i.test(text) && /^SELECT\s+"?EVENT"?\s+FROM/i.test(head)) {
+          // DESC, as Postgres returns it — the store reverses to chronological order.
+          const n = Number(values[1] ?? mine.length);
+          const newest = mine.slice(-n).reverse();
+          return { rows: newest.map((r) => [r.event]), rowCount: newest.length };
+        }
         // head(): newest row, seq + checksum only.
         if (/ORDER BY .*"?SEQ"? DESC/i.test(text) && !/RUN_STARTED/i.test(text)) {
           const last = mine[mine.length - 1];
@@ -374,5 +382,80 @@ describe("backfillConversation — the one-shot migration", () => {
     const res = await backfillConversation(db, CONV, lines);
     expect(res).toMatchObject({ conversationId: CONV, rows: lines.length });
     expect(res.finalChecksum).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("eventStore — the tail bounded by EVENT COUNT", () => {
+  // `runs` is a poor proxy for size: a turn with 40 tool calls emits hundreds of
+  // events, so runs=8 returned 4787 events / 1.3 MB on a real conversation — 53% of
+  // its whole log — for what is meant to be a fast first paint.
+  it("returns at most `limit` events", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    for (let i = 0; i < 50; i++) await s.appendEvent(CONV, run(1)[i % 4]);
+    expect((await s.readEventsTailByCount(CONV, 10)).length).toBeLessThanOrEqual(10);
+  });
+
+  it("returns the NEWEST events, in order", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    for (let i = 1; i <= 20; i++) {
+      await s.appendEvent(CONV, { type: "TEXT_MESSAGE_START", messageId: `m${i}`, role: "assistant" } as never);
+    }
+    const tail = await s.readEventsTailByCount(CONV, 3);
+    expect(tail.map((e) => (e as { messageId: string }).messageId)).toEqual(["m18", "m19", "m20"]);
+  });
+
+  it("APPLIES the boundary trim — a raw cut mid-message is not returned", async () => {
+    // Direct trimToBoundary tests do not prove the STORE calls it; without this,
+    // deleting the call passes every test while the window folds to nothing.
+    const { db } = fakeDb();
+    const s = store(db);
+    // A tool call, then a clean run: a 3-event window cuts inside the tool call.
+    for (const e of [
+      { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "x" },
+      { type: "TOOL_CALL_RESULT", toolCallId: "t1" },
+      { type: "TOOL_CALL_END", toolCallId: "t1" },
+      { type: "RUN_STARTED", threadId: "t", runId: "r9" },
+      { type: "TEXT_MESSAGE_START", messageId: "m9", role: "assistant" },
+    ] as never[]) {
+      await s.appendEvent(CONV, e);
+    }
+    const tail = await s.readEventsTailByCount(CONV, 4);
+    expect(
+      (tail[0] as { type: string }).type,
+      "the window must START at something that can open a message",
+    ).toBe("RUN_STARTED");
+  });
+
+  it("limit <= 0 returns nothing; an empty conversation returns []", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    expect(await s.readEventsTailByCount(CONV, 0)).toEqual([]);
+    expect(await s.readEventsTailByCount("nope" as SessionId, 5)).toEqual([]);
+  });
+});
+
+describe("trimToBoundary", () => {
+  const ev = (type: string) => ({ type }) as never;
+
+  it("THE POINT: drops a leading fragment so the window can actually fold", async () => {
+    // A raw seq cut lands mid-item — measured on a real conversation, the first event
+    // of a 300-event window was a TOOL_CALL_RESULT whose START was outside it. The
+    // client's fold discards such a window, wasting the seed entirely.
+    const { trimToBoundary } = await import("../../src/session/eventStore.js");
+    const out = trimToBoundary([ev("TOOL_CALL_RESULT"), ev("TOOL_CALL_END"), ev("RUN_STARTED"), ev("TEXT_MESSAGE_START")]);
+    expect(out.map((e) => (e as { type: string }).type)).toEqual(["RUN_STARTED", "TEXT_MESSAGE_START"]);
+  });
+
+  it("leaves an already-clean window untouched", async () => {
+    const { trimToBoundary } = await import("../../src/session/eventStore.js");
+    const clean = [ev("RUN_STARTED"), ev("TEXT_MESSAGE_START"), ev("TEXT_MESSAGE_CONTENT")];
+    expect(trimToBoundary(clean)).toHaveLength(3);
+  });
+
+  it("returns [] when NOTHING in the window can open — better than a broken prefix", async () => {
+    const { trimToBoundary } = await import("../../src/session/eventStore.js");
+    expect(trimToBoundary([ev("TOOL_CALL_RESULT"), ev("TEXT_MESSAGE_CONTENT")])).toEqual([]);
   });
 });

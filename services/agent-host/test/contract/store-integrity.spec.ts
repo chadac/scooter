@@ -132,3 +132,42 @@ describe("fileStore integrity surface", () => {
     }
   });
 });
+
+describe("fileStore.readEventsTailByCount", () => {
+  // The UI asks for ?limit=N. fileStore did not implement this, so the route fell
+  // through to a RAW slice that starts mid-message — the client's fold discards such
+  // a window and the first-paint seed silently stops working. The pg store had it;
+  // the file store (which the e2e fake stack uses) did not.
+  it("returns the newest events, trimmed to a boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tail-count-"));
+    try {
+      const store = createFileConversationStore(root);
+      // A tool call, then a clean run: a 4-event window cuts inside the tool call.
+      for (const e of [
+        { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "x" },
+        { type: "TOOL_CALL_RESULT", toolCallId: "t1" },
+        { type: "TOOL_CALL_END", toolCallId: "t1" },
+        { type: "RUN_STARTED", threadId: "t", runId: "r1" },
+        { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" },
+      ] as AguiEvent[]) {
+        await store.appendEvent("conv-1" as never, e);
+      }
+      const tail = await store.readEventsTailByCount!("conv-1" as never, 4);
+      expect(tail[0].type, "the window must start at something that can open a message").toBe("RUN_STARTED");
+      expect(tail.length).toBeLessThanOrEqual(4);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("limit <= 0 is empty; an unknown conversation is empty", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tail-count-"));
+    try {
+      const store = createFileConversationStore(root);
+      expect(await store.readEventsTailByCount!("c" as never, 0)).toEqual([]);
+      expect(await store.readEventsTailByCount!("nope" as never, 5)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
