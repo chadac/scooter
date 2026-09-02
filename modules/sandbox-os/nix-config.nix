@@ -31,6 +31,14 @@ in
   config = lib.mkIf cfg.enable {
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
+    # Disable Nix's build sandbox. These pods are containers WITHOUT the kernel
+    # user-namespaces Nix's sandbox needs, so any derivation BUILD (what `nix
+    # develop` triggers) dies with "this system does not support the kernel
+    # namespaces that are required for sandboxing". `nix profile install` only
+    # escaped this by SUBSTITUTING from cache (no build). Standard for
+    # containerized Nix — the official nixos/nix image does the same.
+    nix.settings.sandbox = false;
+
     # Don't fetch the GLOBAL flake registry (channels.nixos.org) — the local
     # pinned `nixpkgs` entry below is the single source of truth, and fetching the
     # global one needs network + makes `nixpkgs#x` non-deterministic. "" disables it.

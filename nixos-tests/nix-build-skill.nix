@@ -41,6 +41,14 @@ pkgs.testers.runNixOSTest {
     assert "nix-profile" in hello, f"hello not under the nix profile: {hello!r}"
     machine.succeed("bash -l -c 'hello' >/dev/null")
 
+    # The build sandbox MUST be off: these pods lack the kernel user-namespaces
+    # Nix's sandbox needs, so a derivation BUILD (what `nix develop` triggers)
+    # dies with "this system does not support the kernel namespaces ...". The VM
+    # HAS namespaces, so a build here can't reproduce the failure — assert the
+    # effective config directly instead.
+    sandbox = machine.succeed("nix config show sandbox").strip()
+    assert sandbox == "false", f"nix build sandbox must be disabled, got {sandbox!r}"
+
     # NOTE: the NON-LOGIN exec PATH (the sandbox-nix-profile-not-in-path bug) is
     # fixed at the CONTAINER-IMAGE Env layer (pkgs/sandbox-os PID-1 PATH), which a
     # nixosTest VM boot doesn't exercise — see nixos-tests/image-env.nix (checks the
