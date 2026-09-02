@@ -750,6 +750,14 @@ in
     # password to `agent-pg-agent-host`.
     agentSandbox.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
 
+    # The conversation-router gets READ-ONLY access to the agent_host database (conversation
+    # metadata) so it can serve the durable conversation list without fanning out to every
+    # agent-host pod. Its `conversation_router` role owns nothing — it is granted only SELECT
+    # on agent_host's tables and pinned read-only at the server. Secret: agent-pg-conversation-router.
+    agentSandbox.postgres.readers.conversation-router = {
+      user = "conversation_router"; db = "agent_host"; owner = "agent_host";
+    };
+
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define
     # `deployments` / `services`, and a shallow `//` update would replace the
     # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
