@@ -752,15 +752,27 @@ in
 
     # The conversation-router gets READ-ONLY access so it can serve the durable conversation
     # list itself instead of fanning out to every agent-host pod. Its `conversation_router` role
-    # owns nothing — granted only SELECT and pinned read-only at the server. It reads TWO
-    # databases: agent_host (conversation metadata) and webhooks (the linked-resource rows the
-    # sidebar enriches each row with). Secret: agent-pg-conversation-router.
-    agentSandbox.postgres.readers.conversation-router = {
-      user = "conversation_router";
-      grants = [
-        { db = "agent_host"; owner = "agent_host"; }
-      ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; owner = "webhooks"; };
-    };
+    # owns nothing — granted SELECT on EXACTLY the tables the list reads, nothing else (notably
+    # NOT conversation_events, the transcripts), and pinned read-only at the server.
+    #
+    # The table set is DERIVED from lib/sql/owners.toml (the ownership manifest), not repeated
+    # here: whichever tables list "conversation-router" in their readers ARE its grants. So the
+    # manifest is the single reviewable source of truth and the grant cannot drift from it —
+    # adding a table for the router is one line in owners.toml. Secret: agent-pg-conversation-router.
+    agentSandbox.postgres.readers.conversation-router =
+      let
+        manifest = builtins.fromTOML (builtins.readFile ../lib/sql/owners.toml);
+        # Tables in `db` whose readers list includes conversation-router.
+        tablesFor = db: lib.attrNames (lib.filterAttrs
+          (_t: rule: builtins.elem "conversation-router" (rule.readers or [ ]))
+          (manifest.${db}.tables or { }));
+      in
+      {
+        user = "conversation_router";
+        grants = [
+          { db = "agent_host"; tables = tablesFor "agent_host"; }
+        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; };
+      };
 
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define
     # `deployments` / `services`, and a shallow `//` update would replace the

@@ -124,16 +124,17 @@ let
     # attempts — the load-bearing half of the guarantee (the client sets the same param too).
     psql -v ON_ERROR_STOP=1 -c 'ALTER ROLE "${r.user}" SET default_transaction_read_only = on'
   '' + lib.concatMapStrings (g: ''
-    # Least privilege on ${g.db}: CONNECT + USAGE + SELECT existing tables, and — via DEFAULT
-    # PRIVILEGES on the OWNER — SELECT any table the owner creates later (migrations), so a new
-    # table never silently becomes unreadable. No INSERT/UPDATE/DELETE ever granted.
-    # (ALTER DEFAULT PRIVILEGES FOR ROLE needs the admin to be that role's member; the
-    # in-cluster admin is the superuser, which always is.)
+    # Least privilege on ${g.db}: CONNECT + USAGE + SELECT on EXACTLY the named tables. NOT
+    # `ON ALL TABLES` and NO `ALTER DEFAULT PRIVILEGES` — the reader must not gain another
+    # table's rows (e.g. conversation_events, the full transcripts) just because it shares a
+    # database, and a table added by a later migration is opt-in (extend `tables` + owners.toml)
+    # rather than silently readable. No INSERT/UPDATE/DELETE ever granted.
     psql -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE "${g.db}" TO "${r.user}"'
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT USAGE ON SCHEMA public TO "${r.user}"'
-    psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "${r.user}"'
-    psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'ALTER DEFAULT PRIVILEGES FOR ROLE "${g.owner}" IN SCHEMA public GRANT SELECT ON TABLES TO "${r.user}"'
-    echo "[${name}] granted SELECT-only on ${g.db} to ${r.user}"
+  '' + lib.concatMapStrings (t: ''
+    psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON TABLE public."${t}" TO "${r.user}"'
+  '') g.tables + ''
+    echo "[${name}] granted SELECT-only on ${g.db}.{${lib.concatStringsSep "," g.tables}} to ${r.user}"
   '') r.grants) readerNames;
 in
 {
@@ -210,21 +211,24 @@ in
       internal = true;
       default = { };
       description = ''
-        Per-reader { user; grants = [ { db; owner; } … ]; } map — a SELECT-only login role
-        granted on one or more existing consumer databases (`db`, owned by `owner`). Assembled
-        by platform.nix, not by deployers. The role owns nothing, is pinned
+        Per-reader { user; grants = [ { db; tables = [ … ]; } … ]; } map — a SELECT-only login
+        role granted on SPECIFIC tables of one or more existing consumer databases. Assembled by
+        platform.nix, not by deployers. The role owns nothing, is pinned
         default_transaction_read_only, and reuses a single agent-pg-<key> secret across all its
-        grants (one role, one password, many read grants).
+        grants (one role, one password, many read grants). Grants are table-scoped on purpose:
+        the reader must not gain another table's rows just because it shares a database, and a
+        table added later is opt-in (extend `tables` here AND owners.toml's readers list) rather
+        than silently readable.
       '';
       type = types.attrsOf (types.submodule {
         options = {
           user = mkOption { type = types.str; description = "The read-only login role name."; };
           grants = mkOption {
-            description = "Databases this role may SELECT from.";
+            description = "Per-database sets of tables this role may SELECT from.";
             type = types.listOf (types.submodule {
               options = {
-                db = mkOption { type = types.str; description = "The database to grant SELECT on."; };
-                owner = mkOption { type = types.str; description = "The role that owns `db`'s tables (for DEFAULT PRIVILEGES)."; };
+                db = mkOption { type = types.str; description = "The database holding the tables."; };
+                tables = mkOption { type = types.listOf types.str; description = "The tables to grant SELECT on (must match owners.toml readers)."; };
               };
             });
           };
