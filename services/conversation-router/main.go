@@ -72,8 +72,46 @@ func main() {
 	cache := NewOwnershipCache()
 	go cache.Run(ctx, dyn, cfg.namespace)
 
+	// Read-only Postgres handle on the agent_host database (conversation metadata). Optional:
+	// when no DSN is configured the router proxies the list to the pods exactly as before. When
+	// present, GET /conversations is served straight from here (see newRouter).
+	var store *Store
+	if dsn := storeDSNFromEnv(); dsn != "" {
+		s, err := OpenStore(ctx, dsn)
+		if err != nil {
+			log.Warn("postgres read store unavailable (list falls back to fleet aggregate)", errAttr(err))
+		} else {
+			store = s
+			defer store.Close()
+			// Prove the SELECT grant at boot — a mis-provisioned read-only role fails HERE
+			// (loudly) rather than silently when the list is first served.
+			vctx, vcancel := context.WithTimeout(ctx, verifyTimeout)
+			if n, err := store.CountConversations(vctx); err != nil {
+				log.Warn("postgres read store verify failed (list falls back to fleet aggregate)", errAttr(err))
+			} else {
+				log.Info("postgres read store connected", slog.Int64("conversations", n))
+			}
+			vcancel()
+		}
+	}
+
+	// Read-only handle on the webhooks database (resource_links) — the sidebar enrichment for
+	// GET /conversations. Optional and independent of the metadata store: no links DB => bare
+	// rows (no sources/links), never a failure.
+	var links *LinkStore
+	if dsn := linkStoreDSNFromEnv(); dsn != "" {
+		l, err := OpenLinkStore(ctx, dsn)
+		if err != nil {
+			log.Warn("links read store unavailable (list served without enrichment)", errAttr(err))
+		} else {
+			links = l
+			defer links.Close()
+			log.Info("links read store connected")
+		}
+	}
+
 	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator, store, links)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -96,7 +134,7 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, store *Store, links *LinkStore) http.Handler {
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// FLEET-AGGREGATE routes must be answered from EVERY pod, not one. An agent-host serves the
@@ -112,6 +150,14 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 			return
 		}
 		if IsFleetAggregate(r.Method, r.URL.Path) {
+			// The JSON LIST is served from Postgres directly (no fan-out, no per-pod flap). The
+			// SSE events stream stays fed by each owning host — live changes originate on the pod
+			// that owns the conversation — so the router still aggregates those. When the store
+			// is unavailable (pg-less / dev / a read error) the list falls back to the aggregate,
+			// so the sidebar is never blanked by a DB blip.
+			if !isSSE(r) && serveConversationListFromStore(w, r, store, links, cache) {
+				return
+			}
 			ups := upstreamsFor(cfg, cache, fallback)
 			if isSSE(r) {
 				serveAggregatedSSE(w, r, ups)

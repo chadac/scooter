@@ -10,7 +10,7 @@ buildGoModule {
   version = "0.0.0";
   src = ./.;
 
-  vendorHash = "sha256-XVG4RIveHsv75eCSY/it4ix7mleeGJyV6i3QVIwoh/4=";
+  vendorHash = "sha256-wHz3ypgaaUGIZXw9+mCBkYh9Oi+EH1VA0W//p2JicRw=";
 
   # Static-ish; no cgo needed.
   env.CGO_ENABLED = "0";

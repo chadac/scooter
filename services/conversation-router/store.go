@@ -1,0 +1,154 @@
+// Read-only Postgres access for the router.
+//
+// The router already watches the Conversation CR (existence + hostIP + phase); the MUTABLE
+// conversation metadata — title, starred, owner, last_activity — lives only in the agent_host
+// database. This gives the router a READ path to it so the fleet-aggregate list can be served
+// from the durable store instead of fanning out to every agent-host pod and merging (the merge
+// is what let a stale per-pod copy flap `starred`). This PR wires the capability; the routing
+// change that consumes it is a follow-up.
+//
+// READ-ONLY is enforced in two independent layers, so neither alone is load-bearing:
+//   1. The DB role (`conversation_router`) is granted only CONNECT/USAGE/SELECT and is set
+//      `default_transaction_read_only = on` at the server (see modules/postgres.nix). A write
+//      is rejected by Postgres regardless of what this process attempts.
+//   2. This client also sets `default_transaction_read_only = on` on every connection, so a
+//      mis-provisioned grant still can't turn into an accidental write from here.
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"os"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// ConversationRow is the durable metadata the sidebar list needs. It deliberately omits
+// pending_queue (the queued-message blob) — the list never reads it, and leaving it out keeps
+// this a projection, not a full mirror of the agent-host row.
+type ConversationRow struct {
+	ID             string
+	ThreadID       string
+	Title          string
+	CreatedAt      int64
+	LastActivityAt int64
+	Model          *string
+	Owner          *string
+	ParentID       *string
+	UserTitled     *bool
+	Starred        *bool
+}
+
+// Store is a read-only handle on the agent_host database. nil when no DSN is configured
+// (the router then runs exactly as before — DB access is additive, never required to proxy).
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+// storeDSNFromEnv assembles the connection string for the agent_host database from the same
+// AGENT_HOST_DB_* variables agent-host reads, EXCEPT the credentials name the router's
+// read-only role. Prefers an explicit AGENT_HOST_DB_DSN. Returns "" when no password is set —
+// the signal that DB access is not configured (dev / pg-less), NOT an error.
+func storeDSNFromEnv() string {
+	if dsn := os.Getenv("AGENT_HOST_DB_DSN"); dsn != "" {
+		return dsn
+	}
+	pw := os.Getenv("AGENT_HOST_DB_PASSWORD")
+	if pw == "" {
+		return ""
+	}
+	host := envOr("AGENT_HOST_DB_HOST", "agent-shared-db")
+	port := envOr("AGENT_HOST_DB_PORT", "5432")
+	name := envOr("AGENT_HOST_DB_NAME", "agent_host")
+	user := envOr("AGENT_HOST_DB_USER", "conversation_router")
+	dsn := fmt.Sprintf("postgresql://%s:%s@%s:%s/%s",
+		url.QueryEscape(user), url.QueryEscape(pw), host, port, name)
+	if ssl := os.Getenv("AGENT_HOST_DB_SSLMODE"); ssl != "" {
+		dsn += "?sslmode=" + url.QueryEscape(ssl)
+	}
+	return dsn
+}
+
+// buildPoolConfig parses dsn and pins the connection to read-only. Factored out so the
+// read-only guard is unit-testable without a live database.
+func buildPoolConfig(dsn string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	// Client-side half of the read-only guarantee (the DB role is the other half). Applied to
+	// every connection the pool opens, so nothing from this process can begin a writing txn.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+	// A proxy, not a batch worker: keep the footprint tiny and never block a request on the DB.
+	cfg.MinConns = 0
+	cfg.MaxConns = 4
+	return cfg, nil
+}
+
+// OpenStore connects the read-only pool. The caller must Close it.
+func OpenStore(ctx context.Context, dsn string) (*Store, error) {
+	cfg, err := buildPoolConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{pool: pool}, nil
+}
+
+// CountConversations reads the conversations table — used at boot to VERIFY the SELECT grant
+// actually works (a bad grant surfaces as an error here, not silently later).
+func (s *Store) CountConversations(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, "SELECT count(*) FROM conversations").Scan(&n)
+	return n, err
+}
+
+// Conversations returns every conversation's durable metadata, newest-active first — the row
+// set the fleet-aggregate list is built from.
+func (s *Store) Conversations(ctx context.Context) ([]ConversationRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, thread_id, title, created_at, last_activity_at,
+		       model, owner, parent_id, user_titled, starred
+		  FROM conversations
+		 ORDER BY last_activity_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ConversationRow
+	for rows.Next() {
+		var c ConversationRow
+		if err := rows.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
+			&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// Close releases the pool. Safe on a nil Store (the not-configured case).
+func (s *Store) Close() {
+	if s != nil && s.pool != nil {
+		s.pool.Close()
+	}
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// verifyTimeout bounds the boot-time read so a slow/unreachable DB can't delay the router
+// coming up to serve proxy traffic (which does not depend on the DB).
+const verifyTimeout = 5 * time.Second
