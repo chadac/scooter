@@ -90,6 +90,11 @@ export type ThreadProps = {
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
 
+/** Hoisted so its identity is stable: ThreadPrimitive.Messages memoizes the
+ *  rendered message array on [messagesLength, children], so an inline arrow
+ *  rebuilds every message element on every commit. */
+const renderMessage = () => <ThreadMessage />;
+
 const ThreadComponentsContext =
   createContext<ThreadComponents>(EMPTY_COMPONENTS);
 
@@ -336,9 +341,7 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
             data-slot="aui_message-group"
             className="mb-14 flex flex-col gap-y-6 empty:hidden"
           >
-            <ThreadPrimitive.Messages>
-              {() => <ThreadMessage />}
-            </ThreadPrimitive.Messages>
+            <ThreadPrimitive.Messages>{renderMessage}</ThreadPrimitive.Messages>
           </div>
 
           <ThreadPrimitive.ViewportFooter
