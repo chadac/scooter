@@ -7,7 +7,7 @@
  * reads the bytes back at the ACP boundary to build the image content block; the
  * UI fetches them via GET /conversations/:id/assets/:assetId for replay.
  *
- * Pluggable + configurable (docs/MULTIMODAL_IMAGES.md): a PVC backend ships first
+ * Pluggable + configurable: a PVC backend ships first
  * (bytes on the conversation-state volume, alongside events.jsonl); an S3 backend
  * can implement the same interface later (sharding-clean). Size cap + a MIME
  * allow-list (images only) are enforced on put().

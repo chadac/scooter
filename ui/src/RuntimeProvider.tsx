@@ -50,7 +50,7 @@ import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter, type AppendMess
 
 import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
 import { toRepositorySnapshot, type RepositorySnapshot } from "./messageRepository.js";
-import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
+import { imagesFromMessage, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { createConversation } from "./client.js";
 import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
@@ -341,8 +341,9 @@ function ConversationRuntime({
           ? content.filter((p) => (p as { type?: string })?.type === "text").map((p) => (p as { text?: string }).text ?? "").join("")
           : "";
       // Downscale each attached image under the client cap before sending (the
-      // agent-host also hard-rejects over its cap).
-      const rawImages = await imagesFromContent(content);
+      // agent-host also hard-rejects over its cap). Read the WHOLE message — the
+      // composer puts image parts in message.attachments[], NOT message.content.
+      const rawImages = await imagesFromMessage(message);
       const images: OutboundImage[] = [];
       for (const raw of rawImages) {
         // Defensive: ensure we have valid mimeType and data before constructing the data URL

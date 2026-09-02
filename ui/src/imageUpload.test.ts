@@ -2,13 +2,14 @@
  * UI unit test — the composer image-upload helpers (multimodal, stage 4).
  * imagesFromContent pulls image parts out of a message; parseDataUrl/base64Bytes
  * are the small utilities; downscaleImage passes through in a non-DOM context (the
- * server still enforces the cap). See docs/MULTIMODAL_IMAGES.md.
+ * server still enforces the cap).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import {
   imagesFromContent,
+  imagesFromMessage,
   parseDataUrl,
   base64Bytes,
   downscaleImage,
@@ -53,6 +54,66 @@ describe("imagesFromContent", () => {
 
   it("skips a non-data-url image (e.g. a remote URL we can't inline)", async () => {
     expect(await imagesFromContent([{ type: "image", image: "https://x/y.png" }])).toEqual([]);
+  });
+});
+
+describe("imagesFromMessage (the real composer shape)", () => {
+  // @assistant-ui's composer sends { content: [text-only], attachments: [{content:[image]}] }.
+  // The image is in attachments[], NOT content — the regression that silently dropped
+  // every upload (PR #448). imagesFromMessage must union both.
+  it("extracts an image the composer put in message.attachments, not message.content", async () => {
+    const message = {
+      role: "user",
+      content: [{ type: "text", text: "what is this?" }],
+      attachments: [
+        {
+          id: "a1",
+          type: "image",
+          name: "shot.png",
+          contentType: "image/png",
+          content: [{ type: "image", image: "data:image/png;base64,QUJD" }],
+          status: { type: "complete" },
+        },
+      ],
+    };
+    expect(await imagesFromMessage(message)).toEqual([{ mimeType: "image/png", data: "QUJD" }]);
+  });
+
+  it("unions images from BOTH content and attachments", async () => {
+    const message = {
+      role: "user",
+      content: [
+        { type: "text", text: "hi" },
+        { type: "image", image: "data:image/png;base64,QQ==" },
+      ],
+      attachments: [
+        { id: "a1", content: [{ type: "image", image: "data:image/webp;base64,ZZZ" }] },
+      ],
+    };
+    expect(await imagesFromMessage(message)).toEqual([
+      { mimeType: "image/png", data: "QQ==" },
+      { mimeType: "image/webp", data: "ZZZ" },
+    ]);
+  });
+
+  it("handles a text-only message (no attachments field)", async () => {
+    expect(await imagesFromMessage({ role: "user", content: [{ type: "text", text: "hi" }] })).toEqual([]);
+    expect(await imagesFromMessage({ content: "plain string" })).toEqual([]);
+    expect(await imagesFromMessage(undefined)).toEqual([]);
+  });
+
+  it("handles multiple attachments", async () => {
+    const message = {
+      content: [],
+      attachments: [
+        { content: [{ type: "image", image: "data:image/png;base64,AAA=" }] },
+        { content: [{ type: "image", image: "data:image/jpeg;base64,BBB=" }] },
+      ],
+    };
+    expect(await imagesFromMessage(message)).toEqual([
+      { mimeType: "image/png", data: "AAA=" },
+      { mimeType: "image/jpeg", data: "BBB=" },
+    ]);
   });
 });
 

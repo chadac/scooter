@@ -2,7 +2,7 @@
  * Client-side image helpers for the composer upload path: pull image parts out of
  * an assistant-ui message's content, and downscale/re-encode them under a byte cap
  * before they're sent (the agent-host also hard-rejects over its cap; this keeps
- * the payload sane + avoids a rejected send). See docs/MULTIMODAL_IMAGES.md.
+ * the payload sane + avoids a rejected send).
  */
 
 /** An image ready to send: raw base64 (no data-url prefix) + its mime. */
@@ -62,6 +62,30 @@ export async function imagesFromContent(content: unknown): Promise<OutboundImage
           console.warn("[imageUpload] Failed to convert blob URL:", e);
         }
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * Pull image parts out of a WHOLE appended composer message — reading BOTH
+ * `message.content` AND `message.attachments[].content`.
+ *
+ * This is the critical bit: @assistant-ui's composer does NOT merge attachment
+ * content into `message.content`. On send it builds `content: [{type:"text"}]`
+ * (text only) and puts each completed attachment — whose own `.content` holds the
+ * `{type:"image", image:<data-url>}` part from SimpleImageAttachmentAdapter — in a
+ * SEPARATE `message.attachments[]` array. So reading `content` alone finds zero
+ * images and every upload is silently dropped. We must union both. Why this can't
+ * change: it mirrors @assistant-ui/core's composer send shape (see PR #448).
+ */
+export async function imagesFromMessage(message: unknown): Promise<OutboundImage[]> {
+  const m = message as { content?: unknown; attachments?: unknown };
+  const out: OutboundImage[] = [...(await imagesFromContent(m?.content))];
+  if (Array.isArray(m?.attachments)) {
+    for (const att of m.attachments) {
+      const content = (att as { content?: unknown })?.content;
+      out.push(...(await imagesFromContent(content)));
     }
   }
   return out;
