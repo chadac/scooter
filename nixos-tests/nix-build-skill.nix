@@ -41,11 +41,8 @@ pkgs.testers.runNixOSTest {
     assert "nix-profile" in hello, f"hello not under the nix profile: {hello!r}"
     machine.succeed("bash -l -c 'hello' >/dev/null")
 
-    # The build sandbox MUST be off: these pods lack the kernel user-namespaces
-    # Nix's sandbox needs, so a derivation BUILD (what `nix develop` triggers)
-    # dies with "this system does not support the kernel namespaces ...". The VM
-    # HAS namespaces, so a build here can't reproduce the failure — assert the
-    # effective config directly instead.
+    # Build sandbox must be off (see nix-config.nix). Assert the config, not a
+    # build: the VM has namespaces so a build can't reproduce it. Why: PR #445.
     sandbox = machine.succeed("nix config show sandbox").strip()
     assert sandbox == "false", f"nix build sandbox must be disabled, got {sandbox!r}"
 
