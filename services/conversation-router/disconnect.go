@@ -119,21 +119,3 @@ func isDialFailure(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) ||
 		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.ETIMEDOUT)
 }
-
-// isClientGone reports whether an error on a FAN-OUT leg (aggregate.go) is just the caller
-// leaving. When an SSE client navigates away, r.Context() is cancelled, which fails every
-// in-flight upstream request at once with context.Canceled — one departing sidebar produced a
-// burst of "failed" lines for pods that were perfectly healthy.
-//
-// The reqCtx check is what makes this safe: context.Canceled is only read as a client departure
-// when the request context is ACTUALLY done. A cancellation from anywhere else still counts as a
-// failure and keeps its warn.
-func isClientGone(err error, reqCtx context.Context) bool {
-	if errors.Is(err, io.EOF) {
-		return true
-	}
-	if errors.Is(err, context.Canceled) {
-		return reqCtx == nil || reqCtx.Err() != nil
-	}
-	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
-}

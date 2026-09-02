@@ -17,11 +17,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,6 +47,11 @@ type ConversationRow struct {
 // (the router then runs exactly as before — DB access is additive, never required to proxy).
 type Store struct {
 	pool *pgxpool.Pool
+	// connConfig is the parsed, read-only-pinned single-connection config. The LISTEN loop
+	// (events.go) opens a DEDICATED connection from it rather than borrowing a pool conn: a
+	// LISTEN holds its connection for the process lifetime, which would permanently starve the
+	// tiny (MaxConns=4) request pool.
+	connConfig *pgx.ConnConfig
 }
 
 // storeDSNFromEnv assembles the connection string for the agent_host database from the same
@@ -100,7 +107,15 @@ func OpenStore(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, connConfig: cfg.ConnConfig}, nil
+}
+
+// NewListenConn opens a DEDICATED (non-pool) read-only connection for the LISTEN loop. It carries
+// the same default_transaction_read_only guard as the pool (LISTEN is permitted under it — the
+// notification stream is not a transaction). The caller owns the connection and must Close it;
+// the loop reconnects through here after a drop.
+func (s *Store) NewListenConn(ctx context.Context) (*pgx.Conn, error) {
+	return pgx.ConnectConfig(ctx, s.connConfig)
 }
 
 // CountConversations reads the conversations table — used at boot to VERIFY the SELECT grant
@@ -133,6 +148,27 @@ func (s *Store) Conversations(ctx context.Context) ([]ConversationRow, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ConversationByID reads ONE conversation's durable metadata — the row the LISTEN loop re-reads on
+// each notification to build an `upsert` frame (the NOTIFY payload carries only the id; the row is
+// authoritative). Returns (nil, nil) when the row is gone — a delete that raced ahead of the read —
+// so the caller simply emits nothing (the poll reconciles removals).
+func (s *Store) ConversationByID(ctx context.Context, id string) (*ConversationRow, error) {
+	var c ConversationRow
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, thread_id, title, created_at, last_activity_at,
+		       model, owner, parent_id, user_titled, starred
+		  FROM conversations
+		 WHERE id = $1`, id).Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
+		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // Close releases the pool. Safe on a nil Store (the not-configured case).

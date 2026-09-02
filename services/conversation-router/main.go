@@ -110,8 +110,14 @@ func main() {
 		}
 	}
 
+	// The live conversation-list push: a single LISTEN connection on the agent_host DB fans NOTIFYs
+	// out to SSE subscribers (see events.go). No-op when store is nil (dev/pg-less) — the hub stays
+	// empty and GET /conversations/events reports unavailable, same as the JSON list.
+	hub := newSSEHub()
+	go runConversationListener(ctx, store, links, cache, hub)
+
 	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator, store, links)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator, store, links, hub)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -134,14 +140,16 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, store *Store, links *LinkStore) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, store *Store, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// FLEET-AGGREGATE routes must be answered from EVERY pod, not one. An agent-host serves the
-		// conversation list from its in-memory session map, which (with podCap=1) holds only the
-		// conversations that pod hosts — so proxying to a single pod returns a fraction of the
-		// user's conversations and they appear to vanish between refreshes. See aggregate.go.
-		// CREATE is served HERE, not proxied. The agent-host is capacity-bounded
+		// The conversation LIST and its live events stream are served HERE from Postgres, not
+		// proxied. An agent-host only knows the conversations it currently hosts (with podCap=1 the
+		// controller spreads them one-per-pod), so no single pod can answer "all of this user's
+		// conversations" — the durable store can. The JSON list reads a snapshot; the events stream
+		// LISTENs for NOTIFYs (see list.go / events.go). Both require the store: without it (a
+		// misconfigured deploy) there is no correct answer, so report 503 rather than a wrong slice.
+		// CREATE is served HERE too, not proxied. The agent-host is capacity-bounded
 		// (the controller leaves a conversation Pending when every pod is at cap),
 		// so proxying create would make conversation N*C+1 uncreatable. Writing the
 		// CR consults no agent-host. See create.go.
@@ -149,20 +157,15 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 			serveConversationCreate(w, r, creator, ownerFrom(r))
 			return
 		}
-		if IsFleetAggregate(r.Method, r.URL.Path) {
-			// The JSON LIST is served from Postgres directly (no fan-out, no per-pod flap). The
-			// SSE events stream stays fed by each owning host — live changes originate on the pod
-			// that owns the conversation — so the router still aggregates those. When the store
-			// is unavailable (pg-less / dev / a read error) the list falls back to the aggregate,
-			// so the sidebar is never blanked by a DB blip.
-			if !isSSE(r) && serveConversationListFromStore(w, r, store, links, cache) {
+		if IsConversationListRoute(r.Method, r.URL.Path) {
+			if store == nil {
+				http.Error(w, "conversation store unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			ups := upstreamsFor(cfg, cache, fallback)
 			if isSSE(r) {
-				serveAggregatedSSE(w, r, ups)
+				serveConversationEvents(w, r, store, links, cache, hub)
 			} else {
-				serveAggregatedList(w, r, ups)
+				serveConversationList(w, r, store, links, cache)
 			}
 			return
 		}

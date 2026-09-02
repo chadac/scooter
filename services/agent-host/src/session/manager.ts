@@ -387,16 +387,6 @@ export interface SessionManager {
    * own. Returns the ids reaped. Unlike sweepIdle (suspend), this is DESTRUCTIVE.
    */
   sweepRetention(maxAgeMs: number, now?: number): Promise<SessionId[]>;
-
-  /**
-   * Subscribe to conversation LIFECYCLE changes (a new conversation via start(),
-   * or a title change via setTitle()) so the GET /conversations/events stream can
-   * push the sidebar without the 10s poll. Fires with the changed Conversation
-   * (the caller enriches with `sources`/view). Returns an unsubscribe fn.
-   *
-   * Design stage: SIGNATURE ONLY.
-   */
-  onConversationChange(cb: (conv: Conversation) => void): () => void;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -514,16 +504,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     userTitled: e.userTitled,
     starred: e.starred,
   });
-
-  // Conversation lifecycle subscribers (the /conversations/events push stream).
-  // Fired by start() (new conversation) and setTitle() (title change) so the
-  // sidebar updates without waiting on the 10s poll. Fire-and-forget + cheap:
-  // it passes the Conversation only; the stream handler enriches with `sources`.
-  const changeSubs = new Set<(c: Conversation) => void>();
-  const emitChange = (e: Entry): void => {
-    const c = toConversation(e);
-    for (const cb of changeSubs) cb(c);
-  };
 
   // Mark the conversation active NOW and persist it. Fire-and-forget: touch() runs on
   // the prompt path and on throttled web-service proxy traffic, so it must never block
@@ -750,7 +730,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       await saveMeta(entry);
-      emitChange(entry); // push the new conversation to the sidebar stream (live)
 
       // Register the assignment-table CR so the controller assigns a hostPod and the
       // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
@@ -797,7 +776,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       await saveMeta(entry);
-      emitChange(entry); // show it in the sidebar live (nested under the parent)
 
       // Register the child CR carrying parentId so the controller CO-LOCATES it on the
       // parent's pod (it shares the parent's sandbox). Idempotent + non-throwing; noop in
@@ -1275,9 +1253,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // has renamed the conversation, the user title is locked (see setUserTitle).
       if (entry.userTitled) return Promise.resolve();
       entry.title = title;
-      const persisted = saveMeta(entry); // persist the agent-assigned title
-      emitChange(entry); // push the title change to the sidebar stream
-      return persisted;
+      // The durable write is what drives the live sidebar now: saveMeta updates the
+      // conversations row, whose trigger fires NOTIFY 'conversations_changed' and the
+      // conversation-router pushes the upsert (see migration 20260902183131 + events.go).
+      return saveMeta(entry);
     },
 
     setUserTitle(id, title) {
@@ -1285,18 +1264,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entry) return Promise.resolve();
       entry.title = title;
       entry.userTitled = true; // lock it: the agent's <title> no longer wins
-      const persisted = saveMeta(entry);
-      emitChange(entry);
-      return persisted;
+      return saveMeta(entry);
     },
 
     setStarred(id, starred) {
       const entry = entries.get(id);
       if (!entry) return Promise.resolve();
       entry.starred = starred;
-      const persisted = saveMeta(entry);
-      emitChange(entry);
-      return persisted;
+      return saveMeta(entry);
     },
 
     async hydrate() {
@@ -1602,11 +1577,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       return reaped;
-    },
-
-    onConversationChange(cb) {
-      changeSubs.add(cb);
-      return () => changeSubs.delete(cb);
     },
 
     onSubagentComplete(cb) {

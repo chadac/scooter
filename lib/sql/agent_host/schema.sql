@@ -61,6 +61,17 @@ CREATE INDEX "conversations_by_activity" ON "conversations" ("last_activity_at" 
 -- Per-owner filtering for the conversation list.
 CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");
 
+-- LIVE CONVERSATION-LIST PUSH — a NOTIFY trigger on this table (channel
+-- 'conversations_changed') lets the conversation-router serve GET /conversations/events by
+-- LISTENing instead of fanning SSE out to every agent-host pod. It is NOT declared here:
+-- Atlas Community does not diff FUNCTION/TRIGGER objects (`migrate diff` reports "synced,
+-- no changes" for them), so a declaration in this file would silently never reach a
+-- migration — and production is built by REPLAYING migrations, not by applying this file.
+-- The trigger's source of truth is therefore its migration:
+--   migrations/<ts>_notify_conversation_changes.sql
+-- Keep the two in sync by hand when the notified columns change (that migration and the
+-- router's assembleList are the only two places that must agree on which changes push).
+
 -- The conversation EVENT LOG — the durable replacement for events.jsonl on the
 -- wiped emptyDir, and for the NFS mirror that existed only to survive that.
 -- There is no second copy, so there is no divergence to reconcile.

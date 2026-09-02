@@ -63,39 +63,53 @@ func assembleList(metas []ConversationRow, crs []CRInfo, links map[string][]Link
 		if !visible(m.Owner, callerOwner, scope) {
 			continue
 		}
-		// phase drives status uniformly (Suspended => suspended, everything else => running) —
-		// the same mapping every pod used, which is what made the list consistent.
-		status := "running"
-		if cr.Phase == "Suspended" {
-			status = "suspended"
-		}
-		ls := links[m.ID]
-		if ls == nil {
-			ls = []Link{}
-		}
-		rows = append(rows, listRow{
-			ID:             m.ID,
-			ThreadID:       m.ThreadID,
-			Status:         status,
-			Title:          m.Title,
-			CreatedAt:      m.CreatedAt,
-			LastActivityAt: m.LastActivityAt,
-			IdleMs:         nonNeg(now - m.LastActivityAt),
-			AgeMs:          nonNeg(now - m.CreatedAt),
-			Model:          m.Model,
-			Owner:          m.Owner,
-			ParentID:       m.ParentID,
-			UserTitled:     deref(m.UserTitled),
-			Starred:        deref(m.Starred),
-			// namespace is "" to match the old projection; the UI list ignores sandbox, and the
-			// owner pod's GET /conversations/:id carries the live sandbox detail when needed.
-			Sandbox: sandboxProjection{Name: cr.SandboxRef, Namespace: ""},
-			Sources: sourcesOf(ls),
-			Links:   ls,
-		})
+		rows = append(rows, makeListRow(m, cr, links[m.ID], now))
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt > rows[j].CreatedAt })
 	return rows
+}
+
+// makeListRow projects one metadata row + its CR + its links into the wire shape. Shared by the
+// snapshot (assembleList) and the live LISTEN upsert (events.go) so both emit byte-identical rows —
+// if they diverged, a conversation would render one way on first paint and another on the next
+// push. status mapping and the "" namespace match agent-host's old view()+withSources exactly.
+func makeListRow(m ConversationRow, cr CRInfo, ls []Link, now int64) listRow {
+	status := "running"
+	if cr.Phase == "Suspended" {
+		status = "suspended"
+	}
+	if ls == nil {
+		ls = []Link{}
+	}
+	return listRow{
+		ID:             m.ID,
+		ThreadID:       m.ThreadID,
+		Status:         status,
+		Title:          m.Title,
+		CreatedAt:      m.CreatedAt,
+		LastActivityAt: m.LastActivityAt,
+		IdleMs:         nonNeg(now - m.LastActivityAt),
+		AgeMs:          nonNeg(now - m.CreatedAt),
+		Model:          m.Model,
+		Owner:          m.Owner,
+		ParentID:       m.ParentID,
+		UserTitled:     deref(m.UserTitled),
+		Starred:        deref(m.Starred),
+		// namespace is "" to match the old projection; the UI list ignores sandbox, and the
+		// owner pod's GET /conversations/:id carries the live sandbox detail when needed.
+		Sandbox: sandboxProjection{Name: cr.SandboxRef, Namespace: ""},
+		Sources: sourcesOf(ls),
+		Links:   ls,
+	}
+}
+
+// listScope reads the ?scope= filter shared by GET /conversations and its events stream,
+// defaulting to "mine" (a known caller sees only their own) — the same default agent-host used.
+func listScope(r *http.Request) string {
+	if s := r.URL.Query().Get("scope"); s != "" {
+		return s
+	}
+	return "mine"
 }
 
 // visible mirrors agent-host's visibleFilter: scope=all or an anonymous caller sees everything;
@@ -123,24 +137,22 @@ func sourcesOf(links []Link) []string {
 	return out
 }
 
-// serveConversationListFromStore serves GET /conversations from Postgres. Returns false WITHOUT
-// writing anything when it can't (no store configured, or a read error) so the caller falls back
-// to the fleet aggregation — the router must never blank the sidebar just because the DB blipped.
-func serveConversationListFromStore(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, cache *OwnershipCache) bool {
-	if store == nil {
-		return false
-	}
+// serveConversationList serves GET /conversations from Postgres — the durable source of truth for
+// the whole sidebar (no fan-out, no per-pod flap). The caller guarantees store != nil. A read error
+// yields 503, NOT an empty 200: a transient DB blip must not hand the UI an empty list it would
+// render as "you have no conversations" (the poll keeps the last good list on a failed fetch and
+// retries). Link enrichment is best-effort — its failure degrades to bare rows, never fails the list.
+func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, cache *OwnershipCache) {
 	log := logger("list")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	metas, err := store.Conversations(ctx)
 	if err != nil {
-		log.Warn("conversation list read failed; falling back to fleet aggregate", errAttr(err))
-		return false
+		log.Warn("conversation list read failed", errAttr(err))
+		http.Error(w, "conversation store read failed", http.StatusServiceUnavailable)
+		return
 	}
-	// Enrichment is best-effort: if the links DB is absent or errors, serve bare rows rather
-	// than fail the whole list (agent-host degrades the same way when its link store is absent).
 	linksByConv := map[string][]Link{}
 	if links != nil {
 		if lm, err := links.LinksByConversation(ctx); err != nil {
@@ -150,17 +162,12 @@ func serveConversationListFromStore(w http.ResponseWriter, r *http.Request, stor
 		}
 	}
 
-	scope := r.URL.Query().Get("scope")
-	if scope == "" {
-		scope = "mine"
-	}
-	rows := assembleList(metas, cache.ListCRs(), linksByConv, time.Now().UnixMilli(), ownerFrom(r), scope)
+	rows := assembleList(metas, cache.ListCRs(), linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {
 		log.Warn("conversation list encode failed", errAttr(err), slog.Int("rows", len(rows)))
 	}
-	return true
 }
 
 func nonNeg(v int64) int64 {

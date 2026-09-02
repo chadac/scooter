@@ -27,6 +27,36 @@ func TestConvIDFromPath(t *testing.T) {
 	}
 }
 
+func TestIsConversationListRoute(t *testing.T) {
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/conversations", true},         // the list — served from the store, not a pod
+		{"GET", "/conversations/events", true},  // the live list stream — same
+		{"GET", "/conversations/abc123", false}, // one conversation — route to its owner
+		{"POST", "/conversations", false},       // create — a single pod must own it
+		{"GET", "/healthz", false},
+		{"GET", "/conversations/abc/events.integrity", false}, // per-conversation stream
+	}
+	for _, c := range cases {
+		if got := IsConversationListRoute(c.method, c.path); got != c.want {
+			t.Errorf("IsConversationListRoute(%s %s) = %v, want %v", c.method, c.path, got, c.want)
+		}
+	}
+}
+
+// /conversations/events must NOT parse as a conversation whose id is "events" — that would route
+// the live sidebar stream to one arbitrary pod instead of the store-backed list stream.
+func TestEventsIsNotAConversationID(t *testing.T) {
+	if id, ok := ConvIDFromPath("/conversations/events"); ok {
+		t.Errorf("/conversations/events parsed as conversation id %q — it is the list events stream", id)
+	}
+	if id, ok := ConvIDFromPath("/conversations/real-id-123"); !ok || id != "real-id-123" {
+		t.Errorf("a real id must still parse: got (%q,%v)", id, ok)
+	}
+}
+
 func TestIsAguiPost(t *testing.T) {
 	if !IsAguiPost("POST", "/agui") {
 		t.Error("POST /agui should be an agui post")

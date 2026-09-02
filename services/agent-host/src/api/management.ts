@@ -364,43 +364,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     },
   }));
 
-  // VIEW FILTER (not access control — conversations are public):
-  //   ?scope=mine (default) -> conversations the caller owns + unowned/public ones.
-  //   ?scope=all            -> everything.
-  // An anonymous caller (no identity header) sees everything either way, so
-  // single-user / local-dev is unchanged. Extracted so the list route AND the
-  // /conversations/events push stream share ONE predicate — the stream is a
-  // security boundary and must not leak more than the poll would.
-  const visibleFilter = (ctx: { user: { anonymous: boolean; id: string }; query: URLSearchParams }) => {
-    const scope = ctx.query.get("scope") ?? "mine";
-    const user = ctx.user;
-    // "all" and anonymous callers see everything (the latter is dev-friendly: no
-    // ingress identity means we can't distinguish, so don't hide). For a KNOWN
-    // user under "mine", show STRICTLY their own — an unowned conversation
-    // (owner == null: legacy or a webhook that couldn't resolve a user) or another
-    // user's is All-only, so Mine actually distinguishes instead of degrading to
-    // All when many rows are unowned.
-    return (c: { owner?: string }) =>
-      scope === "all" || user.anonymous || c.owner === user.id;
-  };
-
-  // Enrich a conversation with its linked resources, so the sidebar can (a) show a
-  // per-row provider icon, (b) display the linked PR/MR/thread NAME instead of the
-  // title, and (c) filter by provider — all without a per-row /links fetch. Links are
-  // file-backed (cheap; already loaded here). `sources` is the distinct provider set;
-  // `links` is a COMPACT summary (source/type/title/url — no structured ref) for the
-  // list. Shared by the list route and the push stream.
-  const withSources = async (c: Conversation, now: number) => {
-    const links = (await store.listLinks?.(c.id)) ?? [];
-    const sources = [...new Set(links.map((l) => l.source))].sort();
-    const linkSummary = links.map((l) => ({
-      source: l.source,
-      resourceType: l.resourceType,
-      url: l.url,
-      title: l.title,
-    }));
-    return { ...view(c, now), sources, links: linkSummary };
-  };
+  // The conversation-list view-filter (?scope=mine|all) and link enrichment used to live
+  // here, shared by GET /conversations and its events stream. Both routes now live in the
+  // conversation-router (served from Postgres), which reimplements the same predicate
+  // (visible() in list.go) and enrichment (LinksByConversation) against the durable store.
 
   // CREATE a conversation. The SERVER mints the id — this route accepts no caller-chosen
   // threadId, which is the whole point: a client-chosen id would become an event-log key
@@ -424,59 +391,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });
 
-  r.get("/conversations", async (ctx) => {
-    const now = Date.now();
-    const list = sessions.list().filter(visibleFilter(ctx));
-    const json = await Promise.all(list.map((c) => withSources(c, now)));
-    return { json };
-  });
-
-  // GET /conversations/events — the conversation-LIST push stream. Emits an
-  // initial { kind: "snapshot", conversations } (the visible list, same scope /
-  // view-filter as GET /conversations), then { kind: "upsert", conversation } on
-  // each SessionManager.onConversationChange (new conversation / title change),
-  // filtered by the caller's scope so it never leaks more than the poll. Makes a
-  // Slack thread appear in the sidebar instantly instead of on the 10s poll.
-  r.get("/conversations/events", async (ctx) => {
-    const { res } = ctx;
-    // Bind the view-filter to THIS caller's scope+identity once — the same
-    // predicate the REST list uses (a security boundary: the stream must not
-    // emit conversations the poll would hide).
-    const visible = visibleFilter(ctx);
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    const send = (frame: unknown) => res.write(`data: ${JSON.stringify(frame)}\n\n`);
-
-    // Initial snapshot: the visible list, each enriched with its link sources
-    // (same shape as GET /conversations).
-    const now = Date.now();
-    const conversations = await Promise.all(
-      sessions.list().filter(visible).map((c) => withSources(c, now)),
-    );
-    send({ kind: "snapshot", conversations });
-
-    // Then push each lifecycle change (new conversation / title change) that
-    // passes the filter as an upsert. Enrichment (sources) happens here, not in
-    // the emitter, so the manager stays cheap. Emit the frame SYNCHRONOUSLY (a
-    // base view with empty sources) so the change is on the wire immediately;
-    // then, if the store has links, patch `sources` and re-emit. A brand-new
-    // conversation almost never has links yet, so the first frame is usually the
-    // only one — but the two-phase emit means a webhook-linked conversation still
-    // gets its provider icon without waiting on the next poll/snapshot.
-    const unsub = sessions.onConversationChange((c) => {
-      if (!visible(c)) return;
-      const now = Date.now();
-      send({ kind: "upsert", conversation: { ...view(c, now), sources: [] as string[] } });
-      void withSources(c, now).then((conversation) => {
-        if (conversation.sources.length) send({ kind: "upsert", conversation });
-      });
-    });
-
-    ctx.req.on("close", () => unsub());
-  });
+  // GET /conversations and GET /conversations/events are NOT served here. The
+  // conversation LIST and its live events stream are fleet-wide (an agent-host only
+  // knows the conversations it hosts), so the conversation-router answers both from
+  // the durable Postgres store: the JSON list from a snapshot, the events stream from
+  // Postgres LISTEN/NOTIFY (services/conversation-router/{list,events}.go). Keeping a
+  // per-pod version here would only re-expose the single-pod-slice bug the router fixes.
 
   // No POST /conversations here: creating a conversation is a control-plane write
   // served by the conversation-router (services/conversation-router/create.go).
