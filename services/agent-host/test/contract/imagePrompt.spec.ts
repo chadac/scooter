@@ -6,7 +6,6 @@
  *    into prompt text + inbound images; a plain string stays text-only (back-compat).
  *  - the bridge resolves attached image refs (readAsset -> base64) into ACP `image`
  *    content blocks appended after the text; a text-only prompt is unchanged.
- * See docs/MULTIMODAL_IMAGES.md.
  */
 
 import { describe, it, expect, vi } from "vitest";

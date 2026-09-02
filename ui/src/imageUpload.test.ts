@@ -2,7 +2,7 @@
  * UI unit test — the composer image-upload helpers (multimodal, stage 4).
  * imagesFromContent pulls image parts out of a message; parseDataUrl/base64Bytes
  * are the small utilities; downscaleImage passes through in a non-DOM context (the
- * server still enforces the cap). See docs/MULTIMODAL_IMAGES.md.
+ * server still enforces the cap).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";

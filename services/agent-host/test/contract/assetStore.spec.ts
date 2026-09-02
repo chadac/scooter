@@ -1,8 +1,7 @@
 /**
  * Tier 1 contract — the PVC AssetStore (multimodal images, stage 1). Stores image
  * bytes once, hands back a small assetId + url; enforces the size cap + MIME
- * allow-list; isolates per conversation; guards path traversal. See
- * docs/MULTIMODAL_IMAGES.md.
+ * allow-list; isolates per conversation; guards path traversal.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

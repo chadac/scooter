@@ -2,7 +2,7 @@
  * Client-side image helpers for the composer upload path: pull image parts out of
  * an assistant-ui message's content, and downscale/re-encode them under a byte cap
  * before they're sent (the agent-host also hard-rejects over its cap; this keeps
- * the payload sane + avoids a rejected send). See docs/MULTIMODAL_IMAGES.md.
+ * the payload sane + avoids a rejected send).
  */
 
 /** An image ready to send: raw base64 (no data-url prefix) + its mime. */
