@@ -167,8 +167,40 @@ in
         '';
       };
     };
-  };
+    assets = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Provision a dedicated PVC for asset storage (uploaded images, future media).
+          BYTES-ONLY PVC: asset metadata (conversation_id, asset_id, mime_type, size,
+          sha256_hash, created_at) lives in Postgres; the PVC holds only the raw image
+          data, keyed by asset_id. Clean separation: queryable metadata in DB, efficient
+          blob storage on disk. Lifecycle: assets are conversation-scoped and cleared
+          when a conversation is deleted (metadata rows removed; orphaned bytes cleaned
+          by GC job).
 
+          Off means assets fall back to LOCAL_STATE_PATH (emptyDir, ephemeral — images
+          are lost on pod restart).
+        '';
+      };
+      size = mkOption {
+        type = types.str;
+        default = "10Gi";
+        description = "Size of the dedicated assets PVC (10Gi ≈ 2000 images at 5MB each).";
+      };
+      storageClassName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          storageClassName for the assets PVC (null = cluster default). ReadWriteOnce
+          is sufficient: only the agent-host deployment writes assets, and it's a single
+          replica or autoscaled (not a StatefulSet). Simpler than RWX.
+        '';
+      };
+    };
+
+  };
   config = {
     kubernetes.resources = {
       # --- the CRD ---------------------------------------------------------

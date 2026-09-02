@@ -37,6 +37,7 @@ import type { ConversationStore, ConversationLink } from "./session/manager.js";
 import { createPgLinkStore } from "./session/linkStore.js";
 import { createPgMetaStore } from "./session/metaStore.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
+import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createRecorder } from "./transcript/recorder.js";
@@ -586,12 +587,26 @@ export async function main(
           },
         })
       : fileStore;
-  // Image/media assets (uploaded images) live alongside the event log on the
-  // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
-  const assets = createPvcAssetStore({
-    root: config.localStatePath,
-    maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+  // Image/media assets: METADATA in Postgres (queryable, transactional), BYTES on the
+  // dedicated assets PVC (efficient blob storage). When no Postgres DSN, falls back to
+  // PVC-only (both metadata + bytes on disk, like before). ASSETS_PATH is the dedicated
+  // mount (/var/lib/agent-assets); if unset, uses LOCAL_STATE_PATH (emptyDir, ephemeral).
+  const assetsPath = process.env.ASSETS_PATH ?? config.localStatePath;
+  const assets = agentHostResourceDsn()
+    ? createHybridAssetStore({
+        dsn: agentHostResourceDsn(),
+        bytesRoot: assetsPath,
+        maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+      })
+    : createPvcAssetStore({
+        root: assetsPath,
+        maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+      });
+  hostLog.info("asset store", {
+    backend: agentHostResourceDsn() ? "hybrid (pg+pvc)" : "pvc-only",
+    path: assetsPath,
   });
+  // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const server = createAguiServer();
   // The privileged /agui `owner` field (a webhook-resolved Scooter user) is honored
   // ONLY for the TRUSTED webhooks caller — its SA token verified via k8s TokenReview.

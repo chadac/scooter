@@ -49,3 +49,17 @@ export const conversationEvents = pgTable("conversation_events", {
 }, (table) => [
 	primaryKey({ columns: [table.seq, table.conversationId], name: "conversation_events_pkey"}),
 ]);
+
+export const conversationAssets = pgTable("conversation_assets", {
+	conversationId: text("conversation_id").notNull(),
+	assetId: text("asset_id").notNull(),
+	mimeType: text("mime_type").notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+	sha256Hash: text("sha256_hash").notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("conversation_assets_by_conv").using("btree", table.conversationId.asc().nullsLast().op("text_ops")),
+	index("conversation_assets_by_id").using("btree", table.assetId.asc().nullsLast().op("text_ops")),
+	primaryKey({ columns: [table.conversationId, table.assetId], name: "conversation_assets_pkey"}),
+]);
