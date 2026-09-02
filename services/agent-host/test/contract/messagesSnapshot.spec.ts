@@ -8,7 +8,9 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 
-import { foldToMessages } from "../../src/agent/messagesSnapshot.js";
+import { EventType } from "@ag-ui/core";
+
+import { foldToMessages, MESSAGE_EVENTS } from "../../src/agent/messagesSnapshot.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
 const ev = (o: Record<string, unknown>) => o as unknown as AguiEvent;
@@ -116,5 +118,25 @@ describe("foldToMessages", () => {
     const callIds = new Set(out.flatMap((m) => (m.toolCalls ?? []).map((c) => c.id)));
     const orphans = out.filter((m) => m.role === "tool" && !callIds.has(m.toolCallId!));
     expect(orphans, "a tool result with no matching call renders as a dangling card").toEqual([]);
+  });
+});
+
+describe("MESSAGE_EVENTS", () => {
+  it("skips every event the applier deep-clones the message array for", () => {
+    // The snapshot only pays off if the replay then skips these. One left out —
+    // REASONING_END was, and it is 77% of a real log's non-message events — puts
+    // the per-event clone right back.
+    const mutates = Object.values(EventType).filter(
+      (t) => t !== EventType.MESSAGES_SNAPSHOT && /MESSAGE|REASONING|TOOL_CALL|TEXT|THINKING/.test(t),
+    );
+    expect(mutates.length).toBeGreaterThan(0);
+    expect(mutates.filter((t) => !MESSAGE_EVENTS.has(t))).toEqual([]);
+  });
+
+  it("still replays events that carry state no snapshot holds", () => {
+    for (const t of ["RUN_STARTED", "RUN_FINISHED", "RUN_ERROR", "RUN_RETRYING",
+                     "QUEUE_UPDATED", "CONTEXT_USAGE", "SYSTEM_MESSAGE"]) {
+      expect(MESSAGE_EVENTS.has(t)).toBe(false);
+    }
   });
 });

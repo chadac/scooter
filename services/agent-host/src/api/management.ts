@@ -26,15 +26,8 @@ import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../s
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
-import { foldToMessages } from "../agent/messagesSnapshot.js";
+import { foldToMessages, MESSAGE_EVENTS } from "../agent/messagesSnapshot.js";
 
-/** Events the MESSAGES_SNAPSHOT already carries — replaying them would rebuild the
- *  list the snapshot just delivered. Everything else still replays individually. */
-const MESSAGE_EVENTS = new Set([
-  "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
-  "REASONING_START", "REASONING_MESSAGE_START", "REASONING_MESSAGE_CONTENT", "REASONING_MESSAGE_END",
-  "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
-]);
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { ModuleRegistry } from "../proxy/moduleRegistry.js";

@@ -6,7 +6,21 @@
  * on a long conversation. A snapshot applies the same history in ONE pass.
  */
 
+import { EventType } from "@ag-ui/core";
 import type { AguiEvent } from "../bridge.js";
+
+/** Event types the client's applier routes through its message-mutation path: it
+ *  deep-clones the whole message array to emit each one. A replay must skip them,
+ *  or the client rebuilds — token by token — the list the snapshot just delivered.
+ *
+ *  Derived from the library's own enum so a new upstream event type cannot
+ *  silently reintroduce the O(n^2) replay. `MESSAGES_SNAPSHOT` is excluded: it is
+ *  what we send, not something we skip. */
+export const MESSAGE_EVENTS: ReadonlySet<string> = new Set(
+  Object.values(EventType).filter(
+    (t) => t !== EventType.MESSAGES_SNAPSHOT && /MESSAGE|REASONING|TOOL_CALL|TEXT|THINKING/.test(t),
+  ),
+);
 
 export interface SnapshotMessage {
   id: string;
