@@ -34,7 +34,9 @@ pkgs.mkShell {
     # stays here for direct `atlas` use.
     atlas
     # `just db-generate` runs the Drizzle side from the npm workspace (pglite) and the
-    # SQLAlchemy side via `uv run` (pinned sqlacodegen) — uv provides that.
+    # SQLAlchemy side via `uv run` (pinned sqlacodegen). uv needs a system Python on
+    # NixOS (its downloaded interpreters are dynamically linked and don't work here).
+    python3
     uv
   ];
   shellHook = ''
@@ -58,5 +60,8 @@ pkgs.mkShell {
       export PW_CHROME="$(echo "$PLAYWRIGHT_BROWSERS_PATH"/chromium-*/chrome-linux/chrome | head -n1)"
     fi
     echo "  chrome (e2e): ''${PW_CHROME:-not found}"
+    # uv: prefer system Python (the one from the dev shell above) over downloading
+    # its own. The downloaded interpreters are dynamically linked and fail on NixOS.
+    export UV_PYTHON_PREFERENCE=only-system
   '';
 }
