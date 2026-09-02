@@ -76,7 +76,8 @@ describe("REPLAY: real claude transcript (subagent-poll-loop)", () => {
 
   it("REGRESSION: back-pressure yields when shouldYield() is true — keyed on the tool CALL", async () => {
     // The yield hook keys on the tool CALL (tool_use -> tool_call), which the adapter
-    // emits reliably. With shouldYield() true, replaying the real stream INTERRUPTS.
+    // emits reliably. With shouldYield() true, replaying the real stream ENDS cleanly
+    // by breaking (NOT calling interrupt) — fixes #453 spurious interrupt signals.
     const rq = replayQuery(recordedSdkMessages());
     const client = await createSdkAcpClient({
       oauthToken: "t", model: "claude-opus-4-8", exec: fakeExec, systemPrompt: "hi",
@@ -84,7 +85,7 @@ describe("REPLAY: real claude transcript (subagent-poll-loop)", () => {
     });
     await client.newSession({ threadId: "c1" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
-    expect(rq.wasInterrupted()).toBe(true);
+    expect(rq.wasInterrupted()).toBe(false); // clean break, not interrupt
   });
 
   it("FIX: the tool RESULT now surfaces (tool_call_update) — a `user`-message tool_result is no longer dropped", async () => {
