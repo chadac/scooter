@@ -26,6 +26,15 @@ import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../s
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
+import { foldToMessages } from "../agent/messagesSnapshot.js";
+
+/** Events the MESSAGES_SNAPSHOT already carries — replaying them would rebuild the
+ *  list the snapshot just delivered. Everything else still replays individually. */
+const MESSAGE_EVENTS = new Set([
+  "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
+  "REASONING_START", "REASONING_MESSAGE_START", "REASONING_MESSAGE_CONTENT", "REASONING_MESSAGE_END",
+  "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
+]);
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
@@ -750,9 +759,22 @@ export function createManagementApi(deps: ManagementDeps): Router {
       ? (i: SessionId) => store.readEventsWithChecksum!(i)
       : undefined;
     if (replay) {
+      // History goes as ONE snapshot, not N events: the client's applier rebuilds the
+      // message list per event and deep-clones it on each emit, so a long conversation
+      // costs O(n²) (15,062 clones for 4,000 events, measured). Events that carry no
+      // message state (RUN_*, QUEUE_UPDATED, CONTEXT_USAGE, SYSTEM_MESSAGE) are still
+      // replayed individually — the client derives run/queue/context state from them.
+      const history: AguiEvent[] = [];
       for await (const c of replay(id)) {
         seen.add(c.checksum);
-        send({ kind: "event", ...c });
+        history.push(c.event);
+      }
+      const messages = foldToMessages(history);
+      if (messages.length > 0) {
+        send({ kind: "event", event: { type: "MESSAGES_SNAPSHOT", messages } });
+      }
+      for (const e of history) {
+        if (!MESSAGE_EVENTS.has(e.type)) send({ kind: "event", event: e });
       }
     }
     // Flush anything that arrived during replay, then go live.
