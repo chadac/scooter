@@ -68,6 +68,30 @@ export async function imagesFromContent(content: unknown): Promise<OutboundImage
 }
 
 /**
+ * Pull image parts out of a WHOLE appended composer message — reading BOTH
+ * `message.content` AND `message.attachments[].content`.
+ *
+ * This is the critical bit: @assistant-ui's composer does NOT merge attachment
+ * content into `message.content`. On send it builds `content: [{type:"text"}]`
+ * (text only) and puts each completed attachment — whose own `.content` holds the
+ * `{type:"image", image:<data-url>}` part from SimpleImageAttachmentAdapter — in a
+ * SEPARATE `message.attachments[]` array. So reading `content` alone finds zero
+ * images and every upload is silently dropped. We must union both. Why this can't
+ * change: it mirrors @assistant-ui/core's composer send shape (see PR #448).
+ */
+export async function imagesFromMessage(message: unknown): Promise<OutboundImage[]> {
+  const m = message as { content?: unknown; attachments?: unknown };
+  const out: OutboundImage[] = [...(await imagesFromContent(m?.content))];
+  if (Array.isArray(m?.attachments)) {
+    for (const att of m.attachments) {
+      const content = (att as { content?: unknown })?.content;
+      out.push(...(await imagesFromContent(content)));
+    }
+  }
+  return out;
+}
+
+/**
  * Downscale + re-encode an image (data-url in) so its longest edge <= MAX_EDGE and
  * its bytes <= maxBytes, stepping JPEG quality down until it fits. Returns the
  * re-encoded OutboundImage, or null if it can't be loaded. Browser-only (uses

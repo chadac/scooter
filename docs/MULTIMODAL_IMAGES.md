@@ -95,6 +95,14 @@ interface AssetStore {
   attached image → base64, **downscale client-side** if over the cap, include it as
   an image content part in `send()` (`integrityAgent.ts` + `RuntimeProvider.ts`,
   which currently drop everything but `content: string`).
+- **GOTCHA (the silent-drop bug, PR #448):** @assistant-ui/core's composer does NOT
+  merge attachment content into `message.content`. On send it emits
+  `content: [{type:"text"}]` (text only) and puts each image in a SEPARATE
+  `message.attachments[]`, whose own `.content` holds the
+  `{type:"image", image:<data-url>}` part. So the `onNew` handler MUST read images
+  from `message.attachments[].content`, not just `message.content` — use
+  `imagesFromMessage(message)` (which unions both), never `imagesFromContent(content)`
+  alone. Reading `content` only finds zero images and drops every upload.
 - Render the user's own image in the thread (assistant-ui attachment view) + on
   replay.
 
