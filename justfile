@@ -144,6 +144,12 @@ test-cluster-randomized seed="": cluster-up
       npm run test:cluster
 
 # Just the broker IRSA cluster tests.
+# Verify this branch's newly-added `@proves` tests fail WITHOUT the branch's
+# changes (red-on-base) and pass with them. Run before pushing a bugfix PR;
+# CI runs the same script against the PR's base. See test/support/fails-first.sh.
+proves base="origin/main":
+    test/support/fails-first.sh {{base}}
+
 test-broker: cluster-up
     RUN_CLUSTER_TESTS=1 RUN_BROKER_TESTS=1 BROKER_NS=agent-sandbox \
       CLUSTER_PROVIDER={{cluster_provider}} npm run test:cluster -- broker
