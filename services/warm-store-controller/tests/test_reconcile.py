@@ -121,7 +121,7 @@ def test_return_claimed_pvc_when_sandbox_suspended_clean():
     # Sandbox suspended + clean unmount -> relabel its claimed PVC back to `ready`
     # (self-enriching: it carries this agent's installs), clearing claimed-by.
     pvcs = [PoolPvc(name="p1", image_tag=TAG, state="claimed", claimed_by="conv-a", bound_to_pod=False)]
-    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, clean_unmount=True)]
+    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, unmount_marker="clean")]
     actions = reconcile(pvcs=pvcs, sandboxes=sboxes, cfg=cfg(min_ready=1))
     rels = [a for a in actions if isinstance(a, Relabel) and a.pvc == "p1"]
     assert len(rels) == 1
@@ -132,17 +132,53 @@ def test_return_claimed_pvc_when_sandbox_suspended_clean():
 def test_return_discards_pvc_on_unclean_unmount():
     # A crash / dirty overlay work/ -> DISCARD the PVC (delete), don't return it dirty.
     pvcs = [PoolPvc(name="p1", image_tag=TAG, state="claimed", claimed_by="conv-a", bound_to_pod=False)]
-    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, clean_unmount=False)]
+    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, unmount_marker="unclean")]
     actions = reconcile(pvcs=pvcs, sandboxes=sboxes, cfg=cfg(min_ready=0))
     assert any(isinstance(a, DeletePvc) and a.pvc == "p1" for a in actions)
     assert not any(isinstance(a, Relabel) and a.pvc == "p1" and a.state == "ready" for a in actions)
+
+
+def test_unknown_marker_backs_off_no_delete_no_return():
+    # THE PRODUCER-LOOP FIX (read-failure ≠ unclean). A suspended sandbox whose unmount marker
+    # could NOT be read (Job errored / never scheduled / PVC terminating) must NOT be treated as
+    # dirty. A read failure is not evidence of dirtiness — back off: leave the PVC claimed, retry
+    # next pass. Deleting here is exactly how healthy pool volumes got destroyed.
+    pvcs = [PoolPvc(name="p1", image_tag=TAG, state="claimed", claimed_by="conv-a", bound_to_pod=False)]
+    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, unmount_marker="unknown")]
+    actions = reconcile(pvcs=pvcs, sandboxes=sboxes, cfg=cfg(min_ready=0))
+    assert not any(isinstance(a, DeletePvc) and a.pvc == "p1" for a in actions), "unknown must NOT delete"
+    assert not any(isinstance(a, Relabel) and a.pvc == "p1" for a in actions), "unknown must NOT return"
+
+
+def test_terminating_claimed_pvc_gets_no_second_delete():
+    # THE SELF-SUSTAINING SPIN (re-delete of an already-terminating PVC). Once a PVC is
+    # Terminating (deletionTimestamp set) it is resolved — even an `unclean` sandbox must produce
+    # NO further DeletePvc for it. Re-deleting is a no-op that, via the marker re-read, spawns
+    # check Jobs that can never schedule and get misread as unclean → another delete → the loop.
+    pvcs = [
+        PoolPvc(name="p1", image_tag=TAG, state="claimed", claimed_by="conv-a",
+                bound_to_pod=False, terminating=True),
+    ]
+    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, unmount_marker="unclean")]
+    actions = reconcile(pvcs=pvcs, sandboxes=sboxes, cfg=cfg(min_ready=0))
+    assert not any(isinstance(a, DeletePvc) and a.pvc == "p1" for a in actions), "terminating: no re-delete"
+    assert not any(getattr(a, "pvc", None) == "p1" for a in actions), "terminating: no action at all"
+
+
+def test_terminating_ready_pvc_is_not_counted_and_a_replacement_is_warmed():
+    # A terminating `ready` PVC is on its way out: it must not be counted toward min_ready, so the
+    # pool tops up a replacement rather than trusting a dying volume.
+    pvcs = [PoolPvc(name="r-dying", image_tag=TAG, state="ready", terminating=True)]
+    actions = reconcile(pvcs=pvcs, sandboxes=[], cfg=cfg(min_ready=1))
+    assert not any(isinstance(a, DeletePvc) and a.pvc == "r-dying" for a in actions)
+    assert sum(isinstance(a, WarmNew) for a in actions) == 1, "warm a replacement for the dying ready PVC"
 
 
 def test_no_return_while_pod_still_bound():
     # Suspended flag set but a pod still holds the RWO PVC -> wait (don't relabel yet;
     # relabeling `ready` could let a second pod claim it while the first is unmounting).
     pvcs = [PoolPvc(name="p1", image_tag=TAG, state="claimed", claimed_by="conv-a", bound_to_pod=True)]
-    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, clean_unmount=True)]
+    sboxes = [SandboxRef(conv_id="conv-a", image_tag=TAG, suspended=True, unmount_marker="clean")]
     actions = reconcile(pvcs=pvcs, sandboxes=sboxes, cfg=cfg(min_ready=1))
     assert not any(isinstance(a, Relabel) and a.pvc == "p1" for a in actions)
 

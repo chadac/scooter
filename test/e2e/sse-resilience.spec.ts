@@ -14,6 +14,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { fastOnly } from "./target.js";
 
 // The proxy's control endpoint (it listens on 8090; the UI proxies to it).
 const PROXY = "http://localhost:8090";
@@ -26,7 +27,7 @@ async function clearFault(request: import("@playwright/test").APIRequestContext)
   await setFault(request, { mode: "none" });
 }
 
-test.describe("SSE resilience", () => {
+fastOnly("needs the SSE fault proxy to drop/stall/kill stream frames")("SSE resilience", () => {
   // This spec (and ONLY this spec) drives the isolated fault-proxy stack: a second
   // UI dev server on 5273 that proxies through the fault proxy (8090) and runs a
   // small idle-watchdog. All other specs use the pristine 5173 -> 8080 stack, so

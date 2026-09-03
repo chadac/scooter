@@ -747,7 +747,7 @@ describe("SessionManager", () => {
       // It revived (built the bridge) and the prompt reached the agent.
       expect(prompts).toContain("second !scooter mention");
       // Let the fire-and-forget activity write settle before teardown deletes the
-      // store dir (else a late recordActivity mkdir races rmSync -> ENOENT).
+      // store dir (else a late touch -> saveMeta mkdir races rmSync -> ENOENT).
       await new Promise((r) => setTimeout(r, 20));
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -892,20 +892,27 @@ describe("SessionManager", () => {
     }
   });
 
-  it("records last-activity metadata and persists it via the store", async () => {
+  it("records last-activity metadata and persists it via saveMeta", async () => {
+    // Activity is a FIELD of the conversation record, persisted by the same saveMeta
+    // as every other meta change.
     const provisioner = fakeProvisioner();
     const store = inMemoryStore();
-    store.recordActivity = vi.fn(async () => {});
+    const saveMeta = vi.fn(async () => {});
+    store.saveMeta = saveMeta;
     const sessions = createSessionManager({ provisioner, store });
 
     const conv = await sessions.start("thread-1");
     const t0 = sessions.get(conv.id)!.lastActivityAt;
     expect(t0).toBeGreaterThan(0);
 
+    saveMeta.mockClear();
     await sessions.promptByThread("thread-1", "hello");
 
     expect(sessions.get(conv.id)!.lastActivityAt).toBeGreaterThanOrEqual(t0);
-    expect(store.recordActivity).toHaveBeenCalledWith(conv.id, expect.any(Number));
+    // The touch persisted a meta record carrying this conversation's lastActivityAt.
+    expect(saveMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ id: conv.id, lastActivityAt: expect.any(Number) }),
+    );
   });
 
   it("sweepIdle() suspends only running conversations idle past the threshold", async () => {
@@ -937,14 +944,18 @@ describe("SessionManager", () => {
       vi.setSystemTime(0);
       const provisioner = fakeProvisioner();
       const store = inMemoryStore();
-      store.recordActivity = vi.fn(async () => {});
+      const saveMeta = vi.fn(async () => {});
+      store.saveMeta = saveMeta;
       const sessions = createSessionManager({ provisioner, store });
       const conv = await sessions.start("web-thread"); // stamped at t=0
 
       // A user is actively using the pod's web services at t=9min — the proxy touches.
       vi.setSystemTime(9 * 60_000);
       sessions.touchById(conv.id);
-      expect(store.recordActivity).toHaveBeenCalledWith(conv.id, 9 * 60_000);
+      // The touch is persisted as part of the conversation's meta record.
+      expect(saveMeta).toHaveBeenCalledWith(
+        expect.objectContaining({ id: conv.id, lastActivityAt: 9 * 60_000 }),
+      );
 
       // At t=10min with a 5min threshold: WITHOUT the touch it'd be swept (10min old),
       // but the touch reset lastActivityAt to t=9min → only 1min idle → NOT swept.
@@ -1190,5 +1201,94 @@ describe("SessionManager", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("sweepIdle is OWNER-ONLY (the zombie-sandbox bug)", () => {
+  it("a non-owner neither suspends NOR probes an idle conversation", async () => {
+    // The #297 residual, observed on valhalla as three sandbox pods running 9-12h with
+    // their conversations phase=Suspended: BOTH pods held the same (dual-adopted)
+    // conversation and both swept it ~3.5s apart. The second sweeper's background-job
+    // EXEC PROBE rides the pollForReadyPod self-heal, which RESUMED the sandbox the
+    // first sweeper had just suspended — and with the conversation then evicted from
+    // every pod, nothing ever re-suspended it. The probe is the destructive half, so
+    // this asserts the non-owner does not probe AT ALL, not merely that it skips the
+    // suspend.
+    const provisioner = fakeProvisioner();
+    let probes = 0;
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      hasRunningBackgroundJob: async () => {
+        probes++;
+        return false;
+      },
+      ownershipGuard: { canWrite: () => false }, // another pod owns everything
+    });
+    const conv = await sessions.start("thread-zombie");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+
+    expect(await sessions.sweepIdle(60_000, idleAt)).not.toContain(conv.id);
+    expect(probes, "a non-owner must not fire the exec probe — the probe is what resumes").toBe(0);
+    expect((provisioner.suspend as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("the owner still sweeps normally", async () => {
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      ownershipGuard: { canWrite: () => true },
+    });
+    const conv = await sessions.start("thread-owned");
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+    expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
+  });
+});
+
+/**
+ * The CR is the source of truth for EXISTENCE, so ending a conversation must remove it.
+ *
+ * Found by the Tier-2 browser tests on their first run against a real cluster: DELETE
+ * answered 204 while the conversation stayed listed as `running` indefinitely. end()
+ * cleared local state and the store record, but nothing could delete the CR — the
+ * registry had register/setPhase/list and no delete — so hydrate() re-adopted it and the
+ * conversation came back. Every Tier-2 test failed on `cleanState could not empty the
+ * server after 50 attempts`.
+ */
+describe("end() removes the Conversation CR", () => {
+  it("deletes the CR, not just local state", async () => {
+    const remove = vi.fn(async () => {});
+    const conversationRegistry = { ...noopRegistry, remove } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      conversationRegistry,
+    });
+
+    const conv = await sessions.start("thread-cr-remove" as never);
+    await sessions.end(conv.id as SessionId);
+
+    // Without this the conversation is re-adopted from its surviving CR and comes back.
+    expect(remove).toHaveBeenCalledWith(conv.id);
+    expect(sessions.get(conv.id as SessionId), "and it is gone locally").toBeUndefined();
+  });
+
+  it("a registry failure does NOT fail the delete", async () => {
+    // Matches register/setPhase: a k8s hiccup must not turn a successful local delete
+    // into a 500 for the caller. The registry logs it; end() carries on.
+    const remove = vi.fn(async () => {
+      throw new Error("apiserver unreachable");
+    });
+    const conversationRegistry = { ...noopRegistry, remove } as never;
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(),
+      store: inMemoryStore(),
+      conversationRegistry,
+    });
+
+    const conv = await sessions.start("thread-cr-remove-fail" as never);
+    await expect(sessions.end(conv.id as SessionId)).resolves.not.toThrow();
   });
 });

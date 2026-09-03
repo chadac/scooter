@@ -105,3 +105,82 @@ describe("events.integrity — replays an in-flight (unflushed) append", () => {
     }
   });
 });
+
+describe("events.integrity — ownership", () => {
+  /** Like startIntegrity, but also reports whether the handler ENDED the response. */
+  function startWithEnd(api: ReturnType<typeof createManagementApi>, id: string) {
+    const req = new PassThrough() as unknown as IncomingMessage;
+    (req as { method?: string }).method = "GET";
+    (req as { url?: string }).url = `/conversations/${id}/events.integrity`;
+    (req as { headers?: Record<string, string> }).headers = {};
+    let body = "";
+    let ended = false;
+    const res = {
+      writeHead: () => res,
+      write: (c: string) => {
+        body += c;
+        return true;
+      },
+      end: () => {
+        ended = true;
+      },
+      on: () => res,
+      req,
+    } as unknown as ServerResponse;
+    void api.handle(req, res);
+    return { body: () => body, ended: () => ended, close: () => (req as PassThrough).emit("close") };
+  }
+
+  it("ENDS the stream after replay when another pod owns the conversation", async () => {
+    // THE TIER-2 COIN FLIP. A stream opened before the controller assigned an owner
+    // lands on a random pod; live appends only reach the OWNER's local store, so on the
+    // non-owner the stream replayed history and then sat silent FOREVER — no tool card,
+    // no reply, "Working…" until the user refreshed. Verified by a three-way capture on
+    // k3d: router + owner streams complete, the non-owner stream utterly empty. Ending
+    // the stream hands the client's reconnect back to the router, which routes by
+    // hostIP once assignment exists.
+    const root = mkdtempSync(join(tmpdir(), "integrity-owner-"));
+    try {
+      const store = createFileConversationStore(root);
+      const id = "conv-owned-elsewhere";
+      const api = createManagementApi({
+        sessions: stubSessions(id),
+        store,
+        server: stubServer,
+        answerPermission: async () => {},
+        streamOwnership: async () => "elsewhere",
+      });
+      const stream = startWithEnd(api, id);
+      await new Promise((r) => setTimeout(r, 80));
+      expect(stream.body(), "the replay + synced still serve (history is readable anywhere)").toContain('"synced"');
+      expect(stream.ended(), "a non-owner stream must END so the client reconnects to the owner").toBe(true);
+      stream.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stays OPEN when this pod owns it (and when ownership is unknown)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "integrity-owner2-"));
+    try {
+      const store = createFileConversationStore(root);
+      for (const where of ["mine", "unknown"] as const) {
+        const id = `conv-${where}`;
+        const api = createManagementApi({
+          sessions: stubSessions(id),
+          store,
+          server: stubServer,
+          answerPermission: async () => {},
+          streamOwnership: async () => where,
+        });
+        const stream = startWithEnd(api, id);
+        await new Promise((r) => setTimeout(r, 80));
+        expect(stream.ended(), `a "${where}" stream must stay open`).toBe(false);
+        stream.close();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+});

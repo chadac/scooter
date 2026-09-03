@@ -27,6 +27,15 @@
     # so this example renders without cloud config.
     fakeAgent = true;
 
+    # Per-sandbox pod sizing. Omit (null) for the same Guaranteed default shown
+    # here — the scheduler RESERVES the full request per sandbox, so on small
+    # clusters (CI runners) size this down or a second concurrent sandbox never
+    # schedules (Insufficient cpu). An idle sandbox measures ~0 CPU / ~40Mi.
+    sandboxResources = {
+      requests = { cpu = "2"; memory = "4Gi"; };
+      limits = { cpu = "2"; memory = "4Gi"; };
+    };
+
     agent = {
       name = "Scooter"; # the agent's user-facing identity
       provider = "aws_bedrock";
@@ -167,6 +176,11 @@
       tickSeconds = 30;
       relayKey = "change-me-or-provide-via-secret";
     };
+
+    # Shared-database migrations: on deploy, a Job applies the Atlas migrations under
+    # lib/sql to each per-service database (adopting the existing tables via
+    # --baseline). On by default; shown explicitly so the render check exercises it.
+    dbMigrate.enable = true;
 
     # OpenTelemetry metrics + per-model cost attribution. OFF by default (an OTLP endpoint is
     # a deployment choice); enabled here so the render check exercises the env wiring. Prices

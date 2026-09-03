@@ -49,8 +49,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter, type AppendMessage } from "@assistant-ui/react";
 
 import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
-import { toRepositorySnapshot, type RepositorySnapshot } from "./messageRepository.js";
-import { imagesFromContent, downscaleImage, type OutboundImage } from "./imageUpload.js";
+import { toRepositorySnapshot, enrichMessagesWithImages, type RepositorySnapshot } from "./messageRepository.js";
+import { imagesFromMessage, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { createConversation } from "./client.js";
 import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
@@ -162,6 +162,12 @@ export interface InterruptContextValue {
   contextFill: number | null;
   /** {used,total} context tokens for the fill-bar tooltip, or null. */
   contextTokens: { used: number; total: number } | null;
+  /** True while older history remains to page in — the initial snapshot paints
+   *  only the trailing window. */
+  hasOlderHistory: boolean;
+  /** Fetch + prepend the next older page. Resolves with how many messages were
+   *  added (0 when there is no more, or on failure). */
+  loadOlderHistory: () => Promise<number>;
   /** Stop the running turn (the Stop button). POSTs the agent-host cancel route. */
   cancel: () => Promise<void>;
   /** Optimistic Stop-button feedback (the run's terminal event round-trips through
@@ -204,6 +210,8 @@ export const InterruptContext = createContext<InterruptContextValue>({
   runStartedAt: null,
   contextFill: null,
   contextTokens: null,
+  hasOlderHistory: false,
+  loadOlderHistory: async () => 0,
   cancel: async () => {},
   cancelState: "idle",
   runError: null,
@@ -341,10 +349,16 @@ function ConversationRuntime({
           ? content.filter((p) => (p as { type?: string })?.type === "text").map((p) => (p as { text?: string }).text ?? "").join("")
           : "";
       // Downscale each attached image under the client cap before sending (the
-      // agent-host also hard-rejects over its cap).
-      const rawImages = imagesFromContent(content);
+      // agent-host also hard-rejects over its cap). Read the WHOLE message — the
+      // composer puts image parts in message.attachments[], NOT message.content.
+      const rawImages = await imagesFromMessage(message);
       const images: OutboundImage[] = [];
       for (const raw of rawImages) {
+        // Defensive: ensure we have valid mimeType and data before constructing the data URL
+        if (!raw.mimeType || !raw.data) {
+          console.warn("[RuntimeProvider] Skipping image with missing mimeType or data:", raw);
+          continue;
+        }
         const scaled = await downscaleImage(`data:${raw.mimeType};base64,${raw.data}`).catch(() => raw);
         if (scaled) images.push(scaled);
       }
@@ -448,6 +462,7 @@ function ConversationRuntime({
     ReadonlyArray<{ id: string; text: string; priority: number }>
   >([]);
   const [renderTick, setRenderTick] = useState(0);
+  const [hasOlder, setHasOlder] = useState(false);
   // Highest message count applied so far — suppresses a SHRINKING reset during a
   // reconnect re-fold (see push() below). Reset per conversation (this component
   // remounts on currentId).
@@ -467,14 +482,13 @@ function ConversationRuntime({
     let disposed = false;
     const push = () => {
       if (disposed) return;
-      // LOG-DERIVED STATE (run-in-flight, interrupts, error, queue) updates on EVERY
-      // push — even during replay / a suppressed message reset. It's cheap (no thread
-      // reset) and MUST stay in sync, or the thinking dot / Stop button / approvals go
-      // stale. The bug this fixes: opening a conversation whose last run is in-flight
-      // but SILENT (blocked on a long tool call, no streaming) showed no thinking
-      // indicator, because the message-render guards below returned before isRunning
-      // was ever set. runIsActive() is derived from the replayed log, so it's correct
-      // here regardless of the render guards.
+      // Error state first: a 401 never reaches `synced`, so anything below the guard
+      // would be deferred forever and the banner would never show.
+      setRunError(agent.getRunError());
+      setHasOlder(agent.hasOlderHistory());
+      setRunRetrying(agent.getRunRetrying());
+      setStreamAuthError(agent.getStreamAuthError());
+      if (agent.isReplaying()) return; // else a reconnect animates the indicators through history
       const active = agent.runIsActive();
       setIsRunning(active);
       setActiveTool(agent.activeTool());
@@ -483,9 +497,6 @@ function ConversationRuntime({
       setContextTokens(agent.contextTokens());
       if (!active) setCancelState("idle"); // run idle → drop optimistic stopping/failed
       setInterrupts(agent.getPendingInterrupts());
-      setRunError(agent.getRunError());
-      setRunRetrying(agent.getRunRetrying());
-      setStreamAuthError(agent.getStreamAuthError());
       const serverQueue = agent.getQueuedMessages();
       setQueuedMessages(serverQueue);
       // Clear an optimistic pending send once the SERVER has confirmed it — either it's now in
@@ -508,12 +519,6 @@ function ConversationRuntime({
         return next.length === cur.length ? cur : next;
       });
 
-      // MESSAGE RESET is what the guards protect. While REPLAYING history (on open /
-      // switch / reconnect), don't reset the thread on every folded event — that
-      // visibly builds the history top-down. Skip until the stream's `synced` marker,
-      // which fires one final render with the whole history. Live events after that
-      // render per-event as usual.
-      if (agent.isReplaying()) return;
       // Guard against a SHRINKING reset within THIS conversation. A reconnect
       // re-folds agent.messages from empty (0,1,2,…back up to N); a reset applied
       // while that fold is still climbing hands assistant-ui a SHORTER list than it
@@ -526,17 +531,11 @@ function ConversationRuntime({
       const folded = agent.messages as unknown as unknown[];
       if (folded.length < lastLen.current) return;
       lastLen.current = folded.length;
-      // Enrich user messages with their attached images (MESSAGE_IMAGES rides the
-      // log but the base applier ignores it): append an image part per ref so the
-      // image renders live + after a refresh. The url is a same-origin assets route.
-      const enriched = folded.map((m) => {
-        const msg = m as { id?: string; role?: string; content?: unknown };
-        const imgs = msg.id ? agent.getMessageImages(msg.id) : undefined;
-        if (!imgs?.length) return m;
-        const parts = Array.isArray(msg.content) ? [...(msg.content as unknown[])] : msg.content ? [{ type: "text", text: msg.content }] : [];
-        for (const img of imgs) parts.push({ type: "image", image: img.url });
-        return { ...msg, content: parts };
-      });
+      // Enrich user messages with their attached images (MESSAGE_IMAGES rides the log
+      // but the base applier ignores it) as AG-UI wire image parts, so they survive
+      // replay/refresh as attachments. Wire shape + base-prefix are load-bearing — see
+      // enrichMessagesWithImages. BASE_URL is "" in prod, the webService prefix in dev.
+      const enriched = enrichMessagesWithImages(folded, (id) => agent.getMessageImages(id), BASE_URL);
       // Interleave SYSTEM messages inline at their chronological slot. The base applier
       // drops SYSTEM_MESSAGE (bespoke), so we splice a synthetic message carrying a
       // `sys:`-prefixed id + a source/text-tagged text part right AFTER the real
@@ -621,6 +620,13 @@ function ConversationRuntime({
     return extras.length === 0 ? queuedMessages : [...queuedMessages, ...extras];
   }, [queuedMessages, optimisticSends]);
 
+  // Stable identity: the thread's scroll handler holds this in an effect dep.
+  const loadOlder = useCallback(async () => {
+    const n = await agent.loadOlderHistory();
+    setHasOlder(agent.hasOlderHistory());
+    return n;
+  }, [agent]);
+
   const interruptValue = useMemo<InterruptContextValue>(
     () => ({
       interrupts,
@@ -632,6 +638,8 @@ function ConversationRuntime({
       runStartedAt,
       contextFill,
       contextTokens,
+      hasOlderHistory: hasOlder,
+      loadOlderHistory: loadOlder,
       cancel: doCancel,
       cancelState,
       runError,
@@ -640,7 +648,7 @@ function ConversationRuntime({
       queuedMessages: renderedQueue,
       renderTick,
     }),
-    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, doCancel, cancelState, runError, runRetrying, streamAuthError, renderedQueue, renderTick],
+    [interrupts, agent, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, hasOlder, loadOlder, doCancel, cancelState, runError, runRetrying, streamAuthError, renderedQueue, renderTick],
   );
 
   return (

@@ -49,6 +49,10 @@ export interface IntegrityAgentConfig extends AgentHostConfig {
    *  class). Default 25s; small values in tests. 0 disables. See
    *  todo/docs/SSE_RESILIENCE.md. */
   idleReconnectMs?: number;
+  /** Delay between cancel() 404-retries (ms). The production default (700ms × 9
+   *  attempts ≈ 5.6s) outlasts a slow controller assignment tick; tests pass a
+   *  small value so the persistent-404 path stays fast. */
+  cancelRetryDelayMs?: number;
 }
 
 /** A resume answer to a pending interrupt (permission/option choice). */
@@ -81,6 +85,7 @@ type ConnectionOutcome = "not-found" | "closed" | "error" | "auth-error";
 /** A stable empty-queue reference (so getQueuedMessages returns the SAME array
  *  each idle call — a fresh [] every render would defeat React memoization). */
 const EMPTY_QUEUE: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+const EMPTY_INTERRUPTS: readonly PendingInterrupt[] = [];
 
 export class IntegrityAgent extends AbstractAgent {
   private readonly cfg: IntegrityAgentConfig;
@@ -189,11 +194,15 @@ export class IntegrityAgent extends AbstractAgent {
     if (this.contextUsedTokens == null || !this.contextWindow) return null;
     return Math.min(1, this.contextUsedTokens / this.contextWindow);
   }
-  /** {used, total} tokens for a tooltip, or null. */
+  /** {used, total} tokens for a tooltip, or null. Cached so an unchanged reading keeps
+   *  its identity — useState bails out only on Object.is. */
   contextTokens(): { used: number; total: number } | null {
     if (this.contextUsedTokens == null || !this.contextWindow) return null;
-    return { used: this.contextUsedTokens, total: this.contextWindow };
+    const c = this.lastContextTokens;
+    if (c && c.used === this.contextUsedTokens && c.total === this.contextWindow) return c;
+    return (this.lastContextTokens = { used: this.contextUsedTokens, total: this.contextWindow });
   }
+  private lastContextTokens: { used: number; total: number } | null = null;
   private trackContext(e: BaseEvent): boolean {
     const ev = e as unknown as { type?: string; usedTokens?: number; contextWindow?: number };
     if (ev.type !== "CONTEXT_USAGE") return false;
@@ -311,6 +320,9 @@ export class IntegrityAgent extends AbstractAgent {
    *  re-derives the queue from the log instead of losing it (it used to be
    *  client-only and vanished on refresh). Latest-snapshot-wins. */
   private queued: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+  /** Where the painted window starts in the log (1 = the whole log is loaded). */
+  private historyCursor = 1;
+  private olderInFlight: Promise<number> | undefined;
   getQueuedMessages(): ReadonlyArray<{ id: string; text: string; priority: number }> {
     // INVARIANT: the queue only holds items WHILE a run is draining them. If the
     // run is idle, there is nothing queued — regardless of the last QUEUE_UPDATED
@@ -351,11 +363,75 @@ export class IntegrityAgent extends AbstractAgent {
     return true;
   }
 
+  /** Capture the snapshot's paging cursor. The server paints only the trailing
+   *  window; `fromSeq` is where that window starts, so older history is everything
+   *  before it. Absent means the snapshot IS the whole log. */
+  private trackHistoryCursor(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; fromSeq?: number };
+    if (ev.type !== "MESSAGES_SNAPSHOT") return false;
+    const next = typeof ev.fromSeq === "number" ? ev.fromSeq : 1;
+    if (next === this.historyCursor) return false;
+    this.historyCursor = next;
+    return true;
+  }
+
+  /** Whether older history remains to page in (the snapshot was windowed). */
+  hasOlderHistory(): boolean {
+    return this.historyCursor > 1;
+  }
+
+  /** Fetch the next older page and PREPEND it. Returns the number of messages
+   *  added (0 when there is nothing more, or on failure — best-effort, like the
+   *  seed). Concurrent calls collapse onto the in-flight one so a scroll that
+   *  keeps firing does not stack requests. */
+  async loadOlderHistory(): Promise<number> {
+    const id = this.cfg.conversationId;
+    if (!this.hasOlderHistory() || !hasId(id)) return 0;
+    if (this.olderInFlight) return this.olderInFlight;
+    const run = (async () => {
+      try {
+        const url =
+          `${this.base}/conversations/${encodeURIComponent(id)}` +
+          `/messages?before=${this.historyCursor}`;
+        const res = await this.doFetch(url, {
+          headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
+        });
+        if (!res.ok) return 0;
+        const body = (await res.json()) as { messages?: unknown[]; fromSeq?: number; done?: boolean };
+        const older = body.messages ?? [];
+        this.historyCursor = body.done ? 1 : (body.fromSeq ?? 1);
+        if (older.length === 0) return 0;
+        // Prepend: older history goes BEFORE what is already rendered.
+        this.setMessages([...older, ...this.messages] as never);
+        this.notifyMessages();
+        return older.length;
+      } catch {
+        return 0; // best-effort; the user can scroll again
+      } finally {
+        this.olderInFlight = undefined;
+      }
+    })();
+    this.olderInFlight = run;
+    return run;
+  }
+
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
-    return [...this.pendingApprovals.values()];
+    // Stable identity when empty (the common case): the caller feeds this straight to
+    // useState, which bails out only on Object.is — a fresh [] re-renders every notify.
+    if (this.pendingApprovals.size === 0) return EMPTY_INTERRUPTS;
+    const next = [...this.pendingApprovals.values()];
+    if (
+      this.lastInterrupts.length === next.length &&
+      next.every((v, i) => v === this.lastInterrupts[i])
+    ) {
+      return this.lastInterrupts;
+    }
+    this.lastInterrupts = next;
+    return next;
   }
+  private lastInterrupts: readonly PendingInterrupt[] = EMPTY_INTERRUPTS;
 
   /** Update the unified pendingInterrupts map from a single log event:
    *   - RUN_FINISHED(outcome=interrupt) ADDS each interrupt (goose OR ext-) by id;
@@ -695,6 +771,15 @@ export class IntegrityAgent extends AbstractAgent {
         }
         if (waitTicks > 0) {
           record("stream.id_arrived", { wait_ticks: waitTicks });
+            // SEED NOW. seedTail() runs once at start-up and returns immediately when
+            // there is no id yet, so on a BRAND-NEW conversation it never ran at all —
+            // and events emitted before this stream went live had no catch-up. The UI
+            // then rendered nothing, not even the user's own message.
+            //
+            // Seeding HERE, on the id's arrival, is the fix that does not touch when the
+            // pump starts: deferring the pump is documented above as bisected-and-wrong,
+            // and it measured worse (8 -> 13 cluster failures) when tried.
+            if (!seeded) seeded = await this.seedTail().catch(() => false);
           waitTicks = 0;
         }
         // Fresh fold per PHYSICAL connection: reset to empty so the full-log
@@ -725,6 +810,8 @@ export class IntegrityAgent extends AbstractAgent {
         this.lastRunError = null;
         // Likewise re-derive the queue from the log's last QUEUE_UPDATED snapshot.
         this.queued = [];
+        // The new replay's snapshot carries its own window start.
+        this.historyCursor = 1;
         // System messages are re-derived from the replayed log too (reset so a
         // reconnect rebuilds the list instead of doubling it). The anchor resets with
         // them so positions re-derive from an empty fold.
@@ -749,6 +836,8 @@ export class IntegrityAgent extends AbstractAgent {
             .subscribe({ error: () => resolve(), complete: () => resolve() });
         });
 
+        const connectionOpenedAt = Date.now();
+        let framesThisConnection = 0;
         record("stream.connect", {
           [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
           // A RECONNECT (false) is the interesting case: the visible transcript was just
@@ -763,6 +852,15 @@ export class IntegrityAgent extends AbstractAgent {
           (e) => {
             // The stream is alive — reset the idle-watchdog clock.
             this.lastActivityAt = Date.now();
+            // FIRST FRAME separates "connected but silent" from "delivering": a UI that looks
+            // frozen while the server streams shows a connect with no first_frame.
+            if (framesThisConnection === 0) {
+              record("stream.first_frame", {
+                [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
+                "stream.ttfb_ms": Date.now() - connectionOpenedAt,
+              });
+            }
+            framesThisConnection++;
             // Track the pending interrupt as it rides the log: a RUN_STARTED means the
             // (resumed) run is live again — clear any pending; a RUN_FINISHED with an
             // interrupt outcome pauses the run awaiting a user answer. The base
@@ -786,6 +884,8 @@ export class IntegrityAgent extends AbstractAgent {
             changed = this.trackContext(e) || changed;
             // Track SYSTEM messages (hidden behind a toggle in the thread).
             changed = this.trackSystemMessage(e) || changed;
+            // Where the painted window starts, for the scroll-back paging.
+            changed = this.trackHistoryCursor(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
@@ -817,6 +917,14 @@ export class IntegrityAgent extends AbstractAgent {
         this.controllers.delete(controller);
         controller = undefined;
         if (closed) break;
+
+        record("stream.closed", {
+          [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
+          [ATTR.reason]: watchdogForced ? "watchdog" : String(outcome ?? "drop"),
+          "stream.frames": framesThisConnection,
+          "stream.duration_ms": Date.now() - connectionOpenedAt,
+          "stream.silent_ms": Date.now() - this.lastActivityAt,
+        });
 
         if (outcome === "auth-error") {
           // Expired ingress/auth session (401/403). Retrying immediately won't help
@@ -935,7 +1043,13 @@ export class IntegrityAgent extends AbstractAgent {
     // `seeded` stayed false and the first real connection wiped the visible transcript
     // rather than preserving the seeded tail. seedTail runs once, before the loop; the
     // gate has to sit before it, not inside what follows it.
-    void this.seedTail().finally(() => { if (!closed) void loop(); });
+    void this.seedTail()
+      .then((ok) => {
+        seeded = ok;
+      })
+      .finally(() => {
+        if (!closed) void loop();
+      });
     return stop;
   }
 
@@ -943,27 +1057,29 @@ export class IntegrityAgent extends AbstractAgent {
    *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
    *  first paint before the full replay. Best-effort: any failure just skips the
    *  seed and the full replay paints as before. */
-  private async seedTail(runs = 8): Promise<void> {
+  private async seedTail(limit = 300): Promise<boolean> {
     try {
-      if (!hasId(this.cfg.conversationId)) return; // nothing to seed from yet
-      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
+      if (!hasId(this.cfg.conversationId)) return false; // nothing to seed from yet
+      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?limit=${limit}`;
       const res = await this.doFetch(url, {
         headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const body = (await res.json()) as { events?: BaseEvent[] };
       const events = body.events ?? [];
-      if (events.length === 0) return;
+      if (events.length === 0) return false;
       // Fold the tail in a THROWAWAY clone first, so a fold that yields nothing
       // renderable (e.g. the tail's final run is still in-flight — no RUN_FINISHED —
       // so the base applier produces no message state) can't blank the real thread.
       // Adopt + paint only if the fold actually produced messages.
       const folded = await this.foldTail(events);
-      if (folded.length === 0) return; // nothing renderable → let the full replay paint
+      if (folded.length === 0) return false; // nothing renderable → let the full replay paint
       this.setMessages(folded as never);
       this.notifyMessages();
+      return true;
     } catch {
       /* best-effort — the full replay will paint */
+      return false;
     }
   }
 
@@ -1042,13 +1158,29 @@ export class IntegrityAgent extends AbstractAgent {
       "Content-Type": "application/json",
       ...(this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : {}),
     };
-    const res = await this.doFetch(
-      `${this.base}/conversations/${encodeURIComponent(this.#requireId("cancel"))}/cancel`,
-      { method: "POST", headers },
-    );
-    if (!res.ok) {
-      throw new Error(`cancel request failed: ${res.status} ${res.statusText}`);
+    const url = `${this.base}/conversations/${encodeURIComponent(this.#requireId("cancel"))}/cancel`;
+    // RETRY a 404. In the first ~1-2s of a conversation the controller has not assigned
+    // an owner yet, so the router's CR-watch cache has no hostIP and the POST falls back
+    // to a random pod that does not hold the conversation — observed as an immediate
+    // Stop 404ing (nginx: POST …/cancel 404 in the SAME second as the run's first
+    // prompt) while the run kept going and the status bar never cleared. The
+    // conversation demonstrably exists — this client is streaming it — so a 404 here is
+    // the assignment window, not absence. The router's cache usually converges in ~a
+    // second — but on a loaded cluster the controller tick itself can take 3-4s (CI run
+    // 33024754713: created 00:09:25.0, assigned 00:09:28.4, while 4×700ms retries gave
+    // up at +2.1s and the Stop was lost). Retry across ~5.5s to outlast a slow tick.
+    // Other failures still throw immediately: cancel must never silently do nothing
+    // (#347).
+    let last = 0;
+    for (let attempt = 0; attempt < 9; attempt++) {
+      if (attempt > 0) await delay(this.cfg.cancelRetryDelayMs ?? 700);
+      const res = await this.doFetch(url, { method: "POST", headers });
+      if (res.ok) return;
+      last = res.status;
+      if (res.status !== 404) break;
+      record("cancel.retry_404", { attempt });
     }
+    throw new Error(`cancel request failed: ${last}`);
   }
 
   /** Fire-and-forget POST /agui; deliberately does NOT consume the response body,

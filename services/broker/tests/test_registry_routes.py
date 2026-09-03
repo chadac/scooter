@@ -12,11 +12,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from broker.aws.store import StoreConfig
 from broker.core.auth import authenticate
 from broker.core.types import Identity
 from broker.registry.routes import create_registry_router
 from broker.registry.store import ModuleRegistryStore
+
+from conftest import create_schema, sqlite_config
+from broker.registry import store as registry_store
 
 
 def _identity(conv: str) -> Identity:
@@ -26,8 +28,8 @@ def _identity(conv: str) -> Identity:
 
 @pytest.fixture
 async def store():
-    s = ModuleRegistryStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
-    await s.init()
+    s = ModuleRegistryStore(sqlite_config())
+    await create_schema(s, registry_store._Base)
     return s
 
 

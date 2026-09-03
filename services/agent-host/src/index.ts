@@ -30,11 +30,14 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { mirroredConversationStore } from "./session/mirroredStore.js";
+import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
-import type { ConversationStore } from "./session/manager.js";
+import type { ConversationStore, ConversationLink } from "./session/manager.js";
+import { createPgLinkStore } from "./session/linkStore.js";
+import { createPgMetaStore } from "./session/metaStore.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
+import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient } from "./acp/client.js";
 import { createRecorder } from "./transcript/recorder.js";
@@ -49,7 +52,8 @@ import { writeHints, loadSkills, assembleHints } from "./agent/skills.js";
 import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
-import { createJobManager, type JobStatus } from "./session/jobManager.js";
+import { createJobManager, type JobStatus, type JobRegistry } from "./session/jobManager.js";
+import { createPgJobStore } from "./session/jobStore.js";
 import { createMcpEndpoint, type MarimoToolsWiring } from "./agent/mcpServer.js";
 import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
@@ -89,21 +93,14 @@ export interface AgentHostConfig {
   port: number;
   namespace: string;
   sandboxImage: string;
-  /** EPHEMERAL local cache of the AG-UI event log for the conversations THIS pod is
-   *  serving. Backed by an emptyDir in cluster — it does NOT survive a restart, despite
-   *  what the old name (STATE_PATH) and this comment used to claim. The durable record is
-   *  `mirrorStatePath`; the source of truth for a conversation's existence/ownership/
-   *  liveness is the Conversation CR. Nothing answering "which conversations exist?" may
-   *  depend on this path. See docs/CONVERSATION_STATE_MODEL.md. */
+  /** EPHEMERAL per-pod volume: uploaded ASSETS and goose state. Backed by an emptyDir in
+   *  cluster, so it does NOT survive a restart. The event log used to live here too (and
+   *  its durable copy on an NFS mirror) — both are now Postgres. Assets have not moved
+   *  yet; they are blobs, not rows. The source of truth for a conversation's
+   *  existence/ownership/liveness is the Conversation CR. Nothing answering "which
+   *  conversations exist?" may depend on this path. See
+   *  docs/CONVERSATION_STATE_MODEL.md. */
   localStatePath: string;
-  /** The DURABLE conversation record (RWX/NFS PVC): history, transcripts, queue state.
-   *  Survives the pod, so ANOTHER pod can revive a conversation from it (the multi-replica
-   *  story). When set, the store becomes a mirroredConversationStore: local is the hot path
-   *  for reads/writes, and a coalesced async copy of every write is shipped here.
-   *  "MIRROR" is a legacy name — this is the persistent store, not a backup of one. Unset =
-   *  single local store (dev/single-replica). See mirroredStore.ts +
-   *  CONVERSATION_CRD_AND_HISTORY.md + docs/CONVERSATION_STATE_MODEL.md. */
-  mirrorStatePath?: string;
   /** Ephemeral scratch for the agent process: goose's per-conversation cwd
    *  (sessions DB + .goosehints). The real work execs into the sandbox, so this
    *  is throwaway — an emptyDir, NOT the durable PVC. */
@@ -168,7 +165,21 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
   // GOOSE_BIN=fake runs the bundled dummy ACP agent (no model, no AWS).
   const useFakeAgent = process.env.GOOSE_BIN === "fake";
   const fakeAgentPath = new URL("./fakeAgent.js", import.meta.url).pathname;
-  const fakeSandbox = process.env.FAKE_SANDBOX === "1" || useFakeAgent;
+    // The AGENT and the SANDBOX are separate choices. GOOSE_BIN=fake picks a
+    // deterministic agent (no model key); it must NOT also disable the provisioner.
+    // Coupling them meant the k3d platform — which sets GOOSE_BIN=fake on purpose —
+    // silently got createNoopProvisioner(): no Sandbox CR, no sandbox pod, nothing
+    // logged, and every turn hung until the 60s timeout. "A tool call runs in a real
+    // sandbox" could not pass there by construction.
+    //
+    // Still defaults to a fake sandbox OUT of a cluster, so the local Tier-3 stack (no
+    // k8s at all) keeps working unchanged: KUBERNETES_SERVICE_HOST is set only by the
+    // kubelet. In-cluster, the fake agent now runs against a REAL sandbox — the
+    // combination the cluster tier exists to exercise. FAKE_SANDBOX=1 forces the old
+    // behaviour anywhere.
+    const inCluster = process.env.KUBERNETES_SERVICE_HOST !== undefined;
+    const fakeSandbox =
+      process.env.FAKE_SANDBOX === "1" || (useFakeAgent && !inCluster);
   // In prod the k8s manifest mounts /var/lib/... (a writable emptyDir/PVC). In
   // fake/local mode those paths aren't writable, so default to an OS temp dir so
   // the local e2e stack is self-contained (env still overrides either way).
@@ -189,7 +200,6 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     localStatePath: process.env.LOCAL_STATE_PATH ?? process.env.STATE_PATH ?? defaultStatePath,
     // The DURABLE conversation record (RWX PVC): history, transcripts, queue. Survives the
     // pod. "MIRROR" is a legacy name — it is the persistent store, not a backup.
-    mirrorStatePath: process.env.MIRROR_STATE_PATH || undefined,
     scratchPath: process.env.SCRATCH_PATH ?? defaultScratchPath,
     // Default: suspend after 30 min idle, sweep every minute. 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
@@ -311,6 +321,38 @@ function webhooksResourceDsn(): string {
   return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
 }
 
+/** DSN for the BYOC database. agent-host writes byoc.remote_agents (the liveness badge)
+ *  alongside byoc-controller (which owns session_id) — one table, two writers, rather than
+ *  the two unsynchronised copies this replaced. Deliberately NOT derived from the webhooks
+ *  DSN: this must not disappear when webhooks is disabled. PR #423. */
+function byocResourceDsn(): string {
+  const explicit = process.env.BYOC_DB_DSN;
+  if (explicit) return explicit;
+  const pw = process.env.BYOC_DB_PASSWORD;
+  if (!pw) return "";
+  const host = process.env.BYOC_DB_HOST ?? "agent-shared-db";
+  const port = process.env.BYOC_DB_PORT ?? "5432";
+  const name = process.env.BYOC_DB_NAME ?? "byoc";
+  const user = process.env.BYOC_DB_USER ?? "byoc";
+  return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
+}
+
+/** DSN for the agent_host database — the tables agent-host owns and writes
+ *  (conversation_jobs today). Deliberately NOT derived from webhooksResourceDsn(): that
+ *  gates on cfg.webhooks.enable, and agent-host's own state must not disappear because an
+ *  unrelated service is disabled. See todo/draft/SHARED_DB_TABLE_OWNERSHIP.md. */
+function agentHostResourceDsn(): string {
+  const explicit = process.env.AGENT_HOST_DB_DSN;
+  if (explicit) return explicit;
+  const pw = process.env.AGENT_HOST_DB_PASSWORD;
+  if (!pw) return "";
+  const host = process.env.AGENT_HOST_DB_HOST ?? "agent-shared-db";
+  const port = process.env.AGENT_HOST_DB_PORT ?? "5432";
+  const name = process.env.AGENT_HOST_DB_NAME ?? "agent_host";
+  const user = process.env.AGENT_HOST_DB_USER ?? "agent_host";
+  return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
+}
+
 /** Parse an optional static id->email map from AUTH_SUB_EMAIL_MAP ("sub=email"
  *  pairs, comma or semicolon separated). Undefined when unset/empty. Used to seed
  *  identity email resolution for a known set of users (e.g. before the learned
@@ -411,14 +453,20 @@ export async function main(
         // runtime nix builds (tool installs, re-converge) + persisting them across
         // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
         // upper — the overlay still works, writes just don't persist).
+        // Sandbox pod sizing. Default (unset) = the provisioner's Guaranteed 2cpu/4Gi.
+        // SANDBOX_RESOURCES is a JSON {requests:{cpu,memory},limits:{cpu,memory}} —
+        // set by the TEST platform to small values: on a 4-vCPU CI runner the 2cpu
+        // Guaranteed default makes a SECOND concurrent sandbox unschedulable
+        // (Insufficient cpu -> Pending forever), which failed exactly the one e2e
+        // test that holds two live conversations at once.
+        sandboxResources: process.env.SANDBOX_RESOURCES
+          ? (JSON.parse(process.env.SANDBOX_RESOURCES) as {
+              requests?: { cpu?: string; memory?: string };
+              limits?: { cpu?: string; memory?: string };
+            })
+          : undefined,
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
-        // Warm PVC pool: when on, claim a pre-warmed overlay upper (matching the sandbox
-        // image tag) from the warm-store-controller's pool instead of a fresh empty one —
-        // so a new conversation finds common tools already built. Off by default;
-        // WARM_STORE_POOL=1 enables it (set by kubenix when agentSandbox.warmStore.enable).
-        // A cold/contended pool falls back to a fresh upper (never blocks).
-        warmStorePool: (process.env.WARM_STORE_POOL || "0") === "1",
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).
@@ -436,40 +484,133 @@ export async function main(
         // conversation (so the agent can share a link, e.g. to approve an AWS req).
         publicUrl: process.env.PUBLIC_URL || undefined,
       });
+    // WHICH provisioner did we get? A noop provisioner silently creates no sandbox, so
+    // every turn hangs with nothing logged — that cost a long investigation on k3d.
+    // Say it once at boot so the answer is in the first page of any log.
+    hostLog.info("sandbox provisioner selected", {
+      provisioner: config.fakeSandbox ? "noop" : brokerProvisioner ? "broker" : "k8s",
+      fake_sandbox: config.fakeSandbox,
+      in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
+    });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
   // of running them locally in this pod. On a REAL deployment a failure here is
   // FATAL (else goose silently runs tools in the agent-host pod — finding #1);
   // on a fake/dev sandbox there's no real goose, so it's best-effort.
   ensureGooseConfig(process.env.HOME, { fatal: !config.fakeSandbox });
-  // Conversation store: LOCAL fileStore (hot-path authority). When MIRROR_STATE_PATH is
-  // set, wrap it so every write is also mirrored (async, coalesced, non-blocking) to a
-  // second fileStore on the RWX/NFS volume — so another pod can revive from the mirror
-  // (multi-replica). drainMirror is awaited by main()'s returned shutdown fn, so a
-  // graceful stop ships the mirror's tail (near-RPO-0 on a planned rollout — pairs with
-  // the SIGTERM drain #248). See mirroredStore.ts + CONVERSATION_CRD_AND_HISTORY.md.
+  // The event log lives in Postgres; the file store keeps what is still on the state
+  // volume (assets, goose state). NO FILE FALLBACK: without a DSN the event log is
+  // unavailable rather than silently written to an emptyDir every rollout wipes.
   const localStore = createFileConversationStore(config.localStatePath);
-  const mirroredStore = config.mirrorStatePath
-    ? mirroredConversationStore(localStore, createFileConversationStore(config.mirrorStatePath), {
-        // A mirror-write failure is NON-fatal (local is intact) but must not vanish:
-        // it means the backup is diverging from the authority, so surface it debuggably
-        // (full error + stack) AND on the persistence-error metric — same treatment as a
-        // local durable-append failure (store.onAppendError below).
-        onMirrorError: (conversationId, err) => {
-          logger("mirror").errorWith("backup write failed; local intact, mirror diverging", err, {
-            conversation_id: conversationId,
-          });
-          metrics.persistenceError?.({ conversationId });
-        },
+  const eventStore = agentHostResourceDsn()
+    ? createPgEventStore({ dsn: agentHostResourceDsn() })
+    : undefined;
+  hostLog.info("conversation event log", { backend: eventStore ? "postgres" : "none" });
+  const fileStore: ConversationStore = eventStore
+    ? withPgEvents(localStore, eventStore)
+    : localStore;
+
+  // Linked resources (the GitHub PR / Slack thread panel) come from Postgres when a DSN
+  // is configured. They cannot live in the file store: listLinks read LOCAL_STATE_PATH, an
+  // emptyDir every rollout wipes, so a conversation's PR links became permanently
+  // invisible. The file store is passed as the read-through source, so links still only on
+  // disk keep showing and get backfilled. Without a DSN we stay on files — the pg-less mode
+  // must keep working.
+  const sharedDsn = webhooksResourceDsn();
+  const agentHostDsn = agentHostResourceDsn();
+  const linkStore = sharedDsn
+    ? createPgLinkStore({
+        dsn: sharedDsn,
+        legacy: fileStore.listLinks
+          ? { listLinks: (id) => fileStore.listLinks!(id) }
+          : undefined,
       })
     : undefined;
-  const store: ConversationStore = mirroredStore ?? localStore;
-  // Image/media assets (uploaded images) live alongside the event log on the
-  // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
-  const assets = createPvcAssetStore({
-    root: config.localStatePath,
-    maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+  hostLog.info("link store selected", { backend: linkStore ? "postgres" : "file" });
+
+  // Conversation metadata (the sidebar list, and what hydrate rebuilds each conversation
+  // from). Postgres makes listing a QUERY instead of a per-conversation meta.json read,
+  // and takes the list off the emptyDir that every rollout wipes. Seeded once from the
+  // file store when the table is empty, so an existing deployment's history is there on
+  // the first boot after cutting over.
+  // The agent_host database, NOT the webhooks one: agent-host is the only writer, and
+  // webhooksResourceDsn() is gated on cfg.webhooks.enable — borrowing it would make the
+  // conversation list vanish whenever an unrelated service is turned off.
+  const metaStore = agentHostDsn
+    ? createPgMetaStore({
+        dsn: agentHostDsn,
+        legacy: fileStore.listConversations
+          ? { listConversations: () => fileStore.listConversations!() }
+          : undefined,
+      })
+    : undefined;
+  hostLog.info("conversation metadata store selected", { backend: metaStore ? "postgres" : "file" });
+
+  // Decorate rather than replace, so every existing caller (the panel, the list
+  // enrichment, hydrate, the agent tools) moves without change. Delegate through the
+  // ORIGINAL for everything else: several file-store methods call their siblings via
+  // `this`, so they must keep resolving against the object they were defined on rather
+  // than this wrapper.
+  //
+  // The event log stays on the file store — it is the one artifact that belongs there.
+  // saveMeta writes BOTH: Postgres is authoritative for the list, and the file copy keeps
+  // the mirror's per-conversation directory self-describing for recovery.
+  const overrides: Partial<ConversationStore> = {
+    ...(linkStore
+      ? {
+          addLink: (id: SessionId, link: ConversationLink) => linkStore.addLink(id, link),
+          listLinks: (id: SessionId) => linkStore.listLinks(id),
+        }
+      : {}),
+    ...(metaStore
+      ? {
+          saveMeta: async (meta) => {
+            await metaStore.saveMeta(meta);
+            await fileStore.saveMeta?.(meta);
+          },
+          listConversations: () => metaStore.listConversations(),
+          removeConversation: async (id: SessionId) => {
+            await metaStore.removeConversation(id);
+            await fileStore.removeConversation?.(id);
+            // Drop the conversation's links too — the file store cleared them with its directory,
+            // but the shared PG resource_links table needs an explicit delete or an orphaned row
+            // survives the conversation and collides (global unique) with a later re-link.
+            await linkStore?.deleteByConversation(id);
+          },
+        }
+      : {}),
+  };
+  const store: ConversationStore =
+    Object.keys(overrides).length > 0
+      ? new Proxy(fileStore, {
+          get(target, prop, receiver) {
+            const override = overrides[prop as keyof ConversationStore];
+            if (override) return override;
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        })
+      : fileStore;
+  // Image/media assets: METADATA in Postgres (queryable, transactional), BYTES on the
+  // dedicated assets PVC (efficient blob storage). When no Postgres DSN, falls back to
+  // PVC-only (both metadata + bytes on disk, like before). ASSETS_PATH is the dedicated
+  // mount (/var/lib/agent-assets); if unset, uses LOCAL_STATE_PATH (emptyDir, ephemeral).
+  const assetsPath = process.env.ASSETS_PATH ?? config.localStatePath;
+  const assets = agentHostResourceDsn()
+    ? createHybridAssetStore({
+        dsn: agentHostResourceDsn(),
+        bytesRoot: assetsPath,
+        maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+      })
+    : createPvcAssetStore({
+        root: assetsPath,
+        maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+      });
+  hostLog.info("asset store", {
+    backend: agentHostResourceDsn() ? "hybrid (pg+pvc)" : "pvc-only",
+    path: assetsPath,
   });
+  // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const server = createAguiServer();
   // The privileged /agui `owner` field (a webhook-resolved Scooter user) is honored
   // ONLY for the TRUSTED webhooks caller — its SA token verified via k8s TokenReview.
@@ -494,7 +635,7 @@ export async function main(
   // DURABLE binding on the shared Postgres (same DSN as the identity store): persist an owner's
   // online/offline so the "Connected" badge is correct across replicas + survives a restart (the
   // in-memory registry lives on one replica). Absent DSN → in-memory only (badge = local live conn).
-  const remoteAgentDsn = webhooksResourceDsn();
+  const remoteAgentDsn = byocResourceDsn();
   const remoteAgentStore =
     remoteAgentJoinSecret && remoteAgentDsn ? createPgRemoteAgentStore({ dsn: remoteAgentDsn }) : undefined;
   const remoteAgentRegistry = remoteAgentJoinSecret
@@ -597,9 +738,6 @@ export async function main(
     provisioner,
     store,
     ownershipGuard: ownership?.guard,
-    // Revive-on-assign (multi-replica rollout): pull a reassigned conversation's state
-    // from the mirror. Only when a mirror is configured. See ROLLOUT_DRAIN_AND_POD_IP.md.
-    hydrateFromMirror: mirroredStore ? (id) => mirroredStore.hydrateFromMirror(id) : undefined,
     conversationRegistry,
     // CR-DRIVEN HYDRATION (multi-replica): with selfPod set, hydrate() adopts every Conversation
     // the controller assigned to THIS pod instead of replaying the ephemeral local store. Unset
@@ -641,6 +779,19 @@ export async function main(
       return false;
     },
   });
+
+  // Settlement on OWNERSHIP GAIN: the CR watch is the one signal that always fires
+  // when a conversation moves to this pod (the revive push can die with the old pod;
+  // the hydrate cascade makes adoption a no-op when the entry already exists). A
+  // gained conversation with a stranded run gets it terminated (persisted cancel
+  // intent) or resume-nudged. Fire-and-forget; owner-fenced + deduped inside.
+  if (ownership) {
+    ownership.guard.onGained = (id, generation) => {
+      void sessions
+        .reconcileDanglingRun(id as SessionId, generation)
+        .catch((err) => hostLog.errorWith("ownership-gain settlement failed", err, { conversation_id: id }));
+    };
+  }
 
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
    *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
@@ -717,21 +868,43 @@ export async function main(
     }
   };
 
-  // Background jobs (run_background): the agent starts a long command detached in
-  // its sandbox and keeps working. Gated to a real sandbox with a durable registry.
-  // The registry is the state PVC (store).
-  const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!store.saveJob;
+  // Background jobs (run_background): the agent starts a long command detached in its
+  // sandbox and keeps working. The job's OUTPUT stays in-pod on the workspace PVC; only
+  // this small registry — which jobs a conversation has — is stored here.
+  //
+  // Postgres when a DSN is configured. The file store cannot hold it: LOCAL_STATE_PATH is
+  // an emptyDir every rollout wipes, and nothing hydrates jobs back from the mirror, so a
+  // conversation's jobs vanish whenever its pod moves. The file registry is passed as the
+  // read-through source, so a conversation whose jobs are still only on disk lists them
+  // and gets backfilled. Without a DSN we stay on the file store — an agent-host with no
+  // database must keep working.
+  const fileJobRegistry: JobRegistry | undefined = store.saveJob
+    ? {
+        saveJob: (id, job) => store.saveJob!(id, job),
+        listJobs: (id) => store.listJobs!(id),
+        updateJob: store.updateJob ? (id, job) => store.updateJob!(id, job) : undefined,
+      }
+    : undefined;
+  const jobsDsn = agentHostDsn;
+  // NO DATABASE => NO REGISTRY. Falling back to the file registry would silently resume
+  // using the emptyDir-backed jobs.json this store exists to escape — a conversation's
+  // jobs vanish on the next rollout and nothing says so. Losing the ability to START a
+  // background job is honest; losing the record of one already running is not. With no
+  // registry, jobsEnabled is false and run_background is simply unavailable.
+  const jobRegistry = jobsDsn ? createPgJobStore({ dsn: jobsDsn, legacy: fileJobRegistry }) : undefined;
+  hostLog.info("background-job registry", {
+    backend: jobRegistry ? "postgres" : "none",
+    ...(jobRegistry ? {} : { reason: "no agent_host DSN — background jobs are disabled" }),
+  });
+
+  const jobsEnabled = process.env.AGENT_BACKGROUND_JOBS !== "0" && !config.fakeSandbox && !!jobRegistry;
   const jobManager = jobsEnabled
     ? createJobManager({
         client: (id) => {
           const sb = sessions.get(id as SessionId)!.sandbox;
           return deferredSandboxApi(sb, () => provisioner.resume(sb).then(() => {}));
         },
-        registry: {
-          saveJob: (id, job) => store.saveJob!(id as SessionId, job),
-          listJobs: (id) => store.listJobs!(id as SessionId),
-          updateJob: store.updateJob ? (id, job) => store.updateJob!(id as SessionId, job) : undefined,
-        },
+        registry: jobRegistry!,
         cleanupTtlMs: Number(process.env.BACKGROUND_JOB_TTL_MS ?? 10 * 60 * 1000),
       })
     : undefined;
@@ -1113,6 +1286,15 @@ export async function main(
   // the same server. /agui stays the AG-UI streaming transport.
   server.use(
     createManagementApi({
+    // The integrity stream must not sit silent on a non-owner pod: live appends only
+    // reach the OWNER's local store. Absent registry/podName => single-replica ("mine").
+    streamOwnership: conversationRegistry && podName
+      ? async (id: string) => {
+          const rec = await conversationRegistry.get(id).catch(() => undefined);
+          if (!rec?.hostPod) return "unknown" as const; // not assigned yet — serve on
+          return rec.hostPod === podName ? ("mine" as const) : ("elsewhere" as const);
+        }
+      : undefined,
       sessions,
       store,
       server,
@@ -1274,6 +1456,12 @@ export async function main(
     jobCleanupTimer = setInterval(() => {
       for (const c of sessions.list()) {
         if (c.status !== "running") continue;
+        // OWNER-ONLY, same rule as sweepIdle (#358): a stale local entry for a
+        // conversation that moved away (or was deleted elsewhere) otherwise gets
+        // exec-probed here every sweep — each probe rides the pollForReadyPod
+        // self-heal into a resume of a sandbox that may be GONE (observed: a 404
+        // resume retried every 60s forever after the pod-move story).
+        if (ownership && !ownership.guard.canWrite(c.id)) continue;
         void jobManager.cleanup(c.id).catch(() => {});
       }
     }, config.idleSweepIntervalMs);
@@ -1294,6 +1482,8 @@ export async function main(
         // Poll conversations whose pod is up (running) — a suspended conversation's
         // completions are announced on its next revive (the watcher sees them then).
         if (c.status !== "running") continue;
+        // OWNER-ONLY — see the cleanup sweep above.
+        if (ownership && !ownership.guard.canWrite(c.id)) continue;
         void (async () => {
           const done = await jobManager!.pollCompletions(c.id).catch(() => [] as JobStatus[]);
           for (const st of done) {
@@ -1301,8 +1491,17 @@ export async function main(
             const more = st.truncated ? `\n(output truncated — full log: check_background("${st.jobId}"))` : "";
             // A SYSTEM message (source "background job") — the standard decoration is
             // added by the bridge, so no manual [System] prefix here.
+            // A DIED job never wrote an exit code (its process was killed first), so say
+            // that rather than reporting the synthesized 137 as if the command had failed
+            // on its own — the agent should know the work was interrupted, not that it ran
+            // and exited non-zero.
+            const headline = st.died
+              ? `Background job \`${st.jobId}\` (${st.command}) was KILLED before it finished ` +
+                `(the sandbox restarted or the process was terminated). Its output stops wherever it died, ` +
+                `and it did NOT complete — re-run it if you still need the result.`
+              : `Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.`;
             const text =
-              `Background job \`${st.jobId}\` (${st.command}) finished with exit code ${st.exitCode}.\n` +
+              `${headline}\n` +
               (tail ? `Recent output:\n${tail}${more}\n\n` : "") +
               `React to this result if it's relevant to your task; otherwise acknowledge briefly.`;
             await sessions
@@ -1382,23 +1581,6 @@ export async function main(
     await metrics.shutdown();
     await server.close();
     ownership?.stop(); // end the Conversation-CRD watch (multi-replica only)
-    // Flush the NFS mirror's buffered tail before exit so a PLANNED rollout ships every
-    // event to the backup (near-RPO-0); an unclean crash loses at most the in-flight
-    // batch. No-op when the mirror is off. Best-effort — never BLOCK the exit on it, but
-    // a drain failure means the backup just lost its buffered tail (exactly the data a
-    // planned rollout was trying to preserve), so LOG it loudly + debuggably (full error
-    // + stack) instead of swallowing — a silent failure here is undiagnosable after the
-    // pod is gone.
-    if (mirroredStore) {
-      try {
-        await mirroredStore.drainMirror();
-      } catch (err) {
-        hostLog.errorWith(
-            "mirror drain failed on shutdown; the NFS backup may be missing its buffered tail (data loss on this rollout)",
-            err,
-          );
-      }
-    }
   };
 
   // --- helpers ---
@@ -1442,7 +1624,7 @@ export async function main(
     // goose's per-conversation cwd is EPHEMERAL scratch (sessions DB +
     // .goosehints) — the agent's real file/terminal work execs into the sandbox
     // via the ExecBackend, not here. So it lives under scratchPath (an emptyDir),
-    // NOT the local state cache. (The durable event log lives on mirrorStatePath.)
+    // NOT the local state cache. (The durable event log lives in Postgres.)
     const cwd = join(config.scratchPath, conversationId, "agent-cwd");
     mkdirSync(cwd, { recursive: true });
     // Inject the agent identity (Scooter) + skills as goose's .goosehints in its
@@ -1589,16 +1771,9 @@ export async function main(
       // for this conversation (the bridge snapshots it before the current turn).
       loadHistory: async () => {
         const events: AguiEvent[] = [];
-        // Read the DURABLE history (the mirror when local is behind), NOT local-only. On a
-        // restart/rollout this pod's LOCAL emptyDir is wiped or a stale stub, so reading local here
-        // reinjected an EMPTY transcript → the model started from a blank slate + re-introduced
-        // itself. readEventsDurable yields the mirror's superset when local is short. (Falls back to
-        // plain readEvents when no mirror is configured — local IS durable then.) See the
-        // revive-reinjection bug.
-        const readHistory = mirroredStore
-          ? mirroredStore.readEventsDurable(conversationId as SessionId)
-          : store.readEvents(conversationId as SessionId);
-        for await (const e of readHistory) events.push(e);
+        // Reading a stale local log here used to reinject an EMPTY transcript, so the
+        // model started from a blank slate (the revive-reinjection bug).
+        for await (const e of store.readEvents(conversationId as SessionId)) events.push(e);
         // If the conversation was COMPACTED, resume from [summary recap + events after
         // the latest marker] so the revived session's context is the compacted one
         // (real token reduction). No marker → full log, unchanged.
@@ -1627,8 +1802,13 @@ function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<v
   const ensure = createDeferredConnector(() => connectSandbox(sandbox, { ensureRunning }));
   return {
     mode: "k8s-exec" as const,
-    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0]) {
-      return (await ensure()).execute(req);
+    // FORWARD THE SIGNAL. This wrapper used to take only `req`, silently discarding the
+    // AbortSignal sandboxExec passes — so kill()'s abort never reached the k8s exec
+    // layer and waitForExit hung until the remote command exited on its own. The type
+    // let it happen because the parameter is optional: a seam narrowing a contract
+    // with nothing to say so — the same silent-drop family this tier keeps catching.
+    async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0], signal?: AbortSignal) {
+      return (await ensure()).execute(req, signal);
     },
     async download(path: string) {
       return (await ensure()).download(path);

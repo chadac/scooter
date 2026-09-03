@@ -33,12 +33,6 @@ class Store:
         )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 
-    async def init(self) -> None:
-        """Create tables if absent (dev/SQLite). In prod a migration owns the schema;
-        create_all is idempotent and harmless."""
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
     async def dispose(self) -> None:
         await self._engine.dispose()
 

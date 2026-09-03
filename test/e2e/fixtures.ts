@@ -83,7 +83,7 @@ export class Chat {
    *  may be no further scroll event to fire, so the flag can trail the real position
    *  (the CI-only "arrow still enabled at the bottom" flake). An explicit
    *  scrollTo(bottom) forces a scroll event → the store recomputes; then poll the
-   *  measured distance to confirm we're actually pinned. */
+   *  the distance to confirm we're actually pinned. */
   async settleAtBottom(px = 40): Promise<void> {
     await this.viewport().evaluate((el) =>
       el.scrollTo({ top: el.scrollHeight, behavior: "instant" as ScrollBehavior }),
@@ -152,7 +152,16 @@ export class Chat {
    *  until the UI shows the working state — so a subsequent sendWhileRunning() genuinely queues. */
   async startLongRun(sec = 20) {
     await this.send(`!sleep ${sec}`);
-    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 90s on the full target, 30s on fast. The run-status bar appears when the RUN starts,
+    // and on a cluster the exec first waits for a ready sandbox pod — on a fresh conversation
+    // that is a cold boot (5-25s, and longer while the shard's other specs contend for
+    // scheduling under CONVERSATION_POD_CAP=1). Observed on CI: three queue-durability tests
+    // failed together here, each with the bar simply not up yet, which then reads downstream
+    // as "the queue is broken". Fast keeps 30s — its run starts in milliseconds, so a longer
+    // budget there would only slow a genuine hang.
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({
+      timeout: process.env.E2E_TARGET === "full" ? 90_000 : 30_000,
+    });
   }
 
   /** The durable queued-message rows (QUEUE_UPDATED-driven + optimistic). */
@@ -171,7 +180,13 @@ export class Chat {
    *  stream. Unlike `sendTurn`, this waits on the assistant-message COUNT and then on genuine idle —
    *  and unlike `waitForIdle` alone it can't return early just because the run hasn't started yet
    *  (which made corruption tests "pass through" in ~1.7s having done nothing). */
-  async completeTurn(text: string, timeout = 60_000) {
+  // The default is 60s on fast and 120s on the full target. Like sendTurn, this waits on a
+  // run that first needs a READY sandbox pod, and on a cluster that is a cold boot (5-25s,
+  // longer while the shard's other specs contend under CONVERSATION_POD_CAP=1) BEFORE the
+  // exec starts — and completeTurn then waits for the run to fully END on top of that.
+  // Observed on CI: cluster-stories' first turn failed at 59.4s, i.e. the 60s default, as
+  // test #1 on a freshly booted shard. Callers that pass an explicit timeout are unaffected.
+  async completeTurn(text: string, timeout = process.env.E2E_TARGET === "full" ? 120_000 : 60_000) {
     const before = await this.assistantMessages().count();
     await this.send(text);
     // The run must actually BEGIN before we can meaningfully wait for it to end.
@@ -208,6 +223,13 @@ export const test = base.extend<Fixtures>({
     const errors: string[] = [];
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
+      // Forward telemetry spans to the test output when E2E_TELEMETRY=1, so a failing
+      // spec shows the same conversation lifecycle the deployed traces do — without
+      // writing a bespoke probe spec for each investigation.
+      if (process.env.E2E_TELEMETRY === "1" && m.text().startsWith("scooter.span")) {
+        // eslint-disable-next-line no-console
+        console.log(`  [browser] ${m.text()}`);
+      }
     });
     page.on("pageerror", (e) => errors.push(String(e)));
     await use(errors);
@@ -243,7 +265,7 @@ export const test = base.extend<Fixtures>({
       const base = baseURL ?? "http://localhost:5173";
       // SAFETY (belt-and-braces). This fixture deletes EVERY conversation to give the shared local
       // fake stack a clean slate. Run against a LIVE deployment that destroys real user data — which
-      // is exactly what happened once against odin before this guard existed.
+      // is exactly what this guard prevents.
       //
       // TWO independent gates, because one flag proved insufficient (the flag was added AFTER a run
       // had already been launched without it):
@@ -267,11 +289,51 @@ export const test = base.extend<Fixtures>({
       //    actually empty. The delete + sandbox-destroy is async server-side, so
       //    proceeding immediately races the next test's first /conversations
       //    fetch (which would merge leftovers in). Poll to a true clean slate.
-      for (let i = 0; i < 50; i++) {
+      // FULL gets more attempts as well as a longer gap between them (see the delete pass
+      // below). A SUSPENDED conversation must be hydrated back into memory before it can be
+      // ended, and that revive can itself be waiting on a sandbox the cluster is busy
+      // replacing — 50 attempts at 1s was still timing out on a conversation that was not
+      // starred (the error would have said so), i.e. genuinely mid-teardown rather than
+      // undeletable. 150 attempts ≈ 150s covers it; fast keeps 50 at 100ms (~5s), which is
+      // ample for an in-process destroy.
+      const attempts = process.env.E2E_TARGET === "full" ? 150 : 50;
+      for (let i = 0; i < attempts; i++) {
         const res = await request.get(`${base}/conversations`);
-        if (!res.ok()) break;
+        if (!res.ok()) {
+          // FAST: the single-process server is down — nothing to wipe, tests will say so.
+          if (process.env.E2E_TARGET !== "full") break;
+          // FULL: the router 502s the list when every upstream momentarily fails to answer
+          // (its all-upstreams-failed guard). Skipping the wipe on that transient hands the
+          // next test a dirty fleet — retry instead of silently doing nothing.
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
         const convs = (await res.json()) as Array<{ id: string; starred?: boolean }>;
-        if (convs.length === 0) break;
+        if (convs.length === 0) {
+          // FAST: one empty read is authoritative — a single agent-host process.
+          if (process.env.E2E_TARGET !== "full") break;
+          // FULL (multi-replica): an empty read is NOT proof of a clean slate. The router's
+          // GET /conversations fans out to the READY agent-host pods and degrades to a partial
+          // list when a pod is missing/slow — so a pod that briefly drops out of the endpoints
+          // takes its rows with it, and "empty" can mean "the pod still holding rows wasn't
+          // asked". Observed on CI: cleanState deleted 5 leftovers (all 204), read [], and 3 of
+          // them resurfaced 20s later from a pod the aggregate had skipped — failing the first
+          // spec on absolute row counts. Require the emptiness to be STABLE (3 consecutive
+          // empty reads, 1s apart) and go back to deleting if anything resurfaces.
+          let stable = true;
+          for (let k = 0; k < 3; k++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            const again = await request.get(`${base}/conversations`);
+            if (!again.ok()) continue; // transient read error — don't count it as dirty
+            const rows = (await again.json()) as Array<{ id: string }>;
+            if (rows.length > 0) {
+              stable = false;
+              break;
+            }
+          }
+          if (stable) break;
+          continue; // rows resurfaced — loop back into the delete pass
+        }
         await Promise.all(
           convs.map(async (c) => {
             // UNSTAR FIRST. DELETE returns 409 on a starred conversation ("unstar before
@@ -279,22 +341,41 @@ export const test = base.extend<Fixtures>({
             // this loop can NEVER remove: it spins 50 times, gives up, and every later test
             // inherits the leftover — which is exactly how sessions.spec.ts came to fail 8/10
             // with "Expected 1, Received 2" and titles bleeding across tests.
-            if (c.starred) {
+            // FULL: unstar UNCONDITIONALLY. `starred` comes from the aggregated list, which on a
+            // multi-replica fleet can omit or stale the flag for a row served by a pod that was
+            // briefly skipped — so trusting it means a genuinely starred conversation gets a bare
+            // DELETE, 409s, and survives every one of the 50 attempts. Observed on CI: one
+            // conversation held the whole shard hostage for 3 minutes and failed 6 later specs.
+            // The PATCH is idempotent and cheap, so guessing wrong costs nothing.
+            if (c.starred || process.env.E2E_TARGET === "full") {
               await request
                 .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
                 .catch(() => undefined);
             }
-            return request.delete(`${base}/conversations/${c.id}`);
+            const del = await request.delete(`${base}/conversations/${c.id}`);
+            // A 409 means it was still starred when the DELETE landed (the unstar raced, or the
+            // flag arrived late). Unstar again and retry once — otherwise this row is immortal.
+            if (del.status() === 409) {
+              await request
+                .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
+                .catch(() => undefined);
+              return request.delete(`${base}/conversations/${c.id}`);
+            }
+            return del;
           }),
         );
-        await new Promise((r) => setTimeout(r, 100));
-        // FAIL LOUD on the last iteration rather than shrugging. This loop used to exhaust its 50
-        // attempts and continue silently, so an UNDELETABLE conversation (e.g. a starred one —
-        // DELETE 409s) leaked into every later test and surfaced as unrelated assertion failures
-        // ("Expected 1, Received 2", titles from another test) with no hint of the real cause.
-        // A fixture that cannot establish its precondition must say so, not hand the next test a
-        // dirty slate.
-        if (i === 49) {
+        // FULL: 1s, not 100ms, between delete passes. A conversation's destroy is async
+        // server-side (bridge stop + sandbox teardown), and a SUSPENDED one must first be
+        // hydrated back into memory before it can be ended — so it can still be listed for
+        // several seconds after a 204. At 100ms the 50 attempts burn out in ~5s, which is
+        // exactly what CI showed: four specs each failing in 6.2-6.6s naming the same
+        // conversation, one the previous test had suspended. 1s gives the loop ~50s, past
+        // the teardown. Fast keeps 100ms — its destroy is in-process and immediate.
+        await new Promise((r) => setTimeout(r, process.env.E2E_TARGET === "full" ? 1000 : 100));
+        // FAIL LOUD on the last iteration: a fixture that cannot establish its precondition
+        // (e.g. an undeletable starred conversation returning DELETE 409s) must say so,
+        // not hand the next test a dirty slate.
+        if (i === attempts - 1) {
           const left = (await (await request.get(`${base}/conversations`)).json()) as Array<{
             id: string;
             starred?: boolean;
@@ -302,7 +383,7 @@ export const test = base.extend<Fixtures>({
           }>;
           if (left.length) {
             throw new Error(
-              `cleanState could not empty the server after 50 attempts. Still present: ` +
+              `cleanState could not empty the server after ${attempts} attempts. Still present: ` +
                 left.map((c) => `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}`).join(", ") +
                 `. State persists at LOCAL_STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
                 `restarts until that directory is cleared.`,
@@ -371,6 +452,60 @@ test.afterEach(async ({ page, consoleErrors }) => {
 });
 
 export { expect };
+
+/**
+ * Seed a conversation owned by `user` (null = unowned) via the API, the way the
+ * ingress would (x-auth-user), and return the SERVER-minted id.
+ *
+ * BOTH targets now create through the conversation-ROUTER (fast runs it in
+ * ROUTER_DEV_MODE in front of a single agent-host; full runs the real cluster router):
+ *  - The router handles POST /conversations. `title` is DROPPED (only owner/model/parentId
+ *    reach the create) — the row lands title-less, and the sidebar row is not listable
+ *    until it exists in the store the router lists from: on full when a pod ADOPTS the CR,
+ *    on fast the moment the row is inserted. Either way GET /conversations/:id
+ *    hydrates-if-absent (management.ts) so a read makes the conversation materialise.
+ *    So after creating, poll a read until it appears in the list the sidebar reads.
+ *
+ * Because the title does not survive the router path, callers must locate sidebar
+ * rows by `[data-conversation-id="<id>"]`, NOT by title text. The trailing PATCH
+ * still names the row (readable screenshots) but is best-effort: right after
+ * creation the router can route it to an agent-host that has not hydrated it yet (404).
+ */
+export async function seedConversation(
+  request: APIRequestContext,
+  base: string,
+  user: string | null,
+  title: string,
+): Promise<string> {
+  const headers: Record<string, string> = user ? { "x-auth-user": user } : {};
+  const r = await request.post(`${base}/conversations`, { data: { title }, headers });
+  expect(r.ok(), `seed POST /conversations failed: ${r.status()}`).toBeTruthy();
+  const { id } = (await r.json()) as { id: string };
+  // CLUSTER-HONEST BUDGET: adoption is one hydrate round-trip (a CR read + a
+  // Sandbox reconcile list) on whichever pod the fallback Service picks, then the
+  // aggregated fleet list must include the adopting pod's row. That is seconds on
+  // a healthy k3d, but controller assignment + the router's ownership-cache
+  // convergence can lag under load, so give it a 45s ceiling — a ceiling, not a
+  // cost: the fast stack passes on the first iteration.
+  await expect
+    .poll(
+      async () => {
+        // Hydrate-if-absent: makes some pod adopt the CR so it becomes listable.
+        await request.get(`${base}/conversations/${id}`, { headers }).catch(() => undefined);
+        // Anonymous list — sees every conversation regardless of owner.
+        const list = await request.get(`${base}/conversations`);
+        if (!list.ok()) return false;
+        const rows = (await list.json()) as Array<{ id: string }>;
+        return rows.some((c) => c.id === id);
+      },
+      { timeout: 45_000, intervals: [500, 1_000] },
+    )
+    .toBe(true);
+  await request
+    .patch(`${base}/conversations/${id}/title`, { data: { title }, headers })
+    .catch(() => undefined);
+  return id;
+}
 
 /**
  * A WHOLE-UI STATE SNAPSHOT — every surface that can independently go wrong, read in ONE pass.
@@ -538,20 +673,74 @@ export async function assertMatchesServer(
     els.map((el) => ({
       id: el.getAttribute("data-conversation-id") ?? "",  // the SERVER id; absent while pending
       pending: el.getAttribute("data-pending-create") === "true",
+      active: el.getAttribute("data-active") === "true",
     })),
   );
   const serverIds = new Set(convs.map((c) => c.id));
-  const missing = rows.filter((r) => !r.pending && !serverIds.has(r.id)).map((r) => r.id);
+  let missing = rows.filter((r) => !r.pending && !serverIds.has(r.id)).map((r) => r.id);
   const notShown = convs.filter((c) => !rows.some((r) => r.id === c.id)).map((c) => c.id);
 
+  // FULL: a single list read is not proof. The router aggregates over the READY pods and
+  // degrades to a PARTIAL list when one is slow or missing (it even logs "all upstreams
+  // failed for conversation list"), so a row the sidebar legitimately holds can look absent
+  // server-side for one read. Observed on CI during a burst of pod churn: two specs failed
+  // this direction naming conversations that did exist. Re-read before failing, and only
+  // report the ids still missing on the confirming read.
+  // FULL: only THIS test's own conversation can be judged. The sidebar lists the whole
+  // shared fleet, and another spec's cleanState deleting its conversations is normal, expected
+  // traffic — the row lingers here for a refresh or two while the server has already dropped
+  // it. That is cross-spec coexistence, not the client/server detachment this guards against.
+  // Observed on CI across three branches: the offending row was titled "sleep 20", a
+  // conversation belonging to the queue/stop specs, which this test never created or touched.
+  //
+  // The ACTIVE row is the conversation the test is driving, so it is the one whose detachment
+  // would be this suite's bug — and it stays checked on both targets. On fast, where the
+  // backend is wiped and single-process, every row is still checked.
+  if (process.env.E2E_TARGET === "full") {
+    const own = new Set(rows.filter((r) => r.active).map((r) => r.id));
+    missing = missing.filter((id) => own.has(id));
+  }
+
+  let confirmed = missing;
+  if (confirmed.length && process.env.E2E_TARGET === "full") {
+    // 20 attempts over ~30s, and an id is only CONFIRMED missing if it was absent from
+    // every SUCCESSFUL read. Five attempts over 5s was not enough: CI kept failing this
+    // direction naming two ids at a time, which is the signature of the aggregate being
+    // degraded (a whole pod's worth of rows missing at once), not of one stale row. A
+    // degraded aggregate can persist across a pod's readiness gap, which is longer than 5s.
+    //
+    // A read that FAILS is not evidence of absence — it is no evidence at all. Requiring a
+    // successful read means a run of 502s can no longer "confirm" that every id is gone.
+    let goodReads = 0;
+    for (let i = 0; i < 20 && confirmed.length; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const again = await request.get(`${base}/conversations`);
+      if (!again.ok()) continue;
+      goodReads++;
+      const ids = new Set(((await again.json()) as Array<{ id: string }>).map((c) => c.id));
+      confirmed = confirmed.filter((id) => !ids.has(id));
+    }
+    // Never fail on the strength of zero usable reads.
+    if (goodReads === 0) confirmed = [];
+  }
   expect(
-    missing,
-    `${when}: sidebar shows conversation(s) the server does not have: ${missing.join(", ")}`,
+    confirmed,
+    `${when}: sidebar shows conversation(s) the server does not have: ${confirmed.join(", ")}`,
   ).toEqual([]);
-  expect(
-    notShown,
-    `${when}: server has conversation(s) the sidebar does not show: ${notShown.join(", ")}`,
-  ).toEqual([]);
+  // FAST ONLY. "The sidebar shows everything the server has" holds on the single-process,
+  // freshly-wiped stack, where the only conversations in existence are this test's. On the
+  // full target the server is a shared multi-replica fleet: it legitimately holds rows from
+  // OTHER specs running against the same backend, and the sidebar's default scope shows the
+  // user's own conversations rather than the whole fleet — so this direction reports normal
+  // cross-spec coexistence as a divergence.
+  // The `missing` direction above is the one that catches real detachment, and it stays on
+  // for both targets: a row the server does not have is always a bug.
+  if (process.env.E2E_TARGET !== "full") {
+    expect(
+      notShown,
+      `${when}: server has conversation(s) the sidebar does not show: ${notShown.join(", ")}`,
+    ).toEqual([]);
+  }
   // At most one unsent "New chat" can be pending at a time — more means they are leaking.
   expect(
     rows.filter((r) => r.pending).length,

@@ -10,6 +10,7 @@ import { appendFile, mkdir, readFile, writeFile, rename, readdir, rm } from "nod
 import { join } from "node:path";
 
 import type { AguiEvent } from "../bridge.js";
+import { trimToBoundary } from "./eventStore.js";
 import type { ConversationStore, ConversationMeta, ChecksummedEvent, ConversationLink } from "./manager.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionId } from "../types.js";
@@ -46,11 +47,6 @@ export function createFileConversationStore(root: string): ConversationStore {
   const logPath = (id: SessionId) => join(root, id, "events.jsonl");
   const metaPath = (id: SessionId) => join(root, id, "meta.json");
   const linksPath = (id: SessionId) => join(root, id, "links.json");
-  // The agent-authored NixOS module for this conversation — the DURABLE source of
-  // truth for its self-modified environment (survives suspend/resume + agent-host
-  // restart on the same PVC the event log lives on). The agent-host syncs it into
-  // the per-conversation ConfigMap so the in-pod boot re-converge applies it.
-  const modulePath = (id: SessionId) => join(root, id, "module.nix");
   // The conversation's background-job registry (run_background) — small JSON index
   // of {jobId, command, startedAt}. The job's OUTPUT lives in-pod on the workspace
   // PVC; this is just the durable list so `list_background` survives a restart.
@@ -175,6 +171,46 @@ export function createFileConversationStore(root: string): ConversationStore {
       }
     },
 
+    async readEventsTailByCount(id, limit) {
+      if (limit <= 0) return [];
+      let data: string;
+      try {
+        data = await readFile(logPath(id), "utf8");
+      } catch (e) {
+        if (isENOENT(e)) return [];
+        throw e;
+      }
+      const all = data
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as AguiEvent);
+      return trimToBoundary(all.slice(-limit));
+    },
+
+    async readEventsBefore(id, beforeSeq, limit) {
+      // The file has no seq column: a line's 1-based position IS its seq, matching
+      // the Postgres store's per-conversation counter.
+      if (limit <= 0 || beforeSeq <= 1) return { events: [], firstSeq: beforeSeq, done: true };
+      let data: string;
+      try {
+        data = await readFile(logPath(id), "utf8");
+      } catch (e) {
+        if (isENOENT(e)) return { events: [], firstSeq: beforeSeq, done: true };
+        throw e;
+      }
+      const all = data
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as AguiEvent);
+      const end = Math.min(beforeSeq - 1, all.length); // exclusive upper bound, 1-based
+      const start = Math.max(0, end - limit);
+      return {
+        events: all.slice(start, end),
+        firstSeq: start + 1,
+        done: start === 0,
+      };
+    },
+
     async readEventsTail(id, runs) {
       // The RECENT tail only: the events from the last `runs` runs, for a fast
       // first paint on a LONG conversation. We read the file (one syscall), parse
@@ -227,33 +263,12 @@ export function createFileConversationStore(root: string): ConversationStore {
       return next;
     },
 
-    async recordActivity(id, at) {
-      await ensureDir(id);
-      // Last-activity marker — small, overwritten; queryable by an external
-      // lifecycle manager that mounts the same PVC.
-      await writeFileAtomic(join(root, id, "activity.json"), JSON.stringify({ lastActivityAt: at }));
-    },
-
+    /** Persist the conversation record. The SOLE home of lastActivityAt — touch()
+     *  routes through here, so activity is one field of one record, not a file of
+     *  its own that can disagree with this one. */
     async saveMeta(meta: ConversationMeta) {
       await ensureDir(meta.id);
       await writeFileAtomic(metaPath(meta.id), JSON.stringify(meta));
-    },
-
-    /** Persist the agent-authored module.nix as the conversation's durable env
-     *  source of truth. Atomic write next to meta.json. */
-    async saveModule(id: SessionId, module: string) {
-      await ensureDir(id);
-      await writeFileAtomic(modulePath(id), module);
-    },
-
-    /** Read the saved module.nix; null when the conversation never modified its
-     *  environment (revive then skips the CM sync / re-apply — a pristine wake). */
-    async readModule(id: SessionId): Promise<string | null> {
-      try {
-        return await readFile(modulePath(id), "utf8");
-      } catch {
-        return null;
-      }
     },
 
     /** Append a background-job record to the conversation's registry (newest first). */
@@ -307,8 +322,8 @@ export function createFileConversationStore(root: string): ConversationStore {
     },
 
     /** Scan the state dir and rebuild conversation metadata so the list survives
-     *  a restart. Reads meta.json (+ activity.json for a fresher lastActivityAt);
-     *  a dir with an event log but no meta still appears (best-effort defaults).
+     *  a restart. Reads meta.json (the ONLY metadata file); a dir with an event log
+     *  but no meta still appears (best-effort defaults).
      */
     async listConversations(): Promise<ConversationMeta[]> {
       let ids: string[];
@@ -337,13 +352,7 @@ export function createFileConversationStore(root: string): ConversationStore {
             continue;
           }
         }
-        let lastActivityAt = meta.lastActivityAt ?? meta.createdAt ?? 0;
-        try {
-          const act = JSON.parse(await readFile(join(root, id, "activity.json"), "utf8"));
-          if (typeof act.lastActivityAt === "number") lastActivityAt = act.lastActivityAt;
-        } catch {
-          /* no activity marker */
-        }
+        const lastActivityAt = meta.lastActivityAt ?? meta.createdAt ?? 0;
         out.push({
           id,
           threadId: meta.threadId ?? id,

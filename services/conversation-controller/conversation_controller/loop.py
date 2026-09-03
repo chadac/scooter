@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import logging
 
+from dataclasses import dataclass
+
+from .logging_config import forget_warned, warn_once
+
 from .reconcile import (
     ConversationState,
     Assign,
@@ -19,7 +23,9 @@ from .reconcile import (
     reconcile,
     find_orphans,
     desired_replicas,
+    deletion_costs,
     demand_of,
+    SuspendSandbox,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +42,8 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
         # None when the Sandbox doesn't exist (or the ref is unset) — the drift rule treats
         # absence as no-evidence, never as suspension (the creation race).
         sandbox_mode=(sandbox_modes or {}).get(ref) if ref else None,
+        sandbox_ref=ref,
+        creator_pod=spec.get("creatorPod"),
         phase=st.get("phase", "Pending"),
         # Whether the CR actually carries a phase (vs. the "Pending" default above). A
         # status-less CR (status: null / no phase) needs its phase MATERIALIZED even when it
@@ -47,6 +55,40 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
     )
 
 
+# ZOMBIE repair — backoff + terminal resolution. Module-level state: one controller process,
+# one loop.
+#
+# A zombie is (phase=Suspended, unhosted, Sandbox operatingMode=Running) — reconcile returns
+# SuspendSandbox for it. The naive repair re-issued the SAME suspend every tick: if the suspend
+# never takes — which is exactly why a sandbox is a zombie (a racing sweeper's exec probe keeps
+# reviving the pod via the pollForReadyPod self-heal) — the conversation re-armed and was
+# re-suspended every ~5s forever (production: the same sandboxes re-detected + re-suspended
+# indefinitely). So instead:
+#   1. TWO-TICK CONFIRMATION (unchanged) — a real revive patches the Sandbox Running BEFORE
+#      writing phase=Assigned, so one sighting can be a revive mid-flight and must not be acted
+#      on. Act only on the second consecutive sighting.
+#   2. BACKOFF — after issuing a suspend, wait a few ticks before the next one (never re-issue
+#      every tick).
+#   3. TERMINAL ESCALATION — after N suspends that don't take, stop fighting the upstream resume
+#      race: force-delete the Sandbox (reclaims the leaked running pod) and mark the conversation
+#      Failed (a terminal phase reconcile then leaves inert; an operator investigates). Logged
+#      ONCE, not per tick.
+_ZOMBIE_CONFIRM_TICKS = 2          # consecutive sightings before the first suspend (false-positive guard)
+_ZOMBIE_SUSPEND_BACKOFF_TICKS = 3  # ticks to wait between suspends (no re-issue every tick)
+_ZOMBIE_MAX_SUSPENDS = 3           # bounded suspend attempts before the terminal escalation
+
+
+@dataclass
+class _ZombieProgress:
+    confirms: int = 0       # consecutive ticks reconcile flagged this conversation as a zombie
+    suspends: int = 0       # suspend patches issued so far
+    cooldown: int = 0       # ticks remaining before the next suspend is allowed (backoff window)
+    resolved: bool = False  # terminal escalation done — take no further action, and do NOT re-log
+
+
+_zombie_progress: dict[str, _ZombieProgress] = {}
+
+
 def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     """One reconcile pass over all Conversations. Returns [(name, action_kind)] for
     logging/tests. Only mutates via k8s.patch_status. The LOAD each conversation sees
@@ -54,7 +96,10 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     from the CURRENT status and update it as we assign, so a burst of Pending
     conversations spreads across pods instead of all landing on the least-loaded one."""
     pods = k8s.list_host_pods()
-    ready_names = {p.name for p in pods if p.ready}
+    # "Ready" for ASSIGNMENT excludes terminating pods: a scale-down victim reports
+    # Ready through its grace period, and assigning to it schedules the very mid-run
+    # reassignment the deletion-cost annotation exists to prevent.
+    ready_names = {p.name for p in pods if p.ready and not p.terminating}
     # One Sandbox list per tick: the DRIFT rule needs each conversation's backing
     # operatingMode (the Sandbox is the truth for alive/suspended — see MarkSuspended).
     # BEST-EFFORT, same rule the reaper documents: sandbox listing is auxiliary and must
@@ -83,10 +128,82 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     convs.sort(key=lambda c: c.parent_id is not None)
 
     results: list[tuple[str, str]] = []
+    # Conversations flagged as zombies THIS pass — used to reset the per-conversation
+    # confirmation/backoff state for any that are no longer zombies (a false-positive revive,
+    # or a resolved-and-now-terminal conversation).
+    zombie_flagged: set[str] = set()
+    drift_flagged: set[str] = set()  # forgotten below, so a later drift is loud again
     for c in convs:
         action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
             results.append((c.name, "noop"))
+            continue
+        if isinstance(action, SuspendSandbox):
+            zombie_flagged.add(c.name)
+            prog = _zombie_progress.setdefault(c.name, _ZombieProgress())
+
+            # Terminal already reached — the escalation force-deleted the Sandbox and marked the
+            # conversation Failed. Do nothing, and do NOT re-log (resolution is logged once).
+            if prog.resolved:
+                results.append((c.name, "zombie-resolved"))
+                continue
+
+            prog.confirms += 1
+
+            # TWO-TICK CONFIRMATION: a single sighting can be a revive mid-flight — only a
+            # suspect, no action yet.
+            if prog.confirms < _ZOMBIE_CONFIRM_TICKS:
+                logger.info(
+                    "zombie sandbox suspect — confirming next tick",
+                    extra={**_C, "conversation_id": c.name, "sandbox": c.sandbox_ref or ""},
+                )
+                results.append((c.name, "suspend-sandbox-suspect"))
+                continue
+
+            # BACKOFF: within the wait window after a suspend — hold, do not re-issue.
+            if prog.cooldown > 0:
+                prog.cooldown -= 1
+                results.append((c.name, "suspend-sandbox-backoff"))
+                continue
+
+            # TERMINAL ESCALATION: N suspends have not taken. Stop fighting the resume race —
+            # force-delete the Sandbox (reclaims the leaked running pod) and mark the
+            # conversation Failed. Logged ONCE.
+            if prog.suspends >= _ZOMBIE_MAX_SUSPENDS:
+                if c.sandbox_ref:
+                    k8s.force_delete_sandbox(c.sandbox_ref)
+                k8s.patch_status(c.name, {"phase": "Failed"})
+                prog.resolved = True
+                logger.error(
+                    "zombie sandbox unresolved — escalating (force-delete Sandbox + mark conversation Failed)",
+                    extra={
+                        **_C,
+                        "conversation_id": c.name,
+                        "sandbox": c.sandbox_ref or "",
+                        "suspend_attempts": prog.suspends,
+                        "reason": action.reason,
+                    },
+                )
+                results.append((c.name, "zombie-escalated"))
+                continue
+
+            # Issue one bounded suspend and open the backoff window.
+            prog.suspends += 1
+            prog.cooldown = _ZOMBIE_SUSPEND_BACKOFF_TICKS
+            logger.warning(
+                "zombie sandbox — re-suspending",
+                extra={
+                    **_C,
+                    "conversation_id": c.name,
+                    "sandbox": c.sandbox_ref or "",
+                    "attempt": prog.suspends,
+                    "max_attempts": _ZOMBIE_MAX_SUSPENDS,
+                    "reason": action.reason,
+                },
+            )
+            if c.sandbox_ref:
+                k8s.suspend_sandbox(c.sandbox_ref)
+            results.append((c.name, "suspend-sandbox"))
             continue
         if isinstance(action, Detach):
             # A SUSPENDED conversation that still carries stale placement → release it (the
@@ -110,8 +227,14 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             # the phantom stops counting as autoscale demand and the router stops routing to a
             # pod that no longer hosts it. Logged loudly — every silent operatingMode/phase
             # divergence so far has cost a debugging session.
-            logger.warning(
-                "phase drift repaired", extra={**_C, "conversation_id": c.name, "reason": action.reason}
+            drift_flagged.add(c.name)
+            # The repair runs every pass (cheap, idempotent); only the LOG is de-duped —
+            # a drift that never clears is otherwise re-reported on every tick.
+            warn_once(
+                logger,
+                f"phase-drift:{c.name}",
+                "phase drift repaired",
+                {**_C, "conversation_id": c.name, "reason": action.reason},
             )
             k8s.patch_status(c.name, {"phase": "Suspended", "hostPod": None, "hostIP": None})
             hosts[c.name] = None
@@ -168,6 +291,16 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                     exc_info=True,
                 )
 
+    # Reset zombie state for any conversation NOT flagged this pass: this resets the two-tick
+    # confirmation on a false positive (a revive mid-flight), and GCs a resolved record once the
+    # conversation is terminal (Failed → reconcile no longer returns SuspendSandbox for it).
+    for name in list(_zombie_progress.keys()):
+        if name not in zombie_flagged:
+            del _zombie_progress[name]
+
+    # A conversation that did NOT drift this pass is forgotten, so a future drift is loud.
+    forget_warned({f"phase-drift:{n}" for n in drift_flagged})
+
     return results
 
 
@@ -193,8 +326,20 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     # conversations are excluded — they have no pod and revive on demand, so counting them
     # pinned the fleet at max and the pods never slept though the Sandboxes suspended.
     demand = demand_of(convs)
-    ready_pods = sum(1 for p in k8s.list_host_pods() if p.ready)
+    pods = k8s.list_host_pods()
+    ready_pods = sum(1 for p in pods if p.ready)
     current = k8s.get_agent_host_replicas()
+
+    # BEFORE any scale decision: steer scale-down victim selection. Kubernetes kills
+    # the lowest deletion-cost pods first, so pods hosting live conversations must
+    # carry their hosted-count before a scale-down can pick victims. Patch only on
+    # change (the annotation round-trips through list_host_pods).
+    for pod_name, cost in deletion_costs(pods, convs).items():
+        if next((p.deletion_cost for p in pods if p.name == pod_name), None) != cost:
+            try:
+                k8s.set_pod_deletion_cost(pod_name, cost)
+            except Exception:  # noqa: BLE001 — annotation is protective, never tick-fatal
+                logger.warning("set_pod_deletion_cost failed", extra={**_C, "pod": pod_name}, exc_info=True)
 
     target = desired_replicas(demand, cfg.pod_cap, cfg.min_replicas, cfg.max_replicas)
     per_pod = (demand / ready_pods) if ready_pods else float(demand)

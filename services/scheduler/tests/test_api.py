@@ -8,12 +8,14 @@ import scheduler.app as appmod
 from scheduler.metrics import create_metrics
 from scheduler.store import Store
 
+from conftest import sqlite_store
+
+
 
 @pytest_asyncio.fixture
 async def client(monkeypatch):
     # In-memory store; stub the spawn so /run and the loop don't hit a real agent-host.
-    store = Store("sqlite+aiosqlite:///:memory:")
-    await store.init()
+    store = await sqlite_store()
     appmod.app.state.store = store
     # run_now passes app.state.metrics to _fire, so the fixture must set it. The
     # lifespan normally does; these tests drive the app without it.

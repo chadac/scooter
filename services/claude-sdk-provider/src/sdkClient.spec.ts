@@ -259,3 +259,111 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
     expect(tl.wasInterrupted()).toBe(false);
   });
 });
+
+describe("SDK client permission requests carry a UNIQUE id per call", () => {
+  /** Capture what the bridge's permission handler is asked to approve. */
+  const clientWithHandler = async () => {
+    const fq = fakeQuery();
+    const seen: Array<{ toolCallId: string; title: string }> = [];
+    const client = await createSdkAcpClient({
+      oauthToken: "t",
+      model: "claude-x",
+      exec: fakeExec,
+      systemPrompt: "hi",
+      queryImpl: fq.queryImpl,
+    } as never);
+    // The bridge registers this; it keys pendingPermissions by req.toolCallId, so two
+    // concurrent requests sharing an id make the second OVERWRITE the first — and the
+    // first's promise then never resolves (the tool call hangs with no TOOL_CALL_RESULT).
+    (client as never as { onPermissionRequest: (h: (r: never) => Promise<never>) => void })
+      .onPermissionRequest(async (req: never) => {
+        const r = req as unknown as { toolCallId: string; title: string };
+        seen.push({ toolCallId: r.toolCallId, title: r.title });
+        return { optionId: "allow" } as never;
+      });
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+    return { fq, seen };
+  };
+
+  it("THE REGRESSION: two calls to the SAME tool get DISTINCT permission ids", async () => {
+    // Live on conv-1ribob: check_background / run_background are called repeatedly, so
+    // keying the pending permission by TOOL NAME collided — the second request evicted
+    // the first from pendingPermissions and its tool call never returned. 8 orphaned
+    // tool calls, 0 PERMISSION_RESOLVED across 629 calls.
+    const { fq, seen } = await clientWithHandler();
+    const canUseTool = fq.calls[0].options.canUseTool as (n: string, i: unknown) => Promise<unknown>;
+    await Promise.all([
+      canUseTool("mcp__scooter-env__check_background", { job_id: "a" }),
+      canUseTool("mcp__scooter-env__check_background", { job_id: "b" }),
+    ]);
+    expect(seen).toHaveLength(2);
+    expect(seen[0].toolCallId).not.toBe(seen[1].toolCallId);
+  });
+
+  it("the TITLE still names the tool, so the prompt stays readable", async () => {
+    const { fq, seen } = await clientWithHandler();
+    const canUseTool = fq.calls[0].options.canUseTool as (n: string, i: unknown) => Promise<unknown>;
+    await canUseTool("mcp__scooter-env__check_background", { job_id: "a" });
+    expect(seen[0].title).toBe("mcp__scooter-env__check_background");
+  });
+});
+
+describe("multimodal prompt (attached images reach the model)", () => {
+  // A fake query() that records the RAW prompt arg (string OR AsyncIterable) so a
+  // test can assert an image rides the streaming-input form, not the text "[image]".
+  function recordingQuery() {
+    const calls: Array<{ prompt: unknown; options: Record<string, unknown> }> = [];
+    const queryImpl = (params: { prompt: unknown; options: Record<string, unknown> }) => {
+      calls.push({ prompt: params.prompt, options: params.options });
+      async function* gen() {
+        yield { type: "assistant", session_id: "s", message: { content: [] } } as never;
+        yield { type: "result", subtype: "success", session_id: "s" } as never;
+      }
+      return Object.assign(gen(), { interrupt: async () => {} });
+    };
+    return { queryImpl, calls };
+  }
+
+  // Drain the streaming-input generator into the single user message it yields.
+  async function firstUserMessage(prompt: unknown) {
+    const msgs: Array<{ message: { content: unknown[] } }> = [];
+    for await (const m of prompt as AsyncIterable<{ message: { content: unknown[] } }>) msgs.push(m);
+    return msgs[0];
+  }
+
+  it("THE REGRESSION: an image block is sent as a base64 image, NOT the literal text \"[image]\"", async () => {
+    const rq = recordingQuery();
+    const client = await createSdkAcpClient({
+      oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl: rq.queryImpl as never,
+    });
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({
+      prompt: [
+        { type: "text", text: "what is this?" },
+        { type: "image", data: "QUJD", mimeType: "image/png" },
+      ],
+    } as never);
+
+    // Image prompt → streaming-input form (an async iterable), never a string.
+    expect(typeof rq.calls[0].prompt).not.toBe("string");
+    const um = await firstUserMessage(rq.calls[0].prompt);
+    const content = um.message.content as Array<Record<string, unknown>>;
+    // The text survives...
+    expect(content).toContainEqual({ type: "text", text: "what is this?" });
+    // ...and the image is a real base64 image block the model can SEE.
+    expect(content).toContainEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } });
+    // The old bug: a "[image]" text placeholder. It must be gone.
+    expect(JSON.stringify(content)).not.toContain("[image]");
+  });
+
+  it("a text-only prompt still uses the plain-string form (unchanged common path)", async () => {
+    const rq = recordingQuery();
+    const client = await createSdkAcpClient({
+      oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl: rq.queryImpl as never,
+    });
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "just text" }] } as never);
+    expect(rq.calls[0].prompt).toBe("just text");
+  });
+});

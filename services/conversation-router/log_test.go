@@ -321,25 +321,6 @@ func TestDialFailureRetriesViaFallbackAtWarn(t *testing.T) {
 	}
 }
 
-func TestIsClientGone(t *testing.T) {
-	live := context.Background()
-	done, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if !isClientGone(context.Canceled, done) {
-		t.Error("cancel with a done request ctx = client gone")
-	}
-	if isClientGone(context.Canceled, live) {
-		t.Error("cancel with a LIVE request ctx is not the client leaving")
-	}
-	if !isClientGone(io.EOF, live) {
-		t.Error("EOF = stream over")
-	}
-	if isClientGone(syscall.ECONNREFUSED, live) {
-		t.Error("refused connect is a real failure, not a client departure")
-	}
-}
-
 func TestResolveTargetForReturnsConvID(t *testing.T) {
 	cfg := config{namespace: "agent-sandbox", upstreamPort: 8080, clusterIPService: "agent-host"}
 	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)

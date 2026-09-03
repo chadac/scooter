@@ -136,6 +136,25 @@ in
           an RWX class (EFS/NFS) on a real cluster. Ignored when hostPath is set.
         '';
       };
+      retainForMigration = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Keep the mirror PVC provisioned while the event log migrates to
+          Postgres, even once agent-host has stopped writing to it.
+
+          The migration reads every conversation's events.jsonl OUT of this
+          volume, so it must outlive the cutover: deleting the PVC in the same
+          change that stops using it would destroy the only copy of any history
+          the backfill had not yet loaded. Set this true BEFORE the cutover
+          deploy, verify the backfill reported every conversation, then set it
+          false (and drop the option) to reclaim the volume.
+
+          Independent of `enable`: with enable = false and this true, the PVC
+          exists but nothing mounts it — which is exactly the post-cutover,
+          pre-reclaim state.
+        '';
+      };
       hostPath = mkOption {
         type = types.nullOr types.str;
         default = null;
@@ -148,8 +167,40 @@ in
         '';
       };
     };
-  };
+    assets = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Provision a dedicated PVC for asset storage (uploaded images, future media).
+          BYTES-ONLY PVC: asset metadata (conversation_id, asset_id, mime_type, size,
+          sha256_hash, created_at) lives in Postgres; the PVC holds only the raw image
+          data, keyed by asset_id. Clean separation: queryable metadata in DB, efficient
+          blob storage on disk. Lifecycle: assets are conversation-scoped and cleared
+          when a conversation is deleted (metadata rows removed; orphaned bytes cleaned
+          by GC job).
 
+          Off means assets fall back to LOCAL_STATE_PATH (emptyDir, ephemeral — images
+          are lost on pod restart).
+        '';
+      };
+      size = mkOption {
+        type = types.str;
+        default = "10Gi";
+        description = "Size of the dedicated assets PVC (10Gi ≈ 2000 images at 5MB each).";
+      };
+      storageClassName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          storageClassName for the assets PVC (null = cluster default). ReadWriteOnce
+          is sufficient: only the agent-host deployment writes assets, and it's a single
+          replica or autoscaled (not a StatefulSet). Simpler than RWX.
+        '';
+      };
+    };
+
+  };
   config = {
     kubernetes.resources = {
       # --- the CRD ---------------------------------------------------------
@@ -178,6 +229,7 @@ in
                     model = { type = "string"; };
                     owner = { type = "string"; };
                     parentId = { type = "string"; };
+                    creatorPod = { type = "string"; };
                     sandboxRef = { type = "string"; };
                   };
                 };
@@ -221,12 +273,12 @@ in
         metadata = { name = "conversation-controller"; namespace = cfg.namespace; };
         rules = [
           { apiGroups = [ "scooter.chadac.dev" ]; resources = [ "conversations" "conversations/status" ]; verbs = [ "get" "list" "watch" "patch" "update" ]; }
-          { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "get" "list" "watch" ]; }
+          { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "get" "list" "watch" "patch" ]; }  # patch: pod-deletion-cost annotation (scale-down victim steering)
           { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" "watch" "create" "update" ]; }
           # Orphaned-Sandbox reaper: list Sandboxes + DELETE the whole per-conversation tree
           # (Sandbox CR cascades pod+PVCs; the SA + module CM are provisioner-created and must
           # be deleted directly). See todo/docs/ORPHANED_SANDBOX_REAPER.md.
-          { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" ]; }
+          { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" "patch" ]; }
           { apiGroups = [ "" ]; resources = [ "serviceaccounts" "configmaps" ]; verbs = [ "get" "list" "delete" ]; }
           # Autoscaler: read the agent-host Deployment + patch its scale subresource (the
           # controller IS the autoscaler — desired = ceil(conversations / podCap)). See
@@ -331,7 +383,31 @@ in
                   { name = "AGENT_HOST_SERVICE"; value = "agent-host-pods"; }
                   { name = "UPSTREAM_PORT"; value = "8080"; }
                   { name = "LISTEN_ADDR"; value = ":8080"; }
-                ];
+                  # READ-ONLY handle on the agent_host database (conversation metadata). Same
+                  # AGENT_HOST_DB_* names agent-host reads, but the credentials are the router's
+                  # own `conversation_router` role — granted only SELECT and pinned
+                  # default_transaction_read_only (see modules/postgres.nix readers). Lets the
+                  # router serve the durable conversation list without fanning out to every pod.
+                  { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "AGENT_HOST_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "AGENT_HOST_DB_NAME"; value = "agent_host"; }
+                  { name = "AGENT_HOST_DB_USER"; value = "conversation_router"; }
+                  { name = "AGENT_HOST_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-router"; key = "password"; }; }
+                ]
+                ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                # READ-ONLY handle on the webhooks database — the linked-resource rows the sidebar
+                # enriches each conversation with (sources/links). Same conversation_router role
+                # and secret as above, different database. Only when webhooks is enabled (that is
+                # what provisions the webhooks db + the grant); otherwise the router skips
+                # enrichment and returns bare rows.
+                ++ lib.optionals cfg.webhooks.enable [
+                  { name = "WEBHOOKS_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "WEBHOOKS_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "WEBHOOKS_DB_NAME"; value = "webhooks"; }
+                  { name = "WEBHOOKS_DB_USER"; value = "conversation_router"; }
+                  { name = "WEBHOOKS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-router"; key = "password"; }; }
+                ]
+                ++ lib.optional (cfg.webhooks.enable && cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 resources = lib.mkDefault {
                   requests = { cpu = "50m"; memory = "64Mi"; };

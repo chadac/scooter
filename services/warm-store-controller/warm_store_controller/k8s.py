@@ -9,11 +9,20 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from kubernetes import client, config
 
 from .logging_config import format_error
+from .allocate import (
+    ANN_LAST_USED,
+    LBL_WARM_STORE,
+    Node,
+    PendingSandbox,
+    PoolPv,
+)
 from .reconcile import PoolPvc, SandboxRef, WarmJobStatus
 
 logger = logging.getLogger("k8s")
@@ -23,13 +32,10 @@ SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
 
-# Pool PVC labels (see todo/docs/WARM_STORE_PVC_MANAGER.md).
-LBL_WARM_STORE = "scooter.io/warm-store"   # image content tag (the version key)
+# Pool PVC labels. LBL_WARM_STORE / ANN_LAST_USED come from allocate.py — one definition
+# shared by the PVC and PV layers so they cannot drift.
 LBL_POOL_STATE = "scooter.io/pool-state"   # warming|ready|claimed|retiring
 LBL_CLAIMED_BY = "scooter.io/claimed-by"   # conv id when claimed
-# last-used is an ANNOTATION, not a label — an rfc3339 timestamp's colons are illegal in a
-# label value (the claim's label patch would 422). Read for LRU from annotations.
-ANN_LAST_USED = "scooter.io/last-used"     # rfc3339, for LRU
 LBL_WARM_PVC = "scooter.io/warm-pvc"       # on a warm Job: the PVC name it warms (PVC↔Job link)
 POOL_SELECTOR = LBL_POOL_STATE             # any PVC carrying a pool-state is a pool PVC
 
@@ -76,6 +82,9 @@ class ControllerK8s:
     # the host cgroup ns and let the sandbox churn the node's /kubepods tree — the host-logout
     # bug). MUST match the per-conversation sandboxRuntimeClass. Empty → cluster default.
     runtime_class: str = ""
+    # Pool StorageClass. MUST be reclaimPolicy: Retain, or deleting a PVC destroys its PV
+    # and nothing is ever recycled.
+    pool_storage_class: str = ""
 
     # --- observe -----------------------------------------------------------
     def list_pool_pvcs(self) -> list[PoolPvc]:
@@ -101,6 +110,9 @@ class ControllerK8s:
                     last_used=annotations.get(ANN_LAST_USED),
                     bound_to_pod=name in bound,
                     warm_job_status=warm_status.get(name),
+                    # A PVC mid-deletion still lists (its finalizer holds it) with its labels
+                    # intact — reconcile must recognise it as already-resolved and not re-act.
+                    terminating=pvc.metadata.deletion_timestamp is not None,
                 )
             )
         return out
@@ -137,34 +149,45 @@ class ControllerK8s:
         for cr in resp.get("items", []):
             conv_id, image_tag = self._sandbox_identity(cr)
             suspended = (cr.get("spec", {}).get("operatingMode", "Running") != "Running")
-            clean = self.read_clean_marker(conv_id) if suspended else True
+            marker = self.read_unmount_marker(conv_id) if suspended else "clean"
             out.append(
-                SandboxRef(conv_id=conv_id, image_tag=image_tag, suspended=suspended, clean_unmount=clean)
+                SandboxRef(conv_id=conv_id, image_tag=image_tag, suspended=suspended, unmount_marker=marker)
             )
         return out
 
-    def read_clean_marker(self, conv_id: str) -> bool:
-        """True iff the sandbox left its clean-shutdown marker on the claimed PVC (graceful
-        stop). The overlay upper is RWO + single-attach, so the marker can't be read while a
-        pod holds it — this is only called AFTER the pod is gone (bound_to_pod False). We read
-        it by finding the pool PVC claimed by this conv and checking for the marker via a
-        short-lived reader pod that mounts it RO.
+    def read_unmount_marker(self, conv_id: str) -> str:
+        """Resolve the overlay's clean-shutdown marker on a suspended conv's claimed PVC, as a
+        TRI-STATE: "clean" (marker present), "unclean" (the check ran and the marker was
+        DEFINITIVELY absent), or "unknown" (could not determine). The overlay upper is RWO +
+        single-attach, so the marker can't be read while a pod holds it — this is only called
+        after the pod is gone.
 
-        The reader-pod round-trip is I/O-heavy; the loop only calls this for a suspended conv
-        whose PVC is unbound, so it's bounded by the suspend rate. Returns False on any error
-        (fail-safe: an unreadable marker is treated as unclean → the PVC is discarded, never
-        returned dirty)."""
+        A failure to READ is NOT evidence the volume is dirty, so it maps to "unknown" (the loop
+        then backs off and retries, never deletes). Two "unknown" cases matter especially:
+          - the PVC is already TERMINATING: we must NOT spawn a marker-check Job against it (that
+            Job can never schedule — the claim is being deleted — so it would time out and, under
+            the old code, be misread as "unclean" → another delete → the self-sustaining spin);
+          - the claimed PVC can't be found: nothing to read, and nothing to delete.
+        """
         pvc = self._pool_pvc_claimed_by(conv_id)
         if pvc is None:
-            return False
+            # Can't locate the claim → cannot decide, and there is nothing to return/discard.
+            return "unknown"
+        if pvc.metadata.deletion_timestamp is not None:
+            # Already being deleted — do NOT create a doomed marker-check Job; it is resolved.
+            logger.info(
+                "clean-marker skipped: claim is terminating",
+                extra={"conversation_id": conv_id, "pvc": pvc.metadata.name},
+            )
+            return "unknown"
         try:
-            return self._marker_present(pvc)
+            return self._marker_result(pvc.metadata.name)
         except client.ApiException as e:
             logger.warning(
-                "clean-marker read failed, treating as unclean",
-                extra={"conversation_id": conv_id, "pvc": pvc, "error": format_error(e)},
+                "clean-marker read failed; treating as UNKNOWN (backing off, not deleting)",
+                extra={"conversation_id": conv_id, "pvc": pvc.metadata.name, "error": format_error(e)},
             )
-            return False
+            return "unknown"
 
     # --- apply -------------------------------------------------------------
     def warm_new(self, image_tag: str) -> None:
@@ -184,21 +207,11 @@ class ControllerK8s:
         # A unique-ish suffix without Date/random (kept deterministic-friendly): the pool
         # size is small and the controller is single-writer (leader), so an index derived
         # from the current pool count is adequate; k8s generateName guarantees uniqueness.
-        pvc_name_prefix = f"warm-store-{_tag_slug(image_tag)}-"
-        pvc = core.create_namespaced_persistent_volume_claim(
-            self.namespace,
-            client.V1PersistentVolumeClaim(
-                metadata=client.V1ObjectMeta(
-                    generate_name=pvc_name_prefix,
-                    labels={LBL_WARM_STORE: image_tag, LBL_POOL_STATE: "warming"},
-                ),
-                spec=client.V1PersistentVolumeClaimSpec(
-                    access_modes=["ReadWriteOnce"],
-                    resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
-                ),
-            ),
+        pvc_name = self.create_pool_pvc(
+            image_tag,
+            generate_name=f"warm-store-{_tag_slug(image_tag)}-",
+            extra_labels={LBL_POOL_STATE: "warming"},
         )
-        pvc_name = pvc.metadata.name
         batch.create_namespaced_job(self.namespace, self._warm_job_manifest(pvc_name, image_tag))
 
     def _warm_job_manifest(self, pvc_name: str, image_tag: str) -> client.V1Job:
@@ -283,6 +296,224 @@ class ControllerK8s:
             if e.status != 404:
                 raise
 
+    # --- PV placement: pre-create the PVC the vct will adopt, pre-bound via claimRef.
+    # See PR #403 and todo/draft/WARM_STORE_PV_OWNERSHIP.md.
+
+    def iter_pool_pvs(self) -> Iterator[PoolPv]:
+        """Pool PVs, most-recently-used first. Sorted client-side (the k8s API has no
+        server-side sort); nodeAffinity passed through verbatim. PR #403."""
+        core, _, _, _ = _apis()
+        items = list(core.list_persistent_volume(label_selector=LBL_WARM_STORE).items)
+        items.sort(key=self._recency_key, reverse=True)
+        for pv in items:
+            meta, spec = pv.metadata, pv.spec
+            labels = meta.labels or {}
+            annotations = meta.annotations or {}
+            terms: list[dict] = []
+            na = getattr(spec, "node_affinity", None)
+            required = getattr(na, "required", None) if na else None
+            for term in (getattr(required, "node_selector_terms", None) or []):
+                terms.append(
+                    {
+                        "matchExpressions": [
+                            {"key": e.key, "operator": e.operator, "values": list(e.values or [])}
+                            for e in (term.match_expressions or [])
+                        ],
+                        "matchFields": [
+                            {"key": e.key, "operator": e.operator, "values": list(e.values or [])}
+                            for e in (getattr(term, "match_fields", None) or [])
+                        ],
+                    }
+                )
+            yield PoolPv(
+                name=meta.name,
+                image_tag=labels.get(LBL_WARM_STORE, ""),
+                phase=(pv.status.phase if pv.status else "") or "",
+                node_selector_terms=terms,
+                last_used=annotations.get(ANN_LAST_USED),
+                claim_ref=(spec.claim_ref.name if spec.claim_ref else None),
+                terminating=meta.deletion_timestamp is not None,
+            )
+
+    @staticmethod
+    def _recency_key(pv) -> str:
+        """When this PV was last handed out. Our annotation first (it tracks ALLOCATION),
+        then k8s's phase-transition time, then "" — unknown sorts oldest under reverse."""
+        annotations = (pv.metadata.annotations or {})
+        stamp = annotations.get(ANN_LAST_USED)
+        if stamp:
+            return stamp
+        transition = getattr(pv.status, "last_phase_transition_time", None) if pv.status else None
+        if transition is None:
+            return ""
+        # rfc3339 strings sort lexicographically; datetimes need normalising to the same.
+        return transition if isinstance(transition, str) else transition.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def list_pool_pvs(self) -> list[PoolPv]:
+        """Materialised iter_pool_pvs, for callers that genuinely need the whole pool
+        (reclaim sweeps every Released volume; placement does not)."""
+        return list(self.iter_pool_pvs())
+
+    def list_nodes(self) -> list[Node]:
+        """Schedulable nodes, reduced to the labels a PV's nodeAffinity can match on.
+        Cordoned nodes are excluded — a PV pinned to one would place an unschedulable pod."""
+        core, _, _, _ = _apis()
+        out: list[Node] = []
+        for n in core.list_node().items:
+            unschedulable = bool(getattr(n.spec, "unschedulable", False))
+            out.append(
+                Node(name=n.metadata.name, labels=n.metadata.labels or {}, schedulable=not unschedulable)
+            )
+        return out
+
+    def list_pending_uppers(self) -> list[PendingSandbox]:
+        """Running Sandboxes whose `scooter-rw` PVC does not exist yet — the window before
+        the vct provisions. Missing it is harmless: the conversation gets a fresh upper."""
+        core, custom, _, _ = _apis()
+        existing = {
+            pvc.metadata.name
+            for pvc in core.list_namespaced_persistent_volume_claim(self.namespace).items
+        }
+        resp = custom.list_namespaced_custom_object(
+            SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL
+        )
+        out: list[PendingSandbox] = []
+        for cr in resp.get("items", []):
+            if (cr.get("spec", {}).get("operatingMode", "Running") != "Running"):
+                continue
+            name, image_tag = self._sandbox_identity(cr)
+            # Only Sandboxes that actually declare a scooter-rw vct want an upper.
+            vcts = cr.get("spec", {}).get("volumeClaimTemplates") or []
+            if not any((v.get("metadata") or {}).get("name") == "scooter-rw" for v in vcts):
+                continue
+            pvc_name = f"scooter-rw-{name}"
+            if pvc_name in existing:
+                continue  # already provisioned or already placed
+            out.append(PendingSandbox(sandbox=name, image_tag=image_tag, pvc_name=pvc_name))
+        return out
+
+    def reserve_pv(self, pv: str, pvc_name: str, sandbox: str) -> None:
+        """Pre-bind `pv` to `pvc_name` and create that PVC so the vct adopts it.
+        claimRef FIRST — reversed, the PVC could bind some other volume. PR #403."""
+        core, _, _, _ = _apis()
+        core.patch_persistent_volume(
+            pv,
+            {
+                "spec": {"claimRef": {"namespace": self.namespace, "name": pvc_name}},
+                "metadata": {
+                    "annotations": {ANN_LAST_USED: _now_rfc3339()}
+                },
+            },
+        )
+        # 409 = already created; the claimRef above still decides which PV it gets.
+        try:
+            core.create_namespaced_persistent_volume_claim(
+                self.namespace,
+                client.V1PersistentVolumeClaim(
+                    metadata=client.V1ObjectMeta(
+                        name=pvc_name,
+                        labels={LBL_WARM_STORE: self._pv_tag(pv)},
+                    ),
+                    spec=client.V1PersistentVolumeClaimSpec(
+                        access_modes=["ReadWriteOnce"],
+                        resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
+                        storage_class_name=self.pool_storage_class,
+                        volume_name=pv,
+                    ),
+                ),
+            )
+        except client.ApiException as e:
+            if e.status != 409:
+                raise
+
+    def create_pool_pvc(
+        self,
+        image_tag: str,
+        *,
+        name: str | None = None,
+        generate_name: str | None = None,
+        extra_labels: dict[str, str] | None = None,
+    ) -> str:
+        """THE one way a volume enters the pool. Returns the PVC name.
+
+        Every pool volume must be created here so it cannot miss the two things that make
+        it poolable: the POOL StorageClass (Retain — on the default Delete class the PV is
+        destroyed with its PVC and the pool can never grow) and the warm-store label.
+
+        The PV is labelled separately once it exists: WaitForFirstConsumer means there is
+        no PV to label yet, and a dynamically-provisioned PV does NOT inherit its PVC's
+        labels (verified). adopt_bound_pvs does that on a later pass — without it a volume
+        created here survives its PVC but is invisible to iter_pool_pvs, which is worse
+        than not pooling it at all. PR #403."""
+        core, _, _, _ = _apis()
+        meta = client.V1ObjectMeta(
+            labels={LBL_WARM_STORE: image_tag, **(extra_labels or {})},
+            **({"name": name} if name else {"generate_name": generate_name or ""}),
+        )
+        pvc = core.create_namespaced_persistent_volume_claim(
+            self.namespace,
+            client.V1PersistentVolumeClaim(
+                metadata=meta,
+                spec=client.V1PersistentVolumeClaimSpec(
+                    access_modes=["ReadWriteOnce"],
+                    resources=client.V1ResourceRequirements(requests={"storage": self.overlay_storage}),
+                    storage_class_name=self.pool_storage_class,
+                ),
+            ),
+        )
+        return pvc.metadata.name
+
+    def adopt_bound_pvs(self, pvcs: list[str]) -> None:
+        """Label the PVs behind pool PVCs, so iter_pool_pvs can see them.
+
+        A dynamically-provisioned PV carries none of its PVC's labels, and does not exist
+        at all until WaitForFirstConsumer binds it — so this runs on a later pass, once the
+        volume is real. Idempotent; 404s are ignored (the PVC went away first)."""
+        core, _, _, _ = _apis()
+        for pvc_name in pvcs:
+            try:
+                pvc = core.read_namespaced_persistent_volume_claim(pvc_name, self.namespace)
+                pv_name = pvc.spec.volume_name
+                tag = (pvc.metadata.labels or {}).get(LBL_WARM_STORE)
+                if not pv_name or not tag:
+                    continue
+                pv = core.read_persistent_volume(pv_name)
+                if (pv.metadata.labels or {}).get(LBL_WARM_STORE) == tag:
+                    continue  # already adopted
+                core.patch_persistent_volume(pv_name, {"metadata": {"labels": {LBL_WARM_STORE: tag}}})
+                logger.info("adopted a PV into the pool", extra={"pv": pv_name, "pvc": pvc_name})
+            except client.ApiException as e:
+                if e.status != 404:
+                    raise
+
+    def grow_pool(self, pvc_name: str, image_tag: str) -> None:
+        """Add a volume to the pool under the name the sandbox's vct will adopt, so a
+        cold-pool conversation warms a POOL volume instead of a throwaway one."""
+        try:
+            self.create_pool_pvc(image_tag, name=pvc_name)
+        except client.ApiException as e:
+            if e.status != 409:  # the vct beat us to the name; it owns the volume now
+                raise
+
+    def release_pv(self, pv: str) -> None:
+        """Return `pv` to the pool by clearing spec.claimRef — k8s will not rebind a
+        Released PV while it still names its late PVC. Also the reservation rollback."""
+        core, _, _, _ = _apis()
+        try:
+            core.patch_persistent_volume(pv, {"spec": {"claimRef": None}})
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
+
+    def _pv_tag(self, pv: str) -> str:
+        """The image tag a PV was warmed against, read back for the PVC's label."""
+        core, _, _, _ = _apis()
+        try:
+            obj = core.read_persistent_volume(pv)
+        except client.ApiException:
+            return ""
+        return (obj.metadata.labels or {}).get(LBL_WARM_STORE, "")
+
     # --- helpers -----------------------------------------------------------
     def _claim_names_bound_to_live_pods(self) -> set[str]:
         """PVC names currently mounted by a non-terminal pod (the RWO single-attach truth —
@@ -297,16 +528,20 @@ class ControllerK8s:
                     bound.add(vol.persistent_volume_claim.claim_name)
         return bound
 
-    def _pool_pvc_claimed_by(self, conv_id: str) -> str | None:
-        """Name of the pool PVC claimed by this conversation, or None."""
+    def _pool_pvc_claimed_by(self, conv_id: str):
+        """The pool PVC object claimed by this conversation, or None. Returns the object (not
+        just the name) so callers can inspect metadata.deletion_timestamp (terminating?)."""
         core, _, _, _ = _apis()
         sel = f"{LBL_POOL_STATE}=claimed,{LBL_CLAIMED_BY}={conv_id}"
         items = core.list_namespaced_persistent_volume_claim(self.namespace, label_selector=sel).items
-        return items[0].metadata.name if items else None
+        return items[0] if items else None
 
-    def _marker_present(self, pvc: str) -> bool:
-        """Check for CLEAN_MARKER_PATH on `pvc` via a short-lived reader pod that mounts it
-        RO and tests the file. Returns the pod's success (marker present) / failure."""
+    def _marker_result(self, pvc: str) -> str:
+        """Check for CLEAN_MARKER_PATH on `pvc` via a short-lived reader Job that mounts it RO
+        and tests the file. TRI-STATE: "clean" (Job Completed → marker present), "unclean" (Job
+        Failed → the file was definitively absent), "unknown" (the Job never reached a terminal
+        state within the deadline — e.g. it could not schedule). Only a DEFINITIVE Failed maps
+        to unclean; a timeout is unknown so the loop backs off instead of destroying the PVC."""
         _, _, batch, _ = _apis()
         job = client.V1Job(
             metadata=client.V1ObjectMeta(generate_name="warm-marker-check-"),
@@ -341,8 +576,11 @@ class ControllerK8s:
         )
         created = batch.create_namespaced_job(self.namespace, job)
         # The loop polls the Job to Complete/Failed; kept simple here (the caller is off the
-        # hot path). A Complete Job == marker present; Failed == absent/unclean.
-        return _job_succeeded(created.metadata.name, self.namespace)
+        # hot path). Complete → marker present (clean); Failed → absent (unclean); neither
+        # within the deadline → unknown (back off, do not delete).
+        return {"succeeded": "clean", "failed": "unclean"}.get(
+            _job_result(created.metadata.name, self.namespace), "unknown"
+        )
 
     def _sandbox_identity(self, cr: dict) -> tuple[str, str]:
         """(conv_id, image_tag) for a Sandbox CR. conv_id == the Sandbox NAME (what the
@@ -358,6 +596,11 @@ class ControllerK8s:
 
 
 # --- module-level pure helpers (unit-testable without k8s) ------------------
+
+def _now_rfc3339() -> str:
+    """UTC rfc3339, for the last-used LRU stamp."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _tag_of(image_ref: str) -> str:
     """The tag portion of an OCI ref — the part after the LAST ':' that isn't a port. Mirrors
@@ -384,16 +627,19 @@ def _tag_slug(image_tag: str) -> str:
     return slug or "untagged"
 
 
-def _job_succeeded(name: str, namespace: str, timeout_s: float = 60.0, clock=time) -> bool:
-    """Poll a Job to terminal state; True iff it Completed (succeeded). False on Failed/timeout.
-    Used by the marker-check reader Job (a Complete run == the marker file is present)."""
+def _job_result(name: str, namespace: str, timeout_s: float = 60.0, clock=time) -> str:
+    """Poll a Job to terminal state as a TRI-STATE: "succeeded" (Completed), "failed"
+    (definitively Failed), or "unknown" (neither within the deadline — e.g. the pod could not
+    schedule because its claim is terminating). Used by the marker-check reader Job: a timeout
+    must NOT be read as "failed" (which the caller maps to unclean → delete) — it is unknown, so
+    the caller backs off instead of destroying a volume it never actually inspected."""
     _, _, batch, _ = _apis()
     deadline = clock.time() + timeout_s
     while clock.time() < deadline:
         st = batch.read_namespaced_job_status(name, namespace).status
         if st is not None and (st.succeeded or 0) >= 1:
-            return True
+            return "succeeded"
         if st is not None and (st.failed or 0) >= 1:
-            return False
+            return "failed"
         clock.sleep(1.5)
-    return False
+    return "unknown"

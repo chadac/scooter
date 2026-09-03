@@ -87,16 +87,45 @@ interface SdkQuery extends AsyncIterable<SdkMessage> {
   /** Interrupt the running turn (cancel). */
   interrupt?(): Promise<void>;
 }
-type SdkQueryFn = (params: { prompt: string; options: Record<string, unknown> }) => SdkQuery;
+/** A minimal mirror of the SDK's `SDKUserMessage` (the streaming-input form of
+ *  query()'s `prompt`). We only ever yield ONE of these — it's how a MULTIMODAL
+ *  prompt (text + image the model can SEE) is passed, since a plain-string prompt
+ *  can't carry image bytes. */
+type SdkUserMessage = {
+  type: "user";
+  message: { role: "user"; content: SdkContentParam[] };
+  parent_tool_use_id: string | null;
+};
+/** Anthropic content-block params we emit into a streaming-input user message:
+ *  text, and a base64 image in the wire shape the model actually SEES. */
+type SdkContentParam =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+type SdkQueryFn = (params: { prompt: string | AsyncIterable<SdkUserMessage>; options: Record<string, unknown> }) => SdkQuery;
 
-/** Flatten a ContentBlock[] prompt to the text the SDK query() takes. Images are
- *  noted inline (the SDK prompt is a string in this first cut; multimodal via the
- *  streaming-input form is a follow-up). */
+/** Flatten a text-only ContentBlock[] prompt to the string query() takes. Used for
+ *  the common (no-image) path; a prompt carrying an image goes through
+ *  promptToSdkContent + the streaming-input form instead (see prompt()). */
 function promptToText(blocks: ContentBlock[]): string {
   return blocks
-    .map((b) => (b.type === "text" ? b.text : b.type === "image" ? "[image]" : b.type === "resource_link" ? b.uri : ""))
+    .map((b) => (b.type === "text" ? b.text : b.type === "resource_link" ? b.uri : ""))
     .filter(Boolean)
     .join("\n");
+}
+
+/** Map ACP prompt blocks to Anthropic content-block params for the SDK's
+ *  streaming-input form. image → a base64 image block (the model SEES it) —
+ *  emitting it as the literal text "[image]" is exactly why the agent was blind to
+ *  attachments. text/resource_link → text (empty text dropped: the API rejects an
+ *  empty text block). */
+function promptToSdkContent(blocks: ContentBlock[]): SdkContentParam[] {
+  const out: SdkContentParam[] = [];
+  for (const b of blocks) {
+    if (b.type === "image") out.push({ type: "image", source: { type: "base64", media_type: b.mimeType, data: b.data } });
+    else if (b.type === "resource_link") out.push({ type: "text", text: b.uri });
+    else if (b.type === "text" && b.text) out.push({ type: "text", text: b.text });
+  }
+  return out;
 }
 
 /** Map an SDK result message's terminal reason to the bridge's stopReason string
@@ -141,6 +170,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
   const terminalCreatedCbs = new Set<(id: string, command: string, args: string[]) => void>();
   let permissionHandler: ((req: PermissionRequest) => Promise<PermissionAnswer>) | undefined;
+  /** Monotonic suffix so each permission request gets its own id (see canUseTool). */
+  let permissionSeq = 0;
 
   let sessionId = "";
   let active: SdkQuery | undefined; // the in-flight query() for cancel()
@@ -249,9 +280,15 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
         };
       }
       if (!permissionHandler) return { behavior: "allow", updatedInput: input };
+      // UNIQUE per request. The bridge keys pendingPermissions by toolCallId, so reusing
+      // the tool NAME made two concurrent calls to the same tool collide: the second
+      // `set` evicted the first, whose promise then never resolved — the tool call hung
+      // with no TOOL_CALL_RESULT and the agent reported it as "rejected". The SDK does
+      // not hand us its tool_use id here, so mint one. PR #413.
+      const permissionId = `perm-${toolName}-${++permissionSeq}`;
       const ans = await permissionHandler({
         sessionId,
-        toolCallId: toolName,
+        toolCallId: permissionId,
         title: toolName,
         options: [
           { optionId: "allow", name: "Allow", kind: "allow_once" },
@@ -278,12 +315,24 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     },
 
     async prompt(params: PromptParams): Promise<{ stopReason: string }> {
-      const text = promptToText(params.prompt);
       // Resume the SDK session so the turn CONTINUES the conversation (history
       // intact). First turn: sdkSessionId is undefined → a fresh session.
       const options = sdkSessionId ? { ...baseOptions, resume: sdkSessionId } : baseOptions;
-      debug("[sdk] prompt: query start, model=%s, resume=%s", deps.model, sdkSessionId ?? "(new)");
-      const q = query({ prompt: text, options });
+      // A prompt with an image can't ride the plain-string form — pass it via the
+      // SDK streaming-input form (one user message of content blocks) so the base64
+      // image reaches the model. Text-only stays a string (unchanged common path).
+      const hasImage = params.prompt.some((b) => b.type === "image");
+      const promptArg: string | AsyncIterable<SdkUserMessage> = hasImage
+        ? (async function* () {
+            yield {
+              type: "user",
+              message: { role: "user", content: promptToSdkContent(params.prompt) },
+              parent_tool_use_id: null,
+            } as SdkUserMessage;
+          })()
+        : promptToText(params.prompt);
+      debug("[sdk] prompt: query start, model=%s, resume=%s, multimodal=%s", deps.model, sdkSessionId ?? "(new)", hasImage);
+      const q = query({ prompt: promptArg, options });
       active = q;
       let stopReason = "end_turn";
       try {

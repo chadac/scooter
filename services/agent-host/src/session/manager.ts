@@ -14,7 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
-import { hasDanglingRun } from "./danglingRun.js";
+import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
@@ -59,7 +59,7 @@ export interface SandboxProvisioner {
   /** operatingMode: Suspended (drops Pod, keeps PVCs + Sandbox object). */
   suspend(ref: SandboxRef): Promise<void>;
   /** operatingMode: Running (recreates Pod, re-mounts PVCs, same SA). */
-  resume(ref: SandboxRef): Promise<SandboxRef>;
+  resume(ref: SandboxRef, threadId?: string): Promise<SandboxRef>;
   /** Delete the Sandbox + GC the per-conversation SA/RBAC. */
   destroy(ref: SandboxRef): Promise<void>;
   /** List the live per-conversation Sandboxes (name -> ref + whether its pod is
@@ -159,8 +159,8 @@ export interface ConversationStore {
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
   /** REPLACE a conversation's entire event log with `events` (atomic rewrite), resetting the rolling
-   *  integrity checksum. Used ONLY by content-based mirror reconciliation (hydrateFromMirror) when the
-   *  local log has DIVERGED from the durable mirror (a fork, not a prefix) — the mirror wins, so local
+   *  integrity checksum. Used ONLY by content-based reconciliation when the
+   *  log has DIVERGED from the store (a fork, not a prefix) — the store wins, so local
    *  is rewritten to it. NOT a hot-path operation. Optional (in-memory test stores may skip it). */
   replaceEvents?(id: SessionId, events: AguiEvent[]): Promise<void>;
   /** The RECENT tail only: the events from the last `runs` runs, read WITHOUT
@@ -168,6 +168,13 @@ export interface ConversationStore {
    *  fast first-paint window on a long conversation stays cheap. Optional (an
    *  in-memory store can fall back to reading all of readEvents). */
   readEventsTail?(id: SessionId, runs: number): Promise<AguiEvent[]>;
+  /** The last `limit` events by seq — a size-bounded first-paint window. Optional. */
+  readEventsTailByCount?(id: SessionId, limit: number): Promise<AguiEvent[]>;
+  readEventsBefore?(
+    id: SessionId,
+    beforeSeq: number,
+    limit: number,
+  ): Promise<{ events: AguiEvent[]; firstSeq: number; done: boolean }>;
   /** Subscribe to events as they are durably appended, each carrying its rolling
    *  checksum (folded in persisted order). This is the authority the live
    *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's
@@ -180,11 +187,9 @@ export interface ConversationStore {
   onAppendError?(cb: (id: SessionId, error: unknown) => void): () => void;
   /** Path on the conversation-state PVC where goose session data lives. */
   gooseStatePath(id: SessionId): string;
-  /** Persist last-activity (ms epoch) so it survives restarts and is queryable
-   *  by an external lifecycle manager. Optional. */
-  recordActivity?(id: SessionId, at: number): Promise<void>;
-  /** Persist conversation metadata (title/createdAt) so the list survives an
-   *  agent-host restart. Optional (in-memory stores skip it). */
+  /** Persist conversation metadata (title/createdAt/lastActivityAt) so the list
+   *  survives an agent-host restart. The sole persistence path for lastActivityAt —
+   *  touch() routes through it. Optional (in-memory stores skip it). */
   saveMeta?(meta: ConversationMeta): Promise<void>;
   /** Reconstruct all persisted conversations (for the list after a restart).
    *  Optional. */
@@ -196,14 +201,6 @@ export interface ConversationStore {
   addLink?(id: SessionId, link: ConversationLink): Promise<void>;
   /** The conversation's external resource links (for the UI panel). Optional. */
   listLinks?(id: SessionId): Promise<ConversationLink[]>;
-  /** Persist the agent-authored module.nix — the DURABLE source of truth for the
-   *  conversation's self-modified environment (survives suspend/resume + restart).
-   *  The agent-host syncs it into the per-conversation ConfigMap on modify + on
-   *  revive, so the in-pod boot re-converge restores it. Optional. */
-  saveModule?(id: SessionId, module: string): Promise<void>;
-  /** Read the saved module.nix, or null if the conversation never modified its
-   *  environment (revive skips the CM sync / re-apply for a pristine wake). */
-  readModule?(id: SessionId): Promise<string | null>;
   /** Append a background-job record (run_background). The durable registry so
    *  list_background survives an agent-host restart. Optional. */
   saveJob?(id: SessionId, job: JobRecord): Promise<void>;
@@ -281,18 +278,26 @@ export interface SessionManager {
    *  conversation is known to THIS pod (durable state present locally). */
   revive(id: SessionId): Promise<Conversation>;
   /** REVIVE-ON-ASSIGN (seamless rollout): revive a conversation that may be UNKNOWN to this
-   *  pod, hydrating its history from the shared mirror first (this pod is its NEW owner after
+   *  pod (this pod is its NEW owner after
    *  a rollout reassignment). Idempotent (no-op if already in memory). `expectedGen` is the
    *  CR's current generation for fencing — revive only if this pod is the current owner at
    *  that generation; a stale push (older gen) is a no-op. Distinct from `revive()`, which
    *  404s when the conversation isn't already local. DESIGN STUB — see
    *  todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md. */
   reviveFromMirror(id: SessionId, expectedGen: number): Promise<void>;
+  /** Settle a conversation's DANGLING last run on this pod: terminate it (persisted
+   *  cancel intent) or resume-nudge it. Owner-fenced by callers; idempotent-guarded
+   *  (one reconciliation in flight per conversation). Runs from reviveFromMirror
+   *  (the revive push) AND ensureReadable's adoption (the LAZY path — the push is
+   *  fire-and-forget by design, and when it is lost with a dying pod the adopted
+   *  conversation otherwise keeps its stranded run forever: the pod-move story's
+   *  'Working…' that never cleared). */
+  reconcileDanglingRun(id: SessionId, expectedGen?: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
-   *  the sandbox/bridge (unlike revive*). Pulls events from the mirror into local if absent,
+   *  the sandbox/bridge (unlike revive*).
    *  then registers the entry as a suspended placeholder. Returns true if the conversation
-   *  exists anywhere (in memory, local, or mirror) — false ⇒ genuinely unknown (404). Cheap
+   *  exists — false ⇒ genuinely unknown (404). Cheap
    *  + idempotent; the route calls it before deciding to 404. See ROLLOUT_DRAIN_AND_POD_IP.md
    *  (the "GET after a pod move / deleted CR" 404 gap). */
   ensureReadable(id: SessionId): Promise<boolean>;
@@ -382,16 +387,6 @@ export interface SessionManager {
    * own. Returns the ids reaped. Unlike sweepIdle (suspend), this is DESTRUCTIVE.
    */
   sweepRetention(maxAgeMs: number, now?: number): Promise<SessionId[]>;
-
-  /**
-   * Subscribe to conversation LIFECYCLE changes (a new conversation via start(),
-   * or a title change via setTitle()) so the GET /conversations/events stream can
-   * push the sidebar without the 10s poll. Fires with the changed Conversation
-   * (the caller enriches with `sources`/view). Returns an unsubscribe fn.
-   *
-   * Design stage: SIGNATURE ONLY.
-   */
-  onConversationChange(cb: (conv: Conversation) => void): () => void;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -414,12 +409,6 @@ export interface SessionManagerDeps {
    *  generation). Omitted / allowAllGuard = single-replica (always allow, today's
    *  behavior). See ownershipGuard.ts. */
   ownershipGuard?: OwnershipGuard;
-  /** Optional (multi-replica revive-on-assign): pull ONE conversation's durable state from
-   *  the shared mirror into local so this pod can hydrate + revive a conversation the
-   *  controller just reassigned here (that this pod never owned). Returns false if the
-   *  mirror has no such conversation. Wired to mirroredStore.hydrateFromMirror when a mirror
-   *  is configured; omitted single-replica. Used by reviveFromMirror(). */
-  hydrateFromMirror?: (id: SessionId) => Promise<boolean>;
   /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
@@ -516,19 +505,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     starred: e.starred,
   });
 
-  // Conversation lifecycle subscribers (the /conversations/events push stream).
-  // Fired by start() (new conversation) and setTitle() (title change) so the
-  // sidebar updates without waiting on the 10s poll. Fire-and-forget + cheap:
-  // it passes the Conversation only; the stream handler enriches with `sources`.
-  const changeSubs = new Set<(c: Conversation) => void>();
-  const emitChange = (e: Entry): void => {
-    const c = toConversation(e);
-    for (const cb of changeSubs) cb(c);
-  };
-
+  // Mark the conversation active NOW and persist it. Fire-and-forget: touch() runs on
+  // the prompt path and on throttled web-service proxy traffic, so it must never block
+  // either. (`saveMeta` is declared below; touch is only CALLED after init completes.)
   const touch = (e: Entry) => {
     e.lastActivityAt = nowMs();
-    void store.recordActivity?.(e.id, e.lastActivityAt);
+    void saveMeta(e);
   };
 
   // Build an in-memory Entry from a persisted meta (no bridge; revive() spawns
@@ -611,6 +593,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           owner: c.spec.owner,
           parentId: c.spec.parentId,
           sandboxRef: `conv-${shortId(c.id)}`,
+          creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
         });
       }
     }
@@ -624,7 +607,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     } catch {
       /* reconcile failed — treat as suspended; revive() recreates the pod */
     }
-    return hydrateEntry(m, onCluster);
+    const hydrated = hydrateEntry(m, onCluster);
+    // LAZY dangling-run settlement, on EVERY adoption path. The first version hung
+    // this off ensureReadable only — and the pod-move repro adopted through a
+    // DIFFERENT hydrateByThread caller, so the stranded run still spun for the full
+    // budget with the fix deployed. Whatever route materializes a conversation on
+    // its new owner, the stranded-run settlement must ride along. Owner-fenced;
+    // fire-and-forget; the in-flight guard dedupes overlapping callers.
+    if (hydrated && ownershipGuard.canWrite(hydrated.id)) {
+      void api.reconcileDanglingRun(hydrated.id);
+    }
+    return hydrated;
   };
 
   // Returns the persist promise so callers that must guarantee durability (e.g.
@@ -645,6 +638,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       pendingQueue: e.pendingQueue,
     }) ?? Promise.resolve();
 
+  /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
+  const fencedDrops = new Map<SessionId, number>();
+  /** Dangling-run reconciliations in flight — reviveFromMirror and the lazy adoption
+   *  path can race on the same conversation; one settles it, the other no-ops. */
+  const danglingReconciles = new Set<SessionId>();
   const wireEventLog = (e: Entry) => {
     if (!e.bridge) return;
     // Persist via the onPersist channel ONLY. The bridge's emit() fires BOTH the
@@ -658,8 +656,33 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // stop appending so it can't corrupt the log the new owner drives. Synchronous +
       // cache-backed (no k8s call per event). allowAllGuard (single-replica) always
       // passes — today's behavior. See ownershipGuard.ts.
-      if (!ownershipGuard.canWrite(e.id)) return;
-      void store.appendEvent(e.id, event);
+      if (!ownershipGuard.canWrite(e.id)) {
+        // LOUD, because this drop is how a mid-run reassignment TRUNCATES the run's log:
+        // every remaining event — including the terminal — vanishes, and the UI reads the
+        // log as still-running forever. The drop itself is correct (a stale pod must not
+        // corrupt the log the new owner drives; the new owner's dangling-run resume
+        // completes the run), but it was SILENT — an investigation grepped for fencing
+        // refusals and found zero, concluding the fence never fired. It had, every time.
+        // Sampled: first drop per conversation, then every 25th, so a long stale run
+        // cannot flood the log.
+        const n = (fencedDrops.get(e.id) ?? 0) + 1;
+        fencedDrops.set(e.id, n);
+        if (n === 1 || n % 25 === 0) {
+          log.warn("ownership fence dropped an event (reassigned mid-run?)", {
+            conversation_id: e.id,
+            event_type: event.type,
+            dropped_so_far: n,
+          });
+        }
+        return;
+      }
+      // NOT bare `void`: the store RETHROWS append failures after logging them
+      // (finding #4), and `void promise` leaves that rejection unhandled — which
+      // KILLS the Node process. A late event racing the conversation's deletion
+      // (cleanState, a reassignment's aftermath) made ENOENT here take down the
+      // whole agent-host mid-suite: 11 e2e-fast tests died to one stale append.
+      // The store already logged + notified observers; swallowing here loses nothing.
+      store.appendEvent(e.id, event).catch(() => {});
     });
   };
 
@@ -688,7 +711,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     await saveMeta(e);
   };
 
-  return {
+  const api: SessionManager = {
     async start(threadId, model, owner) {
       // The conversation id IS the thread id, so AG-UI events broadcast/persist
       // under the same key the UI subscribes by. The sandbox (k8s) name uses a
@@ -707,13 +730,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       await saveMeta(entry);
-      emitChange(entry); // push the new conversation to the sidebar stream (live)
 
       // Register the assignment-table CR so the controller assigns a hostPod and the
       // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
       // failure must not fail the conversation); noop in single-replica mode. Do it
       // BEFORE the slow provision so assignment can happen while the sandbox spins up.
-      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name });
+      await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name, creatorPod: deps.selfPod });
 
       // Now provision the sandbox (seconds) and attach the bridge. Short hash → k8s
       // resource names; full threadId → the shareable CONVERSATION_URL (?thread=<id>).
@@ -754,13 +776,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       await saveMeta(entry);
-      emitChange(entry); // show it in the sidebar live (nested under the parent)
 
       // Register the child CR carrying parentId so the controller CO-LOCATES it on the
       // parent's pod (it shares the parent's sandbox). Idempotent + non-throwing; noop in
       // single-replica mode.
       await conversationRegistry.register(id, {
         model, owner: parent.owner, parentId, sandboxRef: entry.sandbox.name,
+        creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
       });
 
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
@@ -798,7 +820,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // THIS process (and a suspended Sandbox may have been GC'd). Re-create the
       // sandbox rather than resume a ref this process never owned.
       entry.sandbox = entry.sandbox.namespace
-        ? await provisioner.resume(entry.sandbox)
+        ? await provisioner.resume(entry.sandbox, entry.threadId)
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model, owner: entry.owner }) ?? entry.bridge;
       entry.status = "running";
@@ -809,6 +831,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // idempotent (409 = already there = no-op), so this is a cheap self-heal. Fire-and-forget.
       void conversationRegistry.register(id, {
         model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+        creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
       });
       // Register the resume as ACTIVITY. Without this, lastActivityAt stays at its
       // pre-suspend value, so the idle sweep (sweepIdle) sees the conversation as
@@ -914,25 +937,51 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // fails OPEN when unobserved (the CR watch may lag the push), which is safe — a
       // genuinely stale push still can't advance the log (append is fenced too), and
       // reviving a conversation we don't own is a harmless read+resume that the next
-      // reconcile corrects. But a POSITIVE "another pod owns it" verdict → skip.
+      // reconcile corrects. But a POSITIVE "another pod owns it" verdict needs one more
+      // look: the controller POSTs this push IMMEDIATELY after writing hostPod=<us> at
+      // `expectedGen`, and the watch event for that same write routinely lands AFTER
+      // the push — so the cache can still name the PREVIOUS owner. That is a stale
+      // CACHE, not a stale push, and nothing ever re-pushes: dropping it left the
+      // reassigned mid-run conversation dangling forever ("Working…" until the e2e
+      // budget died — the conversation-moves-pods story). When the
+      // push's generation is NEWER than anything the watch has shown, trust the push,
+      // adopt the assignment (the watch confirms or corrects it shortly), and proceed.
+      // A push at or below the observed generation IS stale: keep the fence — loudly,
+      // never silently (the silent drop cost this exact investigation).
       if (!ownershipGuard.canWrite(id)) {
-        return; // fenced out — not our conversation (a stale push).
+        const observed = ownershipGuard.observedGeneration?.(id);
+        const pushIsNewer =
+          expectedGen > 0 && (observed === undefined || expectedGen > observed);
+        if (!pushIsNewer || !ownershipGuard.adoptAssignment) {
+          log.warn("reviveFromMirror: fenced out (another pod owns this conversation)", {
+            conversation_id: id,
+            observed_generation: observed ?? null,
+            pushed_generation: expectedGen,
+          });
+          return; // fenced out — a genuinely stale push.
+        }
+        ownershipGuard.adoptAssignment(id, expectedGen);
+        log.info("reviveFromMirror: push is ahead of the CR watch — adopting the assignment", {
+          conversation_id: id,
+          observed_generation: observed ?? null,
+          pushed_generation: expectedGen,
+        });
       }
 
-      // If NOT already live here, pull its durable state from the mirror into local, hydrate
+      // If NOT already live here, hydrate
       // the Entry (hydrateByThread reads the now-local meta), and revive it. If it's ALREADY
       // in memory this is a no-op — but we STILL run the dangling-run resume below (a
       // conversation reassigned mid-run may already be revived yet have an unfinished run).
       if (!entries.get(id)) {
-        if (deps.hydrateFromMirror) {
-          const pulled = await deps.hydrateFromMirror(id).catch((err) => {
-            log.errorWith("reviveFromMirror: mirror pull failed", err, { conversation_id: id });
-            return false;
-          });
-          if (!pulled) return; // mirror has nothing — genuinely unknown; nothing to revive.
-        }
         const entry = await hydrateByThread(id as ThreadId);
-        if (!entry) return; // still not reconstructable (no local meta) — give up quietly.
+        if (!entry) {
+          // LOUD: this pod was ASSIGNED the conversation, so giving up means nobody
+          // completes its (possibly truncated) run — "Working… forever".
+          log.warn("reviveFromMirror: could not reconstruct the conversation", {
+            conversation_id: id,
+          });
+          return;
+        }
         void expectedGen; // gen already enforced via the fence above + the append guard.
         await this.revive(id);
       }
@@ -942,38 +991,101 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // before the model finished), re-drive it so the run completes on this host. Without
       // this the UI is stuck "thinking" forever. Same mechanism boot uses (resumeInterrupted),
       // for the one conversation. Fire-and-forget — a nudge failure is logged, not fatal.
+      await this.reconcileDanglingRun(id, expectedGen);
+    },
+
+    async reconcileDanglingRun(id, expectedGen) {
+      if (danglingReconciles.has(id)) return; // one settlement at a time
+      danglingReconciles.add(id);
       try {
         // Pass our identity: a run THIS pod started at THIS generation is in flight, not
         // stranded. `expectedGen` is the generation the controller assigned us at — a run
         // stamped with an earlier one was left by a previous assignment and still resumes.
+        // With no gen (the lazy adoption path) a same-host run reads as OWN and is left
+        // alone — conservative: adoption implies the entry was not in memory, so a live
+        // own run cannot be the one we would touch.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
-        if (hasDanglingRun(await collectEvents(store.readEvents(id)), self)) {
-          log.info("reviveFromMirror: resuming a dangling run", { conversation_id: id });
+        const events = await collectEvents(store.readEvents(id));
+
+        // HEAL FIRST: close any run left open ANYWHERE in the log, not just at the
+        // tail. A fenced hand-off drops the outgoing pod's remaining events —
+        // terminal included — and the next turn completes on top, burying the
+        // orphan where the tail-only check can never reach it. The UI's `running`
+        // flag is a boolean, so one stray RUN_STARTED reads as "working" forever.
+        //
+        // Safe to write here: this pod was just assigned the conversation, the
+        // controller keeps a single hostPod, and the fence stops the old owner — so
+        // nobody else can be driving these runs. The run that is genuinely in
+        // flight (if any) is excluded below.
+        const inFlight = danglingRunInfo(events, self)?.runId;
+        const orphans = orphanRuns(events).filter((o) => o.runId !== inFlight);
+        for (const o of orphans) {
+          await store.appendEvent(id as SessionId, {
+            type: "RUN_FINISHED",
+            threadId: o.threadId as never,
+            runId: o.runId as never,
+            interrupted: true,
+            ts: Date.now(),
+          });
+        }
+        if (orphans.length > 0) {
+          log.warn("closed runs left open by a hand-off", {
+            conversation_id: id,
+            closed: orphans.length,
+            run_ids: orphans.map((o) => o.runId),
+          });
+        }
+
+        const dangling = danglingRunInfo(events, self);
+        if (!dangling) {
+          // NEVER silent: a wrong no-op here is indistinguishable from the hook not
+          // firing at all, which cost three deploy-validate rounds to see.
+          log.info("dangling-run check: nothing to settle", {
+            conversation_id: id,
+            events_seen: events.length,
+          });
+        }
+        if (dangling?.cancelRequested) {
+          // The user STOPPED this run before the old host died (the persisted
+          // CANCEL_REQUESTED marker). Resuming it would resurrect work the user
+          // killed; instead END it the way the old host would have — the reconnected
+          // stream replays this terminal and the UI's run bar finally clears.
+          log.info("dangling run was cancelled — terminating, not resuming", {
+            conversation_id: id,
+            run_id: dangling.runId,
+          });
+          await store.appendEvent(id as SessionId, {
+            type: "RUN_FINISHED",
+            threadId: dangling.threadId as never,
+            runId: dangling.runId as never,
+            cancelled: true,
+            ts: Date.now(),
+          });
+        } else if (dangling) {
+          log.info("resuming a dangling run", { conversation_id: id });
           // source "resume" → persists as a SYSTEM_MESSAGE (platform-injected, not a
           // role:user turn) which the UI hides — the nudge is internal, not a user message.
           void this.prompt(id, RESUME_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume").catch((err) =>
-            log.errorWith("reviveFromMirror: dangling-run resume failed", err, { conversation_id: id }),
+            log.errorWith("dangling-run resume failed", err, { conversation_id: id }),
           );
         }
       } catch (err) {
-        log.errorWith("reviveFromMirror: dangling-run check failed", err, { conversation_id: id });
+        log.errorWith("dangling-run check failed", err, { conversation_id: id });
+      } finally {
+        danglingReconciles.delete(id);
       }
     },
 
     async ensureReadable(id) {
-      // Already known to this pod → readable.
-      if (entries.get(id)) return true;
-      // Pull its durable state (meta + events) from the mirror into local if a mirror is
+      // In memory != history is here: hydrate loads META only, so a known conversation
+      // still takes the pull (a no-op once the log is local). PR #405.
+      const known = entries.get(id) !== undefined;
+      // Hydrate it if
       // configured — so a reconnecting UI (GET events / events.integrity) can read history
       // even after the owner pod moved (rollout) or the CR was cleared. READ-ONLY: no
       // sandbox/bridge spin-up (unlike revive*). hydrateByThread then registers the entry as
       // a suspended placeholder; the next prompt revives the pod on demand.
-      if (deps.hydrateFromMirror) {
-        await deps.hydrateFromMirror(id).catch((err) => {
-          log.errorWith("ensureReadable: mirror pull failed", err, { conversation_id: id });
-          return false;
-        });
-      }
+      if (known) return true;
       const entry = await hydrateByThread(id as ThreadId);
       return entry !== undefined;
     },
@@ -1105,6 +1217,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // not end, is the durable handle.)
         entries.delete(targetId);
         await store.removeConversation?.(targetId);
+        // DELETE THE CR TOO. It is the source of truth for existence, so clearing local
+        // state alone is not enough: hydrate() re-adopts a surviving CR and the
+        // conversation comes back. Observed on a real cluster — DELETE answered 204 and
+        // the conversation stayed listed as `running` indefinitely.
+        // Swallow: the local delete already succeeded and is authoritative for the
+        // caller. A surviving CR is a leak to reconcile, not a reason to answer 500 for
+        // a conversation that IS gone — that would tell the caller nothing true and
+        // invite a retry that 404s.
+        await conversationRegistry.remove(targetId).catch((err: unknown) => {
+          log.errorWith("failed to remove the Conversation CR; it may be re-adopted", err, {
+            conversation_id: targetId,
+          });
+        });
       };
       // Destroy the pod once — for the conversation actually being ended. (If `id`
       // is itself a subagent, it shares its ancestor's pod; ending it should NOT
@@ -1158,9 +1283,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // has renamed the conversation, the user title is locked (see setUserTitle).
       if (entry.userTitled) return Promise.resolve();
       entry.title = title;
-      const persisted = saveMeta(entry); // persist the agent-assigned title
-      emitChange(entry); // push the title change to the sidebar stream
-      return persisted;
+      // The durable write is what drives the live sidebar now: saveMeta updates the
+      // conversations row, whose trigger fires NOTIFY 'conversations_changed' and the
+      // conversation-router pushes the upsert (see migration 20260902183131 + events.go).
+      return saveMeta(entry);
     },
 
     setUserTitle(id, title) {
@@ -1168,18 +1294,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entry) return Promise.resolve();
       entry.title = title;
       entry.userTitled = true; // lock it: the agent's <title> no longer wins
-      const persisted = saveMeta(entry);
-      emitChange(entry);
-      return persisted;
+      return saveMeta(entry);
     },
 
     setStarred(id, starred) {
       const entry = entries.get(id);
       if (!entry) return Promise.resolve();
       entry.starred = starred;
-      const persisted = saveMeta(entry);
-      emitChange(entry);
-      return persisted;
+      return saveMeta(entry);
     },
 
     async hydrate() {
@@ -1262,6 +1384,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // fire-and-forget; the controller (re)assigns the CR a host on its next reconcile.
         void conversationRegistry.register(entry.id, {
           model: entry.model, owner: entry.owner, parentId: entry.parentId, sandboxRef: entry.sandbox.name,
+          creatorPod: deps.selfPod, // the run lives HERE — placement hint for the controller
         });
         // RE-PUBLISH PHASE for a conversation hydrated as SUSPENDED. phase is otherwise only
         // written at the suspend()/revive() TRANSITION events — so a conversation that was
@@ -1281,18 +1404,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // metas, so a wiped emptyDir meant nothing was hydrated however much the cluster knew.
       for (const c of mine) {
         if (entries.has(c.id)) continue; // already live or hydrated from the local cache
-        // Prefer the DURABLE history if this conversation has any: hydrateFromMirror pulls its
-        // meta + event log into local so the transcript is intact. If it has none (or no mirror is
-        // configured) we still adopt from the CR alone — an entry with no history is enough to be
-        // listed, suspended, and reclaimed, which is what closes the leak (I5: suspend() throws
-        // for anything not in `entries`, so an unknown sandbox was previously unreachable).
-        let meta = metaById.get(c.id);
-        if (!meta && deps.hydrateFromMirror) {
-          const pulled = await deps.hydrateFromMirror(c.id).catch(() => false);
-          if (pulled) {
-            meta = ((await store.listConversations?.()) ?? []).find((m) => m.id === c.id);
-          }
-        }
+        // A conversation with no meta is still adopted from the CR alone — enough to be
+        // listed, suspended and reclaimed, which is what closes the sandbox leak.
+        const meta = metaById.get(c.id);
         const synthesized: ConversationMeta = meta ?? {
           id: c.id,
           threadId: c.id,
@@ -1333,7 +1447,23 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             // started any run yet, so every RUN_STARTED in the log predates it and is
             // stranded by definition — even one stamped with our own pod name (a restarted
             // pod reuses it). Passing self would skip the very runs this scan resumes.
-          if (hasDanglingRun(events)) candidates.push(entry.id);
+          const info = danglingRunInfo(events);
+          if (info?.cancelRequested) {
+            // Stopped by the user before the previous process died — end it, don't redo it.
+            log.info("resumeInterrupted: dangling run was cancelled — terminating", {
+              conversation_id: entry.id,
+              run_id: info.runId,
+            });
+            await store.appendEvent(entry.id, {
+              type: "RUN_FINISHED",
+              threadId: info.threadId as never,
+              runId: info.runId as never,
+              cancelled: true,
+              ts: Date.now(),
+            });
+          } else if (info) {
+            candidates.push(entry.id);
+          }
         } catch (err) {
           // eslint-disable-next-line no-console
           log.errorWith("resumeInterrupted: reading the log failed, skipping", err, {
@@ -1382,6 +1512,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       for (const entry of entries.values()) {
         if (entry.status !== "running") continue;
+        // OWNERSHIP FILTER (the #297 residual, finally). Multi-replica, BOTH pods can hold
+        // the same conversation (dual adoption); without this they both swept it ~3s apart.
+        // The second sweeper's background-job EXEC PROBE rides the pollForReadyPod
+        // self-heal, which RESUMES the sandbox the first sweeper just suspended — and with
+        // the conversation then evicted everywhere, nothing ever re-suspends it. Observed
+        // on valhalla: three sandbox pods running 9-12h, conversations phase=Suspended,
+        // each with two 'idle-suspended' log lines 3.5s apart. Only the OWNER sweeps —
+        // and, as importantly, only the owner PROBES.
+        if (!ownershipGuard.canWrite(entry.id)) continue;
         if (now - entry.lastActivityAt < idleMs) continue;
         if (hasLiveDescendant(entry.id)) continue; // keep the shared pod up
         // NEVER suspend a conversation with a run IN FLIGHT. lastActivityAt is bumped
@@ -1470,16 +1609,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return reaped;
     },
 
-    onConversationChange(cb) {
-      changeSubs.add(cb);
-      return () => changeSubs.delete(cb);
-    },
-
     onSubagentComplete(cb) {
       subagentCompleteSubs.add(cb);
       return () => subagentCompleteSubs.delete(cb);
     },
   };
+  return api;
 }
 
 /** Wall-clock ms. Wrapped so it's mockable / avoids new Date() in pure code. */

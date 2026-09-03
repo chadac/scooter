@@ -16,9 +16,14 @@
  * connection or fail a request — the socket is the thing that actually matters.
  */
 
+import { eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { byoc } from "@scooter/schema";
 import { Pool } from "pg";
 
 import type { DeviceRow, DeviceStore } from "./deviceAuth.js";
+
+const { remoteAgents } = byoc;
 
 export interface SessionRow {
   owner: string;
@@ -61,38 +66,22 @@ export function createPgSessionStore(config: PgSessionStoreConfig): SessionStore
   // pool_pre_ping equivalent: `keepAlive` plus a bounded pool. The broker/scheduler learned this
   // the hard way — an engine with no reconnect guard dies permanently on a postgres restart.
   const pool = new Pool({ connectionString: config.dsn, max: 4, keepAlive: true });
-  let ready: Promise<void> | undefined;
-
-  // Lazy migration on first use, so the service starts even if the DB is briefly unavailable.
-  const ensure = (): Promise<void> => {
-    ready ??= (async () => {
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS remote_agents (
-           owner text PRIMARY KEY,
-           status text NOT NULL DEFAULT 'offline',
-           last_seen timestamptz NOT NULL DEFAULT now()
-         )`,
-      );
-      // The ADD this controller needs. Separate from CREATE so it also applies to a table the
-      // agent-host created first.
-      await pool.query(`ALTER TABLE remote_agents ADD COLUMN IF NOT EXISTS session_id text`);
-    })().catch((err) => {
-      ready = undefined; // let a later call retry rather than wedging on one bad startup
-      throw err;
-    });
-    return ready;
-  };
+  // Read/write byoc.remote_agents through the generated @scooter/schema Drizzle client. The
+  // table (with session_id) is declared in lib/sql/byoc/schema.sql and provisioned by the migrate
+  // job, so this store no longer self-CREATE/ALTERs it — a column rename there is a compile error
+  // here. Why: PR #407 chain.
+  const db = drizzle(pool);
 
   return {
     async put(owner, sessionId) {
       try {
-        await ensure();
-        await pool.query(
-          `INSERT INTO remote_agents (owner, session_id, status, last_seen)
-           VALUES ($1, $2, 'offline', now())
-           ON CONFLICT (owner) DO UPDATE SET session_id = $2, status = 'offline', last_seen = now()`,
-          [owner, sessionId],
-        );
+        await db
+          .insert(remoteAgents)
+          .values({ owner, sessionId, status: "offline", lastSeen: sql`now()` })
+          .onConflictDoUpdate({
+            target: remoteAgents.owner,
+            set: { sessionId, status: "offline", lastSeen: sql`now()` },
+          });
       } catch {
         /* best effort — the in-memory registry still serves this process */
       }
@@ -100,11 +89,10 @@ export function createPgSessionStore(config: PgSessionStoreConfig): SessionStore
 
     async setStatus(owner, status) {
       try {
-        await ensure();
-        await pool.query(
-          `UPDATE remote_agents SET status = $2, last_seen = now() WHERE owner = $1`,
-          [owner, status],
-        );
+        await db
+          .update(remoteAgents)
+          .set({ status, lastSeen: sql`now()` })
+          .where(eq(remoteAgents.owner, owner));
       } catch {
         /* best effort */
       }
@@ -112,16 +100,16 @@ export function createPgSessionStore(config: PgSessionStoreConfig): SessionStore
 
     async getByOwner(owner) {
       try {
-        await ensure();
-        const r = await pool.query<{ owner: string; session_id: string | null; status: string }>(
-          `SELECT owner, session_id, status FROM remote_agents WHERE owner = $1`,
-          [owner],
-        );
-        const row = r.rows[0];
-        if (!row?.session_id) return null;
+        const rows = await db
+          .select({ owner: remoteAgents.owner, sessionId: remoteAgents.sessionId, status: remoteAgents.status })
+          .from(remoteAgents)
+          .where(eq(remoteAgents.owner, owner))
+          .limit(1);
+        const row = rows[0];
+        if (!row?.sessionId) return null;
         return {
           owner: row.owner,
-          sessionId: row.session_id,
+          sessionId: row.sessionId,
           status: row.status === "online" ? "online" : "offline",
         };
       } catch {
@@ -162,77 +150,56 @@ export function createMemoryDeviceStore(): DeviceStore {
  */
 export function createPgDeviceStore(config: PgSessionStoreConfig): DeviceStore {
   const pool = new Pool({ connectionString: config.dsn, max: 4, keepAlive: true });
-  let ready: Promise<void> | undefined;
+  const db = drizzle(pool);
 
-  const ensure = (): Promise<void> => {
-    ready ??= (async () => {
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS remote_agent_devices (
-           id          text PRIMARY KEY,
-           owner       text NOT NULL,
-           public_key  text NOT NULL,
-           label       text,
-           created_at  timestamptz NOT NULL DEFAULT now(),
-           last_seen   timestamptz NOT NULL DEFAULT now()
-         )`,
-      );
-      // The hot query is "this owner's devices" (cap enforcement + the settings list).
-      await pool.query(
-        `CREATE INDEX IF NOT EXISTS remote_agent_devices_owner_idx ON remote_agent_devices (owner)`,
-      );
-    })().catch((err) => {
-      ready = undefined; // let a later call retry rather than wedging on one bad startup
-      throw err;
-    });
-    return ready;
-  };
-
-  const toRow = (r: { id: string; owner: string; public_key: string; label: string | null; last_seen: Date }): DeviceRow => ({
+  const toRow = (r: typeof byoc.remoteAgentDevices.$inferSelect): DeviceRow => ({
     id: r.id,
     owner: r.owner,
-    publicKey: r.public_key,
+    publicKey: r.publicKey,
     label: r.label ?? undefined,
-    lastSeen: Math.floor(r.last_seen.getTime() / 1000),
+    // The generated binding maps timestamptz with mode:'string', so this is an ISO
+    // string and not a Date — the hand-written store called .getTime() on it.
+    lastSeen: Math.floor(new Date(r.lastSeen).getTime() / 1000),
   });
 
   return {
     async add(d) {
-      await ensure();
-      await pool.query(
-        `INSERT INTO remote_agent_devices (id, owner, public_key, label, last_seen)
-         VALUES ($1, $2, $3, $4, to_timestamp($5))`,
-        [d.id, d.owner, d.publicKey, d.label ?? null, d.lastSeen],
-      );
+      await db.insert(byoc.remoteAgentDevices).values({
+        id: d.id,
+        owner: d.owner,
+        publicKey: d.publicKey,
+        label: d.label ?? null,
+        lastSeen: sql`to_timestamp(${d.lastSeen})`,
+      });
     },
 
     async listByOwner(owner) {
-      await ensure();
-      const r = await pool.query(
-        `SELECT id, owner, public_key, label, last_seen FROM remote_agent_devices WHERE owner = $1`,
-        [owner],
-      );
-      return r.rows.map(toRow);
+      const rows = await db
+        .select()
+        .from(byoc.remoteAgentDevices)
+        .where(eq(byoc.remoteAgentDevices.owner, owner));
+      return rows.map(toRow);
     },
 
     async getById(id) {
-      await ensure();
-      const r = await pool.query(
-        `SELECT id, owner, public_key, label, last_seen FROM remote_agent_devices WHERE id = $1`,
-        [id],
-      );
-      return r.rows[0] ? toRow(r.rows[0]) : undefined;
+      const rows = await db
+        .select()
+        .from(byoc.remoteAgentDevices)
+        .where(eq(byoc.remoteAgentDevices.id, id));
+      return rows[0] ? toRow(rows[0]) : undefined;
     },
 
     async remove(id) {
-      await ensure();
-      await pool.query(`DELETE FROM remote_agent_devices WHERE id = $1`, [id]);
+      await db.delete(byoc.remoteAgentDevices).where(eq(byoc.remoteAgentDevices.id, id));
     },
 
     async touch(id, at) {
-      await ensure();
       // last_seen drives BOTH the settings list and which device gets evicted at the cap, so a
       // missed touch would make an active laptop look idle and cost it its slot.
-      await pool.query(`UPDATE remote_agent_devices SET last_seen = to_timestamp($2) WHERE id = $1`, [id, at]);
+      await db
+        .update(byoc.remoteAgentDevices)
+        .set({ lastSeen: sql`to_timestamp(${at})` })
+        .where(eq(byoc.remoteAgentDevices.id, id));
     },
 
     async close() {

@@ -1,7 +1,28 @@
 """Tier 1 — the reconcile LOOP against a fake k8s (in-memory CRs + pods). No cluster."""
 
+import pytest
+
+import conversation_controller.loop as loop_mod
+from conversation_controller.logging_config import forget_warned
 from conversation_controller.loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
 from conversation_controller.reconcile import Pod, SandboxRef
+
+
+@pytest.fixture(autouse=True)
+def _reset_zombie_state():
+    """The zombie repair keeps module-level per-conversation state across ticks (one
+    controller process, one loop). Reset it between tests so they don't leak. Tolerant of
+    both the pre-fix `_zombie_suspects` set and the post-fix `_zombie_progress` dict."""
+    for attr in ("_zombie_progress", "_zombie_suspects"):
+        state = getattr(loop_mod, attr, None)
+        if state is not None:
+            state.clear()
+    forget_warned()
+    yield
+    for attr in ("_zombie_progress", "_zombie_suspects"):
+        state = getattr(loop_mod, attr, None)
+        if state is not None:
+            state.clear()
 
 
 class FakeK8s:
@@ -16,6 +37,19 @@ class FakeK8s:
         self.patches = []                       # [(name, status)] for assertions
         self.revives = []                       # [(host_ip, conv_name, generation)] revive-pushes
         self.deleted_trees = []                 # [sandbox_name] reaped
+        self.cost_calls = []                    # [(pod, cost)] set_pod_deletion_cost
+        self.suspends = []                      # [sandbox_name] suspend_sandbox calls (zombie repair)
+        self.force_deleted = []                 # [sandbox_name] force_delete_sandbox calls (terminal)
+
+    def set_pod_deletion_cost(self, name, cost):
+        self.cost_calls.append((name, cost))
+
+    def suspend_sandbox(self, name):
+        self.suspends.append(name)
+
+    def force_delete_sandbox(self, name):
+        self.force_deleted.append(name)
+        self._sandboxes.pop(name, None)
 
     def get_agent_host_replicas(self):
         return self._replicas
@@ -375,3 +409,197 @@ def test_sandbox_list_failure_must_not_abort_assignment():
     results = reconcile_once(k8s, cap=10)
     assert ("newborn", "assign") in results  # assignment still happened
     assert not any(kind == "mark-suspended" for _, kind in results)
+
+
+# --- scale-down victim steering (pod-deletion-cost) ---------------------------
+#
+# Observed in e2e-full CI (run 33015148191): conversation 82d29b1f assigned to a pod
+# at 21:32:57, autoscale down 5->2 at 21:33:07 killed that pod, the run died with it,
+# and the browser showed "Working…" forever. The Deployment picks scale-down victims
+# blindly unless pods carry controller.kubernetes.io/pod-deletion-cost.
+
+
+def _conv(name, host, phase="Assigned", parent=None):
+    return {
+        "metadata": {"name": name},
+        "spec": ({"parentId": parent} if parent else {}),
+        "status": {"phase": phase, "hostPod": host, "generation": 1},
+    }
+
+
+def test_hosting_pods_get_their_conversation_count_as_deletion_cost():  # @proves
+    pods = [Pod("a", True, "10.0.0.1"), Pod("b", True, "10.0.0.2")]
+    k8s = FakeK8s(pods, [_conv("c1", "a"), _conv("c2", "a"), _conv("c3", "b")])
+    autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
+    assert ("a", 2) in k8s.cost_calls
+    assert ("b", 1) in k8s.cost_calls
+
+
+def test_empty_pods_cost_zero_and_unchanged_costs_are_not_repatched():  # @proves
+    # Pod "a" already carries the right cost (1) -> no patch; "b" is empty -> cost 0.
+    pods = [Pod("a", True, "10.0.0.1", deletion_cost=1), Pod("b", True, "10.0.0.2")]
+    k8s = FakeK8s(pods, [_conv("c1", "a")])
+    autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
+    assert ("a", 1) not in k8s.cost_calls, "unchanged cost must not be re-patched"
+    assert ("b", 0) in k8s.cost_calls
+
+
+def test_suspended_and_subagent_conversations_do_not_count():  # @proves
+    pods = [Pod("a", True, "10.0.0.1")]
+    k8s = FakeK8s(pods, [
+        _conv("c1", "a", phase="Suspended"),
+        _conv("c2", "a", parent="c-parent"),
+        _conv("c3", "a"),
+    ])
+    autoscale_once(k8s, _Cfg(), AutoscaleState(), now=0.0)
+    assert ("a", 1) in k8s.cost_calls
+
+
+def test_terminating_pods_are_not_assignment_targets():  # @proves
+    # A scale-down victim stays Ready through its grace period; assigning to it just
+    # schedules another mid-run reassignment (CI: assigned 23:40:26 -> reassigned
+    # 23:40:34, the same conversation). Only the live pod may receive work.
+    pods = [Pod("dying", True, "10.0.0.1", terminating=True), Pod("alive", True, "10.0.0.2")]
+    k8s = FakeK8s(pods, [_conv("c1", None, phase="Pending")])
+    reconcile_once(k8s, cap=10)
+    assigned = [st for name, st in k8s.patches if name == "c1"]
+    assert assigned, "the conversation must be assigned"
+    assert all(st.get("hostPod") != "dying" for st in assigned), "never to a terminating pod"
+
+
+# --- zombie sandbox: backoff + terminal resolution (no infinite re-suspend) ------------
+#
+# A zombie is phase=Suspended + placement released + Sandbox still RUNNING (reconcile returns
+# SuspendSandbox). The bug: with no backoff and no terminal path, a suspend that never takes —
+# exactly why a sandbox is a zombie (an upstream resume race keeps reviving the pod) — was
+# re-detected and re-suspended every tick (every ~5s) forever. The fix keeps the two-tick
+# false-positive confirmation but adds backoff between suspends and, after N bounded attempts,
+# a terminal escalation (force-delete the Sandbox + mark the conversation Failed), logged once.
+
+
+def _zombie():
+    """A conversation the reconcile core flags as a zombie every tick: phase=Suspended,
+    unhosted, backing Sandbox operatingMode=Running."""
+    convs = [_cr("z1", phase="Suspended", gen=2, sandbox_ref="conv-z1")]
+    sbs = [SandboxRef("conv-z1", age_seconds=1000, operating_mode="Running")]
+    return FakeK8s([Pod("a", True)], convs, sandboxes=sbs)
+
+
+def test_zombie_two_tick_confirmation_no_suspend_on_single_sighting():
+    # The false-positive guard is preserved: a SINGLE sighting only marks a suspect — a real
+    # revive patches the Sandbox Running before writing phase=Assigned, so one sighting can be
+    # a revive mid-flight and must not be suspended.
+    k = _zombie()
+    res = dict(reconcile_once(k, cap=10))
+    assert res["z1"] == "suspend-sandbox-suspect"
+    assert k.suspends == []
+
+
+def test_zombie_suspect_resets_when_conversation_revives():
+    # A suspect that turns out to be a mid-flight revive (Running sandbox, now Assigned+hosted)
+    # must be dropped — never suspended, and its confirmation state reset.
+    k = _zombie()
+    reconcile_once(k, cap=10)  # t1: suspect
+    assert k.suspends == []
+    k._convs["z1"]["status"].update({"phase": "Assigned", "hostPod": "a"})
+    reconcile_once(k, cap=10)  # t2: NoOp — not a zombie
+    assert k.suspends == []
+    assert "z1" not in loop_mod._zombie_progress  # confirmation reset
+
+
+def test_confirmed_zombie_is_not_resuspended_every_tick():
+    # (a) After confirmation the first suspend fires, but the loop then BACKS OFF — it does not
+    # re-issue the same suspend on every subsequent tick.
+    k = _zombie()
+    reconcile_once(k, cap=10)  # t1: suspect
+    reconcile_once(k, cap=10)  # t2: first suspend
+    assert k.suspends == ["conv-z1"]
+    reconcile_once(k, cap=10)  # t3: backoff hold
+    reconcile_once(k, cap=10)  # t4: backoff hold
+    assert k.suspends == ["conv-z1"], "confirmed zombie must back off, not re-suspend every tick"
+
+
+def test_persistent_zombie_is_acted_on_a_bounded_number_of_times_then_terminal():
+    # (a)+(b): a sandbox whose suspend never takes is suspended only a small BOUNDED number of
+    # times — not indefinitely — and then escalates to a TERMINAL resolution.
+    k = _zombie()
+    for _ in range(50):
+        reconcile_once(k, cap=10)
+    assert 1 <= len(k.suspends) <= 5, f"expected a small bounded number of suspends, got {len(k.suspends)}"
+    # Terminal: force-delete the running Sandbox (reclaims the leaked pod) + mark conversation Failed.
+    assert k.force_deleted == ["conv-z1"]
+    assert k.status("z1")["phase"] == "Failed"
+    # Idempotent terminal — never suspended again once resolved.
+    at_terminal = len(k.suspends)
+    for _ in range(10):
+        reconcile_once(k, cap=10)
+    assert len(k.suspends) == at_terminal
+    assert k.force_deleted == ["conv-z1"]  # not force-deleted again either
+
+
+def test_failed_conversation_is_never_reassigned():
+    # The terminal Failed phase must be inert: an unhosted Failed conversation must NOT be
+    # picked up and assigned to a pod by the reconcile core.
+    k = FakeK8s([Pod("a", True)], [_cr("z1", phase="Failed", gen=9)])
+    res = dict(reconcile_once(k, cap=10))
+    assert res["z1"] == "noop"
+    assert k.status("z1").get("hostPod") is None
+    assert k.status("z1")["phase"] == "Failed"
+
+
+def test_zombie_resolution_is_logged_once(caplog):
+    # (c) The terminal resolution is logged ONCE, not once per tick.
+    import logging
+    k = _zombie()
+    with caplog.at_level(logging.WARNING, logger="conversation_controller.loop"):
+        for _ in range(50):
+            reconcile_once(k, cap=10)
+    escalations = [r for r in caplog.records if "escalat" in r.getMessage().lower()]
+    assert len(escalations) == 1, f"escalation must be logged once, saw {len(escalations)}"
+
+
+
+
+# --- phase-drift repair: log de-dupe -----------------------------------------
+# The repair re-runs every tick; un-de-duped that was ~5.6k warns/24h from 2 convs.
+
+def _drifting_k8s(names=("drifted",)):
+    """Conversations whose drift never clears — a live owner racing the controller."""
+    from conversation_controller.reconcile import SandboxRef
+
+    return FakeK8s(
+        pods=[Pod("a", True, ip="10.0.0.1")],
+        convs=[_cr(n, host="a", phase="Assigned", gen=3, sandbox_ref=f"sb-{n}") for n in names],
+        sandboxes=[SandboxRef(name=f"sb-{n}", age_seconds=1000.0, operating_mode="Suspended") for n in names],
+    )
+
+
+def _rearm(k8s, name="drifted"):
+    k8s._convs[name]["status"].update({"phase": "Assigned", "hostPod": "a", "hostIP": "10.0.0.1"})
+
+
+def _drift(caplog, level):
+    return [r for r in caplog.records if r.message == "phase drift repaired" and r.levelname == level]
+
+
+def test_THE_SPAM_a_persistent_drift_warns_once_but_is_still_REPAIRED_every_pass(caplog):
+    caplog.set_level("DEBUG")
+    k8s = _drifting_k8s()
+    for _ in range(5):
+        reconcile_once(k8s, cap=10)
+        _rearm(k8s)
+
+    assert len(_drift(caplog, "WARNING")) == 1   # not one per tick
+    # Quieting the LOG must not quiet the FIX.
+    assert len([p for p in k8s.patches if p[1].get("phase") == "Suspended"]) == 5
+
+
+def test_a_drift_that_CLEARS_and_returns_is_loud_again(caplog):
+    # Suppression must not be permanent, and must not mask a different conversation.
+    caplog.set_level("DEBUG")
+    k8s = _drifting_k8s()
+    reconcile_once(k8s, cap=10)          # drifted -> warn
+    reconcile_once(k8s, cap=10)          # clean pass -> forgotten
+    _rearm(k8s)
+    reconcile_once(k8s, cap=10)          # drifts again -> loud
+    assert len(_drift(caplog, "WARNING")) == 2

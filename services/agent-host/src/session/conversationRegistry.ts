@@ -37,6 +37,14 @@ export interface ConversationSpec {
   parentId?: string;
   /** The backing Sandbox name, if known at start (spec.sandboxRef). */
   sandboxRef?: string;
+  /** The pod that CREATED the conversation (spec.creatorPod) — a placement hint. The
+   *  run physically lives here (bridge, sandbox exec, local event log), but the
+   *  controller's least-loaded pick could not know that and routinely assigned the
+   *  OTHER pod: the run's appends were then fenced off mid-run, the "owner" had
+   *  nothing live to stream, and the UI sat at "Working…" forever. The controller
+   *  prefers this pod when it is ready — same reasoning as a subagent pinning to its
+   *  parent's pod. */
+  creatorPod?: string;
 }
 
 /** Conversation liveness, folded into the CR's `status.phase` so it's observable via
@@ -62,6 +70,21 @@ export interface ConversationRegistry {
    * (a k8s failure is logged, not propagated), fire-and-forget. A no-op single-replica.
    */
   setPhase(id: string, phase: ConversationPhase): Promise<void>;
+
+  /**
+   * DELETE the `Conversation` CR — the conversation no longer exists.
+   *
+   * Required because the CR is the source of truth for EXISTENCE: end() removing local
+   * state and the store record is not enough, since a surviving CR is re-adopted by
+   * hydrate() and the conversation comes back. Observed on a real cluster — DELETE
+   * answered 204 and the conversation stayed listed as `running` indefinitely, because
+   * nothing could remove its CR.
+   *
+   * Idempotent (already gone => no-op) and never throws, matching register/setPhase: a
+   * k8s failure must not turn a successful local delete into a 500. It IS logged — a CR
+   * outliving its conversation is a leak, and a silent one is how this bug survived.
+   */
+  remove(id: string): Promise<void>;
 
   /**
    * LIST every Conversation CR in the namespace — the authoritative answer to "which
@@ -113,6 +136,9 @@ export const noopRegistry: ConversationRegistry = {
     /* no CR in single-replica mode */
   },
   async setPhase() {
+    /* no CR in single-replica mode */
+  },
+  async remove() {
     /* no CR in single-replica mode */
   },
   async list() {

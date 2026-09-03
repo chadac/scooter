@@ -320,6 +320,75 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("the PROGRESS/CONTEXT indicators do not replay their history on reconnect", async () => {
+    // A pending-interrupt change notifies WITHOUT integrityAgent's own replay guard,
+    // so push() really does run mid-replay — hence the guard there too.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 10_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "early_tool" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1", outcome: { type: "interrupt", interrupts: [{ id: "i1", reason: "confirmation", message: "ok?" }] } } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r2" } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "t1" } },
+      { kind: "event", event: { type: "CONTEXT_USAGE", usedTokens: 120_000, contextWindow: 200_000 } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r2" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    const samples: Array<{ fill: number | null }> = [];
+    const stop = agent.renderPump();
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => { unsub(); stop(); resolve(); };
+      const { unsubscribe: unsub } = agent.subscribe({
+        onMessagesChanged: () => {
+          clearTimeout(timer); timer = setTimeout(done, 150);
+          // Model RuntimeProvider.push EXACTLY: it returns early while replaying.
+          if (agent.isReplaying()) return;
+          samples.push({ fill: agent.contextFill() });
+        },
+      });
+      setTimeout(done, 1200);
+    });
+    // 10k/200k = 0.05 is the intermediate reading; only the settled tail may show.
+    expect(samples.some((s) => s.fill !== null && Math.abs(s.fill - 0.05) < 1e-9)).toBe(false);
+    expect(agent.contextFill()).toBeCloseTo(0.6, 5);
+    agent.dispose();
+  });
+
+  it("a 401 surfaces the auth error EVEN WHILE REPLAYING (never behind the replay guard)", async () => {
+    // A 401 never reaches `synced`, so a deferred banner is a banner that never shows.
+    const agent = createIntegrityAgent({
+      baseUrl: "http://host",
+      conversationId: "c1",
+      fetchImpl: (async () => new Response("Unauthorized", { status: 401 })) as unknown as typeof fetch,
+    });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(agent.isReplaying()).toBe(true);
+    expect(agent.getStreamAuthError()).toBe(true);
+    stop();
+    agent.dispose();
+  });
+
+  it("an IN-FLIGHT run is still reported the moment replay ends (the silent-run case)", async () => {
+    // The log ends with RUN_STARTED and no terminal, so runIsActive() must be true at
+    // `synced` — the one push that does run.
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "slow_build" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    const stop = agent.renderPump();
+    await new Promise((r) => setTimeout(r, 600));
+    expect(agent.isReplaying()).toBe(false);
+    expect(agent.runIsActive()).toBe(true);        // the thinking dot stays on
+    expect(agent.activeTool()).toBe("slow_build"); // ...and names what it is doing
+    stop();
+    agent.dispose();
+  });
+
   it("an external (ext-) interrupt SURVIVES a concurrent goose run's RUN_STARTED/RUN_FINISHED", async () => {
     // The AWS-request bug: raiseInterrupt emits RUN_FINISHED(runId ext-aws1); the
     // still-live goose run then emits its own RUN_STARTED/RUN_FINISHED (no
@@ -1352,6 +1421,47 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("cancel() RETRIES a 404 through the assignment window, then succeeds", async () => {
+    // The first ~1-2s of a conversation: no owner assigned, the router's cache has no
+    // hostIP, and the cancel POST lands on a random pod that answers 404 — while this
+    // client is actively STREAMING the conversation, so it demonstrably exists.
+    // Observed live: an immediate Stop 404'd in the same second as the run's first
+    // prompt and the status bar never cleared. Retrying rides out the window.
+    let calls = 0;
+    const fetchSpy = vi.fn(async () => {
+      calls++;
+      return calls < 3 ? new Response("nf", { status: 404 }) : new Response("", { status: 202 });
+    }) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).resolves.toBeUndefined();
+    expect(calls).toBe(3);
+    agent.dispose();
+  });
+
+  it("cancel() still throws when the 404 persists (a truly deleted conversation)", async () => {
+    const fetchSpy = vi.fn(async () => new Response("nf", { status: 404 })) as unknown as typeof fetch;
+    // cancelRetryDelayMs: the production 700ms × 9 attempts (~5.6s, sized to outlast a
+    // slow controller assignment tick) would blow the unit-test budget waiting on a
+    // response that never changes — compress the schedule, keep the attempt count.
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy, cancelRetryDelayMs: 5 });
+    await expect(agent.cancel()).rejects.toThrow(/cancel request failed: 404/);
+    expect(fetchSpy, "all 9 attempts must fire before giving up").toHaveBeenCalledTimes(9);
+    agent.dispose();
+  });
+
+  it("cancel() does NOT retry a non-404 failure (a 500 throws immediately)", async () => {
+    let calls = 0;
+    const fetchSpy = vi.fn(async () => {
+      calls++;
+      return new Response("boom", { status: 500 });
+    }) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+    await expect(agent.cancel()).rejects.toThrow(/cancel request failed: 500/);
+    expect(calls).toBe(1);
+    agent.dispose();
+  });
+
+
   it("cancel() THROWS on a network error (fetch rejects) rather than swallowing it", async () => {
     const fetchSpy = vi.fn(async () => {
       throw new Error("network down");
@@ -1428,6 +1538,112 @@ describe("IntegrityAgent", () => {
     expect(agent.getMessageImages("nope")).toBeUndefined();
     agent.dispose();
   });
+
+  // --- the cluster's out-of-order tool-call shape --------------------------------
+  //
+  // TIER-1 ISOLATION of a Tier-2 failure. On k3d, a COMPLETE durable log (verified:
+  // …TOOL_CALL_START, TOOL_CALL_END, TOOL_CALL_ARGS, TOOL_CALL_RESULT, …,
+  // RUN_FINISHED) still rendered no tool card, no assistant reply, and "Working…"
+  // forever. The distinctive feature of the real sequence: the bridge surfaces the
+  // command as TOOL_CALL_ARGS only when terminal/create delivers it — AFTER
+  // TOOL_CALL_END (goose's terminal-handoff shape). This replays the EXACT captured
+  // sequence, byte-for-byte in structure, and asserts the fold survives it.
+  it("folds the cluster's exact sequence: TOOL_CALL_ARGS arriving AFTER TOOL_CALL_END", async () => {
+    const frames = [
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "!echo zxcvbnm-marker" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "u1" } },
+      { kind: "event", event: { type: "REASONING_START", messageId: "re1" } },
+      { kind: "event", event: { type: "REASONING_MESSAGE_START", messageId: "re1", role: "reasoning" } },
+      { kind: "event", event: { type: "REASONING_MESSAGE_CONTENT", messageId: "re1", delta: "Planning a response…" } },
+      { kind: "event", event: { type: "REASONING_MESSAGE_END", messageId: "re1" } },
+      { kind: "event", event: { type: "REASONING_END", messageId: "re1" } },
+      { kind: "event", event: { type: "TOOL_CALL_START", toolCallId: "call_1", toolCallName: "run: echo zxcvbnm-marker" } },
+      { kind: "event", event: { type: "TOOL_CALL_END", toolCallId: "call_1" } },
+      { kind: "event", event: { type: "TOOL_CALL_ARGS", toolCallId: "call_1", delta: '{"command":"echo zxcvbnm-marker"}' } },
+      { kind: "event", event: { type: "TOOL_CALL_RESULT", toolCallId: "call_1", messageId: "tr1", content: "zxcvbnm-marker" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "ran `echo zxcvbnm-marker` (exit 0)" } },
+      { kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "a1" } },
+      { kind: "event", event: { type: "RUN_FINISHED", threadId: "c1", runId: "r1" } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+
+    const msgs = agent.messages as Array<{ role?: string; content?: unknown; toolCalls?: unknown[] }>;
+    const withTool = msgs.filter((m) => (m.toolCalls?.length ?? 0) > 0);
+    expect(withTool.length, "the tool call must survive the fold").toBeGreaterThan(0);
+    expect(
+      msgs.some((m) => m.role === "assistant" && JSON.stringify(m.content ?? "").includes("zxcvbnm-marker")),
+      "the assistant reply must survive the fold",
+    ).toBe(true);
+    expect(agent.runIsActive(), "RUN_FINISHED must end the run").toBe(false);
+    agent.dispose();
+  });
+
+
+  // Same sequence, but delivered the way the CLUSTER delivers it: the browser connects
+  // to a near-empty log, is told `synced` immediately, and the run's events then arrive
+  // LIVE, paced out over seconds, on a stream that never closes (keepalive pings). The
+  // batch-replay variant above passes; if THIS fails, the bug is in the live path.
+  it("folds the same sequence delivered LIVE after synced, paced, on an open stream", async () => {
+    const events = [
+      { type: "RUN_STARTED", threadId: "c1", runId: "r1" },
+      { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "!echo zxcvbnm-marker" },
+      { type: "TEXT_MESSAGE_END", messageId: "u1" },
+      { type: "REASONING_START", messageId: "re1" },
+      { type: "REASONING_MESSAGE_START", messageId: "re1", role: "reasoning" },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "re1", delta: "Planning a response…" },
+      { type: "REASONING_MESSAGE_END", messageId: "re1" },
+      { type: "REASONING_END", messageId: "re1" },
+      { type: "TOOL_CALL_START", toolCallId: "call_1", toolCallName: "run: echo zxcvbnm-marker" },
+      { type: "TOOL_CALL_END", toolCallId: "call_1" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "call_1", delta: '{"command":"echo zxcvbnm-marker"}' },
+      { type: "TOOL_CALL_RESULT", toolCallId: "call_1", messageId: "tr1", content: "zxcvbnm-marker" },
+      { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "ran `echo zxcvbnm-marker` (exit 0)" },
+      { type: "TEXT_MESSAGE_END", messageId: "a1" },
+      { type: "RUN_FINISHED", threadId: "c1", runId: "r1" },
+    ];
+    const enc = new TextEncoder();
+    const liveFetch = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/tail")) {
+        return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(enc.encode('data: {"kind":"synced"}\n\n')); // caught up on an EMPTY log
+          for (const e of events) {
+            await new Promise((r) => setTimeout(r, 25)); // paced, like a live run
+            controller.enqueue(enc.encode(`data: ${JSON.stringify({ kind: "event", event: e })}\n\n`));
+          }
+          controller.enqueue(enc.encode(": ping\n\n"));
+          // NEVER closes — a live stream stays open.
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: liveFetch });
+    const stop = agent.renderPump();
+    // Wait for the paced delivery to complete, then settle.
+    await new Promise((r) => setTimeout(r, 25 * events.length + 600));
+
+    const msgs = agent.messages as Array<{ role?: string; content?: unknown; toolCalls?: unknown[] }>;
+    const withTool = msgs.filter((m) => (m.toolCalls?.length ?? 0) > 0);
+    expect(withTool.length, "the tool call must survive LIVE delivery").toBeGreaterThan(0);
+    expect(
+      msgs.some((m) => m.role === "assistant" && JSON.stringify(m.content ?? "").includes("zxcvbnm-marker")),
+      "the assistant reply must survive LIVE delivery",
+    ).toBe(true);
+    expect(agent.runIsActive(), "RUN_FINISHED must end the run on the LIVE path").toBe(false);
+    stop();
+    agent.dispose();
+  });
+
 });
 
 describe("seedTail + full replay must not leave DUPLICATE message ids", () => {

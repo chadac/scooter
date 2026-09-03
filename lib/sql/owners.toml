@@ -1,0 +1,78 @@
+# Ownership manifest for the shared databases.
+#
+# For each (database, table): the WRITER service and the read-only READER services.
+# This is the one reviewable place that records who may write what — the schema
+# itself (schema.sql) says WHAT the tables are; this says WHO owns them.
+#
+# Enforcement:
+#   - Runtime: assert_database()/assertDatabase() (scooter_schema / @scooter/schema)
+#     make a service fail fast if its DSN points at a database it doesn't own.
+#   - Per-database code boundary: a service imports only the database module(s) it
+#     may touch, so it cannot reference another database's tables.
+#   - Manifest integrity: test_ownership.py checks this file lists exactly the
+#     tables each schema.sql defines, so it can't silently drift.
+# The finer writer/reader distinction is informal (documented here) for now.
+#
+# `writers` is a LIST. Most tables have exactly one, but a table with two legitimate
+# writers is modelled as such rather than duplicated: byoc.remote_agents is written by
+# byoc-controller (session mapping) AND agent-host (liveness badge). It used to exist
+# twice — once per database, same entity, no synchronisation — which is the failure the
+# list shape exists to prevent. See todo/draft/SHARED_DB_TABLE_OWNERSHIP.md.
+#
+# Single-owner holds for scheduler/broker (their Postgres role owns only that database).
+# The webhooks database is co-owned: webhooks owns the webhook tables, agent-host writes
+# user_identity (and reads conversation_map / resource_links) using the same role. The
+# byoc database is co-written by byoc-controller and agent-host.
+
+[webhooks]
+owner = "webhooks"
+
+[webhooks.tables]
+conversation_map  = { writers = ["webhooks"],   readers = ["agent-host"] }
+jira_tickets      = { writers = ["webhooks"],   readers = [] }
+# Webhooks OWNS this table; agent-host also WRITES it (the conversation link panel).
+# Two writers, one table — the same shape as byoc.remote_agents.
+# conversation-router READS it (SELECT-only) to enrich the conversation list with link badges.
+resource_links    = { writers = ["webhooks", "agent-host"], readers = ["conversation-router"] }
+pending_messages  = { writers = ["webhooks"],   readers = [] }
+user_identity     = { writers = ["agent-host"], readers = ["webhooks"] }
+
+[scheduler]
+owner = "scheduler"
+
+[scheduler.tables]
+scheduled_tasks = { writers = ["scheduler"], readers = [] }
+task_runs       = { writers = ["scheduler"], readers = [] }
+
+[broker]
+owner = "broker"
+
+[broker.tables]
+sandbox_size        = { writers = ["broker"], readers = [] }
+permission_requests = { writers = ["broker"], readers = [] }
+module_registry     = { writers = ["broker"], readers = [] }
+
+[byoc]
+owner = "byoc-controller"
+
+[byoc.tables]
+# byoc-controller owns session_id; agent-host writes the status/last_seen badge.
+remote_agents        = { writers = ["byoc-controller", "agent-host"], readers = [] }
+remote_agent_devices = { writers = ["byoc-controller"], readers = [] }
+
+[agent_host]
+owner = "agent-host"
+
+[agent_host.tables]
+# The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
+conversation_jobs = { writers = ["agent-host"], readers = [] }
+# Conversation metadata: the sidebar list + rehydration fields.
+# conversation-router READS it (SELECT-only) to serve GET /conversations from the durable store
+# instead of fanning out to the agent-host pods.
+conversations     = { writers = ["agent-host"], readers = ["conversation-router"] }
+# The conversation event log. Replaces events.jsonl + the NFS mirror. Deliberately NO readers:
+# these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
+# read them.
+conversation_events = { writers = ["agent-host"], readers = [] }
+# Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.
+conversation_assets = { writers = ["agent-host"], readers = [] }

@@ -17,11 +17,28 @@ export default defineConfig({
     // Always print per-test names + pass/fail (so a single run shows exactly
     // what failed — no need to re-run with --reporter=verbose).
     reporters: process.env.CI ? ["default"] : ["verbose"],
+    // Test order randomization to surface ordering-dependent flakes.
+    // Enable with TEST_RANDOMIZE=1; set a specific seed with TEST_SEED=<number>.
+    // A fixed seed makes flake reproduction deterministic.
+    sequence: {
+      shuffle: process.env.TEST_RANDOMIZE === "1",
+      seed: process.env.TEST_SEED ? parseInt(process.env.TEST_SEED, 10) : Date.now(),
+    },
     projects: [
       {
         test: {
           name: "agent-host",
           include: ["services/agent-host/test/contract/**/*.spec.ts"],
+          environment: "node",
+        },
+      },
+      {
+        // @scooter/schema — the GENERATED Drizzle schema. Its units guard the two
+        // hand-written pieces: the ownership manifest stays in sync with the
+        // schemas (ownership.spec) and the runtime db guard (guard.spec).
+        test: {
+          name: "scooter-schema",
+          include: ["lib/ts/scooter-schema/src/**/*.spec.ts"],
           environment: "node",
         },
       },

@@ -14,6 +14,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { isFull } from "./target.js";
 
 const panel = {
   root: '[data-testid="interrupt-panel"]',
@@ -21,26 +22,126 @@ const panel = {
   message: '[data-testid="interrupt-message"]',
 };
 
-/** POST the aws-request exactly like the broker's _notify_host does. */
+/** The server id of the conversation THIS test is looking at, polled rather than read once.
+ *
+ *  Named "first" historically; it is the CURRENT conversation, which on a shared backend is
+ *  not the same thing as the first listed one. See the body for why that distinction cost a
+ *  false "aws-request must revive an inactive conversation" failure.
+ *
+ *  Polled because the router aggregates GET /conversations over the READY agent-host pods
+ *  and degrades to a PARTIAL — sometimes empty — list while pods churn (the platform dump
+ *  for the failing run is full of "resume-on-missing-pod failed"). A single read that came
+ *  back [] kill the test on `list[0].id` with a bare "Cannot read properties of
+ *  undefined", which says nothing about the real cause. */
+async function firstConversationId(
+  request: import("@playwright/test").APIRequestContext,
+  base: string,
+  page: import("@playwright/test").Page,
+): Promise<string> {
+  // THIS test's conversation, read from the UI's own persisted selection — NOT list[0].
+  //
+  // `/conversations` is ordered newest-first across the WHOLE fleet on the full target, so
+  // index 0 is whatever conversation was created most recently by ANY spec sharing the
+  // backend. These tests then suspended and AWS-requested a stranger's conversation, which
+  // another spec's cleanState was free to delete in between — and the route correctly
+  // answered 404 for a conversation that no longer existed. CI showed exactly that: the
+  // suspend succeeded (the id was real then) and the aws-request that followed got a 404,
+  // reported as "aws-request must revive an inactive conversation", a bug that was not
+  // happening. suspended-recovery.spec.ts already reads the id this way for the same reason.
+  //
+  // `currentId` is the stable LOCAL key; the server id is recorded beside it as `serverId`
+  // (for a conversation created on its first send, currentId is a placeholder the server
+  // never issued, so suspending by it 404s).
+  let id = "";
+  for (let i = 0; i < 30 && !id; i++) {
+    id =
+      (await page.evaluate(() => {
+        try {
+          const raw = localStorage.getItem("kubenix-agent.sessions.v1");
+          if (!raw) return "";
+          const st = JSON.parse(raw) as {
+            currentId?: string;
+            sessions?: Array<{ id: string; serverId?: string }>;
+          };
+          return st.sessions?.find((s) => s.id === st.currentId)?.serverId ?? "";
+        } catch {
+          return "";
+        }
+      })) ?? "";
+    if (!id) await page.waitForTimeout(1000);
+  }
+  expect(id, "the conversation this test created must have a server id").toBeTruthy();
+
+  // Confirm the SERVER agrees it exists before the test acts on it. The router aggregates
+  // GET /conversations over the READY pods and degrades to a PARTIAL — sometimes empty —
+  // list while pods churn, so this is a retry, not a single read.
+  for (let i = 0; i < 30; i++) {
+    const res = await request.get(`${base}/conversations`);
+    if (res.ok()) {
+      const rows = (await res.json()) as Array<{ id: string }>;
+      if (rows.some((r) => r.id === id)) return id;
+    }
+    await page.waitForTimeout(1000);
+  }
+  expect(false, `the conversation ${id} never appeared in the server's list`).toBeTruthy();
+  return id;
+}
+
+/** POST the aws-request exactly like the broker's _notify_host does.
+ *
+ *  A 404 is RETRIED on the full target. The caller has already confirmed the server lists
+ *  this conversation (firstConversationId does that), so a 404 here does not mean "no such
+ *  conversation" — it means the request reached a pod that does not yet know about it. The
+ *  router resolves the owner from a CRD-backed cache that is populated by a watch, so
+ *  between a conversation being created and its ownership being visible there is a window
+ *  where the request lands on a non-owner. Observed on CI: this route 404'd for a
+ *  conversation that was listed and healthy, then the identical request succeeded.
+ *
+ *  Retrying is what the broker's own caller would experience as eventual success; it does
+ *  not hide a broken route, which 404s on every attempt and still fails the assertion. */
 async function requestAws(
   request: import("@playwright/test").APIRequestContext,
   base: string,
   conversationId: string,
   requestId: string,
 ) {
-  return request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
-    headers: { "Content-Type": "application/json" },
-    data: {
-      request_id: requestId,
-      target_account: "dev",
-      risk_level: "low",
-      policy_summary: "s3:GetObject on the state bucket",
-      justification: "read terraform state",
-    },
-  });
+  const post = () =>
+    request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 120_000, // the route may REVIVE (real sandbox resume on the full target) before its 202
+      data: {
+        request_id: requestId,
+        target_account: "dev",
+        risk_level: "low",
+        policy_summary: "s3:GetObject on the state bucket",
+        justification: "read terraform state",
+      },
+    });
+
+  let res = await post();
+  if (!isFull) return res;
+  for (let i = 0; i < 10 && res.status() === 404; i++) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    res = await post();
+  }
+  return res;
 }
 
+/** Timeout for the API POSTs that do REAL cluster work server-side before replying.
+ *  On the full target `/suspend` awaits the sandbox suspend and `/aws-request` /
+ *  the `/agui` resume await a REVIVE (sandbox resume → ready pod, 10-30s measured
+ *  at cluster pace; see stop-run.spec.ts:75) — past Playwright's 30s APIRequest
+ *  default on arithmetic alone. The fake stack answers in milliseconds either way. */
+const API_BUDGET_MS = 120_000;
+
 test.describe("AWS approval interrupt", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Each test funds a sandbox
+  // provision (~15-25s cold) inside its first reply wait, and the suspend/revive
+  // tests add a real sandbox suspend + resume (10-30s each) — summed with the
+  // 30s panel waits that is 150-200s worst case, past the 60s default while
+  // everything behaves. Assertions unchanged; only the ceiling.
+  test.beforeEach(() => test.setTimeout(240_000));
+
   test("the approval panel appears when the broker requests AWS access", async ({ chat, page, baseURL, request }) => {
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();
@@ -50,8 +151,7 @@ test.describe("AWS approval interrupt", () => {
     await chat.waitForReply(/dummy agent/i);
 
     // The conversation id (== threadId). Grab it from the conversations list.
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
     expect(conversationId).toBeTruthy();
 
     // The broker notifies the agent-host that the agent requested AWS access.
@@ -67,18 +167,19 @@ test.describe("AWS approval interrupt", () => {
 
   test("the panel appears even when the conversation's bridge is inactive (suspended)", async ({ chat, page, baseURL, request }) => {
     // THE reported bug: the agent hit AWS after the conversation went idle (no live
-    // bridge). The route used to 404 and the broker swallowed it → nothing appeared.
+    // bridge). The route 404 and the broker swallowed it → nothing appeared.
     // The route must now REVIVE the conversation and raise the interrupt anyway.
     const base = (baseURL ?? "").replace(/\/$/, "");
     await chat.open();
     await chat.send("long-running terraform work");
     await chat.waitForReply(/dummy agent/i);
 
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
 
     // Suspend it (drops the in-memory bridge) — the idle-suspend / restart case.
-    const susp = await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`);
+    const susp = await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`, {
+      timeout: API_BUDGET_MS, // awaits the REAL sandbox suspend on the full target
+    });
     expect(susp.ok()).toBeTruthy();
 
     // Now the broker requests AWS. The route must revive + raise (not 404).
@@ -102,26 +203,44 @@ test.describe("AWS approval interrupt", () => {
     await chat.send("terraform apply needing AWS");
     await chat.waitForReply(/dummy agent/i);
 
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
 
     // Raise the AWS interrupt, then SUSPEND to drop the in-memory bridge (the rollout /
     // idle case). The panel is present (persisted), but the run is no longer live.
     const reqId = `awsreq-resume-${Date.now()}`;
     expect((await requestAws(request, base, conversationId, reqId)).status()).toBe(202);
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
-    expect((await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`)).ok()).toBeTruthy();
+    expect(
+      (
+        await request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/suspend`, {
+          timeout: API_BUDGET_MS, // awaits the REAL sandbox suspend on the full target
+        })
+      ).ok(),
+    ).toBeTruthy();
 
     // Answer the approval exactly like InterruptPanel.tsx does — POST /agui with resume[].
     // BEFORE the fix this never returns (0 bytes) and only unblocks when a proxy/socket
     // timeout kills the idle stream — i.e. it takes the full request timeout. The fix
-    // revives + answers (or closes with RUN_ERROR), so it returns in well under a second.
-    // ASSERT ON ELAPSED TIME: a hang resolves only at the ~15s+ timeout; the fix is
-    // sub-second. A generous 8s ceiling cleanly separates fixed (fast) from broken (hang).
+    // revives + answers (or closes with RUN_ERROR), so it returns as soon as the revive
+    // settles. ASSERT ON ELAPSED TIME: a hang resolves only at the request timeout; the
+    // fix returns FAR sooner.
+    //
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). The bounds are per-target
+    // because the legitimate work differs by ~100x, not because the assertion does:
+    //  - fast: no cluster, the revive is in-process → the fix is sub-second; 8s vs a
+    //    20s hang cleanly separates fixed from broken.
+    //  - full: the fix's revive is a REAL sandbox resume (10-30s to a ready pod, per
+    //    the instrumented stop-run runs) before the stream can close (on this target
+    //    the broker has no record of the fabricated request, so /aws/pending re-raises
+    //    nothing and the stream closes with a prompt RUN_ERROR — still a framed,
+    //    returned response, which is the property under test). 120s vs a 150s-timeout
+    //    hang keeps the same fixed/broken separation at cluster pace.
+    const hangTimeoutMs = isFull ? 150_000 : 20_000;
+    const promptReturnMs = isFull ? 120_000 : 8_000;
     const started = Date.now();
     const resume = await request.post(`${base}/agui`, {
       headers: { "Content-Type": "application/json" },
-      timeout: 20_000, // the bug hangs to here; the fix returns FAR sooner.
+      timeout: hangTimeoutMs, // the bug hangs to here; the fix returns FAR sooner.
       data: {
         threadId: conversationId,
         resume: [{ interruptId: reqId, status: "resolved", payload: { optionId: "approve" } }],
@@ -131,11 +250,12 @@ test.describe("AWS approval interrupt", () => {
     expect(resume.ok(), "the resume POST must return, not hang").toBeTruthy();
     const body = await resume.text();
     // Well-formed SSE that actually carried a terminal/answer frame — not 0 bytes. (In the
-    // fake stack, with no BROKER_URL, the revived bridge answers the re-raised interrupt.)
+    // fake stack, with no BROKER_URL, the revived bridge answers the re-raised interrupt;
+    // on the full target the frame is the RUN_ERROR described above.)
     expect(body.length, "the resume stream must carry frames, not 0 bytes").toBeGreaterThan(0);
-    // The decisive assertion: it RETURNED PROMPTLY. A dormant-run hang would only resolve
-    // at the request timeout (~20s); the fix returns in well under a second.
-    expect(elapsed, `resume took ${elapsed}ms — a hang would take ~20s`).toBeLessThan(8_000);
+    // The decisive assertion: it RETURNED PROMPTLY (at its target's pace). A dormant-run
+    // hang would only resolve at the request timeout.
+    expect(elapsed, `resume took ${elapsed}ms — a hang would take ~${hangTimeoutMs}ms`).toBeLessThan(promptReturnMs);
   });
 
   test("the AWS approval panel is still present after a page reload", async ({ chat, page, baseURL, request }) => {
@@ -144,8 +264,7 @@ test.describe("AWS approval interrupt", () => {
     await chat.send("another terraform task");
     await chat.waitForReply(/dummy agent/i);
 
-    const list = await (await request.get(`${base}/conversations`)).json();
-    const conversationId: string = list[0].id;
+    const conversationId: string = await firstConversationId(request, base, page);
     await requestAws(request, base, conversationId, `awsreq-reload-${Date.now()}`);
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
 

@@ -24,6 +24,14 @@ class Pod:
     name: str
     ready: bool
     ip: str | None = None      # status.podIP — the routing address written into the CR (None until scheduled)
+    # controller.kubernetes.io/pod-deletion-cost currently on the pod (None = unset).
+    # Carried so the loop patches only on CHANGE, not every tick.
+    deletion_cost: int | None = None
+    # metadata.deletionTimestamp is set: the pod is on its way OUT (a scale-down
+    # victim draining gracefully). It can report Ready for its whole grace period —
+    # assigning a conversation to it just schedules another mid-run reassignment
+    # (observed: assigned 23:40:26, reassigned 23:40:34, same conversation).
+    terminating: bool = False
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,7 @@ class ConversationState:
     phase: str                 # status.phase (Pending | Assigned | Orphaned) — "Pending" default
     generation: int            # status.generation (the fence epoch)
     host_ip: str | None = None # status.hostIP (owner pod IP — routing address)
+    creator_pod: str | None = None  # spec.creatorPod — where the conversation PHYSICALLY runs
     parent_id: str | None = None  # spec.parentId — a subagent co-locates on its parent's pod
     # False when the CR carries NO status.phase yet (status: null) — the shell must still
     # materialize Pending for such a CR even though `phase` defaulted to "Pending".
@@ -44,6 +53,7 @@ class ConversationState:
     # for alive/suspended — see the drift rule in reconcile() and
     # todo/docs/CONVERSATION_PHASE_DRIFT_RECONCILE.md.
     sandbox_mode: str | None = None
+    sandbox_ref: str | None = None  # spec.sandboxRef — the Sandbox object SuspendSandbox patches
 
 
 # --- Actions the shell will apply -----------------------------------------
@@ -97,7 +107,22 @@ class MarkSuspended:
     reason: str
 
 
-Action = NoOp | Assign | LeavePending | Detach | MarkSuspended
+@dataclass
+class SuspendSandbox:
+    """The ZOMBIE repair: phase=Suspended, placement fully released — yet the Sandbox is
+    RUNNING. Every host has evicted the conversation (that is what Suspended means), so
+    the doctrine's recovery path — "the sweep reclaims the sandbox either way" — is
+    structurally unreachable: no sweep will ever visit it again. Observed on valhalla as
+    sandbox pods running 9-12h (a racing sweeper's exec probe resumed a just-suspended
+    sandbox via the pollForReadyPod self-heal, then both pods evicted the conversation).
+
+    The loop confirms this across TWO consecutive ticks before acting: a real revive
+    patches the sandbox Running BEFORE writing phase=Assigned, so a single-tick sighting
+    can be a revive mid-flight and must not be stomped."""
+    reason: str
+
+
+Action = NoOp | Assign | LeavePending | Detach | MarkSuspended | SuspendSandbox
 
 
 def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
@@ -123,6 +148,13 @@ def reconcile(
     hosts = hosts or {}
     ready_names = {p.name for p in pods if p.ready}
     ip_of = {p.name: p.ip for p in pods}  # pod name → its status.podIP (routing address)
+
+    # TERMINAL. Failed is the zombie-repair escalation's dead end: after N bounded suspends
+    # that never took, the loop force-deleted the Sandbox and marked the conversation Failed
+    # (see loop._zombie_progress). Take NO further action — never (re)assign it, never re-flag
+    # it as a zombie. An operator investigates via the Failed phase; it counts as no demand.
+    if conv.phase == "Failed":
+        return NoOp(reason="failed — terminal, no action")
 
     # SUSPENDED conversations need NO pod — the agent-host set phase=Suspended (idle-suspend).
     # Respect it: never (re)assign a suspended conversation, and RELEASE any stale placement it
@@ -151,6 +183,10 @@ def reconcile(
     if conv.phase == "Suspended":
         if conv.host_pod is not None or conv.host_ip is not None:
             return Detach(reason="suspended — release placement (clear hostPod + hostIP)")
+        if conv.sandbox_mode == "Running":
+            return SuspendSandbox(
+                reason="suspended + unhosted but the Sandbox is RUNNING — zombie (or a revive mid-flight; loop confirms over two ticks)"
+            )
         return NoOp(reason="suspended — no placement to release")
 
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
@@ -168,6 +204,19 @@ def reconcile(
     # Already assigned to a live, ready pod → nothing to do.
     if conv.host_pod is not None and conv.host_pod in ready_names:
         return NoOp(reason=f"host {conv.host_pod} still ready")
+
+    # PREFER THE CREATOR. The run physically lives on the pod that created the
+    # conversation (bridge, sandbox exec, local event log); a least-loaded pick that
+    # lands elsewhere splits run from owner — the run's appends get fenced off mid-run,
+    # the "owner" has nothing live to stream, and the UI sits at "Working…" forever.
+    # Bypasses the cap for the same reason a subagent pins to its parent: the work is
+    # already THERE, and assigning it away does not free that capacity.
+    if conv.creator_pod is not None and conv.creator_pod in ready_names:
+        return Assign(
+            host_pod=conv.creator_pod,
+            generation=conv.generation + 1,
+            host_ip=ip_of.get(conv.creator_pod),
+        )
 
     # Assigned to a pod that's gone/NotReady, OR never assigned → (re)assign.
     host = pick_host(pods, load, cap)
@@ -197,7 +246,25 @@ import math
 # WITHOUT this exclusion the fleet never scales down: every conversation ever created keeps
 # counting as demand, so idle-suspended conversations pin the agent-host at max — the
 # "conversations still not sleeping" symptom (the pods stay up though the Sandboxes suspend).
-_NON_DEMAND_PHASES = frozenset({"Suspended"})
+# Failed is terminal (the zombie escalation gave up on it) — it has no pod either.
+_NON_DEMAND_PHASES = frozenset({"Suspended", "Failed"})
+
+
+def deletion_costs(pods: list[Pod], convs: list["ConversationState"]) -> dict[str, int]:
+    """Per-pod `controller.kubernetes.io/pod-deletion-cost`: the number of TOP-LEVEL
+    Assigned conversations the pod hosts (same accounting as demand_of — subagents
+    co-locate and Suspended conversations have no pod). Kubernetes deletes the
+    LOWEST-cost pods first on a Deployment scale-down, so annotating hosted-count
+    steers victim selection to EMPTY pods. Without this the victim choice was blind:
+    a scale-down 10s after a conversation was assigned killed its pod mid-run — the
+    stream died, the run's terminal event was lost, and the browser showed
+    "Working…" forever (e2e-full stop-family failures; the valhalla rollout bug).
+    """
+    counts: dict[str, int] = {p.name: 0 for p in pods}
+    for c in convs:
+        if c.phase == "Assigned" and c.host_pod in counts and c.parent_id is None:
+            counts[c.host_pod] += 1
+    return counts
 
 
 def demand_of(convs: list["ConversationState"]) -> int:

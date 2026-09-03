@@ -36,6 +36,12 @@ class PoolPvc:
     claimed_by: str | None = None   # label scooter.io/claimed-by (conv id) when claimed
     last_used: str | None = None    # annotation scooter.io/last-used (rfc3339) for LRU
     bound_to_pod: bool = False       # is a live pod currently mounting it? (RWO single-attach)
+    # metadata.deletionTimestamp is set — the PVC is already being deleted (a finalizer, e.g.
+    # pvc-protection while a pod references it, holds it in Terminating). It is ALREADY resolved:
+    # the controller must not re-delete it, re-read its marker, or count it toward the pool. NOT
+    # doing so is what stops the self-sustaining delete→terminating→re-read→re-delete spin that
+    # pinned pool volumes in Terminating and wedged every conversation that claimed them.
+    terminating: bool = False
     # For a `warming` PVC: the terminal state of its warm Job, resolved by the shell.
     # "succeeded" → promote to ready; "failed" → discard; "running"/None → still warming.
     warm_job_status: WarmJobStatus | None = None
@@ -48,7 +54,15 @@ class SandboxRef:
     conv_id: str              # the conversation id (== claimed-by on its pooled PVC)
     image_tag: str            # the sandbox's image content tag
     suspended: bool           # operatingMode != Running (agent-sandbox quiesced the pod)
-    clean_unmount: bool = True  # did the overlay unmount cleanly on suspend? (dirty work/ ⇒ discard)
+    # The overlay's clean-shutdown marker, resolved on suspend (only meaningful when suspended):
+    #   "clean"   → marker present, unmounted gracefully → RETURN the PVC to the pool.
+    #   "unclean" → marker DEFINITIVELY absent (the check ran and the file wasn't there) → discard.
+    #   "unknown" → could NOT determine (read errored / the check Job never scheduled / the PVC is
+    #               terminating). A failure to READ is NOT evidence the volume is dirty — treat it
+    #               as unknown and BACK OFF (leave it claimed, retry next pass), never delete a
+    #               volume that may be perfectly good. Conflating read-failure with unclean is what
+    #               destroyed healthy pool volumes.
+    unmount_marker: Literal["clean", "unclean", "unknown"] = "clean"
 
 
 @dataclass(frozen=True)
@@ -113,6 +127,13 @@ def reconcile(
     in_flight_warming = 0
 
     for p in pvcs:
+        # ALREADY BEING DELETED. A PVC with a deletionTimestamp is resolved — issuing another
+        # delete is a no-op that spawns work, re-reading its marker spawns a check Job that can
+        # never schedule (the claim is terminating), and counting it toward `ready` would keep a
+        # dying volume in the pool. Skip it entirely; top-up below will warm a replacement.
+        if p.terminating:
+            continue
+
         if p.state == "claimed":
             # A pod still holds the RWO PVC → in active use / mid-unmount. Never touch it
             # (relabeling `ready` could let a second pod double-mount → overlayfs corruption).
@@ -120,13 +141,21 @@ def reconcile(
                 continue
             sbox = sandbox_by_conv.get(p.claimed_by) if p.claimed_by else None
             if sbox is not None and sbox.suspended:
-                # Return-on-suspend: clean → relabel ready (self-enriching); unclean → discard.
-                if sbox.clean_unmount:
+                # Return-on-suspend, keyed on the unmount marker:
+                #   clean   → relabel ready (self-enriching);
+                #   unclean → discard (the overlay's work/ was dirty);
+                #   unknown → BACK OFF. We could not read the marker (error / unschedulable check
+                #             / terminating PVC). A read failure is NOT evidence of dirtiness, so
+                #             we leave the PVC claimed and retry next pass rather than destroy a
+                #             volume that may be perfectly good. This is the fix for the loop that
+                #             deleted healthy pool volumes on a transient marker-read failure.
+                if sbox.unmount_marker == "clean":
                     actions.append(Relabel(pvc=p.name, state="ready", labels={CLAIMED_BY: None}))
                     if p.image_tag == cfg.current_image_tag:
                         surviving_ready.append(p)
-                else:
+                elif sbox.unmount_marker == "unclean":
                     actions.append(DeletePvc(pvc=p.name, reason="unclean-return"))
+                # else "unknown": no action — retry next pass.
             elif sbox is None:
                 # Leak recovery: the owning Sandbox is gone and no pod holds it → return.
                 actions.append(Relabel(pvc=p.name, state="ready", labels={CLAIMED_BY: None}))

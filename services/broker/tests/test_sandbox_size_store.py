@@ -5,15 +5,17 @@ from __future__ import annotations
 
 import pytest
 
-from broker.aws.store import StoreConfig
 from broker.sandbox.resources import SandboxResources
 from broker.sandbox.store import SandboxSizeStore
+
+from conftest import create_schema, sqlite_config
+from broker.sandbox import store as sandbox_store
 
 
 @pytest.fixture
 async def store():
-    s = SandboxSizeStore(StoreConfig(dsn="sqlite+aiosqlite:///:memory:"))
-    await s.init()
+    s = SandboxSizeStore(sqlite_config())
+    await create_schema(s, sandbox_store._Base)
     return s
 
 

@@ -15,8 +15,8 @@
  *   <JOBS_DIR>/<jobId>/status   the exit code, written ONCE the process exits
  *   <JOBS_DIR>/<jobId>/pid      the detached process pid (for a future kill)
  *
- * A small per-conversation registry lives on the agent-host STATE PVC (via the
- * ConversationStore) so `list` knows a conversation's jobs across a restart.
+ * A small per-conversation registry (Postgres) records which jobs exist, so `list`
+ * knows a conversation's jobs across a restart or a move to another replica.
  *
  * The agent can poll (check()/list()), AND a completion-WATCHER pushes a "job
  * finished" turn when a job exits: pollCompletions() returns newly-exited jobs
@@ -28,7 +28,7 @@
 import type { SandboxApiClient } from "../exec/sandboxExec.js";
 import type { SessionId } from "../types.js";
 
-/** A background job's persisted registry entry (agent-host state PVC). */
+/** A background job's persisted registry entry. */
 export interface JobRecord {
   jobId: string;
   command: string;
@@ -44,11 +44,17 @@ export interface JobRecord {
 export interface JobStatus {
   jobId: string;
   command: string;
-  /** "running" until the status file exists; then "exited". "unknown" when the
-   *  job dir is gone (pod recreated without the workspace, or GC'd). */
+  /** "running" until the status file exists (or the process is gone — see `died`);
+   *  then "exited". "unknown" when the job dir is gone (pod recreated without the
+   *  workspace, or GC'd). */
   state: "running" | "exited" | "unknown";
-  /** Present only when state === "exited". */
+  /** Present only when state === "exited". 137 for a `died` job — its shell never ran
+   *  the write, so the real code is unknowable. */
   exitCode?: number;
+  /** The job's process is GONE with no status file: killed before it could record an
+   *  exit (pod restart, OOM, eviction). Terminal, but the exit code is a guess and the
+   *  log stops wherever the process was — the announcement must say so. */
+  died?: boolean;
   /** The captured log TAIL (bounded, see maxOutputBytes). */
   output: string;
   /** True when `output` was truncated to the tail. */
@@ -97,8 +103,8 @@ export interface KillResult {
   outcome: "killed" | "already-exited" | "unknown";
 }
 
-/** Persist/read the per-conversation job registry (agent-host state PVC in prod;
- *  a fake in tests). Optional methods so an in-memory store can omit them. */
+/** Persist/read the per-conversation job registry (Postgres in prod; a fake in
+ *  tests). Optional methods so an in-memory store can omit them. */
 export interface JobRegistry {
   saveJob(id: SessionId, job: JobRecord): Promise<void>;
   listJobs(id: SessionId): Promise<JobRecord[]>;
@@ -111,7 +117,7 @@ export interface JobRegistry {
 export interface JobManagerDeps {
   /** Resolve a conversation's exec client (the same seam moduleManager uses). */
   client: (id: SessionId) => SandboxApiClient | Promise<SandboxApiClient>;
-  /** Durable per-conversation job registry (state PVC). */
+  /** Durable per-conversation job registry. */
   registry: JobRegistry;
   /** The in-pod jobs dir (on the workspace PVC). Default JOBS_DIR. */
   jobsDir?: string;
@@ -192,6 +198,10 @@ export function createJobManager(deps: JobManagerDeps): JobManager {
       const probe =
         `if [ ! -d ${d} ]; then echo __MISSING__; exit 0; fi; ` +
         `echo __STATUS__; [ -f ${d}/status ] && cat ${d}/status; echo; ` +
+        // LIVENESS: is the job's process still there? `status` is written by the job's OWN
+        // shell on exit, so a process killed before that (pod restart, OOM, eviction) leaves
+        // no status file and reads as "running" forever. Same exec, so no extra round-trip.
+        `echo __ALIVE__; if [ -f ${d}/pid ] && [ -d /proc/$(cat ${d}/pid) ]; then echo y; else echo n; fi; ` +
         `echo __SIZE__; wc -c < ${d}/log 2>/dev/null || echo 0; ` +
         `echo __LOG__; tail -c ${maxOutput} ${d}/log 2>/dev/null || true`;
       const res = await client.execute({ command: "sh", args: ["-c", probe] });
@@ -199,16 +209,26 @@ export function createJobManager(deps: JobManagerDeps): JobManager {
       if (out.includes("__MISSING__")) {
         return { jobId, command, state: "unknown", output: "", truncated: false, logPath: `${d}/log` };
       }
-      const statusRaw = section(out, "__STATUS__", "__SIZE__").trim();
+      const statusRaw = section(out, "__STATUS__", "__ALIVE__").trim();
+      const aliveRaw = section(out, "__ALIVE__", "__SIZE__").trim();
       const sizeRaw = section(out, "__SIZE__", "__LOG__").trim();
       const log = section(out, "__LOG__", null);
       const size = Number.parseInt(sizeRaw, 10) || 0;
       const exited = statusRaw !== "";
+      // DIED: no status file AND no process. The job's shell writes `status` on exit, so
+      // when it is killed first nothing ever writes it — and polling for that file waits
+      // forever on a signal that can no longer arrive. Report it as exited so the caller
+      // announces a completion instead of hanging. Only trust a NEGATIVE liveness answer
+      // (`n`): an unreadable /proc or a missing pid file must not be read as death.
+      const died = !exited && aliveRaw === "n";
       return {
         jobId,
         command,
-        state: exited ? "exited" : "running",
-        exitCode: exited ? Number.parseInt(statusRaw, 10) : undefined,
+        state: exited || died ? "exited" : "running",
+        // The exit code is unknowable for a killed job — its shell never ran the write.
+        // 137 (128+SIGKILL) is the closest honest answer and reads as failure everywhere.
+        exitCode: exited ? Number.parseInt(statusRaw, 10) : died ? 137 : undefined,
+        died: died || undefined,
         output: log,
         truncated: size > maxOutput,
         logPath: `${d}/log`,

@@ -42,10 +42,11 @@ function fakeClient(script?: (cmd: string) => Partial<ExecResult> | undefined) {
 }
 
 /** Build the marker-delimited stdout that check()'s single probe expects:
- *  __STATUS__\n<status>\n__SIZE__\n<bytes>\n__LOG__\n<log>. An empty status =
- *  running (no status file yet). */
-function probeOut(status: string, sizeBytes: number, log: string): string {
-  return `__STATUS__\n${status}\n__SIZE__\n${sizeBytes}\n__LOG__\n${log}`;
+ *  __STATUS__\n<status>\n__ALIVE__\n<y|n>\n__SIZE__\n<bytes>\n__LOG__\n<log>.
+ *  Empty status + alive "y" = running; empty status + "n" = the process DIED without
+ *  recording an exit code. */
+function probeOut(status: string, sizeBytes: number, log: string, alive: "y" | "n" = "y"): string {
+  return `__STATUS__\n${status}\n__ALIVE__\n${alive}\n__SIZE__\n${sizeBytes}\n__LOG__\n${log}`;
 }
 
 function fakeRegistry() {
@@ -295,5 +296,51 @@ describe("jobManager.pollCompletions (the completion-watcher)", () => {
 
     const done = await mgr(client, registry).pollCompletions("conv-1");
     expect(done).toEqual([]); // already announced
+  });
+});
+
+describe("jobManager — a job whose process DIED without writing status", () => {
+  const setup = async (probe: string) => {
+    const { client } = fakeClient((cmd) => (cmd.includes("__STATUS__") ? { stdout: probe } : undefined));
+    const { registry } = fakeRegistry();
+    await registry.saveJob("conv-1", { jobId: "job-1", command: "nix build", startedAt: 1 });
+    return mgr(client, registry);
+  };
+
+  it("THE REGRESSION: no status file + no process reports EXITED, not running", async () => {
+    // `status` is written by the job's OWN shell on exit, so a process killed first (pod
+    // restart, OOM, eviction) never writes it. Keying "running" on that file alone left the
+    // job running forever and the agent waiting on a completion that could not arrive.
+    // Observed live: conv-1ribob idle 2h18m on a nix build killed by a pod restart.
+    const st = await (await setup(probeOut("", 40, "building...\n", "n"))).check("conv-1", "job-1");
+    expect(st.state).toBe("exited");
+    expect(st.died).toBe(true);
+    expect(st.exitCode).toBe(137); // 128+SIGKILL — the real code is unknowable
+  });
+
+  it("a LIVE process with no status file is still running", async () => {
+    const st = await (await setup(probeOut("", 40, "building...\n", "y"))).check("conv-1", "job-1");
+    expect(st.state).toBe("running");
+    expect(st.died).toBeUndefined();
+  });
+
+  it("a real exit code WINS over liveness (the process is gone because it finished)", async () => {
+    const st = await (await setup(probeOut("0", 5, "done\n", "n"))).check("conv-1", "job-1");
+    expect(st.state).toBe("exited");
+    expect(st.exitCode).toBe(0);
+    expect(st.died).toBeUndefined(); // a normal completion, not a kill
+  });
+
+  it("an UNREADABLE liveness answer is NOT treated as death", async () => {
+    // Only a definite "n" means gone. A missing pid file or an unreadable /proc must not
+    // kill a job that is actually still building.
+    const st = await (await setup(probeOut("", 40, "building...\n", "" as never))).check("conv-1", "job-1");
+    expect(st.state).toBe("running");
+  });
+
+  it("pollCompletions ANNOUNCES a died job so the agent stops waiting", async () => {
+    const done = await (await setup(probeOut("", 40, "building...\n", "n"))).pollCompletions("conv-1");
+    expect(done).toHaveLength(1);
+    expect(done[0].died).toBe(true);
   });
 });

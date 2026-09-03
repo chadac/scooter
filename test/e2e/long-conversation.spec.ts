@@ -23,6 +23,16 @@ const sidebar = { item: '[data-testid="session-item"]', newSession: '[data-testi
 const LONG = ["m1-aaa", "m2-bbb", "m3-ccc", "m4-ddd", "m5-eee", "m6-fff", "m7-ggg", "m8-hhh"];
 
 test.describe("long conversation doesn't block a new one", () => {
+  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target every plain
+  // turn is a REAL sandbox exec (the fake agent shells `echo <text>`), and each test
+  // funds TWO conversation boots (the long one + the fresh one), each of which can
+  // wait 5-25s for a ready sandbox pod (client-server-identity 9-12s of
+  // ready-pod wait per boot under CI CPU pressure). Arithmetic: boot 25s + 8 warm
+  // turns x ~8s + second boot 25s + its turn ~ 120s — the 60s default fails on
+  // timing alone while the behaviour under test is correct. 240s = that worst case
+  // doubled, matching client-server-identity's two-boot budget.
+  test.setTimeout(240_000);
+
   test("start + send a NEW conversation immediately after a long one is loaded", async ({ chat, page }) => {
     await chat.open();
     for (const m of LONG) await chat.sendTurn(`turn ${m}`);
@@ -31,7 +41,13 @@ test.describe("long conversation doesn't block a new one", () => {
     // Now (long conversation live in the thread) start a NEW conversation and send —
     // this must succeed on the FIRST attempt (the bug needed multiple refreshes).
     await page.locator(sidebar.newSession).click();
-    await chat.sendTurn("brand new conversation first-try", 45_000);
+    // 150s, not 45: this turn funds a whole SECOND conversation boot, and CI forces
+    // CONVERSATION_POD_CAP=1 so it cannot reuse the long conversation's pod — it waits for a
+    // fresh one to be scheduled. On the upper links of this stack, where the shard runs the
+    // full 26-spec allowlist, several specs are competing for that scheduling at once and the
+    // wait stretches: observed at the full 100s with the reply still not landed. The 240s
+    // ceiling above accommodates this; nothing waits on it when provisioning is prompt.
+    await chat.sendTurn("brand new conversation first-try", 150_000);
 
     // The new conversation shows exactly its own single turn + reply — the long
     // conversation's history is NOT bleeding in, and the send wasn't dropped.
@@ -57,7 +73,10 @@ test.describe("long conversation doesn't block a new one", () => {
     // WITHOUT waiting for the full replay to finish, immediately open a new
     // conversation and send — it must work first try.
     await page.locator(sidebar.newSession).click();
-    await chat.sendTurn("after-reload new conversation", 45_000);
+    // 100s: funds the second conversation's sandbox boot (see the first test).
+    // 150s, for the same reason as its sibling above: a second conversation boot under
+    // podCap=1, contended by the other specs sharing the shard.
+    await chat.sendTurn("after-reload new conversation", 150_000);
     await expect(chat.userMessages().filter({ hasText: /after-reload new conversation/i })).toHaveCount(1, {
       timeout: 30_000,
     });

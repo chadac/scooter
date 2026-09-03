@@ -118,7 +118,6 @@ async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Even
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store = Store(settings.dsn)
-    await store.init()
     app.state.store = store
     
     # Initialize metrics (no-op if disabled)

@@ -4,7 +4,10 @@ dist/
 !.envrc
 # .envrc is shared dev config (direnv `use flake`) — track it even though a
 # global gitignore may exclude it.
-node_modules/
+# no trailing slash: `node_modules/` matches only DIRECTORIES, and a node_modules
+# SYMLINK (worktree scaffolding pointing at the main checkout) sailed straight into
+# a commit past it.
+node_modules
 # playwright
 .playwright/
 playwright-report/
@@ -27,3 +30,4 @@ site/
 # Python build artifacts (uv/setuptools leave these in the service dirs).
 *.egg-info/
 __pycache__/
+.e2e-cluster/

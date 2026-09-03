@@ -1,8 +1,6 @@
 # TEST-ONLY overrides — everything a cluster/e2e run needs and a production deploy must never get.
 #
-# WHY THIS MODULE EXISTS. These knobs used to live on the production modules as booleans
-# (`agentSandbox.fakeAgent`, `agentSandbox.webhooks.testWebhook`), threaded through SEVEN
-# `!cfg.fakeAgent` guards in platform.nix. That shape has two problems:
+# Test-only overrides isolated from production modules to avoid conditional complexity.
 #
 #   1. Production config was written as the NEGATIVE of a test flag. Reading platform.nix, the
 #      real agent's provider/region/OAuth token/model catalog were all conditional on "not
@@ -67,6 +65,17 @@ in
     agentSandbox = {
       fakeAgent = lib.mkForce tcfg.fakeAgent;
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
+      # SMALL sandboxes. The production default is Guaranteed QoS 2cpu/4Gi PER
+      # sandbox. Tests assert behaviour, not perf isolation: a fake agent's
+      # echo + a short shell command fit comfortably here, and several sandboxes
+      # must be schedulable side by side. REQUESTS are near-zero (scheduling
+      # density is the whole point); LIMITS stay real because the sandbox is a
+      # genuine systemd NixOS pod even under the fake agent — a tiny memory LIMIT
+      # would OOM-kill it at boot, and limits (not requests) are what kill.
+      sandboxResources = lib.mkForce {
+        requests = { cpu = "50m"; memory = "64Mi"; };
+        limits = { cpu = "1"; memory = "1Gi"; };
+      };
     };
 
     # A loud marker on every rendered object, so a manifest built with test overrides is

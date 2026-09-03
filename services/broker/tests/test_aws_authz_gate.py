@@ -16,6 +16,9 @@ from broker.aws.service import PermissionService, ServiceConfig, RequestError
 from broker.aws.store import PermissionStore, StoreConfig
 from broker.core.authz import NoopAuthorizer
 
+from conftest import create_schema
+from broker.aws import store as aws_store
+
 
 class FakeIam(IamProvisioner):
     def __init__(self):
@@ -63,7 +66,7 @@ async def _service(tmp_path, authorizer):
     cfg = StoreConfig()
     cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'b.db'}"
     store = PermissionStore(cfg)
-    await store.init()
+    await create_schema(store, aws_store._Base)
     return PermissionService(
         store=store, iam=FakeIam(), account_registry=REGISTRY,
         config=ServiceConfig(broker_principal_arn="arn:broker"),

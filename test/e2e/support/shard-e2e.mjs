@@ -34,10 +34,16 @@ const DEFAULTS_PATH = join(E2E_DIR, "shard-weights.json");
 
 const DEFAULT_WEIGHT = 30; // seconds — a middling spec, used when nothing else knows.
 
-/** Spec files Playwright would consider — every *.spec.ts in test/e2e. (Specs that
- *  self-skip via env, e.g. external / real-goose, stay in the list: they're cheap
- *  no-ops on a shard and enumerating them keeps this in lock-step with the suite.) */
+/** Spec files Playwright would consider. Default (fast): every *.spec.ts in
+ *  test/e2e — specs that self-skip via env stay in the list: they're cheap no-ops on
+ *  a shard and enumerating them keeps this in lock-step with the suite.
+ *  SPEC_SET=full: the full-target allowlist (test/e2e/full-specs.json) — the SAME
+ *  file playwright.config.ts builds the `full` project's testMatch from, so CI's
+ *  shard plan and the project definition cannot drift. */
 function specFiles() {
+  if (process.env.SPEC_SET === "full") {
+    return JSON.parse(readFileSync(join(E2E_DIR, "full-specs.json"), "utf8")).sort();
+  }
   return readdirSync(E2E_DIR)
     .filter((f) => f.endsWith(".spec.ts"))
     .sort(); // deterministic order → deterministic sharding for the same inputs

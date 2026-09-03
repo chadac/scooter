@@ -91,6 +91,37 @@
       # needed). The claude variant bakes the UNFREE claude-code CLI, so its .outPath
       # forces an allowUnfree check — split out, resolved only under --impure +
       # NIXPKGS_ALLOW_UNFREE. Image NAMES match the canonical agent-* convention.
+      # ── k3d-registry refs for the E2E FULL cluster. The registry is created by
+      # k3d as `k3d-scooter-reg.localhost` (see ci.yml / cluster-up.sh): a
+      # `.localhost` name resolves to 127.0.0.1 on the HOST (so skopeo pushes to it
+      # straight from /nix/store — no docker-daemon load, no `k3d image import`
+      # tarball; unchanged layers are skipped by digest) and to the registry
+      # container via docker DNS INSIDE the cluster — one ref works on both sides.
+      # Content tags (not :latest) make pullPolicy IfNotPresent correct: a rebuilt
+      # image gets a new tag -> pull; an unchanged one is already present -> skip.
+      k3dRegistry = "k3d-scooter-reg.localhost:5800";
+      k3dImageRef = name: img: "${k3dRegistry}/${name}:${ghcrContentTag img}";
+      k3dImages = {
+        agentHost = k3dImageRef "agent-host" pubImages.agent-host-image;
+        ui = k3dImageRef "agent-sandbox-ui" pubImages.ui-image;
+        broker = k3dImageRef "agent-broker" pubImages.broker-image;
+        webhooks = k3dImageRef "agent-webhooks" pubImages.webhooks-image;
+        sandboxOs = k3dImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
+        conversationController = k3dImageRef "conversation-controller" pubImages.conversation-controller-image;
+        conversationRouter = k3dImageRef "conversation-router" pubImages.conversation-router-image;
+      };
+      # attr -> ref, for the push script: `nix build .#k3d-image-refs` + jq. Keyed by
+      # the FLAKE IMAGE ATTR whose `.copyTo` pushes it.
+      k3dImagePushMap = {
+        agent-host-image = k3dImages.agentHost;
+        ui-image = k3dImages.ui;
+        broker-image = k3dImages.broker;
+        webhooks-image = k3dImages.webhooks;
+        sandbox-os-image = k3dImages.sandboxOs;
+        conversation-controller-image = k3dImages.conversationController;
+        conversation-router-image = k3dImages.conversationRouter;
+      };
+
       ghcrImages = {
         agentHost = ghcrImageRef "agent-host" pubImages.agent-host-image;
         ui = ghcrImageRef "agent-sandbox-ui" pubImages.ui-image;
@@ -107,6 +138,7 @@
         conversationController = ghcrImageRef "conversation-controller" pubImages.conversation-controller-image;
         conversationRouter = ghcrImageRef "conversation-router" pubImages.conversation-router-image;
         warmStoreController = ghcrImageRef "warm-store-controller" pubImages.warm-store-controller-image;
+        dbMigrator = ghcrImageRef "agent-db-migrator" pubImages.db-migrator-image;
       };
       ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
     in
@@ -120,19 +152,30 @@
           # The ACP agent the agent-host runs (first target: Goose).
           # Runs OUTSIDE the sandbox. Provider-agnostic later; selected by attr.
           #
-          # DOWNSTREAM PATCH: sanitize Bedrock tool names to `[a-zA-Z0-9_-]+`. Goose
-          # leaks an MCP tool's display name ("<Extension>: <Title Case>") into the
-          # Bedrock converse request's toolUse.name on session resume, which Bedrock
-          # rejects (ValidationException) — permanently wedging the conversation. The
-          # patch sanitizes at the 3 outbound sites (tool def + both toolUse blocks)
-          # with a lossless map so the returned name restores for MCP dispatch. Applied
-          # via cargoPatches so it slots into the vendored-deps build without touching
-          # cargoHash. Remove when an upstream-fixed goose is pinned (the OpenAI side is
-          # already fixed in block/goose#10344; the Bedrock side was missed). See
-          # pkgs/goose/bedrock-tool-name-sanitize.patch + todo/GOOSE_BEDROCK_PATCH.md.
+          # DOWNSTREAM PATCH: goose's Bedrock formatter has no match arm for
+          # `reasoningContent`, so a reasoning model — xAI Grok reasons by DEFAULT —
+          # fails EVERY turn with "Unsupported content block type from Bedrock". On
+          # tool-calling turns Grok returns reasoningContent -> redactedContent
+          # (encrypted bytes), so this is not an edge case: it is every response.
+          # The patch maps it to goose's existing Thinking/RedactedThinking variants
+          # (inbound) and replays signed reasoning back (outbound), which Bedrock
+          # requires unmodified in a multi-turn conversation. Drop it when an
+          # upstream-fixed goose is pinned — block/goose#6192 fixed the analogous
+          # OPENAI-compatible formatter; the Bedrock one was missed and still carries
+          # a comment asserting "Bedrock doesn't use this format".
+          # See pkgs/goose/bedrock-reasoning-content.patch.
+          #
           agent = pkgs.goose-cli.overrideAttrs (old: {
-            cargoPatches = (old.cargoPatches or [ ]) ++ [
-              ./pkgs/goose/bedrock-tool-name-sanitize.patch
+            # `patches`, NOT `cargoPatches`. nixpkgs' goose-cli is a
+            # `buildRustPackage (finalAttrs: ...)`, and buildRustPackage computes
+            # `patches = cargoPatches ++ patches` from the ORIGINAL args — so a
+            # cargoPatches entry added via overrideAttrs never reaches `patches` and is
+            # silently DROPPED (`nix eval .#agent.patches` -> []). The build still
+            # succeeds and the binary still differs from stock (other override effects),
+            # so it fails invisibly: the reasoning fix below appeared to deploy for a
+            # full release while Grok kept failing with the exact error it fixes.
+            patches = (old.patches or [ ]) ++ [
+              ./pkgs/goose/bedrock-reasoning-content.patch
             ];
           });
 
@@ -149,7 +192,12 @@
           # agent-host symlinks it into node_modules and mounts its tools.
           marimoMcp = pkgs.callPackage ./services/marimo-mcp { };
 
-          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp; };
+          # The generated @scooter/schema package (Drizzle tables + ownership guard, from
+          # lib/sql via `just db-generate`). Same isolation pattern: agent-host symlinks it
+          # into node_modules and resourceMapping.ts imports its typed tables.
+          scooterSchemaJs = pkgs.callPackage ./lib/ts/scooter-schema { };
+
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp scooterSchemaJs; };
 
           # Bring-your-own-Claude container app: drives the user's LOCAL Claude via the SAME
           # claudeSdkProvider, tunnels tool-exec to the cloud sandbox. Bakes the (unfree) claude CLI.
@@ -176,12 +224,17 @@
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
-          webhooks = pkgs.callPackage ./services/webhooks { };
+          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {
             inherit pkgs lib n2c webhooks;
           };
+
+          # Generated SQLAlchemy models for the shared databases (from lib/sql via
+          # `just db-generate`). Imported by the Python services; its nix build runs
+          # pytest + pythonImportsCheck (proves the generated models are valid).
+          scooterSchema = pkgs.callPackage ./lib/py/scooter-schema { };
 
           # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
           # spawning a fresh conversation per run via the agent-host /agui. See
@@ -208,7 +261,7 @@
           # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
           # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
-          byocController = pkgs.callPackage ./services/byoc-controller { };
+          byocController = pkgs.callPackage ./services/byoc-controller { inherit scooterSchemaJs; };
 
           # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
           # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
@@ -238,6 +291,13 @@
           # Broker OCI image.
           brokerImage = import ./pkgs/broker-image {
             inherit pkgs lib n2c broker;
+          };
+
+          # Shared-DB migration Job image: Atlas CLI + lib/sql migrations + a driver
+          # that `atlas migrate apply --baseline`s each per-service database. See
+          # modules/db-migrate.nix.
+          dbMigratorImage = import ./pkgs/db-migrator-image {
+            inherit pkgs lib n2c;
           };
 
           # Broker tools (agent-broker / git-credential-broker / scooter-aws*),
@@ -293,29 +353,61 @@
           # test providers, and images SIDE-LOADED into k3s so it uses bare local names
           # (registryPrefix "" overrides the module's ghcr default). This is NOT a deploy
           # manifest — it's the config the Tier-2 cluster + Tier-3 e2e suites apply.
-          platform = mkTestPlatform {
+          # Shared by the side-load render (`platform`, bare names) and the k3d-registry
+          # render (`platformK3d`, content-tagged refs) — ONE test config, two image
+          # sourcing strategies.
+          mkTestPlatformImages = imgs: mkTestPlatform {
             registryPrefix = "";
-            agentHostImage = "agent-host:latest";
-            sandboxImage = "agent-sandbox-os:latest";
+            agentHostImage = imgs.agentHost;
+            sandboxImage = imgs.sandboxOs;
+            uiImage = imgs.ui;
+            conversationController.image = imgs.conversationController;
+            conversationController.routerImage = imgs.conversationRouter;
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
             testing.enable = true;
-            # The cross-pod history mirror is a ReadWriteMany PVC; k3d's default
-            # local-path provisioner has NO RWX, so it never binds and agent-host stays
-            # Pending. A single-node cluster e2e doesn't need cross-pod revival anyway —
-            # disable the mirror so agent-host schedules on its emptyDir `state` alone.
-            conversationController.historyMirror.enable = false;
+            # No migration Job in the cluster/e2e renders: the services still self-create
+            # their tables, so migrations aren't needed for tests, and this keeps the
+            # agent-db-migrator image out of the side-load/k3d push set.
+            dbMigrate.enable = false;
+            # The cross-pod history mirror, backed by the single-node hostPath escape hatch
+            # (k3d's local-path provisioner has no RWX; a hostPath PV binds the RWX claim and
+            # every pod shares the one node's directory — the same mechanism odin uses).
+            #
+            # This USED to be disabled, with the note "a single-node e2e doesn't need
+            # cross-pod revival" — written before the CI job forced CONVERSATION_POD_CAP=1 +
+            # 3 replicas, which makes cross-pod reassignment CONSTANT. With no mirror, a
+            # conversation reassigned mid-run could never be revived on its new owner: the
+            # ownership fence truncated its log (by design) and the new pod had nothing to
+            # hydrate from, so the UI sat at "Working…" forever. Found by the Tier-2
+            # browser tests.
+            conversationController.historyMirror = {
+              enable = true;
+              hostPath = "/var/lib/scooter-e2e-history";
+            };
             broker = {
               enable = true;
-              image = "agent-broker:latest";
+              image = imgs.broker;
               testProvider = true; # whoami provider for the credential e2e
             };
             webhooks = {
               enable = true;
-              image = "agent-webhooks:latest";
+              image = imgs.webhooks;
               # testWebhook comes from modules/testing.nix — not repeated here.
             };
           };
+          platform = mkTestPlatformImages {
+            agentHost = "agent-host:latest";
+            sandboxOs = "agent-sandbox-os:latest";
+            ui = "agent-sandbox-ui:latest";
+            broker = "agent-broker:latest";
+            webhooks = "agent-webhooks:latest";
+            conversationController = "conversation-controller:latest";
+            conversationRouter = "conversation-router:latest";
+          };
+          # `nix build .#platform-manifests-k3d`: the SAME test platform, images pulled
+          # from the k3d-attached registry by CONTENT TAG (see k3dImages). No side-load.
+          platformK3d = mkTestPlatformImages k3dImages;
 
           # GHCR render (`nix build .#platform-manifests-ghcr`): the REAL production deploy
           # manifest — the actual agent (fakeAgent = false), NO test providers/webhooks,
@@ -411,11 +503,20 @@
             # nix build .#broker-image  ->  broker OCI image
             broker-image = brokerImage.image;
 
+            # nix build .#db-migrator-image  ->  shared-DB migration Job image
+            db-migrator-image = dbMigratorImage.image;
+
             # nix build .#webhooks-image  ->  webhooks OCI image
             webhooks-image = webhooksImage.image;
 
             # nix build .#scheduler-image  ->  scheduler OCI image
             scheduler-image = schedulerImage.image;
+
+            # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
+            scooter-schema = scooterSchema;
+
+            # nix build .#scooter-schema-js  ->  generated Drizzle schema package (tsc)
+            scooter-schema-js = scooterSchemaJs;
 
             # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
             remote-agent = remoteAgent;
@@ -444,6 +545,10 @@
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             # (e2e/local flavor: bare side-loaded image names).
             platform-manifests = platform.config.kubernetes.resultYAML;
+
+            # The k3d-registry render + the attr->ref push map for the CI/e2e-full flow.
+            platform-manifests-k3d = platformK3d.config.kubernetes.resultYAML;
+            k3d-image-refs = pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap);
 
             # nix build .#platform-manifests-ghcr  ->  the same manifests with every image
             # pinned to its published ghcr CONTENT TAG (from ghcrImages). This is the
@@ -480,7 +585,7 @@
           # Dev shell: everything needed to build, test (Tier 1-3), and drive a
           # local cluster. Defined in ./nix/devshell.nix; `nix develop` or
           # `.envrc` (`use flake`) via direnv both use it.
-          devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+          devShells.default = import ./nix/devshell.nix { inherit pkgs conversationRouter; };
 
           checks = {
             inherit agentHost ui;
@@ -520,6 +625,7 @@
             broker.image = lib.mkDefault ghcrImages.broker;
             webhooks.image = lib.mkDefault ghcrImages.webhooks;
             scheduler.image = lib.mkDefault ghcrImages.scheduler;
+            dbMigrate.image = lib.mkDefault ghcrImages.dbMigrator;
           };
         };
       };

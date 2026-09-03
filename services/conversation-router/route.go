@@ -41,16 +41,13 @@ func ConvIDFromPath(path string) (string, bool) {
 	return "", false
 }
 
-// IsFleetAggregate reports whether a request must be answered from the WHOLE FLEET rather than by
-// any single pod. These endpoints read an agent-host's IN-MEMORY conversation map (sessions.list()),
-// which on a multi-replica deployment holds only the conversations THAT pod currently hosts — with
-// podCap=1 the controller deliberately spreads them one-per-pod, so any single pod sees a small,
-// disjoint slice. Proxying such a request to one pod therefore returns a fraction of the user's
-// conversations (observed on odin: per-pod 0,2,2,4,4,4,7,7,8,8 while 20 CRs existed), and WHICH
-// fraction changes with load-balancing — conversations appear to vanish between refreshes.
-//
-// The router fans these out to every ready pod and merges the results (see aggregate.go).
-func IsFleetAggregate(method, path string) bool {
+// IsConversationListRoute reports whether a request is the conversation LIST (GET /conversations)
+// or its live events stream (GET /conversations/events) — the two routes the router answers itself
+// from Postgres rather than proxying to a pod. An agent-host only knows the conversations it hosts
+// (with podCap=1 the controller spreads them one-per-pod), so no single pod can answer "all of this
+// user's conversations"; the durable store can. The list reads a snapshot (list.go), the stream
+// LISTENs for NOTIFYs (events.go). Both require the metadata store.
+func IsConversationListRoute(method, path string) bool {
 	if method != "GET" {
 		return false
 	}

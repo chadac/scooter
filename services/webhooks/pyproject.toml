@@ -15,6 +15,7 @@ dependencies = [
   "aiosqlite",   # default dev store (SQLite)
   "asyncpg",     # Postgres driver for the durable mapping store (prod)
   "pyjwt[crypto]", # GitHub App token minting for posting responses
+  "scooter-schema", # generated SQLAlchemy models for the webhooks database (single source of truth)
 ]
 
 [project.scripts]

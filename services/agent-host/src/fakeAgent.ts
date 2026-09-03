@@ -29,6 +29,11 @@ import {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Wrap `s` so `sh -c` sees it as ONE literal argument, whatever it contains.
+ *  Single quotes protect everything except a single quote itself, which is emitted as
+ *  '\'' — close, escaped literal, reopen. */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
 class FakeAgent implements Agent {
   constructor(private conn: AgentSideConnection) {}
 
@@ -103,13 +108,35 @@ class FakeAgent implements Agent {
       return { stopReason: "end_turn" };
     }
 
+    // A "~images" message is a test directive: report how many IMAGE content blocks
+    // reached the agent PROCESS in this prompt. Proves an attached image survived the
+    // whole pipe — composer attachment -> /agui body -> normalizeContent -> AssetStore
+    // -> bridge readAsset -> ACP image block. The image-drop regression (PR #448) made
+    // this 0 because the composer puts images in message.attachments[], not .content,
+    // so the client never sent them. Counts the ACP blocks the bridge built
+    // ({type:"image", data, mimeType}); mirrors the ~model "reached the process" proof.
+    if (userText.startsWith("~images")) {
+      const count = params.prompt.filter((b) => b.type === "image").length;
+      const reply = `images=${count}`;
+      for (const word of reply.split(" ")) {
+        await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
+        await sleep(10);
+      }
+      return { stopReason: "end_turn" };
+    }
+
     // A "!<command>" message is a test directive: run <command> verbatim in the
     // sandbox (real exec path) and report its output. Anything else gets a
     // friendly echo. The ! mechanism is the e2e test harness — it lets a UI
     // conversation drive arbitrary sandbox commands (incl. `agent-broker
     // test/whoami` to verify broker/IRSA auth).
     const isCommand = userText.startsWith("!");
-    const command = isCommand ? userText.slice(1).trim() : `echo ${userText}`;
+    // QUOTE the echoed text: arbitrary user prose being spliced into a shell line
+    // can contain shell metacharacters that break `sh -c`. Single-quote and escape
+    // any embedded single quote ('\'' closes, escapes, reopens) so the text reaches
+    // echo as one literal argument. The "!<command>" directive is deliberately NOT
+    // quoted — running a command verbatim is the escape hatch.
+    const command = isCommand ? userText.slice(1).trim() : `echo ${shellQuote(userText)}`;
 
     // 1. a thought
     await u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Planning a response…" } });

@@ -36,3 +36,6 @@ include = ["broker*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# tests/ on sys.path so `from conftest import ...` resolves explicitly rather than
+# relying on pytest's rootdir insertion (which does NOT fire in every layout).
+pythonpath = ["tests"]

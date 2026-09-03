@@ -118,6 +118,11 @@ type AguiEventBase =
        *  force-interrupt — a clean end, NOT an error. The UI shows "you stopped
        *  this turn." */
       cancelled?: boolean;
+      /** Synthesized by the ADOPTING pod for a run whose real terminal was lost —
+       *  the previous owner was fenced mid-run, so its RUN_FINISHED never reached
+       *  the log. Marks the run closed so the UI stops reading it as in-flight;
+       *  the work itself was not completed. */
+      interrupted?: boolean;
     }
   | { type: "RUN_ERROR"; message: string; code?: string }
   // Emitted when a run failed TRANSIENTLY (agent process died / no-activity / ACP threw) and the pump
@@ -125,6 +130,13 @@ type AguiEventBase =
   // (n/N)…" banner. NOT persisted as a terminal — a following RUN_STARTED clears it (success) or, on
   // exhaustion, the final RUN_ERROR replaces it. See the pump's retry loop.
   | { type: "RUN_RETRYING"; threadId: ThreadId; attempt: number; max: number; delayMs: number; code?: string }
+  // PERSISTED CANCEL INTENT. A user Stop emits this BEFORE the kill takes effect, so
+  // the intent survives the pod: if the host dies mid-cancel (a scale-down/rollout
+  // races the Stop), the next owner's dangling-run check finds the marker and
+  // TERMINATES the run (RUN_FINISHED cancelled) instead of resume-nudging work the
+  // user already stopped. Persist-only for the UI (@ag-ui folds by type and ignores
+  // it); load-bearing for reviveFromMirror.
+  | { type: "CANCEL_REQUESTED"; threadId: ThreadId; runId: RunId }
   | { type: "TEXT_MESSAGE_START"; messageId: string; role: "assistant" | "user" }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string }
   | { type: "TEXT_MESSAGE_END"; messageId: string }
@@ -621,6 +633,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean }>>();
   let acpClient: AcpClient | undefined;
 
+  /** Drop the cached ready-session so the next attempt re-initializes a fresh one.
+   *  A wedged session fails IDENTICALLY on every retry, so retrying through it just
+   *  burns the budget. */
+  const dropCachedSession = (why: string) => {
+    if (!currentProviderId) return;
+    log.warn("dropping the cached agent session; the next attempt re-initializes", {
+      provider: currentProviderId,
+      reason: why,
+    });
+    readySessions.delete(currentProviderId);
+  };
+
   // Permission/option requests awaiting a user answer. Two kinds:
   //  - goose tool-permission: the ACP requestPermission call blocks on `resolve`.
   //  - EXTERNAL (e.g. a broker AWS request): no blocked goose run; `onExternal`
@@ -974,7 +998,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       : "The user sent several messages while you were working — handle them together as one request:\n\n" +
         texts.map((t, i) => `[Message ${i + 1}]\n${t}`).join("\n\n");
 
-  const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<{ runId: RunId; retryable: boolean }> => {
+  const runPrompt = async (
+    input: PromptInput,
+    batch: PromptInput[] = [input],
+    // A RETRY re-drives the same batch; the user's message is already in the log from
+    // the first attempt. Re-persisting it wrote the same prompt 6 times on a run that
+    // wedged and retried 5 times, inflating the very history the next attempt reads.
+    alreadyPersisted = false,
+  ): Promise<{ runId: RunId; retryable: boolean }> => {
     const runId = nextId("run");
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0, terminalPending: new Set() };
     const startedAt = Date.now();
@@ -1001,6 +1032,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         closeOpenText(st);
         closeOpenReasoning(st);
         outcome = "error";
+        // LOUD: the RUN_ERROR below tells the USER to check these logs, so this must be
+        // in them. Without it a wedged-then-retried run leaves no trace at all — the
+        // only evidence is a "prompt: sending" with no matching "returned".
+        log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
+          run_id: st.runId,
+          waited_ms: firstActivityTimeoutMs,
+          retryable: true,
+        });
         emit({
           type: "RUN_ERROR",
           message:
@@ -1010,6 +1049,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           code: "no_activity_timeout",
         });
         st.retryable = true; // transient (credential/model blip) — the pump auto-retries with backoff
+        // The SESSION is suspect, not just this prompt: a session that produced nothing
+        // produces nothing on the retry too (observed: 5 identical dead-on-arrival runs
+        // through one cached session after a cancel left it wedged). Force a fresh one.
+        dropCachedSession("no ACP activity before the deadline");
         // Unblock the wedged goose so the next prompt gets a fresh run.
         void self.cancel(runId).catch(() => {});
       }, firstActivityTimeoutMs);
@@ -1035,6 +1078,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           closeOpenText(st);
           closeOpenReasoning(st);
           outcome = "error";
+          // LOUD, same reason as the DOA watchdog: the user is told to check these logs.
+          log.warn("run wedged: the agent process died without a terminal event", {
+            run_id: st.runId,
+            saw_activity: st.sawActivity,
+            retryable: true,
+          });
           emit({
             type: "RUN_ERROR",
             message:
@@ -1044,6 +1093,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             code: "agent_process_died",
           });
           st.retryable = true; // process crash — the pump auto-retries the batch with backoff
+          // The process behind this session is gone; the cached entry can only fail.
+          dropCachedSession("the agent process died");
           // Best-effort cleanup so the next prompt gets a fresh run.
           void self.cancel(runId).catch(() => {});
         }, livenessProbeMs);
@@ -1067,7 +1118,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // never folded back into itself on the next revive. A batched turn persists
     // EACH original message as its own user message — history stays faithful even
     // though goose received them combined as one prompt.
-    for (const b of batch) {
+    for (const b of alreadyPersisted ? [] : batch) {
       // A PLATFORM-injected message persists as a SYSTEM_MESSAGE (hideable in the UI),
       // NOT a role:user turn — the human didn't type it. The agent still receives the
       // (decorated) text below. A normal human message persists as user text.
@@ -1159,11 +1210,21 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         }
       }
       const promptBlocks = [...textBlocks, ...imageBlocks];
+        // The turn boundary, structured. A turn that produces neither a reply NOR an
+        // error left no trace at all on a real cluster — debug() only surfaces behind a
+        // flag, so the whole prompt path was silent. These two lines bracket the one
+        // call that can hang, and say which provider actually took the run.
+        log.info("acp prompt: sending", {
+          run_id: st.runId,
+          blocks: promptBlocks.length,
+          has_session: acpSessionId !== undefined,
+        });
       const { stopReason } = await acpClient!.prompt({
         sessionId: acpSessionId!,
         prompt: promptBlocks,
       });
       debug("[bridge] prompt: stopReason=%s", stopReason);
+        log.info("acp prompt: returned", { run_id: st.runId, stop_reason: stopReason });
       // The ACP prompt response can resolve before the final session/update
       // notifications have been dispatched. Drain a macrotask so trailing
       // text/reasoning chunks are processed (their messages opened) BEFORE we
@@ -1332,10 +1393,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           let res = await runPrompt(batch[0].input, inputs);
           for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
             const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
+            // A run that fails and silently succeeds on retry looks to the user like
+            // "it failed once" with nothing to point at afterwards.
+            log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
             emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
             await new Promise((r) => setTimeout(r, delayMs));
             if (closed) break; // bridge stopped while backing off — abandon the retry
-            res = await runPrompt(batch[0].input, inputs);
+            res = await runPrompt(batch[0].input, inputs, true);
+          }
+          if (res.retryable) {
+            log.error("run FAILED after exhausting retries", { attempts: RETRY_MAX });
           }
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
@@ -1521,6 +1588,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const run = currentRun;
       if (!run || !acpClient) return;
       run.cancelled = true;
+      // USER stops persist their intent (see CANCEL_REQUESTED in the event union).
+      // Internal cancels (model switch, priority preemption) do NOT: they cancel in
+      // order to immediately continue, and a persisted intent would make a
+      // reassignment terminate the very run their nudge starts... the marker names
+      // THIS runId, so only the run being stopped can match it later.
+      if (userInitiated) emit({ type: "CANCEL_REQUESTED", threadId: run.threadId, runId: run.runId });
       try {
         // This is what actually ends the run: killing the shell makes the prompt
         // return. session/cancel alone does not (the fake agent ignores it).

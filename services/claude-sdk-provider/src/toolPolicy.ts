@@ -22,8 +22,10 @@
 /** Built-ins that run IN THE SANDBOX via the aliased MCP tools (see sandboxMcp.ts). */
 export const ALIASED_BUILTINS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"] as const;
 
-/** Built-ins that are safe as-is: no sandbox access, no side effects we care about. */
-export const ALLOWED_BUILTINS = ["TodoWrite"] as const;
+/** Built-ins that are safe as-is: no sandbox access, no side effects we care about.
+ *  ToolSearch is load-bearing: the scooter-env MCP tools are DEFERRED, so denying it
+ *  leaves the model unable to enumerate the tools it was given. */
+export const ALLOWED_BUILTINS = ["TodoWrite", "ToolSearch"] as const;
 
 /**
  * Built-ins we deliberately do not support, and what to use instead. The message is
@@ -36,6 +38,10 @@ export const TOOL_REDIRECTS: Record<string, string> = {
     "The Task tool is not available here. Use the scooter-env `spawn_subagent` tool " +
     "instead: it runs the subagent in this conversation's sandbox and reports back " +
     "through the UI.",
+  AskUserQuestion:
+    "There is no interactive question channel here — the user reads this conversation " +
+    "asynchronously. State the question and the options in your REPLY, say which option " +
+    "you are proceeding with and why, and continue. Do not block waiting for an answer.",
   WebSearch: "The WebSearch tool is not available here. Use the scooter-env `web_search` tool instead.",
   WebFetch:
     "The WebFetch tool is not available here. Use the scooter-env `web_fetch` tool " +

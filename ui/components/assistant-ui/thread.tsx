@@ -90,6 +90,11 @@ export type ThreadProps = {
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
 
+/** Hoisted so its identity is stable: ThreadPrimitive.Messages memoizes the
+ *  rendered message array on [messagesLength, children], so an inline arrow
+ *  rebuilds every message element on every commit. */
+const renderMessage = () => <ThreadMessage />;
+
 const ThreadComponentsContext =
   createContext<ThreadComponents>(EMPTY_COMPONENTS);
 
@@ -133,6 +138,61 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS }) => {
  *  bottom across a few frames of reflow — and restoring the store's isAtBottom so the
  *  library re-engages too. NB: this pairs with removing `scroll-smooth` from the
  *  viewport (see below) — instant pins don't fight a CSS scroll animation. */
+/** Page older history in as the user scrolls toward the top.
+ *
+ *  The initial snapshot paints only the trailing window, so the top of the
+ *  viewport is a seam, not the start of the conversation. When it comes into
+ *  reach we fetch the next older page and PREPEND it — which grows scrollHeight
+ *  above the current position, so the content under the user's eye would jump
+ *  down by exactly that growth. Restoring scrollTop by the delta keeps it still.
+ *
+ *  Never fires while pinned to the bottom: that is the streaming case, where the
+ *  user is reading the newest output and a prepend is pure cost. */
+function useLoadOlderOnScroll() {
+  const { hasOlderHistory, loadOlderHistory } = useConversationInterrupts();
+  const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
+
+  useEffect(() => {
+    if (!hasOlderHistory || !hasMessages) return;
+    const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+    if (!el) return;
+
+    let loading = false;
+    const TRIGGER_PX = 600; // start fetching before the seam is actually visible
+
+    const maybeLoad = async () => {
+      if (loading) return;
+      if (el.scrollTop > TRIGGER_PX) return;
+      // At the very bottom we are following a live run; leave history alone.
+      if (el.scrollHeight - el.scrollTop - el.clientHeight <= 2) return;
+      loading = true;
+      const before = el.scrollHeight;
+      try {
+        const added = await loadOlderHistory();
+        if (added > 0) {
+          // Hold the viewport still across the prepend. Two frames: React commits
+          // the taller list first, and the height is only correct after layout.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const grew = el.scrollHeight - before;
+              if (grew > 0) el.scrollTop += grew;
+              loading = false;
+            });
+          });
+          return;
+        }
+      } catch {
+        /* best-effort — a later scroll retries */
+      }
+      loading = false;
+    };
+
+    el.addEventListener("scroll", maybeLoad, { passive: true });
+    void maybeLoad(); // the seam may already be in reach on first paint
+    return () => el.removeEventListener("scroll", maybeLoad);
+  }, [hasOlderHistory, loadOlderHistory, hasMessages]);
+}
+
 function useStickToBottom() {
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const store = useThreadViewportStore();
@@ -190,7 +250,8 @@ function useStickToBottom() {
     const CHASE_MAX_FRAMES = 120; // ~2s @ 60fps — a hard stop, not the common path
     const CHASE_STABLE_FRAMES = 3; // scrollHeight unchanged this many frames → settled
     const chase = () => {
-      if (chaseFrame !== null) cancelAnimationFrame(chaseFrame);
+      // Don't restart a running chase; it self-extends. Why re-arming thrashes rAF: PR #402.
+      if (chaseFrame !== null) return;
       let frames = 0;
       let stableFrames = 0;
       let lastHeight = -1;
@@ -256,7 +317,15 @@ function useStickToBottom() {
       pin(); // synchronous follow (see the ResizeObserver note) + the chase tail
       chase();
     });
-    mo.observe(el, { childList: true, subtree: true });
+    // Observe only new-message mounts, not the whole subtree. Why subtree:true janks: PR #402.
+    const messageGroup = el.querySelector<HTMLElement>(
+      '[data-slot="aui_message-group"]',
+    );
+    if (messageGroup) {
+      mo.observe(messageGroup, { childList: true, subtree: false });
+    } else {
+      mo.observe(el, { childList: true, subtree: true }); // group not mounted yet — fall back
+    }
 
     // Land at the tail on first paint + chase the async history replay's late layout.
     chase();
@@ -273,6 +342,7 @@ function useStickToBottom() {
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   useStickToBottom();
+  useLoadOlderOnScroll();
 
   return (
     <ThreadPrimitive.Root
@@ -327,9 +397,7 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
             data-slot="aui_message-group"
             className="mb-14 flex flex-col gap-y-6 empty:hidden"
           >
-            <ThreadPrimitive.Messages>
-              {() => <ThreadMessage />}
-            </ThreadPrimitive.Messages>
+            <ThreadPrimitive.Messages>{renderMessage}</ThreadPrimitive.Messages>
           </div>
 
           <ThreadPrimitive.ViewportFooter

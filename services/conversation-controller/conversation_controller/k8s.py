@@ -37,6 +37,7 @@ GROUP = "scooter.chadac.dev"
 VERSION = "v1alpha1"
 PLURAL = "conversations"
 AGENT_HOST_LABEL = "app=agent-host"
+DELETION_COST_ANNOTATION = "controller.kubernetes.io/pod-deletion-cost"
 AGENT_HOST_DEPLOYMENT = "agent-host"  # the Deployment the controller autoscales
 
 # The upstream agent-sandbox Sandbox CR (what the reaper GCs).
@@ -110,8 +111,29 @@ class ControllerK8s:
         for p in core.list_namespaced_pod(self.namespace, label_selector=AGENT_HOST_LABEL).items:
             ready = _pod_ready(p)
             ip = p.status.pod_ip if p.status is not None else None
-            out.append(Pod(name=p.metadata.name, ready=ready, ip=ip))
+            raw = (p.metadata.annotations or {}).get(DELETION_COST_ANNOTATION)
+            try:
+                cost = int(raw) if raw is not None else None
+            except ValueError:
+                cost = None
+            out.append(Pod(
+                name=p.metadata.name,
+                ready=ready,
+                ip=ip,
+                deletion_cost=cost,
+                terminating=p.metadata.deletion_timestamp is not None,
+            ))
         return out
+
+    def set_pod_deletion_cost(self, name: str, cost: int) -> None:
+        """Annotate an agent-host pod with its scale-down deletion cost (see
+        reconcile.deletion_costs). 404-tolerant: the pod may be terminating."""
+        core, _, _ = _apis()
+        body = {"metadata": {"annotations": {DELETION_COST_ANNOTATION: str(cost)}}}
+        try:
+            core.patch_namespaced_pod(name, self.namespace, body)
+        except client.ApiException as e:
+            _ignore_404(e)
 
     # --- revive-push (seamless rollout) ------------------------------------
     def notify_revive(self, host_ip: str, conv_name: str, generation: int) -> None:
@@ -178,6 +200,33 @@ class ControllerK8s:
         )
 
     # --- orphaned-Sandbox reaper -------------------------------------------
+    def suspend_sandbox(self, name: str) -> None:
+        """Set the Sandbox's spec.operatingMode=Suspended (the zombie repair). Merge-patch,
+        idempotent; a 404 (sandbox already gone) is fine."""
+        _, custom, _ = _apis()
+        try:
+            custom.patch_namespaced_custom_object(
+                group="agents.x-k8s.io", version="v1alpha1", plural="sandboxes",
+                namespace=self.namespace, name=name,
+                body={"spec": {"operatingMode": "Suspended"}},
+            )
+        except client.ApiException as e:
+            _ignore_404(e)
+
+    def force_delete_sandbox(self, name: str) -> None:
+        """Terminal zombie escalation: delete the Sandbox CR outright (cascades its pod + vct
+        PVCs) to reclaim a sandbox that refuses to suspend after N bounded attempts. Distinct
+        from the reaper's delete_sandbox_tree — the owning Conversation still exists (marked
+        Failed by the loop), so we drop ONLY the Sandbox, not its SA / module ConfigMap.
+        404-tolerant: already-gone is the goal; a non-404 propagates so the loop retries."""
+        _, custom, _ = _apis()
+        try:
+            custom.delete_namespaced_custom_object(
+                SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL, name
+            )
+        except client.ApiException as e:
+            _ignore_404(e)
+
     def list_sandboxes(self) -> list["SandboxRef"]:
         """Every per-conversation Sandbox, as (name, age_seconds) for the reaper decision."""
         _, custom, _ = _apis()
