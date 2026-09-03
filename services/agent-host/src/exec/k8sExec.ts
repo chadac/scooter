@@ -174,7 +174,8 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
     lastRunning = candidates.find((p) => p.status?.phase === "Running") ?? lastRunning;
     if (Date.now() > deadline) {
       // Fall back to any Running pod (or fail) rather than hang forever.
-      log.warn("ready-pod deadline expired", {
+      // Every sweep re-probes a wedged sandbox, so warn once per sandbox, not per probe.
+      log.warnOnce(`ready-pod:${ref.namespace}/${ref.name}`, "ready-pod deadline expired", {
         namespace: ref.namespace,
         sandbox: ref.name,
         waited_ms: Date.now() - started,

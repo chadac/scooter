@@ -457,20 +457,19 @@ export { expect };
  * Seed a conversation owned by `user` (null = unowned) via the API, the way the
  * ingress would (x-auth-user), and return the SERVER-minted id.
  *
- * The two targets create differently:
- *  - fast: the agent-host handles POST /conversations itself — it stores the title
- *    and lists the conversation immediately.
- *  - full: the conversation-ROUTER handles the POST. It only writes the Conversation
- *    CR — `title` is DROPPED (only owner/model/parentId reach the spec) — and NO
- *    agent-host lists the conversation until some pod ADOPTS it, which is
- *    request-driven (GET /conversations/:id hydrates-if-absent, management.ts:475).
- *    So after creating, poll a read of the conversation until it appears in the
- *    fleet list the sidebar reads.
+ * BOTH targets now create through the conversation-ROUTER (fast runs it in
+ * ROUTER_DEV_MODE in front of a single agent-host; full runs the real cluster router):
+ *  - The router handles POST /conversations. `title` is DROPPED (only owner/model/parentId
+ *    reach the create) — the row lands title-less, and the sidebar row is not listable
+ *    until it exists in the store the router lists from: on full when a pod ADOPTS the CR,
+ *    on fast the moment the row is inserted. Either way GET /conversations/:id
+ *    hydrates-if-absent (management.ts) so a read makes the conversation materialise.
+ *    So after creating, poll a read until it appears in the list the sidebar reads.
  *
  * Because the title does not survive the router path, callers must locate sidebar
  * rows by `[data-conversation-id="<id>"]`, NOT by title text. The trailing PATCH
- * still names the row (readable screenshots on fast) but is best-effort: right
- * after adoption the router can route it to a pod that has not adopted (404).
+ * still names the row (readable screenshots) but is best-effort: right after
+ * creation the router can route it to an agent-host that has not hydrated it yet (404).
  */
 export async function seedConversation(
   request: APIRequestContext,

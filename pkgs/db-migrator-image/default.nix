@@ -34,13 +34,14 @@ let
       #                                  --baseline to adopt the tables the services
       #                                  already created without re-running the baseline
       # Any OTHER failure (DB/role not ready) is surfaced so the caller retries.
+      # Empty `ver` = no baseline = nothing to adopt, so skip that retry.
       apply_env() {
         local dir="$1" url="$2" ver="$3" out
         if out="$(atlas migrate apply --dir "$dir" --url "$url" 2>&1)"; then
           printf '%s\n' "$out" | tail -1
           return 0
         fi
-        if printf '%s' "$out" | grep -q "not clean"; then
+        if [ -n "$ver" ] && printf '%s' "$out" | grep -q "not clean"; then
           atlas migrate apply --dir "$dir" --url "$url" --baseline "$ver"
           return $?
         fi
@@ -57,11 +58,22 @@ let
         for f in "$SQL_DIR/$env/migrations"/*_baseline.sql; do
           [ -e "$f" ] && baseline_file="$f" && break
         done
-        if [ -z "$baseline_file" ]; then
-          echo "[$env] no baseline migration found — skipping"
+        # No baseline just means nothing to adopt; only an empty dir is skipped.
+        # Glob, not `compgen` — absent in this image's bash. Why: PR #429.
+        any_migration=""
+        for f in "$SQL_DIR/$env/migrations"/*.sql; do
+          [ -e "$f" ] && any_migration="$f" && break
+        done
+        if [ -z "$any_migration" ]; then
+          echo "[$env] no migrations found — skipping"
           continue
         fi
-        baseline_version="$(basename "$baseline_file")"; baseline_version="''${baseline_version%%_*}"
+        baseline_version=""
+        if [ -n "$baseline_file" ]; then
+          baseline_version="$(basename "$baseline_file")"; baseline_version="''${baseline_version%%_*}"
+        else
+          echo "[$env] no baseline — applying migrations directly (repo-created database)"
+        fi
         dir="file://$SQL_DIR/$env/migrations"
         url="postgres://$env:$pw@$DB_HOST:$DB_PORT/$env?sslmode=$SSL"
         echo "[$env] applying migrations"

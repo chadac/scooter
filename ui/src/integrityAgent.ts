@@ -85,6 +85,7 @@ type ConnectionOutcome = "not-found" | "closed" | "error" | "auth-error";
 /** A stable empty-queue reference (so getQueuedMessages returns the SAME array
  *  each idle call — a fresh [] every render would defeat React memoization). */
 const EMPTY_QUEUE: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+const EMPTY_INTERRUPTS: readonly PendingInterrupt[] = [];
 
 export class IntegrityAgent extends AbstractAgent {
   private readonly cfg: IntegrityAgentConfig;
@@ -193,11 +194,15 @@ export class IntegrityAgent extends AbstractAgent {
     if (this.contextUsedTokens == null || !this.contextWindow) return null;
     return Math.min(1, this.contextUsedTokens / this.contextWindow);
   }
-  /** {used, total} tokens for a tooltip, or null. */
+  /** {used, total} tokens for a tooltip, or null. Cached so an unchanged reading keeps
+   *  its identity — useState bails out only on Object.is. */
   contextTokens(): { used: number; total: number } | null {
     if (this.contextUsedTokens == null || !this.contextWindow) return null;
-    return { used: this.contextUsedTokens, total: this.contextWindow };
+    const c = this.lastContextTokens;
+    if (c && c.used === this.contextUsedTokens && c.total === this.contextWindow) return c;
+    return (this.lastContextTokens = { used: this.contextUsedTokens, total: this.contextWindow });
   }
+  private lastContextTokens: { used: number; total: number } | null = null;
   private trackContext(e: BaseEvent): boolean {
     const ev = e as unknown as { type?: string; usedTokens?: number; contextWindow?: number };
     if (ev.type !== "CONTEXT_USAGE") return false;
@@ -315,6 +320,9 @@ export class IntegrityAgent extends AbstractAgent {
    *  re-derives the queue from the log instead of losing it (it used to be
    *  client-only and vanished on refresh). Latest-snapshot-wins. */
   private queued: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
+  /** Where the painted window starts in the log (1 = the whole log is loaded). */
+  private historyCursor = 1;
+  private olderInFlight: Promise<number> | undefined;
   getQueuedMessages(): ReadonlyArray<{ id: string; text: string; priority: number }> {
     // INVARIANT: the queue only holds items WHILE a run is draining them. If the
     // run is idle, there is nothing queued — regardless of the last QUEUE_UPDATED
@@ -355,11 +363,75 @@ export class IntegrityAgent extends AbstractAgent {
     return true;
   }
 
+  /** Capture the snapshot's paging cursor. The server paints only the trailing
+   *  window; `fromSeq` is where that window starts, so older history is everything
+   *  before it. Absent means the snapshot IS the whole log. */
+  private trackHistoryCursor(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string; fromSeq?: number };
+    if (ev.type !== "MESSAGES_SNAPSHOT") return false;
+    const next = typeof ev.fromSeq === "number" ? ev.fromSeq : 1;
+    if (next === this.historyCursor) return false;
+    this.historyCursor = next;
+    return true;
+  }
+
+  /** Whether older history remains to page in (the snapshot was windowed). */
+  hasOlderHistory(): boolean {
+    return this.historyCursor > 1;
+  }
+
+  /** Fetch the next older page and PREPEND it. Returns the number of messages
+   *  added (0 when there is nothing more, or on failure — best-effort, like the
+   *  seed). Concurrent calls collapse onto the in-flight one so a scroll that
+   *  keeps firing does not stack requests. */
+  async loadOlderHistory(): Promise<number> {
+    const id = this.cfg.conversationId;
+    if (!this.hasOlderHistory() || !hasId(id)) return 0;
+    if (this.olderInFlight) return this.olderInFlight;
+    const run = (async () => {
+      try {
+        const url =
+          `${this.base}/conversations/${encodeURIComponent(id)}` +
+          `/messages?before=${this.historyCursor}`;
+        const res = await this.doFetch(url, {
+          headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
+        });
+        if (!res.ok) return 0;
+        const body = (await res.json()) as { messages?: unknown[]; fromSeq?: number; done?: boolean };
+        const older = body.messages ?? [];
+        this.historyCursor = body.done ? 1 : (body.fromSeq ?? 1);
+        if (older.length === 0) return 0;
+        // Prepend: older history goes BEFORE what is already rendered.
+        this.setMessages([...older, ...this.messages] as never);
+        this.notifyMessages();
+        return older.length;
+      } catch {
+        return 0; // best-effort; the user can scroll again
+      } finally {
+        this.olderInFlight = undefined;
+      }
+    })();
+    this.olderInFlight = run;
+    return run;
+  }
+
   /** The interrupt(s) the conversation is currently paused on (empty if none) —
    *  the run-scoped set PLUS any still-open external (broker) interrupts. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
-    return [...this.pendingApprovals.values()];
+    // Stable identity when empty (the common case): the caller feeds this straight to
+    // useState, which bails out only on Object.is — a fresh [] re-renders every notify.
+    if (this.pendingApprovals.size === 0) return EMPTY_INTERRUPTS;
+    const next = [...this.pendingApprovals.values()];
+    if (
+      this.lastInterrupts.length === next.length &&
+      next.every((v, i) => v === this.lastInterrupts[i])
+    ) {
+      return this.lastInterrupts;
+    }
+    this.lastInterrupts = next;
+    return next;
   }
+  private lastInterrupts: readonly PendingInterrupt[] = EMPTY_INTERRUPTS;
 
   /** Update the unified pendingInterrupts map from a single log event:
    *   - RUN_FINISHED(outcome=interrupt) ADDS each interrupt (goose OR ext-) by id;
@@ -738,6 +810,8 @@ export class IntegrityAgent extends AbstractAgent {
         this.lastRunError = null;
         // Likewise re-derive the queue from the log's last QUEUE_UPDATED snapshot.
         this.queued = [];
+        // The new replay's snapshot carries its own window start.
+        this.historyCursor = 1;
         // System messages are re-derived from the replayed log too (reset so a
         // reconnect rebuilds the list instead of doubling it). The anchor resets with
         // them so positions re-derive from an empty fold.
@@ -810,6 +884,8 @@ export class IntegrityAgent extends AbstractAgent {
             changed = this.trackContext(e) || changed;
             // Track SYSTEM messages (hidden behind a toggle in the thread).
             changed = this.trackSystemMessage(e) || changed;
+            // Where the painted window starts, for the scroll-back paging.
+            changed = this.trackHistoryCursor(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
@@ -981,10 +1057,10 @@ export class IntegrityAgent extends AbstractAgent {
    *  `agent.messages` via the SAME base applier, then notify — a fast, faithful
    *  first paint before the full replay. Best-effort: any failure just skips the
    *  seed and the full replay paints as before. */
-  private async seedTail(runs = 8): Promise<boolean> {
+  private async seedTail(limit = 300): Promise<boolean> {
     try {
       if (!hasId(this.cfg.conversationId)) return false; // nothing to seed from yet
-      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?runs=${runs}`;
+      const url = `${this.base}/conversations/${encodeURIComponent(this.cfg.conversationId)}/tail?limit=${limit}`;
       const res = await this.doFetch(url, {
         headers: this.cfg.token ? { Authorization: `Bearer ${this.cfg.token}` } : undefined,
       });

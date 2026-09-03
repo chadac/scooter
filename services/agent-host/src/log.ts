@@ -207,7 +207,23 @@ export function logger(component: string) {
     /** Shorthand for the shape that was silently producing `{}`. */
     errorWith: (msg: string, err: unknown, fields?: Fields) =>
       emit("error", component, msg, { ...fields, error: formatError(err) }),
+    /** warn the first time `key` is seen, debug after. For a condition re-detected
+     *  every sweep: loud once per resource, never a flood. `forgetWarned` re-arms it. */
+    warnOnce: (key: string, msg: string, fields?: Fields) => {
+      const repeat = warned.has(key);
+      warned.add(key);
+      emit(repeat ? "debug" : "warn", component, msg, repeat ? { ...fields, repeat_suppressed: true } : fields);
+    },
   };
+}
+
+const warned = new Set<string>();
+
+/** Re-arm `warnOnce` for keys no longer active, so a condition that clears and returns is
+ *  loud again. No argument forgets everything (tests). */
+export function forgetWarned(keep?: Set<string>): void {
+  if (!keep) return void warned.clear();
+  for (const k of warned) if (!keep.has(k)) warned.delete(k);
 }
 
 export type Logger = ReturnType<typeof logger>;

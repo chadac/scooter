@@ -2,8 +2,9 @@
  * WebServiceRegistry — reads a conversation's declared web services from the
  * in-pod discovery manifest (/run/scooter/web-services.json, rendered by the
  * `webServices` NixOS option) via the exec API, and drives their systemd
- * units (is-active / start). Descriptors are cached per conversation; the cache is
- * invalidated on suspend/resume and after a start.
+ * units (is-active / start). Descriptors are cached per conversation with a short
+ * TTL, so a `scooter-rebuild` that declares a new service shows up without a
+ * restart; start drops the entry, and list({force}) re-reads on demand.
  *
  * Kept separate from webServiceProxy.ts so the proxy stays pure/unit-testable
  * against a fake registry; this module owns the exec/k8s coupling.
@@ -51,12 +52,27 @@ export function parseManifest(json: string): WebServiceDescriptor[] {
   }
 }
 
-export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServiceRegistry {
-  // conversationId -> descriptors (cached). undefined = not yet loaded.
-  const cache = new Map<string, WebServiceDescriptor[]>();
+/** How long a successful manifest read stays authoritative. The manifest changes
+ *  when the agent runs `scooter-rebuild` (switch-to-configuration re-applies the
+ *  tmpfiles rule that points /run/scooter/web-services.json at the new store
+ *  path), and nothing in the pod tells us. Without an expiry the list a
+ *  conversation started with is served for the life of the process, so a service
+ *  the agent just declared never appears. The read is one exec, so re-checking on
+ *  this cadence is cheap next to being wrong. */
+export const MANIFEST_TTL_MS = 10_000;
 
-  async function load(conversationId: string): Promise<WebServiceDescriptor[]> {
-    const cached = cache.get(conversationId);
+export function createWebServiceRegistry(
+  deps: WebServiceRegistryDeps,
+  opts: { ttlMs?: number; now?: () => number } = {},
+): WebServiceRegistry {
+  const ttlMs = opts.ttlMs ?? MANIFEST_TTL_MS;
+  const now = opts.now ?? (() => Date.now());
+  // conversationId -> descriptors + when they were read. undefined = not yet loaded.
+  const cache = new Map<string, { descriptors: WebServiceDescriptor[]; at: number }>();
+
+  async function load(conversationId: string, force = false): Promise<WebServiceDescriptor[]> {
+    const entry = cache.get(conversationId);
+    const cached = !force && entry && now() - entry.at < ttlMs ? entry.descriptors : undefined;
     // Only a NON-EMPTY cached list is authoritative. An empty [] almost always means
     // "couldn't read the manifest yet" — the pod was still ContainerCreating when a
     // prior call ran (download() threw → []), or it was asleep. Caching that empty
@@ -73,7 +89,7 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
     } catch {
       descriptors = []; // pod asleep / creating / manifest missing — retry next time
     }
-    if (descriptors.length > 0) cache.set(conversationId, descriptors);
+    if (descriptors.length > 0) cache.set(conversationId, { descriptors, at: now() });
     return descriptors;
   }
 
@@ -83,8 +99,8 @@ export function createWebServiceRegistry(deps: WebServiceRegistryDeps): WebServi
   }
 
   return {
-    async list(conversationId) {
-      return load(conversationId);
+    async list(conversationId, opts) {
+      return load(conversationId, opts?.force ?? false);
     },
     async get(conversationId, name) {
       return (await load(conversationId)).find((d) => d.name === name) ?? null;

@@ -585,7 +585,7 @@
           # Dev shell: everything needed to build, test (Tier 1-3), and drive a
           # local cluster. Defined in ./nix/devshell.nix; `nix develop` or
           # `.envrc` (`use flake`) via direnv both use it.
-          devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+          devShells.default = import ./nix/devshell.nix { inherit pkgs conversationRouter; };
 
           checks = {
             inherit agentHost ui;

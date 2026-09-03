@@ -75,7 +75,11 @@ setInterval(refreshConversations, 10000);
 // lifetime, so there is no unmount to close on (parallel to the setInterval).
 subscribeConversations({ baseUrl: BASE_URL }, "all", {
   onSnapshot: (list) => sessionStore.mergeFromServer(list),
-  onUpsert: (c) => sessionStore.mergeFromServer([c]),
+  // A single-row upsert is NOT authoritative for sources/links: link changes don't fire it, so
+  // its links re-read is incidental and an empty `sources: []` would clobber the poll-populated
+  // provider icon. The poll + this snapshot own sources; the upsert only advances the rest of the
+  // row. Why: PR #452.
+  onUpsert: (c) => sessionStore.mergeFromServer([c], { sourcesAuthoritative: false }),
 });
 
 // Deep-link support (?thread=<id>). The webhooks service posts a "View

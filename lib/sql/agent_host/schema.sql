@@ -60,3 +60,70 @@ CREATE INDEX "conversations_by_activity" ON "conversations" ("last_activity_at" 
 
 -- Per-owner filtering for the conversation list.
 CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");
+
+-- LIVE CONVERSATION-LIST PUSH — a NOTIFY trigger on this table (channel
+-- 'conversations_changed') lets the conversation-router serve GET /conversations/events by
+-- LISTENing instead of fanning SSE out to every agent-host pod. It is NOT declared here:
+-- Atlas Community does not diff FUNCTION/TRIGGER objects (`migrate diff` reports "synced,
+-- no changes" for them), so a declaration in this file would silently never reach a
+-- migration — and production is built by REPLAYING migrations, not by applying this file.
+-- The trigger's source of truth is therefore its migration:
+--   migrations/<ts>_notify_conversation_changes.sql
+-- Keep the two in sync by hand when the notified columns change (that migration and the
+-- router's assembleList are the only two places that must agree on which changes push).
+
+-- The conversation EVENT LOG — the durable replacement for events.jsonl on the
+-- wiped emptyDir, and for the NFS mirror that existed only to survive that.
+-- There is no second copy, so there is no divergence to reconcile.
+--
+-- `seq` is per-conversation and assigned by the writing pod (one pod owns a
+-- conversation at a time). The PK is the backstop, NOT just an index: if that
+-- assumption is ever violated the second writer gets a unique violation instead
+-- of silently interleaving. Inserts here must never ON CONFLICT DO NOTHING.
+--
+-- The PK also serves both reads: `WHERE conversation_id = $1 ORDER BY seq` is a
+-- range scan over adjacent rows, and the tail walks the same index.
+--
+-- checksum/prev_checksum are STORED, never recomputed from `event`: jsonb does
+-- not preserve key order and canonicalize() sorts only top-level keys, so a
+-- chain re-derived from the column could never match the writer's. These two
+-- columns are the only copy of that truth.
+CREATE TABLE "conversation_events" (
+  "conversation_id" text   NOT NULL,
+  "seq"             bigint NOT NULL,
+  "event"           jsonb  NOT NULL,
+  "checksum"        text   NOT NULL,
+  "prev_checksum"   text   NOT NULL,
+  "created_at"      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("conversation_id", "seq")
+);
+
+-- Conversation ASSETS (images, future: other media) — metadata only.
+-- The asset BYTES live on the dedicated assets PVC (/var/lib/agent-assets),
+-- keyed by asset_id. This table holds the metadata: what exists, for which
+-- conversation, when, how big, what type. Clean separation: queryable metadata
+-- in Postgres, efficient blob storage on disk.
+--
+-- asset_id is content-addressed (SHA-256 prefix + extension), so identical
+-- uploads dedupe automatically. The bytes are written once per unique content;
+-- metadata rows can reference the same asset_id (different conversations
+-- pasting the same image).
+--
+-- Lifecycle: assets are conversation-scoped. When a conversation is deleted,
+-- its asset metadata rows are removed. A separate GC job (future) removes
+-- orphaned bytes (asset_id on disk with no referencing metadata row).
+CREATE TABLE "conversation_assets" (
+  "conversation_id" text   NOT NULL,
+  "asset_id"        text   NOT NULL,
+  "mime_type"       text   NOT NULL,
+  "size_bytes"      bigint NOT NULL,
+  "sha256_hash"     text   NOT NULL,
+  "created_at"      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("conversation_id", "asset_id")
+);
+
+-- Find all assets for a conversation (for clear/replay).
+CREATE INDEX "conversation_assets_by_conv" ON "conversation_assets" ("conversation_id");
+
+-- Find orphaned asset_ids (bytes on disk with no metadata row) for GC.
+CREATE INDEX "conversation_assets_by_id" ON "conversation_assets" ("asset_id");

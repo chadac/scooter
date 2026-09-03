@@ -14,7 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
-import { danglingRunInfo } from "./danglingRun.js";
+import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
@@ -158,12 +158,9 @@ export interface ConversationStore {
    *  the chain. Computed deterministically from the persisted log order, so it
    *  survives a restart. Optional (in-memory test stores may skip it). */
   readEventsWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
-  /** Checksummed replay from the DURABLE store (local, else mirror) — what the integrity
-   *  stream reads. Optional: a store with no mirror only has the local reader. PR #405. */
-  readEventsDurableWithChecksum?(id: SessionId): AsyncIterable<ChecksummedEvent>;
   /** REPLACE a conversation's entire event log with `events` (atomic rewrite), resetting the rolling
-   *  integrity checksum. Used ONLY by content-based mirror reconciliation (hydrateFromMirror) when the
-   *  local log has DIVERGED from the durable mirror (a fork, not a prefix) — the mirror wins, so local
+   *  integrity checksum. Used ONLY by content-based reconciliation when the
+   *  log has DIVERGED from the store (a fork, not a prefix) — the store wins, so local
    *  is rewritten to it. NOT a hot-path operation. Optional (in-memory test stores may skip it). */
   replaceEvents?(id: SessionId, events: AguiEvent[]): Promise<void>;
   /** The RECENT tail only: the events from the last `runs` runs, read WITHOUT
@@ -171,6 +168,13 @@ export interface ConversationStore {
    *  fast first-paint window on a long conversation stays cheap. Optional (an
    *  in-memory store can fall back to reading all of readEvents). */
   readEventsTail?(id: SessionId, runs: number): Promise<AguiEvent[]>;
+  /** The last `limit` events by seq — a size-bounded first-paint window. Optional. */
+  readEventsTailByCount?(id: SessionId, limit: number): Promise<AguiEvent[]>;
+  readEventsBefore?(
+    id: SessionId,
+    beforeSeq: number,
+    limit: number,
+  ): Promise<{ events: AguiEvent[]; firstSeq: number; done: boolean }>;
   /** Subscribe to events as they are durably appended, each carrying its rolling
    *  checksum (folded in persisted order). This is the authority the live
    *  integrity stream broadcasts — it sees EVERY logged event (incl. the user's
@@ -274,7 +278,7 @@ export interface SessionManager {
    *  conversation is known to THIS pod (durable state present locally). */
   revive(id: SessionId): Promise<Conversation>;
   /** REVIVE-ON-ASSIGN (seamless rollout): revive a conversation that may be UNKNOWN to this
-   *  pod, hydrating its history from the shared mirror first (this pod is its NEW owner after
+   *  pod (this pod is its NEW owner after
    *  a rollout reassignment). Idempotent (no-op if already in memory). `expectedGen` is the
    *  CR's current generation for fencing — revive only if this pod is the current owner at
    *  that generation; a stale push (older gen) is a no-op. Distinct from `revive()`, which
@@ -291,9 +295,9 @@ export interface SessionManager {
   reconcileDanglingRun(id: SessionId, expectedGen?: number): Promise<void>;
   /** READ-ONLY hydrate for a reconnecting UI: make a conversation's history available on
    *  THIS pod so the read routes (events / events.integrity) can serve it, WITHOUT starting
-   *  the sandbox/bridge (unlike revive*). Pulls events from the mirror into local if absent,
+   *  the sandbox/bridge (unlike revive*).
    *  then registers the entry as a suspended placeholder. Returns true if the conversation
-   *  exists anywhere (in memory, local, or mirror) — false ⇒ genuinely unknown (404). Cheap
+   *  exists — false ⇒ genuinely unknown (404). Cheap
    *  + idempotent; the route calls it before deciding to 404. See ROLLOUT_DRAIN_AND_POD_IP.md
    *  (the "GET after a pod move / deleted CR" 404 gap). */
   ensureReadable(id: SessionId): Promise<boolean>;
@@ -383,16 +387,6 @@ export interface SessionManager {
    * own. Returns the ids reaped. Unlike sweepIdle (suspend), this is DESTRUCTIVE.
    */
   sweepRetention(maxAgeMs: number, now?: number): Promise<SessionId[]>;
-
-  /**
-   * Subscribe to conversation LIFECYCLE changes (a new conversation via start(),
-   * or a title change via setTitle()) so the GET /conversations/events stream can
-   * push the sidebar without the 10s poll. Fires with the changed Conversation
-   * (the caller enriches with `sources`/view). Returns an unsubscribe fn.
-   *
-   * Design stage: SIGNATURE ONLY.
-   */
-  onConversationChange(cb: (conv: Conversation) => void): () => void;
 }
 
 /** Builds the ACP<->AG-UI bridge for a conversation (spawns goose in prod). */
@@ -415,12 +409,6 @@ export interface SessionManagerDeps {
    *  generation). Omitted / allowAllGuard = single-replica (always allow, today's
    *  behavior). See ownershipGuard.ts. */
   ownershipGuard?: OwnershipGuard;
-  /** Optional (multi-replica revive-on-assign): pull ONE conversation's durable state from
-   *  the shared mirror into local so this pod can hydrate + revive a conversation the
-   *  controller just reassigned here (that this pod never owned). Returns false if the
-   *  mirror has no such conversation. Wired to mirroredStore.hydrateFromMirror when a mirror
-   *  is configured; omitted single-replica. Used by reviveFromMirror(). */
-  hydrateFromMirror?: (id: SessionId) => Promise<boolean>;
   /** Optional multi-replica registry: on start()/spawnChild() this writes a Conversation
    *  CR so the controller can assign the conversation a hostPod and the router forwards to
    *  it. Omitted / noopRegistry = single-replica (no CR). See conversationRegistry.ts. */
@@ -516,16 +504,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     userTitled: e.userTitled,
     starred: e.starred,
   });
-
-  // Conversation lifecycle subscribers (the /conversations/events push stream).
-  // Fired by start() (new conversation) and setTitle() (title change) so the
-  // sidebar updates without waiting on the 10s poll. Fire-and-forget + cheap:
-  // it passes the Conversation only; the stream handler enriches with `sources`.
-  const changeSubs = new Set<(c: Conversation) => void>();
-  const emitChange = (e: Entry): void => {
-    const c = toConversation(e);
-    for (const cb of changeSubs) cb(c);
-  };
 
   // Mark the conversation active NOW and persist it. Fire-and-forget: touch() runs on
   // the prompt path and on throttled web-service proxy traffic, so it must never block
@@ -752,7 +730,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       await saveMeta(entry);
-      emitChange(entry); // push the new conversation to the sidebar stream (live)
 
       // Register the assignment-table CR so the controller assigns a hostPod and the
       // router forwards subsequent requests here. Idempotent + non-throwing (a k8s
@@ -799,7 +776,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       };
       entries.set(id, entry);
       await saveMeta(entry);
-      emitChange(entry); // show it in the sidebar live (nested under the parent)
 
       // Register the child CR carrying parentId so the controller CO-LOCATES it on the
       // parent's pod (it shares the parent's sandbox). Idempotent + non-throwing; noop in
@@ -992,30 +968,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         });
       }
 
-      // If NOT already live here, pull its durable state from the mirror into local, hydrate
+      // If NOT already live here, hydrate
       // the Entry (hydrateByThread reads the now-local meta), and revive it. If it's ALREADY
       // in memory this is a no-op — but we STILL run the dangling-run resume below (a
       // conversation reassigned mid-run may already be revived yet have an unfinished run).
       if (!entries.get(id)) {
-        if (deps.hydrateFromMirror) {
-          const pulled = await deps.hydrateFromMirror(id).catch((err) => {
-            log.errorWith("reviveFromMirror: mirror pull failed", err, { conversation_id: id });
-            return false;
-          });
-          if (!pulled) {
-            // LOUD. This pod was ASSIGNED the conversation; giving up here means nobody
-            // will ever complete its (possibly truncated) run — the "Working… forever"
-            // condition the Tier-2 browser tests surfaced, which
-            // is why the assigned pod's total silence looked like the push never arriving.
-            log.warn("reviveFromMirror: assigned a conversation the mirror does not have", {
-              conversation_id: id,
-            });
-            return;
-          }
-        }
         const entry = await hydrateByThread(id as ThreadId);
         if (!entry) {
-          log.warn("reviveFromMirror: pulled the mirror but could not reconstruct", {
+          // LOUD: this pod was ASSIGNED the conversation, so giving up means nobody
+          // completes its (possibly truncated) run — "Working… forever".
+          log.warn("reviveFromMirror: could not reconstruct the conversation", {
             conversation_id: id,
           });
           return;
@@ -1036,19 +998,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (danglingReconciles.has(id)) return; // one settlement at a time
       danglingReconciles.add(id);
       try {
-        // PULL FIRST. On an ownership gain the watch fires within milliseconds of
-        // the reassignment — before any read has hydrated this pod's local store.
-        // The dead pod's events (including the dangling RUN_STARTED and any cancel
-        // marker) live in the MIRROR; judging from the empty local log found no
-        // dangling run and silently no-opped (deployed validation round 3). The
-        // pull is idempotent and cheap when local is already current.
-        if (deps.hydrateFromMirror && !entries.get(id)?.bridge) {
-          await deps.hydrateFromMirror(id).catch((err) =>
-            log.errorWith("dangling-run check: mirror pull failed (judging local)", err, {
-              conversation_id: id,
-            }),
-          );
-        }
         // Pass our identity: a run THIS pod started at THIS generation is in flight, not
         // stranded. `expectedGen` is the generation the controller assigned us at — a run
         // stamped with an earlier one was left by a previous assignment and still resumes.
@@ -1057,6 +1006,36 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // own run cannot be the one we would touch.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
         const events = await collectEvents(store.readEvents(id));
+
+        // HEAL FIRST: close any run left open ANYWHERE in the log, not just at the
+        // tail. A fenced hand-off drops the outgoing pod's remaining events —
+        // terminal included — and the next turn completes on top, burying the
+        // orphan where the tail-only check can never reach it. The UI's `running`
+        // flag is a boolean, so one stray RUN_STARTED reads as "working" forever.
+        //
+        // Safe to write here: this pod was just assigned the conversation, the
+        // controller keeps a single hostPod, and the fence stops the old owner — so
+        // nobody else can be driving these runs. The run that is genuinely in
+        // flight (if any) is excluded below.
+        const inFlight = danglingRunInfo(events, self)?.runId;
+        const orphans = orphanRuns(events).filter((o) => o.runId !== inFlight);
+        for (const o of orphans) {
+          await store.appendEvent(id as SessionId, {
+            type: "RUN_FINISHED",
+            threadId: o.threadId as never,
+            runId: o.runId as never,
+            interrupted: true,
+            ts: Date.now(),
+          });
+        }
+        if (orphans.length > 0) {
+          log.warn("closed runs left open by a hand-off", {
+            conversation_id: id,
+            closed: orphans.length,
+            run_ids: orphans.map((o) => o.runId),
+          });
+        }
+
         const dangling = danglingRunInfo(events, self);
         if (!dangling) {
           // NEVER silent: a wrong no-op here is indistinguishable from the hook not
@@ -1101,18 +1080,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // In memory != history is here: hydrate loads META only, so a known conversation
       // still takes the pull (a no-op once the log is local). PR #405.
       const known = entries.get(id) !== undefined;
-      // Pull its durable state (meta + events) from the mirror into local if a mirror is
+      // Hydrate it if
       // configured — so a reconnecting UI (GET events / events.integrity) can read history
       // even after the owner pod moved (rollout) or the CR was cleared. READ-ONLY: no
       // sandbox/bridge spin-up (unlike revive*). hydrateByThread then registers the entry as
       // a suspended placeholder; the next prompt revives the pod on demand.
-      if (deps.hydrateFromMirror) {
-        await deps.hydrateFromMirror(id).catch((err) => {
-          log.errorWith("ensureReadable: mirror pull failed", err, { conversation_id: id });
-          return false;
-        });
-      }
-      // A known conversation is readable even if the pull found nothing new.
       if (known) return true;
       const entry = await hydrateByThread(id as ThreadId);
       return entry !== undefined;
@@ -1311,9 +1283,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // has renamed the conversation, the user title is locked (see setUserTitle).
       if (entry.userTitled) return Promise.resolve();
       entry.title = title;
-      const persisted = saveMeta(entry); // persist the agent-assigned title
-      emitChange(entry); // push the title change to the sidebar stream
-      return persisted;
+      // The durable write is what drives the live sidebar now: saveMeta updates the
+      // conversations row, whose trigger fires NOTIFY 'conversations_changed' and the
+      // conversation-router pushes the upsert (see migration 20260902183131 + events.go).
+      return saveMeta(entry);
     },
 
     setUserTitle(id, title) {
@@ -1321,18 +1294,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!entry) return Promise.resolve();
       entry.title = title;
       entry.userTitled = true; // lock it: the agent's <title> no longer wins
-      const persisted = saveMeta(entry);
-      emitChange(entry);
-      return persisted;
+      return saveMeta(entry);
     },
 
     setStarred(id, starred) {
       const entry = entries.get(id);
       if (!entry) return Promise.resolve();
       entry.starred = starred;
-      const persisted = saveMeta(entry);
-      emitChange(entry);
-      return persisted;
+      return saveMeta(entry);
     },
 
     async hydrate() {
@@ -1435,18 +1404,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // metas, so a wiped emptyDir meant nothing was hydrated however much the cluster knew.
       for (const c of mine) {
         if (entries.has(c.id)) continue; // already live or hydrated from the local cache
-        // Prefer the DURABLE history if this conversation has any: hydrateFromMirror pulls its
-        // meta + event log into local so the transcript is intact. If it has none (or no mirror is
-        // configured) we still adopt from the CR alone — an entry with no history is enough to be
-        // listed, suspended, and reclaimed, which is what closes the leak (I5: suspend() throws
-        // for anything not in `entries`, so an unknown sandbox was previously unreachable).
-        let meta = metaById.get(c.id);
-        if (!meta && deps.hydrateFromMirror) {
-          const pulled = await deps.hydrateFromMirror(c.id).catch(() => false);
-          if (pulled) {
-            meta = ((await store.listConversations?.()) ?? []).find((m) => m.id === c.id);
-          }
-        }
+        // A conversation with no meta is still adopted from the CR alone — enough to be
+        // listed, suspended and reclaimed, which is what closes the sandbox leak.
+        const meta = metaById.get(c.id);
         const synthesized: ConversationMeta = meta ?? {
           id: c.id,
           threadId: c.id,
@@ -1647,11 +1607,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
       return reaped;
-    },
-
-    onConversationChange(cb) {
-      changeSubs.add(cb);
-      return () => changeSubs.delete(cb);
     },
 
     onSubagentComplete(cb) {

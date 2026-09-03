@@ -7,6 +7,7 @@ Trigger rules:
 """
 
 import asyncio
+import httpx
 import hashlib
 import hmac
 import logging
@@ -122,6 +123,12 @@ async def handle_github_webhook(
 
     if event_type == "issue_comment":
         await _handle_comment(payload)
+    elif event_type == "pull_request_review_comment":
+        await _handle_review_comment(payload)
+    elif event_type == "pull_request_review":
+        await _handle_review(payload)
+    elif event_type == "workflow_run":
+        await _handle_workflow_run(payload)
     elif event_type == "issues":
         await _handle_issue_event(payload)
     elif event_type == "pull_request":
@@ -213,6 +220,211 @@ async def _handle_comment(payload: dict):
             invoking_user=user,
         )
     )
+
+
+async def _forward_or_ignore(res_id: str, message: str) -> None:
+    """Forward to the conversation LINKED to this PR, or do nothing.
+
+    Unlike _handle_comment there is no create-a-conversation path and no mention
+    gate: a review comment on a PR the agent opened is addressed to it by
+    construction, and a review comment on a PR it does NOT own is not ours to act
+    on. priority=True so it preempts a run in progress — the agent-host turns that
+    into interrupt:"thinking" (idle generation yields; an in-flight tool call
+    finishes first).
+    """
+    existing = (
+        await db.lookup_conversation("github", "pull_request", res_id)
+        or await db.get_conversation_for_resource("github", "pull_request", res_id)
+    )
+    if not existing or is_pending(existing):
+        return
+    await send_message(existing, message, priority=True, source="github")
+
+
+def _line_ref(comment: dict) -> str:
+    """`path:line`, or just the path when GitHub gives no line (an outdated diff)."""
+    path = comment.get("path", "")
+    line = comment.get("line") or comment.get("original_line")
+    return f"{path}:{line}" if line else path
+
+
+async def _handle_review_comment(payload: dict):
+    """pull_request_review_comment — a comment on a SPECIFIC LINE of the diff."""
+    if payload.get("action") != "created":
+        return
+
+    comment = payload.get("comment", {})
+    body = comment.get("body", "")
+    user = comment.get("user", {}).get("login", "unknown")
+    if _is_ignored_user(user) or _is_own_comment(body):
+        return
+
+    pr = payload.get("pull_request", {})
+    number = pr.get("number")
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+
+    where = _line_ref(comment)
+    hunk = comment.get("diff_hunk", "")
+    comment_id = comment.get("id")
+    threaded = comment.get("in_reply_to_id") is not None
+
+    message = (
+        f"@{user} commented on a specific LINE of PR #{number} in {owner}/{repo}"
+        f"{' (replying in an existing thread)' if threaded else ''}:\n\n"
+        f"**{where}**\n\n"
+        + (f"```diff\n{hunk}\n```\n\n" if hunk else "")
+        + f"{body}\n\n---\n\n"
+        f"This is a LINE comment, so reply IN THE THREAD: "
+        f"`github_comment(body, in_reply_to={comment_id})`. That puts your answer next to "
+        f"the code being discussed. Use a plain `github_comment(body)` only for something "
+        f"about the PR as a whole.\n\n"
+        f"If the comment asks for a change, make it and push — a reply alone does not "
+        f"address it."
+    )
+    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+
+
+async def _handle_review(payload: dict):
+    """pull_request_review — the review ENVELOPE (approved / changes_requested)."""
+    if payload.get("action") != "submitted":
+        return
+
+    review = payload.get("review", {})
+    user = review.get("user", {}).get("login", "unknown")
+    body = (review.get("body") or "").strip()
+    state = (review.get("state") or "").lower()
+    if _is_ignored_user(user) or _is_own_comment(body):
+        return
+
+    pr = payload.get("pull_request", {})
+    number = pr.get("number")
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+
+    # The individual line comments arrive as their own events; this is the summary.
+    if state == "approved":
+        head = f"@{user} APPROVED PR #{number} in {owner}/{repo}."
+        tail = "No action needed unless the body asks for something."
+    elif state == "changes_requested":
+        head = f"@{user} requested CHANGES on PR #{number} in {owner}/{repo}."
+        tail = (
+            "Address the individual line comments (they arrive separately), then PUSH — "
+            "a reply alone does not clear a changes-requested review."
+        )
+    else:
+        head = f"@{user} reviewed PR #{number} in {owner}/{repo}."
+        tail = "Respond with `github_comment` if it asks for something."
+
+    message = f"{head}\n\n" + (f"{body}\n\n" if body else "") + f"---\n\n{tail}"
+    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+
+
+async def _previous_run_failed(owner: str, repo: str, workflow_id, branch: str, before_id: int) -> bool:
+    """Did the PREVIOUS run of this workflow on this branch fail?
+
+    Queried from the API rather than kept in a table: webhooks holds no per-resource
+    state, and "was the last run red?" is exactly that. One round-trip, and on any
+    error we answer False — a missed red->green notice is better than a spurious one.
+    """
+    try:
+        from ..responses.github import _headers_for_repo, GITHUB_API
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+                headers=await _headers_for_repo(owner, repo),
+                params={"branch": branch, "per_page": 5, "status": "completed"},
+            )
+            resp.raise_for_status()
+            runs = resp.json().get("workflow_runs", [])
+    except Exception as e:  # noqa: BLE001 - never let this break the webhook
+        logger.warning(
+            "previous-run lookup failed; treating as not-previously-red",
+            extra={**_C, "source": "github", "error": str(e)},
+        )
+        return False
+    for r in runs:
+        if r.get("id") == before_id:
+            continue
+        return r.get("conclusion") == "failure"
+    return False
+
+
+async def _handle_workflow_run(payload: dict):
+    """workflow_run — CI finished.
+
+    NOT check_run: that fires at created/in_progress/completed for every job (109 on
+    one real commit here, ~300 webhooks per push) and arrives over minutes, so the
+    bridge's queue coalescing cannot merge it. workflow_run is one event per workflow.
+
+    Forwarded on FAILURE, and on success only when the previous run was red — so the
+    agent learns it is unblocked without polling, and a routinely-green push costs
+    nothing.
+    """
+    if payload.get("action") != "completed":
+        return
+
+    run = payload.get("workflow_run", {})
+    conclusion = run.get("conclusion")
+    if conclusion not in ("failure", "success"):
+        return  # cancelled / skipped / timed_out: not actionable
+
+    prs = run.get("pull_requests") or []
+    if not prs:
+        return  # not a PR run — nothing to route it to
+    number = prs[0].get("number")
+
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+    name = run.get("name", "workflow")
+    url = run.get("html_url", "")
+    branch = run.get("head_branch", "")
+
+    if conclusion == "success":
+        if not await _previous_run_failed(owner, repo, run.get("workflow_id"), branch, run.get("id")):
+            return
+        message = (
+            f"CI is GREEN again: **{name}** now passes on `{branch}` (PR #{number}).\n\n"
+            f"{url}\n\n---\n\nThe previous run failed, so this unblocks the PR. "
+            f"No action needed unless you were waiting to do something after CI."
+        )
+    else:
+        failed = await _failed_jobs(owner, repo, run.get("id"))
+        listed = ("\n".join(f"- {j}" for j in failed)) if failed else "- (job names unavailable)"
+        message = (
+            f"CI FAILED: **{name}** on `{branch}` (PR #{number}).\n\n"
+            f"Failing jobs:\n{listed}\n\n{url}\n\n---\n\n"
+            f"Investigate before pushing again — read the failing job's log rather than "
+            f"guessing. If it is a known flake, say so explicitly rather than silently "
+            f"re-running."
+        )
+    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+
+
+async def _failed_jobs(owner: str, repo: str, run_id) -> list[str]:
+    """Names of the jobs that failed in a run — the useful half of a CI failure."""
+    try:
+        from ..responses.github import _headers_for_repo, GITHUB_API
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+                headers=await _headers_for_repo(owner, repo),
+                params={"filter": "latest", "per_page": 100},
+            )
+            resp.raise_for_status()
+            jobs = resp.json().get("jobs", [])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "failed-jobs lookup failed; forwarding without job names",
+            extra={**_C, "source": "github", "error": str(e)},
+        )
+        return []
+    return [j.get("name", "?") for j in jobs if j.get("conclusion") == "failure"]
 
 
 async def _handle_issue_event(payload: dict):

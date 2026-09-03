@@ -118,6 +118,11 @@ type AguiEventBase =
        *  force-interrupt — a clean end, NOT an error. The UI shows "you stopped
        *  this turn." */
       cancelled?: boolean;
+      /** Synthesized by the ADOPTING pod for a run whose real terminal was lost —
+       *  the previous owner was fenced mid-run, so its RUN_FINISHED never reached
+       *  the log. Marks the run closed so the UI stops reading it as in-flight;
+       *  the work itself was not completed. */
+      interrupted?: boolean;
     }
   | { type: "RUN_ERROR"; message: string; code?: string }
   // Emitted when a run failed TRANSIENTLY (agent process died / no-activity / ACP threw) and the pump
@@ -628,6 +633,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean }>>();
   let acpClient: AcpClient | undefined;
 
+  /** Drop the cached ready-session so the next attempt re-initializes a fresh one.
+   *  A wedged session fails IDENTICALLY on every retry, so retrying through it just
+   *  burns the budget. */
+  const dropCachedSession = (why: string) => {
+    if (!currentProviderId) return;
+    log.warn("dropping the cached agent session; the next attempt re-initializes", {
+      provider: currentProviderId,
+      reason: why,
+    });
+    readySessions.delete(currentProviderId);
+  };
+
   // Permission/option requests awaiting a user answer. Two kinds:
   //  - goose tool-permission: the ACP requestPermission call blocks on `resolve`.
   //  - EXTERNAL (e.g. a broker AWS request): no blocked goose run; `onExternal`
@@ -981,7 +998,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       : "The user sent several messages while you were working — handle them together as one request:\n\n" +
         texts.map((t, i) => `[Message ${i + 1}]\n${t}`).join("\n\n");
 
-  const runPrompt = async (input: PromptInput, batch: PromptInput[] = [input]): Promise<{ runId: RunId; retryable: boolean }> => {
+  const runPrompt = async (
+    input: PromptInput,
+    batch: PromptInput[] = [input],
+    // A RETRY re-drives the same batch; the user's message is already in the log from
+    // the first attempt. Re-persisting it wrote the same prompt 6 times on a run that
+    // wedged and retried 5 times, inflating the very history the next attempt reads.
+    alreadyPersisted = false,
+  ): Promise<{ runId: RunId; retryable: boolean }> => {
     const runId = nextId("run");
     const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0, terminalPending: new Set() };
     const startedAt = Date.now();
@@ -1008,6 +1032,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         closeOpenText(st);
         closeOpenReasoning(st);
         outcome = "error";
+        // LOUD: the RUN_ERROR below tells the USER to check these logs, so this must be
+        // in them. Without it a wedged-then-retried run leaves no trace at all — the
+        // only evidence is a "prompt: sending" with no matching "returned".
+        log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
+          run_id: st.runId,
+          waited_ms: firstActivityTimeoutMs,
+          retryable: true,
+        });
         emit({
           type: "RUN_ERROR",
           message:
@@ -1017,6 +1049,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           code: "no_activity_timeout",
         });
         st.retryable = true; // transient (credential/model blip) — the pump auto-retries with backoff
+        // The SESSION is suspect, not just this prompt: a session that produced nothing
+        // produces nothing on the retry too (observed: 5 identical dead-on-arrival runs
+        // through one cached session after a cancel left it wedged). Force a fresh one.
+        dropCachedSession("no ACP activity before the deadline");
         // Unblock the wedged goose so the next prompt gets a fresh run.
         void self.cancel(runId).catch(() => {});
       }, firstActivityTimeoutMs);
@@ -1042,6 +1078,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           closeOpenText(st);
           closeOpenReasoning(st);
           outcome = "error";
+          // LOUD, same reason as the DOA watchdog: the user is told to check these logs.
+          log.warn("run wedged: the agent process died without a terminal event", {
+            run_id: st.runId,
+            saw_activity: st.sawActivity,
+            retryable: true,
+          });
           emit({
             type: "RUN_ERROR",
             message:
@@ -1051,6 +1093,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             code: "agent_process_died",
           });
           st.retryable = true; // process crash — the pump auto-retries the batch with backoff
+          // The process behind this session is gone; the cached entry can only fail.
+          dropCachedSession("the agent process died");
           // Best-effort cleanup so the next prompt gets a fresh run.
           void self.cancel(runId).catch(() => {});
         }, livenessProbeMs);
@@ -1074,7 +1118,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // never folded back into itself on the next revive. A batched turn persists
     // EACH original message as its own user message — history stays faithful even
     // though goose received them combined as one prompt.
-    for (const b of batch) {
+    for (const b of alreadyPersisted ? [] : batch) {
       // A PLATFORM-injected message persists as a SYSTEM_MESSAGE (hideable in the UI),
       // NOT a role:user turn — the human didn't type it. The agent still receives the
       // (decorated) text below. A normal human message persists as user text.
@@ -1349,10 +1393,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           let res = await runPrompt(batch[0].input, inputs);
           for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
             const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
+            // A run that fails and silently succeeds on retry looks to the user like
+            // "it failed once" with nothing to point at afterwards.
+            log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
             emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
             await new Promise((r) => setTimeout(r, delayMs));
             if (closed) break; // bridge stopped while backing off — abandon the retry
-            res = await runPrompt(batch[0].input, inputs);
+            res = await runPrompt(batch[0].input, inputs, true);
+          }
+          if (res.retryable) {
+            log.error("run FAILED after exhausting retries", { attempts: RETRY_MAX });
           }
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {

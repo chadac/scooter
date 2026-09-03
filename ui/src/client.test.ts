@@ -1,7 +1,7 @@
 /**
  * UI unit test — loadHistory folds a MESSAGE_IMAGES ref onto its user message
  * (multimodal replay, stage 3), so an image survives a refresh. Text-only messages
- * fold exactly as before. See docs/MULTIMODAL_IMAGES.md.
+ * fold exactly as before.
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";

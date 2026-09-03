@@ -220,8 +220,24 @@ let
     allNamespaces;
   coverageProblems = map (n: "example never sets agentSandbox.${n} (add it, or add to coverageExempt with a reason)") uncovered;
 
-  allProblems = problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  # GATED SKILLS: a skill for a capability that is not wired teaches the agent to call a
+  # route that 404s, and then to misread that 404 as the feature being broken. Render the
+  # platform with grafana on and off and assert the skill follows.
+  skillsWith = enable: let
+    e = flake.inputs.kubenix.evalModules.${system} {
+      module = { imports = [ ./kubenix-config.nix ]; } // {
+        agentSandbox.broker.grafana = { inherit enable; url = "https://example.grafana.net"; };
+      };
+    };
+    cms = e.config.kubernetes.resources.configMaps or { };
+  in if cms ? agent-skills then builtins.attrNames cms.agent-skills.data else [ ];
+  hasGrafanaSkill = enable: builtins.elem "scooter-grafana.md" (skillsWith enable);
+  skillProblems =
+    (if hasGrafanaSkill true then [ ] else [ "scooter-grafana.md missing when broker.grafana.enable = true" ])
+    ++ (if hasGrafanaSkill false then [ "scooter-grafana.md SHIPPED when broker.grafana.enable = false (the agent will chase a 404)" ] else [ ]);
+
+  allProblems = skillProblems ++ problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace\n"
+then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

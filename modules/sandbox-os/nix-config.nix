@@ -31,6 +31,10 @@ in
   config = lib.mkIf cfg.enable {
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
+    # Off: these pods lack the kernel user-namespaces Nix's build sandbox needs,
+    # so any derivation build (e.g. `nix develop`) fails hard. Why: PR #445.
+    nix.settings.sandbox = false;
+
     # Don't fetch the GLOBAL flake registry (channels.nixos.org) — the local
     # pinned `nixpkgs` entry below is the single source of truth, and fetching the
     # global one needs network + makes `nixpkgs#x` non-deterministic. "" disables it.

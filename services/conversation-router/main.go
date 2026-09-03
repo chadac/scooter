@@ -42,6 +42,10 @@ type config struct {
 	// The agent-host ClusterIP Service — fallback for non-scoped / unassigned / stale-IP
 	// requests (load-balances to any ready pod). Replaces the old DEFAULT_POD ordinal.
 	clusterIPService string
+	// fallback is the upstream for non-scoped / unassigned / stale-IP requests, resolved once at
+	// boot: the ClusterIP Service in cluster, or the single AGENT_HOST_URL in dev mode. Set in
+	// main() after the mode is known; newRouter reads it rather than recomputing.
+	fallback *url.URL
 }
 
 func configFromEnv() config {
@@ -64,16 +68,85 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	dyn, err := newDynamicClient()
-	if err != nil {
-		log.Error("k8s client init failed", errAttr(err))
-		os.Exit(1)
-	}
+	// EXISTENCE + routing + create differ between cluster and the kube-less dev/e2e stack (see
+	// devmode.go). The ownership cache is always constructed; in dev it is simply never Run, so
+	// HostIP always misses and every request falls through to the single AGENT_HOST_URL.
 	cache := NewOwnershipCache()
-	go cache.Run(ctx, dyn, cfg.namespace)
+	var crs crLookup = cache
+	var creator ConversationCreator
+	if devModeEnabled() {
+		u, err := agentHostURLFromEnv()
+		if err != nil {
+			log.Error("ROUTER_DEV_MODE misconfigured", errAttr(err))
+			os.Exit(1)
+		}
+		dc, err := OpenDevCreator(ctx, storeDSNFromEnv())
+		if err != nil {
+			log.Error("ROUTER_DEV_MODE dev creator init failed", errAttr(err))
+			os.Exit(1)
+		}
+		defer dc.Close()
+		cfg.fallback = u
+		crs = allExisting{}
+		creator = dc
+		log.Warn("ROUTER_DEV_MODE: kube-less single-host stack (no CRD watch, existence from store)",
+			slog.String("agent_host_url", u.String()))
+	} else {
+		dyn, err := newDynamicClient()
+		if err != nil {
+			log.Error("k8s client init failed", errAttr(err))
+			os.Exit(1)
+		}
+		go cache.Run(ctx, dyn, cfg.namespace)
+		creator = &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
+		cfg.fallback = FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
+	}
 
-	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator)}
+	// Read-only Postgres handle on the agent_host database (conversation metadata). Optional:
+	// when no DSN is configured the router proxies the list to the pods exactly as before. When
+	// present, GET /conversations is served straight from here (see newRouter).
+	var store *Store
+	if dsn := storeDSNFromEnv(); dsn != "" {
+		s, err := OpenStore(ctx, dsn)
+		if err != nil {
+			log.Warn("postgres read store unavailable (list falls back to fleet aggregate)", errAttr(err))
+		} else {
+			store = s
+			defer store.Close()
+			// Prove the SELECT grant at boot — a mis-provisioned read-only role fails HERE
+			// (loudly) rather than silently when the list is first served.
+			vctx, vcancel := context.WithTimeout(ctx, verifyTimeout)
+			if n, err := store.CountConversations(vctx); err != nil {
+				log.Warn("postgres read store verify failed (list falls back to fleet aggregate)", errAttr(err))
+			} else {
+				log.Info("postgres read store connected", slog.Int64("conversations", n))
+			}
+			vcancel()
+		}
+	}
+
+	// Read-only handle on the webhooks database (resource_links) — the sidebar enrichment for
+	// GET /conversations. Optional and independent of the metadata store: no links DB => bare
+	// rows (no sources/links), never a failure.
+	var links *LinkStore
+	if dsn := linkStoreDSNFromEnv(); dsn != "" {
+		l, err := OpenLinkStore(ctx, dsn)
+		if err != nil {
+			log.Warn("links read store unavailable (list served without enrichment)", errAttr(err))
+		} else {
+			links = l
+			defer links.Close()
+			log.Info("links read store connected")
+		}
+	}
+
+	// The live conversation-list push: a single LISTEN connection on the agent_host DB fans NOTIFYs
+	// out to SSE subscribers (see events.go). No-op when store is nil (dev/pg-less) — the hub stays
+	// empty and GET /conversations/events reports unavailable, same as the JSON list.
+	hub := newSSEHub()
+	go runConversationListener(ctx, store, links, crs, hub)
+
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, crs, creator, store, links, hub)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -96,14 +169,16 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator) http.Handler {
-	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, crs crLookup, creator ConversationCreator, store *Store, links *LinkStore, hub *sseHub) http.Handler {
+	fallback := cfg.fallback
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// FLEET-AGGREGATE routes must be answered from EVERY pod, not one. An agent-host serves the
-		// conversation list from its in-memory session map, which (with podCap=1) holds only the
-		// conversations that pod hosts — so proxying to a single pod returns a fraction of the
-		// user's conversations and they appear to vanish between refreshes. See aggregate.go.
-		// CREATE is served HERE, not proxied. The agent-host is capacity-bounded
+		// The conversation LIST and its live events stream are served HERE from Postgres, not
+		// proxied. An agent-host only knows the conversations it currently hosts (with podCap=1 the
+		// controller spreads them one-per-pod), so no single pod can answer "all of this user's
+		// conversations" — the durable store can. The JSON list reads a snapshot; the events stream
+		// LISTENs for NOTIFYs (see list.go / events.go). Both require the store: without it (a
+		// misconfigured deploy) there is no correct answer, so report 503 rather than a wrong slice.
+		// CREATE is served HERE too, not proxied. The agent-host is capacity-bounded
 		// (the controller leaves a conversation Pending when every pod is at cap),
 		// so proxying create would make conversation N*C+1 uncreatable. Writing the
 		// CR consults no agent-host. See create.go.
@@ -111,12 +186,15 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 			serveConversationCreate(w, r, creator, ownerFrom(r))
 			return
 		}
-		if IsFleetAggregate(r.Method, r.URL.Path) {
-			ups := upstreamsFor(cfg, cache, fallback)
+		if IsConversationListRoute(r.Method, r.URL.Path) {
+			if store == nil {
+				http.Error(w, "conversation store unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			if isSSE(r) {
-				serveAggregatedSSE(w, r, ups)
+				serveConversationEvents(w, r, store, links, crs, hub)
 			} else {
-				serveAggregatedList(w, r, ups)
+				serveConversationList(w, r, store, links, crs)
 			}
 			return
 		}

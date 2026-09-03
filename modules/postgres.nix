@@ -46,6 +46,15 @@ let
   consumers = pcfg.consumers;
   consumerNames = builtins.attrNames consumers;
 
+  # READERS are login roles granted SELECT-only on ANOTHER consumer's database (they own no
+  # database of their own). Each gets an agent-pg-<key> secret like a consumer, but instead of
+  # CREATE DATABASE it gets CONNECT + USAGE + SELECT on `db` and is pinned read-only at the
+  # server. Assembled by platform.nix (e.g. the conversation-router reading agent_host).
+  readers = pcfg.readers;
+  readerNames = builtins.attrNames readers;
+  # Both consumers and readers need a generated password secret.
+  secretNames = consumerNames ++ readerNames;
+
   # No single common image ships BOTH kubectl and psql, so the provisioning Job is
   # two containers sharing an emptyDir (/shared):
   #   1. initContainer `secrets` (kubectl image): for each consumer, reuse an existing
@@ -68,7 +77,7 @@ let
       kubectl -n "${ns}" create secret generic "$SECRET" --from-literal=password="$(cat /shared/${name}.pw)"
       echo "[${name}] created secret $SECRET"
     fi
-  '') consumerNames;
+  '') secretNames;
 
   # -- main container: psql only (create roles + databases from the .pw files) -------
   sqlScript = ''
@@ -97,7 +106,36 @@ let
       psql -v ON_ERROR_STOP=1 -c 'CREATE DATABASE "${c.db}" OWNER "${c.user}"'
       echo "[${name}] created database ${c.db}"
     fi
-  '') consumerNames;
+  '') consumerNames
+  # READERS come AFTER consumers: a reader grants on a database the consumer loop above just
+  # created, so the db + its owner role must already exist here.
+  + lib.concatMapStrings (name:
+    let r = readers.${name}; in ''
+    # ---- reader ${name}: role=${r.user} SELECT-only on ${toString (builtins.length r.grants)} db(s) ----
+    PW=$(cat "/shared/${name}.pw")
+    # Idempotent LOGIN role, same create-or-reset-password shape as a consumer.
+    psql -v ON_ERROR_STOP=1 -v pw="$PW" <<'SQL'
+    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '${r.user}', :'pw')
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${r.user}') \gexec
+    SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '${r.user}', :'pw')
+      WHERE EXISTS (SELECT FROM pg_roles WHERE rolname = '${r.user}') \gexec
+    SQL
+    # Read-only at the SERVER: this role can never begin a writing transaction, whatever it
+    # attempts — the load-bearing half of the guarantee (the client sets the same param too).
+    psql -v ON_ERROR_STOP=1 -c 'ALTER ROLE "${r.user}" SET default_transaction_read_only = on'
+  '' + lib.concatMapStrings (g: ''
+    # Least privilege on ${g.db}: CONNECT + USAGE + SELECT on EXACTLY the named tables. NOT
+    # `ON ALL TABLES` and NO `ALTER DEFAULT PRIVILEGES` — the reader must not gain another
+    # table's rows (e.g. conversation_events, the full transcripts) just because it shares a
+    # database, and a table added by a later migration is opt-in (extend `tables` + owners.toml)
+    # rather than silently readable. No INSERT/UPDATE/DELETE ever granted.
+    psql -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE "${g.db}" TO "${r.user}"'
+    psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT USAGE ON SCHEMA public TO "${r.user}"'
+  '' + lib.concatMapStrings (t: ''
+    psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON TABLE public."${t}" TO "${r.user}"'
+  '') g.tables + ''
+    echo "[${name}] granted SELECT-only on ${g.db}.{${lib.concatStringsSep "," g.tables}} to ${r.user}"
+  '') r.grants) readerNames;
 in
 {
   options.agentSandbox.postgres = with lib; {
@@ -168,6 +206,35 @@ in
         };
       });
     };
+    # READ-ONLY roles granted SELECT on another consumer's database. Populated by platform.nix.
+    readers = mkOption {
+      internal = true;
+      default = { };
+      description = ''
+        Per-reader { user; grants = [ { db; tables = [ … ]; } … ]; } map — a SELECT-only login
+        role granted on SPECIFIC tables of one or more existing consumer databases. Assembled by
+        platform.nix, not by deployers. The role owns nothing, is pinned
+        default_transaction_read_only, and reuses a single agent-pg-<key> secret across all its
+        grants (one role, one password, many read grants). Grants are table-scoped on purpose:
+        the reader must not gain another table's rows just because it shares a database, and a
+        table added later is opt-in (extend `tables` here AND owners.toml's readers list) rather
+        than silently readable.
+      '';
+      type = types.attrsOf (types.submodule {
+        options = {
+          user = mkOption { type = types.str; description = "The read-only login role name."; };
+          grants = mkOption {
+            description = "Per-database sets of tables this role may SELECT from.";
+            type = types.listOf (types.submodule {
+              options = {
+                db = mkOption { type = types.str; description = "The database holding the tables."; };
+                tables = mkOption { type = types.listOf types.str; description = "The tables to grant SELECT on (must match owners.toml readers)."; };
+              };
+            });
+          };
+        };
+      });
+    };
     # Read-only outputs other modules consume (so they don't re-derive the host).
     host = mkOption { internal = true; readOnly = true; type = types.str; default = host; };
     port = mkOption { internal = true; readOnly = true; type = types.int; default = port; };
@@ -180,7 +247,7 @@ in
   config = {
     kubernetes.resources = lib.mkMerge [
       # -- The provisioning Job + its RBAC (always, in-cluster or external) ----------
-      (lib.mkIf (consumers != { }) {
+      (lib.mkIf (consumers != { } || readers != { }) {
         serviceAccounts.agent-postgres-init = {
           metadata = { name = "agent-postgres-init"; namespace = ns; };
         };
@@ -203,7 +270,7 @@ in
           metadata = {
             name = "agent-postgres-init";
             namespace = ns;
-            annotations."agent-sandbox/provisions" = lib.concatStringsSep "," consumerNames;
+            annotations."agent-sandbox/provisions" = lib.concatStringsSep "," secretNames;
           };
           spec = {
             backoffLimit = 6;

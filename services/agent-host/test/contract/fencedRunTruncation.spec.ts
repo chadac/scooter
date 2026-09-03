@@ -158,24 +158,20 @@ describe("ownership moving MID-RUN", () => {
 });
 
 describe("reviveFromMirror give-ups are LOUD", () => {
-  it("warns when assigned a conversation the mirror does not have", async () => {
-    // THE OTHER HALF of the "Working… forever" bug. On k3d the test platform had NO
-    // history mirror (disabled with a stale "single-node doesn't need revival" note,
-    // while CI forces podCap=1 + 3 replicas — constant reassignment). The newly
-    // assigned pod pulled nothing and gave up through `if (!pulled) return;` — SILENT,
-    // so the pod's total quiet read as "the revive push never arrived". It had.
+  it("warns when assigned a conversation it cannot reconstruct", async () => {
+    // THE OTHER HALF of the "Working… forever" bug: the newly assigned pod gave up
+    // SILENTLY, so its total quiet read as "the revive push never arrived". It had.
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const store = inMemoryStore();
       const sessions = createSessionManager({
         provisioner: fakeProvisioner(),
         store,
-        hydrateFromMirror: async () => false, // the mirror has nothing (or does not exist)
       });
       await sessions.reviveFromMirror("ghost-conv" as SessionId, 1);
 
       const warned = errSpy.mock.calls.filter((args) =>
-        args.some((a) => String(a).includes("mirror does not have")),
+        args.some((a) => String(a).includes("could not reconstruct")),
       );
       expect(warned.length, "an assigned-but-unrevivable conversation must leave a trace").toBeGreaterThan(0);
     } finally {

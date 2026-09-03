@@ -264,3 +264,29 @@ def configure_logging(service_name: str = "conversation-controller") -> None:
         root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(_level())
+
+
+
+# --- warn-once ---------------------------------------------------------------
+
+_warned: set[str] = set()
+
+
+def warn_once(logger: logging.Logger, key: str, msg: str, extra: dict[str, Any]) -> None:
+    """Warn the first time `key` is seen, debug after. For a condition re-detected every
+    tick: loud once per resource, never a flood. `forget_warned` re-arms it."""
+    repeat = key in _warned
+    _warned.add(key)
+    if repeat:
+        logger.debug(msg, extra={**extra, "repeat_suppressed": True})
+    else:
+        logger.warning(msg, extra=extra)
+
+
+def forget_warned(keep: set[str] | None = None) -> None:
+    """Re-arm keys no longer active, so a condition that clears and returns is loud
+    again. No argument forgets everything (tests)."""
+    if keep is None:
+        _warned.clear()
+        return
+    _warned.intersection_update(keep)

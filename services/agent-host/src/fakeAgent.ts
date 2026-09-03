@@ -108,6 +108,23 @@ class FakeAgent implements Agent {
       return { stopReason: "end_turn" };
     }
 
+    // A "~images" message is a test directive: report how many IMAGE content blocks
+    // reached the agent PROCESS in this prompt. Proves an attached image survived the
+    // whole pipe — composer attachment -> /agui body -> normalizeContent -> AssetStore
+    // -> bridge readAsset -> ACP image block. The image-drop regression (PR #448) made
+    // this 0 because the composer puts images in message.attachments[], not .content,
+    // so the client never sent them. Counts the ACP blocks the bridge built
+    // ({type:"image", data, mimeType}); mirrors the ~model "reached the process" proof.
+    if (userText.startsWith("~images")) {
+      const count = params.prompt.filter((b) => b.type === "image").length;
+      const reply = `images=${count}`;
+      for (const word of reply.split(" ")) {
+        await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
+        await sleep(10);
+      }
+      return { stopReason: "end_turn" };
+    }
+
     // A "!<command>" message is a test directive: run <command> verbatim in the
     // sandbox (real exec path) and report its output. Anything else gets a
     // friendly echo. The ! mechanism is the e2e test harness — it lets a UI

@@ -11,6 +11,8 @@ import logging
 
 from dataclasses import dataclass
 
+from .logging_config import forget_warned, warn_once
+
 from .reconcile import (
     ConversationState,
     Assign,
@@ -130,6 +132,7 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     # confirmation/backoff state for any that are no longer zombies (a false-positive revive,
     # or a resolved-and-now-terminal conversation).
     zombie_flagged: set[str] = set()
+    drift_flagged: set[str] = set()  # forgotten below, so a later drift is loud again
     for c in convs:
         action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
@@ -224,8 +227,14 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             # the phantom stops counting as autoscale demand and the router stops routing to a
             # pod that no longer hosts it. Logged loudly — every silent operatingMode/phase
             # divergence so far has cost a debugging session.
-            logger.warning(
-                "phase drift repaired", extra={**_C, "conversation_id": c.name, "reason": action.reason}
+            drift_flagged.add(c.name)
+            # The repair runs every pass (cheap, idempotent); only the LOG is de-duped —
+            # a drift that never clears is otherwise re-reported on every tick.
+            warn_once(
+                logger,
+                f"phase-drift:{c.name}",
+                "phase drift repaired",
+                {**_C, "conversation_id": c.name, "reason": action.reason},
             )
             k8s.patch_status(c.name, {"phase": "Suspended", "hostPod": None, "hostIP": None})
             hosts[c.name] = None
@@ -288,6 +297,9 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
     for name in list(_zombie_progress.keys()):
         if name not in zombie_flagged:
             del _zombie_progress[name]
+
+    # A conversation that did NOT drift this pass is forgotten, so a future drift is loud.
+    forget_warned({f"phase-drift:{n}" for n in drift_flagged})
 
     return results
 

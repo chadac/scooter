@@ -50,7 +50,22 @@ in
     services.dbus.implementation = lib.mkForce "dbus";
 
     # (2) Don't let a re-converge restart the bus / logind out from under itself.
-    systemd.services.dbus = surviveSwitch;
+    systemd.services.dbus = surviveSwitch // {
+      # RELOAD is not restart, and it is not harmless here. switch-to-configuration
+      # reloads a changed unit by default (nixpkgs sets reloadIfChanged = true for
+      # dbus), and reloading the classic daemon makes it re-read its policy. The
+      # NEXT switch's own switch-to-configuration is then REJECTED when it calls
+      # org.freedesktop.systemd1.Manager.Subscribe:
+      #
+      #   Error: Failed to subscribe to systemd dbus messages
+      #   Rejected send message ... member="Subscribe"
+      #
+      # and — because scooter-apply-module judges success by a failed-unit diff,
+      # which is empty when the switch aborts before touching any unit — that
+      # switch reports `applied.` and exits 0 having changed NOTHING. mkForce
+      # because nixpkgs' dbus module sets this explicitly.
+      reloadIfChanged = lib.mkForce false;
+    };
     systemd.services.systemd-logind = surviveSwitch;
   };
 }

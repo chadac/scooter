@@ -14,6 +14,7 @@
  *   POST   /conversations/:id/messages     prompt {text}
  *   GET    /conversations/:id/events       SSE stream
  *   GET    /conversations/:id/history      the event log
+ *   GET    /conversations/:id/messages     older messages, paged back by seq
  *   POST   /conversations/:id/permission/:toolCallId  {optionId}
  */
 
@@ -25,6 +26,14 @@ import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
+import { trimToBoundary } from "../session/eventStore.js";
+import {
+  alignPageToRun,
+  foldToMessages,
+  MESSAGE_EVENTS,
+  splitForInitialSnapshot,
+} from "../agent/messagesSnapshot.js";
+
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
@@ -355,43 +364,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     },
   }));
 
-  // VIEW FILTER (not access control — conversations are public):
-  //   ?scope=mine (default) -> conversations the caller owns + unowned/public ones.
-  //   ?scope=all            -> everything.
-  // An anonymous caller (no identity header) sees everything either way, so
-  // single-user / local-dev is unchanged. Extracted so the list route AND the
-  // /conversations/events push stream share ONE predicate — the stream is a
-  // security boundary and must not leak more than the poll would.
-  const visibleFilter = (ctx: { user: { anonymous: boolean; id: string }; query: URLSearchParams }) => {
-    const scope = ctx.query.get("scope") ?? "mine";
-    const user = ctx.user;
-    // "all" and anonymous callers see everything (the latter is dev-friendly: no
-    // ingress identity means we can't distinguish, so don't hide). For a KNOWN
-    // user under "mine", show STRICTLY their own — an unowned conversation
-    // (owner == null: legacy or a webhook that couldn't resolve a user) or another
-    // user's is All-only, so Mine actually distinguishes instead of degrading to
-    // All when many rows are unowned.
-    return (c: { owner?: string }) =>
-      scope === "all" || user.anonymous || c.owner === user.id;
-  };
-
-  // Enrich a conversation with its linked resources, so the sidebar can (a) show a
-  // per-row provider icon, (b) display the linked PR/MR/thread NAME instead of the
-  // title, and (c) filter by provider — all without a per-row /links fetch. Links are
-  // file-backed (cheap; already loaded here). `sources` is the distinct provider set;
-  // `links` is a COMPACT summary (source/type/title/url — no structured ref) for the
-  // list. Shared by the list route and the push stream.
-  const withSources = async (c: Conversation, now: number) => {
-    const links = (await store.listLinks?.(c.id)) ?? [];
-    const sources = [...new Set(links.map((l) => l.source))].sort();
-    const linkSummary = links.map((l) => ({
-      source: l.source,
-      resourceType: l.resourceType,
-      url: l.url,
-      title: l.title,
-    }));
-    return { ...view(c, now), sources, links: linkSummary };
-  };
+  // The conversation-list view-filter (?scope=mine|all) and link enrichment used to live
+  // here, shared by GET /conversations and its events stream. Both routes now live in the
+  // conversation-router (served from Postgres), which reimplements the same predicate
+  // (visible() in list.go) and enrichment (LinksByConversation) against the durable store.
 
   // CREATE a conversation. The SERVER mints the id — this route accepts no caller-chosen
   // threadId, which is the whole point: a client-chosen id would become an event-log key
@@ -415,59 +391,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });
 
-  r.get("/conversations", async (ctx) => {
-    const now = Date.now();
-    const list = sessions.list().filter(visibleFilter(ctx));
-    const json = await Promise.all(list.map((c) => withSources(c, now)));
-    return { json };
-  });
-
-  // GET /conversations/events — the conversation-LIST push stream. Emits an
-  // initial { kind: "snapshot", conversations } (the visible list, same scope /
-  // view-filter as GET /conversations), then { kind: "upsert", conversation } on
-  // each SessionManager.onConversationChange (new conversation / title change),
-  // filtered by the caller's scope so it never leaks more than the poll. Makes a
-  // Slack thread appear in the sidebar instantly instead of on the 10s poll.
-  r.get("/conversations/events", async (ctx) => {
-    const { res } = ctx;
-    // Bind the view-filter to THIS caller's scope+identity once — the same
-    // predicate the REST list uses (a security boundary: the stream must not
-    // emit conversations the poll would hide).
-    const visible = visibleFilter(ctx);
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    const send = (frame: unknown) => res.write(`data: ${JSON.stringify(frame)}\n\n`);
-
-    // Initial snapshot: the visible list, each enriched with its link sources
-    // (same shape as GET /conversations).
-    const now = Date.now();
-    const conversations = await Promise.all(
-      sessions.list().filter(visible).map((c) => withSources(c, now)),
-    );
-    send({ kind: "snapshot", conversations });
-
-    // Then push each lifecycle change (new conversation / title change) that
-    // passes the filter as an upsert. Enrichment (sources) happens here, not in
-    // the emitter, so the manager stays cheap. Emit the frame SYNCHRONOUSLY (a
-    // base view with empty sources) so the change is on the wire immediately;
-    // then, if the store has links, patch `sources` and re-emit. A brand-new
-    // conversation almost never has links yet, so the first frame is usually the
-    // only one — but the two-phase emit means a webhook-linked conversation still
-    // gets its provider icon without waiting on the next poll/snapshot.
-    const unsub = sessions.onConversationChange((c) => {
-      if (!visible(c)) return;
-      const now = Date.now();
-      send({ kind: "upsert", conversation: { ...view(c, now), sources: [] as string[] } });
-      void withSources(c, now).then((conversation) => {
-        if (conversation.sources.length) send({ kind: "upsert", conversation });
-      });
-    });
-
-    ctx.req.on("close", () => unsub());
-  });
+  // GET /conversations and GET /conversations/events are NOT served here. The
+  // conversation LIST and its live events stream are fleet-wide (an agent-host only
+  // knows the conversations it hosts), so the conversation-router answers both from
+  // the durable Postgres store: the JSON list from a snapshot, the events stream from
+  // Postgres LISTEN/NOTIFY (services/conversation-router/{list,events}.go). Keeping a
+  // per-pod version here would only re-expose the single-pod-slice bug the router fixes.
 
   // No POST /conversations here: creating a conversation is a control-plane write
   // served by the conversation-router (services/conversation-router/create.go).
@@ -666,26 +595,64 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.get("/conversations/:id/tail", async (ctx) => {
-    // A fast first-paint window: the events from the last N runs (default 8), so a
-    // client opening a LONG conversation can render the latest context instantly
-    // instead of waiting for the whole log to stream + fold. Windowed on RUN
-    // boundaries so every message/tool call in the tail is complete and folds
-    // identically to a full replay — the client then reconciles against the full
-    // integrity stream with no visible change. NOT checksummed (a partial window).
+    // A fast first-paint window, bounded by EVENT COUNT (`limit`, default 300).
+    // `runs` still works for callers that want run-aligned windows.
+    const limitParam = Number(ctx.query.get("limit"));
     const runsParam = Number(ctx.query.get("runs"));
-    const runs = Number.isFinite(runsParam) && runsParam > 0 ? Math.min(runsParam, 100) : 8;
-    // Fast path: read ONLY the tail (scan from the end, parse the window). Falls
-    // back to reading + windowing the whole log for stores without the tail reader
-    // (in-memory test stores) — those logs are tiny so the cost is irrelevant.
+    const wantRuns = Number.isFinite(runsParam) && runsParam > 0;
+
     let events: AguiEvent[];
-    if (store.readEventsTail) {
-      events = await store.readEventsTail(ctx.params.id, runs);
+    if (wantRuns && store.readEventsTail) {
+      events = await store.readEventsTail(ctx.params.id, Math.min(runsParam, 100));
+    } else if (!wantRuns && store.readEventsTailByCount) {
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 2000) : 300;
+      events = await store.readEventsTailByCount(ctx.params.id, limit);
     } else {
+      // Stores without a tail reader (in-memory tests): the logs are tiny.
       const all: AguiEvent[] = [];
       for await (const e of store.readEvents(ctx.params.id)) all.push(e);
-      events = tailByRuns(all, runs);
+      events = wantRuns ? tailByRuns(all, Math.min(runsParam, 100)) : trimToBoundary(all.slice(-300));
     }
-    return { json: { events, runs } };
+    return { json: { events, ...(wantRuns ? { runs: Math.min(runsParam, 100) } : {}) } };
+  });
+
+  r.get("/conversations/:id/messages", async (ctx) => {
+    // Older history, paged backwards for the scroll-up load. `before` is the seq the
+    // client currently starts at (from the snapshot's fromSeq, then this response's);
+    // the reply is the window immediately before it, folded to messages.
+    const before = Number(ctx.query.get("before"));
+    const limitParam = Number(ctx.query.get("limit"));
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 5000) : 1200;
+    if (!Number.isFinite(before) || before <= 1) {
+      return { json: { messages: [], fromSeq: 1, done: true } };
+    }
+    if (!store.readEventsBefore) {
+      // No paging reader (in-memory tests): serve from the full log.
+      const all: AguiEvent[] = [];
+      for await (const e of store.readEvents(ctx.params.id)) all.push(e);
+      const end = Math.max(0, Math.min(before - 1, all.length));
+      const start = Math.max(0, end - limit);
+      const window = all.slice(start, end);
+      const drop = start === 0 ? 0 : alignPageToRun(window);
+      return {
+        json: {
+          messages: foldToMessages(window.slice(drop)),
+          fromSeq: start + 1 + drop,
+          done: start === 0,
+        },
+      };
+    }
+    const { events, firstSeq, done } = await store.readEventsBefore(ctx.params.id, before, limit);
+    // Start the page at a run boundary so a run split across the seam is folded by
+    // exactly one page, not opened by both.
+    const drop = done ? 0 : alignPageToRun(events);
+    return {
+      json: {
+        messages: foldToMessages(events.slice(drop)),
+        fromSeq: firstSeq + drop,
+        done,
+      },
+    };
   });
 
   r.get("/conversations/:id/events", async (ctx) => {
@@ -745,17 +712,36 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // for synchronous in-memory stores.)
     await store.flush?.(id);
 
-    // Replay from the DURABLE store; local-only replays nothing on a wiped emptyDir.
-    // Called THROUGH `store`: these methods use `this`, so a detached ref breaks. PR #405.
-    const replay = store.readEventsDurableWithChecksum
-      ? (i: SessionId) => store.readEventsDurableWithChecksum!(i)
-      : store.readEventsWithChecksum
-        ? (i: SessionId) => store.readEventsWithChecksum!(i)
-        : undefined;
+    // Called THROUGH `store`: these methods use `this`, so a detached ref breaks.
+    const replay = store.readEventsWithChecksum
+      ? (i: SessionId) => store.readEventsWithChecksum!(i)
+      : undefined;
     if (replay) {
+      // History goes as ONE snapshot, not N events: the client's applier rebuilds the
+      // message list per event and deep-clones it on each emit, so a long conversation
+      // costs O(n²) (15,062 clones for 4,000 events, measured). Events that carry no
+      // message state (RUN_*, QUEUE_UPDATED, CONTEXT_USAGE, SYSTEM_MESSAGE) are still
+      // replayed individually — the client derives run/queue/context state from them.
+      const history: AguiEvent[] = [];
       for await (const c of replay(id)) {
         seen.add(c.checksum);
-        send({ kind: "event", ...c });
+        history.push(c.event);
+      }
+      // Only the trailing window is painted up front; older history pages in on
+      // scroll. Mounting a whole long thread is one synchronous ~900ms commit that
+      // blocks the composer (~34 React fibers per message).
+      const { tail, fromSeq, hasOlder } = splitForInitialSnapshot(history);
+      const messages = foldToMessages(tail);
+      if (messages.length > 0) {
+        send({
+          kind: "event",
+          event: { type: "MESSAGES_SNAPSHOT", messages, ...(hasOlder ? { fromSeq } : {}) },
+        });
+      }
+      // Non-message events replay from the FULL history: run/queue/context state is
+      // cumulative, so windowing it would leave the client's trackers out of date.
+      for (const e of history) {
+        if (!MESSAGE_EVENTS.has(e.type)) send({ kind: "event", event: e });
       }
     }
     // Flush anything that arrived during replay, then go live.
@@ -905,7 +891,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/web-services", async (ctx) => {
     const id = await resolveConvId(ctx.params.id);
     if (!id || !deps.webServices) return { json: { services: [] } };
-    const services = await deps.webServices.list(id);
+    // ?refresh=1 re-reads the in-pod manifest instead of serving a cached read —
+    // the agent declares services with `scooter-rebuild`, and nothing in the pod
+    // tells us it happened.
+    const force = ctx.query.get("refresh") === "1";
+    const services = await deps.webServices.list(id, { force });
     const withState = await Promise.all(
       services.map(async (s) => ({
         name: s.name,

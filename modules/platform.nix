@@ -61,6 +61,20 @@ let
     defaultFor = lib.filter (p: providerDefaults.${p} == id) (lib.attrNames providerDefaults);
   }) modelIds);
   hasModels = modelIds != [ ];
+
+  # Platform skills, each paired with the capability it documents. A skill whose gate
+  # is false is NOT shipped: the agent should not read instructions for a route that
+  # 404s. Deployment `skills` win on a filename collision, so an operator can always
+  # override one of ours.
+  bcfg = config.agentSandbox.broker;
+  gatedSkills = {
+    "scooter-grafana.md" = bcfg.grafana.enable;
+  };
+  builtins' = lib.optionalAttrs cfg.agent.builtinSkills (
+    lib.mapAttrs' (file: _: lib.nameValuePair file (builtins.readFile (./skills + "/${file}")))
+      (lib.filterAttrs (_: gate: gate) gatedSkills)
+  );
+  allSkills = builtins' // cfg.agent.skills;
 in
 {
   # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
@@ -428,6 +442,19 @@ in
         default = "Scooter";
         description = "Display name the agent goes by (AGENT_NAME) — its identity in the UI + prompt.";
       };
+      # Skills the platform SHIPS, each gated on the capability it documents. A skill
+      # for a service that is not wired teaches the agent to attempt something that
+      # 404s, then to misread that 404 as the feature being broken — which is exactly
+      # how the grafana skill sent an agent chasing a `loki/` path that never existed.
+      builtinSkills = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Ship the platform's own skills, each only when the capability it documents
+          is enabled (e.g. scooter-grafana only with broker.grafana.enable). Set false
+          to supply every skill yourself via `skills`.
+        '';
+      };
       skills = mkOption {
         type = types.attrsOf types.str;
         default = { };
@@ -723,6 +750,30 @@ in
     # password to `agent-pg-agent-host`.
     agentSandbox.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
 
+    # The conversation-router gets READ-ONLY access so it can serve the durable conversation
+    # list itself instead of fanning out to every agent-host pod. Its `conversation_router` role
+    # owns nothing — granted SELECT on EXACTLY the tables the list reads, nothing else (notably
+    # NOT conversation_events, the transcripts), and pinned read-only at the server.
+    #
+    # The table set is DERIVED from lib/sql/owners.toml (the ownership manifest), not repeated
+    # here: whichever tables list "conversation-router" in their readers ARE its grants. So the
+    # manifest is the single reviewable source of truth and the grant cannot drift from it —
+    # adding a table for the router is one line in owners.toml. Secret: agent-pg-conversation-router.
+    agentSandbox.postgres.readers.conversation-router =
+      let
+        manifest = builtins.fromTOML (builtins.readFile ../lib/sql/owners.toml);
+        # Tables in `db` whose readers list includes conversation-router.
+        tablesFor = db: lib.attrNames (lib.filterAttrs
+          (_t: rule: builtins.elem "conversation-router" (rule.readers or [ ]))
+          (manifest.${db}.tables or { }));
+      in
+      {
+        user = "conversation_router";
+        grants = [
+          { db = "agent_host"; tables = tablesFor "agent_host"; }
+        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; };
+      };
+
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define
     # `deployments` / `services`, and a shallow `//` update would replace the
     # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
@@ -950,6 +1001,8 @@ in
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
                 ]
+                ++ lib.optional cfg.conversationController.assets.enable
+                  { name = "ASSETS_PATH"; value = "/var/lib/agent-assets"; }
                 ++ lib.optional cfg.byoc.traceTunnel
                   # Per-frame tracing of the BYOC MCP tunnel (method, direction, bytes,
                   # status, correlated by stream). Off by default — it is per-frame and
@@ -965,13 +1018,6 @@ in
                   # → the sandbox churns the host /kubepods.slice tree → node instability
                   # / host logout). Unset ⇒ cluster default runtime.
                   { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
-                ++ lib.optional cfg.conversationController.historyMirror.enable
-                  # The shared cross-pod history mirror (async, off the hot path).
-                  # Present ⇒ mirroredStore wraps the local fileStore: every event
-                  # is also appended (coalesced, fire-and-forget) to this RWX
-                  # volume so another pod can revive the conversation after a
-                  # reassignment. See mirroredStore.ts + the CRD design doc.
-                  { name = "MIRROR_STATE_PATH"; value = "/var/lib/agent-history/conversations"; }
                 ++ lib.optional (cfg.retentionMaxAgeMs > 0)
                   # Auto-delete unstarred conversations inactive past the window
                   # (0/default = off, so absent unless a deployment opts in).
@@ -1170,9 +1216,9 @@ in
                   # The image's /tmp is read-only (nix store). goose needs a
                   # writable /tmp for session/new temp files — mount one.
                   { name = "tmp"; mountPath = "/tmp"; }
-                ] ++ lib.optional cfg.conversationController.historyMirror.enable
-                  # Shared cross-pod history mirror (RWX). MIRROR_STATE_PATH lives here.
-                  { name = "history-mirror"; mountPath = "/var/lib/agent-history"; }
+                ]
+                ++ lib.optional cfg.conversationController.assets.enable
+                  { name = "assets"; mountPath = "/var/lib/agent-assets"; }
                 ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
@@ -1206,9 +1252,9 @@ in
                 { name = "state"; emptyDir = { }; }
                 { name = "scratch"; emptyDir = { }; }
                 { name = "tmp"; emptyDir = { }; }
-              ] ++ lib.optional cfg.conversationController.historyMirror.enable
-                # The one shared RWX mirror PVC (all pods mount it).
-                { name = "history-mirror"; persistentVolumeClaim.claimName = "agent-host-history"; }
+              ]
+              ++ lib.optional cfg.conversationController.assets.enable
+                  { name = "assets"; persistentVolumeClaim.claimName = "agent-host-assets"; }
               ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
@@ -1224,10 +1270,10 @@ in
       # Agent skills (filename -> markdown), injected per conversation as
       # .goosehints. Edit this (the option) to add/change a skill — no image
       # rebuild. Only rendered when skills are configured.
-      configMaps = lib.optionalAttrs (cfg.agent.skills != { }) {
+      configMaps = lib.optionalAttrs (allSkills != { }) {
         agent-skills = {
           metadata = { name = "agent-skills"; namespace = cfg.namespace; };
-          data = cfg.agent.skills;
+          data = allSkills;
         };
       } // lib.optionalAttrs (cfg.deployTools.configFiles != { }) {
         # Deployment config FILES (filename -> contents), mounted as a flat dir at
@@ -1287,7 +1333,10 @@ in
         };
       };
     }
-    (lib.mkIf cfg.conversationController.historyMirror.enable (
+    # The PVC is provisioned when the mirror is IN USE, or when it is being kept
+    # alive purely so the Postgres migration can read history out of it.
+    (lib.mkIf (cfg.conversationController.historyMirror.enable
+               || cfg.conversationController.historyMirror.retainForMigration) (
       let hm = cfg.conversationController.historyMirror; in {
         # Shared history-mirror PVC — ONE ReadWriteMany volume every agent-host
         # pod appends its events to (async, off the hot path). After a
@@ -1322,6 +1371,22 @@ in
         };
       }
     ))
+    (lib.mkIf cfg.conversationController.assets.enable {
+      # Dedicated assets PVC for uploaded images. BYTES-ONLY: asset metadata
+      # (conversation_id, asset_id, mime_type, size, sha256_hash, created_at) lives
+      # in Postgres; the PVC holds only the raw image data, keyed by asset_id.
+      # ReadWriteOnce (single writer): the agent-host deployment is the only writer.
+      persistentVolumeClaims.agent-host-assets = {
+        metadata = { name = "agent-host-assets"; namespace = cfg.namespace; };
+        spec = {
+          accessModes = [ "ReadWriteOnce" ];
+          resources.requests.storage = cfg.conversationController.assets.size;
+        }
+        // lib.optionalAttrs (cfg.conversationController.assets.storageClassName != null) {
+          storageClassName = cfg.conversationController.assets.storageClassName;
+        };
+      };
+    })
     (lib.mkIf cfg.ui.enable {
       # Conversation UI — nginx serving the assistant-ui build and proxying the
       # agent-host API on the same origin (so the browser's /agui SSE + /sessions

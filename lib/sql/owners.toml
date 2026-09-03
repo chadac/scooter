@@ -32,7 +32,8 @@ conversation_map  = { writers = ["webhooks"],   readers = ["agent-host"] }
 jira_tickets      = { writers = ["webhooks"],   readers = [] }
 # Webhooks OWNS this table; agent-host also WRITES it (the conversation link panel).
 # Two writers, one table — the same shape as byoc.remote_agents.
-resource_links    = { writers = ["webhooks", "agent-host"], readers = [] }
+# conversation-router READS it (SELECT-only) to enrich the conversation list with link badges.
+resource_links    = { writers = ["webhooks", "agent-host"], readers = ["conversation-router"] }
 pending_messages  = { writers = ["webhooks"],   readers = [] }
 user_identity     = { writers = ["agent-host"], readers = ["webhooks"] }
 
@@ -68,4 +69,12 @@ owner = "agent-host"
 # The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
 conversation_jobs = { writers = ["agent-host"], readers = [] }
 # Conversation metadata: the sidebar list + rehydration fields.
-conversations     = { writers = ["agent-host"], readers = [] }
+# conversation-router READS it (SELECT-only) to serve GET /conversations from the durable store
+# instead of fanning out to the agent-host pods.
+conversations     = { writers = ["agent-host"], readers = ["conversation-router"] }
+# The conversation event log. Replaces events.jsonl + the NFS mirror. Deliberately NO readers:
+# these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
+# read them.
+conversation_events = { writers = ["agent-host"], readers = [] }
+# Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.
+conversation_assets = { writers = ["agent-host"], readers = [] }

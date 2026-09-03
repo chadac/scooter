@@ -91,3 +91,43 @@ export function lastRunCompleted(events: AguiEvent[]): boolean {
   }
   return false; // no runs yet
 }
+
+/** A run that started and never reached a terminal, anywhere in the log. */
+export interface OrphanRun {
+  runId: string;
+  threadId: string;
+}
+
+/**
+ * Every run in `events` with a RUN_STARTED and no RUN_FINISHED/RUN_ERROR, oldest
+ * first.
+ *
+ * `danglingRunInfo` deliberately looks only at the TAIL, so it answers "is the
+ * conversation mid-run right now?" — it stops at the first terminal it meets
+ * scanning backwards. That makes it blind to an orphan BURIED under a later
+ * completed run, which is exactly what an ownership fence leaves behind: the
+ * outgoing pod's remaining events (terminal included) are dropped, the next turn
+ * completes normally on the new owner, and the orphan is now unreachable. The
+ * conversation never self-heals, and the UI's `running` flag — a boolean, not a
+ * counter — reads the stray RUN_STARTED as "still working" forever.
+ *
+ * Pairing by runId finds those. Used on adopt to close them: the adopting pod is
+ * the sole writer (controller keeps one hostPod, the fence blocks the old one),
+ * so writing a terminal here cannot race the run's real author.
+ */
+export function orphanRuns(events: AguiEvent[]): OrphanRun[] {
+  const started = new Map<string, string>(); // runId -> threadId
+  const ended = new Set<string>();
+  for (const e of events) {
+    const runId = (e as { runId?: string }).runId;
+    if (!runId) continue;
+    if (e.type === "RUN_STARTED") {
+      started.set(runId, String((e as { threadId?: string }).threadId ?? ""));
+    } else if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") {
+      ended.add(runId);
+    }
+  }
+  return [...started]
+    .filter(([runId]) => !ended.has(runId))
+    .map(([runId, threadId]) => ({ runId, threadId }));
+}

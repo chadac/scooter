@@ -491,6 +491,24 @@ db-migrate name:
       scripts/atlas-dev.sh migrate diff {{name}} --env "$env"
     done
 
+# CI drift guard: schema.sql must be fully expressed by its migrations.
+# db-generate-check reads schema.sql, so it cannot see this. Why: PR #455.
+# Spins an ephemeral Postgres per env (~1-2 min).
+db-migrate-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for env in {{db_envs}}; do
+      out="$(scripts/atlas-dev.sh migrate diff ci_drift_probe --env "$env" 2>&1)"
+      if ! printf '%s' "$out" | grep -q "no changes to be made"; then
+        printf '%s\n' "$out"
+        echo "❌ $env: schema.sql has changes with no migration. Run 'nix develop -c just db-migrate <name>' and commit the result."
+        git checkout -- "lib/sql/$env/migrations" 2>/dev/null || true
+        git clean -fq "lib/sql/$env/migrations" 2>/dev/null || true
+        exit 1
+      fi
+    done
+    echo "✅ every schema.sql is fully expressed by its migrations"
+
 # Validate every database's migration directory (order, checksums, replayability).
 db-validate:
     #!/usr/bin/env bash
@@ -500,7 +518,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint db-generate-check test-unit
+ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).
