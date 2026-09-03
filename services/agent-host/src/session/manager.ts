@@ -14,7 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
-import { danglingRunInfo } from "./danglingRun.js";
+import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
@@ -1028,6 +1028,36 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // own run cannot be the one we would touch.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
         const events = await collectEvents(store.readEvents(id));
+
+        // HEAL FIRST: close any run left open ANYWHERE in the log, not just at the
+        // tail. A fenced hand-off drops the outgoing pod's remaining events —
+        // terminal included — and the next turn completes on top, burying the
+        // orphan where the tail-only check can never reach it. The UI's `running`
+        // flag is a boolean, so one stray RUN_STARTED reads as "working" forever.
+        //
+        // Safe to write here: this pod was just assigned the conversation, the
+        // controller keeps a single hostPod, and the fence stops the old owner — so
+        // nobody else can be driving these runs. The run that is genuinely in
+        // flight (if any) is excluded below.
+        const inFlight = danglingRunInfo(events, self)?.runId;
+        const orphans = orphanRuns(events).filter((o) => o.runId !== inFlight);
+        for (const o of orphans) {
+          await store.appendEvent(id as SessionId, {
+            type: "RUN_FINISHED",
+            threadId: o.threadId as never,
+            runId: o.runId as never,
+            interrupted: true,
+            ts: Date.now(),
+          });
+        }
+        if (orphans.length > 0) {
+          log.warn("closed runs left open by a hand-off", {
+            conversation_id: id,
+            closed: orphans.length,
+            run_ids: orphans.map((o) => o.runId),
+          });
+        }
+
         const dangling = danglingRunInfo(events, self);
         if (!dangling) {
           // NEVER silent: a wrong no-op here is indistinguishable from the hook not
