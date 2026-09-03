@@ -107,6 +107,19 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>> } 
           .map((r) => [r.source, r.resource_type, r.url, r.title, r.ref]);
         return { rows: out, rowCount: out.length };
       }
+
+      if (head.startsWith("DELETE")) {
+        // deleteByConversation: drop every row of one conversation.
+        const [conv] = values as [string];
+        let removed = 0;
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].conversation_id === conv) {
+            rows.splice(i, 1);
+            removed++;
+          }
+        }
+        return { rows: [], rowCount: removed };
+      }
       throw new Error(`unexpected sql: ${text}`);
     },
   };
@@ -150,6 +163,24 @@ describe("linked resources in Postgres", () => {
     (rows[0] as { ref: unknown }).ref = JSON.stringify({ channel: "C123", threadTs: "1.2" });
 
     expect((await store.listLinks(CONV))[0].ref).toEqual({ channel: "C123", threadTs: "1.2" });
+  });
+
+  it("deleteByConversation drops the links so the SAME resource can re-link to a fresh conversation", async () => {
+    // The isolation bug this prevents: the resource_links unique is GLOBAL
+    // (source, resource_type, resource_id). A conversation is deleted but its link row is left
+    // behind; a later conversation that links the SAME resource then hits ON CONFLICT and the row
+    // keeps the OLD (deleted) conversation_id, so the new conversation shows no link. Deleting a
+    // conversation must clear its links (as the file store did with its directory).
+    const { db } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink("conv-old" as SessionId, pr());
+    await store.deleteByConversation("conv-old" as SessionId);
+    expect(await store.listLinks("conv-old" as SessionId)).toHaveLength(0);
+
+    await store.addLink("conv-new" as SessionId, pr());
+    const listed = await store.listLinks("conv-new" as SessionId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].url).toBe(pr().url);
   });
 
   it("dedupes: the same resource posted twice is ONE link", async () => {
