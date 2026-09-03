@@ -797,6 +797,25 @@ describe("management API", () => {
     expect(svc.url).toBe("/c/c1/marimo/"); // opens under the full threadId
   });
 
+  it("GET web-services?refresh=1 forces a manifest re-read", async () => {
+    // The Rescan button: the agent declared a service with `scooter-rebuild` and
+    // nothing in the pod told the host, so the user needs a way to say "look again".
+    const seen: Array<boolean | undefined> = [];
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerPermission: async () => {},
+      webServices: fakeWebServices({
+        list: async (_id: string, opts?: { force?: boolean }) => {
+          seen.push(opts?.force);
+          return [{ name: "marimo", displayName: "marimo", port: 2718, basePath: "/c/c1/marimo", unit: "webservice-marimo" }];
+        },
+      }),
+    });
+    await call(api, "GET", "/conversations/c1/web-services");
+    await call(api, "GET", "/conversations/c1/web-services?refresh=1");
+    expect(seen).toEqual([false, true]);
+  });
+
   it("GET web-services returns [] when the registry is unwired (fake/local mode)", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { json } = await call(api, "GET", "/conversations/c1/web-services");

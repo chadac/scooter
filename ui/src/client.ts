@@ -113,10 +113,12 @@ export interface WebService {
 export async function loadWebServices(
   config: AgentHostConfig,
   conversationId: string,
+  opts: { refresh?: boolean } = {},
 ): Promise<WebService[]> {
   try {
     const res = await fetch(
-      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/web-services`,
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/web-services` +
+        (opts.refresh ? "?refresh=1" : ""),
       { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
     );
     if (!res.ok) {

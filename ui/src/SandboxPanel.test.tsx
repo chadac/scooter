@@ -109,3 +109,50 @@ describe("SandboxPanelView", () => {
     }
   });
 });
+
+describe("SandboxPanelView — rescan services", () => {
+  it("offers Rescan even when NO services are declared", () => {
+    // This is the case that matters: the agent just ran `scooter-rebuild` to add
+    // the first service, and the panel still says "no services". Hiding the button
+    // here would leave the user with no way to look again.
+    const html = renderToStaticMarkup(
+      createElement(SandboxPanelView, {
+        ...base,
+        state: "running",
+        onRescanServices: noop,
+      }),
+    );
+    expect(html).toContain('data-testid="sandbox-no-services"');
+    expect(html).toContain('data-testid="sandbox-rescan-services"');
+  });
+
+  it("offers Rescan alongside an existing list", () => {
+    const html = renderToStaticMarkup(
+      createElement(SandboxPanelView, {
+        ...base,
+        state: "running",
+        services: [{ name: "marimo", displayName: "marimo", url: "/c/x/marimo/", running: true }],
+        onRescanServices: noop,
+      }),
+    );
+    expect(html).toContain('data-testid="sandbox-rescan-services"');
+  });
+
+  it("disables the button while a rescan is in flight", () => {
+    const html = renderToStaticMarkup(
+      createElement(SandboxPanelView, {
+        ...base,
+        state: "running",
+        onRescanServices: noop,
+        rescanning: true,
+      }),
+    );
+    expect(html).toContain("Rescanning");
+    expect(html).toMatch(/data-testid="sandbox-rescan-services"[^>]*disabled/);
+  });
+
+  it("omits the button when no handler is wired", () => {
+    const html = renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "running" }));
+    expect(html).not.toContain('data-testid="sandbox-rescan-services"');
+  });
+});

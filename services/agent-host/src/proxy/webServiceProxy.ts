@@ -56,10 +56,14 @@ export interface WebServiceDescriptor {
 /**
  * Reads a conversation's declared web services from the in-pod discovery manifest
  * (/run/scooter/web-services.json) via exec/download, and caches per conversation.
- * Cache is invalidated on suspend/resume and after a start.
+ * The cache expires (MANIFEST_TTL_MS) so a `scooter-rebuild` that declares a new
+ * service is picked up; a start drops it immediately, and list({force}) re-reads
+ * on demand.
  */
 export interface WebServiceRegistry {
-  list(conversationId: string): Promise<WebServiceDescriptor[]>;
+  /** Declared services. `force` re-reads the in-pod manifest instead of serving a
+   *  cached read — for the UI's explicit refresh after the agent rebuilds. */
+  list(conversationId: string, opts?: { force?: boolean }): Promise<WebServiceDescriptor[]>;
   get(conversationId: string, name: string): Promise<WebServiceDescriptor | null>;
   /** Liveness: `systemctl is-active webservice-<name>` via exec. */
   isRunning(conversationId: string, name: string): Promise<boolean>;

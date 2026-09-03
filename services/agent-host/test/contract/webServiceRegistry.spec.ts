@@ -33,11 +33,35 @@ function fakeExec(over: Partial<ExecLike> = {}): ExecLike {
   };
 }
 
-function make(exec: ExecLike) {
-  return createWebServiceRegistry({
-    sandboxFor: () => REF,
-    connect: async () => exec,
-  });
+function make(exec: ExecLike, opts?: { ttlMs?: number; now?: () => number }) {
+  return createWebServiceRegistry(
+    {
+      sandboxFor: () => REF,
+      connect: async () => exec,
+    },
+    opts,
+  );
+}
+
+const TWO = JSON.stringify({
+  services: [
+    { name: "marimo", displayName: "marimo", port: 2718, basePath: "/c/conv-1/marimo", unit: "webservice-marimo" },
+    { name: "docs", displayName: "docs", port: 8000, basePath: "/c/conv-1/docs", unit: "webservice-docs" },
+  ],
+});
+
+/** An exec whose manifest can change under us, as `scooter-rebuild` does. */
+function mutableExec(initial: string) {
+  const state = { manifest: initial, reads: 0 };
+  const exec: ExecLike = {
+    download: vi.fn(async (p: string) => {
+      if (p !== MANIFEST_PATH) return "";
+      state.reads++;
+      return state.manifest;
+    }),
+    execute: vi.fn(async () => ({ stdout: "active", stderr: "", exitCode: 0 })),
+  };
+  return { exec, state };
 }
 
 describe("parseManifest", () => {
@@ -168,5 +192,60 @@ describe("WebServiceRegistry", () => {
     });
     expect(await reg.list("conv-1")).toEqual([]);
     expect(await reg.isRunning("conv-1", "marimo")).toBe(false);
+  });
+});
+
+describe("picking up a scooter-rebuild", () => {
+  it("re-reads the manifest once the cached read expires", async () => {
+    // The agent declares a service with `scooter-rebuild`; switch-to-configuration
+    // repoints /run/scooter/web-services.json. Nothing in the pod tells the host,
+    // so an unexpiring cache served the original list for the life of the process.
+    let clock = 1_000;
+    const { exec, state } = mutableExec(MANIFEST);
+    const reg = make(exec, { ttlMs: 10_000, now: () => clock });
+
+    expect((await reg.list("c1")).map((s) => s.name)).toEqual(["marimo"]);
+    state.manifest = TWO;
+
+    // Still inside the TTL: the cached read stands (no extra exec).
+    const readsAfterFirst = state.reads;
+    expect((await reg.list("c1")).map((s) => s.name)).toEqual(["marimo"]);
+    expect(state.reads).toBe(readsAfterFirst);
+
+    clock += 10_001;
+    expect((await reg.list("c1")).map((s) => s.name)).toEqual(["marimo", "docs"]);
+  });
+
+  it("re-reads immediately when forced, without waiting for the TTL", async () => {
+    let clock = 1_000;
+    const { exec, state } = mutableExec(MANIFEST);
+    const reg = make(exec, { ttlMs: 10_000, now: () => clock });
+
+    await reg.list("c1");
+    state.manifest = TWO;
+    // No clock movement: this is the UI's Rescan button.
+    expect((await reg.list("c1", { force: true })).map((s) => s.name)).toEqual(["marimo", "docs"]);
+  });
+
+  it("serves cached reads within the TTL so listing is not an exec per call", async () => {
+    // The cache exists because list() is called on a 4s poll AND by the proxy; the
+    // fix must not turn every call into a pod exec.
+    const { exec, state } = mutableExec(MANIFEST);
+    const reg = make(exec, { ttlMs: 10_000, now: () => 5_000 });
+    await reg.list("c1");
+    await reg.list("c1");
+    await reg.list("c1");
+    expect(state.reads).toBe(1);
+  });
+
+  it("keeps retrying while the manifest reads empty (pod still coming up)", async () => {
+    // An empty read means "couldn't read it yet", never "no services" — it must not
+    // be cached, or the panel says "no services" forever once the pod is ready.
+    const { exec, state } = mutableExec("");
+    const reg = make(exec, { ttlMs: 10_000, now: () => 5_000 });
+    expect(await reg.list("c1")).toEqual([]);
+    state.manifest = MANIFEST;
+    expect((await reg.list("c1")).map((s) => s.name)).toEqual(["marimo"]);
+    expect(state.reads).toBe(2);
   });
 });

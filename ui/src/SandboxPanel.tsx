@@ -76,9 +76,9 @@ export function useSandboxStatus() {
     setReady(res.ready);
   }, [currentId]);
 
-  const refreshServices = useCallback(async () => {
+  const refreshServices = useCallback(async (refresh = false) => {
     const svcs = await currentConversation()?.ifCreated(
-      (id) => loadWebServices({ baseUrl: BASE_URL }, id),
+      (id) => loadWebServices({ baseUrl: BASE_URL }, id, { refresh }),
       [] as Awaited<ReturnType<typeof loadWebServices>>,
     );
     // Keep the previous array when the poll returns the same services. A fresh
@@ -104,6 +104,18 @@ export function useSandboxStatus() {
   useEffect(() => {
     if (serverStatus === "running" && ready) setStarting(false);
   }, [serverStatus, ready]);
+
+  // The agent declares services with `scooter-rebuild`; nothing in the pod tells
+  // the host, so the list is re-read on demand as well as on the poll's TTL.
+  const [rescanning, setRescanning] = useState(false);
+  const rescanServices = useCallback(async () => {
+    setRescanning(true);
+    try {
+      await refreshServices(true);
+    } finally {
+      setRescanning(false);
+    }
+  }, [refreshServices]);
 
   const startSandbox = useCallback(async () => {
     const conv = currentConversation();
@@ -147,6 +159,8 @@ export function useSandboxStatus() {
     starting,
     services,
     busy,
+    rescanServices,
+    rescanning,
     conversationId: currentId ?? undefined,
     startSandbox,
     startService: (name: string) => void act(name, startWebService),
@@ -332,6 +346,11 @@ export interface SandboxPanelViewProps {
   onStartSandbox: () => void;
   onStartService: (name: string) => void;
   onStopService: (name: string) => void;
+  /** Re-read the in-pod service manifest. The agent declares services with
+   *  `scooter-rebuild` and nothing in the pod notifies the host, so this is how a
+   *  user picks up a just-declared service without waiting. */
+  onRescanServices?: () => void;
+  rescanning?: boolean;
 }
 
 /** Pure view — status line + (when running) the service list, or a Start prompt. */
@@ -345,6 +364,8 @@ export function SandboxPanelView({
   onStartSandbox,
   onStartService,
   onStopService,
+  onRescanServices,
+  rescanning,
 }: SandboxPanelViewProps) {
   return (
     <div className="flex flex-col gap-3" data-testid="sandbox-panel">
@@ -384,16 +405,31 @@ export function SandboxPanelView({
       {/* Body: services + modules when running; a hint otherwise. */}
       {state === "running" ? (
         <>
-          {services.length > 0 ? (
-            <div>
-              <div className="mb-1 text-xs font-medium text-muted-foreground">Web services</div>
-              <ServiceRows services={services} starting={busy} onStart={onStartService} onStop={onStopService} />
+          <div>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Web services</span>
+              {onRescanServices ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  data-testid="sandbox-rescan-services"
+                  onClick={onRescanServices}
+                  disabled={rescanning}
+                  title="Re-read the sandbox's service manifest (after scooter-rebuild)"
+                >
+                  {rescanning ? "Rescanning…" : "Rescan"}
+                </Button>
+              ) : null}
             </div>
-          ) : (
-            <p className="text-xs text-muted-foreground" data-testid="sandbox-no-services">
-              No web services declared in this sandbox.
-            </p>
-          )}
+            {services.length > 0 ? (
+              <ServiceRows services={services} starting={busy} onStart={onStartService} onStop={onStopService} />
+            ) : (
+              <p className="text-xs text-muted-foreground" data-testid="sandbox-no-services">
+                No web services declared in this sandbox.
+              </p>
+            )}
+          </div>
           {conversationId && <ModulesSection conversationId={conversationId} />}
         </>
       ) : (
@@ -441,6 +477,8 @@ export function SandboxPanel() {
       state={s.state}
       services={s.services}
       busy={s.busy}
+      onRescanServices={s.rescanServices}
+      rescanning={s.rescanning}
       conversationId={s.conversationId}
       owner={owner}
       resources={resources}
