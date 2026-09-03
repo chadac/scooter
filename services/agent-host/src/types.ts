@@ -88,6 +88,13 @@ export interface ExecBackend {
   readTextFile(path: string): Promise<string>;
   /** agent-sandbox: POST /upload */
   writeTextFile(path: string, content: string): Promise<void>;
+  /** Write raw BYTES (given as base64) to a file in the sandbox, creating parent
+   *  dirs. Binary-safe: the base64 is STREAMED over stdin to `base64 -d`, so it is
+   *  NOT subject to the ~128KB single-argv (MAX_ARG_STRLEN) limit that an inline
+   *  `printf '<b64>' | base64 -d` shell arg hits. Used to materialize user file
+   *  uploads into /workspace/uploads/<name>. Why base64 (not writeTextFile): the
+   *  bytes are arbitrary/binary; a UTF-8 string round-trip would corrupt them. */
+  writeBinaryFile(path: string, base64: string): Promise<void>;
 }
 
 export interface TerminalHandle {
