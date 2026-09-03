@@ -6,12 +6,21 @@
 # (see flake.nix) that the sandbox image, its lazy-tool stubs, and the runtime
 # re-converge all resolve against. A separate devenv input would add its own
 # nixpkgs surface; keeping the shell on the flake's pkgs avoids that drift.
-{ pkgs }:
+{ pkgs, conversationRouter }:
 
 pkgs.mkShell {
   packages = with pkgs; [
     # JS toolchain (agent-host + ui + tests)
     nodejs_22
+    # The conversation-router (Go) binary, on PATH as `conversation-router`. The fast-e2e
+    # harness (test/e2e/support/fakeBackend.mjs) now boots the router in front of agent-host,
+    # so it must be built and ready without a per-run `nix build`. Prebuilt + cached here.
+    conversationRouter
+    # Ephemeral Postgres for the fast-e2e harness: the router serves the conversation LIST +
+    # events stream from a real agent_host DB (LISTEN/NOTIFY), so the harness spins a throwaway
+    # local Postgres and atlas-migrates it. atlas-dev.sh still pulls its own on demand; this is
+    # the standing one the e2e stack needs at test time.
+    postgresql_16
     # cluster tooling — local k8s + control
     kubectl
     kind
