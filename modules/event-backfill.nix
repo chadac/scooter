@@ -5,11 +5,17 @@
 # on the PVC; this Job reads every conversation's events.jsonl from the mirror and loads it
 # into Postgres, verifying the row count and checksum chain against what was read from the file.
 #
-# EPHEMERAL: run it ONCE during the cutover (with `historyMirror.retainForMigration = true`
-# so the PVC stays provisioned while nothing mounts it), verify the report shows every
-# conversation OK, then set the flag back false (and later reclaim the PVC). The Job is
-# idempotent (backfillConversation skips rows already present), so a re-run only loads what's
-# missing.
+# SAFETY: The Job CANNOT run unless retainForMigration = true (enforced by assertion). This
+# prevents the PVC from being deleted mid-backfill. The correct sequence is:
+#   1. retainForMigration = true (deploy)  → PVC stays provisioned
+#   2. eventBackfill.enable = true (deploy) → Job runs
+#   3. kubectl logs -f job/agent-event-backfill → verify ok=true for ALL conversations
+#   4. eventBackfill.enable = false (deploy) → Job removed
+#   5. retainForMigration = false (deploy) → PVC reclaimed
+#
+# EPHEMERAL: run it ONCE during the cutover, verify the report shows every conversation OK,
+# then turn it OFF. The Job is idempotent (backfillConversation skips rows already present),
+# so a re-run only loads what's missing.
 #
 # THE JOB VERIFIES, IT DOES NOT ASSUME. For every conversation it compares the row count
 # against the line count AND the chain recomputed from the FILE against the chain the load
@@ -33,8 +39,9 @@ in
   options.agentSandbox.eventBackfill = with lib; {
     enable = mkEnableOption ''
       the one-shot event backfill Job (history mirror PVC → Postgres). Turn ON to run the
-      migration, verify the report shows all conversations OK, then turn OFF. Must be run
-      with historyMirror.retainForMigration = true so the PVC outlives the cutover'';
+      migration, verify the report shows all conversations OK, then turn OFF. REQUIRES
+      historyMirror.retainForMigration = true (enforced by assertion) so the PVC cannot be
+      deleted while the backfill is running'';
     
     image = mkOption {
       type = types.str;
@@ -55,76 +62,111 @@ in
     };
   };
 
-  config = lib.mkIf bcfg.enable {
-    kubernetes.resources.jobs.agent-event-backfill = {
-      metadata = { name = "agent-event-backfill"; namespace = ns; };
-      spec = {
-        backoffLimit = 2;
-        template = {
-          metadata.labels = {
-            app = "agent-event-backfill";
+  config = lib.mkMerge [
+    # SAFETY ASSERTION: the backfill Job CANNOT run unless the PVC is retained. Without this,
+    # an operator could accidentally delete the PVC (retainForMigration = false) while the Job
+    # is still running, destroying the only copy of history the backfill hadn't yet loaded.
+    (lib.mkIf bcfg.enable {
+      assertions = [
+        {
+          assertion = hmCfg.retainForMigration;
+          message = ''
+            eventBackfill.enable requires historyMirror.retainForMigration = true.
+            
+            The backfill Job reads conversation history FROM the PVC, so the PVC must stay
+            provisioned while the Job runs. Set retainForMigration = true BEFORE enabling
+            the backfill, then set it back to false AFTER the backfill reports success.
+            
+            Safe sequence:
+              1. historyMirror.retainForMigration = true  (deploy)
+              2. eventBackfill.enable = true              (deploy)
+              3. kubectl logs -f job/agent-event-backfill (verify ok=true)
+              4. eventBackfill.enable = false             (deploy)
+              5. historyMirror.retainForMigration = false (deploy)
+          '';
+        }
+      ];
+    })
+
+    (lib.mkIf bcfg.enable {
+      kubernetes.resources.jobs.agent-event-backfill = {
+        metadata = { 
+          name = "agent-event-backfill"; 
+          namespace = ns;
+          labels = {
             "app.kubernetes.io/name" = "agent-event-backfill";
             "app.kubernetes.io/component" = "migration";
+            "scooter.chadac.org/blocks-pvc-deletion" = "agent-host-history";
           };
-          spec = {
-            restartPolicy = "OnFailure";
-            # Same service account as agent-host (needs db secrets)
-            serviceAccountName = "agent-host";
-            securityContext = {
-              fsGroup = 0;
-              fsGroupChangePolicy = "OnRootMismatch";
+        };
+        spec = {
+          backoffLimit = 2;
+          template = {
+            metadata.labels = {
+              app = "agent-event-backfill";
+              "app.kubernetes.io/name" = "agent-event-backfill";
+              "app.kubernetes.io/component" = "migration";
             };
-            containers.backfill = {
-              name = "backfill";
-              image = bcfg.image;
-              command = [
-                "node"
-                "dist/scripts/runEventBackfill.js"
-                bcfg.mirrorPath
-              ];
-              env = [
-                {
-                  name = "DATABASE_URL";
-                  valueFrom.secretKeyRef = {
-                    name = cfg.agentHost.databaseSecretName;
-                    key = cfg.agentHost.databaseSecretKey;
+            spec = {
+              restartPolicy = "OnFailure";
+              # Same service account as agent-host (needs db secrets)
+              serviceAccountName = "agent-host";
+              securityContext = {
+                fsGroup = 0;
+                fsGroupChangePolicy = "OnRootMismatch";
+              };
+              containers.backfill = {
+                name = "backfill";
+                image = bcfg.image;
+                command = [
+                  "node"
+                  "dist/scripts/runEventBackfill.js"
+                  bcfg.mirrorPath
+                ];
+                env = [
+                  {
+                    name = "DATABASE_URL";
+                    valueFrom.secretKeyRef = {
+                      name = cfg.agentHost.databaseSecretName;
+                      key = cfg.agentHost.databaseSecretKey;
+                    };
+                  }
+                  {
+                    name = "NODE_ENV";
+                    value = "production";
+                  }
+                ];
+                volumeMounts = [
+                  {
+                    name = "mirror";
+                    mountPath = "/mirror";
+                    readOnly = true;
+                  }
+                ];
+                resources = {
+                  requests = {
+                    memory = "512Mi";
+                    cpu = "500m";
                   };
-                }
-                {
-                  name = "NODE_ENV";
-                  value = "production";
-                }
-              ];
-              volumeMounts = [
-                {
-                  name = "mirror";
-                  mountPath = "/mirror";
-                  readOnly = true;
-                }
-              ];
-              resources = {
-                requests = {
-                  memory = "512Mi";
-                  cpu = "500m";
-                };
-                limits = {
-                  memory = "2Gi";
-                  cpu = "2000m";
+                  limits = {
+                    memory = "2Gi";
+                    cpu = "2000m";
+                  };
                 };
               };
+              volumes = [
+                {
+                  name = "mirror";
+                  persistentVolumeClaim = {
+                    claimName = "agent-host-history";
+                    readOnly = true;
+                  };
+                }
+              ];
             };
-            volumes = [
-              {
-                name = "mirror";
-                persistentVolumeClaim = {
-                  claimName = "agent-host-history";
-                  readOnly = true;
-                };
-              }
-            ];
           };
         };
       };
-    };
-  };
+    })
+  ];
 }
