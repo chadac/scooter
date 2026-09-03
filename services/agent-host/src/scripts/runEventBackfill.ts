@@ -10,15 +10,19 @@
  * Usage:
  *   node dist/scripts/runEventBackfill.js <mirror-root-path>
  *
+ * Reads the agent_host DSN from the SAME AGENT_HOST_DB_* env the live service uses (see
+ * db/agentHostDsn.ts), so it loads into the exact database + credentials agent-host reads from.
+ *
  * Exits 0 only if EVERY conversation verified (rows == lines, chain matches).
  * A partial success (127 of 128) exits 1 and the Job fails, because the mirror
  * is reclaimed after this runs and destroying history is the failure we prevent.
  */
 
 import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
 
 import { backfillAll } from "../session/eventBackfill.js";
+import { agentHostDsnFromEnv } from "../db/agentHostDsn.js";
+import { createPgPool } from "../db/pgPool.js";
 import { logger } from "../log.js";
 
 const log = logger("runEventBackfill");
@@ -30,15 +34,17 @@ async function main() {
     process.exit(2);
   }
 
-  const dsn = process.env.DATABASE_URL;
+  const dsn = agentHostDsnFromEnv();
   if (!dsn) {
-    console.error("DATABASE_URL environment variable is required");
+    console.error(
+      "no agent_host DSN in env — set AGENT_HOST_DB_PASSWORD (+ AGENT_HOST_DB_HOST/PORT/NAME/USER) or AGENT_HOST_DB_DSN",
+    );
     process.exit(2);
   }
 
   log.info("starting event backfill", { mirrorRoot, dsn: dsn.replace(/:[^:@]+@/, ":***@") });
 
-  const pool = new pg.Pool({ connectionString: dsn });
+  const pool = createPgPool("runEventBackfill", { connectionString: dsn });
   const db = drizzle(pool);
 
   try {
