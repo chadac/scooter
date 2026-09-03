@@ -209,6 +209,14 @@ maybe("event backfill Job renders and runs in a real cluster", () => {
       );
     }
     await cluster.deletePod(SEEDER, NS).catch(() => {});
+    // Leave the shared agent_host DB as we found it: this spec runs on the same cluster as the
+    // platform smoke + browser stories, so drop the rows it seeded (all under the backfill-e2e-
+    // prefix) rather than leaving phantom conversation_events behind.
+    if (pw) {
+      await psql(pw, `DELETE FROM conversation_events WHERE conversation_id LIKE 'backfill-e2e-%'`).catch(
+        () => {},
+      );
+    }
   });
 
   it("renders a Job with the agent-host image, DB wiring, and a read-only mirror mount", () => {

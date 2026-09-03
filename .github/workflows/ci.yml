@@ -731,7 +731,14 @@ jobs:
             kubectl -n agent-sandbox rollout status deployment/conversation-router --timeout=180s
             kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
           '
-          nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke --no-file-parallelism'
+          # platform-smoke: the multi-replica topology comes up + a conversation routes.
+          # event-backfill: the one-shot mirror→Postgres migration Job, end-to-end against
+          # this deployed platform's Postgres + agent-host-history PVC (both in the k3d
+          # render). It builds the real Job from .#platform-manifests-k3d-backfill, seeds the
+          # mirror, runs it, and asserts rows land + a corrupt log FAILS the Job. This is the
+          # ONLY tier that exercises the rendered Job's image/DB-env/volume wiring — Tier 1
+          # covers the verify logic against a fake db. See modules/event-backfill.nix, PR #463.
+          nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke event-backfill --no-file-parallelism'
 
 
       # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
