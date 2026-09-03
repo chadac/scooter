@@ -118,6 +118,11 @@ type AguiEventBase =
        *  force-interrupt — a clean end, NOT an error. The UI shows "you stopped
        *  this turn." */
       cancelled?: boolean;
+      /** Synthesized by the ADOPTING pod for a run whose real terminal was lost —
+       *  the previous owner was fenced mid-run, so its RUN_FINISHED never reached
+       *  the log. Marks the run closed so the UI stops reading it as in-flight;
+       *  the work itself was not completed. */
+      interrupted?: boolean;
     }
   | { type: "RUN_ERROR"; message: string; code?: string }
   // Emitted when a run failed TRANSIENTLY (agent process died / no-activity / ACP threw) and the pump
