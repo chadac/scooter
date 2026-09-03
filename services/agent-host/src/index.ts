@@ -283,6 +283,14 @@ export function resolveModel(
   if (requested && (config.availableModels.includes(requested) || requested === config.model)) {
     return requested;
   }
+  // Log when a persisted model is no longer available.
+  if (requested) {
+    hostLog.warn("conversation requested unavailable model, falling back to default", {
+      requested,
+      fallback: config.model,
+      availableModels: config.availableModels,
+    });
+  }
   return config.model;
 }
 
