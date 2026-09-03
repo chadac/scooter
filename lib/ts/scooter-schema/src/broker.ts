@@ -57,3 +57,29 @@ export const moduleRegistry = pgTable("module_registry", {
 	index("ix_module_registry_owner").using("btree", table.owner.asc().nullsLast().op("text_ops")),
 	index("ix_module_registry_visibility").using("btree", table.visibility.asc().nullsLast().op("text_ops")),
 ]);
+
+export const staticShares = pgTable("static_shares", {
+	uuid: varchar().primaryKey().notNull(),
+	owner: varchar().notNull(),
+	conversationId: varchar("conversation_id").notNull(),
+	description: text().notNull(),
+	visibility: varchar().notNull(),
+	latestVersion: integer("latest_version").notNull(),
+	createdAt: varchar("created_at").notNull(),
+	updatedAt: varchar("updated_at").notNull(),
+}, (table) => [
+	index("ix_static_shares_conversation_id").using("btree", table.conversationId.asc().nullsLast().op("text_ops")),
+	index("ix_static_shares_owner").using("btree", table.owner.asc().nullsLast().op("text_ops")),
+	index("ix_static_shares_visibility").using("btree", table.visibility.asc().nullsLast().op("text_ops")),
+]);
+
+export const staticShareVersions = pgTable("static_share_versions", {
+	id: serial().primaryKey().notNull(),
+	shareUuid: varchar("share_uuid").notNull(),
+	version: integer().notNull(),
+	entryPoint: varchar("entry_point").notNull(),
+	filesJson: text("files_json").notNull(),
+	createdAt: varchar("created_at").notNull(),
+}, (table) => [
+	index("ix_static_share_versions_share_uuid").using("btree", table.shareUuid.asc().nullsLast().op("text_ops")),
+]);
