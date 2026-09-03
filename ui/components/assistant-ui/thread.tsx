@@ -352,8 +352,9 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
         // 78rem fills most of the available width on wide monitors while staying
         // readable; the composer + messages both track this.
         ["--thread-max-width" as string]: "78rem",
-        ["--composer-bg" as string]:
-          "color-mix(in oklab, var(--color-muted) 30%, var(--color-chat))",
+        // A raised card surface so the composer reads as a distinct input on the
+        // grey chat (was a near-chat tint that only the border defined).
+        ["--composer-bg" as string]: "var(--color-card)",
         ["--composer-radius" as string]: "1.5rem",
         ["--composer-padding" as string]: "8px",
       }}
@@ -403,7 +404,11 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
 
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
+              // bg-chat (not bg-background): the footer is sticky over the chat
+              // surface, so it must MATCH it — otherwise the warm paper body shows
+              // as a distinct panel behind the composer (a box-in-a-box). It stays
+              // opaque so messages scrolling under it are covered.
+              "aui-thread-viewport-footer bg-chat flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
               !isEmpty &&
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
