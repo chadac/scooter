@@ -346,13 +346,14 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
 
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
+      className="aui-root aui-thread-root bg-chat @container flex h-full flex-col"
       style={{
-        // Widen the readable column — 44rem left a lot of empty space on wide
-        // monitors. 64rem fills more of the available width while staying readable.
-        ["--thread-max-width" as string]: "64rem",
+        // Widen the readable column — the chat should take a larger part of the page.
+        // 78rem fills most of the available width on wide monitors while staying
+        // readable; the composer + messages both track this.
+        ["--thread-max-width" as string]: "78rem",
         ["--composer-bg" as string]:
-          "color-mix(in oklab, var(--color-muted) 30%, var(--color-background))",
+          "color-mix(in oklab, var(--color-muted) 30%, var(--color-chat))",
         ["--composer-radius" as string]: "1.5rem",
         ["--composer-padding" as string]: "8px",
       }}

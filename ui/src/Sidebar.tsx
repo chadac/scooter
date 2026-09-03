@@ -157,29 +157,17 @@ const SessionRow = memo(function SessionRow({
       data-starred={s.starred ? "true" : undefined}
       data-subagent={depth > 0 ? "true" : undefined}
       className={
-        "group mb-0.5 flex items-center gap-1 rounded-lg pe-1 text-sm " +
-        (depth > 0 ? "ms-3 border-s border-border ps-1 " : "") +
+        "group relative mb-0.5 flex items-center gap-1.5 rounded-lg ps-2 pe-1 text-sm " +
+        (depth > 0 ? "ms-3 border-s border-border ps-2 " : "") +
         (active ? "bg-accent font-medium" : "hover:bg-accent/60")
       }
     >
-      {/* Star toggle — top-level only (subagents aren't independently retained). */}
-      {depth === 0 && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-star"
-          aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
-          aria-pressed={s.starred ? true : false}
-          onClick={toggleStar}
-          className={cn(
-            "shrink-0",
-            s.starred
-              ? "text-warning"
-              : "text-muted-foreground opacity-0 hover:text-warning group-hover:opacity-100"
-          )}
-        >
-          {s.starred ? "★" : "☆"}
-        </Button>
+      {/* Activity status on the LEFT (mockup 1a): a leading dot colored by the pod
+          lifecycle. A fixed-width slot so titles align whether or not a row has one. */}
+      {!editing && (
+        <span className="flex w-1.5 shrink-0 items-center justify-center">
+          {s.status && <StatusDot status={s.status} />}
+        </span>
       )}
 
       {editing ? (
@@ -233,13 +221,11 @@ const SessionRow = memo(function SessionRow({
         </Button>
       )}
 
-      {/* Live pod status dot — top-level rows only (paper reskin 1a). */}
-      {!editing && depth === 0 && s.status && <StatusDot status={s.status} />}
-
       {/* Provider "link plates" for any linked external resources (GitHub/Slack/…):
-          each badge sits in a bordered card chip, per mockup 1a. */}
+          each badge sits in a bordered card chip, per mockup 1a. Hidden on hover so
+          the action overlay below reads clearly over the same space. */}
       {!editing && s.sources && s.sources.length > 0 && (
-        <span className="flex shrink-0 items-center gap-1">
+        <span className="flex shrink-0 items-center gap-1 group-hover:opacity-0">
           {s.sources.map((src) => (
             <span
               key={src}
@@ -251,36 +237,53 @@ const SessionRow = memo(function SessionRow({
         </span>
       )}
 
-      {/* Explicit rename affordance — a dedicated button (not overloading the title's
-          click/double-click, which raced with switchTo re-rendering the row). */}
+      {/* Row actions — star / rename / delete. ABSOLUTELY positioned so they OVERLAY
+          the row's right edge (mockup 1a) instead of consuming width: the title gets
+          the full row, and these fade in on hover. The gradient blends the overlay
+          into the row background (accent when active/hovered). */}
       {!editing && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-rename"
-          aria-label={`Rename ${s.title}`}
-          title="Rename"
-          onClick={(e) => {
-            e.stopPropagation();
-            openRename();
-          }}
-          className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100"
-        >
-          ✎
-        </Button>
-      )}
-
-      {!editing && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-delete"
-          aria-label={`Delete ${s.title}`}
-          onClick={remove}
-          className="shrink-0 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-        >
-          ✕
-        </Button>
+        <div className="absolute inset-y-0 right-1 flex items-center gap-0.5 rounded-lg bg-gradient-to-l from-accent from-70% to-transparent pl-6 opacity-0 transition-opacity group-hover:opacity-100">
+          {/* Star — top-level only (subagents aren't independently retained). A
+              starred row keeps the gold star visible even off-hover, via the parent
+              group state below. */}
+          {depth === 0 && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              data-testid="session-star"
+              aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
+              aria-pressed={s.starred ? true : false}
+              onClick={toggleStar}
+              className={cn("shrink-0", s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
+            >
+              {s.starred ? "★" : "☆"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            data-testid="session-rename"
+            aria-label={`Rename ${s.title}`}
+            title="Rename"
+            onClick={(e) => {
+              e.stopPropagation();
+              openRename();
+            }}
+            className="shrink-0 text-muted-foreground"
+          >
+            ✎
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            data-testid="session-delete"
+            aria-label={`Delete ${s.title}`}
+            onClick={remove}
+            className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            ✕
+          </Button>
+        </div>
       )}
     </div>
   );
