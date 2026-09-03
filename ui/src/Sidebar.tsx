@@ -40,7 +40,7 @@ function StatusDot({ status }: { status: "running" | "suspended" | "ended" }) {
       data-testid="session-status-dot"
       aria-label={`Sandbox ${status}`}
       title={`Sandbox ${status}`}
-      className={cn("h-1.5 w-1.5 shrink-0 rounded-full", cls)}
+      className={cn("h-1 w-1 shrink-0 rounded-full", cls)}
     />
   );
 }
@@ -157,15 +157,15 @@ const SessionRow = memo(function SessionRow({
       data-starred={s.starred ? "true" : undefined}
       data-subagent={depth > 0 ? "true" : undefined}
       className={
-        "group relative mb-0.5 flex items-center gap-1.5 rounded-lg ps-2 pe-1 text-sm " +
-        (depth > 0 ? "ms-3 border-s border-border ps-2 " : "") +
+        "group relative mb-0.5 flex items-center gap-1 rounded-lg ps-1.5 pe-1 text-sm " +
+        (depth > 0 ? "ms-3 border-s border-border ps-1.5 " : "") +
         (active ? "bg-accent font-medium" : "hover:bg-accent/60")
       }
     >
       {/* Activity status on the LEFT (mockup 1a): a leading dot colored by the pod
           lifecycle. A fixed-width slot so titles align whether or not a row has one. */}
       {!editing && (
-        <span className="flex w-1.5 shrink-0 items-center justify-center">
+        <span className="flex w-1 shrink-0 items-center justify-center">
           {s.status && <StatusDot status={s.status} />}
         </span>
       )}
