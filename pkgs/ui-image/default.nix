@@ -143,6 +143,22 @@ let
           proxy_set_header Connection $connection_upgrade;
           proxy_buffering off;
           proxy_read_timeout 3600s;
+          # ROLLOUT UX: while agent-host is rolling there is nothing to dial, and the
+          # failure escaped as nginx's bare 502 page in the user's service tab. These are
+          # NGINX-GENERATED errors only (dial refused / upstream gone) — deliberately no
+          # proxy_intercept_errors, so a legitimate 5xx BODY from an in-pod service still
+          # reaches the client untouched. The page below self-retries.
+          error_page 502 503 504 = @service_retry;
+        }
+
+        # A branded, self-retrying unavailability page for the web-service proxy. 503 +
+        # Retry-After is the honest status (the service exists; its backend is rolling);
+        # the meta refresh makes a user-facing tab recover on its own, and a
+        # programmatic caller sees a clean 503 instead of an HTML 502.
+        location @service_retry {
+          default_type text/html;
+          add_header Retry-After 3 always;
+          return 503 '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>Scooter</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}div{text-align:center}p{color:#999}</style></head><body><div><h1>Scooter is updating</h1><p>This service is briefly unavailable while the platform redeploys.<br>Retrying automatically&hellip;</p></div></body></html>';
         }
 
         # SPA: serve the app, fall back to index.html for client routes.
