@@ -27,6 +27,52 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
  *  plus the head (visible leaf). Matches @assistant-ui/core's ExportedMessageRepository. */
 export type RepositorySnapshot = ExportedMessageRepository;
 
+/** An image attached to a user message, as carried by a MESSAGE_IMAGES event. */
+export interface MessageImageRef {
+  assetId: string;
+  mimeType: string;
+  /** Root-absolute assets route the server emits: /conversations/:id/assets/:assetId. */
+  url: string;
+}
+
+/**
+ * Append each user message's attached images (MESSAGE_IMAGES rides the log, but the
+ * AbstractAgent base applier ignores it) so they survive replay/refresh as attachments.
+ *
+ * The image MUST be emitted in the AG-UI WIRE shape `{type:"image", source:{type:"url",
+ * value}}`: fromAgUiMessages → toSnapshotAttachments only materializes a user-message
+ * attachment from a part that has a `source`. The assistant-ui content-part shape
+ * `{type:"image", image}` has no `source`, so it is SILENTLY DROPPED — the message folds
+ * to text-only and renders as an empty bubble (the live send shows the image only because
+ * the composer supplies its own File-backed attachment; the drop bites on replay). See the
+ * companion test.
+ *
+ * `baseUrl` is prefixed onto the (root-absolute) asset url so the rendered <img> resolves
+ * through the same API base as every other request (client.ts prefixes it): "" at origin
+ * root (prod), the webService path prefix under the dev preview, where an unprefixed
+ * /conversations/... would resolve outside the proxy and 404.
+ */
+export function enrichMessagesWithImages(
+  foldedMessages: readonly unknown[],
+  getImages: (messageId: string) => readonly MessageImageRef[] | undefined,
+  baseUrl: string,
+): unknown[] {
+  return foldedMessages.map((m) => {
+    const msg = m as { id?: string; content?: unknown };
+    const imgs = msg.id ? getImages(msg.id) : undefined;
+    if (!imgs?.length) return m;
+    const parts = Array.isArray(msg.content)
+      ? [...(msg.content as unknown[])]
+      : msg.content
+        ? [{ type: "text", text: msg.content }]
+        : [];
+    for (const img of imgs) {
+      parts.push({ type: "image", source: { type: "url", value: baseUrl + img.url, mimeType: img.mimeType } });
+    }
+    return { ...msg, content: parts };
+  });
+}
+
 /**
  * Convert our folded AG-UI message array (post image-enrichment + system-splice)
  * into an ExportedMessageRepository with a linear parent chain.

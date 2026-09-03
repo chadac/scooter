@@ -49,7 +49,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter, type AppendMessage } from "@assistant-ui/react";
 
 import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
-import { toRepositorySnapshot, type RepositorySnapshot } from "./messageRepository.js";
+import { toRepositorySnapshot, enrichMessagesWithImages, type RepositorySnapshot } from "./messageRepository.js";
 import { imagesFromMessage, downscaleImage, type OutboundImage } from "./imageUpload.js";
 
 import { createConversation } from "./client.js";
@@ -531,17 +531,11 @@ function ConversationRuntime({
       const folded = agent.messages as unknown as unknown[];
       if (folded.length < lastLen.current) return;
       lastLen.current = folded.length;
-      // Enrich user messages with their attached images (MESSAGE_IMAGES rides the
-      // log but the base applier ignores it): append an image part per ref so the
-      // image renders live + after a refresh. The url is a same-origin assets route.
-      const enriched = folded.map((m) => {
-        const msg = m as { id?: string; role?: string; content?: unknown };
-        const imgs = msg.id ? agent.getMessageImages(msg.id) : undefined;
-        if (!imgs?.length) return m;
-        const parts = Array.isArray(msg.content) ? [...(msg.content as unknown[])] : msg.content ? [{ type: "text", text: msg.content }] : [];
-        for (const img of imgs) parts.push({ type: "image", image: img.url });
-        return { ...msg, content: parts };
-      });
+      // Enrich user messages with their attached images (MESSAGE_IMAGES rides the log
+      // but the base applier ignores it) as AG-UI wire image parts, so they survive
+      // replay/refresh as attachments. Wire shape + base-prefix are load-bearing — see
+      // enrichMessagesWithImages. BASE_URL is "" in prod, the webService prefix in dev.
+      const enriched = enrichMessagesWithImages(folded, (id) => agent.getMessageImages(id), BASE_URL);
       // Interleave SYSTEM messages inline at their chronological slot. The base applier
       // drops SYSTEM_MESSAGE (bespoke), so we splice a synthetic message carrying a
       // `sys:`-prefixed id + a source/text-tagged text part right AFTER the real

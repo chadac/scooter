@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { toRepositorySnapshot } from "./messageRepository.js";
+import { toRepositorySnapshot, enrichMessagesWithImages, type MessageImageRef } from "./messageRepository.js";
 
 const msg = (id: string, role: "user" | "assistant", text: string) => ({
   id,
@@ -86,5 +86,54 @@ describe("duplicate message ids must not crash the UI", () => {
     const snap = toRepositorySnapshot(dup);
     expect(snap.headId).toBe("b");
     expect(snap.messages).toHaveLength(2);
+  });
+});
+
+describe("enrichMessagesWithImages", () => {
+  const imgRef: MessageImageRef = {
+    assetId: "asset-1.png",
+    mimeType: "image/png",
+    url: "/conversations/c1/assets/asset-1.png",
+  };
+  const getImages = (id: string) => (id === "u1" ? [imgRef] : undefined);
+
+  // The regression this file guards: an enriched user-image message MUST survive
+  // fromAgUiMessages (inside toRepositorySnapshot) as an ATTACHMENT. The bug was
+  // emitting the content-part shape `{type:"image", image}`, which toSnapshotAttachments
+  // silently drops (no `source`) → an empty bubble on replay. The wire shape below is
+  // what makes it materialize.
+  it("materializes a user-image message as an attachment (not a dropped, empty bubble)", () => {
+    const enriched = enrichMessagesWithImages(
+      [{ id: "u1", role: "user", content: "look" }],
+      getImages,
+      "",
+    );
+    const snap = toRepositorySnapshot(enriched);
+    const message = snap.messages[0]!.message as {
+      attachments?: Array<{ type: string; content: Array<{ type: string; image: string }> }>;
+    };
+    expect(message.attachments).toHaveLength(1);
+    expect(message.attachments![0].type).toBe("image");
+    expect(message.attachments![0].content[0].image).toBe("/conversations/c1/assets/asset-1.png");
+  });
+
+  it("base-prefixes the asset url so it resolves under a webService path prefix", () => {
+    const enriched = enrichMessagesWithImages(
+      [{ id: "u1", role: "user", content: "" }],
+      getImages,
+      "/c/abc/scooter-dev",
+    );
+    const snap = toRepositorySnapshot(enriched);
+    const message = snap.messages[0]!.message as {
+      attachments?: Array<{ content: Array<{ image: string }> }>;
+    };
+    expect(message.attachments![0].content[0].image).toBe(
+      "/c/abc/scooter-dev/conversations/c1/assets/asset-1.png",
+    );
+  });
+
+  it("leaves messages without images untouched", () => {
+    const input = [{ id: "a2", role: "assistant", content: "no imgs" }];
+    expect(enrichMessagesWithImages(input, getImages, "")).toEqual(input);
   });
 });
