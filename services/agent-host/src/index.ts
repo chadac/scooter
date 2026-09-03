@@ -572,6 +572,10 @@ export async function main(
           removeConversation: async (id: SessionId) => {
             await metaStore.removeConversation(id);
             await fileStore.removeConversation?.(id);
+            // Drop the conversation's links too — the file store cleared them with its directory,
+            // but the shared PG resource_links table needs an explicit delete or an orphaned row
+            // survives the conversation and collides (global unique) with a later re-link.
+            await linkStore?.deleteByConversation(id);
           },
         }
       : {}),

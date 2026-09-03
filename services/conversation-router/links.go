@@ -90,6 +90,29 @@ func (s *LinkStore) LinksByConversation(ctx context.Context) (map[string][]Link,
 	return out, rs.Err()
 }
 
+// LinksForConversation reads the links of ONE conversation — the enrichment the LISTEN loop
+// attaches to a single `upsert` frame (vs LinksByConversation, which reads the whole table for the
+// snapshot). Returns an empty slice, never nil, so a row with no links still carries `links: []`.
+func (s *LinkStore) LinksForConversation(ctx context.Context, convID string) ([]Link, error) {
+	rs, err := s.pool.Query(ctx, `
+		SELECT source, resource_type, url, title
+		  FROM resource_links
+		 WHERE conversation_id = $1`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rs.Close()
+	out := []Link{}
+	for rs.Next() {
+		var l Link
+		if err := rs.Scan(&l.Source, &l.ResourceType, &l.URL, &l.Title); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rs.Err()
+}
+
 // Close releases the pool. Safe on a nil LinkStore (the not-configured case).
 func (s *LinkStore) Close() {
 	if s != nil && s.pool != nil {

@@ -84,7 +84,6 @@ function fakeSessions(): SessionManager {
     }),
     sweepIdle: vi.fn(async () => []),
     sweepRetention: vi.fn(async () => []),
-    onConversationChange: vi.fn(() => () => {}),
   };
 }
 
@@ -204,119 +203,10 @@ describe("management API", () => {
     expect((res.json as { id?: string }).id).not.toBe("attacker-chosen-id");
   });
 
-  it("GET /conversations lists conversations (JSON-safe view)", async () => {
-    const api = createManagementApi({
-      sessions: fakeSessions(),
-      store: fakeStore([]),
-      server: stubServer,
-      answerPermission: async () => {},
-    });
-    const { status, json } = await call(api, "GET", "/conversations");
-    expect(status).toBe(200);
-    expect(Array.isArray(json)).toBe(true);
-    expect((json as any[])[0]).toMatchObject({ id: "c1", title: "Hello", status: "running" });
-    expect((json as any[])[0]).not.toHaveProperty("bridge");
-  });
-
-  it("GET /conversations exposes parentId so the UI can nest subagents", async () => {
-    const s = fakeSessions();
-    // c1 is top-level (no parentId); add a subagent child of c1.
-    const withChild: SessionManager = {
-      ...s,
-      list: () => [
-        conv({ id: "c1", threadId: "c1", title: "Parent" }),
-        conv({ id: "sub1", threadId: "sub1", title: "Subagent", parentId: "c1" as any }),
-      ],
-    };
-    const api = createManagementApi({ sessions: withChild, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const { json } = await call(api, "GET", "/conversations");
-    const rows = json as Array<{ id: string; parentId?: string }>;
-    expect(rows.find((r) => r.id === "c1")?.parentId).toBeUndefined();
-    expect(rows.find((r) => r.id === "sub1")?.parentId).toBe("c1");
-  });
-
-  it("GET /conversations enriches each row with sources + a compact links summary", async () => {
-    const store = fakeStore([]);
-    // Attach a GitHub PR link to c1 (what the sidebar shows the name of / filters by).
-    await store.addLink!("c1", {
-      source: "github",
-      resourceType: "pull_request",
-      url: "https://github.com/org/app/pull/203",
-      title: "org/app #203",
-    });
-    const api = createManagementApi({
-      sessions: fakeSessions(),
-      store,
-      server: stubServer,
-      answerPermission: async () => {},
-    });
-    const { json } = await call(api, "GET", "/conversations");
-    const row = (json as any[]).find((c) => c.id === "c1");
-    expect(row.sources).toEqual(["github"]);
-    expect(row.links).toEqual([
-      {
-        source: "github",
-        resourceType: "pull_request",
-        url: "https://github.com/org/app/pull/203",
-        title: "org/app #203",
-      },
-    ]);
-  });
-
-  // --- Part 2: conversation-list push stream (RED until implemented) ----------
-  // Captures res.write() SSE frames + the onConversationChange callback the route
-  // registers, so we can assert: initial snapshot of the visible list, then an
-  // upsert when a new conversation is announced.
-  async function callStream(
-    api: ReturnType<typeof createManagementApi>,
-    path: string,
-    headers: Record<string, string> = {},
-  ): Promise<{ status: number; frames: unknown[]; closeReq: () => void }> {
-    const req = new PassThrough() as unknown as IncomingMessage;
-    (req as { method?: string }).method = "GET";
-    (req as { url?: string }).url = path;
-    (req as { headers?: Record<string, string> }).headers = headers;
-    let status = 200;
-    const frames: unknown[] = [];
-    const res = {
-      writeHead: (s: number) => { status = s; return res; },
-      write: (c: string) => {
-        for (const line of c.split("\n")) {
-          if (line.startsWith("data: ")) frames.push(JSON.parse(line.slice(6)));
-        }
-        return true;
-      },
-      end: () => {},
-      req,
-    } as unknown as ServerResponse;
-    const matched = api.handle(req, res);
-    (req as PassThrough).end();
-    await matched;
-    return { status, frames, closeReq: () => (req as PassThrough).emit("close") };
-  }
-
-  it("GET /conversations/events emits a snapshot then upserts new conversations", async () => {
-    const sessions = fakeSessions();
-    let announce: ((c: Conversation) => void) | undefined;
-    (sessions.onConversationChange as ReturnType<typeof vi.fn>).mockImplementation(
-      (cb: (c: Conversation) => void) => { announce = cb; return () => {}; },
-    );
-    const api = createManagementApi({
-      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
-    });
-
-    const s = await callStream(api, "/conversations/events");
-    expect(s.status).toBe(200);
-    // First frame is the snapshot of the currently-visible list.
-    expect(s.frames[0]).toMatchObject({ kind: "snapshot" });
-    expect((s.frames[0] as any).conversations.map((c: any) => c.id)).toContain("c1");
-
-    // A newly-created conversation is pushed as an upsert.
-    announce?.(conv({ id: "c2", threadId: "c2", title: "Slack: help" }));
-    expect(s.frames).toContainEqual(
-      expect.objectContaining({ kind: "upsert", conversation: expect.objectContaining({ id: "c2" }) }),
-    );
-  });
+  // GET /conversations, its ?scope filter, sources enrichment, and the
+  // /conversations/events snapshot+upsert stream MOVED to the conversation-router
+  // (served from Postgres). Their coverage now lives there:
+  // conversation-router/list_test.go (scope + sources) and events_test.go (stream).
 
   // --- user rename + starring ------------------------------------------------
 
@@ -627,81 +517,9 @@ describe("management API", () => {
     expect(status).toBe(404);
   });
 
-  it("GET /conversations?scope=mine returns STRICTLY the caller's own (not others, not unowned)", async () => {
-    const sessions = fakeSessions();
-    // alice + bob each own one; c1 (the seed) has no owner -> unowned.
-    await sessions.start("a1", undefined, "alice");
-    await sessions.start("b1", undefined, "bob");
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-
-    const mine = await call(api, "GET", "/conversations?scope=mine", undefined, { "x-auth-user": "alice" });
-    const ids = (mine.json as any[]).map((c) => c.id).sort();
-    // ONLY alice's own. For a known user, Mine no longer leaks unowned (c1) or
-    // others' (b1) — an unowned conversation is All-only (see the scope=all test).
-    expect(ids).toEqual(["a1"]);
-  });
-
-  it("GET /conversations?scope=mine for an ANONYMOUS caller still shows everything (dev-friendly)", async () => {
-    const sessions = fakeSessions();
-    await sessions.start("a1", undefined, "alice");
-    await sessions.start("b1", undefined, "bob");
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    // No x-auth-user -> anonymous -> can't distinguish -> sees all.
-    const mine = await call(api, "GET", "/conversations?scope=mine");
-    const ids = (mine.json as any[]).map((c) => c.id).sort();
-    expect(ids).toEqual(["a1", "b1", "c1"]);
-  });
-
-  it("GET /conversations?scope=all returns everything regardless of owner", async () => {
-    const sessions = fakeSessions();
-    await sessions.start("a1", undefined, "alice");
-    await sessions.start("b1", undefined, "bob");
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const all = await call(api, "GET", "/conversations?scope=all", undefined, { "x-auth-user": "alice" });
-    const ids = (all.json as any[]).map((c) => c.id).sort();
-    expect(ids).toEqual(["a1", "b1", "c1"]);
-  });
-
-  it("GET /conversations default scope is 'mine'", async () => {
-    const sessions = fakeSessions();
-    await sessions.start("b1", undefined, "bob");
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const def = await call(api, "GET", "/conversations", undefined, { "x-auth-user": "alice" });
-    const ids = (def.json as any[]).map((c) => c.id);
-    expect(ids).not.toContain("b1"); // default = mine, so bob's is excluded
-  });
-
-  it("anonymous (no header) sees all conversations (single-user/dev unchanged)", async () => {
-    const sessions = fakeSessions();
-    await sessions.start("a1", undefined, "alice");
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    // No x-auth-user -> anonymous -> sees everything even at default scope.
-    const res = await call(api, "GET", "/conversations");
-    const ids = (res.json as any[]).map((c) => c.id).sort();
-    expect(ids).toEqual(["a1", "c1"]);
-  });
-
-  it("GET /conversations includes each conversation's distinct link sources (for sidebar icons)", async () => {
-    const store = fakeStore([]);
-    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerPermission: async () => {} });
-    // c1 has a github PR + a slack thread (+ a duplicate github -> distinct sources only).
-    await call(api, "POST", "/conversations/c1/links", { source: "github", resourceType: "pull_request", url: "https://gh/pr/1" });
-    await call(api, "POST", "/conversations/c1/links", { source: "slack", resourceType: "thread", title: "#eng" });
-    await call(api, "POST", "/conversations/c1/links", { source: "github", resourceType: "issue", url: "https://gh/i/2" });
-
-    const { json } = await call(api, "GET", "/conversations");
-    const c1 = (json as any[]).find((c) => c.id === "c1");
-    expect(c1).toBeDefined();
-    // Distinct sources, sorted; a conversation with no links has [].
-    expect([...c1.sources].sort()).toEqual(["github", "slack"]);
-  });
-
-  it("GET /conversations gives [] sources for a conversation with no links", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-    const { json } = await call(api, "GET", "/conversations");
-    const c1 = (json as any[]).find((c) => c.id === "c1");
-    expect(c1.sources).toEqual([]);
-  });
+  // The ?scope=mine|all view-filter and list-level sources enrichment MOVED to the
+  // conversation-router (list.go visible()/sourcesOf); see conversation-router/list_test.go.
+  // The per-conversation /conversations/:id/links routes below still live here.
 
   it("POST then GET /conversations/:id/links round-trips an external link", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });

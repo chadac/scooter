@@ -46,6 +46,12 @@ export interface LinkStore {
     resourceType: string,
     resourceId: string,
   ): Promise<string | undefined>;
+  /** Drop every link of a conversation — called when the conversation itself is deleted, so
+   *  its rows in the shared resource_links table don't outlive it. The file store dropped links
+   *  implicitly with the conversation's directory; the durable table needs an explicit delete
+   *  (else a later conversation that links the SAME resource collides with the orphan on the
+   *  global (source, resource_type, resource_id) unique and never gets its own row). */
+  deleteByConversation(id: SessionId): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -212,6 +218,17 @@ export function createPgLinkStore(config: PgLinkStoreConfig): LinkStore {
           error: formatError(e),
         });
         return undefined;
+      }
+    },
+
+    async deleteByConversation(id) {
+      try {
+        await db.delete(resourceLinks).where(eq(resourceLinks.conversationId, id));
+      } catch (e) {
+        log.error("deleteByConversation failed (links may outlive the deleted conversation)", {
+          conversation_id: id,
+          error: formatError(e),
+        });
       }
     },
 

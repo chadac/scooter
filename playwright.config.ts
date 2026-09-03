@@ -103,13 +103,17 @@ export default defineConfig({
     ? undefined
     : [
         {
-          // agent-host in fake mode: no cluster. A default + offered models so
-          // the model-selection UI has a catalog to pick from (the fake agent
-          // echoes its GOOSE_MODEL via the "~model" directive).
-          command: "node services/agent-host/dist/index.js",
+          // THE FAKE BACKEND STACK: ephemeral Postgres → atlas migrate → agent-host (fake agent)
+          // → conversation-router (ROUTER_DEV_MODE), all as one process (test/e2e/support/
+          // fakeBackend.mjs). The router now owns the conversation LIST + events stream + CREATE
+          // (served from Postgres), so the UI targets the ROUTER on 8080; the orchestrator runs
+          // agent-host internally on 8079 and the router proxies everything else through to it.
+          // The model catalog (a default + offered models) still comes from agent-host's env so the
+          // model-selection UI has a catalog (the fake agent echoes GOOSE_MODEL via "~model").
+          command: "node test/e2e/support/fakeBackend.mjs",
           env: {
-            PORT: "8080",
-            GOOSE_BIN: "fake",
+            E2E_ROUTER_PORT: "8080",
+            E2E_AGENT_HOST_PORT: "8079",
             LOCAL_STATE_PATH: "/tmp/agent-host-e2e",
             // Run PRODUCTION's two-store topology. mirroredConversationStore is only
             // constructed when MIRROR_STATE_PATH is set (index.ts:189, :442) — without it
@@ -120,9 +124,11 @@ export default defineConfig({
             GOOSE_MODEL: "model-default",
             AGENT_AVAILABLE_MODELS: "model-default,model-fast,model-smart",
           },
-          // Wait on the readiness ROUTE (GET /healthz -> 200), not a bare port bind,
-          // so the server is actually serving before tests start.
+          // Wait on the router's readiness ROUTE (GET /healthz -> 200, proxied to agent-host), so
+          // the WHOLE chain (PG + migrate + agent-host + router) is serving before tests start.
           url: "http://localhost:8080/healthz",
+          // PG init + migrate + two service boots — give the chain generous headroom on a cold runner.
+          timeout: 120_000,
           // Reuse is opt-IN locally (E2E_REUSE_SERVER=1), not the default. A server left over from
           // an earlier run keeps serving its OLD build, so a fresh run silently tests stale code:
           // identical specs then yield different failure counts and any baseline/before-after

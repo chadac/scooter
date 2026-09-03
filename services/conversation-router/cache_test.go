@@ -122,19 +122,6 @@ func TestUnassignClearsBothKeys(t *testing.T) {
 	}
 }
 
-// Hosts() feeds the fleet-aggregate fan-out; the short-id alias points at the SAME pod, so it
-// must not make one owner look like two upstreams (which would duplicate every merged row).
-func TestHostsDeduplicatesAliases(t *testing.T) {
-	c := NewOwnershipCache()
-	c.observe(convCR("uuid-a", "conv-aaa111", "10.42.0.7"))
-	c.observe(convCR("uuid-b", "conv-bbb222", "10.42.0.8"))
-
-	got := c.Hosts()
-	if len(got) != 2 || got[0] != "10.42.0.7" || got[1] != "10.42.0.8" {
-		t.Errorf("Hosts() = %v, want [10.42.0.7 10.42.0.8]", got)
-	}
-}
-
 // End-to-end through the router's own resolution: the broker's short-id-addressed notify
 // must reach the OWNER pod, not the ClusterIP fallback (a random ready pod).
 func TestResolveTargetByShortID(t *testing.T) {

@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -74,16 +73,18 @@ func NewOwnershipCache() *OwnershipCache {
 	}
 }
 
-// ListCRs returns every known Conversation CR — the EXISTENCE set the conversation list is
-// built from (a metadata row with no CR here is an ended conversation, omitted).
-func (c *OwnershipCache) ListCRs() []CRInfo {
+// CR returns one conversation's CR state, or ("", false) when no CR is known — i.e. the
+// conversation does not exist (never created, or ended). The LISTEN loop uses this to honour the
+// EXISTENCE rule for a single upsert: a metadata row whose CR the cache has not observed is not
+// pushed (the snapshot/poll picks it up once the watch catches the CR).
+func (c *OwnershipCache) CR(id string) (CRInfo, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	out := make([]CRInfo, 0, len(c.crs))
-	for id, info := range c.crs {
-		out = append(out, CRInfo{ID: id, Phase: info.phase, SandboxRef: info.sandboxRef})
+	info, ok := c.crs[id]
+	if !ok {
+		return CRInfo{}, false
 	}
-	return out
+	return CRInfo{ID: id, Phase: info.phase, SandboxRef: info.sandboxRef}, true
 }
 
 // HostIP returns the assigned owner pod IP for a conversation, or ("", false) if
@@ -222,32 +223,6 @@ func (c *OwnershipCache) Run(ctx context.Context, dyn dynamic.Interface, namespa
 		// not a failure: debug.
 		log.Debug("watch channel closed, re-listing", slog.String("namespace", namespace))
 	}
-}
-
-// Hosts returns every DISTINCT owner pod IP the cache currently knows about — i.e. the set of
-// agent-host pods that own at least one conversation. Used by the fleet-aggregate fan-out
-// (aggregate.go): a request that must see ALL conversations is sent to each of these and merged.
-//
-// Sourced from the Conversation CRs the cache already watches, so this needs no extra RBAC and no
-// pod listing. A pod hosting nothing contributes nothing to a conversation list anyway, so its
-// absence here is correct rather than a gap.
-func (c *OwnershipCache) Hosts() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	seen := make(map[string]struct{}, len(c.hosts))
-	out := make([]string, 0, len(c.hosts))
-	for _, ip := range c.hosts {
-		if ip == "" {
-			continue
-		}
-		if _, dup := seen[ip]; dup {
-			continue
-		}
-		seen[ip] = struct{}{}
-		out = append(out, ip)
-	}
-	sort.Strings(out) // deterministic order → stable merge + reproducible tests
-	return out
 }
 
 // hostFrom pulls (name, status.hostIP) from a Conversation object. The IP is the routing

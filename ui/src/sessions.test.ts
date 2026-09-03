@@ -93,6 +93,33 @@ describe("merge reference stability (sidebar re-render / flake root)", () => {
   });
 });
 
+describe("link sources ownership (poll owns them; an SSE upsert must not clobber)", () => {
+  const sourcesOf = (id: string) => sessionStore.get().sessions.find((s) => s.id === id)?.sources;
+
+  it("a []-sources single-row upsert does NOT wipe poll-populated sources (the sidebar-icon flake)", () => {
+    // The router always serializes `sources: []` for a link-less row, and link add/remove does
+    // not fire the conversations_changed trigger — so a single-row upsert (fired by an
+    // INSERT/title change before the link existed) carries `sources: []`. It must not clobber
+    // the sources the poll already populated, or the sidebar provider icon vanishes.
+    sessionStore.mergeFromServer([{ id: "conv-1", sources: ["github"] }]); // authoritative poll
+    expect(sourcesOf("conv-1")).toEqual(["github"]);
+    sessionStore.mergeFromServer([{ id: "conv-1", sources: [] }], { sourcesAuthoritative: false });
+    expect(sourcesOf("conv-1")).toEqual(["github"]); // preserved, not clobbered to []
+  });
+
+  it("an authoritative poll STILL clears sources when a link is removed (poll owns them)", () => {
+    sessionStore.mergeFromServer([{ id: "conv-2", sources: ["github"] }]);
+    // A later poll (authoritative) reflects the link removal — this MUST take effect.
+    sessionStore.mergeFromServer([{ id: "conv-2", sources: [] }]);
+    expect(sourcesOf("conv-2")).toEqual([]);
+  });
+
+  it("a NEW conversation arriving only via upsert has no sources (poll/snapshot fills them later)", () => {
+    sessionStore.mergeFromServer([{ id: "conv-3", sources: [] }], { sourcesAuthoritative: false });
+    expect(sourcesOf("conv-3") ?? []).toEqual([]);
+  });
+});
+
 describe("editing lock (rename in progress freezes the sidebar — the CI rename flake)", () => {
   const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
 
