@@ -42,6 +42,10 @@ type config struct {
 	// The agent-host ClusterIP Service — fallback for non-scoped / unassigned / stale-IP
 	// requests (load-balances to any ready pod). Replaces the old DEFAULT_POD ordinal.
 	clusterIPService string
+	// fallback is the upstream for non-scoped / unassigned / stale-IP requests, resolved once at
+	// boot: the ClusterIP Service in cluster, or the single AGENT_HOST_URL in dev mode. Set in
+	// main() after the mode is known; newRouter reads it rather than recomputing.
+	fallback *url.URL
 }
 
 func configFromEnv() config {
@@ -64,13 +68,39 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	dyn, err := newDynamicClient()
-	if err != nil {
-		log.Error("k8s client init failed", errAttr(err))
-		os.Exit(1)
-	}
+	// EXISTENCE + routing + create differ between cluster and the kube-less dev/e2e stack (see
+	// devmode.go). The ownership cache is always constructed; in dev it is simply never Run, so
+	// HostIP always misses and every request falls through to the single AGENT_HOST_URL.
 	cache := NewOwnershipCache()
-	go cache.Run(ctx, dyn, cfg.namespace)
+	var crs crLookup = cache
+	var creator ConversationCreator
+	if devModeEnabled() {
+		u, err := agentHostURLFromEnv()
+		if err != nil {
+			log.Error("ROUTER_DEV_MODE misconfigured", errAttr(err))
+			os.Exit(1)
+		}
+		dc, err := OpenDevCreator(ctx, storeDSNFromEnv())
+		if err != nil {
+			log.Error("ROUTER_DEV_MODE dev creator init failed", errAttr(err))
+			os.Exit(1)
+		}
+		defer dc.Close()
+		cfg.fallback = u
+		crs = allExisting{}
+		creator = dc
+		log.Warn("ROUTER_DEV_MODE: kube-less single-host stack (no CRD watch, existence from store)",
+			slog.String("agent_host_url", u.String()))
+	} else {
+		dyn, err := newDynamicClient()
+		if err != nil {
+			log.Error("k8s client init failed", errAttr(err))
+			os.Exit(1)
+		}
+		go cache.Run(ctx, dyn, cfg.namespace)
+		creator = &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
+		cfg.fallback = FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
+	}
 
 	// Read-only Postgres handle on the agent_host database (conversation metadata). Optional:
 	// when no DSN is configured the router proxies the list to the pods exactly as before. When
@@ -114,10 +144,9 @@ func main() {
 	// out to SSE subscribers (see events.go). No-op when store is nil (dev/pg-less) — the hub stays
 	// empty and GET /conversations/events reports unavailable, same as the JSON list.
 	hub := newSSEHub()
-	go runConversationListener(ctx, store, links, cache, hub)
+	go runConversationListener(ctx, store, links, crs, hub)
 
-	creator := &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator, store, links, hub)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, crs, creator, store, links, hub)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -140,8 +169,8 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, store *Store, links *LinkStore, hub *sseHub) http.Handler {
-	fallback := FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, crs crLookup, creator ConversationCreator, store *Store, links *LinkStore, hub *sseHub) http.Handler {
+	fallback := cfg.fallback
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The conversation LIST and its live events stream are served HERE from Postgres, not
 		// proxied. An agent-host only knows the conversations it currently hosts (with podCap=1 the
@@ -163,9 +192,9 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 				return
 			}
 			if isSSE(r) {
-				serveConversationEvents(w, r, store, links, cache, hub)
+				serveConversationEvents(w, r, store, links, crs, hub)
 			} else {
-				serveConversationList(w, r, store, links, cache)
+				serveConversationList(w, r, store, links, crs)
 			}
 			return
 		}

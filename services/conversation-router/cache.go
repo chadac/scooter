@@ -73,18 +73,6 @@ func NewOwnershipCache() *OwnershipCache {
 	}
 }
 
-// ListCRs returns every known Conversation CR — the EXISTENCE set the conversation list is
-// built from (a metadata row with no CR here is an ended conversation, omitted).
-func (c *OwnershipCache) ListCRs() []CRInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]CRInfo, 0, len(c.crs))
-	for id, info := range c.crs {
-		out = append(out, CRInfo{ID: id, Phase: info.phase, SandboxRef: info.sandboxRef})
-	}
-	return out
-}
-
 // CR returns one conversation's CR state, or ("", false) when no CR is known — i.e. the
 // conversation does not exist (never created, or ended). The LISTEN loop uses this to honour the
 // EXISTENCE rule for a single upsert: a metadata row whose CR the cache has not observed is not

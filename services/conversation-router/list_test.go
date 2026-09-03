@@ -8,6 +8,20 @@ import (
 func sp(s string) *string { return &s }
 func bp(b bool) *bool     { return &b }
 
+// crMap is a crLookup backed by a fixed CR set — the test stand-in for the CRD watch cache, so
+// assembleList's existence join can be driven without a live watch.
+type crMap map[string]CRInfo
+
+func (m crMap) CR(id string) (CRInfo, bool) { c, ok := m[id]; return c, ok }
+
+func crsOf(crs []CRInfo) crMap {
+	m := crMap{}
+	for _, c := range crs {
+		m[c.ID] = c
+	}
+	return m
+}
+
 // assembleList is the whole GET /conversations body. These lock down the three ways it can go
 // wrong: leaking an ended conversation (no CR), leaking someone else's under "mine", and getting
 // the metadata⋈CR⋈links join wrong.
@@ -27,7 +41,7 @@ func TestAssembleList(t *testing.T) {
 	}
 
 	t.Run("all scope joins meta+CR+links, omits CR-less, sorts newest-first", func(t *testing.T) {
-		rows := assembleList(metas, crs, links, 1000, "", "all")
+		rows := assembleList(metas, crsOf(crs), links, 1000, "", "all")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows (ended omitted), got %d", len(rows))
 		}
@@ -57,14 +71,14 @@ func TestAssembleList(t *testing.T) {
 	})
 
 	t.Run("mine scope shows only the caller's own", func(t *testing.T) {
-		rows := assembleList(metas, crs, links, 1000, "alice", "mine")
+		rows := assembleList(metas, crsOf(crs), links, 1000, "alice", "mine")
 		if len(rows) != 1 || rows[0].ID != "a" {
 			t.Fatalf("mine should show only alice's live conv, got %+v", rows)
 		}
 	})
 
 	t.Run("anonymous caller sees everyone under mine", func(t *testing.T) {
-		rows := assembleList(metas, crs, links, 1000, "", "mine")
+		rows := assembleList(metas, crsOf(crs), links, 1000, "", "mine")
 		if len(rows) != 2 {
 			t.Fatalf("anonymous sees all, got %d", len(rows))
 		}
@@ -76,7 +90,7 @@ func TestAssembleList(t *testing.T) {
 func TestListRowJSONShape(t *testing.T) {
 	rows := assembleList(
 		[]ConversationRow{{ID: "x", ThreadID: "x", Title: "X", CreatedAt: 1, LastActivityAt: 2}},
-		[]CRInfo{{ID: "x", Phase: "Assigned"}},
+		crsOf([]CRInfo{{ID: "x", Phase: "Assigned"}}),
 		nil, 10, "", "all",
 	)
 	b, _ := json.Marshal(rows[0])

@@ -101,7 +101,7 @@ func (h *sseHub) broadcast(row listRow) {
 // channel, and on each notification re-reads the row and fans it out via the hub. It reconnects
 // through NewListenConn after any drop (a notification stream is not resumable — reconnect + the
 // poll are the recovery), and returns when ctx is cancelled. No-op when store is nil (dev/pg-less).
-func runConversationListener(ctx context.Context, store *Store, links *LinkStore, cache *OwnershipCache, hub *sseHub) {
+func runConversationListener(ctx context.Context, store *Store, links *LinkStore, crs crLookup, hub *sseHub) {
 	if store == nil {
 		return
 	}
@@ -137,7 +137,7 @@ func runConversationListener(ctx context.Context, store *Store, links *LinkStore
 				}
 				break
 			}
-			handleNotification(ctx, n.Payload, store, links, cache, hub, log)
+			handleNotification(ctx, n.Payload, store, links, crs, hub, log)
 		}
 		// Close with a background context: ctx may already be cancelled (shutdown), and a Close on
 		// a cancelled context would skip the connection teardown.
@@ -156,7 +156,7 @@ func runConversationListener(ctx context.Context, store *Store, links *LinkStore
 //   - an id whose CR the cache has not observed — EXISTENCE follows the CR, so pushing a
 //     metadata-only row would resurrect a ghost the snapshot omits (the poll catches it up once the
 //     watch sees the CR).
-func notifyDecision(payload string, cache *OwnershipCache) (string, CRInfo, bool) {
+func notifyDecision(payload string, crs crLookup) (string, CRInfo, bool) {
 	var p struct {
 		ID string `json:"id"`
 		Op string `json:"op"`
@@ -164,7 +164,7 @@ func notifyDecision(payload string, cache *OwnershipCache) (string, CRInfo, bool
 	if err := json.Unmarshal([]byte(payload), &p); err != nil || p.ID == "" || p.Op == "delete" {
 		return "", CRInfo{}, false
 	}
-	cr, ok := cache.CR(p.ID)
+	cr, ok := crs.CR(p.ID)
 	if !ok {
 		return "", CRInfo{}, false
 	}
@@ -173,8 +173,8 @@ func notifyDecision(payload string, cache *OwnershipCache) (string, CRInfo, bool
 
 // handleNotification turns one NOTIFY payload into an upsert broadcast: decide (notifyDecision),
 // then re-read the row + links (the payload carries only the id) and fan the built row out.
-func handleNotification(ctx context.Context, payload string, store *Store, links *LinkStore, cache *OwnershipCache, hub *sseHub, log *slog.Logger) {
-	id, cr, proceed := notifyDecision(payload, cache)
+func handleNotification(ctx context.Context, payload string, store *Store, links *LinkStore, crs crLookup, hub *sseHub, log *slog.Logger) {
+	id, cr, proceed := notifyDecision(payload, crs)
 	if !proceed {
 		return
 	}
@@ -204,7 +204,7 @@ func handleNotification(ctx context.Context, payload string, store *Store, links
 // The subscription is registered BEFORE the snapshot read so an upsert arriving during that read is
 // buffered, not lost — a duplicate upsert of a row already in the snapshot is folded idempotently
 // by the UI (mergeFromServer). All writes happen on this one goroutine, so w needs no locking.
-func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, cache *OwnershipCache, hub *sseHub) {
+func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, crs crLookup, hub *sseHub) {
 	log := logger("events")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -223,7 +223,7 @@ func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Stor
 	sub := hub.subscribe(callerOwner, scope)
 	defer hub.unsubscribe(sub)
 
-	if snap := snapshotFrame(r.Context(), store, links, cache, callerOwner, scope, log); snap != nil {
+	if snap := snapshotFrame(r.Context(), store, links, crs, callerOwner, scope, log); snap != nil {
 		if _, err := w.Write(snap); err != nil {
 			return
 		}
@@ -254,7 +254,7 @@ func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Stor
 // same way GET /conversations is. On a store read error it returns an EMPTY-list snapshot rather
 // than nil so the client still gets a valid first frame and then rides live upserts + the poll;
 // only a marshalling failure (never expected) yields nil.
-func snapshotFrame(ctx context.Context, store *Store, links *LinkStore, cache *OwnershipCache, callerOwner, scope string, log *slog.Logger) []byte {
+func snapshotFrame(ctx context.Context, store *Store, links *LinkStore, crs crLookup, callerOwner, scope string, log *slog.Logger) []byte {
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -272,7 +272,7 @@ func snapshotFrame(ctx context.Context, store *Store, links *LinkStore, cache *O
 			linksByConv = lm
 		}
 	}
-	rows := assembleList(metas, cache.ListCRs(), linksByConv, time.Now().UnixMilli(), callerOwner, scope)
+	rows := assembleList(metas, crs, linksByConv, time.Now().UnixMilli(), callerOwner, scope)
 	frame, err := json.Marshal(struct {
 		Kind          string    `json:"kind"`
 		Conversations []listRow `json:"conversations"`

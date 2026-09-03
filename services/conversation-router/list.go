@@ -48,15 +48,13 @@ type listRow struct {
 
 // assembleList joins metadata with the CR existence set, applies the visibility filter, enriches
 // with links, and sorts newest-first — the whole GET /conversations body, as a pure function so
-// it is unit-testable without a DB or a live watch.
-func assembleList(metas []ConversationRow, crs []CRInfo, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
-	crByID := make(map[string]CRInfo, len(crs))
-	for _, cr := range crs {
-		crByID[cr.ID] = cr
-	}
+// it is unit-testable without a DB or a live watch. Existence comes from crs.CR(id): in cluster the
+// CRD watch cache (a metadata row with no CR is an ended conversation, omitted); in the kube-less
+// dev stack allExisting (every row exists).
+func assembleList(metas []ConversationRow, crs crLookup, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
 	rows := make([]listRow, 0, len(metas))
 	for _, m := range metas {
-		cr, ok := crByID[m.ID]
+		cr, ok := crs.CR(m.ID)
 		if !ok {
 			continue // EXISTENCE follows the CR: no CR => ended => omit.
 		}
@@ -142,7 +140,7 @@ func sourcesOf(links []Link) []string {
 // yields 503, NOT an empty 200: a transient DB blip must not hand the UI an empty list it would
 // render as "you have no conversations" (the poll keeps the last good list on a failed fetch and
 // retries). Link enrichment is best-effort — its failure degrades to bare rows, never fails the list.
-func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, cache *OwnershipCache) {
+func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, crs crLookup) {
 	log := logger("list")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -162,7 +160,7 @@ func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store,
 		}
 	}
 
-	rows := assembleList(metas, cache.ListCRs(), linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
+	rows := assembleList(metas, crs, linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {

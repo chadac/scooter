@@ -97,6 +97,14 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 	if req.ParentID != "" {
 		spec["parentId"] = req.ParentID
 	}
+	// A create-time title. In cluster the CRD is a structural schema with no `title` property, so
+	// the apiserver PRUNES this key — production keeps its "title arrives later (agent <title>)"
+	// behaviour untouched. In dev mode devCreator reads it and persists it on the row, so an
+	// API-seeded conversation that is never prompted still lists with its title (sessions.spec.ts
+	// "fresh first visit", fast-only).
+	if req.Title != "" {
+		spec["title"] = req.Title
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
