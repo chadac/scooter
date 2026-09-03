@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 
 from .models import StsCredentials
@@ -27,6 +28,7 @@ from ..logging_config import format_error
 logger = logging.getLogger(__name__)
 
 _CHAINED_MAX = 3600  # role-chaining caps the session at 1h
+_DEFAULT_ASSUME_MAX_WAIT = 180  # default max wait for IAM propagation (seconds)
 
 
 class IamProvisioner:
@@ -38,12 +40,18 @@ class IamProvisioner:
         account_registry: dict[str, dict],
         sts_client_factory=None,   # injectable; () -> boto3 sts client
         iam_client_factory=None,   # injectable; (creds) -> boto3 iam client
-        propagation_delay: float = 10.0,  # 0 in tests (no real IAM eventual consistency)
+        propagation_delay: float = 5.0,   # 0 in tests; reduced from 10s now that backoff is exponential
+        max_assume_wait_seconds: float | None = None,  # max retry budget for IAM propagation
     ) -> None:
         self._region = region
         self._external_id = external_id
         self._registry = account_registry
         self._propagation_delay = propagation_delay
+        if max_assume_wait_seconds is None:
+            max_assume_wait_seconds = float(
+                os.environ.get("BROKER_ASSUME_MAX_WAIT_SECONDS", str(_DEFAULT_ASSUME_MAX_WAIT))
+            )
+        self._max_assume_wait = max_assume_wait_seconds
         if sts_client_factory is None:
             import boto3
 
@@ -172,7 +180,8 @@ class IamProvisioner:
 
     def _chained_assume(self, alias: str, role_arn: str, *, session: str, duration: int, retry: bool) -> StsCredentials:
         """base-assume the account, then assume the dynamic role FROM those creds
-        (role chaining → capped at 1h). Retries AccessDenied for trust propagation."""
+        (role chaining → capped at 1h). Retries AccessDenied for trust propagation with
+        exponential backoff up to max_assume_wait_seconds."""
         import boto3
         from botocore.exceptions import ClientError
 
@@ -185,36 +194,82 @@ class IamProvisioner:
             aws_session_token=base["SessionToken"],
             region_name=self._region,
         )
-        assumed = None
-        attempts = 6 if retry else 1
-        for i in range(attempts):
+        
+        if not retry:
+            # Fast path: single attempt for refresh operations
+            assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName=session, DurationSeconds=capped)
+            c = assumed["Credentials"]
+            return StsCredentials(
+                access_key_id=c["AccessKeyId"],
+                secret_access_key=c["SecretAccessKey"],
+                session_token=c["SessionToken"],
+                region=self._region,
+                expires_at=c["Expiration"].isoformat(),
+            )
+        
+        # Retry path with exponential backoff for IAM propagation
+        start_time = time.time()
+        attempt = 0
+        backoff = 1.0  # Start with 1s, doubles each attempt
+        
+        while True:
+            attempt += 1
+            elapsed = time.time() - start_time
+            
             try:
                 assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName=session, DurationSeconds=capped)
-                break
-            except ClientError as e:
-                if retry and "AccessDenied" in str(e) and i < attempts - 1:
+                if attempt > 1:
                     logger.info(
-                        "assume_role failed on propagation; retrying",
+                        "assume_role succeeded after retries",
                         extra={
                             "role_arn": role_arn,
-                            "attempt": i + 1,
-                            "attempts": attempts,
-                            "retry_in_ms": 5000,
+                            "attempt": attempt,
+                            "elapsed_seconds": round(elapsed, 2),
+                        },
+                    )
+                c = assumed["Credentials"]
+                return StsCredentials(
+                    access_key_id=c["AccessKeyId"],
+                    secret_access_key=c["SecretAccessKey"],
+                    session_token=c["SessionToken"],
+                    region=self._region,
+                    expires_at=c["Expiration"].isoformat(),
+                )
+            except ClientError as e:
+                if "AccessDenied" not in str(e):
+                    # Not a propagation issue; fail immediately
+                    raise
+                
+                # Check if we have budget remaining
+                time_remaining = self._max_assume_wait - elapsed
+                if time_remaining < backoff:
+                    # Budget exhausted
+                    logger.error(
+                        "assume_role failed: IAM propagation timeout",
+                        extra={
+                            "role_arn": role_arn,
+                            "attempts": attempt,
+                            "elapsed_seconds": round(elapsed, 2),
+                            "max_wait_seconds": self._max_assume_wait,
                             "error": format_error(e),
                         },
                     )
-                    time.sleep(5)
-                else:
                     raise
-        assert assumed is not None
-        c = assumed["Credentials"]
-        return StsCredentials(
-            access_key_id=c["AccessKeyId"],
-            secret_access_key=c["SecretAccessKey"],
-            session_token=c["SessionToken"],
-            region=self._region,
-            expires_at=c["Expiration"].isoformat(),
-        )
+                
+                # Retry with exponential backoff
+                logger.info(
+                    "assume_role failed on propagation; retrying",
+                    extra={
+                        "role_arn": role_arn,
+                        "attempt": attempt,
+                        "backoff_seconds": backoff,
+                        "elapsed_seconds": round(elapsed, 2),
+                        "budget_seconds": self._max_assume_wait,
+                        "error": format_error(e),
+                    },
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 64)  # Cap individual backoff at 64s
 
     # --- teardown ----------------------------------------------------------
     def delete_dynamic_policy(self, *, target_account: str, policy_arn: str) -> bool:
