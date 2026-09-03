@@ -480,6 +480,12 @@ export async function main(
           : undefined,
         overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
         overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
+        // StorageClass for the durable /workspace PVC (WORKSPACE_STORAGE_CLASS).
+        // Point it at a Retain-reclaim class (e.g. "scooter-retain") so a deleted
+        // PVC leaves its data on disk instead of local-path erasing it. Unset =
+        // cluster default class. The PVC is standalone (agent-host-owned), so it
+        // already survives Sandbox delete/recreate regardless of this.
+        workspaceStorageClass: process.env.WORKSPACE_STORAGE_CLASS || undefined,
         // Deployment-supplied tool injection (generic — the platform doesn't know
         // what's in these; a deployment sets them to its .scooter
         // ConfigMap, the token audiences its tools need, and their env vars).

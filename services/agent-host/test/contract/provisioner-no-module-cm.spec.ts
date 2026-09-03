@@ -19,6 +19,7 @@ function fakeKc() {
   let sandboxBody: unknown;
   const api = {
     createNamespacedServiceAccount: async () => ({}),
+    createNamespacedPersistentVolumeClaim: async () => ({}),
     createNamespacedConfigMap: async (p: { body?: { metadata?: { name?: string } } }) => {
       createdConfigMaps.push(p.body?.metadata?.name ?? "");
       return {};

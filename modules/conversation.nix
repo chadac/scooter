@@ -27,6 +27,10 @@ let
     # This file is the Nix-rendered contract for a directly-created Sandbox; a mismatch
     # drifts from what the provisioner produces at runtime.
   , sandboxResources ? { requests = { cpu = "2"; memory = "4Gi"; }; limits = { cpu = "2"; memory = "4Gi"; }; }
+    # StorageClass for the durable /workspace PVC. Null = cluster default. A
+    # Retain-reclaim class (e.g. "scooter-retain") keeps the data on disk if the
+    # PVC is ever deleted. Mirrors platform.workspaceStorageClass.
+  , workspaceStorageClass ? cfg.workspaceStorageClass or null
   }: {
     # ServiceAccount sandbox-${id}  (unique per conversation; broker identity)
     serviceAccount = {
@@ -35,7 +39,29 @@ let
       metadata = { name = "sandbox-${id}"; namespace = cfg.namespace; };
     };
 
-    # Sandbox (cold): SA + workspace PVC + conversation-state PVC + broker token.
+    # Durable /workspace PVC — STANDALONE (owned by the agent-host, NOT the Sandbox)
+    # and mounted by the pod via claimName. A Sandbox volumeClaimTemplate would be
+    # controller-OWNED, so a Sandbox delete GC-cascades it and the provisioner's
+    # Delete reclaim wipes the disk (observed data-loss on a node reboot). Kept
+    # standalone, the volume survives Sandbox delete/recreate; a Retain StorageClass
+    # is the second line of defense against an accidental PVC delete.
+    workspacePvc = {
+      apiVersion = "v1";
+      kind = "PersistentVolumeClaim";
+      metadata = {
+        name = "workspace-conv-${id}";
+        namespace = cfg.namespace;
+        labels = { "agents.x-k8s.io/sandbox-name" = "conv-${id}"; };
+      };
+      spec = {
+        accessModes = [ "ReadWriteOnce" ];
+        resources.requests.storage = "10Gi";
+      } // lib.optionalAttrs (workspaceStorageClass != null) {
+        storageClassName = workspaceStorageClass;
+      };
+    };
+
+    # Sandbox (cold): SA + claimName workspace volume + conversation-state PVC + broker token.
     sandbox = {
       apiVersion = "agents.x-k8s.io/v1beta1";
       kind = "Sandbox";
@@ -93,6 +119,13 @@ let
           }];
           volumes = [
             {
+              # Durable /workspace: an explicit claim on the standalone PVC above,
+              # NOT a Sandbox volumeClaimTemplate — so it is not controller-owned
+              # and survives Sandbox delete/recreate.
+              name = "workspace";
+              persistentVolumeClaim.claimName = "workspace-conv-${id}";
+            }
+            {
               name = "broker-token";
               projected.sources = [{ serviceAccountToken = { audience = brokerAudience; path = "token"; }; }];
             }
@@ -105,15 +138,13 @@ let
             { name = "deploy-config"; configMap.name = "deploy-config-files"; }
           ];
         };
-        # Workspace PVC (body). Conversation-state PVC is mounted by the
+        # volumeClaimTemplates holds ONLY rebuildable caches now. `workspace` is a
+        # standalone PVC (above) mounted via claimName, deliberately NOT a template:
+        # a template PVC is controller-owned and GC-cascades when the Sandbox is
+        # deleted. Losing scooter-rw only triggers a re-converge, so its
+        # GC-with-the-Sandbox is acceptable. Conversation-state PVC is mounted by the
         # agent-host, NOT here (it lives outside the sandbox).
-        volumeClaimTemplates = [{
-          metadata.name = "workspace";
-          spec = {
-            accessModes = [ "ReadWriteOnce" ];
-            resources.requests.storage = "10Gi";
-          };
-        }] ++ lib.optionals overlayStore [{
+        volumeClaimTemplates = lib.optionals overlayStore [{
           # The overlay-store upper PVC (disk-backed; persists runtime builds across
           # suspend/resume). Only when the overlay-store image is in use.
           metadata.name = "scooter-rw";

@@ -124,6 +124,23 @@ in
       defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-os:latest"'';
       description = "OCI ref of the generic Nix sandbox image.";
     };
+    workspaceStorageClass = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "scooter-retain";
+      description = ''
+        StorageClass for the durable per-conversation /workspace PVC. The agent-host
+        creates that PVC STANDALONE (it is NOT a Sandbox volumeClaimTemplate) and
+        mounts it via claimName, so it survives the Sandbox being deleted/recreated
+        and a resume-after-gone reuses the same volume. Point this at a Retain-reclaim
+        class (e.g. "scooter-retain") so an accidental PVC delete leaves the data on
+        disk rather than the provisioner (e.g. k3s local-path, reclaim=Delete) erasing
+        it. Null = the cluster default StorageClass. Why standalone: the agent-sandbox
+        controller sets itself as controller-owner of any PVC it makes from a
+        volumeClaimTemplate, so a Sandbox delete GC-cascades that PVC and a Delete
+        reclaim then wipes the disk (observed data-loss on a node reboot).
+      '';
+    };
     sandboxRuntimeClass = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -1011,6 +1028,12 @@ in
                   { name = "TUNNEL_TRACE"; value = "1"; }
                 ++ [
                 ]
+                ++ lib.optional (cfg.workspaceStorageClass != null)
+                  # StorageClass for the durable /workspace PVC. A Retain-reclaim class
+                  # (e.g. scooter-retain) keeps the data on disk if the PVC is deleted,
+                  # instead of local-path (reclaim=Delete) erasing it. The PVC is
+                  # standalone (agent-host-owned), so it also survives Sandbox churn.
+                  { name = "WORKSPACE_STORAGE_CLASS"; value = cfg.workspaceStorageClass; }
                 ++ lib.optional (cfg.sandboxRuntimeClass != null)
                   # RuntimeClass for the sandbox pod (e.g. crun) — a cgroup-delegating
                   # runtime so the sandbox's systemd PID 1 runs NON-privileged in its

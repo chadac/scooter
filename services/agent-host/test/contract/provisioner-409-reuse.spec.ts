@@ -19,6 +19,7 @@ function fakeKc(opts: { sandboxCreate409?: boolean } = {}) {
   const calls: string[] = [];
   const api = {
     createNamespacedServiceAccount: async () => ({}),
+    createNamespacedPersistentVolumeClaim: async () => ({}),
     createNamespacedConfigMap: async () => ({}),
     readNamespacedConfigMap: async () => { throw Object.assign(new Error("nf"), { code: 404 }); },
     createNamespacedCustomObject: async () => {
@@ -58,6 +59,7 @@ describe("k8sProvisioner.create — 409 AlreadyExists = reuse", () => {
   it("a NON-409 create error still throws (don't mask a real failure as reuse)", async () => {
     const api = {
       createNamespacedServiceAccount: async () => ({}),
+      createNamespacedPersistentVolumeClaim: async () => ({}),
       createNamespacedConfigMap: async () => ({}),
       readNamespacedConfigMap: async () => { throw Object.assign(new Error("nf"), { code: 404 }); },
       createNamespacedCustomObject: async () => { throw Object.assign(new Error("boom"), { code: 500 }); },

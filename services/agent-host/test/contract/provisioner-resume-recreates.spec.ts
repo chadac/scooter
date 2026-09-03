@@ -22,6 +22,7 @@ function fakeKc(opts: { modePatchError?: number; sandboxGetError?: number } = {}
   const calls: string[] = [];
   const api = {
     createNamespacedServiceAccount: async () => ({}),
+    createNamespacedPersistentVolumeClaim: async () => ({}),
     createNamespacedConfigMap: async () => ({}),
     readNamespacedConfigMap: async () => {
       throw Object.assign(new Error("nf"), { code: 404 });

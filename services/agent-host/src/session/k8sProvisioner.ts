@@ -63,6 +63,16 @@ export interface K8sProvisionerOptions {
   sandboxImage: string;
   /** Workspace PVC size, e.g. "10Gi". */
   workspaceStorage?: string;
+  /** StorageClass for the durable per-conversation /workspace PVC. That PVC is
+   *  created STANDALONE (owned by the agent-host, NOT the Sandbox) and referenced
+   *  by the pod via claimName — so deleting/recreating the Sandbox never touches it
+   *  and a resume-after-gone REUSES the same volume (data persists). Point this at a
+   *  Retain-reclaim class (e.g. "scooter-retain") so even an accidental PVC delete
+   *  leaves the data on disk instead of local-path erasing it. Unset = cluster
+   *  default StorageClass. Why standalone: the agent-sandbox controller makes itself
+   *  the controller-owner of any PVC it provisions from volumeClaimTemplates, so a
+   *  Sandbox delete GC-cascades that PVC and the Delete reclaim wipes the disk. */
+  workspaceStorageClass?: string;
   /** Mount a writable PVC upper for the local-overlay Nix store (the agent's
    *  runtime re-converge + in-pod builds land here). The sandbox image always has the
    *  overlay store on, so this defaults ON — the PVC persists runtime builds across
@@ -150,6 +160,27 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   /** Inverse of sandboxName — recover the conversation id from a Sandbox ref. */
   const convIdOf = (name: string) => (name.startsWith("conv-") ? name.slice("conv-".length) : name);
   const saName = (id: string) => `sandbox-${id}`;
+  // The durable /workspace PVC name. Kept identical to the StatefulSet-style name the
+  // controller USED to derive for the `workspace` volumeClaimTemplate
+  // (`<template>-<sandbox>` = `workspace-conv-<id>`), so an existing conversation's PVC
+  // is ADOPTED by name across the migration instead of being orphaned.
+  const workspacePvcName = (name: string) => `workspace-${name}`;
+  // Standalone workspace PVC body — deliberately NOT a Sandbox volumeClaimTemplate, so
+  // no controller ownerReference and no GC-cascade when the Sandbox is deleted. PR: workspace-pvc-decouple.
+  const workspacePvcManifest = (id: string) => ({
+    metadata: {
+      name: workspacePvcName(sandboxName(id)),
+      namespace: ns,
+      labels: { [SANDBOX_NAME_LABEL]: sandboxName(id) },
+    },
+    spec: {
+      accessModes: ["ReadWriteOnce"],
+      resources: { requests: { storage } },
+      // Omit storageClassName when unset so the cluster default applies (an empty
+      // string would instead REQUEST the "" class and never bind).
+      ...(opts.workspaceStorageClass ? { storageClassName: opts.workspaceStorageClass } : {}),
+    },
+  });
   // Reap-only: nothing creates this CM, but clusters still carry one per live
   // conversation. destroy() drains them. Drop this once none remain.
   const moduleCmName = (id: string) => `conv-${id}-module`;
@@ -199,7 +230,32 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           if (e?.code !== 409) throw e;
         });
 
-      // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
+      // 2. the DURABLE workspace PVC — created STANDALONE (owned by the agent-host,
+      // NOT the Sandbox) and mounted via claimName, so deleting/recreating the Sandbox
+      // never touches it and a resume-after-gone REUSES the same volume. This is the
+      // fix for the data-loss where a Sandbox delete GC-cascaded a controller-owned
+      // template PVC and local-path's Delete reclaim wiped the disk.
+      // Idempotent: a pre-existing PVC (409) is REUSED — that reuse is exactly what
+      // preserves the conversation's work. If that PVC was a controller-OWNED template
+      // PVC from before this change, strip the Sandbox ownerReference so it can no
+      // longer be cascade-deleted (best-effort; reuse still works without it).
+      await core
+        .createNamespacedPersistentVolumeClaim({ namespace: ns, body: workspacePvcManifest(id) })
+        .catch(async (e: { code?: number }) => {
+          if (e?.code !== 409) throw e;
+          await core
+            .patchNamespacedPersistentVolumeClaim(
+              {
+                name: workspacePvcName(sandboxName(id)),
+                namespace: ns,
+                body: { metadata: { ownerReferences: [] } },
+              },
+              setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+            )
+            .catch(() => {});
+        });
+
+      // 3. the cold Sandbox (SA + claimName workspace volume + projected broker token)
       const name = sandboxName(id);
       let alreadyExisted = false;
       await custom
@@ -323,6 +379,15 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         .catch(ignoreDeleteNotFound);
       await core
         .deleteNamespacedServiceAccount({ name: saName(id), namespace: dns })
+        .catch(ignoreDeleteNotFound);
+      // The durable workspace PVC is STANDALONE (not owned by the Sandbox), so
+      // deleting the Sandbox above does NOT reclaim it — end() must delete it
+      // explicitly or a genuinely-ended conversation leaks its PVC forever. (Same
+      // delete-error policy: 404 = already gone; anything else propagates.) The
+      // scooter-rw overlay upper is still a Sandbox-owned template, so it is
+      // GC-reclaimed with the Sandbox and needs no explicit delete here.
+      await core
+        .deleteNamespacedPersistentVolumeClaim({ name: workspacePvcName(ref.name), namespace: dns })
         .catch(ignoreDeleteNotFound);
       await core
         .deleteNamespacedConfigMap({ name: moduleCmName(id), namespace: dns })
@@ -488,6 +553,16 @@ export function sandboxManifest(
           ],
           volumes: [
             {
+              // The durable /workspace volume — an EXPLICIT claim on the standalone
+              // PVC (`workspace-<sandbox>`), NOT a Sandbox volumeClaimTemplate. A
+              // template PVC is controller-owned and GC-cascades when the Sandbox is
+              // deleted (then local-path's Delete reclaim wipes the disk); a claimName
+              // volume references a PVC the agent-host owns, which survives Sandbox
+              // delete/recreate so the conversation's work persists. PR: workspace-pvc-decouple.
+              name: "workspace",
+              persistentVolumeClaim: { claimName: `workspace-${name}` },
+            },
+            {
               name: "broker-token",
               projected: {
                 sources: [{ serviceAccountToken: { audience, path: "token" } }],
@@ -515,16 +590,15 @@ export function sandboxManifest(
           ],
         },
       },
+      // NOTE: `workspace` is deliberately NOT here. It is a STANDALONE PVC the
+      // agent-host creates and mounts via claimName (see the podTemplate volume
+      // above), so it is not controller-owned and survives Sandbox delete/recreate.
+      // Only rebuildable caches (scooter-rw, the /nix overlay upper) stay as
+      // volumeClaimTemplates — losing one just triggers a re-converge, and its
+      // GC-with-the-Sandbox is acceptable.
       volumeClaimTemplates: [
-        {
-          metadata: { name: "workspace" },
-          spec: {
-            accessModes: ["ReadWriteOnce"],
-            resources: { requests: { storage } },
-          },
-        },
         // The overlay-store upper PVC (disk-backed; persists runtime builds across
-        // suspend/resume). ALWAYS emitted — one uniform Sandbox shape. PR #403.
+        // suspend/resume). ALWAYS emitted when overlayStore — one uniform shape. PR #403.
         ...(overlayStore
           ? [
               {

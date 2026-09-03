@@ -213,6 +213,11 @@ let
     "conversationController" "postgres" "legacyStateMigration"
     "sandboxRuntimeClass" "sandboxViaBroker" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage"
+    # Cluster-specific storage plumbing (like sandboxRuntimeClass): the class NAME
+    # depends on the cluster's provisioner, so a reference config should not hardcode
+    # one. Default null = the cluster default StorageClass; a deployment sets it to a
+    # Retain-reclaim class (e.g. scooter-retain) for durable /workspace volumes.
+    "workspaceStorageClass"
   ];
   uncovered = builtins.filter
     (n: !(builtins.elem n coverageExempt)
