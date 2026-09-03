@@ -375,7 +375,17 @@ export const sessionStore = {
    */
   mergeFromServer(
     convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string; userTitled?: boolean; starred?: boolean }>,
+    // Whether this batch is an AUTHORITATIVE full-list read (the 10s poll or the SSE connect
+    // snapshot) vs. a single-row SSE `upsert`. Only the former owns `sources`/`links`: link
+    // add/remove does NOT fire the conversations_changed trigger, so an upsert (fired by an
+    // INSERT/title/owner change) carries a links re-read that is merely incidental — and the
+    // router always serializes `sources: []` for a link-less row. Folding that []-sources
+    // upsert with `?? existing` would CLOBBER the poll-populated sources (`[] ?? x === []`),
+    // erasing the sidebar provider icon (the order-dependent e2e flake). So a non-authoritative
+    // upsert keeps the existing sources/links and lets the poll/snapshot own them. Why: PR #452.
+    opts?: { sourcesAuthoritative?: boolean },
   ) {
+    const sourcesAuthoritative = opts?.sourcesAuthoritative ?? true;
     if (convs.length === 0) return;
     // RENAME IN PROGRESS: freeze the WHOLE sidebar. While the user has an inline rename
     // input open (editingId set) the background merge (10s poll + SSE upsert) must not
@@ -428,10 +438,11 @@ export const sessionStore = {
         // A locally-chosen model (not yet persisted server-side on first prompt)
         // wins; otherwise take the server's persisted model.
         model: existing?.model ?? c.model,
-        // Link sources are server-owned (the webhooks push links); always take
-        // the server's value.
-        sources: c.sources ?? existing?.sources,
-        links: c.links ?? existing?.links,
+        // Link sources are server-owned (the webhooks push links), but only the poll +
+        // connect-snapshot carry them authoritatively — a single-row upsert must not clobber
+        // them (see the sourcesAuthoritative note on the signature). Why: PR #452.
+        sources: sourcesAuthoritative ? (c.sources ?? existing?.sources) : existing?.sources,
+        links: sourcesAuthoritative ? (c.links ?? existing?.links) : existing?.links,
         // Owner is server-owned (stamped at creation); take the server's value.
         owner: c.owner ?? existing?.owner,
         // Sandbox lifecycle state is server-owned + live (idle-suspend / resume);
