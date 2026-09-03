@@ -971,7 +971,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/web-services", async (ctx) => {
     const id = await resolveConvId(ctx.params.id);
     if (!id || !deps.webServices) return { json: { services: [] } };
-    const services = await deps.webServices.list(id);
+    // ?refresh=1 re-reads the in-pod manifest instead of serving a cached read —
+    // the agent declares services with `scooter-rebuild`, and nothing in the pod
+    // tells us it happened.
+    const force = ctx.query.get("refresh") === "1";
+    const services = await deps.webServices.list(id, { force });
     const withState = await Promise.all(
       services.map(async (s) => ({
         name: s.name,
