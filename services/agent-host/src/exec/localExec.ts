@@ -62,5 +62,9 @@ export function createLocalSandboxApiClient(): SandboxApiClient {
     async upload(path, content) {
       files.set(path, content);
     },
+    async uploadBinary(path, base64) {
+      // Fake mode: decode + store so a later download round-trips the bytes.
+      files.set(path, Buffer.from(base64, "base64").toString("binary"));
+    },
   };
 }

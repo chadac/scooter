@@ -172,6 +172,7 @@ describe.skipIf(!run)("REAL claude + REAL scooter-env MCP endpoint", () => {
             return "";
           },
           async writeTextFile() {},
+          async writeBinaryFile() {},
         } as never,
         systemPrompt: "You are a test agent. Use the tools you are given. Be brief.",
         mcpEndpointUrl: mcp.url,

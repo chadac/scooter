@@ -40,7 +40,7 @@ export interface InboundImage {
 }
 
 /** A NON-image attachment (Slack binary: pdf/zip/docx/…). The bytes ride base64;
- *  the agent-host materializes it into the sandbox at /workspace/.slack/<name>. */
+ *  the agent-host materializes it into the sandbox at /workspace/uploads/<name>. */
 export interface InboundFile {
   name: string;
   data: string; // base64
@@ -121,7 +121,7 @@ export interface RunAgentInput {
    *  content array. Empty/undefined = a text-only message (the unchanged path). */
   images?: InboundImage[];
   /** Binary file attachments (Slack pdf/zip/…) on the latest user message (base64).
-   *  The agent-host materializes each into the sandbox at /workspace/.slack/<name>.
+   *  The agent-host materializes each into the sandbox at /workspace/uploads/<name>.
    *  Empty/undefined = no file attachments (the unchanged path). */
   files?: InboundFile[];
   /** SYSTEM message source — set when a PLATFORM caller (webhooks, scheduler) injects

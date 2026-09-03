@@ -20,7 +20,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 from ..config import require_relay_key, settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..identity_resolve import resolve_owner
-from .slack_files import DownloadedFiles, SLACK_FILES_DIR, download_files
+from .slack_files import DownloadedFiles, download_files
 from ..responses.slack import (
     add_slack_reaction,
     get_bot_user_id,
@@ -127,22 +127,14 @@ def _weave_attachments(text: str, dl: DownloadedFiles) -> str:
     """Fold Slack attachments into the agent's message TEXT.
 
     - Text-representable files: append their inlined fenced blocks.
-    - Binary files: append a note listing where the agent-host will have written
-      each one (/workspace/.slack/<name>), so the agent knows the saved paths (the
-      bytes are materialized agent-host-side from the file content parts).
-    Images are NOT woven here — they ride as multimodal content parts."""
-    extra: list[str] = []
-    if dl.inline_text:
-        extra.append(dl.inline_text)
-    if dl.file_parts:
-        names = [f["name"] for f in dl.file_parts]
-        saved = "\n".join(f"- {SLACK_FILES_DIR}/{n}" for n in names)
-        extra.append(
-            "The following file attachment(s) have been saved into your sandbox:\n" + saved
-        )
-    if not extra:
+    Binary files are NOT woven here: the agent-host materializes them into the
+    sandbox and appends the "saved into your sandbox: <path>" note itself (one
+    weaver for every entrypoint — see services/agent-host bridge buildFileNote),
+    so the note can't drift from where the bytes were actually written.
+    Images are NOT woven here either — they ride as multimodal content parts."""
+    if not dl.inline_text:
         return text
-    return text + "\n\n" + "\n\n".join(extra)
+    return text + "\n\n" + dl.inline_text
 
 
 def _format_forwarded_message(
@@ -333,7 +325,7 @@ async def _handle_mention(event: dict):
 
     # Download any attached multimedia. Images ride as multimodal content parts;
     # text-representable files are inlined into the message; binary files become
-    # file parts the agent-host writes to /workspace/.slack (their saved paths are
+    # file parts the agent-host writes to /workspace/uploads (their saved paths are
     # noted in the woven text below).
     dl = await download_files(event.get("files"))
     images = dl.images
@@ -438,7 +430,7 @@ async def _handle_thread_message(event: dict):
     comment_text = f"<@{user}> said:\n\n{text}\n\n(message_ts: {ts} — pass this to slack_react to react to THIS message)"
 
     # Download attached multimedia (images -> parts; text -> inlined; binary -> parts
-    # written to /workspace/.slack). Weave text/binary into the message body.
+    # written to /workspace/uploads). Weave text/binary into the message body.
     dl = await download_files(event.get("files"))
     comment_text = _weave_attachments(comment_text, dl)
 
