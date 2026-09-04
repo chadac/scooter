@@ -76,6 +76,22 @@ test.describe("whole-UI consistency through a normal turn", () => {
       // sendTurn returns when the reply TEXT lands; the run's terminal event trails it. Wait for the
       // run to actually end before asserting the between-turns idle state (otherwise we race it).
       await chat.waitForIdle();
+      // Wait for the last user message's text to be fully rendered before snapshotting.
+      // The nightly run 33846941314 caught a race at turn 6 where the message element existed
+      // but innerText was empty — the DOM update hadn't completed yet. Poll until the expected
+      // text is present to avoid racing the render.
+      await expect
+        .poll(
+          async () => {
+            const userMessages = page.locator('.aui-user-message-content');
+            const count = await userMessages.count();
+            if (count < i) return false;
+            const lastText = await userMessages.nth(count - 1).innerText().catch(() => "");
+            return lastText.includes(`consistency turn ${i}`);
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(true);
       const s = await step(page, `after turn ${i}`);
       // Counts advance in lockstep — a divergence here is a dropped or duplicated message.
       expect(s.userMessages, `turn ${i}: user message count`).toBe(i);
