@@ -53,9 +53,10 @@ describe("deep-link selection (requestSelect)", () => {
     sessionStore.requestSelect("a");
     expect(sessionStore.get().currentId).toBe("a");
     // A later merge bringing a newer conversation must NOT move the selection.
+    const now = Date.now();
     sessionStore.mergeFromServer([
       { id: "a", title: "Conv A" },
-      { id: "b", title: "Conv B", createdAt: Date.now() + 1000 },
+      { id: "b", title: "Conv B", createdAt: now + 1000, lastActivityAt: now + 1000 },
     ]);
     expect(sessionStore.get().currentId).toBe("a");
   });
@@ -65,10 +66,10 @@ describe("merge reference stability (sidebar re-render / flake root)", () => {
   const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
 
   it("reuses the SAME object reference for an unchanged conversation across merges", () => {
-    sessionStore.mergeFromServer([{ id: "ref-a", title: "Alpha", createdAt: 1000 }]);
+    sessionStore.mergeFromServer([{ id: "ref-a", title: "Alpha", createdAt: 1000, lastActivityAt: 1000 }]);
     const first = byId("ref-a");
     // A later poll returns the SAME conversation, unchanged.
-    sessionStore.mergeFromServer([{ id: "ref-a", title: "Alpha", createdAt: 1000 }]);
+    sessionStore.mergeFromServer([{ id: "ref-a", title: "Alpha", createdAt: 1000, lastActivityAt: 1000 }]);
     const second = byId("ref-a");
     // Same reference -> React.memo skips the row -> no re-render disrupts an
     // in-progress interaction (open rename / hover). This is the flake-family fix.
@@ -77,15 +78,15 @@ describe("merge reference stability (sidebar re-render / flake root)", () => {
 
   it("produces a NEW reference only for the conversation that actually changed", () => {
     sessionStore.mergeFromServer([
-      { id: "ch-x", title: "X", createdAt: 1 },
-      { id: "ch-y", title: "Y", createdAt: 2 },
+      { id: "ch-x", title: "X", createdAt: 1, lastActivityAt: 1 },
+      { id: "ch-y", title: "Y", createdAt: 2, lastActivityAt: 2 },
     ]);
     const x1 = byId("ch-x");
     const y1 = byId("ch-y");
     // Only Y's title changes on the next poll.
     sessionStore.mergeFromServer([
-      { id: "ch-x", title: "X", createdAt: 1 },
-      { id: "ch-y", title: "Y renamed", createdAt: 2 },
+      { id: "ch-x", title: "X", createdAt: 1, lastActivityAt: 1 },
+      { id: "ch-y", title: "Y renamed", createdAt: 2, lastActivityAt: 2 },
     ]);
     expect(byId("ch-x")).toBe(x1); // unchanged -> same ref
     expect(byId("ch-y")).not.toBe(y1); // changed -> new ref
@@ -124,28 +125,28 @@ describe("editing lock (rename in progress freezes the sidebar — the CI rename
   const byId = (id: string) => sessionStore.get().sessions.find((s) => s.id === id);
 
   it("a merge does NOT mutate the row being renamed (title/userTitled held)", () => {
-    sessionStore.mergeFromServer([{ id: "edit-a", title: "Original", createdAt: 1 }]);
+    sessionStore.mergeFromServer([{ id: "edit-a", title: "Original", createdAt: 1, lastActivityAt: 1 }]);
     sessionStore.setEditing("edit-a");
     // The agent's <title> update lands on the poll mid-rename — it must be ignored
     // for the editing row (which is exactly what re-rendered the open input away).
-    sessionStore.mergeFromServer([{ id: "edit-a", title: "Agent-picked title", createdAt: 1 }]);
+    sessionStore.mergeFromServer([{ id: "edit-a", title: "Agent-picked title", createdAt: 1, lastActivityAt: 1 }]);
     expect(byId("edit-a")?.title).toBe("Original");
     expect(byId("edit-a")?.userTitled).toBeFalsy();
   });
 
   it("keeps the SAME object reference for the editing row across a merge (React.memo skips it)", () => {
-    sessionStore.mergeFromServer([{ id: "edit-ref", title: "Alpha", createdAt: 2 }]);
+    sessionStore.mergeFromServer([{ id: "edit-ref", title: "Alpha", createdAt: 2, lastActivityAt: 2 }]);
     sessionStore.setEditing("edit-ref");
     const before = byId("edit-ref");
     // A merge that WOULD otherwise change the title (new object) must not touch it.
-    sessionStore.mergeFromServer([{ id: "edit-ref", title: "Changed by agent", createdAt: 2 }]);
+    sessionStore.mergeFromServer([{ id: "edit-ref", title: "Changed by agent", createdAt: 2, lastActivityAt: 2 }]);
     expect(byId("edit-ref")).toBe(before);
   });
 
   it("freezes the WHOLE sidebar while renaming (a merge is a full no-op, not just per-row)", () => {
     sessionStore.mergeFromServer([
-      { id: "lock-a", title: "A", createdAt: 1 },
-      { id: "lock-b", title: "B", createdAt: 2 },
+      { id: "lock-a", title: "A", createdAt: 1, lastActivityAt: 1 },
+      { id: "lock-b", title: "B", createdAt: 2, lastActivityAt: 2 },
     ]);
     sessionStore.setEditing("lock-a");
     // A background merge that changes BOTH the editing row AND another row must be
@@ -155,26 +156,26 @@ describe("editing lock (rename in progress freezes the sidebar — the CI rename
     // open, mergeFromServer no-ops for every row; the next poll after clearEditing
     // reconciles server-truth.
     sessionStore.mergeFromServer([
-      { id: "lock-a", title: "A changed", createdAt: 1 },
-      { id: "lock-b", title: "B changed", createdAt: 2 },
+      { id: "lock-a", title: "A changed", createdAt: 1, lastActivityAt: 1 },
+      { id: "lock-b", title: "B changed", createdAt: 2, lastActivityAt: 2 },
     ]);
     expect(byId("lock-a")?.title).toBe("A"); // editing row held
     expect(byId("lock-b")?.title).toBe("B"); // other rows ALSO held (whole-sidebar freeze)
   });
 
   it("applies server-truth again once the rename clears", () => {
-    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Original", createdAt: 3 }]);
+    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Original", createdAt: 3, lastActivityAt: 3 }]);
     sessionStore.setEditing("edit-clear");
-    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Agent title", createdAt: 3 }]);
+    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Agent title", createdAt: 3, lastActivityAt: 3 }]);
     expect(byId("edit-clear")?.title).toBe("Original"); // held while editing
     // Rename committed/cancelled -> lock clears -> the next merge applies again.
     sessionStore.clearEditing("edit-clear");
-    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Agent title", createdAt: 3 }]);
+    sessionStore.mergeFromServer([{ id: "edit-clear", title: "Agent title", createdAt: 3, lastActivityAt: 3 }]);
     expect(byId("edit-clear")?.title).toBe("Agent title");
   });
 
   it("clearEditing(id) is a no-op when a DIFFERENT row is being edited", () => {
-    sessionStore.mergeFromServer([{ id: "ce-a", title: "A", createdAt: 1 }]);
+    sessionStore.mergeFromServer([{ id: "ce-a", title: "A", createdAt: 1, lastActivityAt: 1 }]);
     sessionStore.setEditing("ce-a");
     sessionStore.clearEditing("ce-b"); // stale clear from another row
     expect(sessionStore.get().editingId).toBe("ce-a");
@@ -183,11 +184,11 @@ describe("editing lock (rename in progress freezes the sidebar — the CI rename
   });
 
   it("a user rename made during editing survives the merge that arrives before clear", () => {
-    sessionStore.mergeFromServer([{ id: "edit-user", title: "Original", createdAt: 4 }]);
+    sessionStore.mergeFromServer([{ id: "edit-user", title: "Original", createdAt: 4, lastActivityAt: 4 }]);
     sessionStore.setEditing("edit-user");
     sessionStore.renameSession("edit-user", "My pinned project"); // optimistic + lock
     // A poll still reporting the agent's guess arrives before the input closes.
-    sessionStore.mergeFromServer([{ id: "edit-user", title: "Agent guess", createdAt: 4 }]);
+    sessionStore.mergeFromServer([{ id: "edit-user", title: "Agent guess", createdAt: 4, lastActivityAt: 4 }]);
     expect(byId("edit-user")?.title).toBe("My pinned project");
     expect(byId("edit-user")?.userTitled).toBe(true);
   });
@@ -249,11 +250,11 @@ describe("favoriting pins a conversation to the top of the list", () => {
   // `only` restricts the visible list to just these ids for a clean assertion.
   const only = (...ids: string[]) => sessionStore.get().sessions.filter((s) => ids.includes(s.id)).map((s) => s.id);
 
-  it("starred conversations sort ABOVE unstarred ones (then newest-first within each group)", () => {
+  it("starred conversations sort ABOVE unstarred ones (then most-recently-active first within each group)", () => {
     sessionStore.mergeFromServer([
-      { id: "star-old", title: "Old", createdAt: 1_000 },
-      { id: "star-mid", title: "Mid", createdAt: 2_000 },
-      { id: "star-new", title: "New", createdAt: 3_000 },
+      { id: "star-old", title: "Old", createdAt: 1_000, lastActivityAt: 1_000 },
+      { id: "star-mid", title: "Mid", createdAt: 2_000, lastActivityAt: 2_000 },
+      { id: "star-new", title: "New", createdAt: 3_000, lastActivityAt: 3_000 },
     ]);
     expect(only("star-new", "star-mid", "star-old")).toEqual(["star-new", "star-mid", "star-old"]);
 
@@ -264,37 +265,37 @@ describe("favoriting pins a conversation to the top of the list", () => {
 
   it("re-sorts immediately on toggle (no wait for a server merge)", () => {
     sessionStore.mergeFromServer([
-      { id: "imm-a", title: "A", createdAt: 3_000 },
-      { id: "imm-b", title: "B", createdAt: 2_000 },
-      { id: "imm-c", title: "C", createdAt: 1_000 },
+      { id: "imm-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000 },
+      { id: "imm-b", title: "B", createdAt: 2_000, lastActivityAt: 2_000 },
+      { id: "imm-c", title: "C", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
     sessionStore.setStarred("imm-c", true);
     sessionStore.setStarred("imm-b", true);
-    // Both starred -> above 'imm-a'; newest-first among starred (b @2000 before c @1000).
+    // Both starred -> above 'imm-a'; most-recently-active first among starred (b @2000 before c @1000).
     expect(only("imm-a", "imm-b", "imm-c")).toEqual(["imm-b", "imm-c", "imm-a"]);
   });
 
   it("un-starring drops a conversation back into recency order", () => {
     sessionStore.mergeFromServer([
-      { id: "un-a", title: "A", createdAt: 3_000, starred: true },
-      { id: "un-b", title: "B", createdAt: 2_000 },
-      { id: "un-c", title: "C", createdAt: 1_000 },
+      { id: "un-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000, starred: true },
+      { id: "un-b", title: "B", createdAt: 2_000, lastActivityAt: 2_000 },
+      { id: "un-c", title: "C", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
     expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]);
     sessionStore.setStarred("un-a", false);
-    expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]); // a @3000 is still newest
+    expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]); // a @3000 is still most recent
   });
 
   it("a server merge that only flips a star re-orders (not skipped by the no-op guard)", () => {
     sessionStore.mergeFromServer([
-      { id: "poll-a", title: "A", createdAt: 3_000 },
-      { id: "poll-b", title: "B", createdAt: 1_000 },
+      { id: "poll-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000 },
+      { id: "poll-b", title: "B", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
     expect(only("poll-a", "poll-b")).toEqual(["poll-a", "poll-b"]);
     // Next poll: the server reports b as starred (persisted / starred elsewhere).
     sessionStore.mergeFromServer([
-      { id: "poll-a", title: "A", createdAt: 3_000 },
-      { id: "poll-b", title: "B", createdAt: 1_000, starred: true },
+      { id: "poll-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000 },
+      { id: "poll-b", title: "B", createdAt: 1_000, lastActivityAt: 1_000, starred: true },
     ]);
     expect(only("poll-a", "poll-b")).toEqual(["poll-b", "poll-a"]);
   });
@@ -441,7 +442,7 @@ describe("visibleSessions (Mine/All owner filter)", () => {
 });
 
 describe("nestSubagents (sidebar hierarchy)", () => {
-  const s = (id: string, parentId?: string): Session => ({ id, title: id, createdAt: 1, parentId });
+  const s = (id: string, parentId?: string): Session => ({ id, title: id, createdAt: 1, lastActivityAt: 1, parentId });
 
   it("with no activeId, expands every parent's children", () => {
     // Flat input (arbitrary order); children of p1 + p2 interleaved.
