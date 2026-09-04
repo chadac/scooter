@@ -182,6 +182,14 @@
     # --baseline). On by default; shown explicitly so the render check exercises it.
     dbMigrate.enable = true;
 
+    # One-shot event-log backfill: a Job that loads conversation history off the mirror PVC
+    # into Postgres during the PVC→DB cutover. EPHEMERAL — a real deploy turns this ON only for
+    # the migration, verifies the report, then turns it OFF (see modules/event-backfill.nix).
+    # Enabled here (with the PVC retained, which the assert requires) so the render check
+    # exercises the Job + its DB wiring; the historyMirror is on by default.
+    eventBackfill.enable = true;
+    conversationController.historyMirror.retainForMigration = true;
+
     # OpenTelemetry metrics + per-model cost attribution. OFF by default (an OTLP endpoint is
     # a deployment choice); enabled here so the render check exercises the env wiring. Prices
     # are per MILLION tokens and feed the cost metric — keep them in sync with your provider.

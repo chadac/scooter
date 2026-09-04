@@ -80,7 +80,7 @@ in
   # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
   # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
   # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
-  imports = [ kubenix.modules.k8s ./postgres.nix ./db-migrate.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ];
+  imports = [ kubenix.modules.k8s ./postgres.nix ./db-migrate.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {

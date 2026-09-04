@@ -31,6 +31,7 @@ import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAu
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
+import { agentHostDsnFromEnv } from "./db/agentHostDsn.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
 import type { ConversationStore, ConversationLink } from "./session/manager.js";
@@ -355,15 +356,7 @@ function byocResourceDsn(): string {
  *  gates on cfg.webhooks.enable, and agent-host's own state must not disappear because an
  *  unrelated service is disabled. See todo/draft/SHARED_DB_TABLE_OWNERSHIP.md. */
 function agentHostResourceDsn(): string {
-  const explicit = process.env.AGENT_HOST_DB_DSN;
-  if (explicit) return explicit;
-  const pw = process.env.AGENT_HOST_DB_PASSWORD;
-  if (!pw) return "";
-  const host = process.env.AGENT_HOST_DB_HOST ?? "agent-shared-db";
-  const port = process.env.AGENT_HOST_DB_PORT ?? "5432";
-  const name = process.env.AGENT_HOST_DB_NAME ?? "agent_host";
-  const user = process.env.AGENT_HOST_DB_USER ?? "agent_host";
-  return `postgresql://${user}:${encodeURIComponent(pw)}@${host}:${port}/${name}`;
+  return agentHostDsnFromEnv();
 }
 
 /** Parse an optional static id->email map from AUTH_SUB_EMAIL_MAP ("sub=email"
