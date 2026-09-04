@@ -1375,11 +1375,11 @@ in
       # Dedicated assets PVC for uploaded images. BYTES-ONLY: asset metadata
       # (conversation_id, asset_id, mime_type, size, sha256_hash, created_at) lives
       # in Postgres; the PVC holds only the raw image data, keyed by asset_id.
-      # ReadWriteOnce (single writer): the agent-host deployment is the only writer.
+      # ReadWriteMany: all agent-host replicas write to the shared assets storage.
       persistentVolumeClaims.agent-host-assets = {
         metadata = { name = "agent-host-assets"; namespace = cfg.namespace; };
         spec = {
-          accessModes = [ "ReadWriteOnce" ];
+          accessModes = [ "ReadWriteMany" ];
           resources.requests.storage = cfg.conversationController.assets.size;
         }
         // lib.optionalAttrs (cfg.conversationController.assets.storageClassName != null) {
