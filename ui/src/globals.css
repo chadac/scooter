@@ -53,91 +53,96 @@
   --color-chat: var(--chat);
 }
 
-/* "Paper" theme — warm off-white surfaces, near-black warm ink, one blue accent
-   and a gold star. Mapped onto the existing shadcn token names so every component
-   shifts as one system. Hues sit around 90 (warm paper) with the blue at 250. */
+/* Solarized Light — Ethan Schoonover's palette, brightened. We keep the canonical
+   Solarized INK ramp (base01 #586e75 body, base1 #93a1a1 muted) and the fixed
+   accents (blue #268bd2 links/ring, green/yellow/red for success/warning/error),
+   but lift the neutral SURFACES toward near-white (dropping base2/base3's yellow
+   chroma) so the UI reads bright rather than tan. Mapped onto the shadcn token
+   names so every component shifts as one system. Ref: ethanschoonover.com/solarized */
 :root {
   --radius: 0.625rem;
-  --background: oklch(0.945 0.005 95);
-  --foreground: oklch(0.24 0.004 75);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.24 0.004 75);
-  --popover: oklch(0.99 0.002 95);
-  --popover-foreground: oklch(0.24 0.004 75);
-  --primary: oklch(0.24 0.004 75);
-  --primary-foreground: oklch(0.985 0.002 95);
-  --secondary: oklch(0.955 0.004 95);
-  --secondary-foreground: oklch(0.24 0.004 75);
-  --muted: oklch(0.955 0.004 95);
-  --muted-foreground: oklch(0.55 0.006 80);
-  --accent: oklch(0.925 0.006 95);
-  --accent-foreground: oklch(0.24 0.004 75);
-  --destructive: oklch(0.52 0.17 25);
-  --success: oklch(0.55 0.13 150);
-  --warning: oklch(0.68 0.14 75);
-  --border: oklch(0.895 0.004 95);
-  --input: oklch(0.895 0.004 95);
-  --ring: oklch(0.55 0.13 250);
-  --brand: oklch(0.55 0.13 250);
-  --brand-foreground: oklch(0.985 0.002 95);
-  --status-active: oklch(0.58 0.16 255);
-  --header: oklch(0.978 0.003 95);
-  --chat: oklch(0.972 0.001 250);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.972 0.004 95);
-  --sidebar-foreground: oklch(0.24 0.004 75);
-  --sidebar-primary: oklch(0.24 0.004 75);
-  --sidebar-primary-foreground: oklch(0.985 0.002 95);
-  --sidebar-accent: oklch(0.925 0.006 95);
-  --sidebar-accent-foreground: oklch(0.24 0.004 75);
-  --sidebar-border: oklch(0.9 0.004 95);
-  --sidebar-ring: oklch(0.55 0.13 250);
+  --background: #fbfbf9; /* near-white body, a hair of warmth */
+  --foreground: #586e75; /* base01 — body ink */
+  --card: #ffffff; /* pure-white raised surfaces */
+  --card-foreground: #586e75;
+  --popover: #ffffff;
+  --popover-foreground: #586e75;
+  --primary: #073642; /* base02 — near-dark ink for buttons/emphasis */
+  --primary-foreground: #fdf6e3;
+  --secondary: #edeeea; /* cool light-grey fill (not tan base2) */
+  --secondary-foreground: #073642;
+  --muted: #edeeea;
+  --muted-foreground: #93a1a1; /* base1 */
+  --accent: #e3e4de; /* slightly deeper grey for hover/active */
+  --accent-foreground: #073642;
+  --destructive: #dc322f; /* Solarized red */
+  --success: #859900; /* Solarized green */
+  --warning: #b58900; /* Solarized yellow */
+  --border: #e3e4de;
+  --input: #e3e4de;
+  --ring: #268bd2; /* Solarized blue */
+  --brand: #268bd2;
+  --brand-foreground: #fdf6e3;
+  --status-active: #268bd2;
+  --header: #f4f4f1;
+  --chat: #fbfbf9;
+  --chart-1: #268bd2; /* blue   */
+  --chart-2: #2aa198; /* cyan   */
+  --chart-3: #859900; /* green  */
+  --chart-4: #b58900; /* yellow */
+  --chart-5: #cb4b16; /* orange */
+  --sidebar: #f4f4f1;
+  --sidebar-foreground: #586e75;
+  --sidebar-primary: #073642;
+  --sidebar-primary-foreground: #fdf6e3;
+  --sidebar-accent: #e3e4de;
+  --sidebar-accent-foreground: #073642;
+  --sidebar-border: #e3e4de;
+  --sidebar-ring: #268bd2;
 }
 
-/* Warm-dark counterpart of the paper theme — same hue family, low lightness. */
+/* Solarized Dark — canonical values: base03 #002b36 background, base02 #073642
+   raised surfaces, base0/base1 ink, same fixed accents as light so the two themes
+   are one system. Ref: ethanschoonover.com/solarized */
 .dark {
-  --background: oklch(0.205 0.004 75);
-  --foreground: oklch(0.965 0.003 95);
-  --card: oklch(0.235 0.004 75);
-  --card-foreground: oklch(0.965 0.003 95);
-  --popover: oklch(0.235 0.004 75);
-  --popover-foreground: oklch(0.965 0.003 95);
-  --primary: oklch(0.92 0.004 95);
-  --primary-foreground: oklch(0.235 0.004 75);
-  --secondary: oklch(0.28 0.005 75);
-  --secondary-foreground: oklch(0.965 0.003 95);
-  --muted: oklch(0.28 0.005 75);
-  --muted-foreground: oklch(0.7 0.006 85);
-  --accent: oklch(0.3 0.006 75);
-  --accent-foreground: oklch(0.965 0.003 95);
-  --destructive: oklch(0.62 0.17 25);
-  --success: oklch(0.72 0.14 155);
-  --warning: oklch(0.75 0.14 75);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.62 0.13 250);
-  --brand: oklch(0.68 0.13 250);
-  --brand-foreground: oklch(0.985 0.002 95);
-  --status-active: oklch(0.66 0.16 255);
-  --header: oklch(0.22 0.004 75);
-  --chat: oklch(0.185 0.003 250);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.185 0.004 75);
-  --sidebar-foreground: oklch(0.965 0.003 95);
-  --sidebar-primary: oklch(0.92 0.004 95);
-  --sidebar-primary-foreground: oklch(0.235 0.004 75);
-  --sidebar-accent: oklch(0.3 0.006 75);
-  --sidebar-accent-foreground: oklch(0.965 0.003 95);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.62 0.13 250);
+  --background: #002b36; /* base03 */
+  --foreground: #839496; /* base0 — body ink */
+  --card: #073642; /* base02 — raised */
+  --card-foreground: #93a1a1; /* base1 */
+  --popover: #073642;
+  --popover-foreground: #93a1a1;
+  --primary: #93a1a1; /* base1 — light ink for buttons/emphasis */
+  --primary-foreground: #002b36;
+  --secondary: #073642;
+  --secondary-foreground: #93a1a1;
+  --muted: #073642;
+  --muted-foreground: #657b83; /* base00 */
+  --accent: #0d4a58; /* a step lighter than base02 for hover/active */
+  --accent-foreground: #93a1a1;
+  --destructive: #dc322f;
+  --success: #859900;
+  --warning: #b58900;
+  --border: #0d4a58;
+  --input: #0d4a58;
+  --ring: #268bd2;
+  --brand: #268bd2;
+  --brand-foreground: #fdf6e3;
+  --status-active: #268bd2;
+  --header: #073642;
+  --chat: #002b36;
+  --chart-1: #268bd2;
+  --chart-2: #2aa198;
+  --chart-3: #859900;
+  --chart-4: #b58900;
+  --chart-5: #cb4b16;
+  --sidebar: #002b36;
+  --sidebar-foreground: #839496;
+  --sidebar-primary: #93a1a1;
+  --sidebar-primary-foreground: #002b36;
+  --sidebar-accent: #0d4a58;
+  --sidebar-accent-foreground: #93a1a1;
+  --sidebar-border: #0d4a58;
+  --sidebar-ring: #268bd2;
 }
 
 @layer base {

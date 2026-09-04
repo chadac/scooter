@@ -2,6 +2,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./globals.css";
+// Import for its side effect: converge <html>.dark to the stored/OS theme and register
+// the live prefers-color-scheme listener before the app mounts (the inline <head> script
+// already set the class pre-paint; this keeps "system" mode reactive).
+import "./theme.js";
 import { App } from "./App.js";
 import { viewStore } from "./view.js";
 import { currentConversation, sessionStore } from "./sessions.js";

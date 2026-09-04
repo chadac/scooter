@@ -9,6 +9,7 @@ import { Sidebar } from "./Sidebar.js";
 import { RightPanel } from "./RightPanel.js";
 import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
+import { ThemePicker } from "./ThemePicker.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { SettingsPage } from "./SettingsPage.js";
@@ -75,6 +76,8 @@ export function App() {
           <div className="flex items-center gap-2">
             {/* Live pod status, mirrored from the Sandbox tab. */}
             <SandboxStatusPill />
+            {/* Light / dark / system theme toggle. */}
+            <ThemePicker />
             {/* Settings (scheduled tasks, …). Toggles the main pane. */}
             <Button
               data-testid="settings-toggle"
