@@ -73,6 +73,7 @@ function fakeExec(): ExecBackend & { runs: Array<{ command: string; args: string
     },
     readTextFile: async (p) => `contents-of:${p}`,
     writeTextFile: async () => {},
+    writeBinaryFile: async () => {},
   } as ExecBackend & { runs: Array<{ command: string; args: string[] }> };
 }
 

@@ -149,11 +149,29 @@ test.describe("conversation scroll-lock", () => {
     // causing useStickToBottom to yank the viewport back to the bottom and hide the arrow
     // mid-click. The nightly ×5 caught this: iteration #3 hung for 6.1 minutes waiting for
     // the button to become visible again (it had become hidden right as the click started).
-    // A 300ms settle window lets the store process the poll's final scroll event before we
-    // assert or click.
-    await page.waitForTimeout(300);
+    //
+    // Poll until the button is STABLY enabled: check that it remains enabled across multiple
+    // samples with small delays between them. This is more robust than a fixed timeout —
+    // it adapts to varying scroll-event processing speeds while still detecting if the
+    // button flips back to disabled. The nightly ×5 revealed that 300ms wasn't enough
+    // (iteration #2 at run 33846941314 failed with the button still disabled after 300ms).
+    await expect
+      .poll(
+        async () => {
+          // Sample the button state 3 times over 150ms total (50ms between samples).
+          // If it stays enabled across all 3 checks, we're confident the scroll events
+          // have settled and useStickToBottom won't yank the viewport back down.
+          for (let i = 0; i < 3; i++) {
+            if (!(await chat.scrollToBottomButton().isEnabled())) return false;
+            if (i < 2) await page.waitForTimeout(50);
+          }
+          return true;
+        },
+        { timeout: 5_000 },
+      )
+      .toBe(true);
 
-    // Re-verify the button is still enabled after the settle window.
+    // Re-verify the button is still enabled (this should now be deterministic).
     await expect(chat.scrollToBottomButton()).toBeEnabled();
 
     // Click the arrow — it re-engages the lock: the view returns to the bottom and the

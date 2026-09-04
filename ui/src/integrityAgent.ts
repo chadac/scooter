@@ -1110,15 +1110,24 @@ export class IntegrityAgent extends AbstractAgent {
    */
   async send(
     text: string,
-    opts?: { priority?: number; images?: Array<{ data: string; mimeType: string }> },
+    opts?: {
+      priority?: number;
+      images?: Array<{ data: string; mimeType: string }>;
+      files?: Array<{ name: string; data: string; mimeType: string }>;
+    },
   ): Promise<void> {
-    // With images, send a multimodal content-parts array (text + image parts) the
-    // agent-host normalizer splits; without, a plain string (the unchanged path).
+    // With images and/or files, send a multimodal content-parts array (text + image +
+    // file parts) the agent-host normalizer splits; without either, a plain string (the
+    // unchanged path). File parts carry base64 bytes the agent-host materializes into the
+    // sandbox at /workspace/uploads/<name>; images ride as vision blocks.
+    const hasImages = !!opts?.images?.length;
+    const hasFiles = !!opts?.files?.length;
     const content =
-      opts?.images && opts.images.length
+      hasImages || hasFiles
         ? [
             ...(text ? [{ type: "text", text }] : []),
-            ...opts.images.map((img) => ({ type: "image", data: img.data, mimeType: img.mimeType })),
+            ...(opts?.images ?? []).map((img) => ({ type: "image", data: img.data, mimeType: img.mimeType })),
+            ...(opts?.files ?? []).map((f) => ({ type: "file", name: f.name, data: f.data, mimeType: f.mimeType })),
           ]
         : text;
     await this.postAgui({

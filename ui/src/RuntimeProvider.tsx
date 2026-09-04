@@ -46,11 +46,17 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AssistantRuntimeProvider, SimpleImageAttachmentAdapter, type AppendMessage } from "@assistant-ui/react";
+import {
+  AssistantRuntimeProvider,
+  SimpleImageAttachmentAdapter,
+  CompositeAttachmentAdapter,
+  type AppendMessage,
+} from "@assistant-ui/react";
 
 import { useRepositoryRuntime } from "./useRepositoryRuntime.js";
 import { toRepositorySnapshot, enrichMessagesWithImages, type RepositorySnapshot } from "./messageRepository.js";
 import { imagesFromMessage, downscaleImage, type OutboundImage } from "./imageUpload.js";
+import { filesFromMessage, SandboxFileAttachmentAdapter } from "./fileUpload.js";
 
 import { createConversation } from "./client.js";
 import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
@@ -362,7 +368,11 @@ function ConversationRuntime({
         const scaled = await downscaleImage(`data:${raw.mimeType};base64,${raw.data}`).catch(() => raw);
         if (scaled) images.push(scaled);
       }
-      if (text || images.length) {
+      // Non-image file attachments: the agent-host materializes each into the sandbox at
+      // /workspace/uploads/<name>. Read the WHOLE message (composer keeps them in
+      // message.attachments[], same as images). Sent as-is — no client re-encoding.
+      const files = filesFromMessage(message);
+      if (text || images.length || files.length) {
         // OPTIMISTIC solidify: title the session from this first message NOW, before the
         // fire-and-forget send round-trips, so a brand-new "New chat" doesn't stay pristine
         // (and droppable by the background merge) until the server echoes it back.
@@ -390,7 +400,11 @@ function ConversationRuntime({
           setOptimisticSends((cur) => [...cur, { id: optId, text, priority: priority ?? 0 }]);
         }
         try {
-          await agent.send(text, { priority, images: images.length ? images : undefined });
+          await agent.send(text, {
+            priority,
+            images: images.length ? images : undefined,
+            files: files.length ? files : undefined,
+          });
         } catch (e) {
           // The POST itself failed — drop the optimistic entry so it doesn't linger forever
           // (the server will never confirm a send that never landed). The composer surfaces
@@ -421,10 +435,17 @@ function ConversationRuntime({
     [conversationId],
   );
 
-  // The image attachment adapter lets the composer accept image uploads: it turns
-  // an attached image File into an image content part on the user message (which
-  // the send override above extracts, downscales, and forwards to /agui).
-  const attachmentAdapter = useMemo(() => new SimpleImageAttachmentAdapter(), []);
+  // Attachment adapters let the composer accept uploads. Two, composed in ORDER:
+  //  1. images (SimpleImageAttachmentAdapter, accept "image/*") → vision content parts,
+  //  2. any other file (SandboxFileAttachmentAdapter, accept "*") → a file part the
+  //     agent-host materializes into the sandbox at /workspace/uploads/<name>.
+  // The image adapter must come FIRST so images match "image/*" and keep riding as
+  // vision blocks; the wildcard file adapter catches everything else. The send override
+  // above extracts both (imagesFromMessage / filesFromMessage) and forwards them to /agui.
+  const attachmentAdapter = useMemo(
+    () => new CompositeAttachmentAdapter([new SimpleImageAttachmentAdapter(), new SandboxFileAttachmentAdapter()]),
+    [],
+  );
 
   // The message-repository SNAPSHOT the external store renders. Updated by the render
   // pump (below) with a fresh object (stable inner ids) on every fold, so the core

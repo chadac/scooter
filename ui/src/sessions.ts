@@ -27,6 +27,8 @@ export interface Session {
   serverId?: string;
   title: string;
   createdAt: number;
+  /** Last user activity timestamp (ms epoch). Used for sidebar sorting. */
+  lastActivityAt: number;
   /** Per-conversation model (undefined = host default). Sent on the next prompt
    *  via the X-Agent-Model header; a change mid-conversation switches the model. */
   model?: string;
@@ -131,6 +133,7 @@ const sameSession = (a: Session, b: Session): boolean => {
     a.userTitled !== b.userTitled ||
     a.starred !== b.starred ||
     a.createdAt !== b.createdAt ||
+    a.lastActivityAt !== b.lastActivityAt ||
     a.model !== b.model ||
     a.owner !== b.owner ||
     a.status !== b.status ||
@@ -144,18 +147,19 @@ const sameSession = (a: Session, b: Session): boolean => {
 };
 
 /** Sidebar order: STARRED conversations first (favoriting pins them to the top),
- *  then newest-first within each group. Stable for equal keys. */
+ *  then most-recently-active first within each group. Stable for equal keys. */
 export const byStarredThenRecent = (a: Session, b: Session): number => {
   const sa = a.starred ? 1 : 0;
   const sb = b.starred ? 1 : 0;
   if (sa !== sb) return sb - sa; // starred (1) sorts before unstarred (0)
-  return b.createdAt - a.createdAt; // then most-recent first
+  return b.lastActivityAt - a.lastActivityAt; // then most-recently-active first
 };
 
 const freshState = (): State => {
   const id = crypto.randomUUID();
+  const now = Date.now();
   return {
-    sessions: [{ id, title: DEFAULT_TITLE, createdAt: Date.now() }],
+    sessions: [{ id, title: DEFAULT_TITLE, createdAt: now, lastActivityAt: now }],
     currentId: id,
     currentUser: "",
     currentUserEmail: null,
@@ -320,10 +324,11 @@ export const sessionStore = {
    *  Synchronous, and returns the local id. */
   newSession(): string {
     const id = crypto.randomUUID();
+    const now = Date.now();
     setState({
       ...state,
       sessions: [
-        { id, title: DEFAULT_TITLE, createdAt: Date.now(), serverCreated: false },
+        { id, title: DEFAULT_TITLE, createdAt: now, lastActivityAt: now, serverCreated: false },
         ...state.sessions,
       ],
       currentId: id,
@@ -374,7 +379,7 @@ export const sessionStore = {
    * server one so a refresh lands on a real conversation.
    */
   mergeFromServer(
-    convs: Array<{ id: string; title?: string; createdAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string; userTitled?: boolean; starred?: boolean }>,
+    convs: Array<{ id: string; title?: string; createdAt?: number; lastActivityAt?: number; model?: string; sources?: string[]; links?: SessionLink[]; owner?: string; status?: Session["status"]; parentId?: string; userTitled?: boolean; starred?: boolean }>,
     // Whether this batch is an AUTHORITATIVE full-list read (the 10s poll or the SSE connect
     // snapshot) vs. a single-row SSE `upsert`. Only the former owns `sources`/`links`: link
     // add/remove does NOT fire the conversations_changed trigger, so an upsert (fired by an
@@ -435,6 +440,7 @@ export const sessionStore = {
         // Starred is server-owned; take the server's value.
         starred: c.starred ?? existing?.starred,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),
+        lastActivityAt: c.lastActivityAt ?? existing?.lastActivityAt ?? Date.now(),
         // A locally-chosen model (not yet persisted server-side on first prompt)
         // wins; otherwise take the server's persisted model.
         model: existing?.model ?? c.model,
@@ -531,7 +537,8 @@ export const sessionStore = {
     const remaining = state.sessions.filter((s) => s.id !== id);
     if (remaining.length === 0) {
       // Always keep at least one conversation.
-      const fresh = { id: crypto.randomUUID(), title: DEFAULT_TITLE, createdAt: Date.now() };
+      const now = Date.now();
+      const fresh = { id: crypto.randomUUID(), title: DEFAULT_TITLE, createdAt: now, lastActivityAt: now };
       setState({ ...state, sessions: [fresh], currentId: fresh.id });
       return;
     }
