@@ -417,7 +417,29 @@ export function createK8sSandboxApiClient(
       const res = await execRaw(["sh", "-c", `tee ${shellQuote(path)} >/dev/null`], stdin);
       if (res.exitCode !== 0) throw new Error(`upload ${path}: ${res.stderr}`);
     },
+
+    async uploadBinary(path: string, base64: string): Promise<void> {
+      // STREAM the base64 over stdin into `base64 -d`. Do NOT embed it in the shell
+      // line: a single argv string is capped at MAX_ARG_STRLEN (~128KB) by execve,
+      // so an inline `printf '<b64>' | base64 -d` silently fails (E2BIG) for any
+      // upload past ~96KB. Over stdin there is no such cap. mkdir -p first so the
+      // parent (e.g. /workspace/uploads) exists.
+      const dir = posixDirname(path);
+      const stdin = Readable.from([base64]);
+      const res = await execRaw(
+        ["sh", "-c", `mkdir -p ${shellQuote(dir)} && base64 -d > ${shellQuote(path)}`],
+        stdin,
+      );
+      if (res.exitCode !== 0) throw new Error(`uploadBinary ${path}: ${res.stderr}`);
+    },
   };
+}
+
+/** POSIX dirname without pulling in node:path just for one call (paths here are
+ *  always sandbox-absolute POSIX paths, e.g. /workspace/uploads/x.pdf). */
+function posixDirname(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i <= 0 ? (i === 0 ? "/" : ".") : p.slice(0, i);
 }
 
 /**

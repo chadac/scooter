@@ -41,6 +41,22 @@ describe("ExecBackend (agent-sandbox SDK)", () => {
     expect(api.getFile("/workspace/b.txt")).toBe("data");
   });
 
+  it("writeBinaryFile() streams base64 (not a shell arg) and round-trips binary bytes", async () => {
+    const api = createFakeSandboxApi();
+    const exec = createSandboxExecBackend(api);
+    // Includes NUL + high bytes that a UTF-8 string round-trip would corrupt.
+    const bytes = Buffer.from([0x00, 0xff, 0x10, 0x89, 0x50, 0x4e, 0x47]);
+    const b64 = bytes.toString("base64");
+
+    await exec.writeBinaryFile("/workspace/uploads/x.bin", b64);
+
+    expect(api.uploadedBinary).toEqual([{ path: "/workspace/uploads/x.bin", base64: b64 }]);
+    // The base64 must NOT ride as an /execute shell argument — that path caps a single
+    // argv string at ~128KB (MAX_ARG_STRLEN), the exact bug this method exists to avoid.
+    const shell = api.executed.map((e) => [e.command, ...e.args].join(" ")).join("\n");
+    expect(shell).not.toContain(b64);
+  });
+
   it("spawn() streams incremental terminal output and an exit code", async () => {
     const api = createFakeSandboxApi();
     api.whenExecute(() => ({ stdout: "line1\nline2\n", stderr: "", exitCode: 0 }));

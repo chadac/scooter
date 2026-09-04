@@ -56,6 +56,7 @@ function createControllableExec() {
       return "";
     },
     async writeTextFile() {},
+    async writeBinaryFile() {},
   };
 
   // Finish a specific spawned terminal (by 1-based spawn order) with output+code.
@@ -179,6 +180,7 @@ function createKillTrackingExec() {
       return "";
     },
     async writeTextFile() {},
+    async writeBinaryFile() {},
   };
   return { exec, spawned };
 }

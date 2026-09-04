@@ -84,6 +84,19 @@ import { formatError, logger } from "./log.js";
 
 const hostLog = logger("agent-host");
 
+/** Default per-file cap (~25MB) for materialized (non-image) uploads. Override with
+ *  FILE_MAX_BYTES. Larger than the 5MB image cap: files are docs/datasets/archives. */
+const DEFAULT_FILE_MAX_BYTES = 25 * 1024 * 1024;
+
+/** Decoded byte length of a base64 string (0.75 ratio, minus '=' padding) — computed
+ *  without allocating a Buffer, so an oversize upload is rejected before we decode it. */
+function base64ByteLength(b64: string): number {
+  const len = b64.length;
+  if (len === 0) return 0;
+  const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  return Math.floor((len * 3) / 4) - pad;
+}
+
 /** TRANSCRIPT RECORDER (test-harness): one shared instance, OFF unless
  *  TRANSCRIPT_RECORD_DIR is set. It writes one NDJSON per run capturing the RAW
  *  agent input + emitted AG-UI, so tests can REPLAY real behavior instead of
@@ -603,6 +616,10 @@ export async function main(
     backend: agentHostResourceDsn() ? "hybrid (pg+pvc)" : "pvc-only",
     path: assetsPath,
   });
+  // Per-file cap for materialized (non-image) uploads. Files are decoded straight
+  // into the sandbox (not the AssetStore), so this is a separate knob from
+  // ASSET_MAX_BYTES. Default 25MB; deployment-tunable via FILE_MAX_BYTES.
+  const fileMaxBytes = Number(process.env.FILE_MAX_BYTES) || DEFAULT_FILE_MAX_BYTES;
   // conversation-state volume. Configurable cap via ASSET_MAX_BYTES.
   const server = createAguiServer();
   // The privileged /agui `owner` field (a webhook-resolved Scooter user) is honored
@@ -1141,16 +1158,23 @@ export async function main(
         hostLog.warn("dropped an attached image", { conversation_id: sessionId, error: formatError(e) });
       }
     }
-    // Binary file attachments (Slack pdf/zip/…) ride straight through to the bridge,
-    // which materializes each into the sandbox at /workspace/.slack/<name> via the
-    // exec client (best-effort — a failed write must not kill the turn). The agent
-    // SEES the saved paths because the message text (woven webhooks-side) references
-    // them.
-    const promptFiles = (input.files ?? []).map((f) => ({
-      name: f.name,
-      data: f.data,
-      mimeType: f.mimeType,
-    }));
+    // Binary file attachments (UI uploads, Slack pdf/zip/…) ride through to the bridge,
+    // which materializes each into the sandbox at /workspace/uploads/<name> via the exec
+    // client and appends a note listing the saved paths (best-effort — a failed write
+    // must not kill the turn). Oversize files are dropped HERE (best-effort, like images)
+    // so a huge attachment can't blow up the run; FILE_MAX_BYTES is deployment-tunable.
+    const promptFiles: Array<{ name: string; data: string; mimeType: string }> = [];
+    for (const f of input.files ?? []) {
+      if (base64ByteLength(f.data) > fileMaxBytes) {
+        hostLog.warn("dropped an oversize file attachment", {
+          conversation_id: sessionId,
+          name: f.name,
+          max_bytes: fileMaxBytes,
+        });
+        continue;
+      }
+      promptFiles.push({ name: f.name, data: f.data, mimeType: f.mimeType });
+    }
     try {
       await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles, input.source);
     } catch (err) {
@@ -1808,6 +1832,9 @@ function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<v
     },
     async upload(path: string, content: string) {
       return (await ensure()).upload(path, content);
+    },
+    async uploadBinary(path: string, base64: string) {
+      return (await ensure()).uploadBinary(path, base64);
     },
   };
 }

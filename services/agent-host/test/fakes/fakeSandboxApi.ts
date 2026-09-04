@@ -10,14 +10,20 @@ export interface FakeSandboxApi extends SandboxApiClient {
   setFile(path: string, content: string): void;
   getFile(path: string): string | undefined;
   readonly executed: Array<{ command: string; args: string[] }>;
+  /** Binary uploads (writeBinaryFile → uploadBinary): {path, base64}. */
+  readonly uploadedBinary: Array<{ path: string; base64: string }>;
   whenExecute(
     handler: (command: string, args: string[]) => ExecResult,
   ): void;
+  /** Make the next uploadBinary throw (to exercise best-effort write failure). */
+  failUploadBinary(err?: Error): void;
 }
 
 export function createFakeSandboxApi(): FakeSandboxApi {
   const files = new Map<string, string>();
   const executed: Array<{ command: string; args: string[] }> = [];
+  const uploadedBinary: Array<{ path: string; base64: string }> = [];
+  let uploadBinaryError: Error | undefined;
   let handler: (command: string, args: string[]) => ExecResult = () => ({
     stdout: "",
     stderr: "",
@@ -27,6 +33,10 @@ export function createFakeSandboxApi(): FakeSandboxApi {
   return {
     mode: "direct",
     executed,
+    uploadedBinary,
+    failUploadBinary(err) {
+      uploadBinaryError = err ?? new Error("uploadBinary failed");
+    },
     setFile(path, content) {
       files.set(path, content);
     },
@@ -47,6 +57,15 @@ export function createFakeSandboxApi(): FakeSandboxApi {
     },
     async upload(path: string, content: string): Promise<void> {
       files.set(path, content);
+    },
+    async uploadBinary(path: string, base64: string): Promise<void> {
+      if (uploadBinaryError) {
+        const e = uploadBinaryError;
+        uploadBinaryError = undefined;
+        throw e;
+      }
+      uploadedBinary.push({ path, base64 });
+      files.set(path, Buffer.from(base64, "base64").toString("binary"));
     },
   };
 }

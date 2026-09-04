@@ -85,7 +85,7 @@ class WebhooksSettings(BaseSettings):
 
     # Max bytes for ANY inbound Slack attachment (text-representable or binary file)
     # forwarded to the agent. Generalizes image_max_bytes to non-image files. ~10MB
-    # default (binaries land in the sandbox at /workspace/.slack via the agent-host).
+    # default (binaries land in the sandbox at /workspace/uploads via the agent-host).
     file_max_bytes: int = 10 * 1024 * 1024
 
     # GitHub App authentication

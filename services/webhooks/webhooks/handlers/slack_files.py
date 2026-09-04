@@ -11,7 +11,7 @@ A Slack message event carries a `files` array; each file has a private
    known). Becomes part of the message TEXT — no new content-part type.
 3. **Binary files** (everything else — pdf, zip, docx, …) -> fetched bytes, forwarded
    as `{name, data(base64), mimeType}` file parts. The agent-host materializes each
-   into the sandbox at /workspace/.slack/<name>.
+   into the sandbox at /workspace/uploads/<name> and notes the saved path for the agent.
 
 Best-effort throughout: a file that can't be downloaded / is over the size cap /
 lacks a URL is skipped (logged), never raised — a bad attachment must not drop the
@@ -35,9 +35,6 @@ _C = {"component": "handlers.slack_files"}
 
 # Images the agent can see (mirrors the agent-host AssetStore allow-list).
 _ALLOWED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp"}
-
-# Where the agent-host materializes binary attachments in the sandbox.
-SLACK_FILES_DIR = "/workspace/.slack"
 
 # Extensions we treat as text (inline into the message). Maps to a fenced-code
 # language hint (empty string -> plain fence).
@@ -76,7 +73,7 @@ class DownloadedFiles:
       `[Attached file: <name>]` header — the caller weaves this into the message text.
       Empty when there are no text files.
     - `file_parts`: [{name, data(base64), mimeType}] for binary attachments the
-      agent-host writes to /workspace/.slack/<name>.
+      agent-host writes to /workspace/uploads/<name>.
     """
 
     images: list[dict] = field(default_factory=list)
@@ -234,7 +231,7 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                     continue
                 text_blocks.append(_inline_block(name, text, _lang_hint(name, f.get("filetype") or "")))
             else:
-                # (3) binary -> file part the agent-host writes to /workspace/.slack.
+                # (3) binary -> file part the agent-host writes to /workspace/uploads.
                 result.file_parts.append(
                     {
                         "name": name,
