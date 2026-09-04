@@ -420,7 +420,8 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
             <InlineRunStatus />
             {/* Context-window fill bar — how full the conversation's context is. */}
             <ContextFillBar />
-            <ModelPicker />
+            {/* ModelPicker moved INTO the composer action row (next to ＋); see
+                ComposerAction below. It no longer sits above the input. PR #465. */}
             <Composer />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
@@ -605,7 +606,11 @@ const Composer: FC = () => {
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <ComposerAddAttachment />
+      {/* Left cluster: attach + the model selector, inline in the composer. */}
+      <div className="flex items-center gap-1">
+        <ComposerAddAttachment />
+        <ModelPicker />
+      </div>
       <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
