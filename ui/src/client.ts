@@ -49,6 +49,10 @@ export interface ConversationView {
 export interface ModelCatalog {
   default: string | null;
   available: string[];
+  /** Model id -> the provider tags that offer it ("byoc"|"goose"|"claude-code"|…).
+   *  [] / absent = offered on every provider (legacy, hint-less catalogs). Lets the
+   *  picker group each model under its source provider. */
+  providers?: Record<string, string[]>;
 }
 
 /** Fetch the offered models. Returns an empty catalog if the server is
