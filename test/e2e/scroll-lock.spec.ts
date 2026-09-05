@@ -111,67 +111,43 @@ test.describe("conversation scroll-lock", () => {
     expect(scrollable, "thread never grew tall enough to scroll").toBeGreaterThan(0);
     await chat.settleAtBottom();
 
-    // Scroll UP to the top. The lock releases — assert via the ARROW becoming enabled
-    // (the UI's own "not at bottom" signal), which is deterministic regardless of how
-    // many px the (variable-height) thread actually scrolled. A loose px check backs
-    // it up: distance grew well past the at-bottom tolerance.
+    // Release the lock by scrolling up with a REAL WHEEL GESTURE, not a programmatic
+    // scrollTo. This is the fix for a flake that survived every timing-window tweak
+    // (300ms → 150ms → 400ms stability sampling): the root cause was never the sampling
+    // window, it was scrollTo. assistant-ui's useStickToBottom only DURABLY releases the
+    // lock on a genuine user scroll gesture (wheel/touch) — that sets its internal
+    // "escaped from lock" flag, which survives the content/resize frames that follow. A
+    // programmatic scrollTo moves scrollTop and fires a scroll event but leaves that flag
+    // UNSET, so the library re-pins the viewport to the bottom on the very next frame and
+    // re-disables the arrow. That re-pin is the whole flake: the poll would catch the
+    // arrow enabled for one tick, then the view got yanked back down before/while we
+    // asserted (nightly ×5: ~40% of reps; run 33971490289 flake-focus: 2/20 reps).
     //
-    // Re-issue the scroll INSIDE the poll: assistant-ui's useStickToBottom can yank the
-    // viewport back down on the animation frame right after a single programmatic
-    // scroll-up (it still believes it's pinned), collapsing distanceFromBottom to ~0
-    // before our measurement — a one-shot scrollTo + poll then flakes. Scrolling up on
-    // every poll tick wins the race deterministically: once the store latches
-    // isAtBottom=false, the yank stops and the distance stays open.
-    //
-    // Gate the poll on the ARROW being enabled — the store's own isAtBottom=false
-    // signal — NOT on distanceFromBottom alone. The `disabled` flag updates from a
-    // SCROLL EVENT and can trail the measured position (same trailing-flag flake that
-    // `settleAtBottom` documents, here in reverse): the poll could exit on a tick where
-    // the viewport had physically scrolled up (distance > tolerance) but the store had
-    // not yet processed the scroll event, so useStickToBottom yanked the view back down
-    // and the arrow never enabled — `toBeEnabled()` on the next line then hung the full
-    // timeout. The nightly ×5 caught this ~40% of the time (2/5 reps). Polling until the
-    // arrow itself reports enabled ties the exit condition to the signal we assert on,
-    // while the loose px check below backs it up.
+    // Wheel up on each poll tick until the arrow reports enabled AND the view sits above
+    // the at-bottom tolerance. Re-wheeling each tick wins the initial race if the first
+    // gesture lands mid-animation; once the escape flag latches the library stops
+    // re-pinning, so the enabled state is then steady with no yank-back.
+    const box = await chat.viewport().boundingBox();
+    expect(box, "thread viewport has no bounding box").not.toBeNull();
+    const wheelX = box!.x + box!.width / 2;
+    const wheelY = box!.y + box!.height / 2;
+    // Wheel by well more than the scrollable height so we reach the top even on a tall
+    // thread; a floor keeps it a decisive gesture on a short one.
+    const wheelDelta = Math.max(600, scrollable);
     await expect
       .poll(
         async () => {
-          await chat.viewport().evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }));
+          await page.mouse.move(wheelX, wheelY);
+          await page.mouse.wheel(0, -wheelDelta);
           return (await chat.scrollToBottomButton().isEnabled()) && (await chat.distanceFromBottom()) > AT_BOTTOM_PX;
         },
         { timeout: 10_000 },
       )
       .toBe(true);
 
-    // Wait for scroll events from the poll to settle. The poll's final iteration scrolled
-    // to top=0, and assistant-ui's isAtBottom flag updates from scroll events asynchronously —
-    // a late event can flip the flag after our poll has already exited and read isEnabled=true,
-    // causing useStickToBottom to yank the viewport back to the bottom and hide the arrow
-    // mid-click. The nightly ×5 caught this: iteration #3 hung for 6.1 minutes waiting for
-    // the button to become visible again (it had become hidden right as the click started).
-    //
-    // Poll until the button is STABLY enabled: check that it remains enabled across multiple
-    // samples with small delays between them. This is more robust than a fixed timeout —
-    // it adapts to varying scroll-event processing speeds while still detecting if the
-    // button flips back to disabled. The nightly ×5 revealed that 300ms wasn't enough
-    // (iteration #2 at run 33846941314 failed with the button still disabled after 300ms).
-    await expect
-      .poll(
-        async () => {
-          // Sample the button state 3 times over 150ms total (50ms between samples).
-          // If it stays enabled across all 3 checks, we're confident the scroll events
-          // have settled and useStickToBottom won't yank the viewport back down.
-          for (let i = 0; i < 3; i++) {
-            if (!(await chat.scrollToBottomButton().isEnabled())) return false;
-            if (i < 2) await page.waitForTimeout(50);
-          }
-          return true;
-        },
-        { timeout: 5_000 },
-      )
-      .toBe(true);
-
-    // Re-verify the button is still enabled (this should now be deterministic).
+    // The wheel gesture escaped the lock durably, so the enabled state is steady — no
+    // stability-sampling window is needed (that was compensating for scrollTo's re-pin).
+    // A plain re-assert is deterministic now: the arrow stays enabled until we click it.
     await expect(chat.scrollToBottomButton()).toBeEnabled();
 
     // Click the arrow — it re-engages the lock: the view returns to the bottom and the
