@@ -233,14 +233,15 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
   const mk = (shouldYield?: () => boolean, queryImpl?: any) =>
     createSdkAcpClient({ oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl, shouldYield });
 
-  it("INTERRUPTS the turn at a tool-call boundary when shouldYield() is true (the check_subagent-loop fix)", async () => {
+  it("ENDS the turn at a tool-call boundary when shouldYield() is true (the check_subagent-loop fix)", async () => {
     const tl = toolLoopQuery();
     const client = await mk(() => true, tl.queryImpl); // a priority item IS waiting
     await client.newSession({ threadId: "c1" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
-    // After the tool_result flowed and shouldYield() was true, the turn interrupted
-    // instead of continuing the loop — so the queued priority item can now inject.
-    expect(tl.wasInterrupted()).toBe(true);
+    // After the tool_call and shouldYield() was true, the turn ended cleanly by
+    // breaking from the stream (NOT calling interrupt) — so the queued priority
+    // item can now inject WITHOUT sending spurious "user stopped" signals (#453).
+    expect(tl.wasInterrupted()).toBe(false); // clean break, not interrupt
   });
 
   it("does NOT interrupt when shouldYield() is false (a normal tool loop runs to completion)", async () => {
