@@ -98,6 +98,11 @@
           auto_approve_read_only = true;
         };
       };
+
+      # Static shares: agents publish static bundles the broker serves at
+      # /s/<uuid>/ and the UI embeds. Persists to the shared Postgres `broker` DB.
+      # publicBaseUrl/frameAncestors default to https://<ingress.host>.
+      shares.enable = true;
     };
 
     # Deployment-supplied sandbox extras (generic — the platform doesn't know what
