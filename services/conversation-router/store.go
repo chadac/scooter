@@ -1,18 +1,5 @@
-// Read-only Postgres access for the router.
-//
-// The router already watches the Conversation CR (existence + hostIP + phase); the MUTABLE
-// conversation metadata — title, starred, owner, last_activity — lives only in the agent_host
-// database. This gives the router a READ path to it so the fleet-aggregate list can be served
-// from the durable store instead of fanning out to every agent-host pod and merging (the merge
-// is what let a stale per-pod copy flap `starred`). This PR wires the capability; the routing
-// change that consumes it is a follow-up.
-//
-// READ-ONLY is enforced in two independent layers, so neither alone is load-bearing:
-//   1. The DB role (`conversation_router`) is granted only CONNECT/USAGE/SELECT and is set
-//      `default_transaction_read_only = on` at the server (see modules/postgres.nix). A write
-//      is rejected by Postgres regardless of what this process attempts.
-//   2. This client also sets `default_transaction_read_only = on` on every connection, so a
-//      mis-provisioned grant still can't turn into an accidental write from here.
+// Postgres access for the router: a read pool (Store, read-only for the list/LISTEN path) and a
+// narrow write pool (WriteStore) for idle star/title writes. Read-only guarantee + why: PR #475.
 package main
 
 import (
@@ -173,6 +160,80 @@ func (s *Store) ConversationByID(ctx context.Context, id string) (*ConversationR
 
 // Close releases the pool. Safe on a nil Store (the not-configured case).
 func (s *Store) Close() {
+	if s != nil && s.pool != nil {
+		s.pool.Close()
+	}
+}
+
+// WriteStore is the router's narrow production write path to agent_host.conversations (title /
+// starred / user_titled, idle conversations only). nil when no DSN is configured. Why: PR #475.
+type WriteStore struct {
+	pool *pgxpool.Pool
+}
+
+// buildWritePoolConfig pins the pool READ-WRITE, overriding the role's read-only default (a startup
+// option outranks ALTER ROLE SET). Tiny pool — writes are rare and must never block a request.
+func buildWritePoolConfig(dsn string) (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "off"
+	cfg.MinConns = 0
+	cfg.MaxConns = 2
+	return cfg, nil
+}
+
+// OpenWriteStore connects the read-write pool. The caller must Close it.
+func OpenWriteStore(ctx context.Context, dsn string) (*WriteStore, error) {
+	cfg, err := buildWritePoolConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &WriteStore{pool: pool}, nil
+}
+
+// writeColumns is the RETURNING list — same projection ConversationByID reads, so the write's row
+// builds the wire response without a second SELECT.
+const writeColumns = `id, thread_id, title, created_at, last_activity_at,
+                      model, owner, parent_id, user_titled, starred`
+
+// SetStarred sets the star flag and returns the updated row ((nil,nil) if the row raced a delete).
+func (s *WriteStore) SetStarred(ctx context.Context, id string, starred bool) (*ConversationRow, error) {
+	return scanUpdated(s.pool.QueryRow(ctx,
+		`UPDATE conversations SET starred = $2 WHERE id = $1 RETURNING `+writeColumns, id, starred))
+}
+
+// SetUserTitle sets the title AND locks it (user_titled=true), mirroring agent-host's setUserTitle.
+func (s *WriteStore) SetUserTitle(ctx context.Context, id, title string) (*ConversationRow, error) {
+	return scanUpdated(s.pool.QueryRow(ctx,
+		`UPDATE conversations SET title = $2, user_titled = true WHERE id = $1 RETURNING `+writeColumns,
+		id, title))
+}
+
+// scanUpdated maps a RETURNING row to a ConversationRow; no-rows (raced delete) becomes (nil, nil).
+func scanUpdated(row pgx.Row) (*ConversationRow, error) {
+	var c ConversationRow
+	err := row.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
+		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// Close releases the write pool. Safe on a nil WriteStore (the not-configured case).
+func (s *WriteStore) Close() {
 	if s != nil && s.pool != nil {
 		s.pool.Close()
 	}

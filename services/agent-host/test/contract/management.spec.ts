@@ -263,6 +263,30 @@ describe("management API", () => {
     expect((off.json as any).starred).toBe(false);
   });
 
+  it("PATCH /conversations/:id/starred hydrates an idle conversation absent from memory instead of 404ing", async () => {
+    // Starring an IDLE conversation (no owner pod) lands on an arbitrary ready pod via the
+    // router fallback, which doesn't hold it in memory. Pre-fix that 404'd (mutableFor only
+    // checked sessions.get); it must hydrate-if-absent like GET/DELETE. Why: PR #475.
+    const s = fakeSessions();
+    const map = new Map<string, Conversation>();
+    const sessions = {
+      ...s,
+      get: (id: string) => map.get(id),
+      ensureReadable: vi.fn(async (id: string) => { map.set(id, conv({ id, threadId: id, status: "suspended" })); return true; }),
+      setStarred: vi.fn((id: string, starred: boolean) => {
+        const c = map.get(id);
+        if (c) map.set(id, conv({ ...c, starred }));
+        return Promise.resolve();
+      }),
+    } as unknown as SessionManager;
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const res = await call(api, "PATCH", "/conversations/idle-1/starred", { starred: true });
+    expect(res.status).toBe(200);
+    expect(sessions.ensureReadable).toHaveBeenCalledWith("idle-1");
+    expect(sessions.setStarred).toHaveBeenCalledWith("idle-1", true);
+    expect((res.json as any).starred).toBe(true);
+  });
+
   it("PATCH starred rejects a non-boolean body (400)", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status } = await call(api, "PATCH", "/conversations/c1/starred", { starred: "yes" });

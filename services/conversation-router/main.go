@@ -125,6 +125,22 @@ func main() {
 		}
 	}
 
+	// Production-only narrow write handle for idle star/title PATCHes (dev has no CR watch to tell
+	// idle from live, so it proxies to the single agent-host instead). Optional. Why: PR #475.
+	var writeStore *WriteStore
+	if !devModeEnabled() {
+		if dsn := storeDSNFromEnv(); dsn != "" {
+			ws, err := OpenWriteStore(ctx, dsn)
+			if err != nil {
+				log.Warn("postgres write store unavailable (metadata PATCH falls back to proxy)", errAttr(err))
+			} else {
+				writeStore = ws
+				defer writeStore.Close()
+				log.Info("postgres write store connected (idle star/title served here)")
+			}
+		}
+	}
+
 	// Read-only handle on the webhooks database (resource_links) — the sidebar enrichment for
 	// GET /conversations. Optional and independent of the metadata store: no links DB => bare
 	// rows (no sources/links), never a failure.
@@ -146,7 +162,7 @@ func main() {
 	hub := newSSEHub()
 	go runConversationListener(ctx, store, links, crs, hub)
 
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, crs, creator, store, links, hub)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, crs, creator, store, writeStore, links, hub)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -169,7 +185,7 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, crs crLookup, creator ConversationCreator, store *Store, links *LinkStore, hub *sseHub) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, crs crLookup, creator ConversationCreator, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The conversation LIST and its live events stream are served HERE from Postgres, not
@@ -197,6 +213,16 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 				serveConversationList(w, r, store, links, crs)
 			}
 			return
+		}
+		// Idle star/title served here; a live conversation (owner pod present) falls through to the
+		// proxy so its owner stays the single writer. writeStore nil (dev) => always proxy. PR #475.
+		if writeStore != nil && store != nil {
+			if field, id, ok := MetadataPatch(r.Method, r.URL.Path); ok {
+				if _, hasOwner := cache.HostIP(id); !hasOwner {
+					serveConversationMetadataPatch(w, r, field, id, store, writeStore, crs)
+					return
+				}
+			}
 		}
 		// convID is resolved ONCE here and threaded into the proxy layer, so every line a
 		// request produces carries conversation_id — the field the cross-service query joins on.

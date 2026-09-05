@@ -755,23 +755,25 @@ in
     # owns nothing — granted SELECT on EXACTLY the tables the list reads, nothing else (notably
     # NOT conversation_events, the transcripts), and pinned read-only at the server.
     #
-    # The table set is DERIVED from lib/sql/owners.toml (the ownership manifest), not repeated
-    # here: whichever tables list "conversation-router" in their readers ARE its grants. So the
-    # manifest is the single reviewable source of truth and the grant cannot drift from it —
-    # adding a table for the router is one line in owners.toml. Secret: agent-pg-conversation-router.
+    # The table set is DERIVED from lib/sql/owners.toml: readers → SELECT grants, writers →
+    # read-write grants. The manifest is the single source of truth so the grant can't drift.
     agentSandbox.postgres.readers.conversation-router =
       let
         manifest = builtins.fromTOML (builtins.readFile ../lib/sql/owners.toml);
-        # Tables in `db` whose readers list includes conversation-router.
+        # Tables in `db` whose readers list includes conversation-router (SELECT-only).
         tablesFor = db: lib.attrNames (lib.filterAttrs
           (_t: rule: builtins.elem "conversation-router" (rule.readers or [ ]))
+          (manifest.${db}.tables or { }));
+        # Tables in `db` whose writers list includes conversation-router (read-write). Why: PR #475.
+        writeTablesFor = db: lib.attrNames (lib.filterAttrs
+          (_t: rule: builtins.elem "conversation-router" (rule.writers or [ ]))
           (manifest.${db}.tables or { }));
       in
       {
         user = "conversation_router";
         grants = [
-          { db = "agent_host"; tables = tablesFor "agent_host"; }
-        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; };
+          { db = "agent_host"; tables = tablesFor "agent_host"; writeTables = writeTablesFor "agent_host"; }
+        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; writeTables = writeTablesFor "webhooks"; };
       };
 
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define

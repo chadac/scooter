@@ -4,6 +4,7 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -65,6 +66,22 @@ func IsConversationListRoute(method, path string) bool {
 func IsAguiPost(method, path string) bool {
 	parts := splitPath(path)
 	return method == "POST" && len(parts) == 1 && parts[0] == "agui"
+}
+
+// MetadataPatch matches PATCH /conversations/<id>/{starred,title}, returning the field and id.
+// The router can serve these itself for an idle conversation; see metadata.go / PR #475.
+func MetadataPatch(method, path string) (field, id string, ok bool) {
+	if method != http.MethodPatch {
+		return "", "", false
+	}
+	parts := splitPath(path)
+	if len(parts) != 3 || parts[0] != "conversations" {
+		return "", "", false
+	}
+	if parts[2] != "starred" && parts[2] != "title" {
+		return "", "", false
+	}
+	return parts[2], parts[1], true
 }
 
 // IsNonScoped reports whether a path is NOT conversation-scoped (routable to any ready

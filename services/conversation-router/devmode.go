@@ -68,8 +68,8 @@ func agentHostURLFromEnv() (*url.URL, error) {
 // devCreator is the kube-less create path: it inserts the conversations row directly rather than
 // writing a Conversation CR (there is no apiserver). agent-host hydrates the conversation from that
 // row on the first prompt (hydrateByThread), so create-then-prompt works with no controller. It
-// holds its OWN writable pool — the read Store is pinned read-only, and a router NEVER writes in
-// production, so this writer is fenced behind ROUTER_DEV_MODE and lives nowhere near that path.
+// holds its OWN writable pool, fenced behind ROUTER_DEV_MODE — separate from the production
+// WriteStore path (store.go).
 type devCreator struct {
 	pool *pgxpool.Pool
 }

@@ -442,6 +442,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // User rename: sets the title AND locks it (userTitled) so the agent's <title> can
   // no longer overwrite it. A blank/whitespace title is rejected (would orphan the row).
   r.patch("/conversations/:id/title", async (ctx) => {
+    // Hydrate-if-absent so an idle-conversation title write here doesn't 404 (the single-host/dev
+    // path; in prod the router serves idle writes and only proxies live ones here). Why: PR #475.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
@@ -455,6 +458,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // Star / unstar. Body { starred: boolean }.
   r.patch("/conversations/:id/starred", async (ctx) => {
+    // Hydrate-if-absent so an idle-conversation star write here doesn't 404 (the single-host/dev
+    // path; in prod the router serves idle writes and only proxies live ones here). Why: PR #475.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };

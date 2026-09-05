@@ -68,10 +68,11 @@ owner = "agent-host"
 [agent_host.tables]
 # The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
 conversation_jobs = { writers = ["agent-host"], readers = [] }
-# Conversation metadata: the sidebar list + rehydration fields.
-# conversation-router READS it (SELECT-only) to serve GET /conversations from the durable store
-# instead of fanning out to the agent-host pods.
-conversations     = { writers = ["agent-host"], readers = ["conversation-router"] }
+# Conversation metadata: the sidebar list + rehydration fields. Two writers, one table (like
+# byoc.remote_agents): agent-host owns the row; conversation-router writes title/starred for IDLE
+# conversations and SELECTs the table for GET /conversations (a writer implies read, so not also a
+# reader — ownership.spec.ts). See services/conversation-router.
+conversations     = { writers = ["agent-host", "conversation-router"], readers = [] }
 # The conversation event log. Replaces events.jsonl + the NFS mirror. Deliberately NO readers:
 # these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
 # read them.
