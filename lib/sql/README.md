@@ -21,7 +21,7 @@ lib/sql/
 |----------|---------------|--------|
 | `webhooks` | webhooks (+ agent-host writes `user_identity`, `remote_agents`; reads `conversation_map`) | conversation_map, jira_tickets, resource_links, pending_messages, credential_scopes, user_identity, remote_agents |
 | `scheduler` | scheduler | scheduled_tasks, task_runs |
-| `broker` | broker | sandbox_size, permission_requests, module_registry |
+| `broker` | broker | sandbox_size, permission_requests |
 | `byoc` | byoc-controller | remote_agents *(with `session_id` — a distinct table from the webhooks-db copy)* |
 
 `schema.sql` is **declarative end-state DDL**: read it to answer "what columns does

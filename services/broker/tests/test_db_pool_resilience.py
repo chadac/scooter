@@ -23,7 +23,6 @@ _BROKER = Path(__file__).resolve().parents[1] / "broker"
 ENGINE_MODULES = [
     _BROKER / "aws" / "store.py",
     _BROKER / "sandbox" / "store.py",
-    _BROKER / "registry" / "store.py",
 ]
 
 

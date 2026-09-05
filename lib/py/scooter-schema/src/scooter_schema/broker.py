@@ -3,31 +3,11 @@
 
 from typing import Optional
 
-from sqlalchemy import Index, Integer, PrimaryKeyConstraint, String, Text
+from sqlalchemy import Index, PrimaryKeyConstraint, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
-
-
-class ModuleRegistry(Base):
-    __tablename__ = 'module_registry'
-    __table_args__ = (
-        PrimaryKeyConstraint('id', name='module_registry_pkey'),
-        Index('ix_module_registry_name', 'name', unique=True),
-        Index('ix_module_registry_owner', 'owner'),
-        Index('ix_module_registry_visibility', 'visibility')
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    owner: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    visibility: Mapped[str] = mapped_column(String, nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    files_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(String, nullable=False)
-    updated_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class PermissionRequests(Base):

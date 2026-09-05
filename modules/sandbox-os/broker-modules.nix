@@ -13,8 +13,8 @@
 # baseline sandbox-os config; a missing broker never breaks the build/boot). An empty
 # default set on the broker likewise yields an empty tarball -> no imports.
 #
-# Mirrors registry-modules.nix (a later PR adds the per-conversation registry path);
-# this module is the deployment-DEFAULTS half.
+# Alongside local-modules.nix (the agent's own /etc/scooter/modules), this module is
+# the deployment-DEFAULTS half of the sandbox's composed config.
 
 { lib, ... }:
 

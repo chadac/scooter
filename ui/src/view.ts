@@ -24,7 +24,6 @@ export type View = "chat" | "settings";
 export const SETTINGS_TABS = [
   { id: "tasks", label: "Scheduled Tasks" },
   { id: "claude", label: "Bring Your Own Claude" },
-  { id: "modules", label: "Modules" },
   { id: "admin", label: "Admin Area" },
 ] as const;
 

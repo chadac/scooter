@@ -47,20 +47,3 @@ CREATE TABLE "permission_requests" (
 CREATE INDEX "ix_permission_requests_conversation_id" ON "permission_requests" ("conversation_id");
 CREATE INDEX "ix_permission_requests_status" ON "permission_requests" ("status");
 CREATE INDEX "ix_permission_requests_target_account" ON "permission_requests" ("target_account");
-
--- Shared module registry (registry/store.py).
-CREATE TABLE "module_registry" (
-  "id"          serial NOT NULL,
-  "name"        character varying NOT NULL,
-  "owner"       character varying NOT NULL,
-  "description" text NOT NULL,
-  "visibility"  character varying NOT NULL,
-  "version"     integer NOT NULL,
-  "files_json"  text NOT NULL,
-  "created_at"  character varying NOT NULL,
-  "updated_at"  character varying NOT NULL,
-  PRIMARY KEY ("id")
-);
-CREATE UNIQUE INDEX "ix_module_registry_name" ON "module_registry" ("name");
-CREATE INDEX "ix_module_registry_owner" ON "module_registry" ("owner");
-CREATE INDEX "ix_module_registry_visibility" ON "module_registry" ("visibility");

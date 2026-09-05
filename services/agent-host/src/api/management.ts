@@ -36,7 +36,6 @@ import {
 
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
-import type { ModuleRegistry } from "../proxy/moduleRegistry.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
 import type { SchedulerClient } from "../agent/schedulerTools.js";
@@ -130,10 +129,6 @@ export interface ManagementDeps {
   /** In-pod web-service registry (list/start), powering the UI Services panel.
    *  Optional — absent in fake/local mode (no pods), where the routes report none. */
   webServices?: WebServiceRegistry;
-  /** In-pod module registry (search/attach registry modules via scooter-rebuild),
-   *  powering the Sandbox tab's module search/install + the settings module list.
-   *  Optional — absent in fake/local mode. */
-  moduleRegistry?: ModuleRegistry;
   /** The identity store (user_identity), for the email→Scooter-user reverse lookup
    *  that maps an invoking external (github/gitlab/slack) user to their internal
    *  user. Optional — absent = the lookup route reports no match. */
@@ -944,53 +939,6 @@ export function createManagementApi(deps: ManagementDeps): Router {
       return { status: 502, json: { error: `stop failed: ${(e as Error).message}` } };
     }
     return { status: 202, json: { ok: true } };
-  });
-
-  // --- Modules (Sandbox tab search/install + settings list) --------------------
-  // `configured` distinguishes "no module registry wired" (fake/local) from
-  // "configured but nothing found", so the UI shows the right empty state.
-  const noModules = { status: 501, json: { configured: false, error: "modules unavailable" } };
-
-  // Search the broker module catalog (caller's own + all public). Empty q = all.
-  // Also used by the settings "available modules" list. Includes which are attached.
-  r.get("/conversations/:id/module-registry", async (ctx) => {
-    if (!deps.moduleRegistry) return noModules;
-    const id = await resolveConvId(ctx.params.id);
-    if (!id) return { status: 404, json: { error: "unknown conversation" } };
-    const q = ctx.query.get("q") ?? "";
-    const [modules, attached] = await Promise.all([
-      deps.moduleRegistry.search(id, q),
-      deps.moduleRegistry.attached(id).catch(() => [] as string[]),
-    ]);
-    const attachedSet = new Set(attached);
-    return {
-      json: {
-        configured: true,
-        modules: modules.map((m) => ({ ...m, attached: attachedSet.has(m.name) })),
-      },
-    };
-  });
-
-  // The registry modules currently attached to this conversation (names).
-  r.get("/conversations/:id/modules", async (ctx) => {
-    if (!deps.moduleRegistry) return noModules;
-    const id = await resolveConvId(ctx.params.id);
-    if (!id) return { status: 404, json: { error: "unknown conversation" } };
-    return { json: { configured: true, attached: await deps.moduleRegistry.attached(id) } };
-  });
-
-  // Install (attach) a registry module by name-or-id + re-converge. Needs the pod
-  // running (the CLI runs in-pod).
-  r.post("/conversations/:id/modules/:ref/install", async (ctx) => {
-    if (!deps.moduleRegistry) return noModules;
-    const id = await resolveConvId(ctx.params.id);
-    if (!id) return { status: 404, json: { error: "unknown conversation" } };
-    try {
-      const message = await deps.moduleRegistry.install(id, ctx.params.ref);
-      return { status: 202, json: { ok: true, message } };
-    } catch (e) {
-      return { status: 502, json: { error: `install failed: ${(e as Error).message}` } };
-    }
   });
 
   // The broker calls this when an agent requests AWS access: raise an in-

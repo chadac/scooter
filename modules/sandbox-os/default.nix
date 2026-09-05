@@ -25,7 +25,6 @@
     ./runtime-converge.nix
     ./broker-modules.nix
     ./local-modules.nix
-    ./registry-modules.nix
     ./overlay-store.nix
     ./warm-store-seed.nix
     ./dbus-container.nix
