@@ -11,6 +11,7 @@ import httpx
 import hashlib
 import hmac
 import logging
+import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
@@ -63,6 +64,36 @@ def _is_own_comment(body: str) -> bool:
 
 def _resource_id(owner: str, repo: str, number: int) -> str:
     return f"{owner}/{repo}#{number}"
+
+
+def _link_variants(res_type: str, res_id: str) -> list[tuple[str, str]]:
+    """(resource_type, resource_id) pairs to try, widest-compatible first.
+
+    Links are WRITTEN by the agent through agent-host's /links as
+    ("pr"|"issue", <html_url>), but this handler asks for
+    ("pull_request"|"issue", "owner/repo#N"). Both halves differ, so an exact
+    match never hit and every linked-PR forward was dropped silently. The store
+    is the source of truth; derive its shape here rather than rewriting rows.
+    """
+    out = [(res_type, res_id)]
+    m = re.fullmatch(r"([^/]+)/([^#]+)#(\d+)", res_id)
+    if m:
+        owner, repo, number = m.groups()
+        kind, path = ("pr", "pull") if res_type == "pull_request" else ("issue", "issues")
+        out.append((kind, f"https://github.com/{owner}/{repo}/{path}/{number}"))
+    return out
+
+
+async def _resolve_conversation(res_type: str, res_id: str) -> str | None:
+    """First conversation matching any known link shape."""
+    for rtype, rid in _link_variants(res_type, res_id):
+        found = (
+            await db.lookup_conversation("github", rtype, rid)
+            or await db.get_conversation_for_resource("github", rtype, rid)
+        )
+        if found:
+            return found
+    return None
 
 
 def _response_instructions(owner: str, repo: str, number: int, is_pr: bool) -> str:
@@ -166,10 +197,7 @@ async def _handle_comment(payload: dict):
     res_type = "pull_request" if is_pr else "issue"
     res_id = _resource_id(owner, repo, issue_number)
 
-    existing = (
-        await db.lookup_conversation("github", res_type, res_id)
-        or await db.get_conversation_for_resource("github", res_type, res_id)
-    )
+    existing = await _resolve_conversation(res_type, res_id)
 
     if not has_mention and not existing:
         return
@@ -232,10 +260,7 @@ async def _forward_or_ignore(res_id: str, message: str) -> None:
     into interrupt:"thinking" (idle generation yields; an in-flight tool call
     finishes first).
     """
-    existing = (
-        await db.lookup_conversation("github", "pull_request", res_id)
-        or await db.get_conversation_for_resource("github", "pull_request", res_id)
-    )
+    existing = await _resolve_conversation("pull_request", res_id)
     if not existing or is_pending(existing):
         return
     await send_message(existing, message, priority=True, source="github")
