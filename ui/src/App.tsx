@@ -106,8 +106,11 @@ export function App() {
             <span className="text-[13.5px] font-semibold tracking-tight">scooter</span>
           </div>
           <div className="flex items-center gap-2">
-            {/* Live pod status, mirrored from the Sandbox tab. */}
-            <SandboxStatusPill />
+            {/* Live pod status, mirrored from the Sandbox tab. Desktop-only — on mobile
+                the header has no room, and the same status lives in the ⚑ panel drawer. */}
+            <span className="hidden md:flex">
+              <SandboxStatusPill />
+            </span>
             {/* Mobile-only: open the right panel (sandbox/approvals/queue) drawer.
                 Hidden at md+ where the panel is always in-flow. */}
             {view !== "settings" && (
@@ -141,8 +144,11 @@ export function App() {
             >
               ⚙
             </Button>
-            {/* Signed-in user (from the ingress identity); hidden when anonymous. */}
-            <UserBadge />
+            {/* Signed-in user (from the ingress identity); hidden when anonymous, and
+                desktop-only — the header can't fit it on a phone. */}
+            <span className="hidden md:flex">
+              <UserBadge />
+            </span>
           </div>
         </header>
         {view === "settings" ? (
