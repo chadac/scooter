@@ -159,6 +159,23 @@ class BrokerSettings(BaseSettings):
     registry_enabled: bool = False
     registry_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-registry.db"
 
+    # --- Static shares (broker/shares/) — persistent static webpages -----------
+    # Agents publish static bundles; the broker mints a UUID and serves them at
+    # /s/<uuid>/. Shares the broker DB (static_shares + static_share_versions).
+    # Off by default (SQLite dev DSN). `shares_public_base_url` is the external
+    # origin used to build the returned share URL (e.g. https://scooter.example.com);
+    # empty -> a relative /s/<uuid>/ URL.
+    shares_enabled: bool = False
+    shares_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-shares.db"
+    shares_public_base_url: str = ""
+    # Who may frame a served share in an <iframe> (CSP frame-ancestors). Shares are
+    # meant to be embedded ONLY inside the Scooter conversation UI, never arbitrary
+    # external sites, so this is a strict allowlist. Default `'self'` = same origin
+    # as the share; deployments where the UI is a different origin set this to the
+    # UI origin(s), space-separated (e.g. "https://scooter.example.com"). A served
+    # share also sends this so external embedding is blocked even if the value widens.
+    shares_frame_ancestors: str = "'self'"
+
     port: int = 8080
 
 

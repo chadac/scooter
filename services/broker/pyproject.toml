@@ -18,6 +18,7 @@ dependencies = [
   "asyncpg",      # Postgres driver (shared agent-shared-db)
   "aiosqlite",    # SQLite driver (local/dev default)
   "openfga-sdk",  # OpenFGA authorization (the broker's enforcement point)
+  "scooter-schema", # generated SQLAlchemy models for the broker DB (lib/py/scooter-schema)
 ]
 
 [project.scripts]

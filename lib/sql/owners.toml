@@ -48,9 +48,11 @@ task_runs       = { writers = ["scheduler"], readers = [] }
 owner = "broker"
 
 [broker.tables]
-sandbox_size        = { writers = ["broker"], readers = [] }
-permission_requests = { writers = ["broker"], readers = [] }
-module_registry     = { writers = ["broker"], readers = [] }
+sandbox_size          = { writers = ["broker"], readers = [] }
+permission_requests   = { writers = ["broker"], readers = [] }
+module_registry       = { writers = ["broker"], readers = [] }
+static_shares         = { writers = ["broker"], readers = [] }
+static_share_versions = { writers = ["broker"], readers = [] }
 
 [byoc]
 owner = "byoc-controller"

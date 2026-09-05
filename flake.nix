@@ -220,7 +220,7 @@
 
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules. See services/broker/ + docs/BROKER.md.
-          broker = pkgs.callPackage ./services/broker { };
+          broker = pkgs.callPackage ./services/broker { inherit scooterSchema; };
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.

@@ -73,3 +73,37 @@ class SandboxSize(Base):
     conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
     spec_json: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class StaticShareVersions(Base):
+    __tablename__ = 'static_share_versions'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='static_share_versions_pkey'),
+        Index('ix_static_share_versions_share_uuid', 'share_uuid')
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    share_uuid: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_point: Mapped[str] = mapped_column(String, nullable=False)
+    files_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class StaticShares(Base):
+    __tablename__ = 'static_shares'
+    __table_args__ = (
+        PrimaryKeyConstraint('uuid', name='static_shares_pkey'),
+        Index('ix_static_shares_conversation_id', 'conversation_id'),
+        Index('ix_static_shares_owner', 'owner'),
+        Index('ix_static_shares_visibility', 'visibility')
+    )
+
+    uuid: Mapped[str] = mapped_column(String, primary_key=True)
+    owner: Mapped[str] = mapped_column(String, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility: Mapped[str] = mapped_column(String, nullable=False)
+    latest_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
