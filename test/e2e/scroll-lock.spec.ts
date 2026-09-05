@@ -105,7 +105,12 @@ test.describe("conversation scroll-lock", () => {
     await expect(chat.scrollToBottomButton()).toBeDisabled({ timeout: 10_000 });
   });
 
-  test("scrolling up releases the lock; the arrow re-engages it", async ({ chat, page }) => {
+  test("scrolling up releases the lock; the arrow re-engages it", {
+    annotation: {
+      type: "issue",
+      description: "Previously flaky in nightly CI - scroll events not settling fast enough. Fixed by increasing stability window to 400ms. Runs: 33951450492, 33846941314",
+    },
+  }, async ({ chat, page }) => {
     await chat.open();
     const scrollable = await fillUntilScrollable(chat);
     expect(scrollable, "thread never grew tall enough to scroll").toBeGreaterThan(0);
