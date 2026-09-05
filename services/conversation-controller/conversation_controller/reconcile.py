@@ -72,6 +72,28 @@ class Assign:
 
 
 @dataclass(frozen=True)
+class RepairHostIP:
+    """The owner (hostPod) is unchanged and still ready, but status.hostIP — the address
+    the router actually dials — is stale or missing. Re-publish JUST hostIP; DON'T touch
+    hostPod, phase, or generation (the owner hasn't moved, so bumping the fence would
+    needlessly fence the live run).
+
+    Why hostIP drifts while hostPod stays ready:
+      - It's written from the pod's status.podIP at Assign time, which is None if the podIP
+        wasn't observed yet — so a conversation assigned a beat before its pod's IP appeared
+        gets hostIP=None PERMANENTLY, because the "host still ready" branch used to NoOp and
+        never revisit it.
+      - A pod replaced under a stable name (StatefulSet-style) keeps the name but changes IP.
+    The router keys on hostIP: empty/stale → it falls back to the ClusterIP Service, which
+    load-balances every request to a RANDOM pod. A non-owner then serves the integrity
+    replay and ENDS the stream (streamOwnership="elsewhere"), the client reconnects, and
+    lands on yet another random pod — so with N replicas two tabs on the same conversation
+    each have ~1/N odds of hitting the owner: one streams live, the other goes silent."""
+    host_pod: str              # unchanged owner (for logging/co-location bookkeeping)
+    host_ip: str               # the owner pod's CURRENT status.podIP
+
+
+@dataclass(frozen=True)
 class LeavePending:
     """No ready pod under cap can take it — record Pending (no host)."""
     reason: str
@@ -122,7 +144,18 @@ class SuspendSandbox:
     reason: str
 
 
-Action = NoOp | Assign | LeavePending | Detach | MarkSuspended | SuspendSandbox
+Action = NoOp | Assign | RepairHostIP | LeavePending | Detach | MarkSuspended | SuspendSandbox
+
+
+def _host_ip_drift(host_pod: str, host_ip: str | None, ip_of: dict[str, str | None]) -> str | None:
+    """The owner pod's CURRENT IP when it differs from the recorded hostIP and is known,
+    else None (nothing to repair). Only acts on a KNOWN current IP: if the pod is ready but
+    its podIP isn't observed yet (ip_of[host_pod] is None) we leave hostIP as-is and let a
+    later tick converge it — we never blank a hostIP we can't replace."""
+    current = ip_of.get(host_pod)
+    if current is not None and current != host_ip:
+        return current
+    return None
 
 
 def pick_host(pods: list[Pod], load: dict[str, int], cap: int) -> str | None:
@@ -192,8 +225,13 @@ def reconcile(
     # A subagent is PINNED to its parent's pod (shared sandbox) — cap doesn't apply.
     if conv.parent_id is not None:
         parent_host = hosts.get(conv.parent_id)
-        # Already co-located on the parent's ready pod → done.
+        # Already co-located on the parent's ready pod → done (but converge a stale/missing
+        # hostIP first: a subagent's hostIP tracks the shared parent pod's IP and drifts the
+        # same way a top-level owner's does — see RepairHostIP).
         if conv.host_pod is not None and conv.host_pod == parent_host and parent_host in ready_names:
+            drift = _host_ip_drift(conv.host_pod, conv.host_ip, ip_of)
+            if drift is not None:
+                return RepairHostIP(host_pod=conv.host_pod, host_ip=drift)
             return NoOp(reason=f"co-located with parent on {parent_host}")
         # Parent not yet assigned to a ready pod → wait (don't scatter the child).
         if parent_host is None or parent_host not in ready_names:
@@ -201,8 +239,14 @@ def reconcile(
         # Pin (or re-pin) to the parent's pod, bumping the fence generation.
         return Assign(host_pod=parent_host, generation=conv.generation + 1, host_ip=ip_of.get(parent_host))
 
-    # Already assigned to a live, ready pod → nothing to do.
+    # Already assigned to a live, ready pod. The OWNER is correct — don't reassign (a fence
+    # bump would fence the live run) — but CONVERGE the routing address: hostIP can be stale
+    # or missing while hostPod stays ready, and a NoOp here would leave the router dialing a
+    # dead/empty address forever (the two-tabs-one-goes-silent bug — see RepairHostIP).
     if conv.host_pod is not None and conv.host_pod in ready_names:
+        drift = _host_ip_drift(conv.host_pod, conv.host_ip, ip_of)
+        if drift is not None:
+            return RepairHostIP(host_pod=conv.host_pod, host_ip=drift)
         return NoOp(reason=f"host {conv.host_pod} still ready")
 
     # PREFER THE CREATOR. The run physically lives on the pod that created the
