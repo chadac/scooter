@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { memo, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 
 import {
@@ -19,6 +19,7 @@ import {
   type LabelMode,
 } from "./sessions.js";
 import { LinkedResources } from "./LinkedResources.js";
+import { mobileNav, useDrawer } from "./mobileNav.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
 import { agentHostConfig } from "./config.js";
 import { renameConversation, setConversationStarred, deleteConversation } from "./client.js";
@@ -322,13 +323,31 @@ export const Sidebar = memo(function Sidebar() {
   }
   const [filtersOpen, setFiltersOpen] = useState(false);
 
+  // On mobile the sidebar is an overlay drawer; picking a conversation (or starting a
+  // new one) changes currentId, so close the drawer then to reveal the thread. No-op
+  // on desktop (the drawer is always "closed"/in-flow there).
+  const drawer = useDrawer();
+  useEffect(() => {
+    mobileNav.close();
+  }, [currentId]);
+
   // How many advanced filters are "active" (non-default) — a badge on the toggle so
   // the user knows a filter is narrowing the list even when the panel is collapsed.
   const activeFilters =
     (scope === "all" ? 1 : 0) + providerFilter.length + (labelMode !== "title" ? 1 : 0);
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r border-sidebar-border bg-sidebar">
+    <aside
+      data-testid="sidebar"
+      className={cn(
+        "flex flex-col border-r border-sidebar-border bg-sidebar",
+        // Mobile: off-canvas left drawer over the thread, below the h-11 header.
+        "fixed bottom-0 left-0 top-11 z-40 w-[86vw] max-w-72 -translate-x-full shadow-xl transition-transform duration-200 ease-out",
+        // Desktop (md+): the original static, in-flow column — unchanged.
+        "md:static md:h-full md:w-64 md:max-w-none md:translate-x-0 md:shadow-none md:transition-none",
+        drawer === "sessions" && "translate-x-0",
+      )}
+    >
       <div className="p-3">
         <Button
           variant="default"
