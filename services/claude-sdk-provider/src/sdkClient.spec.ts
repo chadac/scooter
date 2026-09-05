@@ -212,6 +212,7 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
   // tool_result (the completion, which the adapter ignores). Records interrupt().
   function toolLoopQuery() {
     let interrupted = false;
+    let reachedEnd = false;
     const queryImpl = () => {
       async function* gen() {
         yield { type: "assistant", session_id: "s1", message: { content: [] } } as never;
@@ -225,10 +226,11 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
         ] } } as never;
         // If the turn ISN'T interrupted at the CALL, it would keep looping.
         yield { type: "result", subtype: "success", session_id: "s1" } as never;
+        reachedEnd = true;
       }
       return Object.assign(gen(), { interrupt: async () => { interrupted = true; } });
     };
-    return { queryImpl, wasInterrupted: () => interrupted };
+    return { queryImpl, wasInterrupted: () => interrupted, endedEarly: () => !reachedEnd };
   }
   const mk = (shouldYield?: () => boolean, queryImpl?: any) =>
     createSdkAcpClient({ oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi", queryImpl, shouldYield });
@@ -238,10 +240,9 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
     const client = await mk(() => true, tl.queryImpl); // a priority item IS waiting
     await client.newSession({ threadId: "c1" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
-    // After the tool_call and shouldYield() was true, the turn ended cleanly by
-    // breaking from the stream (NOT calling interrupt) — so the queued priority
-    // item can now inject WITHOUT sending spurious "user stopped" signals (#453).
-    expect(tl.wasInterrupted()).toBe(false); // clean break, not interrupt
+    // Breaks from stream without calling interrupt (no spurious "user stopped" signals; PR #453).
+    expect(tl.wasInterrupted()).toBe(false);
+    expect(tl.endedEarly()).toBe(true);
   });
 
   it("does NOT interrupt when shouldYield() is false (a normal tool loop runs to completion)", async () => {
@@ -250,6 +251,7 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
     await client.newSession({ threadId: "c1" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
     expect(tl.wasInterrupted()).toBe(false);
+    expect(tl.endedEarly()).toBe(false); // ran to completion
   });
 
   it("does NOT interrupt when no shouldYield is wired (default behavior unchanged)", async () => {
@@ -258,6 +260,7 @@ describe("SDK client back-pressure (stream-loop interrupt at tool-call boundarie
     await client.newSession({ threadId: "c1" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "poll" }] } as never);
     expect(tl.wasInterrupted()).toBe(false);
+    expect(tl.endedEarly()).toBe(false); // ran to completion
   });
 });
 
