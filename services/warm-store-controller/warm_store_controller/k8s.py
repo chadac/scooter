@@ -463,20 +463,27 @@ class ControllerK8s:
         )
         return pvc.metadata.name
 
-    def adopt_bound_pvs(self, pvcs: list[str]) -> None:
-        """Label the PVs behind pool PVCs, so iter_pool_pvs can see them.
+    def adopt_bound_pvs(self) -> None:
+        """Label the PVs behind bound pool PVCs, so iter_pool_pvs can see them.
 
-        A dynamically-provisioned PV carries none of its PVC's labels, and does not exist
-        at all until WaitForFirstConsumer binds it — so this runs on a later pass, once the
-        volume is real. Idempotent; 404s are ignored (the PVC went away first)."""
+        A dynamically-provisioned PV carries none of its PVC's labels, and does not bind
+        until WaitForFirstConsumer — which only fires once a pod mounts the claim, i.e.
+        AFTER the sandbox drops out of list_pending_uppers. So adoption CANNOT key off the
+        pending set (the PV is never bound while its sandbox is still pending): it sweeps
+        every warm-store PVC each pass and labels any bound PV still missing the label.
+        Without this, grow_pool volumes survive their PVC (Retain) but stay invisible to
+        the pool forever, so placement + return-on-suspend never see them. PR #403.
+        Idempotent; 404s are ignored (a PVC went away first)."""
         core, _, _, _ = _apis()
-        for pvc_name in pvcs:
+        for pvc in core.list_namespaced_persistent_volume_claim(
+            self.namespace, label_selector=LBL_WARM_STORE
+        ).items:
+            pvc_name = pvc.metadata.name
             try:
-                pvc = core.read_namespaced_persistent_volume_claim(pvc_name, self.namespace)
                 pv_name = pvc.spec.volume_name
                 tag = (pvc.metadata.labels or {}).get(LBL_WARM_STORE)
                 if not pv_name or not tag:
-                    continue
+                    continue  # unbound yet (WaitForFirstConsumer) — no PV to label
                 pv = core.read_persistent_volume(pv_name)
                 if (pv.metadata.labels or {}).get(LBL_WARM_STORE) == tag:
                     continue  # already adopted

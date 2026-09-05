@@ -63,10 +63,11 @@ def reconcile_once(
             affinity[_sandbox_of_pvc(pv.claim_ref)] = pv.name
 
     # Label the PVs behind pool PVCs we created. They do not inherit their PVC's labels and
-    # do not exist until WaitForFirstConsumer binds them, so this can only happen now — and
-    # until it does, iter_pool_pvs cannot see them.
+    # bind only once a pod mounts them (WaitForFirstConsumer) — which is AFTER the sandbox
+    # leaves the pending set, so adoption sweeps ALL warm-store PVCs, not just `pending`.
+    # Until a PV is labelled iter_pool_pvs cannot see it. Why the full sweep: PR #403.
     try:
-        k8s.adopt_bound_pvs([w.pvc_name for w in pending])
+        k8s.adopt_bound_pvs()
     except ApiException:
         logger.exception("adopting bound PVs failed; they stay invisible until the next pass")
 
