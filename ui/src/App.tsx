@@ -14,6 +14,7 @@ import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { SettingsPage } from "./SettingsPage.js";
 import { viewStore, useView } from "./view.js";
+import { mobileNav, useDrawer } from "./mobileNav.js";
 import { StartingPodLanding } from "./DeadPodLanding.js";
 import { useSandboxStatus, LABEL as SANDBOX_LABEL, DOT as SANDBOX_DOT } from "./SandboxPanel.js";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -62,20 +63,72 @@ function SandboxStatusPill() {
   );
 }
 
+/** The dim/dismiss layer shown behind an open mobile drawer. Sits below the header
+ *  (top-11) so the toggle buttons stay reachable, and below the drawers (z-30 < z-40).
+ *  Desktop hides it via `desk:hidden` — the panels are in-flow there, never overlays. */
+function MobileDrawerBackdrop() {
+  const drawer = useDrawer();
+  if (drawer === "none") return null;
+  return (
+    <div
+      data-testid="mobile-drawer-backdrop"
+      aria-hidden
+      onClick={() => mobileNav.close()}
+      className="fixed inset-x-0 bottom-0 top-11 z-30 bg-black/40 desk:hidden"
+    />
+  );
+}
+
 export function App() {
   const view = useView();
+  const drawer = useDrawer(); // for the header toggles' pressed state
   return (
     <RuntimeProvider>
       <div className="flex h-dvh flex-col">
         <header className="flex h-11 items-center justify-between gap-3 border-b bg-header px-3 pl-4 text-sm">
           {/* Compact wordmark — mark + name; the tagline was dropped in the paper reskin. */}
           <div className="flex items-center gap-2">
+            {/* Mobile-only: open the sessions drawer. Hidden at desk+ (≥1200px) where the sidebar
+                is always in-flow. Only in chat (settings has no sidebar). */}
+            {view !== "settings" && (
+              <Button
+                data-testid="mobile-nav-open"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Toggle conversations"
+                title="Conversations"
+                aria-pressed={drawer === "sessions"}
+                onClick={() => mobileNav.toggle("sessions")}
+                className="-ml-1 text-muted-foreground desk:hidden"
+              >
+                ☰
+              </Button>
+            )}
             <span className="text-[15px] leading-none" aria-hidden>🛴</span>
             <span className="text-[13.5px] font-semibold tracking-tight">scooter</span>
           </div>
           <div className="flex items-center gap-2">
-            {/* Live pod status, mirrored from the Sandbox tab. */}
-            <SandboxStatusPill />
+            {/* Live pod status, mirrored from the Sandbox tab. Desktop-only — on mobile
+                the header has no room, and the same status lives in the ⚑ panel drawer. */}
+            <span className="hidden desk:flex">
+              <SandboxStatusPill />
+            </span>
+            {/* Mobile-only: open the right panel (sandbox/approvals/queue) drawer.
+                Hidden at desk+ (≥1200px) where the panel is always in-flow. */}
+            {view !== "settings" && (
+              <Button
+                data-testid="mobile-panel-open"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Toggle sandbox & approvals panel"
+                title="Sandbox & approvals"
+                aria-pressed={drawer === "panel"}
+                onClick={() => mobileNav.toggle("panel")}
+                className="text-muted-foreground desk:hidden"
+              >
+                ⚑
+              </Button>
+            )}
             {/* Light / dark / system theme toggle. */}
             <ThemePicker />
             {/* Settings (scheduled tasks, …). Toggles the main pane. */}
@@ -86,13 +139,19 @@ export function App() {
               aria-label="Settings"
               title="Settings"
               aria-pressed={view === "settings"}
-              onClick={() => viewStore.set(view === "settings" ? "chat" : "settings")}
+              onClick={() => {
+                mobileNav.close(); // settings has no drawers; don't leave one open behind it
+                viewStore.set(view === "settings" ? "chat" : "settings");
+              }}
               className={cn("text-muted-foreground", view === "settings" && "bg-accent text-foreground")}
             >
               ⚙
             </Button>
-            {/* Signed-in user (from the ingress identity); hidden when anonymous. */}
-            <UserBadge />
+            {/* Signed-in user (from the ingress identity); hidden when anonymous, and
+                desktop-only — the header can't fit it on a phone. */}
+            <span className="hidden desk:flex">
+              <UserBadge />
+            </span>
           </div>
         </header>
         {view === "settings" ? (
@@ -100,8 +159,10 @@ export function App() {
             <SettingsPage />
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1">
+          <div className="relative flex min-h-0 flex-1">
             <Sidebar />
+            {/* Dim + dismiss layer behind an open mobile drawer (md-hidden). */}
+            <MobileDrawerBackdrop />
             <main className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1">
                 {/* Provider "post" tool calls (slack/github/gitlab/jira) render as

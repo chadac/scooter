@@ -37,7 +37,7 @@ const MarkdownTextImpl = () => {
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
       preprocess={preprocessShareEmbeds}
-      className="aui-md"
+      className="aui-md text-[15px] desk:text-base"
       components={defaultComponents}
       componentsByLanguage={shareEmbedComponentsByLanguage}
       defer
