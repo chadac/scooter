@@ -17,6 +17,7 @@ from .reconcile import (
     ConversationState,
     Assign,
     NoOp,
+    RepairHostIP,
     LeavePending,
     Detach,
     MarkSuspended,
@@ -137,6 +138,25 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
         action = reconcile(c, pods, load, cap, hosts)
         if isinstance(action, NoOp):
             results.append((c.name, "noop"))
+            continue
+        if isinstance(action, RepairHostIP):
+            # The owner is unchanged and ready, but status.hostIP drifted (written None before
+            # the pod's IP was observed, or the pod was replaced under a stable name). Patch
+            # ONLY hostIP so the router stops falling back to the ClusterIP Service (which
+            # scatters requests across pods → one tab streams, another goes silent). No fence
+            # bump / hostPod change → the live run is undisturbed. Idempotent: once hostIP
+            # matches, reconcile returns NoOp, so no churn.
+            k8s.patch_status(c.name, {"hostIP": action.host_ip})
+            logger.info(
+                "hostIP converged",
+                extra={
+                    **_C,
+                    "conversation_id": c.name,
+                    "host_pod": action.host_pod,
+                    "host_ip": action.host_ip,
+                },
+            )
+            results.append((c.name, "repair-hostip"))
             continue
         if isinstance(action, SuspendSandbox):
             zombie_flagged.add(c.name)
