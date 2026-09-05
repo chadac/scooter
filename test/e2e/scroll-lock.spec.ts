@@ -154,16 +154,18 @@ test.describe("conversation scroll-lock", () => {
     // samples with small delays between them. This is more robust than a fixed timeout —
     // it adapts to varying scroll-event processing speeds while still detecting if the
     // button flips back to disabled. The nightly ×5 revealed that 300ms wasn't enough
-    // (iteration #2 at run 33846941314 failed with the button still disabled after 300ms).
+    // (iteration #2 at run 33846941314 failed with the button still disabled after 300ms),
+    // and even 150ms (3 samples × 50ms) still failed at run 33951450492/repeat #3.
+    // Increased to 5 samples over 400ms to handle slow scroll event processing in CI.
     await expect
       .poll(
         async () => {
-          // Sample the button state 3 times over 150ms total (50ms between samples).
-          // If it stays enabled across all 3 checks, we're confident the scroll events
+          // Sample the button state 5 times over 400ms total (100ms between samples).
+          // If it stays enabled across all 5 checks, we're confident the scroll events
           // have settled and useStickToBottom won't yank the viewport back down.
-          for (let i = 0; i < 3; i++) {
+          for (let i = 0; i < 5; i++) {
             if (!(await chat.scrollToBottomButton().isEnabled())) return false;
-            if (i < 2) await page.waitForTimeout(50);
+            if (i < 4) await page.waitForTimeout(100);
           }
           return true;
         },
