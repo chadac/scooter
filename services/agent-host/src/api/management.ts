@@ -442,6 +442,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // User rename: sets the title AND locks it (userTitled) so the agent's <title> can
   // no longer overwrite it. A blank/whitespace title is rejected (would orphan the row).
   r.patch("/conversations/:id/title", async (ctx) => {
+    // Hydrate-if-absent so a title write routed to a pod that doesn't hold the conversation
+    // in memory (an idle/suspended conversation has no owner pod, so the router falls back to
+    // an arbitrary ready pod) resolves instead of 404ing. Same multi-replica 404 class the
+    // GET/DELETE routes above already handle. Why: PR #475.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
@@ -455,6 +460,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // Star / unstar. Body { starred: boolean }.
   r.patch("/conversations/:id/starred", async (ctx) => {
+    // Hydrate-if-absent: starring an IDLE conversation (no owner pod) lands on an arbitrary
+    // ready pod via the router fallback, which doesn't hold it in memory → mutableFor 404s.
+    // Star is pure metadata (persisted to the shared store), so a read-only hydrate is enough.
+    // Same multi-replica 404 class as GET/DELETE. Why: PR #475.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
