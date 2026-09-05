@@ -46,6 +46,16 @@ let
   ddWired = builtins.any (e: e.name == "DATADOG_API_KEY") brokerEnv;
   ddProblems = if ddWired then [ ] else [ "broker.env.DATADOG_API_KEY (datadog provider not wired)" ];
 
+  # Static shares (shares.enable = true in the example): the broker must carry
+  # SHARES_ENABLED and a derived public base URL — otherwise the /shares +
+  # /s/<uuid>/ routes never mount (or return relative URLs) and publishing 404s.
+  sharesEnvVal = name: let m = builtins.filter (e: e.name == name) brokerEnv; in if m == [ ] then "" else (builtins.head m).value;
+  sharesProblems =
+    (if builtins.any (e: e.name == "SHARES_ENABLED") brokerEnv then [ ]
+     else [ "broker.env.SHARES_ENABLED (shares.enable = true not wired)" ])
+    ++ (if builtins.match "https://.+" (sharesEnvVal "SHARES_PUBLIC_BASE_URL") != null then [ ]
+        else [ "broker.env.SHARES_PUBLIC_BASE_URL (should derive from ingress.host)" ]);
+
   # deployTools.configFiles (enabled in the example) must (a) render the
   # deploy-config-files ConfigMap with the file, and (b) tell the agent-host to
   # mount it via SCOOTER_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files.
@@ -236,7 +246,7 @@ let
     (if hasGrafanaSkill true then [ ] else [ "scooter-grafana.md missing when broker.grafana.enable = true" ])
     ++ (if hasGrafanaSkill false then [ "scooter-grafana.md SHIPPED when broker.grafana.enable = false (the agent will chase a 404)" ] else [ ]);
 
-  allProblems = skillProblems ++ problems ++ ddProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  allProblems = skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability\n"

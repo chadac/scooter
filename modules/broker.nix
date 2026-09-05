@@ -13,6 +13,19 @@
 let
   cfg = config.agentSandbox;
   bcfg = cfg.broker;
+
+  # Static shares external origin + CSP allowlist. Both fall back to the public
+  # ingress host so a deployment only has to set `shares.enable`; leaving them
+  # empty (no explicit value AND no ingress host) makes the broker return
+  # relative /s/<uuid>/ URLs and a `'self'` frame-ancestors default.
+  sharesBaseUrl =
+    if bcfg.shares.publicBaseUrl != "" then bcfg.shares.publicBaseUrl
+    else if cfg.ingress.host != "" then "https://${cfg.ingress.host}"
+    else "";
+  sharesFrameAncestors =
+    if bcfg.shares.frameAncestors != "" then bcfg.shares.frameAncestors
+    else if cfg.ingress.host != "" then "https://${cfg.ingress.host}"
+    else "";
 in
 {
   options.agentSandbox.broker = with lib; {
@@ -179,6 +192,43 @@ in
           };
         };
         description = "Secret holding a Grafana service-account token. Injected as GRAFANA_TOKEN. The secret must exist in the broker namespace.";
+      };
+    };
+
+    # --- Static shares (broker/shares/) — persistent static webpages --------
+    # The broker's shares feature lets agents publish static bundles, served at
+    # /s/<uuid>/ and embeddable in the conversation UI. Off by default; when on,
+    # the /shares + /s/<uuid>/ routes mount and the store persists to the shared
+    # Postgres `broker` DB via the AWS_DB_* components already emitted below —
+    # there is deliberately NO SHARES_DB_DSN (setting it would pin the store to
+    # the SQLite dev path and silently lose shares on restart). Without this
+    # option the shares code ships in the image but the routes never mount.
+    shares = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable static-share publishing (/shares + /s/<uuid>/). Persists to the shared Postgres `broker` DB.";
+      };
+      publicBaseUrl = mkOption {
+        type = types.str;
+        default = "";
+        example = "https://scooter.example.com";
+        description = ''
+          External origin used to build the returned share URL
+          (SHARES_PUBLIC_BASE_URL). Empty -> defaults to https://<ingress.host>
+          when that is set, else a relative /s/<uuid>/ URL.
+        '';
+      };
+      frameAncestors = mkOption {
+        type = types.str;
+        default = "";
+        example = "https://scooter.example.com";
+        description = ''
+          CSP frame-ancestors allowlist for embedding a served share in an
+          <iframe> (SHARES_FRAME_ANCESTORS) — the UI origin(s), space-separated.
+          Empty -> defaults to https://<ingress.host> when set, else the broker's
+          own `'self'` default (same-origin only).
+        '';
       };
     };
 
@@ -462,7 +512,36 @@ in
                       key = bcfg.grafana.tokenSecret.key;
                     };
                   }
-                ] ++ lib.optionals bcfg.aws.enable ([
+                ] ++ lib.optionals bcfg.shares.enable ([
+                  # Static shares -> the broker mounts /shares + /s/<uuid>/ and
+                  # persists bundles in the shared Postgres `broker` DB. The store
+                  # reuses the AWS_DB_* components emitted below (StoreConfig builds
+                  # a Postgres DSN whenever a db password is set), so SHARES_DB_DSN
+                  # is deliberately left unset — setting it would pin the store to
+                  # the SQLite dev path and silently lose shares on restart.
+                  { name = "SHARES_ENABLED"; value = "true"; }
+                ] ++ lib.optional (sharesBaseUrl != "")
+                  { name = "SHARES_PUBLIC_BASE_URL"; value = sharesBaseUrl; }
+                ++ lib.optional (sharesFrameAncestors != "")
+                  { name = "SHARES_FRAME_ANCESTORS"; value = sharesFrameAncestors; }
+                ++ lib.optionals (!bcfg.aws.enable && !cfg.sandboxViaBroker) (
+                  # The shares store reads the shared Postgres `broker` DB via the
+                  # AWS_DB_* components (StoreConfig builds the Postgres DSN when a
+                  # db password is set). Those are otherwise emitted only when the
+                  # AWS broker or the sandbox control-plane is on; when shares is the
+                  # ONLY consumer, emit them here so the store resolves to Postgres
+                  # instead of the SQLite dev default (which would silently lose
+                  # shares on restart). The guard is mutually exclusive with the
+                  # other two AWS_DB_* emissions, so no env is declared twice.
+                  [
+                    { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
+                    { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
+                    { name = "AWS_DB_NAME"; value = "broker"; }
+                    { name = "AWS_DB_USER"; value = "broker"; }
+                    { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
+                  ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                )
+                ) ++ lib.optionals bcfg.aws.enable ([
                   { name = "AWS_ENABLED"; value = "true"; }
                   { name = "AWS_REGION"; value = bcfg.aws.region; }
                   { name = "AWS_STS_EXTERNAL_ID"; value = bcfg.aws.externalId; }
