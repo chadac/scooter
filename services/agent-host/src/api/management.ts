@@ -442,11 +442,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // User rename: sets the title AND locks it (userTitled) so the agent's <title> can
   // no longer overwrite it. A blank/whitespace title is rejected (would orphan the row).
   r.patch("/conversations/:id/title", async (ctx) => {
-    // Hydrate-if-absent so a title write for a conversation this pod doesn't hold in memory
-    // resolves instead of 404ing. In production the conversation-router serves idle writes itself
-    // and only proxies here when an owner pod holds it — but the single-host/dev stack has no CR
-    // watch to tell idle from live, so a PATCH for an idle conversation still lands here. Same
-    // multi-replica 404 class the GET/DELETE routes above handle. Why: PR #475.
+    // Hydrate-if-absent so an idle-conversation title write here doesn't 404 (the single-host/dev
+    // path; in prod the router serves idle writes and only proxies live ones here). Why: PR #475.
     if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
@@ -461,11 +458,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // Star / unstar. Body { starred: boolean }.
   r.patch("/conversations/:id/starred", async (ctx) => {
-    // Hydrate-if-absent so a star write for a conversation this pod doesn't hold in memory resolves
-    // instead of 404ing. In production the conversation-router persists an idle star itself (it can
-    // tell idle from live via the CR watch) and only proxies here for a conversation an owner pod
-    // holds; the single-host/dev stack has no such watch, so an idle star still lands here. Star is
-    // pure metadata, so a read-only hydrate is enough. Same 404 class as GET/DELETE. Why: PR #475.
+    // Hydrate-if-absent so an idle-conversation star write here doesn't 404 (the single-host/dev
+    // path; in prod the router serves idle writes and only proxies live ones here). Why: PR #475.
     if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };

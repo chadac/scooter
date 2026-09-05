@@ -1,13 +1,5 @@
-// PATCH /conversations/:id/{starred,title} for an IDLE conversation, served HERE from the store
-// rather than proxied. An idle/suspended conversation has no owner pod, so proxying this PATCH
-// lands on an arbitrary ready agent-host pod that doesn't hold the conversation in memory — which
-// 404s (agent-host's mutableFor only checks its in-memory session map). Since title/starred are
-// pure metadata on the durable row, the router writes them directly.
-//
-// This is reached ONLY for an idle conversation (newRouter checks the ownership cache first): a
-// LIVE conversation is proxied to its owner pod so THAT pod stays the single writer of its
-// in-memory copy — metaStore.saveMeta re-upserts the whole row on activity and would otherwise
-// clobber a value written from here.
+// Router-served star/title writes for an IDLE conversation (newRouter gates on no owner pod).
+// Why here, and why idle-only: PR #475.
 package main
 
 import (
@@ -19,28 +11,23 @@ import (
 	"time"
 )
 
-// metaReader reads one conversation's durable row for the existence + ownership check. *Store
-// satisfies it; a fake stands in for the handler test.
+// metaReader / metaWriter are the narrow store deps (satisfied by *Store / *WriteStore), so the
+// handler is testable with fakes.
 type metaReader interface {
 	ConversationByID(ctx context.Context, id string) (*ConversationRow, error)
 }
 
-// metaWriter applies the user-metadata write and returns the updated row. *WriteStore satisfies it.
 type metaWriter interface {
 	SetStarred(ctx context.Context, id string, starred bool) (*ConversationRow, error)
 	SetUserTitle(ctx context.Context, id, title string) (*ConversationRow, error)
 }
 
-// serveConversationMetadataPatch validates ownership (mirroring agent-host's mutableFor), applies
-// the write, and returns the updated conversation in the same wire shape the list uses (makeListRow
-// == agent-host's view()), so the UI client parses it identically to the proxied response.
+// serveConversationMetadataPatch mirrors agent-host's mutableFor auth + view() response. Why: PR #475.
 func serveConversationMetadataPatch(w http.ResponseWriter, r *http.Request, field, id string, store metaReader, writeStore metaWriter, crs crLookup) {
 	log := logger("metadata")
 	caller := ownerFrom(r)
 
-	// Existence + ownership BEFORE the write. mutableFor's rule: an identified caller may mutate
-	// only their own or an unowned conversation; an anonymous caller (no ingress identity) is
-	// single-user mode and may mutate any.
+	// Existence + ownership before the write (mutableFor's rule; anonymous = single-user, may mutate any).
 	row, err := store.ConversationByID(r.Context(), id)
 	if err != nil {
 		log.Error("metadata patch: existence read failed", convAttr(id), errAttr(err))
@@ -104,17 +91,14 @@ func serveConversationMetadataPatch(w http.ResponseWriter, r *http.Request, fiel
 		return
 	}
 
-	// Project into the same wire row the list emits. Existence-in-the-CR-cache is not required
-	// here (the caller is writing a real row); a missing CR just yields the default "running"
-	// status, which the UI ignores for this response anyway.
+	// Same wire row the list emits; a missing CR just yields the default status (UI ignores it here).
 	cr, _ := crs.CR(id)
 	out := makeListRow(*updated, cr, nil, time.Now().UnixMilli())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// decodeBody reads a JSON request body, tolerating an empty body (treated as {}), matching the
-// lenient decode agent-host's handlers use.
+// decodeBody reads a JSON body, tolerating an empty one (treated as {}), like agent-host's handlers.
 func decodeBody(r *http.Request, v interface{}) error {
 	if r.Body == nil {
 		return nil

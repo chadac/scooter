@@ -125,12 +125,8 @@ func main() {
 		}
 	}
 
-	// PRODUCTION-ONLY narrow write handle: lets the router persist a star/title PATCH for an IDLE
-	// conversation (no owner pod) directly, instead of proxying it to an arbitrary ready pod that
-	// 404s (it doesn't hold the conversation). NOT opened in dev mode — there the single agent-host
-	// behind the fallback is the authoritative writer and the CRD watch that tells idle from live
-	// does not exist, so metadata PATCHes proxy to it exactly as before (agent-host hydrates an
-	// idle conversation on demand). Optional: no DSN / open failure => metadata PATCHes proxy too.
+	// Production-only narrow write handle for idle star/title PATCHes (dev has no CR watch to tell
+	// idle from live, so it proxies to the single agent-host instead). Optional. Why: PR #475.
 	var writeStore *WriteStore
 	if !devModeEnabled() {
 		if dsn := storeDSNFromEnv(); dsn != "" {
@@ -218,13 +214,8 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 			}
 			return
 		}
-		// A star/title PATCH for an IDLE conversation is served HERE from the store, not proxied.
-		// An idle/suspended conversation has no owner pod, so proxying lands on an arbitrary ready
-		// pod that doesn't hold it in memory and 404s (agent-host's mutableFor is memory-only). A
-		// LIVE conversation (owner pod present in the cache) is NOT intercepted — it falls through
-		// to the proxy below and is forwarded to its owner, which stays the single writer of its
-		// in-memory copy (see metadata.go / owners.toml). writeStore is nil in dev / when no write
-		// grant is configured, so this whole path degrades to the proxy exactly as before.
+		// Idle star/title served here; a live conversation (owner pod present) falls through to the
+		// proxy so its owner stays the single writer. writeStore nil (dev) => always proxy. PR #475.
 		if writeStore != nil && store != nil {
 			if field, id, ok := MetadataPatch(r.Method, r.URL.Path); ok {
 				if _, hasOwner := cache.HostIP(id); !hasOwner {

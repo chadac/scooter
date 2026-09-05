@@ -131,26 +131,21 @@ let
     SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '${r.user}', :'pw')
       WHERE EXISTS (SELECT FROM pg_roles WHERE rolname = '${r.user}') \gexec
     SQL
-    # Read-only DEFAULT at the SERVER: every session this role opens starts read-only, whatever it
-    # attempts — the load-bearing half of the guarantee for the read/LISTEN path (the client sets the
-    # same param too). A role with writeTables still carries this default; its dedicated write pool
-    # overrides default_transaction_read_only=off per-connection (startup options outrank the role
-    # default), so ONLY that pool can write and the read path stays doubly guarded.
+    # Read-only DEFAULT at the SERVER (client sets it too) — the load-bearing guard for the read/
+    # LISTEN path. A writeTables role keeps it; only its write pool overrides it. Why: PR #475.
     psql -v ON_ERROR_STOP=1 -c 'ALTER ROLE "${r.user}" SET default_transaction_read_only = on'
   '' + lib.concatMapStrings (g: ''
     # Least privilege on ${g.db}: CONNECT + USAGE + SELECT on EXACTLY the named tables. NOT
     # `ON ALL TABLES` and NO `ALTER DEFAULT PRIVILEGES` — the reader must not gain another
     # table's rows (e.g. conversation_events, the full transcripts) just because it shares a
     # database, and a table added by a later migration is opt-in (extend `tables` + owners.toml)
-    # rather than silently readable. writeTables (below) are the sole exception: exactly the tables
-    # owners.toml names this role a WRITER of get INSERT/UPDATE/DELETE too.
+    # rather than silently readable. writeTables (below) are the sole exception.
     psql -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE "${g.db}" TO "${r.user}"'
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT USAGE ON SCHEMA public TO "${r.user}"'
   '' + lib.concatMapStrings (t: ''
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON TABLE public."${t}" TO "${r.user}"'
   '') g.tables + lib.concatMapStrings (t: ''
-    # A WRITER of this table (owners.toml): SELECT + INSERT/UPDATE/DELETE, table-scoped like the
-    # SELECT grants. Still no ON ALL TABLES / default privileges — writes are opt-in per table.
+    # A WRITER of this table (owners.toml): SELECT + INSERT/UPDATE/DELETE, still table-scoped.
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."${t}" TO "${r.user}"'
   '') g.writeTables + ''
     echo "[${name}] granted SELECT on ${g.db}.{${lib.concatStringsSep "," g.tables}}${lib.optionalString (g.writeTables != []) " + read-write on {${lib.concatStringsSep "," g.writeTables}}"} to ${r.user}"
@@ -251,12 +246,7 @@ in
                 writeTables = mkOption {
                   type = types.listOf types.str;
                   default = [ ];
-                  description = ''
-                    Tables to additionally grant INSERT/UPDATE/DELETE on (SELECT is implied) — must
-                    match owners.toml writers. The role default stays read-only (below); a writer
-                    role opens a dedicated pool that overrides default_transaction_read_only=off for
-                    its writes, so the read/LISTEN path is unaffected.
-                  '';
+                  description = "Tables to also grant INSERT/UPDATE/DELETE on (must match owners.toml writers). Role default stays read-only; the writer opens a pool that overrides it.";
                 };
               };
             });

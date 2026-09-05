@@ -1,19 +1,5 @@
-// Postgres access for the router: a read pool (Store) and a NARROW write pool (WriteStore, below).
-//
-// The router already watches the Conversation CR (existence + hostIP + phase); the MUTABLE
-// conversation metadata — title, starred, owner, last_activity — lives only in the agent_host
-// database. Store gives the router a READ path to it so the fleet-aggregate list is served from the
-// durable store instead of fanning out to every agent-host pod and merging (the merge is what let a
-// stale per-pod copy flap `starred`). WriteStore adds a tightly-scoped WRITE path: title/starred
-// for an IDLE conversation, so a PATCH doesn't 404 on an arbitrary pod that doesn't hold it (a live
-// conversation is still proxied to its owner — see metadata.go / owners.toml).
-//
-// The READ pool stays read-only, enforced in two independent layers so neither alone is load-bearing:
-//  1. The DB role (`conversation_router`) is set `default_transaction_read_only = on` at the server
-//     (see modules/postgres.nix); its write grant is table-scoped to `conversations` only.
-//  2. This client also sets `default_transaction_read_only = on` on every read connection, so the
-//     list/LISTEN path can never write. Only WriteStore's pool overrides that (off) to persist the
-//     metadata write, and only on the one table the grant covers.
+// Postgres access for the router: a read pool (Store, read-only for the list/LISTEN path) and a
+// narrow write pool (WriteStore) for idle star/title writes. Read-only guarantee + why: PR #475.
 package main
 
 import (
@@ -179,25 +165,14 @@ func (s *Store) Close() {
 	}
 }
 
-// WriteStore is the router's NARROW production write path to agent_host.conversations. It exists
-// only so PATCH /conversations/:id/{starred,title} for an IDLE conversation (one with no owner pod)
-// can persist the user metadata directly, instead of being proxied to an arbitrary ready pod that
-// doesn't hold the conversation in memory and therefore 404s. It writes ONLY title / starred /
-// user_titled, and newRouter only reaches it when the conversation has NO owner pod — a LIVE
-// conversation is forwarded to its owner so that pod stays the single writer of its in-memory row
-// (metaStore.saveMeta re-upserts the WHOLE row on activity, which would clobber a value set here).
-//
-// It holds its OWN pool that overrides default_transaction_read_only=off (buildWritePoolConfig).
-// The role default is read-only (postgres.nix) and the read Store keeps it, so the read/LISTEN path
-// remains doubly guarded; only this pool can write, and only the tables owners.toml names the router
-// a writer of (the grant is table-scoped to conversations). nil when no DSN is configured.
+// WriteStore is the router's narrow production write path to agent_host.conversations (title /
+// starred / user_titled, idle conversations only). nil when no DSN is configured. Why: PR #475.
 type WriteStore struct {
 	pool *pgxpool.Pool
 }
 
-// buildWritePoolConfig parses dsn and pins the connection to READ-WRITE, overriding the router
-// role's read-only default (a startup option outranks ALTER ROLE SET). Tiny pool — writes are rare
-// (a star/title toggle on an idle conversation) and must never block a request on the DB.
+// buildWritePoolConfig pins the pool READ-WRITE, overriding the role's read-only default (a startup
+// option outranks ALTER ROLE SET). Tiny pool — writes are rare and must never block a request.
 func buildWritePoolConfig(dsn string) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -225,29 +200,25 @@ func OpenWriteStore(ctx context.Context, dsn string) (*WriteStore, error) {
 	return &WriteStore{pool: pool}, nil
 }
 
-// writeColumns is the RETURNING list shared by the metadata writes — the same projection
-// ConversationByID reads, so the caller can build the wire row without a second SELECT.
+// writeColumns is the RETURNING list — same projection ConversationByID reads, so the write's row
+// builds the wire response without a second SELECT.
 const writeColumns = `id, thread_id, title, created_at, last_activity_at,
                       model, owner, parent_id, user_titled, starred`
 
-// SetStarred sets the star flag on one conversation and returns the updated row. (nil, nil) when
-// the row is gone (a delete that raced the write) — the handler then 404s.
+// SetStarred sets the star flag and returns the updated row ((nil,nil) if the row raced a delete).
 func (s *WriteStore) SetStarred(ctx context.Context, id string, starred bool) (*ConversationRow, error) {
 	return scanUpdated(s.pool.QueryRow(ctx,
 		`UPDATE conversations SET starred = $2 WHERE id = $1 RETURNING `+writeColumns, id, starred))
 }
 
-// SetUserTitle sets the title AND locks it (user_titled = true) so the agent's <title> can no
-// longer overwrite it — mirroring agent-host's setUserTitle. Returns the updated row, or (nil, nil)
-// when the row is gone.
+// SetUserTitle sets the title AND locks it (user_titled=true), mirroring agent-host's setUserTitle.
 func (s *WriteStore) SetUserTitle(ctx context.Context, id, title string) (*ConversationRow, error) {
 	return scanUpdated(s.pool.QueryRow(ctx,
 		`UPDATE conversations SET title = $2, user_titled = true WHERE id = $1 RETURNING `+writeColumns,
 		id, title))
 }
 
-// scanUpdated maps a RETURNING row into a ConversationRow, translating no-rows (the id was deleted
-// between the auth read and the write) into (nil, nil).
+// scanUpdated maps a RETURNING row to a ConversationRow; no-rows (raced delete) becomes (nil, nil).
 func scanUpdated(row pgx.Row) (*ConversationRow, error) {
 	var c ConversationRow
 	err := row.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,

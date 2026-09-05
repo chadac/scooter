@@ -68,13 +68,8 @@ func IsAguiPost(method, path string) bool {
 	return method == "POST" && len(parts) == 1 && parts[0] == "agui"
 }
 
-// MetadataPatch recognizes the two user-metadata writes the router can serve itself for an IDLE
-// conversation — PATCH /conversations/<id>/starred and /conversations/<id>/title — returning the
-// field ("starred"|"title") and the conversation id. Anything else is (("", "", false)) and
-// proxied normally. These are pure metadata on the durable row: an idle conversation has no owner
-// pod, so proxying the PATCH lands on an arbitrary ready pod that doesn't hold it and 404s; the
-// router writes the store directly instead. A LIVE conversation (owner pod present) is still
-// proxied to its owner — see newRouter.
+// MetadataPatch matches PATCH /conversations/<id>/{starred,title}, returning the field and id.
+// The router can serve these itself for an idle conversation; see metadata.go / PR #475.
 func MetadataPatch(method, path string) (field, id string, ok bool) {
 	if method != http.MethodPatch {
 		return "", "", false
