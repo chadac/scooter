@@ -13,7 +13,7 @@
  * Navigation uses history.pushState (so Back returns to chat / the previous tab) and
  * listens to popstate, so the browser's Back/Forward buttons work. nginx serves the
  * SPA with `try_files $uri $uri/ /index.html`, so a hard refresh or a pasted deep-link
- * on /settings/modules loads the app and this module re-derives the tab from the path.
+ * on /settings/claude loads the app and this module re-derives the tab from the path.
  */
 
 import { useSyncExternalStore } from "react";
