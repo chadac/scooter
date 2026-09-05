@@ -475,6 +475,9 @@ class ControllerK8s:
         the pool forever, so placement + return-on-suspend never see them. PR #403.
         Idempotent; 404s are ignored (a PVC went away first)."""
         core, _, _, _ = _apis()
+        # Iterates PVCs, so a PV whose PVC is deleted before any sweep sees it bound (a
+        # warm-Job Retain PV → Released with no PVC) can never be labelled here → orphaned.
+        # Fix belongs on the warm-Job path, not here. Why: PR #477.
         for pvc in core.list_namespaced_persistent_volume_claim(
             self.namespace, label_selector=LBL_WARM_STORE
         ).items:
