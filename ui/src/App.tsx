@@ -81,6 +81,7 @@ function MobileDrawerBackdrop() {
 
 export function App() {
   const view = useView();
+  const drawer = useDrawer(); // for the header toggles' pressed state
   return (
     <RuntimeProvider>
       <div className="flex h-dvh flex-col">
@@ -94,9 +95,10 @@ export function App() {
                 data-testid="mobile-nav-open"
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Open conversations"
+                aria-label="Toggle conversations"
                 title="Conversations"
-                onClick={() => mobileNav.open("sessions")}
+                aria-pressed={drawer === "sessions"}
+                onClick={() => mobileNav.toggle("sessions")}
                 className="-ml-1 text-muted-foreground desk:hidden"
               >
                 ☰
@@ -118,9 +120,10 @@ export function App() {
                 data-testid="mobile-panel-open"
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Open sandbox & approvals panel"
+                aria-label="Toggle sandbox & approvals panel"
                 title="Sandbox & approvals"
-                onClick={() => mobileNav.open("panel")}
+                aria-pressed={drawer === "panel"}
+                onClick={() => mobileNav.toggle("panel")}
                 className="text-muted-foreground desk:hidden"
               >
                 ⚑

@@ -34,6 +34,12 @@ export const mobileNav = {
       emit();
     }
   },
+  /** Toggle a drawer: open it, or close it if it's already the open one. Lets the
+   *  same header button that opens a drawer also collapse it. */
+  toggle(d: Exclude<Drawer, "none">) {
+    drawer = drawer === d ? "none" : d;
+    emit();
+  },
   /** Close whatever drawer is open (no-op if already closed). */
   close() {
     if (drawer !== "none") {
