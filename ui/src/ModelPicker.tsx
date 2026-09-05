@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { loadModels, type ModelCatalog } from "./client.js";
+import { groupModelsByProvider } from "./modelGroups.js";
 import { sessionStore, useSessions } from "./sessions.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 
@@ -84,12 +85,27 @@ export function ModelPicker() {
           sessionStore.setModel(currentId, e.target.value);
         }}
       >
-        {catalog.available.map((m) => (
-          <option key={m} value={m}>
-            {m}
-            {m === catalog.default ? " (default)" : ""}
-          </option>
-        ))}
+        {(() => {
+          const label = (m: string) => `${m}${m === catalog.default ? " (default)" : ""}`;
+          // Two-level view when the catalog tags models with a source provider: group
+          // each model under its provider ("byoc › claude-opus-4-8"), so the source is
+          // obvious. Falls back to a flat list when no model is tagged (legacy catalogs).
+          const groups = groupModelsByProvider(catalog.available, catalog.providers, catalog.default);
+          if (!groups) {
+            return catalog.available.map((m) => (
+              <option key={m} value={m}>{label(m)}</option>
+            ));
+          }
+          return groups.map((g) => (
+            <optgroup key={g.provider} label={g.label} data-testid={`model-group-${g.provider}`}>
+              {g.models.map((m) => (
+                // A model two providers offer appears under each group; the value is
+                // still the model id, so keys must be provider-scoped to stay unique.
+                <option key={`${g.provider}:${m}`} value={m}>{label(m)}</option>
+              ))}
+            </optgroup>
+          ));
+        })()}
       </select>
       {inherited && !switching && (
         <span data-testid="model-inherited" className="text-[10px] uppercase tracking-wide opacity-60" title="Using the host default — not explicitly set for this conversation">
