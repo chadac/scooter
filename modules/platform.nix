@@ -756,22 +756,30 @@ in
     # NOT conversation_events, the transcripts), and pinned read-only at the server.
     #
     # The table set is DERIVED from lib/sql/owners.toml (the ownership manifest), not repeated
-    # here: whichever tables list "conversation-router" in their readers ARE its grants. So the
-    # manifest is the single reviewable source of truth and the grant cannot drift from it —
-    # adding a table for the router is one line in owners.toml. Secret: agent-pg-conversation-router.
+    # here: whichever tables list "conversation-router" in their readers ARE its SELECT grants, and
+    # whichever list it in their writers ARE its read-write grants. So the manifest is the single
+    # reviewable source of truth and the grant cannot drift from it — adding a table for the router
+    # is one line in owners.toml. Secret: agent-pg-conversation-router.
     agentSandbox.postgres.readers.conversation-router =
       let
         manifest = builtins.fromTOML (builtins.readFile ../lib/sql/owners.toml);
-        # Tables in `db` whose readers list includes conversation-router.
+        # Tables in `db` whose readers list includes conversation-router (SELECT-only).
         tablesFor = db: lib.attrNames (lib.filterAttrs
           (_t: rule: builtins.elem "conversation-router" (rule.readers or [ ]))
+          (manifest.${db}.tables or { }));
+        # Tables in `db` whose writers list includes conversation-router (SELECT + INSERT/UPDATE/
+        # DELETE). The router is a writer of agent_host.conversations: it writes user metadata
+        # (title/starred) for IDLE conversations directly to the store rather than 404ing a PATCH
+        # routed to a pod that doesn't hold the conversation. See services/conversation-router.
+        writeTablesFor = db: lib.attrNames (lib.filterAttrs
+          (_t: rule: builtins.elem "conversation-router" (rule.writers or [ ]))
           (manifest.${db}.tables or { }));
       in
       {
         user = "conversation_router";
         grants = [
-          { db = "agent_host"; tables = tablesFor "agent_host"; }
-        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; };
+          { db = "agent_host"; tables = tablesFor "agent_host"; writeTables = writeTablesFor "agent_host"; }
+        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; writeTables = writeTablesFor "webhooks"; };
       };
 
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define

@@ -122,7 +122,7 @@ let
   # created, so the db + its owner role must already exist here.
   + lib.concatMapStrings (name:
     let r = readers.${name}; in ''
-    # ---- reader ${name}: role=${r.user} SELECT-only on ${toString (builtins.length r.grants)} db(s) ----
+    # ---- reader ${name}: role=${r.user} SELECT on ${toString (builtins.length r.grants)} db(s) (+ any writeTables) ----
     PW=$(cat "/shared/${name}.pw")
     # Idempotent LOGIN role, same create-or-reset-password shape as a consumer.
     psql -v ON_ERROR_STOP=1 -v pw="$PW" <<'SQL'
@@ -131,21 +131,29 @@ let
     SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '${r.user}', :'pw')
       WHERE EXISTS (SELECT FROM pg_roles WHERE rolname = '${r.user}') \gexec
     SQL
-    # Read-only at the SERVER: this role can never begin a writing transaction, whatever it
-    # attempts — the load-bearing half of the guarantee (the client sets the same param too).
+    # Read-only DEFAULT at the SERVER: every session this role opens starts read-only, whatever it
+    # attempts — the load-bearing half of the guarantee for the read/LISTEN path (the client sets the
+    # same param too). A role with writeTables still carries this default; its dedicated write pool
+    # overrides default_transaction_read_only=off per-connection (startup options outrank the role
+    # default), so ONLY that pool can write and the read path stays doubly guarded.
     psql -v ON_ERROR_STOP=1 -c 'ALTER ROLE "${r.user}" SET default_transaction_read_only = on'
   '' + lib.concatMapStrings (g: ''
     # Least privilege on ${g.db}: CONNECT + USAGE + SELECT on EXACTLY the named tables. NOT
     # `ON ALL TABLES` and NO `ALTER DEFAULT PRIVILEGES` — the reader must not gain another
     # table's rows (e.g. conversation_events, the full transcripts) just because it shares a
     # database, and a table added by a later migration is opt-in (extend `tables` + owners.toml)
-    # rather than silently readable. No INSERT/UPDATE/DELETE ever granted.
+    # rather than silently readable. writeTables (below) are the sole exception: exactly the tables
+    # owners.toml names this role a WRITER of get INSERT/UPDATE/DELETE too.
     psql -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE "${g.db}" TO "${r.user}"'
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT USAGE ON SCHEMA public TO "${r.user}"'
   '' + lib.concatMapStrings (t: ''
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON TABLE public."${t}" TO "${r.user}"'
-  '') g.tables + ''
-    echo "[${name}] granted SELECT-only on ${g.db}.{${lib.concatStringsSep "," g.tables}} to ${r.user}"
+  '') g.tables + lib.concatMapStrings (t: ''
+    # A WRITER of this table (owners.toml): SELECT + INSERT/UPDATE/DELETE, table-scoped like the
+    # SELECT grants. Still no ON ALL TABLES / default privileges — writes are opt-in per table.
+    psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."${t}" TO "${r.user}"'
+  '') g.writeTables + ''
+    echo "[${name}] granted SELECT on ${g.db}.{${lib.concatStringsSep "," g.tables}}${lib.optionalString (g.writeTables != []) " + read-write on {${lib.concatStringsSep "," g.writeTables}}"} to ${r.user}"
   '') r.grants) readerNames;
 in
 {
@@ -233,13 +241,23 @@ in
       '';
       type = types.attrsOf (types.submodule {
         options = {
-          user = mkOption { type = types.str; description = "The read-only login role name."; };
+          user = mkOption { type = types.str; description = "The login role name (read-only by default; writeTables opt into writes)."; };
           grants = mkOption {
-            description = "Per-database sets of tables this role may SELECT from.";
+            description = "Per-database sets of tables this role may SELECT from (tables) and read-write (writeTables).";
             type = types.listOf (types.submodule {
               options = {
                 db = mkOption { type = types.str; description = "The database holding the tables."; };
                 tables = mkOption { type = types.listOf types.str; description = "The tables to grant SELECT on (must match owners.toml readers)."; };
+                writeTables = mkOption {
+                  type = types.listOf types.str;
+                  default = [ ];
+                  description = ''
+                    Tables to additionally grant INSERT/UPDATE/DELETE on (SELECT is implied) — must
+                    match owners.toml writers. The role default stays read-only (below); a writer
+                    role opens a dedicated pool that overrides default_transaction_read_only=off for
+                    its writes, so the read/LISTEN path is unaffected.
+                  '';
+                };
               };
             });
           };

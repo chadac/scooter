@@ -442,10 +442,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // User rename: sets the title AND locks it (userTitled) so the agent's <title> can
   // no longer overwrite it. A blank/whitespace title is rejected (would orphan the row).
   r.patch("/conversations/:id/title", async (ctx) => {
-    // Hydrate-if-absent so a title write routed to a pod that doesn't hold the conversation
-    // in memory (an idle/suspended conversation has no owner pod, so the router falls back to
-    // an arbitrary ready pod) resolves instead of 404ing. Same multi-replica 404 class the
-    // GET/DELETE routes above already handle. Why: PR #475.
+    // Hydrate-if-absent so a title write for a conversation this pod doesn't hold in memory
+    // resolves instead of 404ing. In production the conversation-router serves idle writes itself
+    // and only proxies here when an owner pod holds it — but the single-host/dev stack has no CR
+    // watch to tell idle from live, so a PATCH for an idle conversation still lands here. Same
+    // multi-replica 404 class the GET/DELETE routes above handle. Why: PR #475.
     if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
@@ -460,10 +461,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // Star / unstar. Body { starred: boolean }.
   r.patch("/conversations/:id/starred", async (ctx) => {
-    // Hydrate-if-absent: starring an IDLE conversation (no owner pod) lands on an arbitrary
-    // ready pod via the router fallback, which doesn't hold it in memory → mutableFor 404s.
-    // Star is pure metadata (persisted to the shared store), so a read-only hydrate is enough.
-    // Same multi-replica 404 class as GET/DELETE. Why: PR #475.
+    // Hydrate-if-absent so a star write for a conversation this pod doesn't hold in memory resolves
+    // instead of 404ing. In production the conversation-router persists an idle star itself (it can
+    // tell idle from live via the CR watch) and only proxies here for a conversation an owner pod
+    // holds; the single-host/dev stack has no such watch, so an idle star still lands here. Star is
+    // pure metadata, so a read-only hydrate is enough. Same 404 class as GET/DELETE. Why: PR #475.
     if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
