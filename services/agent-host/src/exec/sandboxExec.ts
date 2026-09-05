@@ -35,6 +35,10 @@ export interface SandboxApiClient {
   execute(req: ExecRequest, signal?: AbortSignal): Promise<ExecResult>;
   download(path: string): Promise<string>;
   upload(path: string, content: string): Promise<void>;
+  /** Write raw bytes (base64-encoded) to `path`, creating parent dirs. Binary-safe:
+   *  the base64 is streamed over stdin to `base64 -d` (not passed as a shell arg),
+   *  so it survives files larger than the single-argv limit. */
+  uploadBinary(path: string, base64: string): Promise<void>;
   /** How the exec stream is reached. "k8s-exec" in production. */
   readonly mode: "k8s-exec" | "direct";
 }
@@ -71,6 +75,10 @@ export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExe
 
     writeTextFile(path, content) {
       return api.upload(path, content);
+    },
+
+    writeBinaryFile(path, base64) {
+      return api.uploadBinary(path, base64);
     },
 
     spawn(req): TerminalHandle {

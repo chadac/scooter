@@ -9,12 +9,13 @@ import { Sidebar } from "./Sidebar.js";
 import { RightPanel } from "./RightPanel.js";
 import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
+import { ThemePicker } from "./ThemePicker.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { SettingsPage } from "./SettingsPage.js";
 import { viewStore, useView } from "./view.js";
 import { StartingPodLanding } from "./DeadPodLanding.js";
-import { useSandboxStatus } from "./SandboxPanel.js";
+import { useSandboxStatus, LABEL as SANDBOX_LABEL, DOT as SANDBOX_DOT } from "./SandboxPanel.js";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -44,27 +45,49 @@ function ConversationArea() {
   return <GuardedThread />;
 }
 
+/** Header sandbox pill — a colored dot + "sandbox <state>", mirroring the Sandbox
+ *  tab's own status so the pod's liveness is visible from anywhere in the shell. */
+function SandboxStatusPill() {
+  const { state, hasConversation } = useSandboxStatus();
+  if (!hasConversation) return null;
+  return (
+    <div
+      data-testid="header-sandbox-status"
+      className="flex h-6 items-center gap-1.5 rounded-md border bg-card px-2 text-xs text-muted-foreground"
+      title={`Sandbox: ${SANDBOX_LABEL[state]}`}
+    >
+      <span className={cn("h-1.5 w-1.5 rounded-full", SANDBOX_DOT[state])} />
+      <span>sandbox {SANDBOX_LABEL[state].toLowerCase().replace("…", "")}</span>
+    </div>
+  );
+}
+
 export function App() {
   const view = useView();
   return (
     <RuntimeProvider>
       <div className="flex h-dvh flex-col">
-        <header className="flex items-center justify-between gap-3 border-b px-4 py-3 text-sm">
-          <div>
-            <strong>Scooter</strong>
-            <span className="text-muted-foreground"> — your agent, running in a Nix sandbox</span>
+        <header className="flex h-11 items-center justify-between gap-3 border-b bg-header px-3 pl-4 text-sm">
+          {/* Compact wordmark — mark + name; the tagline was dropped in the paper reskin. */}
+          <div className="flex items-center gap-2">
+            <span className="text-[15px] leading-none" aria-hidden>🛴</span>
+            <span className="text-[13.5px] font-semibold tracking-tight">scooter</span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            {/* Live pod status, mirrored from the Sandbox tab. */}
+            <SandboxStatusPill />
+            {/* Light / dark / system theme toggle. */}
+            <ThemePicker />
             {/* Settings (scheduled tasks, …). Toggles the main pane. */}
             <Button
               data-testid="settings-toggle"
-              variant="outline"
-              size="sm"
+              variant="ghost"
+              size="icon-sm"
               aria-label="Settings"
               title="Settings"
               aria-pressed={view === "settings"}
               onClick={() => viewStore.set(view === "settings" ? "chat" : "settings")}
-              className={cn(view === "settings" && "bg-accent")}
+              className={cn("text-muted-foreground", view === "settings" && "bg-accent text-foreground")}
             >
               ⚙
             </Button>

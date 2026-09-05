@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 
 import {
@@ -24,6 +24,36 @@ import { agentHostConfig } from "./config.js";
 import { renameConversation, setConversationStarred, deleteConversation } from "./client.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+/** Per-row sandbox status dot (paper reskin): running = active blue, suspended =
+ *  gold, ended = muted. Mirrors the row's live pod lifecycle so the list reads at a
+ *  glance without opening each conversation. */
+function StatusDot({ status }: { status: "running" | "suspended" | "ended" }) {
+  const cls =
+    status === "running"
+      ? "bg-status-active"
+      : status === "suspended"
+        ? "bg-warning"
+        : "bg-muted-foreground/40";
+  return (
+    <span
+      data-testid="session-status-dot"
+      aria-label={`Sandbox ${status}`}
+      title={`Sandbox ${status}`}
+      className={cn("h-1 w-1 shrink-0 rounded-full", cls)}
+    />
+  );
+}
+
+/** A section heading in the conversation list (STARRED / RECENT). */
+function SectionHeader({ icon, label }: { icon?: ReactNode; label: string }) {
+  return (
+    <div className="flex items-center gap-1 px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground first:pt-1">
+      {icon}
+      {label}
+    </div>
+  );
+}
 
 /** A small "?" affordance with an explanatory tooltip (native title + aria-label,
  *  matching the sidebar's lightweight style). */
@@ -127,29 +157,17 @@ const SessionRow = memo(function SessionRow({
       data-starred={s.starred ? "true" : undefined}
       data-subagent={depth > 0 ? "true" : undefined}
       className={
-        "group mb-1 flex items-center gap-1 rounded-md pe-1 text-sm " +
-        (depth > 0 ? "ms-3 border-s ps-1 " : "") +
-        (active ? "bg-accent" : "hover:bg-accent/50")
+        "group relative mb-0.5 flex items-center gap-1 rounded-lg ps-1.5 pe-1 text-sm " +
+        (depth > 0 ? "ms-3 border-s border-border ps-1.5 " : "") +
+        (active ? "bg-accent font-medium" : "hover:bg-accent/60")
       }
     >
-      {/* Star toggle — top-level only (subagents aren't independently retained). */}
-      {depth === 0 && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-star"
-          aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
-          aria-pressed={s.starred ? true : false}
-          onClick={toggleStar}
-          className={cn(
-            "shrink-0",
-            s.starred
-              ? "text-warning"
-              : "text-muted-foreground opacity-0 hover:text-warning group-hover:opacity-100"
-          )}
-        >
-          {s.starred ? "★" : "☆"}
-        </Button>
+      {/* Activity status on the LEFT (mockup 1a): a leading dot colored by the pod
+          lifecycle. A fixed-width slot so titles align whether or not a row has one. */}
+      {!editing && (
+        <span className="flex w-1 shrink-0 items-center justify-center">
+          {s.status && <StatusDot status={s.status} />}
+        </span>
       )}
 
       {editing ? (
@@ -203,45 +221,69 @@ const SessionRow = memo(function SessionRow({
         </Button>
       )}
 
-      {/* Provider badges for any linked external resources (GitHub/Slack/…). */}
+      {/* Provider "link plates" for any linked external resources (GitHub/Slack/…):
+          each badge sits in a bordered card chip, per mockup 1a. Hidden on hover so
+          the action overlay below reads clearly over the same space. */}
       {!editing && s.sources && s.sources.length > 0 && (
-        <span className="flex shrink-0 items-center gap-0.5">
+        <span className="flex shrink-0 items-center gap-1 group-hover:opacity-0">
           {s.sources.map((src) => (
-            <SourceBadge key={src} source={src} />
+            <span
+              key={src}
+              className="flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border bg-card"
+            >
+              <SourceBadge source={src} />
+            </span>
           ))}
         </span>
       )}
 
-      {/* Explicit rename affordance — a dedicated button (not overloading the title's
-          click/double-click, which raced with switchTo re-rendering the row). */}
+      {/* Row actions — star / rename / delete. ABSOLUTELY positioned so they OVERLAY
+          the row's right edge (mockup 1a) instead of consuming width: the title gets
+          the full row, and these fade in on hover. The gradient blends the overlay
+          into the row background (accent when active/hovered). */}
       {!editing && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-rename"
-          aria-label={`Rename ${s.title}`}
-          title="Rename"
-          onClick={(e) => {
-            e.stopPropagation();
-            openRename();
-          }}
-          className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100"
-        >
-          ✎
-        </Button>
-      )}
-
-      {!editing && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-delete"
-          aria-label={`Delete ${s.title}`}
-          onClick={remove}
-          className="shrink-0 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-        >
-          ✕
-        </Button>
+        <div className="absolute inset-y-0 right-1 flex items-center gap-0.5 rounded-lg bg-gradient-to-l from-accent from-70% to-transparent pl-6 opacity-0 transition-opacity group-hover:opacity-100">
+          {/* Star — top-level only (subagents aren't independently retained). A
+              starred row keeps the gold star visible even off-hover, via the parent
+              group state below. */}
+          {depth === 0 && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              data-testid="session-star"
+              aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
+              aria-pressed={s.starred ? true : false}
+              onClick={toggleStar}
+              className={cn("shrink-0", s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
+            >
+              {s.starred ? "★" : "☆"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            data-testid="session-rename"
+            aria-label={`Rename ${s.title}`}
+            title="Rename"
+            onClick={(e) => {
+              e.stopPropagation();
+              openRename();
+            }}
+            className="shrink-0 text-muted-foreground"
+          >
+            ✎
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            data-testid="session-delete"
+            aria-label={`Delete ${s.title}`}
+            onClick={remove}
+            className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            ✕
+          </Button>
+        </div>
       )}
     </div>
   );
@@ -265,6 +307,19 @@ export const Sidebar = memo(function Sidebar() {
   // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
   // conversation — so an inactive conversation's subagents don't clutter the list.
   const rows = nestSubagents(filteredSessions(state), currentId);
+  // Split into STARRED / RECENT sections for the paper reskin. Subagent rows
+  // (depth > 0) follow their parent, so they inherit the parent's section — walk the
+  // flat list and route each depth-0 row (and the children after it) by `starred`.
+  // Order within each section is unchanged (byActivity already sorts starred first).
+  const starredRows: typeof rows = [];
+  const recentRows: typeof rows = [];
+  {
+    let bucket = recentRows;
+    for (const r of rows) {
+      if (r.depth === 0) bucket = r.session.starred ? starredRows : recentRows;
+      bucket.push(r);
+    }
+  }
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // How many advanced filters are "active" (non-default) — a badge on the toggle so
@@ -273,16 +328,16 @@ export const Sidebar = memo(function Sidebar() {
     (scope === "all" ? 1 : 0) + providerFilter.length + (labelMode !== "title" ? 1 : 0);
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r bg-muted/30">
+    <aside className="flex h-full w-64 flex-col border-r border-sidebar-border bg-sidebar">
       <div className="p-3">
         <Button
-          variant="outline"
+          variant="default"
           size="sm"
           data-testid="new-session"
           onClick={() => sessionStore.newSession()}
-          className="w-full"
+          className="w-full justify-center gap-1.5"
         >
-          + New conversation
+          <span aria-hidden>＋</span> New conversation
         </Button>
       </div>
       {/* Keyword search over the title + linked-resource names. */}
@@ -432,7 +487,25 @@ export const Sidebar = memo(function Sidebar() {
             No chats match.
           </p>
         )}
-        {rows.map(({ session: s, depth, childCount }) => (
+        {starredRows.length > 0 && (
+          <SectionHeader
+            label="Starred"
+            icon={<span className="text-[10px] text-warning">★</span>}
+          />
+        )}
+        {starredRows.map(({ session: s, depth, childCount }) => (
+          <SessionRow
+            key={s.id}
+            session={s}
+            depth={depth}
+            childCount={childCount}
+            active={s.id === currentId}
+            editing={s.id === editingId}
+            labelMode={labelMode}
+          />
+        ))}
+        {recentRows.length > 0 && <SectionHeader label="Recent" />}
+        {recentRows.map(({ session: s, depth, childCount }) => (
           <SessionRow
             key={s.id}
             session={s}

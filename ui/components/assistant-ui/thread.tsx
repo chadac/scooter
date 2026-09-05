@@ -346,13 +346,15 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
 
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
+      className="aui-root aui-thread-root bg-chat @container flex h-full flex-col"
       style={{
-        // Widen the readable column — 44rem left a lot of empty space on wide
-        // monitors. 64rem fills more of the available width while staying readable.
-        ["--thread-max-width" as string]: "64rem",
-        ["--composer-bg" as string]:
-          "color-mix(in oklab, var(--color-muted) 30%, var(--color-background))",
+        // Widen the readable column — the chat should take a larger part of the page.
+        // 78rem fills most of the available width on wide monitors while staying
+        // readable; the composer + messages both track this.
+        ["--thread-max-width" as string]: "78rem",
+        // A raised card surface so the composer reads as a distinct input on the
+        // grey chat (was a near-chat tint that only the border defined).
+        ["--composer-bg" as string]: "var(--color-card)",
         ["--composer-radius" as string]: "1.5rem",
         ["--composer-padding" as string]: "8px",
       }}
@@ -402,7 +404,11 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
 
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
+              // bg-chat (not bg-background): the footer is sticky over the chat
+              // surface, so it must MATCH it — otherwise the warm paper body shows
+              // as a distinct panel behind the composer (a box-in-a-box). It stays
+              // opaque so messages scrolling under it are covered.
+              "aui-thread-viewport-footer bg-chat flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
               !isEmpty &&
                 "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
             )}
@@ -414,7 +420,8 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
             <InlineRunStatus />
             {/* Context-window fill bar — how full the conversation's context is. */}
             <ContextFillBar />
-            <ModelPicker />
+            {/* ModelPicker moved INTO the composer action row (next to ＋); see
+                ComposerAction below. It no longer sits above the input. PR #465. */}
             <Composer />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
@@ -599,7 +606,11 @@ const Composer: FC = () => {
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <ComposerAddAttachment />
+      {/* Left cluster: attach + the model selector, inline in the composer. */}
+      <div className="flex items-center gap-1">
+        <ComposerAddAttachment />
+        <ModelPicker />
+      </div>
       <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
@@ -681,7 +692,7 @@ const ComposerSendOrStop: FC = () => {
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>

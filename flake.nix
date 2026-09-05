@@ -356,7 +356,9 @@
           # Shared by the side-load render (`platform`, bare names) and the k3d-registry
           # render (`platformK3d`, content-tagged refs) — ONE test config, two image
           # sourcing strategies.
-          mkTestPlatformImages = imgs: mkTestPlatform {
+          # The full test-platform config as data, so a variant (e.g. the event-backfill
+          # e2e render below) can `recursiveUpdate` it instead of duplicating every knob.
+          mkTestPlatformConfig = imgs: {
             registryPrefix = "";
             agentHostImage = imgs.agentHost;
             sandboxImage = imgs.sandboxOs;
@@ -396,6 +398,7 @@
               # testWebhook comes from modules/testing.nix — not repeated here.
             };
           };
+          mkTestPlatformImages = imgs: mkTestPlatform (mkTestPlatformConfig imgs);
           platform = mkTestPlatformImages {
             agentHost = "agent-host:latest";
             sandboxOs = "agent-sandbox-os:latest";
@@ -408,6 +411,16 @@
           # `nix build .#platform-manifests-k3d`: the SAME test platform, images pulled
           # from the k3d-attached registry by CONTENT TAG (see k3dImages). No side-load.
           platformK3d = mkTestPlatformImages k3dImages;
+
+          # `nix build .#platform-manifests-k3d-backfill`: the k3d test platform with the
+          # one-shot event backfill turned ON (and the mirror PVC retained, which the module's
+          # assert requires). The Tier-2 event-backfill e2e reads the rendered Job out of this
+          # (real k3d image ref + agent_host DB wiring) and applies its own seeded instance —
+          # so the test exercises the ACTUAL module output, not a hand-built copy that could drift.
+          platformK3dBackfill = mkTestPlatform (lib.recursiveUpdate (mkTestPlatformConfig k3dImages) {
+            eventBackfill.enable = true;
+            conversationController.historyMirror.retainForMigration = true;
+          });
 
           # GHCR render (`nix build .#platform-manifests-ghcr`): the REAL production deploy
           # manifest — the actual agent (fakeAgent = false), NO test providers/webhooks,
@@ -548,6 +561,9 @@
 
             # The k3d-registry render + the attr->ref push map for the CI/e2e-full flow.
             platform-manifests-k3d = platformK3d.config.kubernetes.resultYAML;
+            # The k3d test platform + event backfill enabled — the Tier-2 e2e extracts the
+            # rendered agent-event-backfill Job from this YAML (see platformK3dBackfill).
+            platform-manifests-k3d-backfill = platformK3dBackfill.config.kubernetes.resultYAML;
             k3d-image-refs = pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap);
 
             # nix build .#platform-manifests-ghcr  ->  the same manifests with every image

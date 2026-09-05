@@ -313,7 +313,7 @@ export interface SessionManager {
    *  `owner` stamps the conversation's owner when it's newly STARTED here (a
    *  webhook-resolved Scooter user) — ignored for an already-existing conversation.
    *  `images` are attached uploads (resolved to ACP image blocks by the bridge).
-   *  `files` are binary attachments (Slack) the bridge writes to /workspace/.slack. */
+   *  `files` are binary attachments (Slack) the bridge writes to /workspace/uploads. */
   promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[], files?: PromptFile[], source?: string): Promise<void>;
   /** Switch a RUNNING conversation's model IMMEDIATELY and continue its work on
    *  the new model. Unlike a model passed to prompt() (which applies on the next

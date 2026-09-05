@@ -35,14 +35,15 @@ import { formatError, logger } from "./log.js";
 
 const log = logger("bridge");
 
-/** Where binary Slack attachments are materialized inside the sandbox. Kept in sync
- *  with the webhooks handler (services/webhooks) which notes these paths in the
- *  message text so the agent knows where to find each file. */
-export const SLACK_FILES_DIR = "/workspace/.slack";
+/** Where user-attached binary files (UI uploads, Slack pdf/zip/…) are materialized
+ *  inside the sandbox. The bridge writes the bytes here and then appends a note to
+ *  the prompt listing the saved paths, so the agent knows where to read each file
+ *  — one place does the weaving for every entrypoint (UI + webhooks). */
+export const UPLOADS_DIR = "/workspace/uploads";
 
 /** Sanitize an attachment filename to a safe basename (no path traversal / dir
- *  separators) so a hostile `name` can't escape SLACK_FILES_DIR. */
-function safeSlackName(name: string): string {
+ *  separators) so a hostile `name` can't escape UPLOADS_DIR. */
+export function safeUploadName(name: string): string {
   const base = name.split(/[\\/]/).pop() || "file";
   // Drop leading dots that could hide it / strip anything odd to a conservative set.
   const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
@@ -50,26 +51,22 @@ function safeSlackName(name: string): string {
 }
 
 /** Write one binary file attachment (base64) into the sandbox at
- *  SLACK_FILES_DIR/<name>, base64-decoding it pod-side so the bytes land intact.
- *  Uses the exec `run` seam (mkdir + a base64 pipe). Throws on a non-zero exit so
- *  the caller can log + skip (best-effort). */
-async function writeSlackFile(exec: ExecBackend, file: { name: string; data: string }): Promise<void> {
-  const name = safeSlackName(file.name);
-  const path = `${SLACK_FILES_DIR}/${name}`;
-  // Build a single shell line: create the dir, then decode base64 from a heredoc
-  // into the target path. args:[] marks this as a pass-through shell string.
-  const script =
-    `mkdir -p ${shellQuote(SLACK_FILES_DIR)} && ` +
-    `printf %s ${shellQuote(file.data)} | base64 -d > ${shellQuote(path)}`;
-  const res = await exec.run({ command: script, args: [] });
-  if (res.exitCode !== 0) {
-    throw new Error(`write ${path}: ${res.stderr || `exit ${res.exitCode}`}`);
-  }
+ *  UPLOADS_DIR/<name>. Streams the base64 over stdin to `base64 -d` (writeBinaryFile)
+ *  so it is NOT capped by the ~128KB single-argv limit an inline `printf | base64 -d`
+ *  hits. Returns the sandbox path written. Throws so the caller can log + skip
+ *  (best-effort — a bad upload must not fail the turn). */
+async function writeUploadedFile(exec: ExecBackend, file: { name: string; data: string }): Promise<string> {
+  const name = safeUploadName(file.name);
+  const path = `${UPLOADS_DIR}/${name}`;
+  await exec.writeBinaryFile(path, file.data);
+  return path;
 }
 
-/** POSIX single-quote a string for a `sh -c` line (mirrors k8sExec's shellQuote). */
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+/** The note appended to the prompt listing where uploaded files were saved. Kept
+ *  identical in wording to what the Slack path used to weave (so the agent's
+ *  experience is unchanged), now emitted for every entrypoint. */
+export function buildFileNote(paths: string[]): string {
+  return "The following file attachment(s) have been saved into your sandbox:\n" + paths.map((p) => `- ${p}`).join("\n");
 }
 
 /** An AG-UI interrupt: a point where the run pauses for a user response (a
@@ -234,7 +231,7 @@ export interface PromptImage {
 
 /** A binary file attached to a user prompt (Slack pdf/zip/…). Unlike images, files
  *  are NOT sent as ACP content blocks — the bridge MATERIALIZES the bytes into the
- *  sandbox at /workspace/.slack/<name> via the exec client, and the agent reads them
+ *  sandbox at /workspace/uploads/<name> via the exec client, and the agent reads them
  *  from disk (the message text, woven webhooks-side, references the saved paths). */
 export interface PromptFile {
   name: string;
@@ -251,7 +248,7 @@ export interface PromptInput {
    *  (the unchanged hot path). Resolved to ACP image blocks when the run prompts. */
   images?: PromptImage[];
   /** Binary file attachments (Slack). Empty/undefined = none (the unchanged path).
-   *  Written to /workspace/.slack/<name> in the sandbox when the run prompts. */
+   *  Written to /workspace/uploads/<name> in the sandbox when the run prompts. */
   files?: PromptFile[];
   /** SYSTEM message source — set when this prompt is injected by the PLATFORM, not
    *  typed by a human (a webhook event, a scheduler fire, a background-job completion,
@@ -1195,21 +1192,27 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           if (bytes) imageBlocks.push({ type: "image", data: bytes.data.toString("base64"), mimeType: bytes.mimeType });
         }
       }
-      // Materialize any binary file attachments (Slack pdf/zip/…) into the sandbox
-      // at /workspace/.slack/<name> so the agent can read them from disk (the woven
-      // message text references those paths). Best-effort: a failed write is logged
-      // and skipped — it must not kill the turn. No files → the path is unchanged.
+      // Materialize any binary file attachments (UI uploads, Slack pdf/zip/…) into the
+      // sandbox at /workspace/uploads/<name> so the agent can read them from disk.
+      // Best-effort: a failed write is logged and skipped — it must not kill the turn.
+      // No files → the path is unchanged.
       const files = batch.flatMap((b) => b.files ?? []);
-      if (files.length) {
-        for (const f of files) {
-          try {
-            await writeSlackFile(deps.exec, f);
-          } catch (err) {
-            debug("[bridge] failed to write slack file %s (continuing): %s", f.name, err);
-          }
+      const savedFilePaths: string[] = [];
+      for (const f of files) {
+        try {
+          savedFilePaths.push(await writeUploadedFile(deps.exec, f));
+        } catch (err) {
+          debug("[bridge] failed to write uploaded file %s (continuing): %s", f.name, err);
         }
       }
-      const promptBlocks = [...textBlocks, ...imageBlocks];
+      // Tell the agent where the files landed: one note text block after the user
+      // text (before any images) listing each saved path. Prompt-only (not persisted)
+      // — it's guidance, not user content. Only successfully-written files are listed.
+      // Every entrypoint (UI, Slack webhooks) gets the note from HERE, so it stays in
+      // one place and can't drift from where the bytes were actually written.
+      const fileNoteBlocks: ContentBlock[] =
+        savedFilePaths.length > 0 ? [{ type: "text", text: buildFileNote(savedFilePaths) }] : [];
+      const promptBlocks = [...textBlocks, ...fileNoteBlocks, ...imageBlocks];
         // The turn boundary, structured. A turn that produces neither a reply NOR an
         // error left no trace at all on a real cluster — debug() only surfaces behind a
         // flag, so the whole prompt path was silent. These two lines bracket the one

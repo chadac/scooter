@@ -62,8 +62,10 @@ export function ModelPicker() {
   const inherited = explicitModel === undefined;
 
   return (
-    <div className="aui-model-picker flex items-center justify-end gap-2 px-2 text-xs text-muted-foreground">
-      <label htmlFor="aui-model-select">Model</label>
+    // Lives INSIDE the composer's action row (next to ＋), so it's a compact,
+    // borderless inline pill rather than a labelled row above the input. PR #465.
+    <div className="aui-model-picker flex items-center gap-1 text-xs text-muted-foreground">
+      <label htmlFor="aui-model-select" className="sr-only">Model</label>
       <select
         id="aui-model-select"
         aria-label="Model"
@@ -72,7 +74,7 @@ export function ModelPicker() {
         // Muted/italic while inheriting the default (not an explicit pick), so a
         // never-switched conversation is visually distinct from one you set.
         className={
-          "rounded-md border border-border bg-background px-2 py-1 " +
+          "rounded-md border-0 bg-transparent px-1.5 py-1 hover:bg-accent focus:bg-accent focus:outline-none cursor-pointer " +
           (inherited ? "italic text-muted-foreground" : "text-foreground")
         }
         title={inherited ? "Using the host default (not set for this conversation)" : "Model set for this conversation"}

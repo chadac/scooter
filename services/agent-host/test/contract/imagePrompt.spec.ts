@@ -180,10 +180,10 @@ describe("bridge: image content blocks", () => {
   });
 });
 
-// --- the bridge writes binary file attachments into /workspace/.slack ---------
+// --- the bridge writes binary file attachments into /workspace/uploads ---------
 
 describe("bridge: binary file attachments", () => {
-  it("writes a file part to /workspace/.slack/<name> via exec (base64-decoded)", async () => {
+  it("materializes a file part to /workspace/uploads/<name> (binary-safe, via writeBinaryFile)", async () => {
     const { client, lastPrompt } = capturingAcp();
     const api = createFakeSandboxApi();
     const bridge = createSessionBridge({
@@ -194,28 +194,30 @@ describe("bridge: binary file attachments", () => {
     await bridge.start();
     await bridge.prompt({
       threadId: "t1",
-      text: "see /workspace/.slack/report.pdf",
+      text: "look at the report",
       files: [{ name: "report.pdf", data: "UERG", mimeType: "application/pdf" }],
     });
 
-    // A shell exec ran that mkdir's the dir + writes the decoded bytes to the path.
-    const shell = api.executed.map((e) => (e.args.length ? [e.command, ...e.args].join(" ") : e.command)).join("\n");
-    expect(shell).toContain("/workspace/.slack");
-    expect(shell).toContain("/workspace/.slack/report.pdf");
-    expect(shell).toContain("base64 -d");
-    expect(shell).toContain("UERG"); // the base64 payload piped in
+    // The bytes went through the binary-safe path (base64 STREAMED, not a shell arg).
+    expect(api.uploadedBinary).toEqual([{ path: "/workspace/uploads/report.pdf", base64: "UERG" }]);
 
     // The turn still ran (the ACP prompt was sent).
     expect(lastPrompt()).toBeTruthy();
-    // No file block is sent to the model (files go to disk, not ACP content).
     const blocks = lastPrompt()!.prompt as ContentBlock[];
+    // No file block is sent to the model (files go to disk, not ACP content).
     expect(blocks.some((b) => (b as { type: string }).type === "file")).toBe(false);
+    // A note tells the agent where the file landed.
+    const noteBlock = blocks.find(
+      (b) => b.type === "text" && (b as { text: string }).text.includes("/workspace/uploads/report.pdf"),
+    ) as { type: "text"; text: string } | undefined;
+    expect(noteBlock).toBeTruthy();
+    expect(noteBlock!.text).toContain("saved into your sandbox");
   });
 
-  it("a failed write is best-effort — the turn still completes", async () => {
+  it("a failed write is best-effort — the turn still completes and no note is added", async () => {
     const { client, lastPrompt } = capturingAcp();
     const api = createFakeSandboxApi();
-    api.whenExecute(() => ({ stdout: "", stderr: "disk full", exitCode: 1 }));
+    api.failUploadBinary(new Error("disk full"));
     const bridge = createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
       exec: createSandboxExecBackend(api),
@@ -227,8 +229,11 @@ describe("bridge: binary file attachments", () => {
       text: "hi",
       files: [{ name: "x.bin", data: "QQ==", mimeType: "application/octet-stream" }],
     });
-    // The write failed (exit 1) but the ACP prompt was still sent — the turn ran.
+    // The write failed but the ACP prompt was still sent — the turn ran.
     expect(lastPrompt()).toBeTruthy();
+    const blocks = lastPrompt()!.prompt as ContentBlock[];
+    // No saved-path note for a file that never landed.
+    expect(blocks.some((b) => b.type === "text" && (b as { text: string }).text.includes("saved into your sandbox"))).toBe(false);
   });
 
   it("a prompt with no files writes nothing (unchanged path)", async () => {
@@ -241,10 +246,10 @@ describe("bridge: binary file attachments", () => {
     });
     await bridge.start();
     await bridge.prompt({ threadId: "t1", text: "just text" });
-    expect(api.executed.length).toBe(0);
+    expect(api.uploadedBinary.length).toBe(0);
   });
 
-  it("sanitizes a traversal filename to a safe basename under /workspace/.slack", async () => {
+  it("sanitizes a traversal filename to a safe basename under /workspace/uploads", async () => {
     const { client } = capturingAcp();
     const api = createFakeSandboxApi();
     const bridge = createSessionBridge({
@@ -258,9 +263,7 @@ describe("bridge: binary file attachments", () => {
       text: "hi",
       files: [{ name: "../../etc/passwd", data: "QQ==", mimeType: "application/octet-stream" }],
     });
-    const shell = api.executed.map((e) => (e.args.length ? [e.command, ...e.args].join(" ") : e.command)).join("\n");
-    // No path escape: the write target stays inside /workspace/.slack.
-    expect(shell).toContain("/workspace/.slack/passwd");
-    expect(shell).not.toContain("../../etc/passwd");
+    // No path escape: the write target stays inside /workspace/uploads.
+    expect(api.uploadedBinary).toEqual([{ path: "/workspace/uploads/passwd", base64: "QQ==" }]);
   });
 });
