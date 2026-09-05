@@ -6,7 +6,7 @@
  * arbitrary model strings reaching the agent launch env.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 
 import { resolveModel } from "../../src/index.js";
 
@@ -32,4 +32,21 @@ describe("resolveModel", () => {
   it("returns undefined when there is no default and no valid request", () => {
     expect(resolveModel("haiku", { model: undefined, availableModels: [] })).toBeUndefined();
   });
+
+  it("logs a warning when falling back from an unavailable model", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    
+    const result = resolveModel("haiku", cfg);
+    
+    expect(result).toBe("opus");
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("conversation requested unavailable model")
+    );
+    
+    spy.mockRestore();
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
