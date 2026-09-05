@@ -343,8 +343,8 @@ export const Sidebar = memo(function Sidebar() {
         "flex flex-col border-r border-sidebar-border bg-sidebar",
         // Mobile: off-canvas left drawer over the thread, below the h-11 header.
         "fixed bottom-0 left-0 top-11 z-40 w-[86vw] max-w-72 -translate-x-full shadow-xl transition-transform duration-200 ease-out",
-        // Desktop (md+): the original static, in-flow column — unchanged.
-        "md:static md:h-full md:w-64 md:max-w-none md:translate-x-0 md:shadow-none md:transition-none",
+        // Desktop (desk+ (≥1200px)): the original static, in-flow column — unchanged.
+        "desk:static desk:h-full desk:w-64 desk:max-w-none desk:translate-x-0 desk:shadow-none desk:transition-none",
         drawer === "sessions" && "translate-x-0",
       )}
     >

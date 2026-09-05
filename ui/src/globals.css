@@ -5,6 +5,12 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* The three-column shell (sidebar | thread | right panel) needs real width to
+     not feel cramped; below this it switches to the mobile off-canvas-drawer
+     layout. Deliberately 1200px (above Tailwind's lg/1024 and xl-ish tablets like
+     the 834px iPad Pro) — those get the mobile layout. Drives the `desk:` variant
+     used across App/Sidebar/RightPanel; keep in sync with MOBILE_QUERY in mobileNav.ts. */
+  --breakpoint-desk: 1200px;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

@@ -65,7 +65,7 @@ function SandboxStatusPill() {
 
 /** The dim/dismiss layer shown behind an open mobile drawer. Sits below the header
  *  (top-11) so the toggle buttons stay reachable, and below the drawers (z-30 < z-40).
- *  Desktop hides it via `md:hidden` — the panels are in-flow there, never overlays. */
+ *  Desktop hides it via `desk:hidden` — the panels are in-flow there, never overlays. */
 function MobileDrawerBackdrop() {
   const drawer = useDrawer();
   if (drawer === "none") return null;
@@ -74,7 +74,7 @@ function MobileDrawerBackdrop() {
       data-testid="mobile-drawer-backdrop"
       aria-hidden
       onClick={() => mobileNav.close()}
-      className="fixed inset-x-0 bottom-0 top-11 z-30 bg-black/40 md:hidden"
+      className="fixed inset-x-0 bottom-0 top-11 z-30 bg-black/40 desk:hidden"
     />
   );
 }
@@ -87,7 +87,7 @@ export function App() {
         <header className="flex h-11 items-center justify-between gap-3 border-b bg-header px-3 pl-4 text-sm">
           {/* Compact wordmark — mark + name; the tagline was dropped in the paper reskin. */}
           <div className="flex items-center gap-2">
-            {/* Mobile-only: open the sessions drawer. Hidden at md+ where the sidebar
+            {/* Mobile-only: open the sessions drawer. Hidden at desk+ (≥1200px) where the sidebar
                 is always in-flow. Only in chat (settings has no sidebar). */}
             {view !== "settings" && (
               <Button
@@ -97,7 +97,7 @@ export function App() {
                 aria-label="Open conversations"
                 title="Conversations"
                 onClick={() => mobileNav.open("sessions")}
-                className="-ml-1 text-muted-foreground md:hidden"
+                className="-ml-1 text-muted-foreground desk:hidden"
               >
                 ☰
               </Button>
@@ -108,11 +108,11 @@ export function App() {
           <div className="flex items-center gap-2">
             {/* Live pod status, mirrored from the Sandbox tab. Desktop-only — on mobile
                 the header has no room, and the same status lives in the ⚑ panel drawer. */}
-            <span className="hidden md:flex">
+            <span className="hidden desk:flex">
               <SandboxStatusPill />
             </span>
             {/* Mobile-only: open the right panel (sandbox/approvals/queue) drawer.
-                Hidden at md+ where the panel is always in-flow. */}
+                Hidden at desk+ (≥1200px) where the panel is always in-flow. */}
             {view !== "settings" && (
               <Button
                 data-testid="mobile-panel-open"
@@ -121,7 +121,7 @@ export function App() {
                 aria-label="Open sandbox & approvals panel"
                 title="Sandbox & approvals"
                 onClick={() => mobileNav.open("panel")}
-                className="text-muted-foreground md:hidden"
+                className="text-muted-foreground desk:hidden"
               >
                 ⚑
               </Button>
@@ -146,7 +146,7 @@ export function App() {
             </Button>
             {/* Signed-in user (from the ingress identity); hidden when anonymous, and
                 desktop-only — the header can't fit it on a phone. */}
-            <span className="hidden md:flex">
+            <span className="hidden desk:flex">
               <UserBadge />
             </span>
           </div>

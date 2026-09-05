@@ -97,7 +97,7 @@ export function RightPanel() {
   const [active, setActive] = useState<Tab>("sandbox");
 
   // On mobile the panel is an overlay right-drawer toggled from the header; drawer
-  // state drives its slide-in. Desktop (md+) pins it in-flow regardless.
+  // state drives its slide-in. Desktop (desk+ (≥1200px)) pins it in-flow regardless.
   const drawer = useDrawer();
 
   // Auto-focus Approvals whenever the pending-interrupt count RISES (a new gate the
@@ -119,8 +119,8 @@ export function RightPanel() {
         "flex flex-col border-l bg-background",
         // Mobile: off-canvas right drawer over the thread, below the h-11 header.
         "fixed bottom-0 right-0 top-11 z-40 w-[86vw] max-w-80 translate-x-full shadow-xl transition-transform duration-200 ease-out",
-        // Desktop (md+): the original static, in-flow column — unchanged.
-        "md:static md:h-full md:w-80 md:max-w-none md:translate-x-0 md:shadow-lg md:transition-none",
+        // Desktop (desk+ (≥1200px)): the original static, in-flow column — unchanged.
+        "desk:static desk:h-full desk:w-80 desk:max-w-none desk:translate-x-0 desk:shadow-lg desk:transition-none",
         drawer === "panel" && "translate-x-0",
       )}
       data-testid="right-panel"
@@ -133,7 +133,7 @@ export function RightPanel() {
           data-testid="mobile-panel-close"
           aria-label="Close panel"
           onClick={() => mobileNav.close()}
-          className="flex w-9 shrink-0 items-center justify-center border-r text-muted-foreground hover:text-foreground md:hidden"
+          className="flex w-9 shrink-0 items-center justify-center border-r text-muted-foreground hover:text-foreground desk:hidden"
         >
           ✕
         </button>

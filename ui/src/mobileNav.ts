@@ -4,8 +4,8 @@
  * The desktop shell is a three-column row (sessions | thread | right panel). Below
  * the `md` breakpoint the two fixed-width side columns would leave the thread no
  * room, so each collapses into an overlay drawer toggled from the header; the thread
- * + composer take the full width. Desktop (md+) ignores all of this — the CSS `md:`
- * variants pin both panels back in-flow regardless of the drawer state here.
+ * + composer take the full width. Desktop (≥1200px) ignores all of this — the CSS
+ * `desk:` variants pin both panels back in-flow regardless of the drawer state here.
  *
  * Same dependency-free useSyncExternalStore store as view.ts (no router/context).
  */
@@ -52,10 +52,11 @@ export function useDrawer(): Drawer {
   return useSyncExternalStore(subscribe, () => snapshot, () => snapshot);
 }
 
-// Tailwind's `md` breakpoint is 768px; "mobile" is anything below it. Keeping the JS
-// query one hair under 768 (767.98) matches the CSS `md:` cutover exactly, so the
-// drawer behavior and the panel visibility never disagree at the boundary.
-const MOBILE_QUERY = "(max-width: 767.98px)";
+// The custom `desk` breakpoint is 1200px (see --breakpoint-desk in globals.css);
+// "mobile" is anything below it. Keeping the JS query one hair under 1200 (1199.98)
+// matches the CSS `desk:` cutover exactly, so the drawer behavior and the panel
+// visibility never disagree at the boundary.
+const MOBILE_QUERY = "(max-width: 1199.98px)";
 
 /** True on viewports below the `md` breakpoint. Re-renders on viewport change. */
 export function useIsMobile(): boolean {
