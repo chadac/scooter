@@ -5,7 +5,7 @@
  * and GET /models exposes it as `providers: { modelId: [tags] }`. Model ids are
  * provider-specific namespaces — a Bedrock id ("us.anthropic.…") means nothing to a
  * subscription-backed provider and vice-versa — so grouping by provider makes the
- * source of each model obvious ("byoc › claude-opus-4-8" vs "bedrock › us.anthropic…").
+ * source of each model obvious ("byoc › claude-opus-4-8" vs "goose › us.anthropic…").
  *
  * The picker's stored value is still the model id (unchanged contract): a model that
  * two providers offer is simply listed under each. When NO model carries a provider
@@ -23,11 +23,13 @@ export interface ModelGroup {
   models: string[];
 }
 
-// Friendly labels for the known internal provider tags. "goose" is the agent
-// framework, not the model source — its models are Bedrock ids, so we surface it
-// as "bedrock" (what the user recognizes). Unknown tags render verbatim.
+// Friendly labels for provider tags whose display name differs from the tag.
+// "byoc" -> "bring-your-own-claude" (spell out the acronym). goose is left
+// verbatim: it's multi-use and not tied to one model source, so it keeps its
+// own name. Add an entry here only when a tag needs prettifying; unknown tags
+// render verbatim.
 const PROVIDER_LABELS: Record<string, string> = {
-  goose: "bedrock",
+  byoc: "bring-your-own-claude",
 };
 
 /** Model ids offered by NO named provider ([] or absent) are bucketed here so a

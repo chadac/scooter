@@ -18,9 +18,9 @@ describe("groupModelsByProvider", () => {
       "claude-sonnet-4-5",
     );
     expect(groups).not.toBeNull();
-    // byoc holds the default -> it leads; goose renders as "bedrock".
+    // byoc holds the default -> it leads; byoc spells out, goose stays verbatim.
     expect(groups!.map((g) => g.provider)).toEqual(["byoc", "goose"]);
-    expect(groups!.map((g) => g.label)).toEqual(["byoc", "bedrock"]);
+    expect(groups!.map((g) => g.label)).toEqual(["bring-your-own-claude", "goose"]);
     expect(groups!.find((g) => g.provider === "byoc")!.models).toEqual(["claude-sonnet-4-5"]);
   });
 
@@ -59,9 +59,9 @@ describe("groupModelsByProvider", () => {
 });
 
 describe("providerLabel", () => {
-  it("maps goose -> bedrock and passes other tags through", () => {
-    expect(providerLabel("goose")).toBe("bedrock");
-    expect(providerLabel("byoc")).toBe("byoc");
+  it("spells out byoc and passes other tags through verbatim", () => {
+    expect(providerLabel("byoc")).toBe("bring-your-own-claude");
+    expect(providerLabel("goose")).toBe("goose");
     expect(providerLabel("claude-code")).toBe("claude-code");
   });
 });
