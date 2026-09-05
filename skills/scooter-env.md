@@ -79,19 +79,6 @@ Enable a background systemd service:
 }
 ```
 
-## Sharing modules via the registry
-
-You can attach modules others published, and publish your own:
-
-```bash
-scooter-rebuild module search [query]        # search the shared registry
-scooter-rebuild module add <name-or-id>      # attach a registry module (+ switch)
-scooter-rebuild module detach <name-or-id>   # detach it (+ switch)
-scooter-rebuild module attached              # list attached registry modules
-scooter-rebuild publish <name> [--public] [--description D]
-                                             # publish your local modules/<name>.nix
-```
-
 ## It runs in the BACKGROUND — keep working, then check the status
 
 `scooter-rebuild switch` launches the build+switch in the background and returns

@@ -132,48 +132,6 @@ export async function loadWebServices(
   }
 }
 
-/** A Nix module from the broker registry (search result / settings list). */
-export interface RegistryModule {
-  id: number;
-  name: string;
-  description: string;
-  visibility: "public" | "private";
-  owner?: string;
-  /** True if it's already attached to this conversation. */
-  attached?: boolean;
-}
-
-/** Result of a module-registry fetch — `configured` distinguishes "no module
- *  registry (fake/local, or pod asleep)" from "configured but nothing found". */
-export interface ModuleSearchResult {
-  configured: boolean;
-  modules: RegistryModule[];
-}
-
-/** Search the broker module catalog (caller's own + all public) for a conversation.
- *  Empty query = all. 501 → { configured:false }. Needs a running pod. */
-export async function searchModules(
-  config: AgentHostConfig,
-  conversationId: string,
-  query = "",
-): Promise<ModuleSearchResult> {
-  try {
-    const res = await fetch(
-      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/module-registry?q=${encodeURIComponent(query)}`,
-      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
-    );
-    if (res.status === 501) return { configured: false, modules: [] };
-    if (!res.ok) {
-      console.warn(`[client] searchModules ${conversationId}: HTTP ${res.status}`);
-      return { configured: true, modules: [] };
-    }
-    return { configured: true, modules: ((await res.json()) as { modules?: RegistryModule[] }).modules ?? [] };
-  } catch (e) {
-    console.warn(`[client] searchModules ${conversationId} failed:`, e);
-    return { configured: true, modules: [] };
-  }
-}
-
 /** Manually compact a conversation (summarize older turns → continue on
  *  summary + recent). Resolves { compacted } — false when too short to compact.
  *  Throws with the server's message on failure (leaves the conversation unchanged). */
@@ -190,24 +148,6 @@ export async function compactConversation(
     throw new Error(body.error ?? `compaction failed (HTTP ${res.status})`);
   }
   return (await res.json()) as { compacted: boolean; summarizedTurns?: number; keptRuns?: number };
-}
-
-/** Install (attach) a registry module by name-or-id + re-converge. Throws with the
- *  server's error message on failure (unknown module, pod asleep, switch error). */
-export async function installModule(
-  config: AgentHostConfig,
-  conversationId: string,
-  ref: string,
-): Promise<string> {
-  const res = await fetch(
-    `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/modules/${encodeURIComponent(ref)}/install`,
-    { method: "POST", headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
-  );
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `install failed (HTTP ${res.status})`);
-  }
-  return ((await res.json()) as { message?: string }).message ?? `attached ${ref}`;
 }
 
 /** Start a web service (systemctl start via the agent-host). Resolves true once

@@ -50,7 +50,6 @@ owner = "broker"
 [broker.tables]
 sandbox_size        = { writers = ["broker"], readers = [] }
 permission_requests = { writers = ["broker"], readers = [] }
-module_registry     = { writers = ["broker"], readers = [] }
 
 [byoc]
 owner = "byoc-controller"

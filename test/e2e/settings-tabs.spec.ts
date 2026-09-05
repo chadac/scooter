@@ -16,7 +16,6 @@ import { test, expect, snapshot, assertConsistent } from "./fixtures.js";
 const TABS = [
   { id: "tasks", label: "Scheduled Tasks" },
   { id: "claude", label: "Bring Your Own Claude" },
-  { id: "modules", label: "Modules" },
   { id: "admin", label: "Admin Area" },
 ];
 
@@ -61,11 +60,12 @@ test.describe("settings page tabs", () => {
 
   test("a deep-link to a tab opens it directly after a full page load", async ({ page }) => {
     // The nginx SPA fallback serves index.html for /settings/*; the app re-derives the
-    // tab from the path. This is the bookmark / shared-link case.
-    await page.goto("/settings/modules");
+    // tab from the path. This is the bookmark / shared-link case. Use a non-default tab
+    // so this asserts real path-derivation, not just the fallback.
+    await page.goto("/settings/claude");
     await expect(page.locator('[data-testid="settings-page"]')).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('[data-testid="settings-tab-modules"]')).toHaveAttribute("aria-selected", "true");
-    await expect(page.locator('[data-testid="settings-panel-modules"]')).toBeVisible();
+    await expect(page.locator('[data-testid="settings-tab-claude"]')).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator('[data-testid="settings-panel-claude"]')).toBeVisible();
   });
 
   test("an UNKNOWN tab segment falls back to the first tab (a stale bookmark still works)", async ({ page }) => {
@@ -78,15 +78,15 @@ test.describe("settings page tabs", () => {
     await chat.open();
     await page.locator('[data-testid="settings-toggle"]').click();
     await expect(page.locator('[data-testid="settings-page"]')).toBeVisible({ timeout: 20_000 });
-    await page.locator('[data-testid="settings-tab-modules"]').click();
-    await page.waitForURL((u) => u.pathname === "/settings/modules", { timeout: 20_000 });
+    await page.locator('[data-testid="settings-tab-claude"]').click();
+    await page.waitForURL((u) => u.pathname === "/settings/claude", { timeout: 20_000 });
 
     await page.goBack();
     await page.waitForURL((u) => u.pathname === "/settings/tasks", { timeout: 20_000 });
     await expect(page.locator('[data-testid="settings-tab-tasks"]')).toHaveAttribute("aria-selected", "true");
 
     await page.goForward();
-    await page.waitForURL((u) => u.pathname === "/settings/modules", { timeout: 20_000 });
+    await page.waitForURL((u) => u.pathname === "/settings/claude", { timeout: 20_000 });
 
     // All the way back out to the chat view.
     await page.goBack();

@@ -15,14 +15,13 @@ import pathlib
 import pytest
 
 from broker.aws.store import PermissionStore, StoreConfig
-from broker.registry.store import ModuleRegistryStore
 from broker.sandbox.store import SandboxSizeStore
 
 SERVICE_SRC = pathlib.Path(__file__).resolve().parents[1] / "broker"
 
 
 @pytest.mark.parametrize(
-    "store_cls", [PermissionStore, ModuleRegistryStore, SandboxSizeStore], ids=lambda c: c.__name__
+    "store_cls", [PermissionStore, SandboxSizeStore], ids=lambda c: c.__name__
 )
 def test_stores_expose_NO_schema_creating_method(store_cls):
     # init() used to run create_all. It is gone: nothing on a store builds tables, so a
@@ -60,8 +59,8 @@ async def test_create_schema_REFUSES_a_postgres_engine():
 async def test_create_schema_DOES_build_tables_on_sqlite():
     # The guard must not break the test path it protects.
     from conftest import create_schema, sqlite_config
-    from broker.registry import store as registry_store
+    from broker.sandbox import store as sandbox_store
 
-    store = ModuleRegistryStore(sqlite_config())
-    await create_schema(store, registry_store._Base)
-    assert await store.list_visible(viewer="someone") == []
+    store = SandboxSizeStore(sqlite_config())
+    await create_schema(store, sandbox_store._Base)
+    assert await store.get("someone") is None
