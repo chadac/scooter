@@ -36,10 +36,14 @@ let
   providerModelIds = lib.unique
     (lib.concatMap (p: lib.attrNames cfg.agent.availableModels.${p}) providerNames);
   # The GLOBAL default (provider-less contexts): the goose group's — the cloud floor is what a
-  # provider-less context runs — else the deprecated agent.model, else the first model anywhere.
+  # provider-less context runs — else the deprecated agent.model, else ANY provider's explicit
+  # default (an operator's choice beats sort order), else the first model anywhere.
   defaultModelId =
     if providerDefaults ? goose then providerDefaults.goose
     else if cfg.agent.model != null then cfg.agent.model
+    # attrValues is alphabetical BY PROVIDER — arbitrary when providers disagree, but it only ever
+    # picks a model someone marked `default`, never the alphabetically-first id. Why: PR pending.
+    else if providerDefaults != { } then lib.head (lib.attrValues providerDefaults)
     else if providerModelIds != [ ] then lib.head providerModelIds
     else null;
   modelIds = lib.unique (
@@ -313,10 +317,11 @@ in
         type = types.nullOr types.str;
         default = null;
         description = ''
-          DEPRECATED — use `availableModels.<id>.default = true` instead. When set
-          (and no availableModels entry is marked default), it's the default model
-          and is added to the offered set (back-compat for existing deploys). For
-          Bedrock, the cross-region inference-profile id.
+          DEPRECATED — use `availableModels.<id>.default = true` instead. When set,
+          it's added to the offered set (back-compat for existing deploys) and, unless
+          the `goose` provider marks its own default, becomes the global default —
+          taking precedence over any OTHER provider's `default` marking. For Bedrock,
+          the cross-region inference-profile id.
         '';
       };
 
