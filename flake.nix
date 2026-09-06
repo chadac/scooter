@@ -153,31 +153,11 @@
           # Runs OUTSIDE the sandbox. Provider-agnostic later; selected by attr.
           #
           # DOWNSTREAM PATCH: goose's Bedrock formatter has no match arm for
-          # `reasoningContent`, so a reasoning model — xAI Grok reasons by DEFAULT —
-          # fails EVERY turn with "Unsupported content block type from Bedrock". On
-          # tool-calling turns Grok returns reasoningContent -> redactedContent
-          # (encrypted bytes), so this is not an edge case: it is every response.
-          # The patch maps it to goose's existing Thinking/RedactedThinking variants
-          # (inbound) and replays signed reasoning back (outbound), which Bedrock
-          # requires unmodified in a multi-turn conversation. Drop it when an
-          # upstream-fixed goose is pinned — block/goose#6192 fixed the analogous
-          # OPENAI-compatible formatter; the Bedrock one was missed and still carries
-          # a comment asserting "Bedrock doesn't use this format".
-          # See pkgs/goose/bedrock-reasoning-content.patch.
-          #
-          agent = pkgs.goose-cli.overrideAttrs (old: {
-            # `patches`, NOT `cargoPatches`. nixpkgs' goose-cli is a
-            # `buildRustPackage (finalAttrs: ...)`, and buildRustPackage computes
-            # `patches = cargoPatches ++ patches` from the ORIGINAL args — so a
-            # cargoPatches entry added via overrideAttrs never reaches `patches` and is
-            # silently DROPPED (`nix eval .#agent.patches` -> []). The build still
-            # succeeds and the binary still differs from stock (other override effects),
-            # so it fails invisibly: the reasoning fix below appeared to deploy for a
-            # full release while Grok kept failing with the exact error it fixes.
-            patches = (old.patches or [ ]) ++ [
-              ./pkgs/goose/bedrock-reasoning-content.patch
-            ];
-          });
+          # Bedrock reasoningContent fix is now upstream as of goose-cli 1.47.0.
+          # The Bedrock formatter properly handles ReasoningText and RedactedContent
+          # blocks in both directions (inbound from_bedrock_content_block and outbound
+          # to_bedrock_message_content). No patch needed.
+          agent = pkgs.goose-cli;
 
           # agent-host (TypeScript): runs `goose acp` per conversation OUTSIDE the
           # sandbox; ACP<->AG-UI bridge; exec serviced via the agent-sandbox API.
