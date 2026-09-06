@@ -12,7 +12,8 @@
  * suspended we show the Start prompt and services appear once it's up.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { RotateCw, Plus } from "lucide-react";
 
 import {
   resumeConversation,
@@ -31,6 +32,7 @@ import { agentHostConfig } from "./config.js";
 import { useSessions, currentConversation } from "./sessions.js";
 import { ServiceRows } from "./ServicesPanel.js";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
@@ -185,6 +187,32 @@ export const DOT: Record<SandboxState, string> = {
   unknown: "bg-muted-foreground/40 animate-pulse",
 };
 
+/** Status-banner tint per state — a full-width bar at the top of the Sandbox tab. */
+const BANNER: Record<SandboxState, string> = {
+  running: "border-success/30 bg-success/10",
+  suspended: "border-warning/30 bg-warning/10",
+  starting: "border-warning/30 bg-warning/10",
+  ended: "border-border bg-muted/40",
+  unknown: "border-border bg-muted/30",
+};
+
+const BANNER_TEXT: Record<SandboxState, string> = {
+  running: "Sandbox running",
+  suspended: "Sandbox suspended",
+  starting: "Starting sandbox…",
+  ended: "Sandbox ended",
+  unknown: "Checking sandbox…",
+};
+
+/** A section heading in the Sandbox tab: small, upper-cased, letter-spaced label. */
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      {children}
+    </div>
+  );
+}
+
 /** Search + install Nix MODULES from the broker registry into this sandbox. Runs
  *  in-pod (scooter-rebuild), so it's shown only while the pod is running. */
 export function ModulesSection({ conversationId }: { conversationId: string }) {
@@ -194,6 +222,9 @@ export function ModulesSection({ conversationId }: { conversationId: string }) {
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // Collapsed by default (matches the compact panel design); the "+ Add module"
+  // button expands the search + browse list.
+  const [expanded, setExpanded] = useState(false);
 
   const runSearch = useCallback(async (q: string) => {
     setLoading(true);
@@ -219,67 +250,101 @@ export function ModulesSection({ conversationId }: { conversationId: string }) {
     }
   };
 
+  const installedCount = modules.filter((m) => m.attached).length;
+
   return (
-    <div data-testid="modules-section">
-      <div className="mb-1 text-xs font-medium text-muted-foreground">Modules</div>
-      <form
-        onSubmit={(e) => { e.preventDefault(); void runSearch(query); }}
-        className="mb-2 flex gap-1"
-      >
-        <input
-          data-testid="module-search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search modules…"
-          className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
-        />
-        <Button variant="outline" size="xs" type="submit">
-          Search
-        </Button>
-      </form>
+    <div data-testid="modules-section" className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <SectionLabel>Modules</SectionLabel>
+        <span
+          data-testid="modules-installed-count"
+          className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground"
+        >
+          {installedCount === 0 ? "none installed" : `${installedCount} installed`}
+        </span>
+      </div>
 
       {!configured ? (
         <p data-testid="modules-unavailable" className="text-xs text-muted-foreground">
           The module registry isn’t available.
         </p>
-      ) : loading ? (
-        <p className="text-xs text-muted-foreground">Loading…</p>
-      ) : modules.length === 0 ? (
-        <p data-testid="modules-empty" className="text-xs text-muted-foreground">No modules found.</p>
       ) : (
-        <ul data-testid="module-list" className="flex flex-col gap-1">
-          {modules.map((m) => (
-            <li key={m.id} data-testid="module-item" className="flex items-start gap-2 rounded-md border p-2">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-xs font-medium">{m.name}</span>
-                  {m.visibility === "private" && (
-                    <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">private</span>
-                  )}
-                </div>
-                {m.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{m.description}</p>}
-              </div>
-              {m.attached ? (
-                <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-success/15 text-success">
-                  installed
-                </span>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="xs"
-                  data-testid="module-install"
-                  disabled={installing === m.name}
-                  onClick={() => void install(m.name)}
-                  className="shrink-0"
-                >
-                  {installing === m.name ? "Installing…" : "Install"}
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="modules-add-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+            className="self-start"
+          >
+            <Plus className="size-3.5" aria-hidden />
+            Add module
+          </Button>
+
+          {expanded ? (
+            <div className="flex flex-col gap-2">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void runSearch(query);
+                }}
+                className="flex gap-1"
+              >
+                <input
+                  data-testid="module-search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search modules…"
+                  className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
+                />
+                <Button variant="outline" size="xs" type="submit">
+                  Search
                 </Button>
+              </form>
+
+              {loading ? (
+                <p className="text-xs text-muted-foreground">Loading…</p>
+              ) : modules.length === 0 ? (
+                <p data-testid="modules-empty" className="text-xs text-muted-foreground">No modules found.</p>
+              ) : (
+                <ul data-testid="module-list" className="flex flex-col gap-1">
+                  {modules.map((m) => (
+                    <li key={m.id} data-testid="module-item" className="flex items-start gap-2 rounded-md border p-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-medium">{m.name}</span>
+                          {m.visibility === "private" && (
+                            <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">private</span>
+                          )}
+                        </div>
+                        {m.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{m.description}</p>}
+                      </div>
+                      {m.attached ? (
+                        <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-success/15 text-success">
+                          installed
+                        </span>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          data-testid="module-install"
+                          disabled={installing === m.name}
+                          onClick={() => void install(m.name)}
+                          className="shrink-0"
+                        >
+                          {installing === m.name ? "Installing…" : "Install"}
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               )}
-            </li>
-          ))}
-        </ul>
+              {note && <p data-testid="module-note" className="text-[11px] text-muted-foreground">{note}</p>}
+            </div>
+          ) : null}
+        </>
       )}
-      {note && <p data-testid="module-note" className="mt-1 text-[11px] text-muted-foreground">{note}</p>}
     </div>
   );
 }
@@ -367,13 +432,21 @@ export function SandboxPanelView({
   onRescanServices,
   rescanning,
 }: SandboxPanelViewProps) {
+  // A stopped service's "+ Service" card reveals a short explainer (services are
+  // declared in-sandbox, not created from here), rather than pretending to be a form.
+  const [showAddHint, setShowAddHint] = useState(false);
+
   return (
-    <div className="flex flex-col gap-3" data-testid="sandbox-panel">
-      {/* Pod status */}
-      <div className="flex items-center gap-2">
-        <span className={`inline-block h-2.5 w-2.5 rounded-full ${DOT[state]}`} aria-hidden />
+    <div className="flex flex-col gap-4" data-testid="sandbox-panel">
+      {/* Status banner — a full-width tinted bar mirroring the pod lifecycle. Hosts
+          the contextual action on the right: Start when down, Rescan when running. */}
+      <div
+        data-testid="sandbox-status-banner"
+        className={cn("flex items-center gap-2 rounded-lg border px-3 py-2.5", BANNER[state])}
+      >
+        <span className={cn("inline-block h-2.5 w-2.5 rounded-full", DOT[state])} aria-hidden />
         <span className="text-sm font-medium" data-testid="sandbox-state" data-state={state}>
-          {LABEL[state]}
+          {BANNER_TEXT[state]}
         </span>
         {(state === "suspended" || state === "starting") && (
           <Button
@@ -387,6 +460,20 @@ export function SandboxPanelView({
             {state === "starting" ? "Starting…" : "Start sandbox"}
           </Button>
         )}
+        {state === "running" && onRescanServices ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            data-testid="sandbox-rescan-services"
+            disabled={rescanning}
+            onClick={onRescanServices}
+            title="Re-read the sandbox's service manifest (after scooter-rebuild)"
+            aria-label="Rescan services"
+            className="ml-auto text-muted-foreground hover:text-foreground"
+          >
+            {rescanning ? <span className="text-xs">Rescanning…</span> : <RotateCw className="size-4" aria-hidden />}
+          </Button>
+        ) : null}
       </div>
 
       {/* Owner — who created this conversation. Hidden when unowned (nothing to
@@ -405,31 +492,31 @@ export function SandboxPanelView({
       {/* Body: services + modules when running; a hint otherwise. */}
       {state === "running" ? (
         <>
-          <div>
-            <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Web services</span>
-              {onRescanServices ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2 text-xs"
-                  data-testid="sandbox-rescan-services"
-                  onClick={onRescanServices}
-                  disabled={rescanning}
-                  title="Re-read the sandbox's service manifest (after scooter-rebuild)"
-                >
-                  {rescanning ? "Rescanning…" : "Rescan"}
-                </Button>
-              ) : null}
-            </div>
-            {services.length > 0 ? (
-              <ServiceRows services={services} starting={busy} onStart={onStartService} onStop={onStopService} />
-            ) : (
+          <section className="flex flex-col gap-2">
+            <SectionLabel>Web services</SectionLabel>
+            {services.length === 0 ? (
               <p className="text-xs text-muted-foreground" data-testid="sandbox-no-services">
                 No web services declared in this sandbox.
               </p>
-            )}
-          </div>
+            ) : null}
+            <ServiceRows
+              services={services}
+              starting={busy}
+              onStart={onStartService}
+              onStop={onStopService}
+              onAdd={() => setShowAddHint((v) => !v)}
+            />
+            {showAddHint ? (
+              <p
+                data-testid="service-add-hint"
+                className="rounded-md border bg-muted/30 p-2 text-[11px] leading-relaxed text-muted-foreground"
+              >
+                Web services are declared inside the sandbox — install a module below, or ask Scooter
+                to add one (e.g. a terminal or VS Code) with <span className="font-mono">scooter-rebuild</span>.
+                {onRescanServices ? " Use the ↻ button above to re-scan once it's added." : ""}
+              </p>
+            ) : null}
+          </section>
           {conversationId && <ModulesSection conversationId={conversationId} />}
         </>
       ) : (

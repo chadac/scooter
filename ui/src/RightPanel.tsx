@@ -176,6 +176,8 @@ export function RightPanel() {
             onStartSandbox={() => void sandbox.startSandbox()}
             onStartService={sandbox.startService}
             onStopService={sandbox.stopService}
+            onRescanServices={sandbox.rescanServices}
+            rescanning={sandbox.rescanning}
           />
         ) : active === "approvals" ? (
           nInterrupts > 0 ? (
