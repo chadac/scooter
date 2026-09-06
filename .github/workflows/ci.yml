@@ -1057,6 +1057,13 @@ jobs:
         run: |
           set -euo pipefail
           marker="<!-- e2e-shard-report -->"
+          # A CANCELLED run says nothing about the code. `cancel-in-progress` supersedes
+          # the in-flight run on every push/label, and a cancelled shard uploads no report
+          # — which the renderer below would call "crashed / timed out". Why: PR #496.
+          if [ "$SHARDS_RESULT" = "cancelled" ] || [ "$DISTRIBUTE_RESULT" = "cancelled" ]; then
+            echo "e2e run was cancelled (superseded) — leaving the sticky comment untouched."
+            exit 0
+          fi
           # Is the whole e2e green this run?
           if [ "$SHARDS_RESULT" = "success" ] && [ "$DISTRIBUTE_RESULT" = "success" ]; then
             passed=1
