@@ -17,7 +17,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createAguiServer } from "./agui/server.js";
-import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "./api/management.js";
+import {
+  createManagementApi,
+  raiseAwsApprovalInterrupt,
+  fetchPendingAwsRequests,
+  fetchConversationShares,
+} from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
 import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
@@ -1324,6 +1329,18 @@ export async function main(
       // only (it owns sizing); keyed by shortId like the show/set resource tools.
       sandboxResources: brokerProvisioner
         ? (id: string) => brokerProvisioner.getSize(shortId(id))
+        : undefined,
+      // The conversation's published static shares for the right-panel Shares tab.
+      // Broker path only (needs the agent-host SA to relay the query); keyed by
+      // shortId like the resource tools — the broker owns shares by the short-id.
+      listShares: (process.env.BROKER_URL ?? "").trim()
+        ? async (id: string) =>
+            fetchConversationShares(
+              (process.env.BROKER_URL ?? "").replace(/\/$/, ""),
+              shortId(id),
+              await brokerAuthHeaders(),
+              (status) => hostLog.warn("broker /shares list failed", { conversation_id: id, status }),
+            )
         : undefined,
       // BYO-Claude Settings section (mint one-liner + connected badge). Undefined = BYO off.
       remoteAgent: remoteAgentUi,

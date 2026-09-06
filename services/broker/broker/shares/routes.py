@@ -172,6 +172,7 @@ def create_shares_router(
     public_base_url: str = "",
     frame_ancestors: str = "'self'",
     now: Callable[[], str] = lambda: "",
+    is_admin: Callable[[Identity], bool] = lambda identity: identity.is_approver,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -227,8 +228,19 @@ def create_shares_router(
         return {**share.summary(), "url": _url(share.uuid), "entry_point": entry_point}
 
     @router.get("/shares")
-    async def list_shares(identity: Identity = Depends(authenticate)):
-        shares = await store.list_by_owner(identity.conversation_id)
+    async def list_shares(
+        identity: Identity = Depends(authenticate), conversation_id: str = "",
+    ):
+        # By default a caller sees only its OWN conversation's shares. A control/
+        # approver caller (the agent-host relaying a UI request on the user's behalf)
+        # may pass an EXPLICIT conversation_id to list a named conversation's shares —
+        # the browser has no sandbox SA token, so the agent-host is the only path to a
+        # per-conversation view. A non-admin asking for anyone else's is 403 (never a
+        # cross-conversation read); asking for its own explicitly is allowed.
+        if conversation_id and conversation_id != identity.conversation_id and not is_admin(identity):
+            raise HTTPException(status_code=403, detail="not permitted to list another conversation's shares")
+        owner = conversation_id or identity.conversation_id
+        shares = await store.list_by_owner(owner)
         return {"shares": [{**s.summary(), "url": _url(s.uuid)} for s in shares]}
 
     @router.get("/shares/{uuid}")

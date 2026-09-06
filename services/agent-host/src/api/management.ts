@@ -156,6 +156,11 @@ export interface ManagementDeps {
    *  so the Sandbox tab can show the user what the pod is allotted. Wired only on the
    *  broker path (the broker owns + applies sizing); absent = the route reports none. */
   sandboxResources?: (conversationId: string) => Promise<SandboxResources | undefined>;
+  /** List the static shares (broker /shares) a conversation has published, for the
+   *  right-panel Shares tab. Wired only on the broker path (the browser has no sandbox
+   *  SA token, so the agent-host relays the query under its own control/approver SA,
+   *  passing the conversation's short-id); absent = the tab reports none. */
+  listShares?: (conversationId: string) => Promise<ConversationShares>;
   /** Bring-your-own-Claude (Increment 2): powers the Settings "Connect your Claude agent"
    *  section — mint an owner-bound join token + the copyable docker one-liner, and report whether
    *  the caller's agent is currently connected (for the live badge). Optional — absent when BYO
@@ -180,6 +185,55 @@ export interface AwsRequestSummary {
   risk_level?: string;
   policy_summary?: string;
   justification?: string;
+}
+
+/** One published static share, as the broker's /shares summary returns it (snake_case
+ *  passed through verbatim). The UI maps these to its camelCase view type. */
+export interface ShareSummary {
+  uuid: string;
+  url: string;
+  description?: string;
+  visibility?: string;
+  latest_version?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** A conversation's static shares, plus whether the broker's shares feature is even on
+ *  (`configured:false` => the UI hides the tab rather than showing a permanently-empty one). */
+export interface ConversationShares {
+  configured: boolean;
+  shares: ShareSummary[];
+}
+
+/** List a conversation's static shares from the broker (powers the right-panel Shares tab).
+ *
+ *  Same id-space rule as fetchPendingAwsRequests: `brokerConversationId` MUST be the sandbox
+ *  SHORT-id (the broker owns shares by `conversation_id` = the short-id from the SA name), NOT the
+ *  full thread UUID — callers pass `shortId(threadId)`. The agent-host calls this under its own
+ *  control/approver SA and passes conversation_id explicitly (the browser has no sandbox token).
+ *  A 404/501 (shares feature off, or no broker) reports `configured:false`; any other error is a
+ *  quiet empty (best-effort — the tab just shows its empty state). */
+export async function fetchConversationShares(
+  brokerUrl: string,
+  brokerConversationId: string,
+  authHeaders: Record<string, string>,
+  onWarn?: (status: number) => void,
+): Promise<ConversationShares> {
+  const base = brokerUrl.replace(/\/$/, "");
+  if (!base) return { configured: false, shares: [] };
+  const res = await fetch(
+    `${base}/shares?conversation_id=${encodeURIComponent(brokerConversationId)}`,
+    { method: "GET", headers: authHeaders },
+  );
+  if (!res.ok) {
+    // 404/501 = shares feature not enabled on the broker -> unconfigured (hide the tab).
+    if (res.status === 404 || res.status === 501) return { configured: false, shares: [] };
+    onWarn?.(res.status);
+    return { configured: true, shares: [] };
+  }
+  const body = (await res.json().catch(() => ({}))) as { shares?: ShareSummary[] };
+  return { configured: true, shares: (body.shares ?? []).filter((s) => s.uuid) };
 }
 
 /** Query the broker for a conversation's still-PENDING AWS requests (used by the revive re-raise).
@@ -844,6 +898,18 @@ export function createManagementApi(deps: ManagementDeps): Router {
     const id = (await resolveConvId(ctx.params.id)) ?? ctx.params.id;
     const links = (await store.listLinks?.(id)) ?? [];
     return { json: { links } };
+  });
+
+  // The static shares (broker /shares) this conversation has published, for the
+  // right-panel Shares tab. `configured:false` when the broker path isn't wired
+  // (local/fake) so the UI hides the tab rather than showing a spurious empty one.
+  // Read-only + same view-filter model as /links and /web-services (no ownership
+  // gate); index.ts scopes the broker query to this conversation's short-id.
+  r.get("/conversations/:id/shares", async (ctx) => {
+    if (!deps.listShares) return { json: { configured: false, shares: [] } };
+    const id = (await resolveConvId(ctx.params.id)) ?? ctx.params.id;
+    const result = await deps.listShares(id).catch(() => ({ configured: true, shares: [] as ShareSummary[] }));
+    return { json: result };
   });
 
   r.post("/conversations/:id/links", async (ctx) => {
