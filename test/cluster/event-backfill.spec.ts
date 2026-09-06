@@ -125,7 +125,9 @@ function jobInstance(
   const container = spec.template.spec!.containers[0];
   // Only the read path is overridden — image, DB env, volume, SA stay as rendered so the run
   // exercises the real module output. mirrorRoot is /mirror + a per-test subdir for isolation.
-  container.command = ["node", "dist/scripts/runEventBackfill.js", mirrorRoot];
+  // Keep the rendered bin (`agent-host-backfill`); only swap the mirror-path arg. A literal
+  // `node dist/...` here fails MODULE_NOT_FOUND (no WorkingDir; /bin-only image). See PR #487.
+  container.command = ["agent-host-backfill", mirrorRoot];
   return job;
 }
 
@@ -225,11 +227,10 @@ maybe("event backfill Job renders and runs in a real cluster", () => {
     const c = podSpec.containers[0];
 
     expect(c.image, "uses an agent-host image").toMatch(/agent-host/);
-    expect(c.command).toEqual([
-      "node",
-      "dist/scripts/runEventBackfill.js",
-      "/mirror/conversations",
-    ]);
+    // The packaged bin, not `node dist/scripts/runEventBackfill.js`: the image sets no
+    // WorkingDir and links only /bin, so a relative path from CWD / is MODULE_NOT_FOUND.
+    // The bin shim execs node against the script's absolute store path. See PR #487.
+    expect(c.command).toEqual(["agent-host-backfill", "/mirror/conversations"]);
 
     // The SAME agent_host DB wiring the live service uses — a DATABASE_URL here (the original
     // restore's bug) would point at nothing and the load would fail.
