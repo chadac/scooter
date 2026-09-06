@@ -120,9 +120,14 @@ in
                 name = "backfill";
                 image = bcfg.image;
                 imagePullPolicy = cfg.pullPolicy;
+                # Use the packaged `agent-host-backfill` bin, NOT `node
+                # dist/scripts/...`: the image sets no WorkingDir and only links
+                # /bin (the app's dist/ lives deep in the store, unreachable by a
+                # relative path from CWD /), so `node dist/...` exits MODULE_NOT_FOUND
+                # → BackoffLimitExceeded. The npm bin shim execs node against the
+                # script's absolute store path, so it runs from any CWD. Why: PR #487.
                 command = [
-                  "node"
-                  "dist/scripts/runEventBackfill.js"
+                  "agent-host-backfill"
                   bcfg.mirrorPath
                 ];
                 # The SAME agent_host DB wiring agent-host itself uses (discrete

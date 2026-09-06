@@ -6,7 +6,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "agent-host": "dist/index.js"
+    "agent-host": "dist/index.js",
+    "agent-host-backfill": "dist/scripts/runEventBackfill.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
