@@ -1,13 +1,18 @@
 { pkgs, lib, n2c, ui, ... }:
 
 # OCI image for the conversation UI: nginx serving the static assistant-ui build
-# and reverse-proxying the agent-host API on the same origin.
+# and reverse-proxying the agent-host API (and the broker's /s/ shares) on the
+# same origin.
 #
 # The browser loads the SPA from /, and its AG-UI client calls relative paths
 # (/agui SSE, /sessions, /conversations, /models, /whoami, /scheduled-tasks) —
 # nginx forwards those to the agent-host Service. AGENT_HOST_URL is templated in
 # at container start. Every agent-host API prefix the UI calls needs a `location`
 # here; a missing one falls through to the SPA handler (GET→index.html, write→405).
+#
+# /s/<uuid>/ (published static shares) is forwarded to the BROKER instead, keeping
+# the broker cluster-internal — it must never be exposed at the ingress. BROKER_URL
+# is templated in the same way.
 
 let
   # nginx needs these dirs writable at runtime + a passwd with the worker user
@@ -161,6 +166,22 @@ let
           return 503 '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>Scooter</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}div{text-align:center}p{color:#999}</style></head><body><div><h1>Scooter is updating</h1><p>This service is briefly unavailable while the platform redeploys.<br>Retrying automatically&hellip;</p></div></body></html>';
         }
 
+        # Static shares (broker.shares): /s/<uuid>/... -> the broker, which serves
+        # the published bundle from its Postgres store. Proxied SAME-ORIGIN so the
+        # broker stays cluster-internal (it vends credentials + brokers provider
+        # APIs — it must never be exposed at the ingress) and so ShareEmbed's
+        # relative /s/ iframe resolves. The broker serves /s/ UNAUTHENTICATED by
+        # design (the UUID is the capability), and it 404s when shares is disabled,
+        # so this location is always safe to ship. Buffering ON (static assets, not
+        # a stream); the broker sets its own Content-Type + frame-ancestors CSP,
+        # which pass through since only Host is overridden. Why: PR for shares
+        # serving path.
+        location /s/ {
+          proxy_pass ''${BROKER_URL};
+          proxy_set_header Host $host;
+          proxy_buffering on;
+        }
+
         # SPA: serve the app, fall back to index.html for client routes.
         location / { try_files $uri $uri/ /index.html; }
       }
@@ -171,6 +192,9 @@ let
   entrypoint = pkgs.writeShellScript "ui-entrypoint" ''
     set -e
     : "''${AGENT_HOST_URL:=http://agent-host:8080}"
+    # Where nginx forwards /s/ (static shares). Defaults to the in-namespace broker
+    # Service; the deployment overrides it with the fully-qualified svc address.
+    : "''${BROKER_URL:=http://agent-broker:8080}"
     # Telemetry is ON only when a collector was ACTUALLY configured. Decide BEFORE the
     # placeholder default below is applied, or every deployment would look configured.
     #
@@ -184,7 +208,7 @@ let
     : "''${OTEL_COLLECTOR_URL:=http://127.0.0.1:1}"
     : "''${TELEMETRY_SAMPLE_RATIO:=1}"
     export TELEMETRY_ENABLED TELEMETRY_SAMPLE_RATIO
-    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO' \
+    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_URL $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO' \
       < ${nginxConfTemplate} > /tmp/nginx.conf
     exec ${pkgs.nginx}/bin/nginx -c /tmp/nginx.conf -g 'daemon off;'
   '';
@@ -208,6 +232,8 @@ in
       Entrypoint = [ "${entrypoint}" ];
       Env = [
         "AGENT_HOST_URL=http://agent-host:8080"
+        # /s/ static-share proxy target; the deployment overrides with the FQ svc.
+        "BROKER_URL=http://agent-broker:8080"
         # Unset by default: no collector => /telemetry/ 204s and discards.
         "OTEL_COLLECTOR_URL="
       ];

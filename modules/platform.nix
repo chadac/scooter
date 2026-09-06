@@ -1420,6 +1420,12 @@ in
               env = [{
                 name = "AGENT_HOST_URL";
                 value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
+              } {
+                # nginx forwards /s/ (static shares) here so the broker stays
+                # cluster-internal. Set unconditionally (harmless when shares is
+                # off — the broker 404s /s/); the FQ address matches AGENT_HOST_URL.
+                name = "BROKER_URL";
+                value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080";
               }] ++ lib.optionals cfg.observability.browserTelemetry.enable [
                 # Where nginx forwards /telemetry/. ASSERT rather than defaulting to a
                 # plausible-looking address: a wrong collector URL fails SILENTLY — the UI
