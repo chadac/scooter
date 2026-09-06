@@ -23,6 +23,7 @@ import {
   inferRef,
   toToolResult,
   registerAgentTools,
+  registerWebTools,
   type BrokerClient,
   type BrokerResponse,
   type ToolContext,
@@ -306,6 +307,31 @@ describe("agent-tools: web_fetch SSRF guard", () => {
   });
 });
 
+describe("agent-tools: web tools are decoupled from the broker", () => {
+  // web_search/web_fetch hit DuckDuckGo / a URL directly and never touch the broker,
+  // so registerWebTools must register them with NO broker dep, and registerAgentTools
+  // must no longer own them. See PR (decouple web tools from broker).
+  it("registerWebTools registers web_search + web_fetch without a broker", () => {
+    const names = new Set<string>();
+    const server = {
+      registerTool: (name: string) => names.add(name),
+    } as unknown as Parameters<typeof registerWebTools>[0];
+    registerWebTools(server, {});
+    expect(names.has("web_search")).toBe(true);
+    expect(names.has("web_fetch")).toBe(true);
+  });
+
+  it("registerAgentTools no longer registers the web tools", async () => {
+    const names = new Set<string>();
+    const server = {
+      registerTool: (name: string) => names.add(name),
+    } as unknown as Parameters<typeof registerAgentTools>[0];
+    await registerAgentTools(server, { broker: fakeBroker({ status: 200, raw: "", data: undefined }) }, allAttached());
+    expect(names.has("web_search")).toBe(false);
+    expect(names.has("web_fetch")).toBe(false);
+  });
+});
+
 // A ctx with every provider attached (via link refs), so all provider tools register.
 const githubLink = (): ConversationLink => ({
   source: "github", resourceType: "pr", title: "PR", ref: { owner: "o", repo: "r", number: 7 },
@@ -320,7 +346,9 @@ const allAttached = (): ToolContext =>
   ctxWith([slackLink(), githubLink(), gitlabLink(), jiraLinkFull()]);
 
 /** Register the agent-tools against a fake server and return the set of tool names
- *  (and their titles) that actually got registered. */
+ *  (and their titles) that actually got registered. Mirrors buildServer: the web
+ *  tools come from registerWebTools (broker-independent), the provider reply tools
+ *  from registerAgentTools (broker + attachment-gated). */
 async function registeredTools(ctx: ToolContext): Promise<Map<string, string>> {
   const titles = new Map<string, string>();
   const server = {
@@ -328,6 +356,7 @@ async function registeredTools(ctx: ToolContext): Promise<Map<string, string>> {
       titles.set(name, meta.title ?? "");
     },
   } as unknown as Parameters<typeof registerAgentTools>[0];
+  registerWebTools(server, {});
   await registerAgentTools(server, { broker: fakeBroker({ status: 200, raw: "", data: undefined }) }, ctx);
   return titles;
 }

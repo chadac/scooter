@@ -80,10 +80,16 @@ export interface BrokerResponse {
   raw: string;
 }
 
-export interface AgentToolsDeps {
-  broker: BrokerClient;
+/** Deps for the broker-INDEPENDENT web tools (web_search / web_fetch). These hit
+ *  DuckDuckGo / an arbitrary URL directly and never touch the broker, so they must
+ *  not be gated on the broker being wired. See PR (decouple web tools from broker). */
+export interface WebToolsDeps {
   /** How to fetch a URL for web_fetch / web_search (injectable for tests). */
   fetchImpl?: typeof fetch;
+}
+
+export interface AgentToolsDeps extends WebToolsDeps {
+  broker: BrokerClient;
 }
 
 // --- The shared error-echo mapper — the load-bearing "never hide" rule ---------
@@ -475,7 +481,7 @@ export async function handleJiraComment(
  * related topics; errors echoed.
  */
 export async function handleWebSearch(
-  deps: AgentToolsDeps,
+  deps: WebToolsDeps,
   args: { query: string },
 ): Promise<ToolResult> {
   const doFetch = deps.fetchImpl ?? fetch;
@@ -506,7 +512,7 @@ export async function handleWebSearch(
 
 /** Fetch a URL's main text content. SSRF-guarded (refuses internal/metadata IPs). */
 export async function handleWebFetch(
-  deps: AgentToolsDeps,
+  deps: WebToolsDeps,
   args: { url: string },
 ): Promise<ToolResult> {
   const guard = await ssrfCheck(args.url);
@@ -595,10 +601,42 @@ function isBlockedIp(ip: string): boolean {
 
 // --- Registration --------------------------------------------------------------
 
+/** Register the broker-INDEPENDENT web tools (web_search / web_fetch). They need no
+ *  broker, so buildServer registers them unconditionally — decoupled from the broker
+ *  gate that governs the provider reply tools. Keep this separate from
+ *  registerAgentTools so enabling AWS / broker-routed sandboxes is NOT a prerequisite
+ *  for a web fetcher. See PR (decouple web tools from broker). */
+export function registerWebTools(server: McpServer, deps: WebToolsDeps): void {
+  server.registerTool(
+    "web_search",
+    {
+      title: "Search the web (DuckDuckGo)",
+      description:
+        "Search the web via DuckDuckGo's Instant Answer API (definitions, abstracts, related topics — " +
+        "not a full result index). Good for quick facts + finding a canonical URL to web_fetch.",
+      inputSchema: { query: z.string().describe("The search query.") },
+    },
+    async (args) => (await handleWebSearch(deps, args)) as never,
+  );
+  server.registerTool(
+    "web_fetch",
+    {
+      title: "Fetch a URL",
+      description:
+        "Fetch a public web page and return its readable text. Refuses internal/cluster/metadata " +
+        "addresses. Use after web_search, or on a URL from a PR/issue.",
+      inputSchema: { url: z.string().describe("The http(s) URL to fetch.") },
+    },
+    async (args) => (await handleWebFetch(deps, args)) as never,
+  );
+}
+
 /** Register the agent-tools on an McpServer bound to one conversation. The provider
  *  reply tools (slack/github/gitlab/jira + get_slack_context) are registered ONLY
- *  when that provider is attached to the conversation; web_search/web_fetch are
- *  always registered. Async because attachment resolution reads links + the DB. */
+ *  when that provider is attached to the conversation. web_search/web_fetch are NOT
+ *  registered here — they're broker-independent and live in registerWebTools, which
+ *  buildServer calls unconditionally. Async because attachment resolution reads
+ *  links + the DB. */
 // NOTE: the `title` strings below are load-bearing for the UI. goose surfaces the
 // ACP tool `title` as the tool name in the AG-UI stream, and ui/src/toolCallView.ts
 // matches these EXACT strings to render slack/github/gitlab/jira tool calls as
@@ -706,26 +744,4 @@ export async function registerAgentTools(
       async (args) => (await handleJiraComment(deps, ctx, args)) as never,
     );
   }
-  server.registerTool(
-    "web_search",
-    {
-      title: "Search the web (DuckDuckGo)",
-      description:
-        "Search the web via DuckDuckGo's Instant Answer API (definitions, abstracts, related topics — " +
-        "not a full result index). Good for quick facts + finding a canonical URL to web_fetch.",
-      inputSchema: { query: z.string().describe("The search query.") },
-    },
-    async (args) => (await handleWebSearch(deps, args)) as never,
-  );
-  server.registerTool(
-    "web_fetch",
-    {
-      title: "Fetch a URL",
-      description:
-        "Fetch a public web page and return its readable text. Refuses internal/cluster/metadata " +
-        "addresses. Use after web_search, or on a URL from a PR/issue.",
-      inputSchema: { url: z.string().describe("The http(s) URL to fetch.") },
-    },
-    async (args) => (await handleWebFetch(deps, args)) as never,
-  );
 }
