@@ -113,6 +113,38 @@ let
     ++ (if sonnetEntry != [ ] && (builtins.head sonnetEntry).default && (builtins.head sonnetEntry).hint != "" then [ ]
         else [ "AGENT_MODELS_JSON: sonnet should be default:true with a hint" ]);
 
+  # NO-GOOSE FALLBACK (regression: platform.nix defaultModelId). A subscription-/BYOC-only
+  # deployment has no `goose` provider group, so the global default must fall through to a
+  # provider's EXPLICIT `default` — NOT lib.head of the alphabetically-sorted model ids.
+  # Here every provider marks `claude-opus-5` default while `claude-fable-5` sorts ahead of it:
+  # a correct render picks the chosen opus; the pre-fix bug picked fable on sort order alone
+  # (and fable was the priciest model). The alphabetically-earlier id is what makes this test
+  # fail for the RIGHT reason if the fallback regresses. Render a non-fake, no-goose platform.
+  noGoosePlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.fakeAgent = lib.mkForce false;
+      agentSandbox.agent.availableModels = lib.mkForce {
+        "claude-code"."claude-opus-5" = { default = true; };
+        "claude-code"."claude-fable-5" = { };
+        byoc."claude-opus-5" = { default = true; };
+        byoc."claude-fable-5" = { };
+      };
+    };
+  };
+  ngHostEnv =
+    let ctrs = builtins.attrValues (noGoosePlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  ngEnvVal = name: let m = builtins.filter (e: e.name == name) ngHostEnv; in if m == [ ] then "" else (builtins.head m).value;
+  ngGooseModel = ngEnvVal "GOOSE_MODEL";
+  ngModels = let j = ngEnvVal "AGENT_MODELS_JSON"; in if j == "" then [ ] else builtins.fromJSON j;
+  ngOpus = builtins.filter (m: m.id == "claude-opus-5") ngModels;
+  ngProblems =
+    (if ngGooseModel == "claude-opus-5" then [ ]
+     else [ "no-goose: GOOSE_MODEL should fall through to the per-provider default (claude-opus-5), got '${ngGooseModel}'" ])
+    ++ (if ngOpus != [ ] && (builtins.head ngOpus).default then [ ]
+        else [ "no-goose: AGENT_MODELS_JSON claude-opus-5 should be default:true" ]);
+
   # broker.aws (enabled in the example) must stamp a checksum/aws-accounts annotation
   # on the broker pod template, so editing an account rolls the pod (a ConfigMap
   # content change alone doesn't trigger a rollout). Assert the annotation is present.
@@ -246,7 +278,7 @@ let
     (if hasGrafanaSkill true then [ ] else [ "scooter-grafana.md missing when broker.grafana.enable = true" ])
     ++ (if hasGrafanaSkill false then [ "scooter-grafana.md SHIPPED when broker.grafana.enable = false (the agent will chase a 404)" ] else [ ]);
 
-  allProblems = skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  allProblems = skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability\n"
