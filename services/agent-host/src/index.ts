@@ -1105,27 +1105,33 @@ export async function main(
   // learn what it owns. NOTE this gates STARTUP only — once hydrated, a later list failure must
   // never yank an already-serving pod out of rotation.
   {
-    const RETRIES = 5;
+    // A TIME budget, not an attempt count: on a cold cluster the role (28P01) and the
+    // tables (42P01) are created CONCURRENTLY with this pod, and nothing orders them
+    // before it. Only a readinessProbe guards us, so a slow hydrate stays NotReady
+    // rather than being killed. Why: PR #492.
+    const BUDGET_MS = 90_000;
+    const MAX_DELAY_MS = 5_000;
+    const deadline = Date.now() + BUDGET_MS;
     for (let attempt = 0; ; attempt++) {
       try {
         await sessions.hydrate();
         break;
       } catch (err) {
-        if (attempt === RETRIES - 1) {
+        const delay = Math.min(250 * 2 ** attempt, MAX_DELAY_MS);
+        if (Date.now() + delay >= deadline) {
           // eslint-disable-next-line no-console
           hostLog.errorWith(
               "hydrate failed; cannot read the conversation source of truth, refusing to serve on a stale view",
               err,
-              { attempts: RETRIES },
+              { attempts: attempt + 1, budget_ms: BUDGET_MS },
             );
           throw err;
         }
-        const delay = 250 * 2 ** attempt;
         // eslint-disable-next-line no-console
         hostLog.warn("hydrate attempt failed; retrying", {
             attempt: attempt + 1,
-            attempts: RETRIES,
             retry_in_ms: delay,
+            budget_remaining_ms: deadline - Date.now(),
             error: formatError(err),
           });
         await new Promise((r) => setTimeout(r, delay));
