@@ -196,6 +196,7 @@ cluster-platform: cluster-up
       "conversation-router-image=conversation-router:latest" \
       "broker-image=agent-broker:latest" \
       "webhooks-image=agent-webhooks:latest" \
+      "db-migrator-image=agent-db-migrator:latest" \
       "ui-image=agent-sandbox-ui:latest"; do
       attr="${img%%=*}"; name="${img#*=}"; name="${name%%:*}"
       echo "==> $name"
@@ -203,7 +204,7 @@ cluster-platform: cluster-up
     done
     k3d image import agent-host:latest agent-sandbox-os:latest \
       conversation-controller:latest conversation-router:latest agent-broker:latest \
-      agent-webhooks:latest agent-sandbox-ui:latest -c {{_K3D_CLUSTER}}
+      agent-webhooks:latest agent-db-migrator:latest agent-sandbox-ui:latest -c {{_K3D_CLUSTER}}
     kubectl apply -f "$(nix build .#platform-manifests --no-link --print-out-paths)"
     # Match CI: podCap=1 + 3 replicas so conversations SPREAD across pods. With the
     # default topology every test conversation lands on one pod and any per-pod-view

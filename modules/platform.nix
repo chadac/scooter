@@ -1378,7 +1378,8 @@ in
         };
       }
     ))
-    (lib.mkIf cfg.conversationController.assets.enable {
+    (lib.mkIf cfg.conversationController.assets.enable (
+      let as = cfg.conversationController.assets; in {
       # Dedicated assets PVC for uploaded images. BYTES-ONLY: asset metadata
       # (conversation_id, asset_id, mime_type, size, sha256_hash, created_at) lives
       # in Postgres; the PVC holds only the raw image data, keyed by asset_id.
@@ -1386,14 +1387,33 @@ in
       persistentVolumeClaims.agent-host-assets = {
         metadata = { name = "agent-host-assets"; namespace = cfg.namespace; };
         spec = {
-          accessModes = [ "ReadWriteMany" ];
-          resources.requests.storage = cfg.conversationController.assets.size;
+          accessModes = [ as.accessMode ];
+          resources.requests.storage = as.size;
         }
-        // lib.optionalAttrs (cfg.conversationController.assets.storageClassName != null) {
-          storageClassName = cfg.conversationController.assets.storageClassName;
+        # hostPath escape hatch → bind to the explicit PV below by class; otherwise
+        # use the given/default class. Mirrors historyMirror: an RWX claim never binds
+        # on a cluster whose only provisioner (k3d local-path) is RWO, so on a single
+        # node a hostPath PV backs it and every pod shares the one node's directory.
+        // (if as.hostPath != null
+            then { storageClassName = "agent-host-assets-hostpath"; }
+            else lib.optionalAttrs (as.storageClassName != null) { storageClassName = as.storageClassName; });
+      };
+    }
+    # Single-node hostPath PV so a ReadWriteMany assets PVC binds where there's no RWX
+    # provisioner (all agent-host pods land on the one node, sharing the dir).
+    // lib.optionalAttrs (cfg.conversationController.assets.hostPath != null) {
+      persistentVolumes.agent-host-assets = {
+        metadata.name = "agent-host-assets";
+        spec = {
+          capacity.storage = cfg.conversationController.assets.size;
+          accessModes = [ cfg.conversationController.assets.accessMode ];
+          storageClassName = "agent-host-assets-hostpath";
+          persistentVolumeReclaimPolicy = "Retain";
+          hostPath = { path = cfg.conversationController.assets.hostPath; type = "DirectoryOrCreate"; };
         };
       };
-    })
+    }
+    ))
     (lib.mkIf cfg.ui.enable {
       # Conversation UI — nginx serving the assistant-ui build and proxying the
       # agent-host API on the same origin (so the browser's /agui SSE + /sessions
