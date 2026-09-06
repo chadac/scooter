@@ -177,3 +177,42 @@ async def test_list_and_delete_owner_scoped(store):
     # alice can
     assert alice.delete(f"/shares/{uuid}").status_code == 204
     assert alice.get(f"/s/{uuid}/").status_code == 404
+
+
+def _admin_client(store):
+    """A control/approver caller (is_approver=True) — the agent-host relaying a UI
+    request. Its own conversation_id is "" (not a sandbox), so it must pass an
+    explicit conversation_id to list a named conversation's shares."""
+    app = FastAPI()
+    app.include_router(create_shares_router(store, public_base_url="https://scooter.example.com"))
+    app.dependency_overrides[authenticate] = lambda: Identity(
+        conversation_id="", namespace="agent-sandbox",
+        service_account="system:serviceaccount:agent-sandbox:agent-host", is_approver=True,
+    )
+    return TestClient(app)
+
+
+@pytest.mark.asyncio
+async def test_admin_lists_named_conversation_shares(store):
+    # An admin (agent-host) relays a UI request: list conv-alice's shares by passing
+    # conversation_id explicitly — the path the right-panel Shares tab depends on.
+    alice = _client(store, "conv-alice")
+    uuid = alice.post("/shares", json=_inline("mine")).json()["uuid"]
+
+    admin = _admin_client(store)
+    shares = admin.get("/shares", params={"conversation_id": "conv-alice"}).json()["shares"]
+    assert [s["uuid"] for s in shares] == [uuid]
+    # Without the param the admin (conversation_id="") sees nothing of alice's.
+    assert admin.get("/shares").json()["shares"] == []
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_list_another_conversation(store):
+    alice = _client(store, "conv-alice")
+    alice.post("/shares", json=_inline("mine"))
+    # A sandbox caller may only ever list its OWN — asking for another's is 403,
+    # never a silent cross-conversation read.
+    bob = _client(store, "conv-bob")
+    assert bob.get("/shares", params={"conversation_id": "conv-alice"}).status_code == 403
+    # Its own id explicitly is fine (== the default).
+    assert bob.get("/shares", params={"conversation_id": "conv-bob"}).status_code == 200
