@@ -74,6 +74,17 @@ let
     # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
     boot.isContainer = true;
 
+    # kubelet bind-mounts /etc/hosts and /etc/hostname into the pod, so activation's
+    # setup-etc CANNOT replace them with store symlinks — it errors "could not create
+    # symlink /etc/hosts", which fails switch-to-configuration and makes the FIRST
+    # scooter-rebuild switch report failure (scooter-apply-module infers success from a
+    # failed-unit diff, and the failing switch unit poisons it). kubelet already writes
+    # correct pod entries in both, so stop NixOS managing them. Container-only: lives
+    # HERE, not modules/sandbox-os, because a nixosTest VM has a writable /etc and needs
+    # the managed versions. Why: PR #489.
+    environment.etc.hosts.enable = false;
+    environment.etc.hostname.enable = false;
+
     # Overlay Nix store ALWAYS ON (the writable-store overlay is the ONE sandbox image now —
     # the plain read-only-store variant was retired). Without it /nix/store is the read-only
     # baked image layer, and the sandbox's core operations — the agent's `nix profile install`,
