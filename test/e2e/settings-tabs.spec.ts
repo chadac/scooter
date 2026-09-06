@@ -11,7 +11,22 @@
  * leave the rest of the app in an inconsistent state.
  */
 
+import { type Page } from "@playwright/test";
 import { test, expect, snapshot, assertConsistent } from "./fixtures.js";
+
+// The tabs are an accordion (a trigger that expands the list) below the `desk`
+// (1200px) breakpoint, so each test opens it before the tab buttons can be
+// seen/clicked. At/above desk the trigger is hidden and the list is always shown, so
+// this is a no-op there (the Desktop Chrome viewport is 1280px, hence the isVisible
+// guard). Selecting a tab does NOT auto-close the menu, so one open per test suffices
+// — it stays open across client-side nav (tab clicks, Back/Forward) but resets on a
+// full page.goto().
+async function openTabs(page: Page) {
+  const toggle = page.locator('[data-testid="settings-tabs-toggle"]');
+  if ((await toggle.isVisible()) && (await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click();
+  }
+}
 
 const TABS = [
   { id: "tasks", label: "Scheduled Tasks" },
@@ -36,6 +51,7 @@ test.describe("settings page tabs", () => {
     // deep-link is preserved across the navigation, so a `**/settings/x` glob (which matches the
     // whole URL including the query) would never match.
     await page.waitForURL((u) => u.pathname.startsWith("/settings/"), { timeout: 20_000 });
+    await openTabs(page);
     for (const t of TABS) {
       await expect(page.locator(`[data-testid="settings-tab-${t.id}"]`), t.id).toHaveText(t.label);
     }
@@ -46,6 +62,7 @@ test.describe("settings page tabs", () => {
     await chat.open();
     await page.locator('[data-testid="settings-toggle"]').click();
     await expect(page.locator('[data-testid="settings-page"]')).toBeVisible({ timeout: 20_000 });
+    await openTabs(page);
 
     for (const t of TABS) {
       await page.locator(`[data-testid="settings-tab-${t.id}"]`).click();
@@ -64,6 +81,7 @@ test.describe("settings page tabs", () => {
     // tab from the path. This is the bookmark / shared-link case.
     await page.goto("/settings/modules");
     await expect(page.locator('[data-testid="settings-page"]')).toBeVisible({ timeout: 20_000 });
+    await openTabs(page);
     await expect(page.locator('[data-testid="settings-tab-modules"]')).toHaveAttribute("aria-selected", "true");
     await expect(page.locator('[data-testid="settings-panel-modules"]')).toBeVisible();
   });
@@ -71,6 +89,7 @@ test.describe("settings page tabs", () => {
   test("an UNKNOWN tab segment falls back to the first tab (a stale bookmark still works)", async ({ page }) => {
     await page.goto("/settings/no-such-tab");
     await expect(page.locator('[data-testid="settings-page"]')).toBeVisible({ timeout: 20_000 });
+    await openTabs(page);
     await expect(page.locator('[data-testid="settings-tab-tasks"]')).toHaveAttribute("aria-selected", "true");
   });
 
@@ -78,6 +97,7 @@ test.describe("settings page tabs", () => {
     await chat.open();
     await page.locator('[data-testid="settings-toggle"]').click();
     await expect(page.locator('[data-testid="settings-page"]')).toBeVisible({ timeout: 20_000 });
+    await openTabs(page);
     await page.locator('[data-testid="settings-tab-modules"]').click();
     await page.waitForURL((u) => u.pathname === "/settings/modules", { timeout: 20_000 });
 

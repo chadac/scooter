@@ -92,7 +92,7 @@ function TaskForm({
           className="rounded-md border bg-background px-2 py-1.5 text-sm"
         />
       </div>
-      <div className="flex gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row">
         <div className="flex flex-1 flex-col gap-1">
           <label className="text-xs font-medium text-muted-foreground">Schedule (cron)</label>
           <input
@@ -104,7 +104,7 @@ function TaskForm({
           />
           <span className="text-[11px] text-muted-foreground">5 fields: min hour dom mon dow — e.g. “0 9 * * 1-5” = 9am on weekdays.</span>
         </div>
-        <div className="flex w-48 flex-col gap-1">
+        <div className="flex flex-col gap-1 sm:w-48">
           <label className="text-xs font-medium text-muted-foreground">Timezone</label>
           <input
             data-testid="task-timezone"
@@ -198,7 +198,7 @@ function TaskRow({
   }
 
   return (
-    <li data-testid="task-item" data-enabled={task.enabled} className="flex list-none items-start gap-3 rounded-md border p-3">
+    <li data-testid="task-item" data-enabled={task.enabled} className="flex list-none flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-start sm:gap-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span data-testid="task-item-title" className="truncate font-medium">{task.title}</span>
@@ -726,18 +726,44 @@ const TAB_BODIES: Record<SettingsTab, FC> = {
 };
 
 /**
- * The settings page: a left tab rail + the selected tab's body.
+ * The settings page: a collapsible tab menu + the selected tab's body.
  *
  * Each tab is a real URL (/settings/<tab>) owned by view.ts, so a tab is
  * bookmarkable, survives a refresh, and Back/Forward moves between tabs — rather
  * than the previous single scrolling page reached only by a header toggle.
+ *
+ * The tabs are an accordion (mirrors the conversations sidebar's disclosure): a
+ * trigger showing the active tab that expands the list. Collapsed by default at
+ * every width — a fixed side rail has no room on a phone, and a horizontal scroll
+ * strip is hard to discover/reach. Selecting a tab does NOT auto-close the menu, so
+ * the open list stays put while you move between tabs.
  */
 export function SettingsPage() {
   const tab = useSettingsTab();
   const Body = TAB_BODIES[tab];
+  const [menuOpen, setMenuOpen] = useState(false);
+  const activeLabel = SETTINGS_TABS.find((t) => t.id === tab)?.label ?? "Settings";
+
+  const tabButtons = SETTINGS_TABS.map((t) => {
+    const active = t.id === tab;
+    return (
+      <Button
+        key={t.id}
+        variant="ghost"
+        size="sm"
+        role="tab"
+        aria-selected={active}
+        data-testid={`settings-tab-${t.id}`}
+        onClick={() => viewStore.setTab(t.id)}
+        className={cn("justify-start", active ? "bg-accent font-medium" : "text-muted-foreground")}
+      >
+        {t.label}
+      </Button>
+    );
+  });
 
   return (
-    <div data-testid="settings-page" className="mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden p-6">
+    <div data-testid="settings-page" className="mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden p-4 sm:p-6">
       <div className="flex items-center gap-3">
         <Button
           variant="outline"
@@ -750,31 +776,43 @@ export function SettingsPage() {
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-6">
-        {/* Left tab rail. role=tablist + aria-selected so the active tab is exposed to
-            assistive tech and assertable in tests. */}
-        <nav data-testid="settings-tabs" role="tablist" aria-orientation="vertical" className="flex w-56 shrink-0 flex-col gap-1">
-          {SETTINGS_TABS.map((t) => {
-            const active = t.id === tab;
-            return (
-              <Button
-                key={t.id}
-                variant="ghost"
-                size="sm"
-                role="tab"
-                aria-selected={active}
-                data-testid={`settings-tab-${t.id}`}
-                onClick={() => viewStore.setTab(t.id)}
-                className={cn(
-                  "justify-start",
-                  active ? "bg-accent font-medium" : "text-muted-foreground"
-                )}
-              >
-                {t.label}
-              </Button>
-            );
-          })}
-        </nav>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 sm:flex-row sm:gap-6">
+        {/* Accordion tab menu — a trigger showing the active tab that expands the
+            tab list (mirrors the conversations sidebar's disclosure). Collapsed by
+            default below the `desk` (1200px) breakpoint. At/above desk the list is
+            always shown and the trigger is hidden — the same desk: override the
+            sidebar/right-panel use, so the tabs read as a plain in-flow rail. */}
+        <div data-testid="settings-tabs" className="shrink-0 sm:w-56">
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="settings-tabs-toggle"
+            data-open={menuOpen}
+            aria-expanded={menuOpen}
+            aria-controls="settings-tab-menu"
+            onClick={() => setMenuOpen((o) => !o)}
+            className="w-full justify-between desk:hidden"
+          >
+            <span className="font-medium">{activeLabel}</span>
+            <span className={"transition-transform " + (menuOpen ? "rotate-90" : "")} aria-hidden>
+              ›
+            </span>
+          </Button>
+          {/* Always in the DOM so the desk: variant can force it open with pure CSS;
+              hidden below desk until the trigger expands it. */}
+          <nav
+            id="settings-tab-menu"
+            role="tablist"
+            aria-orientation="vertical"
+            className={cn(
+              "mt-1 flex-col gap-1 rounded-md border bg-background/60 p-1",
+              menuOpen ? "flex" : "hidden",
+              "desk:mt-0 desk:flex desk:border-0 desk:bg-transparent desk:p-0",
+            )}
+          >
+            {tabButtons}
+          </nav>
+        </div>
 
         <div
           role="tabpanel"
