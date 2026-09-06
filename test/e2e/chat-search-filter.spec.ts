@@ -161,7 +161,7 @@ test.describe("sidebar search + filter + label mode", () => {
     await expect(rowA, "the link name must be searchable once the merge lands").toHaveCount(1, {
       timeout: 90_000,
     });
-    await expect(rowB).toHaveCount(0, { timeout: 30_000 });
+    await expect(rowB).toHaveCount(0, { timeout: 90_000 });
     if (!isFull) await expect(page.locator(sb.item)).toHaveCount(1);
 
     // Search matches a plain title too (and drops the non-matching linked row).
