@@ -150,6 +150,30 @@ def test_pending_conversation_gets_a_host():
     assert k.status("c1")["generation"] == 1
 
 
+def test_repairs_missing_hostip_without_touching_owner_or_generation():
+    # Owner "a" is ready, but the CR has hostPod=a and NO hostIP (assigned before the pod's IP
+    # was observed). The loop must patch ONLY hostIP — no hostPod/phase/generation change (a
+    # fence bump would disrupt the live run) — so the router can reach the owner. Without this,
+    # the router scatters requests across pods and a second tab goes silent.
+    cr = _cr("c1", host="a", phase="Assigned", gen=1)  # note: no host_ip
+    k = FakeK8s([Pod("a", True, ip="10.42.0.7")], [cr])
+    reconcile_once(k, cap=10)
+    assert k.patches == [("c1", {"hostIP": "10.42.0.7"})]
+    st = k.status("c1")
+    assert st["hostIP"] == "10.42.0.7"
+    assert st["hostPod"] == "a"          # unchanged
+    assert st["generation"] == 1         # NOT bumped
+    assert st["phase"] == "Assigned"     # unchanged
+
+
+def test_matching_hostip_is_not_rechurned():
+    # hostIP already correct → NoOp, no patch (no churn every tick).
+    cr = _cr("c1", host="a", phase="Assigned", gen=1, host_ip="10.42.0.7")
+    k = FakeK8s([Pod("a", True, ip="10.42.0.7")], [cr])
+    reconcile_once(k, cap=10)
+    assert k.patches == []
+
+
 def test_statusless_cr_unassignable_materializes_pending():
     # REGRESSION (found live on odin): a brand-new CR with status: null that can't be
     # assigned (no pod / all at cap) was left at status:null forever — _state defaults
@@ -383,7 +407,9 @@ def test_running_sandbox_is_not_repaired():
 
     k8s = FakeK8s(
         pods=[Pod("a", True, ip="10.0.0.1")],
-        convs=[_cr("live", host="a", phase="Assigned", gen=1, sandbox_ref="conv-y")],
+        # hostIP matches the pod so there's no routing-address drift to repair — this test is
+        # about the RUNNING sandbox not being force-suspended, not about hostIP convergence.
+        convs=[_cr("live", host="a", phase="Assigned", gen=1, host_ip="10.0.0.1", sandbox_ref="conv-y")],
         sandboxes=[SandboxRef(name="conv-y", age_seconds=1000.0, operating_mode="Running")],
     )
     results = reconcile_once(k8s, cap=10)

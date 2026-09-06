@@ -6,6 +6,7 @@
   "component-coverage.spec.ts",
   "concurrency-divergence.spec.ts",
   "conversation.spec.ts",
+  "integrity-two-streams.spec.ts",
   "interrupt-queue-recovery.spec.ts",
   "interrupt.spec.ts",
   "linked-resources.spec.ts",

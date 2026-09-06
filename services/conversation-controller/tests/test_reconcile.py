@@ -6,6 +6,7 @@ from conversation_controller.reconcile import (
     NoOp,
     Assign,
     LeavePending,
+    RepairHostIP,
     SandboxRef,
     pick_host,
     reconcile,
@@ -206,6 +207,71 @@ def test_assign_carries_the_chosen_pods_ip():
 def test_noop_when_host_still_ready():
     a = reconcile(conv(host="a", phase="Assigned", gen=1), [Pod("a", True)], {"a": 1}, cap=10)
     assert isinstance(a, NoOp)
+
+
+def test_converges_hostip_when_owner_ready_but_hostip_missing():
+    # THE two-tabs-one-goes-silent bug: the conversation was assigned a beat before the pod's
+    # status.podIP was observed, so hostIP was written None and the old "host still ready" NoOp
+    # never revisited it. The router then falls back to the ClusterIP Service and scatters
+    # requests across pods. Reconcile must REPAIR hostIP (owner unchanged, no fence bump).
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, host_ip=None),
+        [Pod("a", True, ip="10.42.0.7")],
+        {"a": 1},
+        cap=10,
+    )
+    assert isinstance(a, RepairHostIP)
+    assert a.host_pod == "a"
+    assert a.host_ip == "10.42.0.7"
+
+
+def test_converges_hostip_when_owner_ready_but_hostip_stale():
+    # Pod replaced under a stable name (StatefulSet-style): same hostPod, new IP. The recorded
+    # hostIP now points at a dead address — converge it to the current one.
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, host_ip="10.42.0.9"),
+        [Pod("a", True, ip="10.42.0.7")],
+        {"a": 1},
+        cap=10,
+    )
+    assert isinstance(a, RepairHostIP)
+    assert a.host_ip == "10.42.0.7"
+
+
+def test_noop_when_hostip_already_matches():
+    # No drift → no churn.
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, host_ip="10.42.0.7"),
+        [Pod("a", True, ip="10.42.0.7")],
+        {"a": 1},
+        cap=10,
+    )
+    assert isinstance(a, NoOp)
+
+
+def test_noop_when_owner_ready_but_ip_not_yet_observed():
+    # The pod is ready but its podIP isn't in the snapshot yet (ip=None). Don't act — we never
+    # blank a hostIP we can't replace; a later tick converges it once the IP is known.
+    a = reconcile(
+        conv(host="a", phase="Assigned", gen=1, host_ip=None),
+        [Pod("a", True)],
+        {"a": 1},
+        cap=10,
+    )
+    assert isinstance(a, NoOp)
+
+
+def test_subagent_converges_hostip_when_colocated_but_hostip_stale():
+    # A subagent co-located on its parent's ready pod, but its hostIP drifted the same way a
+    # top-level owner's can. Repair it (owner/co-location unchanged), don't re-pin (no fence bump).
+    child = ConversationState(
+        name="child", host_pod="a", phase="Assigned", generation=3, host_ip="10.42.0.9",
+        parent_id="parent",
+    )
+    a = reconcile(child, [Pod("a", True, ip="10.42.0.7")], {"a": 1}, cap=10, hosts={"parent": "a"})
+    assert isinstance(a, RepairHostIP)
+    assert a.host_pod == "a"
+    assert a.host_ip == "10.42.0.7"
 
 
 def test_reassigns_when_host_gone_and_bumps_generation():
