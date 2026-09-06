@@ -26,7 +26,7 @@ import {
   type SubagentManager,
 } from "./subagentTools.js";
 import type { ConversationLink } from "../session/manager.js";
-import { registerAgentTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
+import { registerAgentTools, registerWebTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
 import {
@@ -308,6 +308,14 @@ export async function buildServer(
       async (args) => handleSearchSubagent(subagents, conversationId, args) as TR,
     );
   }
+  // Web tools (web_search / web_fetch) need NO broker — they hit DuckDuckGo / a URL
+  // directly. Register them unconditionally so they don't depend on broker wiring
+  // (which otherwise required AWS or broker-routed sandboxes). See PR (decouple web
+  // tools from broker).
+  registerWebTools(server, { fetchImpl: agentTools?.fetchImpl });
+
+  // The provider reply tools (slack/github/gitlab/jira) DO need the broker and are
+  // additionally attachment-gated inside registerAgentTools.
   if (agentTools) {
     await registerAgentTools(
       server,

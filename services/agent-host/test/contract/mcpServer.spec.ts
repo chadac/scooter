@@ -173,6 +173,16 @@ describe("marimo tools wiring (buildServer)", () => {
     expect(names.some((n) => n.startsWith("marimo_"))).toBe(false);
   });
 
+  it("registers web_search + web_fetch even with NO agentTools/broker wiring", async () => {
+    // The decoupling: web tools need no broker, so buildServer must register them
+    // regardless of whether agentTools is wired. clientForServer passes agentTools
+    // = undefined. See PR (decouple web tools from broker).
+    const client = await clientForServer(undefined);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("web_search");
+    expect(names).toContain("web_fetch");
+  });
+
   it("marimo_execute dispatches to the conversation's client", async () => {
     let seenConv: string | undefined;
     const client = await clientForServer({
