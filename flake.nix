@@ -109,6 +109,11 @@
         sandboxOs = k3dImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
         conversationController = k3dImageRef "conversation-controller" pubImages.conversation-controller-image;
         conversationRouter = k3dImageRef "conversation-router" pubImages.conversation-router-image;
+        # The shared-DB migration Job image. Required in the k3d/e2e render: agent-host's
+        # metadata stores stopped self-creating tables (#425), so nothing creates the
+        # `conversations` schema unless this Job runs — without it agent-host crash-loops on
+        # `relation "conversations" does not exist` and every e2e-full spec fails.
+        dbMigrator = k3dImageRef "agent-db-migrator" pubImages.db-migrator-image;
       };
       # attr -> ref, for the push script: `nix build .#k3d-image-refs` + jq. Keyed by
       # the FLAKE IMAGE ATTR whose `.copyTo` pushes it.
@@ -120,6 +125,7 @@
         sandbox-os-image = k3dImages.sandboxOs;
         conversation-controller-image = k3dImages.conversationController;
         conversation-router-image = k3dImages.conversationRouter;
+        db-migrator-image = k3dImages.dbMigrator;
       };
 
       ghcrImages = {
@@ -343,10 +349,25 @@
             agent.skills = scooterSkills; # ship the ./skills/*.md set
             # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
             testing.enable = true;
-            # No migration Job in the cluster/e2e renders: the services still self-create
-            # their tables, so migrations aren't needed for tests, and this keeps the
-            # agent-db-migrator image out of the side-load/k3d push set.
-            dbMigrate.enable = false;
+            # RUN the migration Job in the cluster/e2e renders. This USED to be disabled with
+            # the note "the services still self-create their tables, so migrations aren't
+            # needed for tests" — that stopped being true when agent-host's metadata stores
+            # dropped their inline DDL (#425). With no migrator, NOTHING creates the
+            # `conversations`/jobs/events/assets schema, so agent-host crash-loops at hydrate
+            # on `relation "conversations" does not exist`, agent-host never goes Ready, the
+            # router's /healthz proxy to it fails, and every e2e-full spec dies at
+            # `apply platform + smoke`. The migrator image is now in the side-load/k3d push
+            # sets (flake k3dImagePushMap + justfile + ci.yml) so this Job's image exists.
+            dbMigrate = {
+              enable = true;
+              image = imgs.dbMigrator;
+            };
+            # Assets PVC on the single-node k3d hostPath escape hatch. #471 made this PVC
+            # ReadWriteMany (all agent-host replicas write assets), but k3d's only provisioner
+            # (local-path) is RWO-only, so an RWX claim stays Pending forever and agent-host
+            # never schedules. Same fix as historyMirror.hostPath: a hostPath PV binds the RWX
+            # claim on the one node every pod shares.
+            conversationController.assets.hostPath = "/var/lib/scooter-e2e-assets";
             # The cross-pod history mirror, backed by the single-node hostPath escape hatch
             # (k3d's local-path provisioner has no RWX; a hostPath PV binds the RWX claim and
             # every pod shares the one node's directory — the same mechanism odin uses).
@@ -382,6 +403,7 @@
             webhooks = "agent-webhooks:latest";
             conversationController = "conversation-controller:latest";
             conversationRouter = "conversation-router:latest";
+            dbMigrator = "agent-db-migrator:latest";
           };
           # `nix build .#platform-manifests-k3d`: the SAME test platform, images pulled
           # from the k3d-attached registry by CONTENT TAG (see k3dImages). No side-load.

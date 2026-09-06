@@ -189,13 +189,33 @@ in
         default = "10Gi";
         description = "Size of the dedicated assets PVC (10Gi ≈ 2000 images at 5MB each).";
       };
+      accessMode = mkOption {
+        type = types.str;
+        default = "ReadWriteMany";
+        description = ''
+          Access mode of the assets PVC. ReadWriteMany because the multi-replica
+          agent-host fleet all write assets and pods may land on different nodes
+          (see #471). Left configurable for the degenerate single-node/RWO case.
+        '';
+      };
       storageClassName = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = ''
-          storageClassName for the assets PVC (null = cluster default). ReadWriteOnce
-          is sufficient: only the agent-host deployment writes assets, and it's a single
-          replica or autoscaled (not a StatefulSet). Simpler than RWX.
+          storageClassName for the assets PVC (null = cluster default). Point at an
+          RWX class (EFS/NFS) on a real multi-node cluster. Ignored when hostPath is set.
+        '';
+      };
+      hostPath = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/var/lib/scooter/agent-host-assets";
+        description = ''
+          Single-node escape hatch (e.g. k3d/odin, which have no RWX provisioner):
+          back the assets PVC with a hostPath PV at this path so a ReadWriteMany claim
+          binds. All agent-host pods land on the one node and share the host dir — the
+          same mechanism historyMirror.hostPath uses. Set null on a real multi-node
+          cluster (use storageClassName instead).
         '';
       };
     };
