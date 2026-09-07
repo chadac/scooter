@@ -67,15 +67,29 @@ func assembleList(metas []ConversationRow, crs crLookup, links map[string][]Link
 	return rows
 }
 
+// statusForPhase maps the Conversation CR's status.phase to the sidebar dot state. The controller
+// writes exactly four phases (Pending | Assigned | Suspended | Failed). Only Suspended and Failed
+// are distinguished; Pending/Assigned/"" are a live/starting sandbox → "running". Failed is
+// TERMINAL (the zombie-repair escalation force-deleted the Sandbox and gave up) — it MUST NOT read
+// as "running": a dead conversation with no sandbox was showing the blue active dot because the old
+// mapping treated every non-Suspended phase as running. Why: PR (sandbox-state icon accuracy).
+func statusForPhase(phase string) string {
+	switch phase {
+	case "Suspended":
+		return "suspended"
+	case "Failed":
+		return "failed"
+	default:
+		return "running"
+	}
+}
+
 // makeListRow projects one metadata row + its CR + its links into the wire shape. Shared by the
 // snapshot (assembleList) and the live LISTEN upsert (events.go) so both emit byte-identical rows —
 // if they diverged, a conversation would render one way on first paint and another on the next
 // push. status mapping and the "" namespace match agent-host's old view()+withSources exactly.
 func makeListRow(m ConversationRow, cr CRInfo, ls []Link, now int64) listRow {
-	status := "running"
-	if cr.Phase == "Suspended" {
-		status = "suspended"
-	}
+	status := statusForPhase(cr.Phase)
 	if ls == nil {
 		ls = []Link{}
 	}

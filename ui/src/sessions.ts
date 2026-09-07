@@ -54,8 +54,10 @@ export interface Session {
   parentId?: string;
   /** The conversation's sandbox lifecycle state (server-sourced, live via the
    *  /conversations/events stream): "running" (pod up), "suspended" (idle → pod
-   *  dropped, PVCs kept), "ended". Drives the Sandbox status tab + Start button. */
-  status?: "running" | "suspended" | "ended";
+   *  dropped, PVCs kept), "failed" (the sandbox was force-deleted after the
+   *  zombie-repair escalation gave up — terminal, no pod), "ended". Drives the
+   *  sidebar dot + the Sandbox status tab + Start button. */
+  status?: "running" | "suspended" | "failed" | "ended";
   /** The user renamed this conversation (server-sourced): the title is user-set and
    *  the agent's <title> no longer overrides it. When true, the server title is
    *  authoritative (mergeFromServer stops preferring a stale local title). */

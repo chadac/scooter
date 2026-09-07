@@ -18,6 +18,7 @@ export function subagentsOf(sessions: Session[], parentId: string | undefined): 
 const STATUS_DOT: Record<string, string> = {
   running: "bg-success animate-pulse",
   suspended: "bg-warning",
+  failed: "bg-destructive",
   ended: "bg-muted-foreground/40",
 };
 

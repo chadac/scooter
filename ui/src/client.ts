@@ -30,8 +30,10 @@ export interface ConversationView {
   id: string;
   threadId: string;
   title: string;
-  /** Sandbox lifecycle state. */
-  status: "running" | "suspended" | "ended";
+  /** Sandbox lifecycle state. "failed" = the sandbox was force-deleted after the
+   *  controller's zombie-repair escalation gave up (terminal, no pod) — the router
+   *  maps CR phase=Failed to it so a dead conversation isn't shown as "running". */
+  status: "running" | "suspended" | "failed" | "ended";
   createdAt: number;
   lastActivityAt: number;
   /** The conversation's model (undefined = host default). */

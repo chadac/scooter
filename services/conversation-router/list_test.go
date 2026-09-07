@@ -36,6 +36,23 @@ func TestAssembleList(t *testing.T) {
 		{ID: "b", Phase: "Suspended", SandboxRef: "conv-bb"},
 		// no CR for "ended" — it was ended, so it must be omitted.
 	}
+
+	// statusForPhase is the phase->dot mapping the sidebar reads. Failed is terminal (the
+	// zombie-repair escalation force-deleted the sandbox) and MUST NOT read as "running" —
+	// the regression this locks down (a dead conversation showing the blue active dot).
+	t.Run("statusForPhase maps each phase", func(t *testing.T) {
+		for phase, want := range map[string]string{
+			"Suspended": "suspended",
+			"Failed":    "failed",
+			"Assigned":  "running",
+			"Pending":   "running",
+			"":          "running",
+		} {
+			if got := statusForPhase(phase); got != want {
+				t.Errorf("statusForPhase(%q) = %q, want %q", phase, got, want)
+			}
+		}
+	})
 	links := map[string][]Link{
 		"a": {{Source: "github", ResourceType: "pull", URL: sp("http://x")}, {Source: "slack", ResourceType: "thread"}},
 	}
