@@ -64,39 +64,23 @@ let
   modulesSubdir = "/modules/sandbox-os";
   modulesTreeRoot =
     builtins.substring 0 (builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir) modulesPathStr;
-  # Rebuild the stub overlay in-pod from the bits reconverge-inputs.nix vendored.
-  #
-  # Without this, `pkgs.uv` / `pkgs.marimo` / `pkgs.awscli2` evaluate to the REAL
-  # packages here and a self-modify silently re-fattens the system by ~1 GB — the
-  # bug the old code carried for awscli2 alone (FOLLOW-UP
-  # todo-nix-stubs-reconverge-lockstep). It was unfixable while nix-stubs was
-  # reachable only as a flake input, because this eval has no flake. A pure-Nix
-  # overlay + a JSON lock vendors as plain files, so now it is just an import.
-  #
-  # Applied through `nixpkgs.overlays` rather than at pkgs construction — the
-  # mirror of the image build, which must use pkgs construction because
-  # `pkgs.nixos` sets `nixpkgs.pkgs` and the two options conflict. This eval passes
-  # `system`, so the option is the available half here.
+  # The nix-stubs bits reconverge-inputs.nix vendored, handed to stub-set.nix so
+  # the re-converge rebuilds the stub overlay. Without it `pkgs.uv` / `pkgs.marimo`
+  # / `pkgs.awscli2` are the REAL packages here and a self-modify re-fattens the
+  # system. Null when absent (a nixosTest evaluating this bare). See PR #502.
   stubBitsRoot = modulesTreeRoot;
-  hasStubBits = builtins.pathExists (stubBitsRoot + "/nix-stubs/lock.nix");
-  stubOverlays =
-    if !hasStubBits then [ ]
-    else
-      let
-        lockLib = import (stubBitsRoot + "/nix-stubs/lock.nix") {
-          lib = import (nixpkgsPath + "/lib");
-        };
-      in [
-        (lockLib.mkOverlay {
-          stubs = p: import (modulesPath + "/stubs.nix") { pkgs = p; };
-          lock = modulesPath + "/stubs.lock";
-          flakeLock = stubBitsRoot + "/flake.lock";
-          # The baked binary, not a fresh callPackage — that would compile Rust
-          # inside the pod on every self-modify.
-          nix-stubs = builtins.storePath
-            (builtins.readFile (stubBitsRoot + "/nix-stubs-bin"));
-        })
-      ];
+  stubBits =
+    if !builtins.pathExists (stubBitsRoot + "/nix-stubs/lock.nix") then null
+    else {
+      lockLib = import (stubBitsRoot + "/nix-stubs/lock.nix") {
+        lib = import (nixpkgsPath + "/lib");
+      };
+      flakeLock = stubBitsRoot + "/flake.lock";
+      # The baked binary, not a fresh callPackage — that would compile Rust
+      # inside the pod on every self-modify.
+      nix-stubs = builtins.storePath
+        (builtins.readFile (stubBitsRoot + "/nix-stubs-bin"));
+    };
 
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
     inherit system;
@@ -104,7 +88,9 @@ let
       modulesPath
       { boot.isContainer = true; }
       ({ lib, ... }: {
-        nixpkgs.overlays = stubOverlays;
+        # stub-set.nix turns these into the overlay (and lets a deployment
+        # override which stub set that is).
+        _module.args.stubBits = stubBits;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
         # Keep programs.scooterModule ENABLED across the re-converge so scooter-rebuild
         # / scooter-apply-module / scooter-env-status stay on PATH after a self-modify

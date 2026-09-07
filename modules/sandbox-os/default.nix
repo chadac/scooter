@@ -18,6 +18,7 @@
 {
   imports = [
     ./nix-config.nix
+    ./stub-set.nix
     ./injected-tools.nix
     ./sample-service.nix
     ./web-services.nix
@@ -98,6 +99,11 @@
   # a nixosTest importing modules/sandbox-os bare gets null and simply has no
   # stub overlay to vendor for the re-converge.
   _module.args.nixStubs = lib.mkDefault null;
+
+  # The vendored nix-stubs bits the in-pod re-converge rebuilds its stub overlay
+  # from; null everywhere else, which is what makes stub-set.nix inert in the
+  # image build and in a bare nixosTest. Supplied by runtime-converge/base-config.nix.
+  _module.args.stubBits = lib.mkDefault null;
 
   # Deployment-injected tools (a mounted .scooter flake). On by default like the
   # old lazyTools was: the module emits nothing until a deployment declares a tool.

@@ -289,16 +289,12 @@
           # directly (carry-over.nix), one source of truth (pkgs/broker-tools).
           brokerTools = pkgs.callPackage ./pkgs/broker-tools { };
 
-          # The stub overlay: every attr in modules/sandbox-os/stubs.nix becomes a
-          # nix-stubs SHIM carrying the package's .drv closure instead of the
-          # package. Applied HERE, at pkgs construction, rather than through
-          # `nixpkgs.overlays` in a module — pkgs/sandbox-os builds the system with
-          # `pkgs.nixos`, which sets `nixpkgs.pkgs`, and that conflicts with the
-          # overlays option. (The in-pod re-converge is the mirror case: it calls
-          # eval-config with a `system`, so it sets the option there instead.)
-          stubOverlay = nix-stubs.lib.mkOverlay {
-            stubs = p: import ./modules/sandbox-os/stubs.nix { pkgs = p; };
-            lock = ./modules/sandbox-os/stubs.lock;
+          # Applied HERE, at pkgs construction, not through `nixpkgs.overlays`:
+          # pkgs/sandbox-os builds the system with `pkgs.nixos`, which sets
+          # `nixpkgs.pkgs` and conflicts with the overlays option. The in-pod
+          # re-converge is the mirror case (modules/sandbox-os/stub-set.nix).
+          stubOverlay = import ./modules/sandbox-os/stub-overlay.nix {
+            lockLib = nix-stubs.lib;
             flakeLock = ./flake.lock;
             nix-stubs = nix-stubs.packages.${system}.nix-stubs;
           };
