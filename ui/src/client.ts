@@ -352,6 +352,68 @@ export async function setConversationStarred(
   }
 }
 
+/** One published static share (broker /shares), as the right-panel Shares tab shows it.
+ *  The agent-host relays the broker's snake_case summary; loadShares maps it to camelCase. */
+export interface ShareView {
+  uuid: string;
+  url: string;
+  description: string;
+  visibility: string;
+  latestVersion: number;
+  updatedAt: string;
+}
+
+export interface SharesResult {
+  /** false when the broker path isn't wired (local/fake) — the UI hides the tab then. */
+  configured: boolean;
+  shares: ShareView[];
+}
+
+/** List the static pages this conversation has published (GET /conversations/:id/shares).
+ *  Read-only + best-effort: never throws, returns an empty (configured) result on error so
+ *  the polling tab degrades quietly. 501 / configured:false => the feature isn't wired. */
+export async function loadShares(
+  config: AgentHostConfig,
+  conversationId: string,
+): Promise<SharesResult> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/shares`,
+      { headers: authHeaders(config) },
+    );
+    if (res.status === 501) return { configured: false, shares: [] };
+    if (!res.ok) {
+      console.warn(`[client] loadShares ${conversationId}: HTTP ${res.status}`);
+      return { configured: true, shares: [] };
+    }
+    const body = (await res.json()) as {
+      configured?: boolean;
+      shares?: Array<{
+        uuid: string;
+        url: string;
+        description?: string;
+        visibility?: string;
+        latest_version?: number;
+        updated_at?: string;
+      }>;
+    };
+    return {
+      configured: body.configured ?? true,
+      shares: (body.shares ?? []).map((s) => ({
+        uuid: s.uuid,
+        url: s.url,
+        description: s.description ?? "",
+        visibility: s.visibility ?? "public",
+        latestVersion: s.latest_version ?? 1,
+        updatedAt: s.updated_at ?? "",
+      })),
+    };
+  } catch (e) {
+    console.warn(`[client] loadShares ${conversationId} failed:`, e);
+    return { configured: true, shares: [] };
+  }
+}
+
 /** End + delete a conversation (DELETE /conversations/:id) — destroys the sandbox +
  *  PVCs and purges the record. Returns true on success (204/404 both mean "gone"). */
 export async function deleteConversation(

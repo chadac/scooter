@@ -26,12 +26,13 @@ import { InterruptList } from "./InterruptPanel.js";
 import { QueuedMessages } from "./QueuedMessages.js";
 import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
 import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
+import { PublishedShares, useShares } from "./PublishedShares.js";
 import { useSessions } from "./sessions.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-type Tab = "sandbox" | "approvals" | "queue" | "subagents";
+type Tab = "sandbox" | "approvals" | "queue" | "subagents" | "shares";
 
 function TabButton({
   active,
@@ -90,6 +91,10 @@ export function RightPanel() {
   const nQueued = queuedMessages.length;
   const subagents = subagentsOf(sessions, currentId);
   const nSubagents = subagents.length;
+  // Published static shares for this conversation. `configured` is false when the
+  // broker path isn't wired (local/fake) — hide the tab entirely then, rather than
+  // show a permanently-empty one.
+  const { shares: publishedShares, configured: sharesConfigured } = useShares();
 
   // Sandbox is the leftmost, ALWAYS-present tab — so it's the default. It now hosts
   // BOTH the pod status AND the web services (start/stop), so there's no separate
@@ -164,6 +169,14 @@ export function RightPanel() {
             count={nSubagents}
           />
         )}
+        {sharesConfigured && (
+          <TabButton
+            active={active === "shares"}
+            onClick={() => setActive("shares")}
+            label="Shares"
+            count={publishedShares.length}
+          />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -189,6 +202,8 @@ export function RightPanel() {
           )
         ) : active === "subagents" ? (
           <SubagentsPanel />
+        ) : active === "shares" ? (
+          <PublishedShares shares={publishedShares} />
         ) : nQueued > 0 ? (
           <QueuedMessages />
         ) : (
