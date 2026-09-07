@@ -5,7 +5,7 @@
  * A deployment ships a `.scooter` ConfigMap (module.nix + flake.nix + a tool source),
  * mounted at /etc/agent-sandbox/scooter. The boot unit runs `scooter-apply-module
  * --detach`, which builds+switches to (base + the mounted module) in the background. The
- * module declares the deployment's tool as a `programs.lazyTools` stub that resolves
+ * module declares the deployment's tool as a `programs.injectedTools` stub that resolves
  * `path:/etc/agent-sandbox/scooter#<tool>` from the mounted flake — so after the boot
  * converge the tool is on PATH (and builds on first call).
  *
@@ -32,20 +32,20 @@ const SCOOTER_MOUNT = "/etc/agent-sandbox/scooter";
 const STATUS = "/run/scooter/env-switch/status";
 const TOOL = "review-app";
 
-// A minimal deployment `.scooter` dir: module.nix declares the tool as a lazy stub
-// that resolves from ./flake.nix; flake.nix exposes it as a package built from
+// A minimal deployment `.scooter` dir: module.nix declares the tool as an INJECTED
+// tool that resolves from ./flake.nix at runtime; flake.nix exposes it as a package built from
 // ./review-app.sh. This mirrors the real deployment convention with a fake tool.
 const MODULE_NIX = `{ config, lib, pkgs, ... }:
 {
-  programs.lazyTools.tools.${TOOL} = {
+  programs.injectedTools.tools.${TOOL} = {
     package = "${TOOL}";
-    localFlake = "${SCOOTER_MOUNT}";
+    flake = "${SCOOTER_MOUNT}";
   };
 }
 `;
 
 // Mirrors the real deployment .scooter flake: nixpkgs is a declared input, and the
-// lazy stub builds --impure so `github:NixOS/nixpkgs` resolves against the sandbox's
+// injected stub builds --impure so `github:NixOS/nixpkgs` resolves against the sandbox's
 // PINNED registry (devEnvNix) — the closure is already present in the image, no cold
 // fetch. A bare `nixpkgs` with no input url falls to `flake:nixpkgs` registry lookup,
 // which isn't resolvable in the pod (the cause of the first CI failure here).
@@ -173,7 +173,7 @@ maybe("scooter .scooter injection: seed → boot converge → tool on PATH (k3d,
   }, 320_000);
 
   it("the seeded lazy tool lands on PATH after the converge", async () => {
-    // The lazyTools stub resolves path:${SCOOTER_MOUNT}#${TOOL} from the mounted
+    // The injected-tool stub resolves path:${SCOOTER_MOUNT}#${TOOL} from the mounted
     // flake; after the switch it's on the new system's PATH. Query the CURRENT
     // system's sw/bin (a long-lived exec shell may still hold the pre-switch PATH).
     // The STUB being present on PATH is the product assertion (the seed + converge

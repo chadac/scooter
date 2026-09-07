@@ -121,15 +121,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1783646154,
-        "narHash": "sha256-Zztks+2J72iFyhdU35UI1bnhikXoguuGDP4pXngeas8=",
+        "lastModified": 1788808969,
+        "narHash": "sha256-cxmr4WkJkBc4IWRprw/3+fDnNySa4lSKGSt73whDvvo=",
         "owner": "chadac",
         "repo": "nix-stubs",
-        "rev": "3d3d56974bf0a8c153c510dbedef04905985eb9d",
+        "rev": "af64270fbb293fb2d94cdbb79392ac902c3fe481",
         "type": "github"
       },
       "original": {
         "owner": "chadac",
+        "ref": "feat/two-stage-lock",
         "repo": "nix-stubs",
         "type": "github"
       }

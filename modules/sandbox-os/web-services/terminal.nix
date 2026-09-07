@@ -11,9 +11,10 @@
 # start, so ExecStart is a shell wrapper. `-W` makes it writable (interactive) — access is
 # gated by the platform proxy, same trust model as marimo (--no-token) / vscode (--auth none).
 #
-# Packaged lazily: `programs.lazyTools.tools.ttyd` puts a `ttyd` stub on PATH that builds on
-# first `systemctl start` — the base image ships only the .drv. tmux is small, so it's a
-# normal systemPackage (also handy for the agent's own shells). An un-enabled terminal adds
+# Packaged lazily: modules/sandbox-os/stubs.nix declares `ttyd`, so `pkgs.ttyd` is a
+# nix-stubs shim built on first `systemctl start`. The lock records its output NAME,
+# which is what retires the multi-output workaround this used to need (see stubs.nix).
+# tmux is small, so it's a normal systemPackage (also handy for the agent's own shells). An un-enabled terminal adds
 # ~nothing.
 #
 # DEFAULTS only (mkDefault). Inert until a deployment/agent sets
@@ -26,17 +27,10 @@ let
   cfg = config.webServices.terminal;
 in
 {
-  # Lazy-built ttyd on PATH (built on first `systemctl start`). ttyd is MULTI-OUTPUT
-  # (out + man); `nix build nixpkgs#ttyd` prints the `man` output first, which the lazy
-  # stub would then try to exec ("Is a directory", exit 126). Target the `.out` output
-  # explicitly so the stub resolves the binary; the command/bin stay `ttyd` (the attr key).
-  programs.lazyTools.tools.ttyd = {
-    package = lib.mkDefault "ttyd.out";
-  };
-
   # tmux backs the terminal session; keep it always available (small, and useful for the
   # agent's own shells too).
-  environment.systemPackages = [ pkgs.tmux ];
+  # The ttyd shim stays on PATH too, so an agent can run it by hand.
+  environment.systemPackages = [ pkgs.tmux pkgs.ttyd ];
 
   webServices.terminal = {
     port = lib.mkDefault 7681;
@@ -58,7 +52,7 @@ in
       # ttyd serves the web terminal under the proxy base path; -W = writable (the proxy
       # gates access). It runs tmux `new -A -s main`: attach the "main" session if it
       # exists, else create it — so the session PERSISTS across reconnects.
-      exec ttyd \
+      exec ${pkgs.ttyd}/bin/ttyd \
         --port ${toString cfg.port} \
         --interface 0.0.0.0 \
         --base-path "$base" \

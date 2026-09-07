@@ -42,14 +42,13 @@ notebook, giving the user a live terminal, or a browser code editor.
 Add it in a NixOS module under `/etc/scooter/modules/<name>.nix` and apply it with
 `scooter-rebuild switch` (see the scooter-env skill). The service MUST serve under
 its base path `/c/$CONVERSATION_ID/<name>` — `CONVERSATION_ID` is in the pod env.
-Package heavy servers as a **lazy tool** so the switch stays fast (built on first
-start, see scooter-env).
+A heavy server is built or downloaded during the switch, so `scooter-rebuild
+status` will sit in `building` for a while. `marimo`, `ttyd` and `code-server`
+are exceptions — the image already ships them as stubs, so referencing them is
+free until the service actually starts.
 
 ```nix
 { pkgs, ... }: {
-  # marimo binary on PATH, built on first start (light — no eager build).
-  programs.lazyTools.tools.marimo = { package = "marimo"; };
-
   webServices.marimo = {
     enable = true;
     port = 2718;                       # in-pod port (unique per service)
@@ -109,7 +108,7 @@ yourself** (add cells, run code, read outputs) while the user watches live —
 `marimo-pair` is the agent-side tool for this. It is NOT a web service; it's a
 skill you attach to the *running* marimo server.
 
-Prereqs: `bash`, `curl`, `jq` on PATH (jq via a lazy tool if missing). Install +
+Prereqs: `bash`, `curl`, `jq` on PATH (add jq to a module if missing). Install +
 use per its README:
 
 ```bash

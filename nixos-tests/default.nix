@@ -8,7 +8,11 @@
 #
 # See docs/DEV_ENVIRONMENT_DESIGN.md.
 
-{ pkgs, lib ? pkgs.lib }:
+{ pkgs, lib ? pkgs.lib
+  # The stub overlay the image is built with (flake.nix). stub-tools.nix applies it
+  # to its VM so the test asserts against the same shims production ships.
+, stubOverlay ? null
+}:
 
 let
   # The NixOS module under test — imported by each test's node.
@@ -18,7 +22,11 @@ let
 in
 {
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
-  dev-env-lazy-stub = runTest ./lazy-stub.nix;
+  # The stubbed tools are shims in a booted system, and the closure carries their
+  # recipes but not their packages. Takes the overlay, so not a plain runTest.
+  dev-env-stub-tools = import ./stub-tools.nix {
+    inherit pkgs lib sandboxModule stubOverlay;
+  };
   dev-env-service = runTest ./service.nix;
   # The webServices option: renders a proxyable unit + discovery manifest,
   # explicit-start, sub-path serving (the reverse-proxy target contract).
@@ -34,8 +42,6 @@ in
   # Deployment-injected CLI tool via a mounted .scooter flake dir (the generic
   # mechanism; a deployment ships its own real tool, e.g. example-review).
   dev-env-injected-tool = runTest ./injected-tool.nix;
-  # mkLazyTool used DIRECTLY in a module (inline lazy-tool declaration, multi-command).
-  dev-env-mklazytool = runTest ./mklazytool.nix;
   # A deployment's .scooter/module.nix (a NixOS module declaring its own tools)
   # applied at runtime via switch-to-configuration. The no-rebuild injection path.
   dev-env-scooter-module = runTest ./scooter-module.nix;

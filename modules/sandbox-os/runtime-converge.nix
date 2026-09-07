@@ -15,7 +15,7 @@
 #
 # See docs/HYPERNIX_INJECTION.md.
 
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, nixStubs, ... }:
 
 let
   cfg = config.programs.scooterModule;
@@ -29,7 +29,7 @@ let
   # Factored into a shared helper so the nixosTest pre-builds the re-converged
   # toplevel from the IDENTICAL derivations (else: cache miss -> offline from-source
   # build that hangs in the VM). See runtime-converge/reconverge-inputs.nix.
-  inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib; })
+  inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib nixStubs; })
     baseConfig modulesTree modulesSrc;
 
   # The modules-source path the in-pod build feeds to base-config, AND the tree baked

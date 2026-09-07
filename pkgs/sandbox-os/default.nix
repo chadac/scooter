@@ -24,16 +24,16 @@
 , name ? "agent-sandbox-os"
 , tag ? "latest"
 , extraModules ? [ ]   # let consumers layer extra NixOS config (extra tools/services)
-  # nix-stubs' lib (mkLazyPackage / mkOverlay). Exposed to modules as the
-  # `nixStubsLib` module arg so they can declare lazy tool shims (only the .drv is
-  # baked; the built package lands in the writable store on first use). Optional so
-  # the nixosTests (which import modules/sandbox-os directly) can pass null.
-, nixStubsLib ? null
   # The uv-nix uv (patched for Nix): exposed to modules as the `uvNix` module arg so
   # web-services/marimo.nix can launch marimo under it (science deps import). Optional
   # so nixosTests importing modules/sandbox-os directly can pass null (marimo falls
   # back to a plain `marimo` there — see marimo.nix).
 , uvNix ? null
+  # { src; package; } — nix-stubs' source and its built binary. Vendored into the
+  # re-converge modules tree so a self-modify can rebuild the stub overlay in-pod
+  # instead of re-fattening every stubbed tool. Optional: nixosTests that import
+  # modules/sandbox-os bare pass null and simply get real packages.
+, nixStubs ? null
 }:
 
 let
@@ -62,14 +62,12 @@ let
   nixos = pkgs.nixos ({ lib, ... }: {
     imports = [ ../../modules/sandbox-os ] ++ extraModules;
 
-    # nix-stubs' mkLazyPackage, available to any module as `{ nixStubsLib, ... }:`
-    # (e.g. carry-over.nix declares `aws` as a lazy shim). Null in nixosTests that
-    # import modules/sandbox-os without the packaging layer — the lazy-tools module
-    # guards on it and falls back to a normal package there.
-    _module.args.nixStubsLib = nixStubsLib;
     # The uv-nix uv, for web-services/marimo.nix. Null in nixosTests (marimo.nix
     # guards on it and falls back to a plain marimo).
     _module.args.uvNix = uvNix;
+    # The nix-stubs source+binary, for runtime-converge.nix to vendor (see
+    # runtime-converge/reconverge-inputs.nix).
+    _module.args.nixStubs = nixStubs;
 
     # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
     boot.isContainer = true;
@@ -95,14 +93,14 @@ let
     # See modules/sandbox-os/overlay-store.nix + todo/docs/WARM_STORE_PVC_MANAGER.md.
     programs.overlayStore.enable = true;
 
-    # The pinned nixpkgs the lazy stubs + registry resolve against. MUST be the
-    # `path:`-ref of the SAME source the re-converge uses (`pkgs.path`), so the
-    # baked lazy-tool stubs are byte-identical to the ones a runtime re-converge
-    # rebuilds (base-config.nix derives `path:${pkgs.path}` too). A mismatch here
-    # (a bare vs path: format mismatch) makes the
-    # first re-converge rebuild system-path + re-fetch the toolchain (~10min)
+    # The pinned nixpkgs the dev-env registry resolves against. MUST be the `path:`
+    # ref of the SAME source the re-converge uses (`pkgs.path`), or the first
+    # re-converge rebuilds system-path and re-fetches the toolchain (~10min)
     # instead of being a near-noop diff against the baked store.
-    programs.lazyTools.defaultNixpkgs = lib.mkForce "path:${nixpkgsSourceStr}";
+    #
+    # The lazy tools no longer read this. They used to resolve `<pin>#uv` at RUNTIME,
+    # which is why the pin string had to be byte-identical on both sides; a nix-stubs
+    # shim carries its recipe in the store and never consults a pin.
     devEnvNix.nixpkgs = lib.mkForce "path:${nixpkgsSourceStr}";
 
     # Runtime re-converge: the pod applies a mounted .scooter/module.nix (a NixOS

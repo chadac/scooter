@@ -5,7 +5,7 @@
 # without losing PID 1.
 #
 # This is the in-pod build+switch of a mounted NixOS module — the no-rebuild
-# injection path: the module DECLARES its own tools (a lazy mkLazyTool tool here,
+# injection path: the module DECLARES its own tools (a tool it defines itself,
 # the example-review pattern) + services, applied at runtime. See
 # docs/SCOOTER_DIR_INJECTION.md.
 #
@@ -26,10 +26,9 @@ let
     cp -r ${pkgs.path} $out
   '';
 
-  # NOTE: lazyTools.defaultNixpkgs + devEnvNix.nixpkgs are now pinned by
-  # base-config.nix itself (to `path:${nixpkgs}`, the SAME source passed below), so
-  # the re-converged lazy tool resolves OFFLINE against the test's nixpkgs without a
-  # separate pin module here.
+  # NOTE: devEnvNix.nixpkgs is pinned by base-config.nix itself (to `path:${nixpkgs}`,
+  # the SAME source passed below), so the re-converge resolves OFFLINE against the
+  # test's nixpkgs without a separate pin module here.
 
   # The EXACT inputs the in-pod build feeds base-config.nix, from the SAME helper
   # runtime-converge.nix uses (single source of truth). `modulesSrc` is a VENDORED
@@ -97,7 +96,7 @@ pkgs.testers.runNixOSTest {
     # so the rebuilt toplevel reflects the currently-running system.
     # The re-converge always layers keep-backdoor (so the test control channel
     # survives the switch). The offline nixpkgs pin is no longer needed — base-config
-    # pins lazyTools/devEnvNix to the same nixpkgs source automatically.
+    # pins devEnvNix to the same nixpkgs source automatically.
     programs.scooterModule.extraReconvergeModules = [
       "${./fixtures/keep-backdoor.nix}"
     ];
@@ -115,11 +114,10 @@ pkgs.testers.runNixOSTest {
     # APPLY the mounted .scooter/module.nix via switch-to-configuration.
     machine.succeed("scooter-apply-module")
 
-    # AFTER: the injected (lazy) tool is on PATH and runs — the module declared it
-    # via mkLazyTool, and it resolves nixpkgs#hello on first call (light: not in
-    # the base closure). This is exactly how a deployment's module declares example-review.
+    # AFTER: the injected tool is on PATH and runs — the module declared it itself,
+    # exactly how a deployment's module declares example-review.
     out = machine.succeed("scooter-demo")
-    assert "Hello, world!" in out, f"injected lazy tool didn't run: {out!r}"
+    assert "Hello, world!" in out, f"injected tool did not run: {out!r}"
     # ...and the injected systemd service is active (full module power applied).
     machine.wait_for_unit("scooter-demo-service.service")
 

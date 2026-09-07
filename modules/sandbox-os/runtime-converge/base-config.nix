@@ -64,13 +64,47 @@ let
   modulesSubdir = "/modules/sandbox-os";
   modulesTreeRoot =
     builtins.substring 0 (builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir) modulesPathStr;
+  # Rebuild the stub overlay in-pod from the bits reconverge-inputs.nix vendored.
+  #
+  # Without this, `pkgs.uv` / `pkgs.marimo` / `pkgs.awscli2` evaluate to the REAL
+  # packages here and a self-modify silently re-fattens the system by ~1 GB — the
+  # bug the old code carried for awscli2 alone (FOLLOW-UP
+  # todo-nix-stubs-reconverge-lockstep). It was unfixable while nix-stubs was
+  # reachable only as a flake input, because this eval has no flake. A pure-Nix
+  # overlay + a JSON lock vendors as plain files, so now it is just an import.
+  #
+  # Applied through `nixpkgs.overlays` rather than at pkgs construction — the
+  # mirror of the image build, which must use pkgs construction because
+  # `pkgs.nixos` sets `nixpkgs.pkgs` and the two options conflict. This eval passes
+  # `system`, so the option is the available half here.
+  stubBitsRoot = modulesTreeRoot;
+  hasStubBits = builtins.pathExists (stubBitsRoot + "/nix-stubs/lock.nix");
+  stubOverlays =
+    if !hasStubBits then [ ]
+    else
+      let
+        lockLib = import (stubBitsRoot + "/nix-stubs/lock.nix") {
+          lib = import (nixpkgsPath + "/lib");
+        };
+      in [
+        (lockLib.mkOverlay {
+          stubs = p: import (modulesPath + "/stubs.nix") { pkgs = p; };
+          lock = modulesPath + "/stubs.lock";
+          flakeLock = stubBitsRoot + "/flake.lock";
+          # The baked binary, not a fresh callPackage — that would compile Rust
+          # inside the pod on every self-modify.
+          nix-stubs = builtins.storePath
+            (builtins.readFile (stubBitsRoot + "/nix-stubs-bin"));
+        })
+      ];
+
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
     inherit system;
     modules = [
       modulesPath
       { boot.isContainer = true; }
       ({ lib, ... }: {
-        programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsRef;
+        nixpkgs.overlays = stubOverlays;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
         # Keep programs.scooterModule ENABLED across the re-converge so scooter-rebuild
         # / scooter-apply-module / scooter-env-status stay on PATH after a self-modify
@@ -102,12 +136,6 @@ let
         programs.scooterModule.modulesTree = lib.mkForce modulesTreeRoot;
       })
     ] ++ extraModules;
-    # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so
-    # carry-over.nix's `awscli` falls back to the FULL pkgs.awscli2 on a re-converge
-    # (the booted image ships it as a nix-stubs lazy shim). Correctness-safe, but a
-    # self-modify re-fattens ~145MB. FOLLOW-UP (todo-nix-stubs-reconverge-lockstep):
-    # vendor nix-stubs into modulesTree + reconstruct nixStubsLib here so the lazy
-    # shim survives re-converge — the "sandbox vends itself as a module" design.
   };
 in
 {

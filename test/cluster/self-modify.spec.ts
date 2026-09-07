@@ -26,10 +26,13 @@ const POD = "self-modify-boot";
 const SELECTOR = "app=self-modify-boot";
 const UPPER = "/nix/.scooter-rw";
 
-// A GOOD module: declares a lazy tool `selfmod-demo` -> hello (resolves on first
-// call; light, no eager build at switch time).
-const GOOD_MODULE = `{ ... }: {
-  programs.lazyTools.tools.selfmod-demo = { package = "hello"; bin = "hello"; };
+// A GOOD module: declares its own tool. Eager — the stub set is fixed when the
+// image is built (modules/sandbox-os/stubs.nix), so a module's own tool is built
+// during the switch. `hello` is tiny, so that is cheap here.
+const GOOD_MODULE = `{ pkgs, ... }: {
+  environment.systemPackages = [
+    (pkgs.writeShellScriptBin "selfmod-demo" ''exec \${pkgs.hello}/bin/hello "$@"'')
+  ];
 }`;
 // A BAD module: references an undefined variable -> eval/build fails (the gate).
 const BAD_MODULE = `{ ... }: { environment.systemPackages = [ thisIsNotDefined ]; }`;
@@ -128,7 +131,7 @@ maybe("agent self-modify live switch works in a real container", () => {
     expect(apply.exitCode).toBe(0);
 
     // A new generation was registered, the running system advanced to it, and the
-    // lazy tool now runs (first call resolves hello). PID 1 survived (systemd).
+    // module's tool now runs. PID 1 survived (systemd).
     const genAfter = (await cluster.exec(SELECTOR, ["readlink", "-f", `${prof}/system`], NS)).stdout.trim();
     expect(genAfter).not.toBe(genBefore);
     // The switch made the new generation current (so the tool is on the new PATH).

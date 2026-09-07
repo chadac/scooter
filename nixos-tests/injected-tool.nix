@@ -1,4 +1,4 @@
-# nixosTest: a DEPLOYMENT-INJECTED CLI tool (a lazyTools tool with `localFlake`)
+# nixosTest: a DEPLOYMENT-INJECTED CLI tool (programs.injectedTools)
 # resolves from a MOUNTED local flake dir — the light injection mechanism — with
 # NO flake ref. Proves: a tool defined in a deployment's `.scooter/` dir (a
 # ConfigMap in prod) is on PATH as a lazy stub and, on first call, builds
@@ -30,14 +30,13 @@ pkgs.testers.runNixOSTest {
   name = "dev-env-injected-tool";
 
   nodes.machine = { config, pkgs, lib, ... }: {
-    imports = [ "${sandboxModule}/lazy-tools.nix" "${sandboxModule}/nix-config.nix" ];
+    imports = [ "${sandboxModule}/injected-tools.nix" "${sandboxModule}/nix-config.nix" ];
 
-    programs.lazyTools = {
+    programs.injectedTools = {
       enable = true;
-      defaultNixpkgs = "path:${pkgs.path}";
       tools.injected-tool = {
         package = "injected-tool";
-        localFlake = "/etc/agent-sandbox/scooter";
+        flake = "/etc/agent-sandbox/scooter";
       };
     };
     devEnvNix = { enable = true; nixpkgs = lib.mkForce "path:${pkgs.path}"; };
@@ -55,7 +54,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     machine.wait_for_unit("default.target")
 
-    # The injected tool is on PATH as a lazy stub.
+    # The injected tool is on PATH as a stub.
     machine.succeed("command -v injected-tool")
 
     # First call: builds `path:/etc/agent-sandbox/scooter#injected-tool` from the
@@ -63,11 +62,8 @@ pkgs.testers.runNixOSTest {
     out = machine.succeed("injected-tool")
     assert "injected-tool-from-mounted-dir-ok" in out, f"injected tool didn't run: {out!r}"
 
-    # Memoized.
-    machine.succeed("test -e /var/cache/lazy-tools/injected-tool")
-
     # If the .scooter dir is NOT mounted, the stub errors clearly.
-    machine.succeed("rm -rf /etc/agent-sandbox/scooter /var/cache/lazy-tools/injected-tool")
+    machine.succeed("rm -rf /etc/agent-sandbox/scooter")
     machine.fail("injected-tool")
   '';
 }

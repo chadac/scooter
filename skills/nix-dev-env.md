@@ -16,6 +16,7 @@ triggers:
 - background service
 - port
 - lazy tool
+- stub
 ---
 
 # Dev environment (this sandbox)
@@ -64,18 +65,14 @@ A service that's defined-but-off is enabled on demand with `systemctl start`.
 Once it's listening on a port, that port is reachable inside the sandbox (port-
 forwarding to expose it externally is a separate step — ask if you need it).
 
-## Adding a new lazy tool (config)
+## Which tools are already lazy
 
-Lazy tools are declared in the sandbox's NixOS config under
-`programs.lazyTools.tools`. Adding one is a single line — no code change:
+Some tools are STUBS: on `PATH` immediately, fetched for real the first time you
+run them, costing the image only their build recipe. Today that set is `uv`,
+`tree`, `marimo`, `ttyd`, `code-server`, and `awscli2`. Just run them — the first
+call pauses while the tool arrives, and later calls are instant.
 
-```nix
-programs.lazyTools.tools = {
-  uv.package = "uv";
-  python = { package = "python3"; bin = "python3"; };  # name -> nixpkgs attr
-  node   = { package = "nodejs_22"; bin = "node"; };
-};
-```
-
-The attribute name is the command that appears on `PATH`; `package` is the
-nixpkgs attribute it builds from; `bin` overrides the binary name if it differs.
+The set is declared when the image is built
+(`modules/sandbox-os/stubs.nix` in the scooter repo). A module you write in the
+sandbox cannot add to it: any other package you install is built or downloaded
+then and there, not on first use.

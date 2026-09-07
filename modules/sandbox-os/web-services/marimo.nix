@@ -5,9 +5,9 @@
 # the external host. Both are read from the pod env (CONVERSATION_ID injected by
 # the provisioner; PUBLIC_HOST optional) at start, so ExecStart is a shell wrapper.
 #
-# Packaged lazily: `programs.lazyTools.tools.marimo` puts a `marimo` stub on PATH
-# that `nix build <pin>#marimo`s on first start — the base image ships only the
-# .drv. Paired with the scooter-web-services skill (marimo-pair) so the agent can
+# Packaged lazily: modules/sandbox-os/stubs.nix declares `marimo`, so `pkgs.marimo`
+# is a nix-stubs shim — the image ships the build recipe and the notebook itself
+# materializes on first start. Paired with the scooter-web-services skill (marimo-pair) so the agent can
 # drive the running notebook.
 #
 # This module only supplies DEFAULTS (mkDefault) for the marimo service + its
@@ -23,11 +23,8 @@ let
   cfg = config.webServices.marimo;
 in
 {
-  # Lazy-built marimo on PATH (built on first `systemctl start`). Declaring the
-  # stub unconditionally is cheap — it bakes only a .drv, no closure.
-  programs.lazyTools.tools.marimo = {
-    package = lib.mkDefault "marimo";
-  };
+  # The marimo shim on PATH, so the agent can run it by hand (marimo-pair does).
+  environment.systemPackages = [ pkgs.marimo ];
 
   webServices.marimo = {
     port = lib.mkDefault 2718;
@@ -66,7 +63,7 @@ in
           # makes each notebook self-contained (inline PEP 723 deps). uv is on PATH via
           # the absolute store path so the unit needs no extra PATH entry.
           then ''exec ${uvBin} run --with marimo marimo edit --sandbox''
-          else ''exec marimo edit'';
+          else "exec ${pkgs.marimo}/bin/marimo edit";
       in
       lib.mkDefault "${pkgs.writeShellScript "marimo-web-service" ''
         set -euo pipefail
