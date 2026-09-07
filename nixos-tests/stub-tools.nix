@@ -20,7 +20,6 @@ let
 
   realUv = pkgs.uv;
   realAwsOut = builtins.unsafeDiscardStringContext (toString pkgs.awscli2);
-  awsRecipe = builtins.unsafeDiscardStringContext pkgs.awscli2.drvPath;
 in
 pkgs.testers.runNixOSTest {
   name = "dev-env-stub-tools";
@@ -53,11 +52,17 @@ pkgs.testers.runNixOSTest {
     # The whole point: the image ships build recipes, not the tools. awscli2 is
     # ~449 MB built and ~8 MB as a recipe.
     with subtest("the system closure carries recipes, not packages"):
-        closure = machine.succeed("nix-store -q --requisites /run/current-system")
+        closure = machine.succeed("nix-store -q --requisites /run/current-system").split()
         assert "${realAwsOut}" not in closure, \
             "LEAK: awscli2's built output is in the image closure"
-        assert "${awsRecipe}" in closure, \
-            "MISSING RECIPE: awscli2's .drv is absent, so `aws` could never be realised"
+        assert any("-recipe-awscli2" in p for p in closure), \
+            "MISSING RECIPE: no recipe blob for awscli2, so `aws` could never be realised"
+
+        # A recipe travels as that blob and never as store derivations: a .drv in
+        # the closure names unrealised build-time outputs, and enumerating it is
+        # what took down the image build (chadac/nix-stubs#3).
+        drvs = [p for p in closure if p.endswith(".drv")]
+        assert not drvs, f"the image closure ships store derivations: {drvs}"
 
     with subtest("a shim resolves its output and execs the real tool"):
         out = machine.succeed("uv --version")
