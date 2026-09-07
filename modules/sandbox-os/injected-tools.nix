@@ -1,18 +1,10 @@
-# Deployment-INJECTED CLI tools: a stub on PATH that builds `path:<dir>#<attr>`
-# from a flake directory MOUNTED INTO THE POD (a deployment's `.scooter/`
-# ConfigMap) the first time it is called. See docs/SCOOTER_DIR_INJECTION.md.
+# Deployment-INJECTED CLI tools: a stub that builds `path:<dir>#<attr>` from a
+# flake directory MOUNTED INTO THE POD (a deployment's `.scooter/` ConfigMap) on
+# first call. See docs/SCOOTER_DIR_INJECTION.md.
 #
-# This is the one lazy-tool case nix-stubs cannot cover, and the reason this
-# module still exists after the stub refactor. A nix-stubs shim carries the
-# package's build RECIPE, which means the package has to be known when the image
-# is built. An injected tool is the opposite: the flake shows up at RUNTIME, in a
-# ConfigMap the image has never seen, so resolution has to happen at runtime too.
-#
-# Everything else the old programs.lazyTools did — resolving `<pin>#uv` at runtime
-# against a mounted pin, memoizing out-paths, the pin/byte-identity contract with
-# the re-converge — is gone: those tools are nix-stubs shims now
-# (modules/sandbox-os/stubs.nix), and a shim needs no pin, no runtime eval, and no
-# cache file.
+# Separate from modules/sandbox-os/stubs.nix because a nix-stubs shim needs the
+# package at IMAGE BUILD time to bake its recipe, and an injected flake only
+# exists at runtime. Resolution therefore has to be deferred. See PR #502.
 
 { config, lib, pkgs, ... }:
 

@@ -1,15 +1,11 @@
-# nixosTest: the stubbed tools are SHIMS in a booted system — on PATH, execing
-# the real tool — and the system closure carries their RECIPES but not their
-# packages.
+# nixosTest: the IMAGE-TIME stubs (modules/sandbox-os/stubs.nix) are shims in a
+# booted system, and the system closure carries their recipes but not their
+# packages. Replaces lazy-stub.nix + mklazytool.nix.
 #
-# This is the "light base image" requirement, stated as a property of the built
-# system rather than of the stub mechanism (nix-stubs' own tests cover the
-# mechanism). Replaces lazy-stub.nix + mklazytool.nix, which tested the homegrown
-# runtime-resolving stubs this refactor deleted.
+# Not the same mechanism as injected-tool.nix, which covers a tool resolved from
+# a flake MOUNTED AT RUNTIME (programs.injectedTools) and has no baked recipe.
 #
-# Hermetic: the VM has no network. The real `uv` OUTPUT is pre-seeded so the shim
-# can exec it without building; everything asserted about the closure is about
-# what the image ships, which needs no network at all.
+# Hermetic: the VM has no network, so the real `uv` output is pre-seeded.
 
 { pkgs, lib, sandboxModule, stubOverlay }:
 

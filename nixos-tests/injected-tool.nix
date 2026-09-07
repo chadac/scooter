@@ -1,12 +1,14 @@
-# nixosTest: a DEPLOYMENT-INJECTED CLI tool (programs.injectedTools)
-# resolves from a MOUNTED local flake dir — the light injection mechanism — with
-# NO flake ref. Proves: a tool defined in a deployment's `.scooter/` dir (a
-# ConfigMap in prod) is on PATH as a lazy stub and, on first call, builds
-# `path:<dir>#tool` from that mounted dir and execs it. Fast (it's just a package,
-# not a system rebuild — unlike the parked runtime-converge path).
+# nixosTest: a DEPLOYMENT-INJECTED CLI tool (programs.injectedTools) resolved from
+# a flake MOUNTED AT RUNTIME. Proves a tool defined in a deployment's `.scooter/`
+# dir (a ConfigMap in prod) is on PATH and, on first call, builds
+# `path:<dir>#tool` from that mounted dir and execs it.
 #
-# A deployment ships its OWN real tool this way — e.g. example-review in the
-# deployment repo's .scooter/ dir. THIS repo only proves the mechanism. See docs/SCOOTER_DIR_INJECTION.md.
+# A different mechanism from stub-tools.nix, which covers the IMAGE-TIME stubs:
+# those bake a recipe from a package known at build time, this one has no lock and
+# no baked recipe because the flake does not exist until runtime.
+#
+# A deployment ships its OWN real tool this way — e.g. example-review. THIS repo
+# only proves the mechanism. See docs/SCOOTER_DIR_INJECTION.md.
 
 { pkgs, lib, sandboxModule }:
 
