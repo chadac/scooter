@@ -136,6 +136,10 @@ fullOnly("multi-pod routing")(
     // The two raw streams run on a SEPARATE page so this page.evaluate does not block the send we
     // drive on `page`. They open concurrently, sync, then stay open for the whole window.
     const readerPage = await context.newPage();
+    // The raw fetch inside openTwoStreams runs in readerPage's realm and must be SAME-ORIGIN, or
+    // the browser rejects it with `TypeError: Failed to fetch`. A fresh newPage() sits at
+    // about:blank (origin "null"), so navigate it to the app origin before the evaluate.
+    await readerPage.goto(base);
     const windowMs = 60_000;
     const streams = openTwoStreams(readerPage, integrityUrl, probe, windowMs);
 
