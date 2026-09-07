@@ -27,15 +27,19 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /** Per-row sandbox status dot (paper reskin): running = active blue, suspended =
- *  gold, ended = muted. Mirrors the row's live pod lifecycle so the list reads at a
- *  glance without opening each conversation. */
-function StatusDot({ status }: { status: "running" | "suspended" | "ended" }) {
+ *  gold, failed = red, ended = muted. Mirrors the row's live pod lifecycle so the
+ *  list reads at a glance without opening each conversation. "failed" is a terminal,
+ *  sandbox-dead conversation (the zombie-repair escalation force-deleted the sandbox);
+ *  it must be visually distinct from a normal idle-suspend, not shown as running. */
+function StatusDot({ status }: { status: "running" | "suspended" | "failed" | "ended" }) {
   const cls =
     status === "running"
       ? "bg-status-active"
       : status === "suspended"
         ? "bg-warning"
-        : "bg-muted-foreground/40";
+        : status === "failed"
+          ? "bg-destructive"
+          : "bg-muted-foreground/40";
   return (
     <span
       data-testid="session-status-dot"
