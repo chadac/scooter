@@ -146,7 +146,7 @@ test.describe("session selector & titles", () => {
     ).toHaveCount(1, { timeout: 30_000 });
   });
 
-  test("deleting a conversation removes it from the list", async ({ chat, page }) => {
+  test("deleting a conversation removes it from the list", async ({ chat, page, request, baseURL }) => {
     await chat.open();
     await chat.send("keep this one");
     await chat.waitForReply(/dummy agent/i);
@@ -165,6 +165,13 @@ test.describe("session selector & titles", () => {
     await expect(keepRow).toHaveCount(1, { timeout: 30_000 });
     await expect(deleteRow).toHaveCount(1, { timeout: 30_000 });
 
+    // The row's disappearance is OPTIMISTIC — it clears whether or not the server was
+    // reached — so capture the server id first and check the deletion actually landed.
+    // Without this the test passes on a DELETE that 404s, leaving the sandbox running.
+    // Why: PR #501.
+    const deletedId = await deleteRow.first().getAttribute("data-conversation-id");
+    expect(deletedId, "the row must carry the server id before we delete it").toBeTruthy();
+
     // Delete now shows a confirm dialog (universal) — accept it.
     page.on("dialog", (d) => d.accept());
     await deleteRow.first().locator(sidebar.deleteButton).click();
@@ -173,6 +180,16 @@ test.describe("session selector & titles", () => {
     await expect(deleteRow).toHaveCount(0, { timeout: 30_000 });
     // The OTHER conversation is untouched — a delete that took the wrong row would fail here.
     await expect(keepRow).toHaveCount(1);
+    // …and the SERVER agrees it is gone (the sandbox was actually torn down).
+    await expect
+      .poll(
+        async () =>
+          (
+            await request.get(`${baseURL ?? "http://localhost:5173"}/conversations/${deletedId}`)
+          ).status(),
+        { timeout: 30_000 },
+      )
+      .toBe(404);
   });
 
   test("clicking a session swaps the thread (other conversation's messages go away)", async ({ chat, page }) => {

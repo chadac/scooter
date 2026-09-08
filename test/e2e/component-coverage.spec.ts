@@ -44,7 +44,7 @@ test.describe("sidebar / session components", () => {
     assertConsistent(await snapshot(page), "sidebar listed");
   });
 
-  test("STARRING a conversation persists across a reload and disturbs nothing else", async ({ chat, page }) => {
+  test("STARRING a conversation persists across a reload and disturbs nothing else", async ({ chat, page, request, baseURL }) => {
     // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Every fake-agent turn runs a real
     // exec, and on the full target the FIRST exec of a conversation waits for its sandbox
     // pod (5-25s measured). Worst case here: open 5s + first turn ~30s + waitForIdle +
@@ -58,9 +58,43 @@ test.describe("sidebar / session components", () => {
     // serial, so a prior test's conversation can still be settling and inflate the count.
     await expect(page.locator(sb.item).first()).toBeVisible({ timeout: 30_000 });
     const before = await snapshot(page);
-    await page.locator(sb.star).first().click();
+
+    // Address the row by its SERVER id. This test used to click `.first()` and assert only
+    // that the row still existed after the reload, so it passed for months while every star
+    // write 404'd: the UI's optimistic flag survives the reload via localStorage, which is
+    // indistinguishable from a persisted star unless you ask the server. Why: PR #501.
+    let convId: string | null = null;
+    await expect
+      .poll(
+        async () => {
+          convId = await page
+            .locator(`${sb.item}[data-conversation-id]`)
+            .first()
+            .getAttribute("data-conversation-id")
+            .catch(() => null);
+          return convId;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeTruthy();
+    const row = page.locator(`${sb.item}[data-conversation-id="${convId}"]`);
+
+    await row.locator(sb.star).click();
+
+    // THE ASSERTION THIS TEST WAS NAMED FOR: the star reached the durable row. Asked of the
+    // server, not the UI — the UI can show a star it never managed to write.
+    const starredOnServer = async () => {
+      const res = await request.get(`${baseURL ?? "http://localhost:5173"}/conversations/${convId}`);
+      if (!res.ok()) return `HTTP ${res.status()}`;
+      return ((await res.json()) as { starred?: boolean }).starred === true;
+    };
+    await expect.poll(starredOnServer, { timeout: 20_000 }).toBe(true);
+
     await page.reload();
     await expect(page.locator(sb.item).first()).toBeVisible({ timeout: 30_000 });
+    // …and the reloaded sidebar renders it starred (the row survives the server merge that
+    // follows the reload, which is what overwrites a merely-local star).
+    await expect(row).toHaveAttribute("data-starred", "true", { timeout: 30_000 });
     // Wait for the transcript to finish re-folding before snapshotting — a snapshot taken mid-render
     // reads 0 messages and would wrongly look like data loss.
     await expect.poll(async () => (await snapshot(page)).userMessages, { timeout: 30_000 })
@@ -79,10 +113,11 @@ test.describe("sidebar / session components", () => {
     // dependent, so it only bites when the sharder happens to place a count-sensitive
     // spec (e.g. sessions.spec.ts, "Expected 1, Received 2") after this one — which is
     // exactly how it surfaced: green for several runs, then red when CI reweighted.
-    await page.locator(sb.star).first().click();
-    await expect(page.locator(sb.item).first()).not.toHaveAttribute("data-starred", "true", {
-      timeout: 10_000,
-    });
+    await row.locator(sb.star).click();
+    await expect(row).not.toHaveAttribute("data-starred", "true", { timeout: 10_000 });
+    // Confirm the UNSTAR landed server-side too: a local-only unstar leaves the row starred
+    // in the database, and cleanState can never delete it (DELETE 409s on a starred row).
+    await expect.poll(starredOnServer, { timeout: 20_000 }).not.toBe(true);
   });
 
   test("SEARCH narrows the sidebar and restores the full list when cleared", async ({ chat, page }) => {

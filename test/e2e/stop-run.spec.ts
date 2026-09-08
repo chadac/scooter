@@ -49,7 +49,9 @@ test.describe("Stop button + thinking indicator", () => {
     // The thinking indicator + Stop button appear while the run is in flight. The
     // indicator is now a single pulsing dot (no "working…" text, no per-message ●) —
     // assert its presence via the dot's aria-label.
-    await expect(page.locator(bar.root)).toBeVisible({ timeout: 30_000 });
+    // FIRST_TURN_MS, not 30s: this is the FIRST assertion after a cold `chat.send`, so
+    // the cold sandbox boot is inside its budget. Why: PR #497.
+    await expect(page.locator(bar.root)).toBeVisible({ timeout: FIRST_TURN_MS });
     await expect(page.locator(bar.thinking)).toBeVisible();
     await expect(page.locator(`${bar.thinking} [aria-label="Scooter is working"]`)).toBeVisible();
     await expect(page.locator(bar.stop)).toBeVisible();
@@ -99,7 +101,8 @@ test.describe("Stop button + thinking indicator", () => {
     // composer, so the stop belongs there.
     await chat.open();
     await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="composer-stop"]')).toBeVisible({ timeout: 30_000 });
+    // FIRST_TURN_MS: first assertion after a cold send — see the note at the top. Why: PR #497.
+    await expect(page.locator('[data-testid="composer-stop"]')).toBeVisible({ timeout: FIRST_TURN_MS });
     // Clicking it stops the run (same cancel path as the bottom-bar Stop).
     await page.locator('[data-testid="composer-stop"]').click();
     await expect(page.locator('[data-testid="composer-stop"]')).toHaveCount(0, { timeout: 15_000 });
@@ -121,7 +124,9 @@ test.describe("Stop button + thinking indicator", () => {
     // running indicator must be visible while the tool runs and clear when it ends.
     await chat.open();
     await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="provider-tool-running"]')).toBeVisible({ timeout: 30_000 });
+    // FIRST_TURN_MS: first assertion after a cold send. The 60s clear-budget below already
+    // accounts for the ready-pod wait; this one did not. Why: PR #497.
+    await expect(page.locator('[data-testid="provider-tool-running"]')).toBeVisible({ timeout: FIRST_TURN_MS });
     // When the sleep finishes the run ends and the spinner goes away. 60s, not 30:
     // the spinner appears when the tool call STREAMS, but the exec then waits for a
     // ready sandbox pod BEFORE the 20s sleep even starts — an instrumented throttled

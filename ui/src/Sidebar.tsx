@@ -21,8 +21,7 @@ import {
 import { LinkedResources } from "./LinkedResources.js";
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
-import { agentHostConfig } from "./config.js";
-import { renameConversation, setConversationStarred, deleteConversation } from "./client.js";
+import { commitRename as commitRenameAction, isServerBacked, removeSession, toggleStar as toggleStarAction } from "./sessionActions.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -124,19 +123,14 @@ const SessionRow = memo(function SessionRow({
     });
   };
 
+  // The three row actions address the SERVER, which the row's local key cannot do —
+  // they go through sessionActions, which owns that split. Why: PR #501.
   const commitRename = () => {
-    const next = draft.trim();
     sessionStore.clearEditing(s.id); // close the input (store-owned)
-    if (!next || next === s.title) return;
-    sessionStore.renameSession(s.id, next); // optimistic + lock
-    void renameConversation(agentHostConfig, s.id, next);
+    void commitRenameAction(s, draft);
   };
 
-  const toggleStar = () => {
-    const next = !s.starred;
-    sessionStore.setStarred(s.id, next); // optimistic
-    void setConversationStarred(agentHostConfig, s.id, next);
-  };
+  const toggleStar = () => void toggleStarAction(s);
 
   const remove = () => {
     // Universal confirm on delete; a STARRED conversation gets a stronger warning.
@@ -144,8 +138,7 @@ const SessionRow = memo(function SessionRow({
       ? `"${s.title}" is starred. Deleting destroys its sandbox and data permanently. Delete anyway?`
       : `Delete "${s.title}"? This destroys its sandbox and data permanently.`;
     if (!window.confirm(msg)) return;
-    sessionStore.deleteSession(s.id); // optimistic local removal
-    void deleteConversation(agentHostConfig, s.id);
+    void removeSession(s);
   };
 
   return (
@@ -258,6 +251,10 @@ const SessionRow = memo(function SessionRow({
               data-testid="session-star"
               aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
               aria-pressed={s.starred ? true : false}
+              // Starred is server-owned: an unsent conversation has no row to set it on,
+              // so the control says so instead of lighting up and reverting. Why: PR #501.
+              disabled={!isServerBacked(s)}
+              title={isServerBacked(s) ? undefined : "Send a message first — an unsent conversation can't be starred"}
               onClick={toggleStar}
               className={cn("shrink-0", s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
             >

@@ -340,6 +340,11 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'playwright.config.ts'
               - 'test/e2e/target.ts'
+              # The event-backfill Job and its cluster spec run ONLY in this job, so a
+              # change to either must open the gate — otherwise the fix for a backfill
+              # failure can never be verified by the suite that caught it (#488).
+              - 'modules/event-backfill.nix'
+              - 'test/cluster/event-backfill.spec.ts'
               # The full-target allowlist IS "what runs": adding/removing a spec there
               # must run the only job that executes it.
               - 'test/e2e/full-specs.json'
