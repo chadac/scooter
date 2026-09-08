@@ -61,15 +61,13 @@ const STORE_DIAGNOSTIC = [
   // storePath skip ensurePath entirely, so it passes even on an invalid path. This is
   // the same check the failing converge makes, in a mode that actually performs it.
   'echo "--- nix-store -r (the real validity check) ---"; nix-store -r "$TREE" 2>&1 | head -4',
-  // Is it TRANSIENT? path-info above passed on a path the converge just called
-  // invalid, and the overlay upper DB is carrying a ~164MB uncheckpointed WAL — i.e.
-  // the store was still settling. If a straight retry now succeeds, the bug is a race
-  // against the local-overlay store coming up, not a missing registration.
-  // Capture the exit code BEFORE piping — `cmd | tail` reports tail's status, not the
-  // converge's, which is the whole point of the probe.
-  'echo "--- retry the converge now ---"; timeout 180 scooter-apply-module > /tmp/retry.out 2>&1; echo "retry-exit=$?"; tail -12 /tmp/retry.out',
+  // Deliberately does NOT retry the converge. An earlier revision did, which "fixed"
+  // the pod as a side effect and made a later assertion in this same spec pass on the
+  // diagnostic's work rather than the product's. A failure dump must observe, not act.
   'echo "--- when did it fail vs now? ---"; date; ls -l --time-style=full-iso /run/scooter/env-switch/ 2>&1',
-  'echo "--- upper WAL now (compare to above) ---"; ls -l /nix/.scooter-rw/state/db/ 2>&1',
+  // The overlay upper's state DB is the thing to watch: a large uncheckpointed WAL
+  // here means the store was still settling when the converge asked (PR #502).
+  'echo "--- overlay upper state db ---"; ls -l /nix/.scooter-rw/state/db/ 2>&1',
   'echo "--- disk ---"; df -h /nix/.scooter-rw / 2>&1',
   'echo "--- units ---"; journalctl -b --no-pager -u overlay-store-setup -u nix-daemon -u scooter-apply-module 2>&1 | tail -40',
 ].join("\n");
