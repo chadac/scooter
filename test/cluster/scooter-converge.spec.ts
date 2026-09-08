@@ -57,13 +57,21 @@ const STORE_DIAGNOSTIC = [
   "echo \"--- tree: lower store only ---\"; nix $EF path-info --store 'local?root=/&real=/nix/.scooter-ro&read-only=true' \"$TREE\" 2>&1 | head -3",
   'echo "--- CONTROL (current system) : merged ---"; nix $EF path-info "$(readlink -f /run/current-system)" 2>&1 | head -3',
   "echo \"--- CONTROL : lower store only ---\"; nix $EF path-info --store 'local?root=/&real=/nix/.scooter-ro&read-only=true' \"$(readlink -f /run/current-system)\" 2>&1 | head -3",
-  // Which BUILTIN throws? base-config.nix newly reads the tree through a
-  // CONTEXT-FREE STRING path (pathExists/import/readFile on the vendored nix-stubs
-  // bits); main only ever passed it as a real path arg. Isolating storePath from the
-  // string-path reads says whether this is a DB miss or the string-path accessor.
-  'echo "--- builtins.storePath ---"; nix $EF eval --impure --expr "builtins.storePath \\"$TREE\\"" 2>&1 | head -4',
-  'echo "--- builtins.pathExists (string path) ---"; nix $EF eval --impure --expr "builtins.pathExists (\\"$TREE\\" + \\"/nix-stubs/lock.nix\\")" 2>&1 | head -4',
-  'echo "--- builtins.readFile (string path) ---"; nix $EF eval --impure --raw --expr "builtins.readFile (\\"$TREE\\" + \\"/nix-stubs-bin\\")" 2>&1 | head -4',
+  // NOT `nix eval builtins.storePath`: eval commands set readOnlyMode, which makes
+  // storePath skip ensurePath entirely, so it passes even on an invalid path. This is
+  // the same check the failing converge makes, in a mode that actually performs it.
+  'echo "--- nix-store -r (the real validity check) ---"; nix-store -r "$TREE" 2>&1 | head -4',
+  // Is it TRANSIENT? path-info above passed on a path the converge just called
+  // invalid, and the overlay upper DB is carrying a ~164MB uncheckpointed WAL — i.e.
+  // the store was still settling. If a straight retry now succeeds, the bug is a race
+  // against the local-overlay store coming up, not a missing registration.
+  // Capture the exit code BEFORE piping — `cmd | tail` reports tail's status, not the
+  // converge's, which is the whole point of the probe.
+  'echo "--- retry the converge now ---"; timeout 180 scooter-apply-module > /tmp/retry.out 2>&1; echo "retry-exit=$?"; tail -12 /tmp/retry.out',
+  'echo "--- when did it fail vs now? ---"; date; ls -l --time-style=full-iso /run/scooter/env-switch/ 2>&1',
+  'echo "--- upper WAL now (compare to above) ---"; ls -l /nix/.scooter-rw/state/db/ 2>&1',
+  'echo "--- disk ---"; df -h /nix/.scooter-rw / 2>&1',
+  'echo "--- units ---"; journalctl -b --no-pager -u overlay-store-setup -u nix-daemon -u scooter-apply-module 2>&1 | tail -40',
 ].join("\n");
 
 // A minimal deployment `.scooter` dir: module.nix declares the tool as an INJECTED
