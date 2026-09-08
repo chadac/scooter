@@ -24,7 +24,7 @@ async function step(page: Page, when: string): Promise<UiSnapshot> {
 test.describe("whole-UI consistency through a normal turn", () => {
   test("every surface stays mutually consistent across idle → running → replied", async ({ chat, page, request, baseURL }) => {
     // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Must exceed startLongRun's 90s full-target
-    // run-bar budget plus the 60s reply poll, or the test dies before its own waits can. PR #500.
+    // run-bar budget plus the 60s reply poll, or the test dies before its own waits can. PR #503.
     test.setTimeout(240_000);
     await chat.open();
     const idle = await step(page, "after open");
@@ -35,7 +35,7 @@ test.describe("whole-UI consistency through a normal turn", () => {
 
     // RUNNING: the run bar is up, the composer offers Stop (not Send), nothing else changed state.
     // startLongRun, not send + an inline wait: on the full target the run-bar budget must cover
-    // the cold sandbox boot that precedes the sleep. Why 20s / why the helper: PR #500.
+    // the cold sandbox boot that precedes the sleep. Why 20s / why the helper: PR #503.
     await chat.startLongRun(20);
     // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
     // becoming visible doesn't guarantee the user message has been counted yet — observed in
@@ -118,7 +118,7 @@ test.describe("whole-UI consistency through a normal turn", () => {
 test.describe("whole-UI consistency around the QUEUE", () => {
   test("queueing keeps thread, queue, badge, run-state and composer mutually consistent", async ({ chat, page }) => {
     // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). startLongRun's full-target run-bar budget
-    // is 90s, not 30; add two sendWhileRunning retry loops and three whole-UI snapshots. PR #500.
+    // is 90s, not 30; add two sendWhileRunning retry loops and three whole-UI snapshots. PR #503.
     test.setTimeout(240_000);
     await chat.open();
     await chat.startLongRun(20);
@@ -155,11 +155,11 @@ test.describe("whole-UI consistency around the QUEUE", () => {
 
   test("the queue DRAINS into the thread with counts conserved (nothing lost, nothing duplicated)", async ({ chat, page, request, baseURL }) => {
     // Must exceed startLongRun's 90s full-target run-bar budget plus the two 60s drain polls, or
-    // the test dies at the same moment its own poll would have. PR #500.
+    // the test dies at the same moment its own poll would have. PR #503.
     test.setTimeout(240_000);
     await chat.open();
     // 20s keeps the run in flight across the queueing window; startLongRun's budget covers the
-    // cold sandbox boot that precedes the sleep on the full target. Why both: PR #500.
+    // cold sandbox boot that precedes the sleep on the full target. Why both: PR #503.
     await chat.startLongRun(20);
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
@@ -184,12 +184,12 @@ test.describe("whole-UI consistency around the QUEUE", () => {
 
   test("a reload mid-queue preserves EVERY surface, not just the queue rows", async ({ chat, page, request, baseURL }) => {
     // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75): must exceed startLongRun's 90s full-target
-    // run-bar budget plus reload + the 60s re-derive poll. PR #500.
+    // run-bar budget plus reload + the 60s re-derive poll. PR #503.
     test.setTimeout(240_000);
     await chat.open();
     // 60s, not 20: the run must outlive open→send→queue→snapshot→reload→re-derive, and the
     // sandbox wait precedes the sleep so its 20s is not the margin it looks like. startLongRun's
-    // budget covers that same boot for the run-bar wait. Why both: PR #500.
+    // budget covers that same boot for the run-bar wait. Why both: PR #503.
     await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();
