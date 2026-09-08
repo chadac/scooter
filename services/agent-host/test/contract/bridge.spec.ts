@@ -1164,6 +1164,36 @@ describe("bridge run queue + cancel", () => {
     expect(rejected, "drainQueue must not reject an ALREADY-RUNNING prompt").toBe(false);
   });
 
+  it("drainQueue({ requeue: true }) RESOLVES waiting prompts (suspend re-runs them; no spurious error)", async () => {
+    // A pod-cap eviction / idle-suspend drains the queue to re-enqueue it on revive.
+    // A WAITING item is therefore deferred, not lost — rejecting it surfaced a
+    // spurious RUN_ERROR ("the conversation was suspended before this queued message
+    // could run") on the client's in-flight POST for a turn that in fact runs after
+    // resume. With requeue it must RESOLVE instead.
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate(); // hold the first run so the second prompt QUEUES behind it
+    const bridge = mkBridge(agent);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "running" }).catch(() => {});
+    await tick();
+
+    let settled: "resolved" | "rejected" | "pending" = "pending";
+    void bridge
+      .prompt({ threadId: "t1", text: "queued at suspend" })
+      .then(() => { settled = "resolved"; })
+      .catch(() => { settled = "rejected"; });
+    await tick();
+
+    const drained = bridge.drainQueue({ requeue: true });
+    expect(drained.map((d) => d.text), "the waiting message is preserved for revive").toContain(
+      "queued at suspend",
+    );
+    await tick();
+    expect(settled, "a re-enqueued waiting prompt must RESOLVE, not reject").toBe("resolved");
+  });
+
   it("stop() emits a CLEARING queue snapshot so a revived tab shows no phantom queue", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([{ finish: { stopReason: "end_turn" } }]);
