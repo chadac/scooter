@@ -32,7 +32,7 @@ durable — they persist across suspend/resume and are re-applied if the pod res
 Use a module when a change should be **part of the environment**:
 - a tool/package you'll use repeatedly (vs a one-off `nix run`),
 - a **systemd service** (a notebook server, a web service, a daemon),
-- environment config (env vars, lazy tools, settings).
+- environment config (env vars, settings).
 
 For a quick one-off, prefer `nix run nixpkgs#<pkg>` (see the nix-dev-env skill). For
 something durable, author a module and `scooter-rebuild switch`.
@@ -61,13 +61,20 @@ Add packages to PATH:
 }
 ```
 
-Add a lazy tool (builds on first call — light, no eager build at switch time;
-PREFER this for heavy tools):
+Some tools are already LAZY — the sandbox ships them as stubs that fetch the real
+tool on first use, so they cost nothing until you run them: `uv`, `tree`,
+`marimo`, `ttyd`, `code-server`, `awscli2`. Just reference them:
 ```nix
-{ ... }: {
-  programs.lazyTools.tools.htop = { package = "htop"; };
+{ pkgs, ... }: {
+  environment.systemPackages = [ pkgs.uv ];   # a stub; the real uv arrives on first run
 }
 ```
+
+Anything else you name is built/downloaded during the switch. That is fine for
+small tools and slow for large ones — `scooter-rebuild status` will sit in
+`building` for a while. There is no per-module way to make an arbitrary package
+lazy right now; the lazy set is declared when the image is built
+(modules/sandbox-os/stubs.nix).
 
 Enable a background systemd service:
 ```nix
@@ -124,5 +131,7 @@ scooter-rebuild status
 
 So: iterate freely. A bad module can't brick the sandbox — worst case the switch
 fails and the old environment stays (check `scooter-rebuild status` for the error).
-**Prefer lazy tools** (`programs.lazyTools`) over eager `environment.systemPackages`
-for anything heavy, so the switch stays fast (builds on first use, not at switch time).
+**Heavy packages make the switch slow** — they are built or downloaded during it,
+not on first use. The already-lazy set (`uv`, `tree`, `marimo`, `ttyd`,
+`code-server`, `awscli2`) is free to reference; reach for a big new package only
+when you actually need it.

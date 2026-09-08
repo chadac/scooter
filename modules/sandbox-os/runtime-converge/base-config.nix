@@ -64,13 +64,33 @@ let
   modulesSubdir = "/modules/sandbox-os";
   modulesTreeRoot =
     builtins.substring 0 (builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir) modulesPathStr;
+  # The nix-stubs bits reconverge-inputs.nix vendored, handed to stub-set.nix so
+  # the re-converge rebuilds the stub overlay. Without it `pkgs.uv` / `pkgs.marimo`
+  # / `pkgs.awscli2` are the REAL packages here and a self-modify re-fattens the
+  # system. Null when absent (a nixosTest evaluating this bare). See PR #502.
+  stubBitsRoot = modulesTreeRoot;
+  stubBits =
+    if !builtins.pathExists (stubBitsRoot + "/nix-stubs/lock.nix") then null
+    else {
+      lockLib = import (stubBitsRoot + "/nix-stubs/lock.nix") {
+        lib = import (nixpkgsPath + "/lib");
+      };
+      flakeLock = stubBitsRoot + "/flake.lock";
+      # The baked binary, not a fresh callPackage — that would compile Rust
+      # inside the pod on every self-modify.
+      nix-stubs = builtins.storePath
+        (builtins.readFile (stubBitsRoot + "/nix-stubs-bin"));
+    };
+
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
     inherit system;
     modules = [
       modulesPath
       { boot.isContainer = true; }
       ({ lib, ... }: {
-        programs.lazyTools.defaultNixpkgs = lib.mkForce nixpkgsRef;
+        # stub-set.nix turns these into the overlay (and lets a deployment
+        # override which stub set that is).
+        _module.args.stubBits = stubBits;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
         # Keep programs.scooterModule ENABLED across the re-converge so scooter-rebuild
         # / scooter-apply-module / scooter-env-status stay on PATH after a self-modify
@@ -102,12 +122,6 @@ let
         programs.scooterModule.modulesTree = lib.mkForce modulesTreeRoot;
       })
     ] ++ extraModules;
-    # NOTE: this in-pod eval does NOT set _module.args.nixStubsLib, so
-    # carry-over.nix's `awscli` falls back to the FULL pkgs.awscli2 on a re-converge
-    # (the booted image ships it as a nix-stubs lazy shim). Correctness-safe, but a
-    # self-modify re-fattens ~145MB. FOLLOW-UP (todo-nix-stubs-reconverge-lockstep):
-    # vendor nix-stubs into modulesTree + reconstruct nixStubsLib here so the lazy
-    # shim survives re-converge — the "sandbox vends itself as a module" design.
   };
 in
 {

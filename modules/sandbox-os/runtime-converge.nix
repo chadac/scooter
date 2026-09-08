@@ -15,7 +15,7 @@
 #
 # See docs/HYPERNIX_INJECTION.md.
 
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, nixStubs, ... }:
 
 let
   cfg = config.programs.scooterModule;
@@ -29,7 +29,7 @@ let
   # Factored into a shared helper so the nixosTest pre-builds the re-converged
   # toplevel from the IDENTICAL derivations (else: cache miss -> offline from-source
   # build that hangs in the VM). See runtime-converge/reconverge-inputs.nix.
-  inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib; })
+  inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib nixStubs; })
     baseConfig modulesTree modulesSrc;
 
   # The modules-source path the in-pod build feeds to base-config, AND the tree baked
@@ -191,6 +191,26 @@ let
       # On ANY unexpected exit before we reach the explicit done/failed writes, mark
       # failed so a poller never sees a stuck "building" after the process died.
       trap 'rc=$?; if [ "$rc" -ne 0 ]; then write_status failed "scooter-apply-module exited $rc"; fi' EXIT
+
+      # WAIT FOR THE STORE, don't just build. The local-overlay store is not queryable
+      # the instant overlay-store-setup exits: the upper's state DB is still being
+      # written (observed in the k3d boot: a 164MB uncheckpointed WAL ~20s in, settling
+      # to a 0-byte WAL and a 6.4MB db.sqlite). Until that transaction commits, a path
+      # that lives only in the READ-ONLY LOWER — which is exactly what the baked modules
+      # tree is — reads back as invalid, and the build below dies on `builtins.storePath`
+      # with "path '...-sandbox-os-src' is not valid" despite the path being present on
+      # disk and registered in the baked DB. Boot starts this unit ~1s after the overlay
+      # mount, landing inside that window. See PR #502.
+      #
+      # Bounded, and deliberately NOT fatal on timeout: fall through and let the build
+      # report the real error rather than wedging the converge on a store that will
+      # never settle.
+      # `if` (not `cmd && break`) so the probe's expected failures are unambiguously
+      # exempt from writeShellApplication's `set -e`.
+      for _ in $(seq 1 90); do
+        if nix-store --realise ${effTree} >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
 
       if [ -n "$module" ]; then
         echo "scooter-apply-module: building toplevel (base + $module)..."

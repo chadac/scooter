@@ -121,11 +121,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1783646154,
-        "narHash": "sha256-Zztks+2J72iFyhdU35UI1bnhikXoguuGDP4pXngeas8=",
+        "lastModified": 1788843021,
+        "narHash": "sha256-STCrT9+KwdQdi/WtyeWwP999RwF+NCkUovVnZAy7DXA=",
         "owner": "chadac",
         "repo": "nix-stubs",
-        "rev": "3d3d56974bf0a8c153c510dbedef04905985eb9d",
+        "rev": "490127aeabf3b1ea6a72d1f320a3087791c6ff1a",
         "type": "github"
       },
       "original": {

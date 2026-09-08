@@ -99,7 +99,7 @@ export interface K8sProvisionerOptions {
    *  side-loaded local cluster where "Always" fails ImagePullBackOff. */
   sandboxPullPolicy?: "Always" | "IfNotPresent" | "Never";
   /** A deployment's `.scooter` ConfigMap (its own injected Nix tools) to mount at
-   *  /etc/agent-sandbox/scooter, where lazyTools `localFlake` builds them. The
+   *  /etc/agent-sandbox/scooter, where injectedTools builds them. The
    *  CONTENT is deployment-specific (this platform doesn't know what's in it). */
   scooterConfigMap?: string;
   /** A deployment's config-FILES ConfigMap (filename -> contents), mounted as a

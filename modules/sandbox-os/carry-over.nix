@@ -18,7 +18,7 @@
 # The writable Nix store the old entrypoint faked with an overlay is NATIVE here
 # (NixOS has a real store), so that job is dropped.
 
-{ config, lib, pkgs, nixStubsLib ? null, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   cfg = config.programs.scooterCarryOver;
@@ -31,17 +31,16 @@ let
   brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
   scooterAwsCredentials = brokerTools.scooter-aws-credentials;
 
-  # awscli2 (+ its python) is ~280MB — too heavy to bake into the base image for a
-  # tool most conversations never use. Ship it as a nix-stubs LAZY SHIM: only its
-  # .drv is baked (tiny), and the built package materializes into the writable store
-  # the first time the agent runs `aws` (fast against the baked nixpkgs / Attic
-  # cache). The credential_process (scooter-aws-credentials, python) is unaffected —
-  # it's a separate broker tool. Fall back to the real package when nix-stubs isn't
-  # wired (the nixosTests import this module without the packaging layer).
-  awscli =
-    if nixStubsLib != null
-    then nixStubsLib.mkLazyPackage { package = pkgs.awscli2; commands = [ "aws" "aws_completer" ]; }
-    else pkgs.awscli2;
+  # awscli2 (+ its python closure) is ~449 MB — too heavy to bake for a tool most
+  # conversations never use. modules/sandbox-os/stubs.nix declares it, so
+  # `pkgs.awscli2` here is a nix-stubs SHIM: the image carries the build recipe and
+  # the real aws-cli materializes into the writable store the first time the agent
+  # runs `aws`. The credential_process (scooter-aws-credentials, python) is a
+  # separate broker tool and stays eager.
+  #
+  # No fallback branch any more: the shim arrives through the pkgs the image is
+  # built with, so a nixosTest importing this module bare just gets the real
+  # package — same expression, no conditional.
 in
 {
   options.programs.scooterCarryOver = {
@@ -62,7 +61,7 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = brokerTools.all ++ [
       pkgs.git
-      awscli   # a lazy nix-stubs shim (realises awscli2 on first `aws` call)
+      pkgs.awscli2   # a nix-stubs shim; realises the real aws-cli on first `aws` call
     ];
 
     # configure_git_broker: point git's credential helper at the broker, once the

@@ -287,9 +287,20 @@
           # directly (carry-over.nix), one source of truth (pkgs/broker-tools).
           brokerTools = pkgs.callPackage ./pkgs/broker-tools { };
 
-          # nix-stubs' lib for this system (mkLazyPackage / mkOverlay) — passed into
-          # the sandbox-os build so its modules can declare lazy tool shims.
-          nixStubsLib = nix-stubs.lib.${system};
+          # Applied HERE, at pkgs construction, not through `nixpkgs.overlays`:
+          # pkgs/sandbox-os builds the system with `pkgs.nixos`, which sets
+          # `nixpkgs.pkgs` and conflicts with the overlays option. The in-pod
+          # re-converge is the mirror case (modules/sandbox-os/stub-set.nix).
+          stubOverlay = import ./modules/sandbox-os/stub-overlay.nix {
+            lockLib = nix-stubs.lib;
+            flakeLock = ./flake.lock;
+            nix-stubs = nix-stubs.packages.${system}.nix-stubs;
+          };
+
+          # A pkgs with the stubs applied, for the sandbox image ONLY. Scoped
+          # deliberately: overlaying the repo-wide pkgs would hand a shim to every
+          # other build here, and nothing outside the sandbox wants one.
+          sandboxPkgs = import nixpkgs { inherit system; overlays = [ stubOverlay ]; };
 
           # The uv-nix uv (patched for Nix) — backs the in-pod marimo so science deps
           # install + import. Passed into the sandbox-os build for marimo.nix.
@@ -301,7 +312,14 @@
           # programs.overlayStore.enable) — there is no longer a separate read-only-store
           # variant; the writable store is required for runtime tool-install + re-converge.
           sandboxOsImage = import ./pkgs/sandbox-os {
-            inherit pkgs lib n2c nixStubsLib uvNix;
+            inherit lib n2c uvNix;
+            pkgs = sandboxPkgs;
+            # For the in-pod re-converge: it vendors these so a self-modify can
+            # rebuild the stub overlay instead of re-fattening every stubbed tool.
+            nixStubs = {
+              src = nix-stubs;
+              package = nix-stubs.packages.${system}.nix-stubs;
+            };
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
@@ -462,7 +480,7 @@
           # check` runs them. See nixos-tests/ + docs/DEV_ENVIRONMENT*.
           devEnvTests =
             if pkgs.stdenv.isLinux
-            then import ./nixos-tests { inherit pkgs lib; }
+            then import ./nixos-tests { inherit pkgs lib stubOverlay; }
             else { };
         in
         {
@@ -606,6 +624,15 @@
         };
 
       flake = {
+        # The stub set, per system, for `nix-stubs gen` / `check`:
+        #   nix run github:chadac/nix-stubs#check -- --lock modules/sandbox-os/stubs.lock
+        # Read with a PLAIN nixpkgs (no stub overlay) — gen records what the real
+        # packages evaluate to, which is exactly what the overlay's `prev` sees.
+        stubs = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]
+          (system: import ./modules/sandbox-os/stubs.nix {
+            pkgs = nixpkgs.legacyPackages.${system};
+          });
+
         # The built-in agent skills as a `filename -> content` attrset, for a host
         # flake to thread into `agentSandbox.agent.skills` (so a custom deploy ships
         # the same skills the default render does). e.g.

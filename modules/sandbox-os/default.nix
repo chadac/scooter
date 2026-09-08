@@ -18,7 +18,8 @@
 {
   imports = [
     ./nix-config.nix
-    ./lazy-tools.nix
+    ./stub-set.nix
+    ./injected-tools.nix
     ./sample-service.nix
     ./web-services.nix
     ./carry-over.nix
@@ -41,14 +42,6 @@
   ];
 
   # nix-stubs' lib (mkLazyPackage), consumed by carry-over.nix to lazy-shim awscli2.
-  # Default it to null HERE so importers that DON'T provide it — the nixosTests,
-  # which import modules/sandbox-os directly, not through pkgs/sandbox-os — still
-  # evaluate (carry-over.nix then falls back to the real package). The image build
-  # (pkgs/sandbox-os) overrides this with the real lib via its own _module.args
-  # (a plain definition outranks this mkDefault). Without the default, referencing
-  # `nixStubsLib` as a module arg errors "attribute 'nixStubsLib' missing".
-  _module.args.nixStubsLib = lib.mkDefault null;
-
   # The uv-nix uv (patched for Nix), consumed by web-services/marimo.nix to launch
   # marimo under uv so science deps import. Defaulted to null here (same reasoning as
   # nixStubsLib) so nixosTests importing modules/sandbox-os directly still evaluate;
@@ -89,21 +82,32 @@
     # own session/process-group so they survive the exec shell and can be reaped
     # as a group later. coreutils' nohup alone can't create a process group.
     util-linux
+
+    # nix-stubs SHIMS, not packages: modules/sandbox-os/stubs.nix declares them and
+    # the overlay (flake.nix) makes these attrs resolve to a shim carrying only the
+    # build recipe, so listing them here costs kilobytes rather than closures.
+    #
+    # `tree` is here because goose's built-in `tree` tool reads the AGENT-HOST's
+    # filesystem rather than the sandbox's, so the skills steer the agent to
+    # `shell` + `tree` — which only works if `tree` resolves in here.
+    uv tree
   ];
 
-  # --- the lazy-tool stubs (extensible; uv shipped) --------------------------
-  programs.lazyTools = {
-    enable = true;
-    # Built-in fallback pin; the live pod overrides via the pinFile ConfigMap.
-    # STAGE 5: set this to a concrete fixed rev.
-    defaultNixpkgs = lib.mkDefault "github:NixOS/nixpkgs/nixos-unstable";
-    tools.uv = { package = "uv"; };
-    # `tree` as a lazy stub: the agent reaches for it to list directories, and its
-    # goose developer `tree` tool reads the WRONG filesystem (the agent-host pod,
-    # not the sandbox) — so we steer it to `shell` + `tree` (see identityPrompt).
-    # Ship it lazily so that shell `tree` actually resolves in the sandbox.
-    tools.tree = { package = "tree"; };
-  };
+  # Defaulted here so modules can take `{ nixStubs, ... }` unconditionally: a NixOS
+  # module argument is looked up in `_module.args` and a `? null` default on the
+  # function does not save it. The image build overrides this (pkgs/sandbox-os);
+  # a nixosTest importing modules/sandbox-os bare gets null and simply has no
+  # stub overlay to vendor for the re-converge.
+  _module.args.nixStubs = lib.mkDefault null;
+
+  # The vendored nix-stubs bits the in-pod re-converge rebuilds its stub overlay
+  # from; null everywhere else, which is what makes stub-set.nix inert in the
+  # image build and in a bare nixosTest. Supplied by runtime-converge/base-config.nix.
+  _module.args.stubBits = lib.mkDefault null;
+
+  # Deployment-injected tools (a mounted .scooter flake). On by default like the
+  # old lazyTools was: the module emits nothing until a deployment declares a tool.
+  programs.injectedTools.enable = lib.mkDefault true;
 
   # --- the PoC sample service ------------------------------------------------
   services.sampleDevService.enable = true;

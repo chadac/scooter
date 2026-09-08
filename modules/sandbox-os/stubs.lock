@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1788614874,
+      "narHash": "sha256-7QYjT2vHLuX9Z1pdxHXDKCbh1CR3D/2rywB9Tx0MPRg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "c043004d1c6985732bcc1cbc5a9c9aecbbb4e0f0",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "x86_64-linux": {
+      "awscli2": {
+        "attr": "awscli2",
+        "drv": "/nix/store/w1qdkgk5k5v3vb0pl4rqsyzrhdh82av2-awscli2-2.35.11.drv",
+        "output": "out",
+        "bins": [
+          "aws",
+          "aws_completer"
+        ],
+        "name": "awscli2-2.35.11"
+      },
+      "code-server": {
+        "attr": "code-server",
+        "drv": "/nix/store/g7sl587z9vd02v4jdrvi0c756ynainqp-code-server-4.115.0.drv",
+        "output": "out",
+        "bins": [
+          "code-server"
+        ],
+        "name": "code-server-4.115.0"
+      },
+      "marimo": {
+        "attr": "marimo",
+        "drv": "/nix/store/chgc316p953gvgbh3kskrgqzbghr93jq-python3.14-marimo-0.24.0.drv",
+        "output": "out",
+        "bins": [
+          "marimo"
+        ],
+        "name": "marimo-0.24.0"
+      },
+      "tree": {
+        "attr": "tree",
+        "drv": "/nix/store/q931pa3r2wxs5hpxynaa33h305273wy9-tree-2.3.2.drv",
+        "output": "out",
+        "bins": [
+          "tree"
+        ],
+        "name": "tree-2.3.2"
+      },
+      "ttyd": {
+        "attr": "ttyd",
+        "drv": "/nix/store/l2pc6jxyj8gvnx1qcwkilka20vhly09j-ttyd-1.7.7.drv",
+        "output": "out",
+        "bins": [
+          "ttyd"
+        ],
+        "name": "ttyd-1.7.7"
+      },
+      "uv": {
+        "attr": "uv",
+        "drv": "/nix/store/mszx1f9yy1dxj4v1m2wincdj57is67c5-uv-0.12.5.drv",
+        "output": "out",
+        "bins": [
+          "uv"
+        ],
+        "name": "uv-0.12.5"
+      }
+    }
+  }
+}
