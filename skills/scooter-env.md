@@ -62,11 +62,21 @@ Add packages to PATH:
 ```
 
 Some tools are already LAZY — the sandbox ships them as stubs that fetch the real
-tool on first use, so they cost nothing until you run them: `uv`, `tree`,
-`marimo`, `ttyd`, `code-server`, `awscli2`. Just reference them:
+tool on first use, so they cost nothing until you run them: `tree`, `marimo`,
+`ttyd`, `code-server`, `awscli2`. Just reference them:
 ```nix
 { pkgs, ... }: {
-  environment.systemPackages = [ pkgs.uv ];   # a stub; the real uv arrives on first run
+  environment.systemPackages = [ pkgs.marimo ];   # a stub; the real one arrives on first run
+}
+```
+
+**Python/uv is the exception.** The sandbox's `uv` is uv-nix (patched so wheels
+and downloaded interpreters find Nix libraries); `pkgs.uv` is the vanilla one and
+will fail to import native deps. A service of yours that runs uv must say:
+```nix
+{ config, ... }: {
+  systemd.services.my-job.serviceConfig.ExecStart =
+    "${config.sandboxOs.uv.package}/bin/uv run /workspace/job.py";
 }
 ```
 
@@ -132,6 +142,6 @@ scooter-rebuild status
 So: iterate freely. A bad module can't brick the sandbox — worst case the switch
 fails and the old environment stays (check `scooter-rebuild status` for the error).
 **Heavy packages make the switch slow** — they are built or downloaded during it,
-not on first use. The already-lazy set (`uv`, `tree`, `marimo`, `ttyd`,
+not on first use. The already-lazy set (`tree`, `marimo`, `ttyd`,
 `code-server`, `awscli2`) is free to reference; reach for a big new package only
 when you actually need it.

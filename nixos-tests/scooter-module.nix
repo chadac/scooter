@@ -30,13 +30,23 @@ let
   # the SAME source passed below), so the re-converge resolves OFFLINE against the
   # test's nixpkgs without a separate pin module here.
 
+  # Stands in for the uv-nix uv, which is a flake input these tests do not have.
+  # Its identity is all that matters here: it must be DISTINGUISHABLE from vanilla
+  # `pkgs.uv`, so the test can tell whether the re-converge kept the uv the image
+  # supplied or silently fell back. A shell script also keeps the test offline —
+  # the real uv-nix fetches its binary at eval time.
+  fakeUvNix = pkgs.writeShellScriptBin "uv" ''echo uv-nix-fake'';
+
   # The EXACT inputs the in-pod build feeds base-config.nix, from the SAME helper
   # runtime-converge.nix uses (single source of truth). `modulesSrc` is a VENDORED
   # tree (modules/sandbox-os + pkgs/broker-tools at a fixed layout), NOT the bare
   # module dir: building `reconverged` with `sandboxModule` directly produces a
   # DIFFERENT derivation than the runtime builds -> cache miss -> from-source build
   # that hangs OFFLINE in the VM.
-  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
+  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix {
+    inherit pkgs lib;
+    uvNix = fakeUvNix;
+  };
 
   # Pre-build the re-converged toplevel (base config + the layered modules) so its
   # closure is in the VM store and the in-pod build is a pure CACHE HIT (offline
@@ -61,6 +71,10 @@ pkgs.testers.runNixOSTest {
 
   nodes.machine = { config, pkgs, lib, ... }: {
     imports = [ sandboxModule ];
+
+    # What the image build supplies from the uv-nix flake input. The test asserts
+    # this survives the re-converge (reconverge-inputs.nix vendors its store path).
+    _module.args.uvNix = fakeUvNix;
 
     # Enable runtime-converge (the image builder enables it in prod; here the
     # test imports the shared config directly, so turn it on explicitly).
@@ -111,6 +125,10 @@ pkgs.testers.runNixOSTest {
 
     pid1_before = machine.succeed("stat -c %Y /proc/1").strip()
 
+    # BEFORE: `uv` is the uv-nix one the image supplied, not vanilla nixpkgs uv.
+    uv_before = machine.succeed("uv").strip()
+    assert uv_before == "uv-nix-fake", f"booted uv is not the uv-nix one: {uv_before!r}"
+
     # APPLY the mounted .scooter/module.nix via switch-to-configuration.
     machine.succeed("scooter-apply-module")
 
@@ -131,6 +149,15 @@ pkgs.testers.runNixOSTest {
     machine.succeed("command -v scooter-env-status")
     # They resolve into the NEW current-system profile (not a stale generation).
     machine.succeed("test \"$(command -v scooter-rebuild)\" = /run/current-system/sw/bin/scooter-rebuild")
+
+    # REGRESSION (uv-nix-across-reconverge): the PATCHED uv must survive the switch.
+    # The re-converge evaluates modules/sandbox-os afresh, where `uvNix` defaults to
+    # null — so unless base-config.nix reads back the store path reconverge-inputs
+    # vendored, `uv` here silently reverts to vanilla nixpkgs uv and every Nix-linked
+    # wheel (numpy/scipy/matplotlib) starts failing to import on a system the agent
+    # only ADDED to. Vanilla uv would print its version banner, never this string.
+    uv_after = machine.succeed("uv").strip()
+    assert uv_after == "uv-nix-fake", f"re-converge lost the uv-nix uv: {uv_after!r}"
 
     # PID 1 (systemd) survived the switch — same process, same start time.
     machine.succeed("test \"$(ps -o comm= -p 1)\" = systemd")
