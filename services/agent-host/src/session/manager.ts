@@ -565,6 +565,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       return undefined;
     }
     let m = metas.find((x) => x.threadId === threadId);
+    const fromStore = m !== undefined;
     if (!m) {
       // No local meta. The conversation may still EXIST as a Conversation CR that this
       // pod has not cached yet — the router creates the CR and returns immediately, so a
@@ -616,6 +617,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     // fire-and-forget; the in-flight guard dedupes overlapping callers.
     if (hydrated && ownershipGuard.canWrite(hydrated.id)) {
       void api.reconcileDanglingRun(hydrated.id);
+      // Persist CR-synthesized metadata so the Postgres-only conversation list can see
+      // a conversation adopted from its CR but never prompted. Without this the row (and
+      // its owner) is invisible to Mine/All. Owner-fenced.
+      if (!fromStore) void saveMeta(hydrated);
     }
     return hydrated;
   };
