@@ -32,6 +32,40 @@ const SCOOTER_MOUNT = "/etc/agent-sandbox/scooter";
 const STATUS = "/run/scooter/env-switch/status";
 const TOOL = "review-app";
 
+// Pod-side store diagnostic, dumped when the converge does not reach 'done'.
+//
+// "path '…-sandbox-os-src' is not valid" only says a store path missed the Nix DB —
+// it does not say WHICH db (the baked read-only lower, or the overlay upper's state),
+// nor whether the miss is specific to that path or total. This answers both in one
+// shot; the CONTROL path (/run/current-system, which is definitionally in the baked
+// closure) is the discriminator: control-valid + tree-invalid = a registration gap,
+// both invalid = the pod is not reading the baked DB at all.
+const STORE_DIAGNOSTIC = [
+  "set +e",
+  'echo "--- nix.conf ---"; cat /etc/nix/nix.conf 2>&1',
+  'echo "--- nix store mounts ---"; grep nix /proc/mounts 2>&1',
+  'echo "--- baked lower db ---"; ls -l /nix/var/nix/db/ 2>&1',
+  'echo "--- overlay upper state ---"; ls -lR /nix/.scooter-rw/state 2>&1 | head -20',
+  // Pass the features explicitly: a diagnostic that dies on "experimental feature
+  // not enabled" wastes the whole CI round-trip it exists to save.
+  "EF='--extra-experimental-features nix-command --extra-experimental-features read-only-local-store --extra-experimental-features local-overlay-store'",
+  "AP=$(readlink -f /run/current-system/sw/bin/scooter-apply-module)",
+  "TREE=$(grep -o '/nix/store/[a-z0-9]*-sandbox-os-src' \"$AP\" | head -1)",
+  'echo "tree=$TREE"',
+  'echo "--- tree present on disk? ---"; ls -ld "$TREE" "/nix/.scooter-ro/${TREE#/nix/store/}" 2>&1',
+  'echo "--- tree: merged (local-overlay) store ---"; nix $EF path-info "$TREE" 2>&1 | head -3',
+  "echo \"--- tree: lower store only ---\"; nix $EF path-info --store 'local?root=/&real=/nix/.scooter-ro&read-only=true' \"$TREE\" 2>&1 | head -3",
+  'echo "--- CONTROL (current system) : merged ---"; nix $EF path-info "$(readlink -f /run/current-system)" 2>&1 | head -3',
+  "echo \"--- CONTROL : lower store only ---\"; nix $EF path-info --store 'local?root=/&real=/nix/.scooter-ro&read-only=true' \"$(readlink -f /run/current-system)\" 2>&1 | head -3",
+  // Which BUILTIN throws? base-config.nix newly reads the tree through a
+  // CONTEXT-FREE STRING path (pathExists/import/readFile on the vendored nix-stubs
+  // bits); main only ever passed it as a real path arg. Isolating storePath from the
+  // string-path reads says whether this is a DB miss or the string-path accessor.
+  'echo "--- builtins.storePath ---"; nix $EF eval --impure --expr "builtins.storePath \\"$TREE\\"" 2>&1 | head -4',
+  'echo "--- builtins.pathExists (string path) ---"; nix $EF eval --impure --expr "builtins.pathExists (\\"$TREE\\" + \\"/nix-stubs/lock.nix\\")" 2>&1 | head -4',
+  'echo "--- builtins.readFile (string path) ---"; nix $EF eval --impure --raw --expr "builtins.readFile (\\"$TREE\\" + \\"/nix-stubs-bin\\")" 2>&1 | head -4',
+].join("\n");
+
 // A minimal deployment `.scooter` dir: module.nix declares the tool as an INJECTED
 // tool that resolves from ./flake.nix at runtime; flake.nix exposes it as a package built from
 // ./review-app.sh. This mirrors the real deployment convention with a fake tool.
@@ -166,8 +200,12 @@ maybe("scooter .scooter injection: seed → boot converge → tool on PATH (k3d,
         .exec(SELECTOR, ["sh", "-c", "tail -50 /run/scooter/env-switch/log 2>/dev/null || true"], NS)
         .then((r) => r.stdout)
         .catch(() => "");
+      const store = await cluster
+        .exec(SELECTOR, ["sh", "-c", STORE_DIAGNOSTIC], NS)
+        .then((r) => r.stdout)
+        .catch((e) => `(diagnostic failed: ${e})`);
       // eslint-disable-next-line no-console
-      console.error(`\n=== scooter-apply-module did not reach 'done' (status='${status}') ===\nerror: ${err}\n--- log tail ---\n${log}\n=== end ===\n`);
+      console.error(`\n=== scooter-apply-module did not reach 'done' (status='${status}') ===\nerror: ${err}\n--- log tail ---\n${log}\n--- store diagnostic ---\n${store}\n=== end ===\n`);
     }
     expect(status, `env-switch status was '${status}' (empty/building/switching = the converge never completed)`).toBe("done");
   }, 320_000);
