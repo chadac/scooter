@@ -55,8 +55,10 @@ pkgs.testers.runNixOSTest {
         closure = machine.succeed("nix-store -q --requisites /run/current-system").split()
         assert "${realAwsOut}" not in closure, \
             "LEAK: awscli2's built output is in the image closure"
-        assert any("-recipe-awscli2" in p for p in closure), \
-            "MISSING RECIPE: no recipe blob for awscli2, so `aws` could never be realised"
+        # One blob for the whole set, not one per tool: the pack is opaque, so
+        # per-stub blobs re-ship the stdenv chain they share (chadac/nix-stubs#3).
+        assert any("-recipe-stub-set" in p for p in closure), \
+            "MISSING RECIPE: no recipe blob in the closure, so `aws` could never be realised"
 
         # A recipe travels as that blob and never as store derivations: a .drv in
         # the closure names unrealised build-time outputs, and enumerating it is

@@ -23,10 +23,8 @@
     # baked into the image (tiny) — the built package materializes into the writable
     # store on first call, keeping rarely-used heavies (awscli2) out of the base
     # image closure. Replaces the homegrown modules/sandbox-os/lazy-tools.nix.
-    # TODO: back to the default branch once chadac/nix-stubs#3 lands — this pins the
-    # branch that introduces stubs.nix/stubs.lock + lib.mkOverlay.
     nix-stubs = {
-      url = "github:chadac/nix-stubs/feat/two-stage-lock";
+      url = "github:chadac/nix-stubs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # uv patched to work under Nix: wheels/interpreters are fixed up so Nix-supplied
