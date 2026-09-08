@@ -18,7 +18,7 @@
 # uvNix arrives as a derivation in the image build and as a `builtins.storePath`
 # string in the in-pod re-converge (runtime-converge/base-config.nix). Both are
 # valid `types.package` values, which is what lets the re-converge keep the
-# patched uv without re-deriving it. See PR #503.
+# patched uv without re-deriving it. See PR #505.
 
 { config, lib, pkgs, uvNix ? null, ... }:
 
