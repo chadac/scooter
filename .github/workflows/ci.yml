@@ -731,8 +731,10 @@ jobs:
             # each conversation lands on a DIFFERENT pod, and give the fleet room to spread.
             kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
             # The reaper spares a sandbox until it is ORPHAN_GRACE_SECONDS old, so the default
-            # 600s holds ~15 dead per-test sandboxes on the one CI node. Why: PR #506.
-            kubectl -n agent-sandbox set env deployment/conversation-controller ORPHAN_GRACE_SECONDS=45
+            # 600s holds ~15 dead per-test sandboxes on the one CI node. Do NOT go much below
+            # 180s: at 45s the reaper outran conversation registration and thrashed (127 reaps
+            # vs 8). Why: PR #506.
+            kubectl -n agent-sandbox set env deployment/conversation-controller ORPHAN_GRACE_SECONDS=180
             kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
             kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
             kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
