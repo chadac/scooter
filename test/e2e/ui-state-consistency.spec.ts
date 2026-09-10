@@ -185,6 +185,14 @@ test.describe("whole-UI consistency around the QUEUE", () => {
 
     // Conservation: the queued message must LEAVE the queue and ARRIVE in the thread — exactly once.
     await expect.poll(async () => (await snapshot(page)).queued.length, { timeout: 60_000 }).toBe(0);
+    // Wait for the ARRIVAL, not for `running === false`. The queue empties when the drain STARTS,
+    // and between the first run ending and the drained run starting the UI is legitimately idle
+    // with the drained turn not yet in the thread — an idle-gated read lands in that window and
+    // sees one turn too few. The turn count is the property under test, so wait on it directly;
+    // idle is then asserted as the settled END state, not used as the signal. Why: PR #508.
+    await expect
+      .poll(async () => (await snapshot(page)).userMessages, { timeout: 60_000 })
+      .toBe(start.userMessages + 1);
     await expect.poll(async () => (await snapshot(page)).running, { timeout: 60_000 }).toBe(false);
     const end = await step(page, "after the drain");
     expect(end.userMessages, "both the original and the queued message are thread turns")
