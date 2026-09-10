@@ -66,7 +66,20 @@ export class OwnershipTracker implements OwnershipGuard {
    *  stream the write fence itself trusts. Not fired on same-owner echoes. */
   onGained?: (id: string, generation: number) => void;
 
+  /** Fired when a Conversation CR is DELETED — the conversation no longer exists,
+   *  fleet-wide. Distinct from observe(id, null), which also means "assigned to nobody
+   *  yet" and must not tear anything down. Only the watch's DELETED event reaches it, via
+   *  observeDeleted. */
+  onDeleted?: (id: string) => void;
+
   constructor(private readonly selfPod: string) {}
+
+  /** Called by the watch when a Conversation CR is DELETED: forget the assignment (as
+   *  observe(id, null) does) AND announce that the conversation is gone. */
+  observeDeleted(id: string): void {
+    this.observe(id, null);
+    this.onDeleted?.(id);
+  }
 
   /** Called by the watch when a Conversation CR changes. */
   observe(id: string, a: Assignment | null): void {
