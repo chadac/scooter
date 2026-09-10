@@ -1186,7 +1186,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Optional-call: a bridge that predates drainQueue (or a partial test double)
       // must not break suspend — losing the queue is bad, failing the suspend is worse
       // (the pod would never come down and the idle sweep would retry forever).
-      const drained = entry.bridge?.drainQueue?.() ?? [];
+      // requeue: revive() re-enqueues these on the rebuilt bridge, so a waiting
+      // item is deferred, not lost — drainQueue RESOLVES its awaited prompt() rather
+      // than rejecting it, so a suspend (e.g. a pod-cap eviction) never surfaces a
+      // spurious RUN_ERROR for a turn that in fact runs after resume. See PR.
+      const drained = entry.bridge?.drainQueue?.({ requeue: true }) ?? [];
       if (drained.length > 0) {
         entry.pendingQueue = [...(entry.pendingQueue ?? []), ...drained];
         await saveMeta(entry); // durable BEFORE the teardown — a crash here must not lose it
