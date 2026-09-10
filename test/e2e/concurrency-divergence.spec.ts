@@ -122,7 +122,7 @@ test.describe("two tabs on the same conversation", () => {
     // A queues a message behind a long run; B must see it in ITS queue tab.
     // 20s, not 6: B's queue read has to happen while A's run is still in flight, and on the full
     // target the sandbox wait precedes the sleep. startLongRun carries the target-aware budget for
-    // the bar itself — a hand-rolled 30s wait is short by 60s on a cold pod. Why: PR #503.
+    // the bar itself — a hand-rolled 30s wait is short by 60s on a cold pod. Why: PR #507.
     await chat.startLongRun(20);
     await chat.sendWhileRunning("queued in A, visible in B");
     await chatB.openQueueTab();

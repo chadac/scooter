@@ -157,14 +157,14 @@ test.describe("queue durability across refresh + drain", () => {
     await chat.open();
     // 20s, not 3: the message must queue behind a run that is still in flight, and on the full
     // target a 3s run can begin and END inside the sandbox wait that precedes it — the bar never
-    // renders and the queueing this test is about never happens. Why: PR #503.
+    // renders and the queueing this test is about never happens. Why: PR #507.
     await chat.startLongRun(20);
     const before = await chat.assistantMessages().count();
     await chat.sendWhileRunning("run me after the sleep");
 
     // Once the sleep run + the queued run both complete, there are MORE assistant messages,
     // and the queued item leaves the queue. 120s, not 90: the run this queues behind is now
-    // 20s (see above), and the queued turn's own exec + streamed reply follows it. Why: PR #503.
+    // 20s (see above), and the queued turn's own exec + streamed reply follows it. Why: PR #507.
     await expect.poll(async () => chat.assistantMessages().count(), { timeout: 120_000 }).toBeGreaterThan(before);
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 20_000 });

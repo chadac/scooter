@@ -37,7 +37,7 @@ test.describe("whole-UI consistency through a normal turn", () => {
 
     // RUNNING: the run bar is up, the composer offers Stop (not Send), nothing else changed state.
     // 20s, not 3: the run must still be in flight when the bar assertion polls, and on the full
-    // target the exec waits for a ready sandbox pod before the sleep even starts. Why: PR #503.
+    // target the exec waits for a ready sandbox pod before the sleep even starts. Why: PR #507.
     await chat.startLongRun(20);
     // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
     // becoming visible doesn't guarantee the user message has been counted yet — observed in
@@ -164,7 +164,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     await chat.open();
     // 20s, not 3: the second message must QUEUE behind an in-flight run. A run that ends first
     // makes the message an ordinary turn and the conservation count comes up one short with
-    // nothing actually lost. Why: PR #503.
+    // nothing actually lost. Why: PR #507.
     await chat.startLongRun(20);
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
@@ -194,7 +194,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     await chat.open();
     // 60s, not 20: the run must outlive open→send→queue→snapshot→reload→re-derive, because the
     // post-reload assertions require it still in flight. The sandbox wait precedes the sleep, so
-    // the sleep's own 20s was not the margin it appeared to be. Why: PR #503.
+    // the sleep's own 20s was not the margin it appeared to be. Why: PR #507.
     await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();

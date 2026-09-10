@@ -96,7 +96,7 @@ fullOnly("needs kubectl access to delete the owner pod mid-run")(
       expect(thread, "the URL must name a conversation").toBeTruthy();
 
       // A turn long enough that the pod deletion lands MID-run. startLongRun carries the
-      // target-aware bar budget; this spec is fullOnly, where 30s is short. Why: PR #503.
+      // target-aware bar budget; this spec is fullOnly, where 30s is short. Why: PR #507.
       await chat.startLongRun(15);
       const moved = await request.post(`${hook}/move/${thread}`);
       expect(moved.ok(), `the hook must delete the owner pod: ${await moved.text()}`).toBeTruthy();
