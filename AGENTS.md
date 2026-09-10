@@ -117,6 +117,35 @@ Rules of thumb:
   server. NOT a superset of fast — fault-proxy specs run fast only. Gate specs with
   `fastOnly(reason)` / `fullOnly(reason)` from `test/e2e/target.ts`.
 
+### Fixing a flake: label the PR so CI proves it
+
+A PR that fixes a flaky test declares the test in its **description** and opts in
+with a **label**. Without the label nothing extra runs; without the description
+line the check fails loudly rather than passing on zero tests.
+
+```
+flake-test: THREE messages sent mid-run       # playwright -g pattern (required)
+flake-specs: test/e2e/queue-durability.spec.ts test/e2e/ui-state-consistency.spec.ts
+```
+
+`flake-specs:` is optional — give it when the flake only reproduces under
+cross-spec contention, and CI runs those files together instead of the lone `-g`
+match.
+
+| Label | Job | Runs against |
+|---|---|---|
+| `flake-check` | flake focus (targeted ×20) | **fast** — fake stack |
+| `e2e-full-flake-check` | flake focus full (k3d, targeted ×5) | **full** — a real k3d cluster |
+| `e2e-full` | e2e full (k3d) | the whole full suite, once |
+
+**Which one you need depends on where the flake was seen.** A flake reported by
+the nightly `e2e-full` usually cannot reproduce on the fast target at all: the
+fast stack has no sandbox pods, so it has no cold boots, no node CPU saturation,
+and no contention for provisioning — which is where those flakes live. A green
+`flake-check` on such a PR shows no *regression*; it is not evidence the flake is
+fixed. Use `e2e-full-flake-check` for those, and expect it to be slow (a cluster
+per run, ~13-25m before the first repetition).
+
 ## Conventions
 
 - **Cluster-agnostic:** never hardcode minikube. Go through

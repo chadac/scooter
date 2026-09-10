@@ -66,3 +66,29 @@ if [[ -n "$specs_raw" ]]; then
 fi
 echo "Focused flake specs: '${specs}'"
 echo "specs=$specs" >>"$GITHUB_OUTPUT"
+
+# The FULL target runs an ALLOWLIST (test/e2e/full-specs.json), not every spec, so
+# `flake-specs:` written for the fast suite can name files the `full` project does
+# not match. Passing one anyway makes playwright exit "no tests found" and the
+# check reads as infrastructure breakage rather than "that spec is fast-only".
+# Emit the intersection, and — when FULL_TARGET=1 — fail if the PR named specs but
+# NONE survive, so the full check can't pass by running nothing.
+specs_full=""
+allow="$(dirname "$0")/../../test/e2e/full-specs.json"
+for tok in $specs; do
+  if grep -q "\"$(basename "$tok")\"" "$allow"; then
+    specs_full="${specs_full:+$specs_full }$tok"
+  else
+    echo "::notice::$tok is not on the full-target allowlist — dropped from the full flake run"
+  fi
+done
+echo "Focused flake specs (full allowlist): '${specs_full}'"
+echo "specs_full=$specs_full" >>"$GITHUB_OUTPUT"
+
+if [[ "${FULL_TARGET:-}" == "1" && -n "$specs" && -z "$specs_full" ]]; then
+  echo "::error::'flake-specs:' names only specs that are NOT on the full-target" \
+       "allowlist (test/e2e/full-specs.json), so the full flake check would run" \
+       "nothing. Add the spec to full-specs.json, or drop the" \
+       "'e2e-full-flake-check' label and rely on the fast one."
+  exit 1
+fi
