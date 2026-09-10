@@ -51,7 +51,7 @@ test.describe("queue rendering while a run is in flight", () => {
     // rapid-fire sends have no arrival order for the queue to preserve: they are in flight
     // together and the server records them in whatever order they land, so the rows can render
     // transposed with FIFO working perfectly. Waiting for row n before sending n+1 is what makes
-    // "arrival order" a fact this test is entitled to assert. Why: PR #505.
+    // "arrival order" a fact this test is entitled to assert. Why: PR #509.
     // The rows only mount while the Queue tab is selected, so open it first.
     await chat.openQueueTab();
     const sent = ["first queued", "second queued", "third queued"];
