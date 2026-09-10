@@ -29,8 +29,8 @@ name: CI
 
 on:
   pull_request:
-    # `labeled` so adding `flake-check` (or `full-nixos-tests`) to an open PR
-    # re-triggers CI and runs the focused flake-repeat job below.
+    # `labeled` so adding `flake-check` / `e2e-full-flake-check` (or `e2e-full`,
+    # `full-nixos-tests`) to an open PR re-triggers CI and runs the opt-in job.
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
@@ -338,6 +338,12 @@ jobs:
               # silently skips the only job that exercises it. A green PR whose
               # platform job says `skipping` is NOT cluster-verified.
               - '.github/workflows/ci.yml'
+              # …and the scripts the job delegates to. The cluster bring-up, the
+              # port-forward/hook setup and the failure dump now live in
+              # `.github/scripts/`, so without this a change to how the cluster is
+              # STOOD UP would skip the only job that stands one up — the same
+              # blind spot the line above exists to close.
+              - '.github/scripts/**'
               - 'playwright.config.ts'
               - 'test/e2e/target.ts'
               # The event-backfill Job and its cluster spec run ONLY in this job, so a
@@ -635,116 +641,26 @@ jobs:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # The registry-backed cluster. `scooter-reg.localhost` is the trick that makes
-      # ONE image ref work on both sides: a `.localhost` name resolves to 127.0.0.1 on
-      # the HOST (so skopeo pushes to it directly) and to the registry container via
-      # docker DNS inside the cluster (so containerd pulls from it) — see k3dImages in
-      # flake.nix. This replaces the docker-daemon load + `k3d image import` tarball
-      # round-trip: every byte used to cross FOUR formats (nix store -> skopeo ->
-      # docker archive -> docker save tar -> ctr import); now skopeo streams blobs
-      # from /nix/store into the registry once, skipping any layer already present.
-      - name: create k3d cluster + registry
-        run: |
-          set -euo pipefail
-          nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -c '
-            k3d registry create scooter-reg.localhost --port 5800
-            k3d cluster create scooter-ci --no-lb --wait --registry-use k3d-scooter-reg.localhost:5800
-            k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
-          '
-          # Wait for registry to be ready before pushing images
-          echo "Waiting for registry to be ready..."
-          max_attempts=30
-          attempt=0
-          until curl -sf http://localhost:5800/v2/ > /dev/null 2>&1; do
-            attempt=$((attempt + 1))
-            if [ $attempt -ge $max_attempts ]; then
-              echo "Registry failed to become ready after ${max_attempts} attempts"
-              exit 1
-            fi
-            echo "Registry not ready (attempt $attempt/$max_attempts), waiting..."
-            sleep 2
-          done
-          echo "Registry is ready!"
-      # The Sandbox CRD + controller. Previously unnecessary here BY ACCIDENT: the job
-      # set GOOSE_BIN=fake, which also forced a noop provisioner, so nothing ever touched
-      # the Sandbox API. Decoupling those flags (so the cluster tier tests a REAL sandbox)
-      # made this a hard dependency — without it the apiserver answers a plain-text
-      # "404 page not found" and every run ends RUN_ERROR.
-      #
-      # Same version + assets as test/support/cluster-up.sh installs locally.
-      - name: install agent-sandbox controller
-        run: |
-          set -euo pipefail
-          base="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2"
-          nix shell nixpkgs#kubectl -c bash -c "
-            kubectl apply -f '${base}/sandbox.yaml'
-            kubectl apply -f '${base}/extensions.yaml'
-            kubectl wait --for=condition=Available deploy --all -n agent-sandbox-system --timeout=180s
-          "
-      - name: build + push platform images to the registry
-        run: |
-          set -euo pipefail
-          # attr -> content-tagged registry ref, from the flake (single source of truth
-          # with the platform-manifests-k3d render). Pushes run 4-wide: skopeo streams
-          # layer blobs straight from /nix/store, and layers shared between images
-          # (there are many — same nixpkgs base) upload exactly once.
-          refs=$(nix build .#k3d-image-refs --no-link --print-out-paths)
-          nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
-            | xargs -P 4 -I{} bash -c '
-                set -euo pipefail
-                attr="${1%%=*}"; ref="${1#*=}"
-                push_ref="localhost:${ref#*.localhost:}"
-                echo "push $attr -> $ref (via $push_ref)"
-                
-                # Retry push up to 3 times with exponential backoff
-                max_retries=3
-                retry=0
-                while [ $retry -lt $max_retries ]; do
-                  if nix run ".#${attr}.copyTo" -- "docker://${push_ref}" --dest-tls-verify=false; then
-                    echo "✓ $attr pushed successfully"
-                    exit 0
-                  fi
-                  retry=$((retry + 1))
-                  if [ $retry -lt $max_retries ]; then
-                    wait_time=$((retry * retry))
-                    echo "Push failed, retry $retry/$max_retries after ${wait_time}s..."
-                    sleep $wait_time
-                  fi
-                done
-                echo "ERROR: Failed to push $attr after $max_retries attempts"
-                exit 1
-              ' _ {}
+      # Cluster, registry, agent-sandbox controller, platform images, and the
+      # deployed platform — all of it in one script so the label-gated
+      # `flake focus full` job below stands up an IDENTICAL cluster. See the
+      # script for why each piece is here.
+      - name: bring up k3d + the platform
+        run: .github/scripts/k3d-platform-up.sh
 
-          echo "All images pushed successfully!"
-
-      - name: apply platform + smoke
+      - name: cluster smoke
         env:
           RUN_CLUSTER_TESTS: "1"
           CLUSTER_PROVIDER: existing
           CI: "1"
-        run: |
-          nix shell nixpkgs#kubectl -c bash -c '
-            kubectl apply -f "$(nix build .#platform-manifests-k3d --no-link --print-out-paths)"
-            # MULTI-REPLICA + SPREAD. The default topology (replicas=2, podCap=100) puts every test
-            # conversation on ONE pod, so any per-pod-view bug is invisible — which is exactly how the
-            # "GET /conversations returns one pod'"'"'s slice" bug reached production. Force podCap=1 so
-            # each conversation lands on a DIFFERENT pod, and give the fleet room to spread.
-            kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
-            kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
-            kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
-            kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
-            kubectl -n agent-sandbox rollout status deployment/conversation-router --timeout=180s
-            kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
-          '
-          # platform-smoke: the multi-replica topology comes up + a conversation routes.
-          # event-backfill: the one-shot mirror→Postgres migration Job, end-to-end against
-          # this deployed platform's Postgres + agent-host-history PVC (both in the k3d
-          # render). It builds the real Job from .#platform-manifests-k3d-backfill, seeds the
-          # mirror, runs it, and asserts rows land + a corrupt log FAILS the Job. This is the
-          # ONLY tier that exercises the rendered Job's image/DB-env/volume wiring — Tier 1
-          # covers the verify logic against a fake db. See modules/event-backfill.nix, PR #463.
-          nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke event-backfill --no-file-parallelism'
-
+        # platform-smoke: the multi-replica topology comes up + a conversation routes.
+        # event-backfill: the one-shot mirror→Postgres migration Job, end-to-end against
+        # this deployed platform's Postgres + agent-host-history PVC (both in the k3d
+        # render). It builds the real Job from .#platform-manifests-k3d-backfill, seeds the
+        # mirror, runs it, and asserts rows land + a corrupt log FAILS the Job. This is the
+        # ONLY tier that exercises the rendered Job's image/DB-env/volume wiring — Tier 1
+        # covers the verify logic against a fake db. See modules/event-backfill.nix, PR #463.
+        run: nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke event-backfill --no-file-parallelism'
 
       # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
       # This is the seam nothing else covers — test/cluster is curl-only (no UI) and the
@@ -763,36 +679,9 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_NAME: "report-full-shard-${{ matrix.shard }}.json"
         run: |
           set -euo pipefail
-          # Port-forward the `ui` Service: nginx serving the static build AND proxying the
-          # API, so ONE origin answers both the app and /conversations — the browser's real
-          # topology, not a test-only arrangement.
-          nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox rollout status deployment/ui --timeout=180s
-          nix shell nixpkgs#kubectl -c kubectl -n agent-sandbox port-forward svc/ui 8899:8080 >/tmp/pf.log 2>&1 &
-          PF_PID=$!
-          # CLUSTER SAMPLER: every 15s, the node's Allocated-resources table + the pod
-          # list. A sandbox Pending on Insufficient cpu leaves NO trace in pod logs and
-          # had rolled out of the events tail by dump time in three straight failures —
-          # this keeps the resource timeline of the whole run.
-          ( while true; do
-              echo "== $(date -u +%H:%M:%S)"
-              nix shell nixpkgs#kubectl -c bash -c '
-                kubectl get pods -n agent-sandbox -o wide 2>/dev/null | grep -v Completed
-                kubectl describe nodes 2>/dev/null | grep -A8 "Allocated resources"' 
-              sleep 15
-            done >/tmp/cluster-sampler.log 2>&1 ) &
-          SAMPLER_PID=$!
-          # The rollout/move hook: lets the browser specs disturb the cluster (delete
-          # the owner pod mid-run / restart the deployment) — kubectl runs HERE, not
-          # in the browser. Activates the reassignment stories.
-          nix shell nixpkgs#kubectl -c python3 test/e2e/support/rolloutHook.py 8898 >/tmp/rollout-hook.log 2>&1 &
-          HOOK_PID=$!
-          trap 'kill "$PF_PID" "$SAMPLER_PID" "$HOOK_PID" 2>/dev/null || true' EXIT
-          # Wait on a real GET, not the port bind — the forward accepts before nginx serves.
-          for i in $(seq 1 60); do
-            curl -sf -o /dev/null http://127.0.0.1:8899/ && break
-            sleep 2
-          done
-          curl -sf -o /dev/null http://127.0.0.1:8899/ || { echo "the UI never served:"; cat /tmp/pf.log; exit 1; }
+          # Sourced, not executed: the background PIDs + cleanup trap must live in
+          # THIS shell so they outlast the helper and are reaped with the step.
+          . .github/scripts/e2e-full-serve.sh
           nix develop --command bash -c 'npm install && npx playwright test --project=full --reporter=json,list ${{ matrix.specs }}'
 
       - name: upload shard report
@@ -817,20 +706,7 @@ jobs:
           retention-days: 7
       - name: dump platform state on failure
         if: failure()
-        run: |
-          nix shell nixpkgs#kubectl -c bash -c '
-            kubectl -n agent-sandbox get pods,deploy,svc,pvc,conversations -o wide || true
-            # describe the not-ready workloads so a Pending pod shows its scheduling reason
-            # (Insufficient cpu/mem, an unbindable PVC, a taint, …) — a bare `get` hides it.
-            kubectl -n agent-sandbox describe deploy/agent-host || true
-            kubectl -n agent-sandbox describe pods -l app=agent-host || true
-            kubectl describe nodes || true
-            kubectl -n agent-sandbox get sandboxes.agents.x-k8s.io -o wide || true
-            kubectl -n agent-sandbox get events --sort-by=.lastTimestamp | tail -120 || true
-            kubectl -n agent-sandbox logs -l app=agent-host --tail=300 || true
-            kubectl -n agent-sandbox logs -l app=conversation-controller --tail=150 || true
-            kubectl -n agent-sandbox logs -l app=conversation-router --tail=150 || true
-          '
+        run: .github/scripts/k3d-dump-state.sh
 
       - name: tear down k3d
         if: always()
@@ -1256,3 +1132,111 @@ jobs:
           path: test-results/
           retention-days: 14
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Focused flake check, FULL TARGET — PR opt-in via the `e2e-full-flake-check`
+  # label. Same contract as `flake-focus` above (`flake-test:` / `flake-specs:`
+  # in the PR body), but the repetitions run against a REAL k3d cluster instead
+  # of the fake stack.
+  #
+  # Why this exists as a separate job: `flake-focus` runs the FAST target, and
+  # most of what the nightly `e2e-full` reports never reproduces there. The fast
+  # stack has no sandbox pods, so it cannot produce a cold boot, cannot saturate
+  # a node's CPU, and cannot contend for provisioning — which is precisely the
+  # machinery the full-target flakes live in. A fast ×20 that passes is evidence
+  # of no REGRESSION; it is not evidence the flake is fixed. Three PRs shipped
+  # green on that basis and only a nightly could confirm them.
+  #
+  # The cost is real (a cluster per run, ~13-25m of setup before the first
+  # repetition), which is why it is opt-in per PR rather than always-on — and why
+  # the repeat counts below are far lower than the fast job's ×20.
+  flake-focus-full:
+    name: flake focus full (k3d, targeted ×5)
+    # Label ONLY — deliberately NOT gated on `cluster-changes`. A flake fix is
+    # usually test-only, so the platform path filter would skip this job in
+    # exactly the case it was added for.
+    if: contains(github.event.pull_request.labels.*.name, 'e2e-full-flake-check')
+    runs-on: ubuntu-latest
+    env:
+      # Repetitions. Each one costs a real sandbox pod and a cold boot, so these
+      # are wall-clock knobs with teeth: at cluster pace a targeted repetition is
+      # ~30-90s and a contention repetition runs whole spec FILES. Bump here if a
+      # flake needs more attempts to show; the k3d setup is paid once either way.
+      FULL_REPEAT_TARGETED: "5"
+      FULL_REPEAT_CONTENTION: "3"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Same resolver as the fast job. FULL_TARGET=1 additionally intersects
+      # `flake-specs:` with the full-target allowlist and FAILS if that leaves
+      # nothing to run — a full check must not pass by running zero tests.
+      - name: resolve flake-test pattern
+        id: pat
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          FULL_TARGET: "1"
+        run: .github/scripts/flake-focus-pattern.sh
+
+      - name: bring up k3d + the platform
+        run: .github/scripts/k3d-platform-up.sh
+
+      # CONTENTION path: `flake-specs:` named at least one full-allowlisted spec.
+      # Run those files together so cross-spec load — on this target, competing
+      # for sandbox provisioning on one 4-vCPU node — recreates the flake.
+      - name: e2e full ×N (contention — flake-specs)
+        if: steps.pat.outputs.specs_full != ''
+        env:
+          E2E_TARGET: full
+          E2E_CLUSTER_URL: http://127.0.0.1:8899
+          E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
+          CI: "1"
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
+        run: |
+          set -euo pipefail
+          . .github/scripts/e2e-full-serve.sh
+          nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list $FLAKE_SPECS'
+
+      # TARGETED path: no usable `flake-specs:` — hammer just the matching test.
+      # --trace on overrides playwright.config's `trace: on-first-retry`, which
+      # never fires under retries=0; a cluster failure without the trace is
+      # nearly unreadable.
+      - name: e2e full ×N (targeted)
+        if: steps.pat.outputs.specs_full == ''
+        env:
+          E2E_TARGET: full
+          E2E_CLUSTER_URL: http://127.0.0.1:8899
+          E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
+          CI: "1"
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+        run: |
+          set -euo pipefail
+          . .github/scripts/e2e-full-serve.sh
+          nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list'
+
+      - name: dump platform state on failure
+        if: failure()
+        run: .github/scripts/k3d-dump-state.sh
+
+      # always(), not failure(): capturing the trace/sampler is the whole point of
+      # this job, and a cancelled run is the one that most needs them.
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-focus-full-results
+          path: |
+            test-results/
+            /tmp/pf.log
+            /tmp/cluster-sampler.log
+            /tmp/rollout-hook.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: tear down k3d
+        if: always()
+        run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
