@@ -162,6 +162,17 @@ export class Chat {
     await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({
       timeout: process.env.E2E_TARGET === "full" ? 90_000 : 30_000,
     });
+    // The bar going up does NOT mean the prompt is on screen: the run-started event and the user
+    // message land on separate paths, and on fast the bar wins often enough that a snapshot taken
+    // here counts ZERO user messages — a caller that then treats that count as its baseline reads
+    // the `!sleep` turn itself as a leaked queued message. Return only once the turn is rendered,
+    // so every caller's baseline includes it. Why: PR #507.
+    await expect
+      .poll(
+        async () => (await this.userMessages().last().innerText().catch(() => "")).includes(`!sleep ${sec}`),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
   }
 
   /** The durable queued-message rows (QUEUE_UPDATED-driven + optimistic). */
