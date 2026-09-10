@@ -38,7 +38,9 @@ export function createK8sOwnershipGuard(
     const name = obj.metadata?.name;
     if (!name) return;
     if (type === "DELETED") {
-      tracker.observe(name, null);
+      // NOT observe(name, null): that is also "no hostPod yet", which must not read as
+      // "the conversation is gone". Only a real DELETED event tears local state down.
+      tracker.observeDeleted(name);
       return;
     }
     const hostPod = obj.status?.hostPod;

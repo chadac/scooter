@@ -57,4 +57,25 @@ describe("OwnershipTracker", () => {
     t.observe("conv-1", null); // CR deleted
     expect(t.canWrite(C)).toBe(true);
   });
+
+  it("announces a DELETED CR, and forgets the assignment with it", () => {
+    const t = new OwnershipTracker("agent-host-0");
+    const gone: string[] = [];
+    t.onDeleted = (id) => gone.push(id);
+    t.observe("conv-1", { hostPod: "agent-host-1", generation: 1 });
+    t.observeDeleted("conv-1");
+    expect(gone).toEqual(["conv-1"]);
+    expect(t.canWrite(C)).toBe(true); // and the fence forgets it, as observe(null) does
+  });
+
+  it("does NOT announce a deletion for a CR that merely has no host yet", () => {
+    // The watch calls observe(id, null) for an UNASSIGNED CR too. Reading that as "the
+    // conversation is gone" would tear down a conversation that is only waiting to be
+    // assigned — so only observeDeleted (the watch's DELETED event) fires the hook.
+    const t = new OwnershipTracker("agent-host-0");
+    const gone: string[] = [];
+    t.onDeleted = (id) => gone.push(id);
+    t.observe("conv-1", null);
+    expect(gone).toEqual([]);
+  });
 });

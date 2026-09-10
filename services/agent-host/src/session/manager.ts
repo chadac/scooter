@@ -325,6 +325,16 @@ export interface SessionManager {
   switchModelNow(id: SessionId, model: string): Promise<boolean>;
   suspend(id: SessionId): Promise<void>;
   end(id: SessionId): Promise<void>;
+  /** The conversation's CR is GONE — it was deleted on some other pod. Tear down whatever
+   *  THIS pod still holds for it (bridge, sandbox, entry, persisted state) and forget it.
+   *  A no-op when this pod never held it, which is the common case.
+   *
+   *  end() only clears LOCAL state, so a delete served by one replica leaves every other
+   *  replica that ever hydrated the conversation holding a live entry — which answers GET
+   *  200 for a conversation that is gone, and can re-provision its sandbox from a revive
+   *  (a dangling-run resume, a queued prompt) with no CR to own it. The CR watch is the
+   *  fleet-wide signal that the conversation no longer exists. Why: #495. */
+  forgetDeleted(id: SessionId): Promise<void>;
 
   get(id: SessionId): Conversation | undefined;
   /** Resolve a conversation by its SHORT DNS-safe hash (the `shortId(threadId)`
@@ -1241,6 +1251,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // tear that pod down. Only destroy when this conversation has no parent, i.e.
       // it owns its pod.)
       await endSubtree(id, entry.parentId === undefined);
+    },
+
+    async forgetDeleted(id) {
+      // Nothing held here — the CR delete is just news about someone else's conversation.
+      if (!entries.get(id)) return;
+      log.warn("dropping a conversation whose CR is gone (deleted on another pod)", {
+        conversation_id: id,
+      });
+      // Same teardown as a local delete: cascade to subagents, stop the bridge, destroy the
+      // sandbox this pod may have re-provisioned, drop the entry + persisted state. The CR
+      // remove inside is a no-op (already gone) and never throws, so reusing end() costs one
+      // idempotent 404 and keeps ONE teardown path rather than a second that drifts from it.
+      await this.end(id);
     },
 
     get(id) {
