@@ -44,11 +44,21 @@ in
       type = types.int;
       default = 180;
       description = ''
-        Only reap a Sandbox that has had no owning Conversation for this many seconds,
-        continuously. The window is measured from when the Conversation went away, not from
-        the Sandbox's creation, so it means one thing: how long dead sandboxes may hold node
-        capacity. A just-created Sandbox whose Conversation CR isn't registered yet is still
-        covered — its clock starts at creation too.
+        How long a Sandbox the controller has NEVER seen referenced by a Conversation must
+        stay unreferenced, continuously, before it is reaped. That case is ambiguous — it may
+        be garbage, or its Conversation may not have registered spec.sandboxRef yet — so the
+        window is generous. A Sandbox whose Conversation the controller watched disappear is
+        not ambiguous and uses orphanConfirmSeconds instead.
+      '';
+    };
+    orphanConfirmSeconds = mkOption {
+      type = types.int;
+      default = 15;
+      description = ''
+        How long a Sandbox whose Conversation the controller OBSERVED, and then observed go,
+        must stay unreferenced before it is reaped. This is the common case (every deleted
+        conversation), and it only has to ride out a list that raced a create, so it is short:
+        it bounds how long dead sandboxes hold node capacity. Clamped to orphanGraceSeconds.
       '';
     };
     # --- agent-host autoscaling -------------------------------------------
@@ -338,6 +348,7 @@ in
                   # Orphaned-Sandbox reaper (leader-only).
                   { name = "REAP_ORPHANED_SANDBOXES"; value = if ccfg.reapOrphans then "1" else "0"; }
                   { name = "ORPHAN_GRACE_SECONDS"; value = toString ccfg.orphanGraceSeconds; }
+                  { name = "ORPHAN_CONFIRM_SECONDS"; value = toString ccfg.orphanConfirmSeconds; }
                   # Agent-host autoscaler (leader-only, single writer of agent-host replicas).
                   { name = "AUTOSCALE_AGENT_HOST"; value = if ccfg.autoscale then "1" else "0"; }
                   { name = "AGENT_HOST_MIN_REPLICAS"; value = toString ccfg.minReplicas; }

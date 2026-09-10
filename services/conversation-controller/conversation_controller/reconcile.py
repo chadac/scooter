@@ -319,32 +319,60 @@ class SandboxRef:
     operating_mode: str | None = None
 
 
+@dataclass(frozen=True)
+class Orphaned:
+    """One Sandbox's standing in the reaper's clock (see loop.OrphanClock)."""
+
+    seconds: float    # continuously unreferenced for this long (never more than its own age)
+    # True once we have OBSERVED this Sandbox referenced by a Conversation. Its Conversation
+    # existed and is now gone — a deletion we watched happen, not a state we walked in on.
+    confirmed: bool
+
+
 def find_orphans(
     sandboxes: list[SandboxRef],
     referenced: set[str],
     grace_seconds: float,
-    unreferenced_for: dict[str, float],
+    confirm_seconds: float,
+    orphaned: dict[str, Orphaned],
 ) -> list[str]:
     """Names of Sandboxes to reap: those NOT referenced by any Conversation (via
-    spec.sandboxRef) and continuously unreferenced for at least `grace_seconds`, per the
-    `unreferenced_for` clock (name -> seconds; see loop.OrphanClock). Pure + order-stable.
+    spec.sandboxRef) and unreferenced for long enough, per the `orphaned` clock. Pure +
+    order-stable.
 
     The key is time-since-ORPHANED, not age since creation. Age conflated two unrelated
     windows in one number: how long we tolerate garbage, and how long a just-created
     Sandbox is protected before its Conversation CR registers. A Sandbox that outlives the
     window is then reaped the instant its Conversation goes — while dead ones created
     inside it linger for the remainder, so the dead pool is bounded by
-    grace/create-interval, not by grace. That pool exhausted the e2e-full node. Keying on
-    orphaned-ness separates the two: a new Sandbox still gets a full window (its clock also
-    starts at creation), and a dead one is reaped `grace` after its Conversation, however
-    old it is. Why: issue #495, PR #506.
+    grace/create-interval, not by grace. That pool exhausted the e2e-full node. Why: #495,
+    #506.
+
+    Which window applies is the other half of the split, and it turns on whether we ever
+    saw the Sandbox referenced:
+
+    - `confirmed` — we watched its Conversation exist and then go. Nothing is in doubt, so
+      this needs only `confirm_seconds`: long enough to ride out a list that raced a create,
+      not long enough to hoard a node. This is the case that dominates in practice (every
+      deleted conversation).
+    - otherwise — we have never seen it referenced. Either it is garbage from birth, or its
+      Conversation has not registered spec.sandboxRef YET, and we cannot tell those apart.
+      That doubt is what `grace_seconds` pays for.
+
+    A confirm window longer than the grace window is a misconfiguration, not an intent to
+    keep confirmed garbage longer than doubtful garbage — clamp rather than honour it.
 
     `referenced` is the set of sandbox NAMES any Conversation points at (its spec.sandboxRef,
     across ALL conversations incl. subagents — a subagent shares its parent's sandbox, and
     the parent conversation references it, so co-located pods are protected as long as the
     parent conversation exists)."""
+    def due(o: Orphaned) -> float:
+        return min(confirm_seconds, grace_seconds) if o.confirmed else grace_seconds
+
     return [
         sb.name
         for sb in sandboxes
-        if sb.name not in referenced and unreferenced_for.get(sb.name, 0.0) >= grace_seconds
+        if sb.name not in referenced
+        and (o := orphaned.get(sb.name)) is not None
+        and o.seconds >= due(o)
     ]

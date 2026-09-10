@@ -44,7 +44,13 @@ def run(cfg: Config, stop: threading.Event) -> None:
                 # A reaper failure must NOT abort assignment reconcile, so guard it separately.
                 if cfg.reap_orphans:
                     try:
-                        reap_orphans(k8s, cfg.orphan_grace_seconds, orphan_clock, time.monotonic())
+                        reap_orphans(
+                            k8s,
+                            cfg.orphan_grace_seconds,
+                            cfg.orphan_confirm_seconds,
+                            orphan_clock,
+                            time.monotonic(),
+                        )
                     except Exception:  # noqa: BLE001
                         logger.exception(
                             "orphan-reaper pass failed",
