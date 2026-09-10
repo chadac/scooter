@@ -66,6 +66,53 @@ in
       default = "scooter";
       description = "Issue/PR label name that triggers a conversation (GitHub/GitLab).";
     };
+
+    # --- Author trust -------------------------------------------------------
+    # A webhook signature proves the PROVIDER sent the event, not who wrote the
+    # comment inside it. On a PUBLIC repo that gap is the security model: any
+    # GitHub account can comment the mention pattern and get a sandbox holding the
+    # repo's push credentials to run their instructions. See
+    # services/webhooks/webhooks/access.py.
+    allowUsers = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      example = lib.literalExpression ''{ github = [ "chadac" ]; slack = [ "U01ABCDEF" ]; }'';
+      description = ''
+        Per-provider allowlist of users who may trigger Scooter, whatever their
+        standing on the resource. Keys: github, gitlab, slack, jira. GitHub/GitLab
+        logins, Slack user ids (U…), Jira display names or accountIds.
+
+        GitHub additionally trusts `trustedAssociations` from the event itself, so
+        maintainers need no entry here — list only outside collaborators. For
+        GitLab/Slack/Jira an EMPTY list leaves the provider open (project/workspace
+        membership is the gate); the service logs a warning at startup when a
+        provider is enabled with no gate at all.
+      '';
+    };
+    trustedAssociations = mkOption {
+      type = types.listOf types.str;
+      default = [ "OWNER" "MEMBER" "COLLABORATOR" ];
+      description = ''
+        GitHub `author_association` values trusted without an allowlist entry —
+        people who already have standing on the repo. Rides along in the payload,
+        so it needs no API call and no list maintained as collaborators change.
+
+        Deliberately excludes CONTRIBUTOR: that means "has a merged commit", a past
+        contribution rather than authority to spend compute now. Set to [ ] to
+        require `allowUsers.github` and nothing else.
+      '';
+    };
+    forwardUntrusted = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Forward an untrusted author's comment into an ALREADY-RUNNING conversation,
+        fenced as untrusted data, instead of dropping it. Off by default: text in
+        the context window is the prompt-injection vector, so awareness of drive-by
+        comments is opt-in. Even when on, an untrusted author can never spawn a
+        conversation or preempt a run.
+      '';
+    };
     logLevel = mkOption {
       type = types.str;
       default = "INFO";
@@ -191,6 +238,30 @@ in
                   { name = "SLACK_ENABLED"; value = lib.boolToString wcfg.slackEnabled; }
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
+                  {
+                    name = "GITHUB_ALLOW_USERNAMES";
+                    value = lib.concatStringsSep "," (wcfg.allowUsers.github or [ ]);
+                  }
+                  {
+                    name = "GITLAB_ALLOW_USERNAMES";
+                    value = lib.concatStringsSep "," (wcfg.allowUsers.gitlab or [ ]);
+                  }
+                  {
+                    name = "SLACK_ALLOW_USERS";
+                    value = lib.concatStringsSep "," (wcfg.allowUsers.slack or [ ]);
+                  }
+                  {
+                    name = "JIRA_ALLOW_USERS";
+                    value = lib.concatStringsSep "," (wcfg.allowUsers.jira or [ ]);
+                  }
+                  {
+                    name = "GITHUB_TRUSTED_ASSOCIATIONS";
+                    value = lib.concatStringsSep "," wcfg.trustedAssociations;
+                  }
+                  {
+                    name = "FORWARD_UNTRUSTED_COMMENTS";
+                    value = lib.boolToString wcfg.forwardUntrusted;
+                  }
                   { name = "LOG_LEVEL"; value = wcfg.logLevel; }
                   { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
                 ] ++ [

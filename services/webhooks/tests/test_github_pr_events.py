@@ -17,13 +17,14 @@ def _repo():
     return {"owner": {"login": "chadac"}, "name": "scooter"}
 
 
-def review_comment(body="please rename this", user="chadac", cid=555, in_reply_to=None):
+def review_comment(body="please rename this", user="chadac", cid=555, in_reply_to=None, association="OWNER"):
     return {
         "action": "created",
         "comment": {
             "id": cid,
             "body": body,
             "user": {"login": user},
+            "author_association": association,
             "path": "src/foo.ts",
             "line": 42,
             "diff_hunk": "@@ -1 +1 @@\n-const a = 1;",
@@ -101,7 +102,7 @@ class TestReviewEnvelope:
     async def test_changes_requested_says_a_reply_is_not_enough(self, forwarded):
         await gh._handle_review({
             "action": "submitted",
-            "review": {"state": "changes_requested", "body": "see comments", "user": {"login": "chadac"}},
+            "review": {"state": "changes_requested", "body": "see comments", "user": {"login": "chadac"}, "author_association": "OWNER"},
             "pull_request": {"number": 431}, "repository": _repo(),
         })
         msg = forwarded.call_args[0][1]
@@ -112,7 +113,7 @@ class TestReviewEnvelope:
         # Decided: the agent should learn its PR was approved.
         await gh._handle_review({
             "action": "submitted",
-            "review": {"state": "approved", "body": "", "user": {"login": "chadac"}},
+            "review": {"state": "approved", "body": "", "user": {"login": "chadac"}, "author_association": "OWNER"},
             "pull_request": {"number": 431}, "repository": _repo(),
         })
         assert forwarded.called

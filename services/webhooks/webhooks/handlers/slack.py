@@ -14,6 +14,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from .. import access
 from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
@@ -112,11 +113,16 @@ def _contains_mention(text: str) -> bool:
     return settings.mention_pattern.lower() in text.lower()
 
 
-def _is_ignored_user(user_id: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return user_id.lower() in ignored
+def _classify(user_id: str) -> access.Access:
+    """Author trust for a Slack event. See webhooks/access.py.
+
+    Slack has no `author_association`, and a workspace is already a trust
+    boundary — an outsider cannot post in it at all. So SLACK_ALLOW_USERS unset
+    leaves Slack open (today's behavior); set it (Slack user ids, `U…`, not
+    display names) to narrow triggering to specific people in a large workspace
+    or one with guest/Connect channels.
+    """
+    return access.classify("slack", user_id)
 
 
 def _resource_id(channel: str, thread_ts: str) -> str:
@@ -288,8 +294,11 @@ async def _handle_mention(event: dict):
     ts = event.get("ts", "")
     thread_ts = event.get("thread_ts", ts)  # If in thread, use thread_ts; otherwise use message ts
 
-    if _is_ignored_user(user):
-        return
+    acl = _classify(user)
+    if not acl.trusted:
+        access.log_denied("slack", user, acl, channel=channel)
+        if acl.drop:
+            return
 
     # A mention arrives as BOTH app_mention + message twin events (different
     # event_ids, same message ts). Drop it if THIS mention was already dispatched
@@ -322,6 +331,8 @@ async def _handle_mention(event: dict):
     message_text = message_text.strip()
 
     comment_text = f"<@{user}> said:\n\n{message_text}\n\n(message_ts: {ts} — pass this to slack_react to react to THIS message)"
+    if not acl.trusted:
+        comment_text = access.fence_untrusted("slack", user, comment_text)
 
     # Download any attached multimedia. Images ride as multimodal content parts;
     # text-representable files are inlined into the message; binary files become
@@ -346,10 +357,18 @@ async def _handle_mention(event: dict):
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
         await add_slack_reaction(channel, ts, "eyes")
         # A mention to an ACTIVE conversation is priority: force-interrupt a stuck
-        # turn after the agent-host's timeout (it owns the timer).
+        # turn after the agent-host's timeout (it owns the timer). Withheld from an
+        # untrusted author — interrupting a run on demand is itself a lever.
         asyncio.create_task(
-            _background_forward(existing, forward_msg, priority=True, images=images, files=files)
+            _background_forward(
+                existing, forward_msg, priority=acl.trusted, images=images, files=files
+            )
         )
+        return
+
+    # Creating a conversation is the privileged act: an untrusted author may reach
+    # a RUNNING conversation as fenced data (above) but never start a new one.
+    if not acl.trusted:
         return
 
     # React to indicate we're processing
@@ -388,8 +407,11 @@ async def _handle_thread_message(event: dict):
     user = event.get("user", "unknown")
     channel = event.get("channel", "")
 
-    if _is_ignored_user(user):
-        return
+    acl = _classify(user)
+    if not acl.trusted:
+        access.log_denied("slack", user, acl, channel=channel)
+        if acl.drop:
+            return
 
     bot_id = await _get_bot_id()
     if bot_id and user == bot_id:
@@ -428,6 +450,8 @@ async def _handle_thread_message(event: dict):
         return
 
     comment_text = f"<@{user}> said:\n\n{text}\n\n(message_ts: {ts} — pass this to slack_react to react to THIS message)"
+    if not acl.trusted:
+        comment_text = access.fence_untrusted("slack", user, comment_text)
 
     # Download attached multimedia (images -> parts; text -> inlined; binary -> parts
     # written to /workspace/uploads). Weave text/binary into the message body.
