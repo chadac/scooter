@@ -806,6 +806,16 @@ export async function main(
         .reconcileDanglingRun(id as SessionId, generation)
         .catch((err) => hostLog.errorWith("ownership-gain settlement failed", err, { conversation_id: id }));
     };
+    // Settlement on DELETION: end() clears only the local pod's state, so every OTHER
+    // replica that hydrated this conversation keeps a live entry — serving GET 200 for a
+    // conversation that is gone, and able to re-provision its sandbox on a revive with no
+    // CR to own it (the e2e-full sandbox leak, #495). The CR watch is the fleet-wide "it no
+    // longer exists" signal, same stream the write fence already trusts.
+    ownership.guard.onDeleted = (id) => {
+      void sessions
+        .forgetDeleted(id as SessionId)
+        .catch((err) => hostLog.errorWith("deleted-conversation teardown failed", err, { conversation_id: id }));
+    };
   }
 
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
