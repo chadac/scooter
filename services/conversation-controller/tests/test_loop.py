@@ -4,7 +4,13 @@ import pytest
 
 import conversation_controller.loop as loop_mod
 from conversation_controller.logging_config import forget_warned
-from conversation_controller.loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
+from conversation_controller.loop import (
+    reconcile_once,
+    reap_orphans,
+    autoscale_once,
+    AutoscaleState,
+    OrphanClock,
+)
 from conversation_controller.reconcile import Pod, SandboxRef
 
 
@@ -110,21 +116,56 @@ def test_reap_deletes_unreferenced_sandbox_past_grace():
     convs = [_cr("c1", sandbox_ref="conv-a")]
     sbs = [SandboxRef("conv-a", age_seconds=1000), SandboxRef("conv-orphan", age_seconds=1000)]
     k = FakeK8s([], convs, sandboxes=sbs)
-    reaped = reap_orphans(k, grace_seconds=600)
+    clock = OrphanClock()
+    # First pass starts the clock; nothing is reapable yet however old it is.
+    assert reap_orphans(k, 600, clock, now=0.0) == []
+    reaped = reap_orphans(k, 600, clock, now=600.0)
     assert reaped == ["conv-orphan"]
     assert k.deleted_trees == ["conv-orphan"]
 
 
-def test_reap_spares_young_orphan():
+def test_reap_spares_recently_orphaned_sandbox():
     k = FakeK8s([], [], sandboxes=[SandboxRef("conv-new", age_seconds=10)])
-    assert reap_orphans(k, grace_seconds=600) == []
+    clock = OrphanClock()
+    assert reap_orphans(k, 600, clock, now=0.0) == []
+    assert reap_orphans(k, 600, clock, now=100.0) == []
     assert k.deleted_trees == []
 
 
 def test_reap_spares_referenced_sandbox():
     convs = [_cr("c1", sandbox_ref="conv-a")]
     k = FakeK8s([], convs, sandboxes=[SandboxRef("conv-a", age_seconds=99999)])
-    assert reap_orphans(k, grace_seconds=600) == []
+    clock = OrphanClock()
+    assert reap_orphans(k, 600, clock, now=0.0) == []
+    assert reap_orphans(k, 600, clock, now=99999.0) == []
+
+
+def test_reap_window_restarts_when_the_conversation_reappears():
+    # A pass that cannot see the Conversation (a partial/failed list) must not hand the next
+    # pass a matured clock — under the old age rule that view reaped every aged Sandbox.
+    sbs = [SandboxRef("conv-a", age_seconds=1000)]
+    k = FakeK8s([], [], sandboxes=sbs)                       # conversation invisible
+    clock = OrphanClock()
+    assert reap_orphans(k, 600, clock, now=0.0) == []
+    k._convs = {"c1": _cr("c1", sandbox_ref="conv-a")}       # it was there all along
+    assert reap_orphans(k, 600, clock, now=10.0) == []
+    k._convs = {}                                            # now genuinely deleted
+    assert reap_orphans(k, 600, clock, now=20.0) == []       # clock restarted at 20
+    assert reap_orphans(k, 600, clock, now=619.0) == []
+    assert reap_orphans(k, 600, clock, now=620.0) == ["conv-a"]
+
+
+def test_reap_window_restarts_for_a_recreated_sandbox_name():
+    # conv-<id> is derived from the conversation id, so a revived conversation reuses the
+    # name. The new Sandbox must get its own window, not inherit the dead one's.
+    k = FakeK8s([], [], sandboxes=[SandboxRef("conv-a", age_seconds=1000)])
+    clock = OrphanClock()
+    assert reap_orphans(k, 600, clock, now=0.0) == []
+    k._sandboxes = {}                                        # reaped elsewhere / suspended out
+    assert reap_orphans(k, 600, clock, now=300.0) == []
+    k._sandboxes = {"conv-a": SandboxRef("conv-a", age_seconds=1.0)}  # recreated
+    assert reap_orphans(k, 600, clock, now=700.0) == []       # would have fired at 600
+    assert reap_orphans(k, 600, clock, now=1300.0) == ["conv-a"]
 
 
 def test_reap_one_failure_does_not_abort_the_pass():
@@ -136,7 +177,9 @@ def test_reap_one_failure_does_not_abort_the_pass():
 
     sbs = [SandboxRef("conv-bad", age_seconds=1000), SandboxRef("conv-good", age_seconds=1000)]
     k = Boom([], [], sandboxes=sbs)
-    reaped = reap_orphans(k, grace_seconds=600)
+    clock = OrphanClock()
+    reap_orphans(k, 600, clock, now=0.0)
+    reaped = reap_orphans(k, 600, clock, now=600.0)
     # conv-bad raised; conv-good still reaped.
     assert "conv-good" in k.deleted_trees
     assert reaped == ["conv-good"]

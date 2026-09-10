@@ -22,6 +22,7 @@ from .reconcile import (
     MarkSuspended,
     reconcile,
     find_orphans,
+    SandboxRef,
     desired_replicas,
     deletion_costs,
     demand_of,
@@ -365,12 +366,43 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     return {"demand": demand, "current": current, "target": target, "ready_pods": ready_pods, "per_pod": per_pod}
 
 
-def reap_orphans(k8s, grace_seconds: float) -> list[str]:
-    """One reaper pass: destroy Sandboxes with no owning Conversation, older than the grace
-    window. Reaping deletes the whole per-conversation tree (Sandbox + its ServiceAccount +
-    module ConfigMap) — the Sandbox delete cascades its pod + volumeClaimTemplate PVCs, but
-    the SA + module CM are provisioner-created (not Sandbox-owned) so they DON'T cascade and
-    must be deleted too. Leader-gated by the caller. Returns the reaped sandbox names.
+class OrphanClock:
+    """How long each Sandbox has been observed with NO owning Conversation — mutable state
+    the caller owns across ticks, like AutoscaleState.
+
+    A Sandbox must be unreferenced on EVERY pass of the window to be reaped; one pass that
+    sees its Conversation restarts the clock. That also makes the reaper safe against a
+    partial/failed Conversation list, which under the old age-based rule could reap every
+    aged Sandbox at once — here a single bad pass only starts clocks the next good pass
+    clears. Cleared on controller restart, so a new leader re-grants a full window."""
+
+    def __init__(self) -> None:
+        # sandbox name -> the `now` of the first pass that saw it unreferenced.
+        self._since: dict[str, float] = {}
+
+    def observe(self, sandboxes: list[SandboxRef], referenced: set[str], now: float) -> dict[str, float]:
+        """Fold this pass into the clock and return name -> seconds continuously
+        unreferenced (0.0 on the first such pass, which is what protects a Sandbox created
+        moments ago whose Conversation CR has not registered yet)."""
+        present = {sb.name for sb in sandboxes}
+        # Forget anything referenced again or gone from the cluster, so a reused name (the
+        # sandbox for a revived conversation) starts a fresh window rather than inheriting one.
+        for name in [n for n in self._since if n in referenced or n not in present]:
+            del self._since[name]
+        return {
+            sb.name: now - self._since.setdefault(sb.name, now)
+            for sb in sandboxes
+            if sb.name not in referenced
+        }
+
+
+def reap_orphans(k8s, grace_seconds: float, clock: OrphanClock, now: float) -> list[str]:
+    """One reaper pass: destroy Sandboxes that have had no owning Conversation for the whole
+    grace window. Reaping deletes the whole per-conversation tree (Sandbox + its
+    ServiceAccount + module ConfigMap) — the Sandbox delete cascades its pod +
+    volumeClaimTemplate PVCs, but the SA + module CM are provisioner-created (not
+    Sandbox-owned) so they DON'T cascade and must be deleted too. Leader-gated by the
+    caller. Returns the reaped sandbox names.
 
     DESTRUCTIVE — logs every reap. Best-effort per sandbox: a failed delete is logged and the
     pass continues (retries next tick). See todo/docs/ORPHANED_SANDBOX_REAPER.md."""
@@ -379,14 +411,24 @@ def reap_orphans(k8s, grace_seconds: float) -> list[str]:
         for cr in k8s.list_conversations()
         if (ref := (cr.get("spec") or {}).get("sandboxRef"))
     }
-    orphans = find_orphans(k8s.list_sandboxes(), referenced, grace_seconds)
+    sandboxes = k8s.list_sandboxes()
+    unreferenced_for = clock.observe(sandboxes, referenced, now)
+    orphans = find_orphans(sandboxes, referenced, grace_seconds, unreferenced_for)
+    ages = {sb.name: sb.age_seconds for sb in sandboxes}
     reaped: list[str] = []
     for name in orphans:
         try:
             k8s.delete_sandbox_tree(name)
             reaped.append(name)
             logger.info(
-                "reaped orphaned sandbox", extra={**_C, "sandbox_name": name, "reason": "no owning Conversation"}
+                "reaped orphaned sandbox",
+                extra={
+                    **_C,
+                    "sandbox_name": name,
+                    "reason": "no owning Conversation",
+                    "orphaned_for_seconds": round(unreferenced_for[name], 1),
+                    "age_seconds": round(ages[name], 1),
+                },
             )
         except Exception:  # noqa: BLE001 — one failed reap must not abort the pass
             logger.exception(

@@ -128,27 +128,49 @@ def test_desired_defends_against_zero_cap():
 def test_orphan_is_unreferenced_and_past_grace():
     sbs = [SandboxRef("conv-a", age_seconds=1000), SandboxRef("conv-b", age_seconds=1000)]
     # conv-a is referenced (kept); conv-b is not (reaped).
-    assert find_orphans(sbs, referenced={"conv-a"}, grace_seconds=600) == ["conv-b"]
+    orphaned = {"conv-a": 700.0, "conv-b": 700.0}
+    assert find_orphans(sbs, referenced={"conv-a"}, grace_seconds=600, unreferenced_for=orphaned) == ["conv-b"]
 
 
-def test_young_unreferenced_sandbox_is_spared_by_grace():
-    # A just-created Sandbox whose Conversation CR isn't registered yet — spare it.
+def test_recently_orphaned_sandbox_is_spared_by_grace():
+    # Its Conversation went away one pass ago — inside the window, so keep it. Same rule
+    # spares a just-created Sandbox whose Conversation CR hasn't registered yet.
     sbs = [SandboxRef("conv-new", age_seconds=30)]
-    assert find_orphans(sbs, referenced=set(), grace_seconds=600) == []
+    assert find_orphans(sbs, referenced=set(), grace_seconds=600, unreferenced_for={"conv-new": 5.0}) == []
 
 
-def test_old_unreferenced_sandbox_at_grace_boundary_is_reaped():
-    sbs = [SandboxRef("conv-x", age_seconds=600)]  # exactly at the window
-    assert find_orphans(sbs, referenced=set(), grace_seconds=600) == ["conv-x"]
+def test_old_sandbox_orphaned_only_briefly_is_spared():
+    # THE regression this rule exists for: age alone reaped this the moment its Conversation
+    # went, and (worse) spared every dead sandbox younger than the window.
+    sbs = [SandboxRef("conv-x", age_seconds=99999)]
+    assert find_orphans(sbs, referenced=set(), grace_seconds=600, unreferenced_for={"conv-x": 10.0}) == []
+
+
+def test_unreferenced_sandbox_at_grace_boundary_is_reaped():
+    sbs = [SandboxRef("conv-x", age_seconds=605)]
+    assert find_orphans(sbs, referenced=set(), grace_seconds=600, unreferenced_for={"conv-x": 600.0}) == ["conv-x"]
+
+
+def test_young_sandbox_orphaned_past_grace_is_reaped():
+    # A sandbox created 200s ago whose Conversation never registered: age < the old 600s
+    # window, but it has been garbage the whole time.
+    sbs = [SandboxRef("conv-y", age_seconds=200)]
+    assert find_orphans(sbs, referenced=set(), grace_seconds=180, unreferenced_for={"conv-y": 200.0}) == ["conv-y"]
 
 
 def test_referenced_sandbox_never_reaped_regardless_of_age():
     sbs = [SandboxRef("conv-a", age_seconds=999999)]
-    assert find_orphans(sbs, referenced={"conv-a"}, grace_seconds=600) == []
+    assert find_orphans(sbs, referenced={"conv-a"}, grace_seconds=600, unreferenced_for={"conv-a": 999999.0}) == []
+
+
+def test_sandbox_with_no_clock_entry_is_spared():
+    # Unclocked = never observed unreferenced by this process (a fresh leader). Full window.
+    sbs = [SandboxRef("conv-x", age_seconds=99999)]
+    assert find_orphans(sbs, referenced=set(), grace_seconds=600, unreferenced_for={}) == []
 
 
 def test_no_sandboxes_no_orphans():
-    assert find_orphans([], referenced=set(), grace_seconds=600) == []
+    assert find_orphans([], referenced=set(), grace_seconds=600, unreferenced_for={}) == []
 
 
 def conv(host=None, phase="Pending", gen=0, host_ip=None, sandbox_mode=None, creator=None) -> ConversationState:

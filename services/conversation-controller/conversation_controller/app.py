@@ -14,7 +14,7 @@ from .config import Config
 from .k8s import ControllerK8s
 from .leader import LeaderElector
 from .logging_config import configure_logging
-from .loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
+from .loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState, OrphanClock
 
 logger = logging.getLogger(__name__)
 # Every line from this module carries component="app"; the loop/leader/k8s modules bind
@@ -26,6 +26,10 @@ def run(cfg: Config, stop: threading.Event) -> None:
     k8s = ControllerK8s(cfg.namespace)
     elector = LeaderElector(cfg.namespace, cfg.lease_name, cfg.identity, cfg.lease_seconds)
     autoscale_state = AutoscaleState()
+    # The reaper keys on how long a Sandbox has been unreferenced, so its clock has to
+    # outlive the tick. Held here, not in the reaper, so leadership flapping re-grants a
+    # full grace window rather than reaping on a view this process never actually watched.
+    orphan_clock = OrphanClock()
     # /metrics on every replica (leader or standby) so a scrape target is always up.
     metrics.serve(cfg.metrics_port, stop)
     was_leader = False
@@ -40,7 +44,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
                 # A reaper failure must NOT abort assignment reconcile, so guard it separately.
                 if cfg.reap_orphans:
                     try:
-                        reap_orphans(k8s, cfg.orphan_grace_seconds)
+                        reap_orphans(k8s, cfg.orphan_grace_seconds, orphan_clock, time.monotonic())
                     except Exception:  # noqa: BLE001
                         logger.exception(
                             "orphan-reaper pass failed",

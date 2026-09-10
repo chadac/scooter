@@ -313,9 +313,9 @@ class SandboxRef:
     """The bits of a Sandbox CR the reaper decision depends on."""
 
     name: str            # metadata.name (e.g. conv-<id>)
-    age_seconds: float   # now - metadata.creationTimestamp
+    age_seconds: float   # now - metadata.creationTimestamp (logged on a reap, not the key)
     # spec.operatingMode ("Running" | "Suspended"); None for callers that don't need it (the
-    # reaper decision ignores it — it keys on referenced-ness and age).
+    # reaper decision ignores it — it keys on how long the Sandbox has been unreferenced).
     operating_mode: str | None = None
 
 
@@ -323,11 +323,21 @@ def find_orphans(
     sandboxes: list[SandboxRef],
     referenced: set[str],
     grace_seconds: float,
+    unreferenced_for: dict[str, float],
 ) -> list[str]:
     """Names of Sandboxes to reap: those NOT referenced by any Conversation (via
-    spec.sandboxRef) AND older than `grace_seconds`. The grace window spares a just-created
-    Sandbox whose Conversation CR hasn't been registered yet (the provisioner creates the
-    Sandbox a beat before the CR) — only genuine orphans are reaped. Pure + order-stable.
+    spec.sandboxRef) and continuously unreferenced for at least `grace_seconds`, per the
+    `unreferenced_for` clock (name -> seconds; see loop.OrphanClock). Pure + order-stable.
+
+    The key is time-since-ORPHANED, not age since creation. Age conflated two unrelated
+    windows in one number: how long we tolerate garbage, and how long a just-created
+    Sandbox is protected before its Conversation CR registers. A Sandbox that outlives the
+    window is then reaped the instant its Conversation goes — while dead ones created
+    inside it linger for the remainder, so the dead pool is bounded by
+    grace/create-interval, not by grace. That pool exhausted the e2e-full node. Keying on
+    orphaned-ness separates the two: a new Sandbox still gets a full window (its clock also
+    starts at creation), and a dead one is reaped `grace` after its Conversation, however
+    old it is. Why: issue #495, PR #506.
 
     `referenced` is the set of sandbox NAMES any Conversation points at (its spec.sandboxRef,
     across ALL conversations incl. subagents — a subagent shares its parent's sandbox, and
@@ -336,5 +346,5 @@ def find_orphans(
     return [
         sb.name
         for sb in sandboxes
-        if sb.name not in referenced and sb.age_seconds >= grace_seconds
+        if sb.name not in referenced and unreferenced_for.get(sb.name, 0.0) >= grace_seconds
     ]

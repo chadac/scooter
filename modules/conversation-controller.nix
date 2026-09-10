@@ -42,11 +42,13 @@ in
     };
     orphanGraceSeconds = mkOption {
       type = types.int;
-      default = 600;
+      default = 180;
       description = ''
-        Only reap a Sandbox with no owning Conversation if it's older than this many seconds —
-        long enough that a normal create has registered its Conversation CR (the provisioner
-        creates the Sandbox a beat before the CR), so only genuine orphans are reaped.
+        Only reap a Sandbox that has had no owning Conversation for this many seconds,
+        continuously. The window is measured from when the Conversation went away, not from
+        the Sandbox's creation, so it means one thing: how long dead sandboxes may hold node
+        capacity. A just-created Sandbox whose Conversation CR isn't registered yet is still
+        covered — its clock starts at creation too.
       '';
     };
     # --- agent-host autoscaling -------------------------------------------
