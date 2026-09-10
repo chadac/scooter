@@ -13,6 +13,7 @@ import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from .. import access
 from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
@@ -91,11 +92,15 @@ async def _infer_conversation_from_jira(
     return None
 
 
-def _is_ignored_user(username: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return username.lower() in ignored
+def _classify(username: str) -> access.Access:
+    """Author trust for a GitLab event. See webhooks/access.py.
+
+    GitLab sends no `author_association`, so this is the allowlist (plus the
+    denylist) and nothing else: with GITLAB_ALLOW_USERNAMES unset the provider
+    stays open, which is the pre-allowlist behavior for a self-hosted instance
+    whose project membership already gates who can comment.
+    """
+    return access.classify("gitlab", username)
 
 
 def _is_own_comment(body: str) -> bool:
@@ -206,10 +211,14 @@ async def _handle_note(payload: dict):
     repo = _extract_repo(payload)
     noteable_type = note.get("noteable_type", "")
 
-    if _is_ignored_user(user):
-        return
     if _is_own_comment(note_body):
         return
+
+    acl = _classify(user)
+    if not acl.trusted:
+        access.log_denied("gitlab", user, acl, resource_type=noteable_type)
+        if acl.drop:
+            return
 
     # Branch-specific fields, initialized so they're always bound (the later
     # noteable_type-gated blocks reference the ones relevant to their branch; the
@@ -246,7 +255,9 @@ async def _handle_note(payload: dict):
     else:
         return
 
-    has_mention = _contains_mention(note_body)
+    # An untrusted author cannot summon the agent or preempt a run — at most their
+    # comment reaches an already-running conversation as fenced data.
+    has_mention = _contains_mention(note_body) and acl.trusted
     existing = (
         await db.lookup_conversation("gitlab", res_type, res_id)
         or await db.get_conversation_for_resource("gitlab", res_type, res_id)
@@ -270,6 +281,8 @@ async def _handle_note(payload: dict):
     message_text = note_body.replace(settings.mention_pattern, "").strip()
     diff_context = _format_diff_context(note)
     comment_body = f"{diff_context}\n\n@{user} commented:\n\n{message_text}" if diff_context else f"@{user} commented:\n\n{message_text}"
+    if not acl.trusted:
+        comment_body = access.fence_untrusted("gitlab", user, comment_body)
 
     if is_pending(existing):
         discussion_id = note.get("discussion_id")
@@ -300,6 +313,12 @@ async def _handle_note(payload: dict):
             },
         )
 
+    # Reached only via the failed-send fallthrough above. Creating a conversation
+    # is the privileged act, so an untrusted author stops here rather than getting
+    # a fresh sandbox because a send happened to fail.
+    if not acl.trusted:
+        return
+
     await db.store_conversation("gitlab", res_type, res_id, PENDING_CONVERSATION_ID)
 
     if noteable_type == "MergeRequest":
@@ -320,10 +339,26 @@ async def _handle_note(payload: dict):
     )
 
 
+def _label_actor_trusted(payload: dict) -> bool:
+    """Can the actor behind this label change trigger a run?
+
+    Yes by default: GitLab requires at least Reporter on the project to set a
+    label, so membership has already vetted them. The check still runs so the
+    denylist applies — it is what breaks a bot label loop.
+    """
+    sender = payload.get("user", {}).get("username", "unknown")
+    acl = access.classify("gitlab", sender, privileged=True)
+    if not acl.trusted:
+        access.log_denied("gitlab", sender, acl, trigger="label")
+    return acl.trusted
+
+
 async def _handle_issue(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
     labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
     if action != "update" or settings.label_trigger.lower() not in labels:
+        return
+    if not _label_actor_trusted(payload):
         return
 
     issue = payload.get("object_attributes", {})
@@ -359,6 +394,8 @@ async def _handle_merge_request(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
     labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
     if action != "update" or settings.label_trigger.lower() not in labels:
+        return
+    if not _label_actor_trusted(payload):
         return
 
     mr = payload.get("object_attributes", {})

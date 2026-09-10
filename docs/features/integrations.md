@@ -6,6 +6,29 @@ GitHub, GitLab, and Slack events spawn or address conversations: an issue commen
 mention becomes a prompt, attributed to the mapped Scooter user. Provider routes verify
 signatures; the webhook service resolves the external identity to an internal owner.
 
+### Who may trigger a run
+
+A signature proves the *provider* sent the event, not that the person who wrote the comment
+has any standing on the repo — on a public repo, anyone could otherwise comment the mention
+pattern and get a sandbox holding that repo's push credentials. Authorship is gated per
+provider:
+
+- **GitHub** trusts the event's own `author_association` — `OWNER`, `MEMBER`, `COLLABORATOR`
+  (`agentSandbox.webhooks.trustedAssociations`). Maintainers need no configuration;
+  `CONTRIBUTOR` and `NONE` are rejected. Applying the trigger label is trusted because GitHub
+  already requires triage/write access for it.
+- **Any provider** additionally trusts `agentSandbox.webhooks.allowUsers.<provider>` — an
+  explicit list, for an outside collaborator who should be able to trigger runs.
+- **GitLab/Slack/Jira** have no association field, so an empty list leaves them open (project
+  and workspace membership gate those). The service logs a warning at startup for any enabled
+  provider with no gate at all.
+
+An untrusted author's comment is **dropped** — never forwarded, because text in the agent's
+context window is the prompt-injection vector. Set `forwardUntrusted = true` to receive them
+instead, wrapped in an explicit untrusted-content fence that the agent's skills tell it to
+treat as data rather than instructions. Even then, an untrusted author can neither spawn a
+conversation nor interrupt a run in progress.
+
 ## Scheduled runs
 
 Cron-style scheduled tasks prompt a conversation on a timer — recurring reports, monitors,

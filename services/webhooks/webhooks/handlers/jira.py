@@ -13,6 +13,7 @@ import logging
 
 from fastapi import APIRouter, Request
 
+from .. import access
 from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
@@ -37,11 +38,15 @@ def _is_own_comment(body: str, author_account_id: str) -> bool:
     return body.startswith("Scooter is on it") or "OpenHands status:" in body
 
 
-def _is_ignored_user(username: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return username.lower() in ignored
+def _classify(display_name: str, account_id: str = "") -> access.Access:
+    """Author trust for a Jira comment. See webhooks/access.py.
+
+    Either form matches JIRA_ALLOW_USERS: the accountId is the stable identifier,
+    the display name is what an operator actually knows a colleague by. Jira sends
+    no association field, so an unset list leaves the provider open — site
+    membership is the gate there.
+    """
+    return access.classify("jira", display_name, identifiers=(account_id,))
 
 
 def _format_forwarded_message(
@@ -114,10 +119,16 @@ async def _handle_comment(payload: dict):
 
     if _is_own_comment(comment_body, author_account_id):
         return
-    if _is_ignored_user(author_name):
-        return
 
-    has_mention = _contains_mention(comment_body)
+    acl = _classify(author_name, author_account_id)
+    if not acl.trusted:
+        access.log_denied("jira", author_account_id or author_name, acl, resource_id=issue_key)
+        if acl.drop:
+            return
+
+    # An untrusted author cannot summon the agent or preempt a run — at most their
+    # comment reaches an already-running conversation as fenced data.
+    has_mention = _contains_mention(comment_body) and acl.trusted
 
     existing = (
         await db.lookup_conversation("jira", "issue", issue_key)
@@ -130,6 +141,8 @@ async def _handle_comment(payload: dict):
 
     message_text = comment_body.replace(settings.mention_pattern, "").strip()
     comment_text = f"@{author_name} commented:\n\n{message_text}"
+    if not acl.trusted:
+        comment_text = access.fence_untrusted("jira", author_name, comment_text)
 
     if is_pending(existing):
         forward_msg = _format_forwarded_message(comment_text, issue_key, has_mention)
@@ -151,6 +164,12 @@ async def _handle_comment(payload: dict):
                 "resource_id": issue_key,
             },
         )
+
+    # Reached only via the failed-send fallthrough above. Creating a conversation
+    # is the privileged act, so an untrusted author stops here rather than getting
+    # a fresh sandbox because a send happened to fail.
+    if not acl.trusted:
+        return
 
     await db.store_conversation("jira", "issue", issue_key, PENDING_CONVERSATION_ID)
     await db.link_jira_ticket(PENDING_CONVERSATION_ID, issue_key)
@@ -180,6 +199,18 @@ async def _handle_issue_updated(payload: dict):
             break
 
     if not label_added:
+        return
+
+    # Editing labels needs project permission, so Jira has already vetted the
+    # actor (privileged=True); the check runs anyway so the denylist applies and
+    # a bot relabeling tickets can't loop.
+    actor = payload.get("user", {})
+    actor_name = actor.get("displayName", "unknown")
+    acl = access.classify(
+        "jira", actor_name, identifiers=(actor.get("accountId"),), privileged=True
+    )
+    if not acl.trusted:
+        access.log_denied("jira", actor_name, acl, trigger="label")
         return
 
     issue = payload.get("issue", {})

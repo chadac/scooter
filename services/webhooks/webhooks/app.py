@@ -7,6 +7,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel
 
+from . import access
 from . import store as db
 
 from .config import db_settings, require_relay_key, settings
@@ -24,6 +25,17 @@ configure_logging("webhooks", settings.log_level)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db(db_settings)
+    # An enabled provider with no author gate lets any user who can comment spawn
+    # an agent run. Warn rather than refuse: failing to boot would take down a
+    # working deployment on upgrade, and up-but-open still beats down. GitHub is
+    # gated by author_association out of the box, so this normally stays quiet.
+    for provider, enabled in (
+        ("github", settings.github_enabled),
+        ("gitlab", settings.gitlab_enabled),
+        ("slack", settings.slack_enabled),
+        ("jira", settings.jira_enabled),
+    ):
+        access.assert_provider_gated(provider, enabled)
     # No message bus: the agent runs in the agent-host, reached directly via
     # POST /agui. Each provider posts a single "on it" message with the
     # conversation link; there is no live status to poll.

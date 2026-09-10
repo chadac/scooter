@@ -15,6 +15,7 @@ import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from .. import access
 from .. import store as db
 from ..store import PENDING_CONVERSATION_ID, is_pending
 
@@ -45,11 +46,16 @@ def _contains_mention(text: str) -> bool:
     return settings.mention_pattern.lower() in text.lower()
 
 
-def _is_ignored_user(username: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return username.lower() in ignored
+def _classify(payload_user: str, comment: dict, **kw) -> access.Access:
+    """Author trust for a GitHub comment/review. See webhooks/access.py.
+
+    `author_association` comes from the event itself, so a maintainer needs no
+    configuration and a drive-by commenter (NONE / CONTRIBUTOR) is rejected
+    without an API call.
+    """
+    return access.classify(
+        "github", payload_user, author_association=comment.get("author_association"), **kw
+    )
 
 
 def _is_own_comment(body: str) -> bool:
@@ -188,14 +194,28 @@ async def _handle_comment(payload: dict):
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
 
-    if _is_ignored_user(user):
-        return
     if _is_own_comment(comment_body):
         return
 
-    has_mention = _contains_mention(comment_body)
     res_type = "pull_request" if is_pr else "issue"
     res_id = _resource_id(owner, repo, issue_number)
+
+    # Authorship gate BEFORE anything is created or forwarded. A signed webhook
+    # only proves GitHub sent it; on a public repo the author is a stranger until
+    # shown otherwise, and spawning a conversation hands them a sandbox with this
+    # repo's push credentials.
+    acl = _classify(user, comment)
+    if not acl.trusted:
+        access.log_denied(
+            "github", user, acl, resource_type=res_type, resource_id=res_id
+        )
+        if acl.drop:
+            return
+
+    # An untrusted author cannot summon the agent (no mention trigger, no new
+    # conversation) and cannot preempt a run in progress. At most, their comment
+    # reaches an ALREADY-RUNNING conversation as fenced data.
+    has_mention = _contains_mention(comment_body) and acl.trusted
 
     existing = await _resolve_conversation(res_type, res_id)
 
@@ -204,6 +224,8 @@ async def _handle_comment(payload: dict):
 
     message_text = comment_body.replace(settings.mention_pattern, "").strip()
     comment_text = f"@{user} commented:\n\n{message_text}"
+    if not acl.trusted:
+        comment_text = access.fence_untrusted("github", user, comment_text)
 
     if is_pending(existing):
         forward_msg = _format_forwarded_message(
@@ -230,6 +252,12 @@ async def _handle_comment(payload: dict):
             },
         )
 
+    # Reached only via the failed-send fallthrough above. Creating a conversation
+    # is the privileged act, so an untrusted author stops here rather than getting
+    # a fresh sandbox because a send happened to fail.
+    if not acl.trusted:
+        return
+
     await db.store_conversation("github", res_type, res_id, PENDING_CONVERSATION_ID)
 
     kind = "PR" if is_pr else "Issue"
@@ -250,7 +278,7 @@ async def _handle_comment(payload: dict):
     )
 
 
-async def _forward_or_ignore(res_id: str, message: str) -> None:
+async def _forward_or_ignore(res_id: str, message: str, priority: bool = True) -> None:
     """Forward to the conversation LINKED to this PR, or do nothing.
 
     Unlike _handle_comment there is no create-a-conversation path and no mention
@@ -258,12 +286,13 @@ async def _forward_or_ignore(res_id: str, message: str) -> None:
     construction, and a review comment on a PR it does NOT own is not ours to act
     on. priority=True so it preempts a run in progress — the agent-host turns that
     into interrupt:"thinking" (idle generation yields; an in-flight tool call
-    finishes first).
+    finishes first). An untrusted author never gets that preemption (priority=False):
+    interrupting a run on demand is itself a lever worth withholding.
     """
     existing = await _resolve_conversation("pull_request", res_id)
     if not existing or is_pending(existing):
         return
-    await send_message(existing, message, priority=True, source="github")
+    await send_message(existing, message, priority=priority, source="github")
 
 
 def _line_ref(comment: dict) -> str:
@@ -281,7 +310,7 @@ async def _handle_review_comment(payload: dict):
     comment = payload.get("comment", {})
     body = comment.get("body", "")
     user = comment.get("user", {}).get("login", "unknown")
-    if _is_ignored_user(user) or _is_own_comment(body):
+    if _is_own_comment(body):
         return
 
     pr = payload.get("pull_request", {})
@@ -289,6 +318,19 @@ async def _handle_review_comment(payload: dict):
     repo_data = payload.get("repository", {})
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
+
+    # A review on a PR the agent opened is addressed to it by construction — but
+    # "addressed to it" is not "authorized to direct it". Anyone can review a PR
+    # on a public repo, and these messages arrive with priority=True (preempting
+    # the run), so an unvetted reviewer is the sharpest edge of this surface.
+    acl = _classify(user, comment)
+    if not acl.trusted:
+        access.log_denied(
+            "github", user, acl, resource_type="pull_request",
+            resource_id=_resource_id(owner, repo, number),
+        )
+        if acl.drop:
+            return
 
     where = _line_ref(comment)
     hunk = comment.get("diff_hunk", "")
@@ -308,7 +350,11 @@ async def _handle_review_comment(payload: dict):
         f"If the comment asks for a change, make it and push — a reply alone does not "
         f"address it."
     )
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    if not acl.trusted:
+        message = access.fence_untrusted("github", user, message)
+    await _forward_or_ignore(
+        _resource_id(owner, repo, number), message, priority=acl.trusted
+    )
 
 
 async def _handle_review(payload: dict):
@@ -320,7 +366,7 @@ async def _handle_review(payload: dict):
     user = review.get("user", {}).get("login", "unknown")
     body = (review.get("body") or "").strip()
     state = (review.get("state") or "").lower()
-    if _is_ignored_user(user) or _is_own_comment(body):
+    if _is_own_comment(body):
         return
 
     pr = payload.get("pull_request", {})
@@ -328,6 +374,16 @@ async def _handle_review(payload: dict):
     repo_data = payload.get("repository", {})
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
+
+    # `author_association` is on the review object here, not a comment.
+    acl = _classify(user, review)
+    if not acl.trusted:
+        access.log_denied(
+            "github", user, acl, resource_type="pull_request",
+            resource_id=_resource_id(owner, repo, number),
+        )
+        if acl.drop:
+            return
 
     # The individual line comments arrive as their own events; this is the summary.
     if state == "approved":
@@ -344,7 +400,11 @@ async def _handle_review(payload: dict):
         tail = "Respond with `github_comment` if it asks for something."
 
     message = f"{head}\n\n" + (f"{body}\n\n" if body else "") + f"---\n\n{tail}"
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    if not acl.trusted:
+        message = access.fence_untrusted("github", user, message)
+    await _forward_or_ignore(
+        _resource_id(owner, repo, number), message, priority=acl.trusted
+    )
 
 
 async def _previous_run_failed(owner: str, repo: str, workflow_id, branch: str, before_id: int) -> bool:
@@ -452,6 +512,21 @@ async def _failed_jobs(owner: str, repo: str, run_id) -> list[str]:
     return [j.get("name", "?") for j in jobs if j.get("conclusion") == "failure"]
 
 
+def _label_actor_trusted(sender: str) -> bool:
+    """Can `sender` trigger a run by applying the label?
+
+    Yes by default: GitHub only lets a user with triage/write on the repo add a
+    label, so the provider has already vetted them — a stranger cannot reach this
+    code path at all. The check still runs so the denylist applies (it is what
+    breaks bot label loops). See `privileged` in access.classify for why repo-write
+    outranks the allowlist here.
+    """
+    acl = access.classify("github", sender, privileged=True)
+    if not acl.trusted:
+        access.log_denied("github", sender, acl, trigger="label")
+    return acl.trusted
+
+
 async def _handle_issue_event(payload: dict):
     """Handle issues event (labeled)."""
     action = payload.get("action", "")
@@ -460,6 +535,10 @@ async def _handle_issue_event(payload: dict):
 
     label = payload.get("label", {}).get("name", "")
     if label.lower() != settings.label_trigger.lower():
+        return
+
+    sender = payload.get("sender", {}).get("login", "unknown")
+    if not _label_actor_trusted(sender):
         return
 
     issue = payload.get("issue", {})
@@ -496,6 +575,10 @@ async def _handle_pr_event(payload: dict):
 
     label = payload.get("label", {}).get("name", "")
     if label.lower() != settings.label_trigger.lower():
+        return
+
+    sender = payload.get("sender", {}).get("login", "unknown")
+    if not _label_actor_trusted(sender):
         return
 
     pr = payload.get("pull_request", {})

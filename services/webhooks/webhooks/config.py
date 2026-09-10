@@ -112,6 +112,34 @@ class WebhooksSettings(BaseSettings):
     # Bot usernames to ignore
     ignore_usernames: str = ""
 
+    # --- Author trust (see webhooks/access.py) ------------------------------
+    # A webhook signature proves the PROVIDER sent the event, not who wrote the
+    # comment in it. On a public repo, anyone with an account can comment the
+    # mention pattern and get a sandbox with push credentials to run their
+    # instructions — so authorship is gated per provider.
+    #
+    # Comma-separated usernames that may direct the agent, whatever their standing
+    # on the resource. GitHub/GitLab logins, Slack user ids (U…), Jira display
+    # names or accountIds. Case-insensitive.
+    github_allow_usernames: str = ""
+    gitlab_allow_usernames: str = ""
+    slack_allow_users: str = ""
+    jira_allow_users: str = ""
+
+    # GitHub `author_association` values trusted WITHOUT being listed above —
+    # people who already have standing on the repo. Rides along in the payload, so
+    # this is a secure default that needs no list maintained as collaborators
+    # change. Deliberately excludes CONTRIBUTOR ("has a merged commit" is a past
+    # contribution, not authority to spend compute now). Set empty to require the
+    # explicit allowlist and nothing else.
+    github_trusted_associations: str = "OWNER,MEMBER,COLLABORATOR"
+
+    # Forward an untrusted author's comment into an existing conversation, fenced
+    # as untrusted data, instead of dropping it? Off by default: text in the
+    # context window IS the prompt-injection vector, so awareness of drive-by
+    # comments is opt-in rather than the default posture.
+    forward_untrusted_comments: bool = False
+
     # Public UI base URL for the "View conversation" deep-links posted back to
     # Slack/GitHub/GitLab/Jira: <agent_manager_url>/?thread=<id>. Distinct from
     # agent_host_url (the internal API). Empty -> the link degrades to the raw id.
