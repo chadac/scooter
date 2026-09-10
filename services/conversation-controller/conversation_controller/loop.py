@@ -22,6 +22,8 @@ from .reconcile import (
     MarkSuspended,
     reconcile,
     find_orphans,
+    Orphaned,
+    SandboxRef,
     desired_replicas,
     deletion_costs,
     demand_of,
@@ -365,12 +367,62 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float) -> dict:
     return {"demand": demand, "current": current, "target": target, "ready_pods": ready_pods, "per_pod": per_pod}
 
 
-def reap_orphans(k8s, grace_seconds: float) -> list[str]:
-    """One reaper pass: destroy Sandboxes with no owning Conversation, older than the grace
-    window. Reaping deletes the whole per-conversation tree (Sandbox + its ServiceAccount +
-    module ConfigMap) — the Sandbox delete cascades its pod + volumeClaimTemplate PVCs, but
-    the SA + module CM are provisioner-created (not Sandbox-owned) so they DON'T cascade and
-    must be deleted too. Leader-gated by the caller. Returns the reaped sandbox names.
+class OrphanClock:
+    """How long each Sandbox has been observed with NO owning Conversation, and whether we
+    ever saw it referenced — mutable state the caller owns across ticks, like AutoscaleState.
+
+    A Sandbox must be unreferenced on EVERY pass of its window to be reaped; one pass that
+    sees its Conversation restarts the clock. That is also what makes a short confirm window
+    safe: a list that raced a create costs a restart, not a reap. Cleared on controller
+    restart, so a new leader re-grants a full window and confirms nothing it did not see."""
+
+    def __init__(self) -> None:
+        # sandbox name -> the `now` of the first pass that saw it unreferenced.
+        self._since: dict[str, float] = {}
+        # sandbox names we have observed a Conversation reference. Only these can take the
+        # short confirm window — for anything else, "unreferenced" might just mean "not
+        # registered yet". Bounded by the reap: an entry dies with its Sandbox.
+        self._seen_referenced: set[str] = set()
+
+    def observe(self, sandboxes: list[SandboxRef], referenced: set[str], now: float) -> dict[str, Orphaned]:
+        """Fold this pass into the clock and return name -> Orphaned for every unreferenced
+        Sandbox (`seconds` 0.0 on the first such pass, which is what protects a Sandbox
+        created moments ago whose Conversation CR has not registered yet).
+
+        `seconds` is capped at the Sandbox's own age, because a NAME is not an identity:
+        `conv-<id>` is derived from the conversation id, so a revived conversation reuses it,
+        and a delete+recreate that lands inside one reconcile interval is never observed as
+        an absence. Without the cap the new Sandbox inherits the dead one's matured window
+        and is reaped on sight — measured in CI at 5.9s old against a 189.8s clock."""
+        present = {sb.name for sb in sandboxes}
+        self._seen_referenced |= referenced & present
+        # Forget anything referenced again or gone from the cluster, so its next appearance
+        # starts a fresh window. (The age cap above covers the recreate we never SEE go; a
+        # Sandbox that does vanish loses its confirmed standing with the rest of its state.)
+        for name in [n for n in self._since if n in referenced or n not in present]:
+            del self._since[name]
+        self._seen_referenced &= present
+        return {
+            sb.name: Orphaned(
+                seconds=min(now - self._since.setdefault(sb.name, now), sb.age_seconds),
+                confirmed=sb.name in self._seen_referenced,
+            )
+            for sb in sandboxes
+            if sb.name not in referenced
+        }
+
+
+def reap_orphans(
+    k8s, grace_seconds: float, confirm_seconds: float, clock: OrphanClock, now: float
+) -> list[str]:
+    """One reaper pass: destroy Sandboxes that have had no owning Conversation for their
+    whole window — `confirm_seconds` for one we watched lose its Conversation,
+    `grace_seconds` for one we have never seen referenced (see find_orphans). Reaping
+    deletes the whole per-conversation tree (Sandbox + its
+    ServiceAccount + module ConfigMap) — the Sandbox delete cascades its pod +
+    volumeClaimTemplate PVCs, but the SA + module CM are provisioner-created (not
+    Sandbox-owned) so they DON'T cascade and must be deleted too. Leader-gated by the
+    caller. Returns the reaped sandbox names.
 
     DESTRUCTIVE — logs every reap. Best-effort per sandbox: a failed delete is logged and the
     pass continues (retries next tick). See todo/docs/ORPHANED_SANDBOX_REAPER.md."""
@@ -379,14 +431,27 @@ def reap_orphans(k8s, grace_seconds: float) -> list[str]:
         for cr in k8s.list_conversations()
         if (ref := (cr.get("spec") or {}).get("sandboxRef"))
     }
-    orphans = find_orphans(k8s.list_sandboxes(), referenced, grace_seconds)
+    sandboxes = k8s.list_sandboxes()
+    orphaned = clock.observe(sandboxes, referenced, now)
+    orphans = find_orphans(sandboxes, referenced, grace_seconds, confirm_seconds, orphaned)
+    ages = {sb.name: sb.age_seconds for sb in sandboxes}
     reaped: list[str] = []
     for name in orphans:
         try:
             k8s.delete_sandbox_tree(name)
             reaped.append(name)
             logger.info(
-                "reaped orphaned sandbox", extra={**_C, "sandbox_name": name, "reason": "no owning Conversation"}
+                "reaped orphaned sandbox",
+                extra={
+                    **_C,
+                    "sandbox_name": name,
+                    "reason": "no owning Conversation",
+                    "orphaned_for_seconds": round(orphaned[name].seconds, 1),
+                    # False = never seen referenced; it waited the full grace window because
+                    # we could not tell "garbage" from "CR has not registered yet".
+                    "deletion_observed": orphaned[name].confirmed,
+                    "age_seconds": round(ages[name], 1),
+                },
             )
         except Exception:  # noqa: BLE001 — one failed reap must not abort the pass
             logger.exception(

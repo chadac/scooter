@@ -29,11 +29,16 @@ class Config:
     lease_seconds: int = 15
     lease_name: str = "conversation-controller-leader"
     identity: str = "unknown"
-    # Orphaned-Sandbox reaper: destroy Sandboxes with no owning Conversation, older than the
-    # grace window (spares a just-created Sandbox whose CR isn't registered yet). On by
-    # default; grace defaults to 10 min. See todo/docs/ORPHANED_SANDBOX_REAPER.md.
+    # Orphaned-Sandbox reaper: destroy Sandboxes with no owning Conversation. On by default.
+    # TWO windows, because there are two different situations (see reconcile.find_orphans):
+    # confirm = we watched the Conversation exist and go, so only a create-race needs riding
+    # out; grace = we have never seen the Sandbox referenced, and cannot tell garbage from a
+    # CR that has not registered spec.sandboxRef yet. One number for both is what left ~15
+    # dead pods on the e2e-full node and exhausted it (#495).
+    # See todo/docs/ORPHANED_SANDBOX_REAPER.md.
     reap_orphans: bool = True
-    orphan_grace_seconds: float = 600.0
+    orphan_grace_seconds: float = 180.0
+    orphan_confirm_seconds: float = 15.0
     # Agent-host AUTOSCALING: the controller scales the agent-host Deployment to fit demand
     # (ceil(top-level conversations / pod_cap), clamped to [min,max]). On by default. Do NOT
     # also run an HPA on agent-host replicas (two writers fight). scale_down_cooldown avoids
@@ -57,7 +62,8 @@ class Config:
             # The downward-API pod name in-cluster; HOSTNAME is the container fallback.
             identity=os.environ.get("POD_NAME") or os.environ.get("HOSTNAME", "unknown"),
             reap_orphans=os.environ.get("REAP_ORPHANED_SANDBOXES", "1") != "0",
-            orphan_grace_seconds=float(os.environ.get("ORPHAN_GRACE_SECONDS", "600")),
+            orphan_grace_seconds=float(os.environ.get("ORPHAN_GRACE_SECONDS", "180")),
+            orphan_confirm_seconds=float(os.environ.get("ORPHAN_CONFIRM_SECONDS", "15")),
             autoscale=os.environ.get("AUTOSCALE_AGENT_HOST", "1") != "0",
             min_replicas=int(os.environ.get("AGENT_HOST_MIN_REPLICAS", "2")),
             max_replicas=int(os.environ.get("AGENT_HOST_MAX_REPLICAS", "10")),
