@@ -39,20 +39,6 @@ test.describe("whole-UI consistency through a normal turn", () => {
     // 20s, not 3: the run must still be in flight when the bar assertion polls, and on the full
     // target the exec waits for a ready sandbox pod before the sleep even starts. Why: PR #507.
     await chat.startLongRun(20);
-    // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
-    // becoming visible doesn't guarantee the user message has been counted yet — observed in
-    // nightly run 34018090436 where the snapshot showed 0 user messages while the message was
-    // visible in the DOM. Poll until the message text is present to avoid racing the render.
-    await expect
-      .poll(
-        async () => {
-          const userMessages = page.locator('.aui-user-message-content');
-          const lastText = await userMessages.last().innerText().catch(() => "");
-          return lastText.includes("!sleep 20");
-        },
-        { timeout: 10_000 },
-      )
-      .toBe(true);
     const running = await step(page, "while running");
     expect(running.running).toBe(true);
     expect(running.composerStop, "the composer must offer Stop while running").toBe(true);
