@@ -189,7 +189,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // and between the first run ending and the drained run starting the UI is legitimately idle
     // with the drained turn not yet in the thread — an idle-gated read lands in that window and
     // sees one turn too few. The turn count is the property under test, so wait on it directly;
-    // idle is then asserted as the settled END state, not used as the signal. Why: PR #504.
+    // idle is then asserted as the settled END state, not used as the signal. Why: PR #508.
     await expect
       .poll(async () => (await snapshot(page)).userMessages, { timeout: 60_000 })
       .toBe(start.userMessages + 1);
