@@ -36,14 +36,9 @@ test.describe("whole-UI consistency through a normal turn", () => {
     expect(idle.runError, "a fresh conversation must have no error").toBeNull();
 
     // RUNNING: the run bar is up, the composer offers Stop (not Send), nothing else changed state.
-    // 20s, not 3: this asserts the run bar is VISIBLE, so the run must still be in flight when
-    // the assertion polls. On the full target the exec waits for a ready sandbox pod BEFORE the
-    // sleep starts, so a 3s sleep can begin and END inside that wait — the bar never renders and
-    // the test fails with everything behaving correctly (observed: "element(s) not found" after
-    // the full 30s). The same arithmetic is why stop-run.spec.ts:75 uses a 20s sleep. Nothing
-    // waits for this sleep to finish — the poll below ends the test as soon as the run does.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s, not 3: the run must still be in flight when the bar assertion polls, and on the full
+    // target the exec waits for a ready sandbox pod before the sleep even starts. Why: PR #503.
+    await chat.startLongRun(20);
     // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
     // becoming visible doesn't guarantee the user message has been counted yet — observed in
     // nightly run 34018090436 where the snapshot showed 0 user messages while the message was
@@ -167,14 +162,10 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // moment its own poll would have. Give this one a budget larger than the work it waits on.
     test.setTimeout(180_000);
     await chat.open();
-    // 20s, not 3: the whole point is that the second message QUEUES behind an in-flight run.
-    // On the full target the exec waits for a ready sandbox pod before the sleep starts, so a
-    // 3s sleep can be over by the time sendWhileRunning fires — the message then lands on an
-    // IDLE conversation as an ordinary turn, the queue never holds it, and the conservation
-    // count comes up one short (observed: expected 2, received 1) while nothing is actually
-    // lost. A 20s sleep keeps the run in flight across the queueing window.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s, not 3: the second message must QUEUE behind an in-flight run. A run that ends first
+    // makes the message an ordinary turn and the conservation count comes up one short with
+    // nothing actually lost. Why: PR #503.
+    await chat.startLongRun(20);
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
     // The queued ROWS only mount while the Queue tab is selected — open it before reading them.
@@ -201,16 +192,10 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // top of a run whose exec first waits for the sandbox (5-25s) exceeds the 60s default.
     test.setTimeout(120_000);
     await chat.open();
-    // 60s, not 20: the test asserts the queue still holds a row and `running === true` AFTER
-    // the reload, so the run must outlive open→send→queue→snapshot→reload→re-derive. On the
-    // full target that window is far wider than it looks — a 20s sleep was still being drained
-    // before the post-reload poll could observe it (observed: queued.length stuck at 0 through
-    // the whole 30s budget, expected 1, with the queue demonstrably working). The sandbox wait
-    // precedes the sleep, so the sleep's own 20s is not the margin it appears to be. Nothing
-    // waits for this sleep to finish (the test ends mid-run; cleanState cancels it), so the
-    // longer sleep costs no wall-clock time.
-    await chat.send("!sleep 60");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 60s, not 20: the run must outlive open→send→queue→snapshot→reload→re-derive, because the
+    // post-reload assertions require it still in flight. The sandbox wait precedes the sleep, so
+    // the sleep's own 20s was not the margin it appeared to be. Why: PR #503.
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();
     const pre = await step(page, "before reload");

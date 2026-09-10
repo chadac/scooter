@@ -120,8 +120,10 @@ test.describe("two tabs on the same conversation", () => {
     await expect(chatB.input()).toBeVisible({ timeout: 20_000 });
 
     // A queues a message behind a long run; B must see it in ITS queue tab.
-    await chat.send("!sleep 6");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s, not 6: B's queue read has to happen while A's run is still in flight, and on the full
+    // target the sandbox wait precedes the sleep. startLongRun carries the target-aware budget for
+    // the bar itself — a hand-rolled 30s wait is short by 60s on a cold pod. Why: PR #503.
+    await chat.startLongRun(20);
     await chat.sendWhileRunning("queued in A, visible in B");
     await chatB.openQueueTab();
     await expect

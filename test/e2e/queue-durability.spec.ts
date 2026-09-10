@@ -155,18 +155,17 @@ test.describe("queue durability across refresh + drain", () => {
 
   test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat, page }) => {
     await chat.open();
-    // A short sleep so the test doesn't wait the full 20s — long enough to queue behind.
-    await chat.send("!sleep 3");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s, not 3: the message must queue behind a run that is still in flight, and on the full
+    // target a 3s run can begin and END inside the sandbox wait that precedes it — the bar never
+    // renders and the queueing this test is about never happens. Why: PR #503.
+    await chat.startLongRun(20);
     const before = await chat.assistantMessages().count();
     await chat.sendWhileRunning("run me after the sleep");
 
     // Once the sleep run + the queued run both complete, there are MORE assistant messages,
-    // and the queued item leaves the queue. 90s, not 45: on the full target the sleep-3
-    // run first waits for a ready sandbox pod (≤25s cold), then the queued turn runs its
-    // own exec + streamed reply (~10s) — the reply lands ~40s after the send when cold,
-    // which leaves a 45s budget no headroom under CI CPU pressure.
-    await expect.poll(async () => chat.assistantMessages().count(), { timeout: 90_000 }).toBeGreaterThan(before);
+    // and the queued item leaves the queue. 120s, not 90: the run this queues behind is now
+    // 20s (see above), and the queued turn's own exec + streamed reply follows it. Why: PR #503.
+    await expect.poll(async () => chat.assistantMessages().count(), { timeout: 120_000 }).toBeGreaterThan(before);
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 20_000 });
     await expect(chat.userMessages().filter({ hasText: "run me after the sleep" })).toHaveCount(1);
@@ -182,7 +181,6 @@ test.describe("queue durability across refresh + drain", () => {
     // shorter window than RUN_SEC: long enough to outlast the boot, short enough that the
     // drain it waits on is not needlessly slow.
     await chat.startLongRun(20);
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("drain me");
     // After everything settles, a fresh normal turn works first-try (no wedge). 150s:
     // sendTurn first waits for the composer to go idle, which is now behind the cold boot
