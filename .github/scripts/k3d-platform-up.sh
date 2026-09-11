@@ -98,7 +98,11 @@ nix shell nixpkgs#kubectl -c bash -c "
   # exactly how the 'GET /conversations returns one pod's slice' bug reached
   # production. Force podCap=1 so each conversation lands on a DIFFERENT pod, and
   # give the fleet room to spread.
-  kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
+  # ORPHAN_GRACE_SECONDS: grace is measured from sandbox CREATION, so the 600s default
+  # keeps every deleted test's pod on this one node for 10 min and CPU limits hit ~326%.
+  # Set with podCap in ONE call — two 'set env' calls roll the deployment twice.
+  # No backticks in this block: it is inside bash -c \"...\", so they run. Why: PR #514.
+  kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1 ORPHAN_GRACE_SECONDS=60
   kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
   kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
   kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
