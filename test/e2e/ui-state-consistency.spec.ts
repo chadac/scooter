@@ -23,11 +23,9 @@ async function step(page: Page, when: string): Promise<UiSnapshot> {
 
 test.describe("whole-UI consistency through a normal turn", () => {
   test("every surface stays mutually consistent across idle → running → replied", async ({ chat, page, request, baseURL }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target the exec waits
-    // for a ready sandbox pod first (5-25s measured), so the run lasts up to ~30s; add
-    // open + the multi-surface snapshots and the worst case brushes the 60s default on
-    // arithmetic alone.
-    test.setTimeout(120_000);
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Must exceed startLongRun's 90s full-target
+    // run-bar budget plus the 60s reply poll, or the test dies before its own waits can. PR #503.
+    test.setTimeout(240_000);
     await chat.open();
     const idle = await step(page, "after open");
     expect(idle.running, "a fresh conversation must not claim to be running").toBe(false);
@@ -36,14 +34,9 @@ test.describe("whole-UI consistency through a normal turn", () => {
     expect(idle.runError, "a fresh conversation must have no error").toBeNull();
 
     // RUNNING: the run bar is up, the composer offers Stop (not Send), nothing else changed state.
-    // 20s, not 3: this asserts the run bar is VISIBLE, so the run must still be in flight when
-    // the assertion polls. On the full target the exec waits for a ready sandbox pod BEFORE the
-    // sleep starts, so a 3s sleep can begin and END inside that wait — the bar never renders and
-    // the test fails with everything behaving correctly (observed: "element(s) not found" after
-    // the full 30s). The same arithmetic is why stop-run.spec.ts:75 uses a 20s sleep. Nothing
-    // waits for this sleep to finish — the poll below ends the test as soon as the run does.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // startLongRun, not send + an inline wait: on the full target the run-bar budget must cover
+    // the cold sandbox boot that precedes the sleep. Why 20s / why the helper: PR #503.
+    await chat.startLongRun(20);
     // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
     // becoming visible doesn't guarantee the user message has been counted yet — observed in
     // nightly run 34018090436 where the snapshot showed 0 user messages while the message was
@@ -124,11 +117,9 @@ test.describe("whole-UI consistency through a normal turn", () => {
 
 test.describe("whole-UI consistency around the QUEUE", () => {
   test("queueing keeps thread, queue, badge, run-state and composer mutually consistent", async ({ chat, page }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). startLongRun's 30s run-bar budget
-    // plus two sendWhileRunning retry loops (up to 10s each) plus three whole-UI
-    // snapshots leave no headroom inside the 60s default once the sandbox wait
-    // (5-25s) stretches the timeline.
-    test.setTimeout(120_000);
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). startLongRun's full-target run-bar budget
+    // is 90s, not 30; add two sendWhileRunning retry loops and three whole-UI snapshots. PR #503.
+    test.setTimeout(240_000);
     await chat.open();
     await chat.startLongRun(20);
     const before = await step(page, "long run started");
@@ -163,18 +154,13 @@ test.describe("whole-UI consistency around the QUEUE", () => {
   });
 
   test("the queue DRAINS into the thread with counts conserved (nothing lost, nothing duplicated)", async ({ chat, page, request, baseURL }) => {
-    // A 60s wait inside the 60s suite default leaves ZERO headroom — the test dies at the same
-    // moment its own poll would have. Give this one a budget larger than the work it waits on.
-    test.setTimeout(180_000);
+    // Must exceed startLongRun's 90s full-target run-bar budget plus the two 60s drain polls, or
+    // the test dies at the same moment its own poll would have. PR #503.
+    test.setTimeout(240_000);
     await chat.open();
-    // 20s, not 3: the whole point is that the second message QUEUES behind an in-flight run.
-    // On the full target the exec waits for a ready sandbox pod before the sleep starts, so a
-    // 3s sleep can be over by the time sendWhileRunning fires — the message then lands on an
-    // IDLE conversation as an ordinary turn, the queue never holds it, and the conservation
-    // count comes up one short (observed: expected 2, received 1) while nothing is actually
-    // lost. A 20s sleep keeps the run in flight across the queueing window.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s keeps the run in flight across the queueing window; startLongRun's budget covers the
+    // cold sandbox boot that precedes the sleep on the full target. Why both: PR #503.
+    await chat.startLongRun(20);
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
     // The queued ROWS only mount while the Queue tab is selected — open it before reading them.
@@ -197,20 +183,14 @@ test.describe("whole-UI consistency around the QUEUE", () => {
   });
 
   test("a reload mid-queue preserves EVERY surface, not just the queue rows", async ({ chat, page, request, baseURL }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75): reload + the 30s re-derive poll on
-    // top of a run whose exec first waits for the sandbox (5-25s) exceeds the 60s default.
-    test.setTimeout(120_000);
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75): must exceed startLongRun's 90s full-target
+    // run-bar budget plus reload + the 60s re-derive poll. PR #503.
+    test.setTimeout(240_000);
     await chat.open();
-    // 60s, not 20: the test asserts the queue still holds a row and `running === true` AFTER
-    // the reload, so the run must outlive open→send→queue→snapshot→reload→re-derive. On the
-    // full target that window is far wider than it looks — a 20s sleep was still being drained
-    // before the post-reload poll could observe it (observed: queued.length stuck at 0 through
-    // the whole 30s budget, expected 1, with the queue demonstrably working). The sandbox wait
-    // precedes the sleep, so the sleep's own 20s is not the margin it appears to be. Nothing
-    // waits for this sleep to finish (the test ends mid-run; cleanState cancels it), so the
-    // longer sleep costs no wall-clock time.
-    await chat.send("!sleep 60");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 60s, not 20: the run must outlive open→send→queue→snapshot→reload→re-derive, and the
+    // sandbox wait precedes the sleep so its 20s is not the margin it looks like. startLongRun's
+    // budget covers that same boot for the run-bar wait. Why both: PR #503.
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();
     const pre = await step(page, "before reload");
