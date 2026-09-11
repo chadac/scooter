@@ -27,6 +27,10 @@ in
   dev-env-stub-tools = import ./stub-tools.nix {
     inherit pkgs lib sandboxModule stubOverlay;
   };
+  # Which uv the sandbox selects (uv-nix when the image supplies one, else nixpkgs'):
+  # a fast eval-check, because the VM test that proves the choice survives a
+  # self-modify is heavy and per-PR-excluded. See uv.nix.
+  dev-env-uv = runTest ./uv.nix;
   dev-env-service = runTest ./service.nix;
   # The webServices option: renders a proxyable unit + discovery manifest,
   # explicit-start, sub-path serving (the reverse-proxy target contract).

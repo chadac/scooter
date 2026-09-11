@@ -19,6 +19,7 @@
   imports = [
     ./nix-config.nix
     ./stub-set.nix
+    ./uv.nix
     ./injected-tools.nix
     ./sample-service.nix
     ./web-services.nix
@@ -90,7 +91,10 @@
     # `tree` is here because goose's built-in `tree` tool reads the AGENT-HOST's
     # filesystem rather than the sandbox's, so the skills steer the agent to
     # `shell` + `tree` — which only works if `tree` resolves in here.
-    uv tree
+    #
+    # `uv` is NOT here: which uv goes on PATH depends on whether the image
+    # supplied the uv-nix one, so uv.nix owns that single entry.
+    tree
   ];
 
   # Defaulted here so modules can take `{ nixStubs, ... }` unconditionally: a NixOS
