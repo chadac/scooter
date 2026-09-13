@@ -563,13 +563,28 @@ export async function snapshot(page: Page): Promise<UiSnapshot> {
     assistantMessages: await page.locator(sel.assistantMessage).count(),
     toolCards: await count(sel.toolCall),
     lastUserText: nUsers ? ((await users.nth(nUsers - 1).innerText().catch(() => "")) || "").trim() : "",
-    running: await visible('[data-testid="run-status-bar"]'),
+    // ATOMIC RUN-STATE TRIPLE (same reasoning as the interrupt pair below). assertConsistent
+    // cross-checks all three against each other, and ComposerSendOrStop renders Send XOR Stop — so
+    // "both" is not a state the DOM can hold, only one a straddled read can invent. Why: PR #517.
     // Target the COMPOSER's send button precisely (.aui-composer-send / aria-label "Send message").
     // A loose getByRole(/send/i) also matches SIDEBAR row buttons named after the conversation title
     // (e.g. "Delete baseline before simultaneous sends"), which produced a false "composer shows BOTH
     // Send and Stop" whenever a message contained the word "send".
-    composerSendable: await visible('.aui-composer-send, [aria-label="Send message"]'),
-    composerStop: await visible('[data-testid="composer-stop"]'),
+    ...(await page.evaluate(() => {
+      // Playwright's isVisible(): first match in document order, non-empty box, not visibility:hidden.
+      const vis = (s: string): boolean => {
+        const el = document.querySelector(s);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        return getComputedStyle(el).visibility !== "hidden";
+      };
+      return {
+        running: vis('[data-testid="run-status-bar"]'),
+        composerSendable: vis('.aui-composer-send, [aria-label="Send message"]'),
+        composerStop: vis('[data-testid="composer-stop"]'),
+      };
+    })),
     runError: await text('[data-testid="run-error-message"]'),
     authError: await visible('[data-testid="stream-auth-error-bar"]'),
     // ATOMIC TRIPLE (same reasoning as the interrupt pair above). assertConsistent cross-checks
