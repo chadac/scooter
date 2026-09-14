@@ -53,11 +53,15 @@ test.describe("queue rendering while a run is in flight", () => {
     // still in flight — so back-to-back sends race and the server may persist them in any
     // order. A queued row is server state (QUEUE_UPDATED, no optimistic insert), so waiting
     // for it is what actually fixes arrival order. Why: PR #518.
+    // Wait for THIS row by text, not for a count: the queue can hold a row this test
+    // never sent (a prior run's `!sleep` that queued instead of starting), and a count
+    // wait is satisfied by that stray row while the real send is still in flight —
+    // which put the sends back in a race and rendered them 1, 0, 2.
     await chat.openQueueTab();
     const sends = ["first queued", "second queued", "third queued"];
-    for (const [i, text] of sends.entries()) {
+    for (const text of sends) {
       await chat.sendWhileRunning(text);
-      await expect(chat.queuedMessages()).toHaveCount(i + 1, { timeout: 30_000 });
+      await expect(chat.queuedMessages().filter({ hasText: text })).toHaveCount(1, { timeout: 30_000 });
     }
 
     // Rows sort (priority DESC, arrival ASC) — see QueuedMessages.tsx — so FIFO is a property
