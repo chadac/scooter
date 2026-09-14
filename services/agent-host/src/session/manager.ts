@@ -845,7 +845,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // the freshly-started pod the full idle window before it can be reclaimed.
       //
       // Set the timestamp here but do NOT touch(): touch's fire-and-forget saveMeta
-      // would outlive revive() and race the awaited write two lines down. Why: PR #512.
+      // would outlive revive() and race the awaited write two lines down. Why: PR #519.
       entry.lastActivityAt = nowMs();
       wireEventLog(entry);
       await saveMeta(entry); // await (like start/create) so a persist failure propagates, not an unhandled rejection

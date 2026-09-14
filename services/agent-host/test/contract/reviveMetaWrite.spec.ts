@@ -6,7 +6,7 @@
  * fire-and-forget saveMeta (`void saveMeta(e)`) racing the awaited one: it can
  * still be running when revive() resolves, and when it rejects there is no
  * caller left to catch it — an unhandled rejection that takes the host down.
- * Why: PR #512.
+ * Why: PR #519.
  *
  * Invisible to every other spec: on the happy path both writes just succeed.
  * What changes is the write COUNT and who owns the FAILURE, so that is what
