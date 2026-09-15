@@ -24,6 +24,12 @@ let
   # Auto-assigned ports start here. Clear of the built-in web services (marimo
   # 2718, ttyd 7681, code-server 8443) — the assertions below prove it rather
   # than trusting this comment.
+  #
+  # A rebuild can REUSE a port for a DIFFERENT server (add a name that sorts first
+  # and every later server shifts up one). Nothing here can prevent that, so the
+  # agent-host must rebuild its agent session whenever the offered set changes —
+  # a session still holding the old URL would reach the new server believing it is
+  # the old one, which fails silently rather than loudly. See PR #521.
   basePort = 9700;
   maxAutoPorts = 100;
 
@@ -229,9 +235,15 @@ let
           manifest tells the agent-host which one it got.
 
           Auto-assignment is by index in the sorted set of auto-port servers, so
-          adding a server whose name sorts earlier RENUMBERS the ones after it.
-          That is harmless by construction: the unit and the manifest come from one
-          evaluation and cannot disagree, and the agent-host re-reads the manifest.
+          adding a server whose name sorts earlier RENUMBERS the ones after it, and
+          a port can be REUSED by a different server across a rebuild.
+
+          The unit and the manifest always agree (one evaluation produces both), but
+          that is not sufficient on its own: a consumer holding a previously-read
+          URL can be pointed at a different server than it thinks. The agent-host
+          must therefore rebuild its agent session whenever the offered set changes,
+          not merely re-read the manifest.
+
           It is also why these units are restartIfChanged = true (unlike
           webServices): a renumbered server must actually rebind, or the manifest
           advertises a port nothing is listening on.
