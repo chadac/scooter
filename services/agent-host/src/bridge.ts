@@ -30,6 +30,7 @@ import { debug } from "./debug.js";
 import { createTitleExtractor } from "./agent/titleMarker.js";
 import { buildHistoryPreamble } from "./agent/transcript.js";
 import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
+import { fingerprintOffered, type OfferedMcpServer } from "./agent/mcpServerRegistry.js";
 
 import { formatError, logger } from "./log.js";
 
@@ -425,6 +426,20 @@ export interface BridgeDeps {
   acpProviders?: readonly AcpProvider[];
 
   /**
+   * The MCP servers to offer a new session, resolved FRESH per run — sandbox-declared
+   * servers change under a live conversation whenever the agent runs `scooter-rebuild`.
+   * Absent = use the static `config.mcpServers` (every existing test, and any deployment
+   * without the sandbox registry).
+   *
+   * The result is fingerprinted, and a change DROPS the cached agent session so the next
+   * one is created against the current set. That is not an optimization: auto-assigned
+   * ports can be REUSED by a different server across a rebuild, so a session holding the
+   * old URL would reach the wrong server while believing it is the right one — a silent
+   * mis-wire. See modules/sandbox-os/mcp-servers.nix and PR #521.
+   */
+  resolveMcpServers?: (conversationId: string) => Promise<OfferedMcpServer[]>;
+
+  /**
    * The conversation OWNER (Scooter user), if known — part of the per-run RunContext an
    * owner-bound provider (e.g. the remote personalized agent) selects on. Optional; the ported
    * Increment-1 providers don't use it.
@@ -627,7 +642,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // One READY (initialize+newSession+hooks-wired) client per provider id, plus the client serving
   // the CURRENT run. `acpClient`/`acpSessionId` track the ACTIVE run's client so the run loop,
   // cancel(), and the liveness probe operate on it (unchanged shape; now sourced per-run).
-  const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean }>>();
+  const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean; mcpFingerprint: string }>>();
   let acpClient: AcpClient | undefined;
 
   /** Drop the cached ready-session so the next attempt re-initializes a fresh one.
@@ -1440,7 +1455,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Lazily ready ONE client per provider: initialize → newSession → wire the update/terminal/
   // permission hooks ONCE (the same lifecycle the old single-client start() ran). Cached by
   // provider id; a failed init drops the cache entry so the next run retries.
-  const readyProvider = (provider: AcpProvider): Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean }> => {
+  const readyProvider = (provider: AcpProvider): Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean; mcpFingerprint: string }> => {
     let ready = readySessions.get(provider.id);
     if (ready) return ready;
     ready = (async () => {
@@ -1463,7 +1478,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // A provider that cannot reach the bridge's default MCP endpoint supplies its own set —
       // the BYO container gets tunnel NAMES it proxies locally, since the default is a
       // loopback URL only in-cluster agents can reach.
-      const mcpServers = provider.mcpServersFor?.(sessionId) ?? deps.config.mcpServers;
+      // A provider with its own set wins (the BYO tunnel names). Otherwise prefer the
+      // per-run resolver, which includes sandbox-declared servers; `config.mcpServers`
+      // is the static fallback for deployments/tests without the registry.
+      const resolved = provider.mcpServersFor
+        ? provider.mcpServersFor(sessionId)
+        : ((await deps.resolveMcpServers?.(sessionId)) ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
+      const mcpServers = resolved;
+      // Remember WHAT this session was created with, so a later run can tell whether the
+      // sandbox's set has moved under it (resolveForRun).
+      const mcpFingerprint = fingerprintOffered((resolved ?? []) as OfferedMcpServer[]);
       const { sessionId: sid } = await client.newSession({
         cwd: deps.config.cwd,
         mcpServers,
@@ -1526,11 +1550,58 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         }
         return optionId ? { optionId } : { cancelled: true as const };
       });
-      return { client, acpSessionId: sid, historySeeded: false };
+      return { client, acpSessionId: sid, historySeeded: false, mcpFingerprint };
     })();
     readySessions.set(provider.id, ready);
     ready.catch(() => readySessions.delete(provider.id));
     return ready;
+  };
+
+  /** Drop a cached session whose MCP set no longer matches the sandbox's.
+   *
+   *  Auto-assigned ports can be REUSED by a different server across a `scooter-rebuild`, so a
+   *  session created with `sandbox:alpha -> :9700` can end up talking to a DIFFERENT server on
+   *  :9700 while still calling it alpha. That mis-wires silently, which is worse than a dead
+   *  port. Re-resolving per run and comparing the fingerprint is what makes the renumbering in
+   *  modules/sandbox-os/mcp-servers.nix safe; see PR #521.
+   *
+   *  Best-effort by design: a resolver failure (pod asleep, exec blip) must NOT block the run.
+   *  Keeping the existing session is the safe direction — it is the set we last confirmed. */
+  const dropSessionIfMcpChanged = async (providerId: string): Promise<void> => {
+    if (!deps.resolveMcpServers) return;
+    const cached = readySessions.get(providerId);
+    if (!cached) return; // nothing cached: the next readyProvider builds it fresh anyway
+    let settled: { client: AcpClient; mcpFingerprint: string };
+    try {
+      settled = await cached;
+    } catch {
+      return; // a failed session already drops itself
+    }
+    let next: string;
+    try {
+      next = fingerprintOffered(await deps.resolveMcpServers(sessionId));
+    } catch (err) {
+      log.warn("could not resolve MCP servers; keeping the current agent session", {
+        conversation_id: sessionId,
+        error: formatError(err),
+      });
+      return;
+    }
+    if (next === settled.mcpFingerprint) return;
+    log.info("sandbox MCP servers changed; rebuilding the agent session", {
+      conversation_id: sessionId,
+      provider: providerId,
+    });
+    readySessions.delete(providerId);
+    // Close the old client so its transport/process does not linger — a rebuild that leaked
+    // the previous goose on every `scooter-rebuild` would accumulate them for the life of the
+    // conversation. Best-effort: failing to close must not prevent the rebuild, which is the
+    // whole point of this path.
+    try {
+      await settled.client.close();
+    } catch {
+      /* ignore */
+    }
   };
 
   // Resolve the provider for a run + set acpClient/acpSessionId to its ready client. Throws if no
@@ -1542,6 +1613,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         `no ACP provider eligible (source=${ctx.source ?? "-"}, owner=${ctx.owner ?? "-"})`,
       );
     }
+    await dropSessionIfMcpChanged(provider.id);
     const ready = await readyProvider(provider);
     acpClient = ready.client;
     acpSessionId = ready.acpSessionId;
