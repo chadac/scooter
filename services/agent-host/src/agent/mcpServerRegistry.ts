@@ -15,7 +15,11 @@
  * See issue #520.
  */
 
+import { formatError, logger } from "../log.js";
+
 import type { SandboxRef } from "../types.js";
+
+const log = logger("mcp-registry");
 
 /** The manifest file the `mcpServers` option renders inside the pod. */
 export const MCP_MANIFEST_PATH = "/run/scooter/mcp-servers.json";
@@ -146,8 +150,28 @@ export function createMcpServerRegistry(
     let descriptors: McpServerDescriptor[] = [];
     try {
       const exec = await deps.connect(ref);
-      descriptors = parseMcpManifest(await exec.download(MCP_MANIFEST_PATH));
-    } catch {
+      const raw = await exec.download(MCP_MANIFEST_PATH);
+      descriptors = parseMcpManifest(raw);
+      // A manifest we could READ but not parse is a different problem from an absent one,
+      // and the user-visible symptom is identical (no tools). parseMcpManifest stays pure
+      // — tests call it directly — so the discrimination happens here.
+      if (raw.trim() !== "" && descriptors.length === 0) {
+        log.warn("the MCP manifest parsed to no servers; check the rendered file", {
+          conversation_id: conversationId,
+          path: MCP_MANIFEST_PATH,
+          bytes: raw.length,
+        });
+      }
+    } catch (err) {
+      // "Could not read the manifest" and "no servers are declared" both surface as an
+      // empty list, and the agent simply gets no sandbox tools either way. Without this
+      // line the two are indistinguishable after the fact, and the first one looks to a
+      // user like the servers they declared were ignored.
+      log.warn("could not read the MCP manifest; offering no sandbox servers this time", {
+        conversation_id: conversationId,
+        path: MCP_MANIFEST_PATH,
+        error: formatError(err),
+      });
       descriptors = [];
     }
     if (descriptors.length > 0) cache.set(conversationId, { descriptors, at: now() });
@@ -193,8 +217,23 @@ export function createMcpServerRegistry(
       // suspend/resume pod recreate.
       try {
         const r = await exec.execute({ command: "scooter-mcp", args: ["start", name] });
+        if (r.exitCode !== 0) {
+          // The server the user declared will NOT be offered to the agent. Silent here
+          // means "my MCP server does nothing and there is no trace anywhere".
+          log.warn("scooter-mcp start failed; this server will not be offered", {
+            conversation_id: conversationId,
+            server: name,
+            exit_code: r.exitCode,
+            stderr: r.stderr.trim().slice(0, 500),
+          });
+        }
         return r.exitCode === 0;
-      } catch {
+      } catch (err) {
+        log.warn("scooter-mcp start could not be executed; this server will not be offered", {
+          conversation_id: conversationId,
+          server: name,
+          error: formatError(err),
+        });
         return false;
       }
     },

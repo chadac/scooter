@@ -1574,8 +1574,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     let settled: { client: AcpClient; mcpFingerprint: string };
     try {
       settled = await cached;
-    } catch {
-      return; // a failed session already drops itself
+    } catch (err) {
+      // Not an error path worth warning about — readyProvider's own `ready.catch` already
+      // dropped this entry, so the next run rebuilds. Traced at debug so a confusing
+      // "why did it not rebuild" investigation can see we took this branch.
+      debug("[bridge] dropSessionIfMcpChanged: cached session had failed (%s)", formatError(err));
+      return;
     }
     let next: string;
     try {
@@ -1599,8 +1603,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // whole point of this path.
     try {
       await settled.client.close();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      // Swallowed ONLY in the sense that it does not abort the rebuild — never silently.
+      // A close that keeps failing leaks one agent process per `scooter-rebuild`, which
+      // presents later as unexplained memory/PID growth in the pod with nothing tying it
+      // back to here. This line is the tie-back.
+      log.warn("failed to close the superseded agent client; rebuilding anyway", {
+        conversation_id: sessionId,
+        provider: providerId,
+        error: formatError(err),
+      });
     }
   };
 
