@@ -22,6 +22,7 @@
     ./injected-tools.nix
     ./sample-service.nix
     ./web-services.nix
+    ./mcp-servers.nix
     ./carry-over.nix
     ./runtime-converge.nix
     ./broker-modules.nix

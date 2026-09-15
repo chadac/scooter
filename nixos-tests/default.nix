@@ -36,6 +36,12 @@ in
   # a `scooter-service-restore` boot oneshot re-starts each autostart service — so a
   # service that was running before hibernate is running again after resume.
   dev-env-service-persist = runTest ./service-persist.nix;
+  # The mcpServers option: unit + discovery manifest + auto-assigned ports + the
+  # per-boot bearer token, bound to loopback with the firewall left closed.
+  dev-env-mcp-servers = runTest ./mcp-servers.nix;
+  # The mcpServers port assertions actually FIRE (a broken predicate is a silent
+  # no-op). Fast pure-eval check, not a VM.
+  dev-env-mcp-server-ports = runTest ./mcp-server-ports.nix;
   dev-env-nix-build-skill = runTest ./nix-build-skill.nix;
   # SPIKE: runtime re-converge (warm-pod-specializes-on-claim primitive).
   dev-env-switch-specialisation = runTest ./switch-specialisation.nix;
