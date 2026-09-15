@@ -32,7 +32,7 @@ pkgs.testers.runNixOSTest {
   name = "dev-env-injected-tool";
 
   nodes.machine = { config, pkgs, lib, ... }: {
-    imports = [ "${sandboxModule}/injected-tools.nix" "${sandboxModule}/nix-config.nix" ./fixtures/nixpkgs-eval-vm.nix ];
+    imports = [ "${sandboxModule}/injected-tools.nix" "${sandboxModule}/nix-config.nix" ];
 
     programs.injectedTools = {
       enable = true;

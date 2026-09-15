@@ -25,7 +25,7 @@ pkgs.testers.runNixOSTest {
   name = "dev-env-overlay-store";
 
   nodes.machine = { config, pkgs, lib, ... }: {
-    imports = [ sandboxModule ./fixtures/nixpkgs-eval-vm.nix ];
+    imports = [ sandboxModule ];
 
     programs.overlayStore.enable = true;
 
