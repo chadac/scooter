@@ -82,6 +82,19 @@ let
         (builtins.readFile (stubBitsRoot + "/nix-stubs-bin"));
     };
 
+  # The uv-nix uv, vendored by reconverge-inputs.nix as a store path. Without it a
+  # self-modify silently DOWNGRADES the sandbox: `uv` on PATH reverts to vanilla
+  # nixpkgs uv (uv.nix) and marimo drops to a bare `marimo edit`
+  # (web-services/marimo.nix) — so `uv add numpy` starts failing on native libs
+  # after a scooter-rebuild, on a system the agent believes it only added to.
+  # storePath, not a re-derive: the package's src is a builtins.fetchurl, which
+  # would fetch at eval time (fatal offline). Null when absent — a nixosTest
+  # evaluating this bare, matching the stubBits treatment above.
+  uvNixPath = modulesTreeRoot + "/uv-nix-bin";
+  uvNix =
+    if !builtins.pathExists uvNixPath then null
+    else builtins.storePath (builtins.readFile uvNixPath);
+
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
     inherit system;
     modules = [
@@ -91,6 +104,8 @@ let
         # stub-set.nix turns these into the overlay (and lets a deployment
         # override which stub set that is).
         _module.args.stubBits = stubBits;
+        # uv.nix + marimo.nix read this; modules/sandbox-os defaults it to null.
+        _module.args.uvNix = uvNix;
         devEnvNix.nixpkgs = lib.mkForce nixpkgsRef;
         # Keep programs.scooterModule ENABLED across the re-converge so scooter-rebuild
         # / scooter-apply-module / scooter-env-status stay on PATH after a self-modify
