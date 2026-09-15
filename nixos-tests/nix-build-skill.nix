@@ -16,7 +16,7 @@ pkgs.testers.runNixOSTest {
   name = "dev-env-nix-build-skill";
 
   nodes.machine = { config, pkgs, lib, ... }: {
-    imports = [ sandboxModule ];
+    imports = [ sandboxModule ./fixtures/nixpkgs-eval-vm.nix ];
 
     # Resolve OFFLINE: pin the `nixpkgs` registry at the test's own nixpkgs source
     # (a path-flake) and pre-seed both that source and the built `hello`, so
