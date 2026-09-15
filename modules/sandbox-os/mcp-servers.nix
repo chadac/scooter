@@ -45,10 +45,8 @@ let
   # The discovery manifest (contract with the agent-host McpServerRegistry):
   #   { "servers": [ { name, displayName, description, port, path, unit, autoStart,
   #                    listenAddress } ] }
-  # No credential here, deliberately: the access control is the LOOPBACK BIND, not a
-  # secret. A bearer token belongs with the proxy that enforces it, whenever a server
-  # is first exposed off-loopback — minting one now would read as auth without being
-  # it (anything that can reach loopback is already in the pod and can read the file).
+  # No credential here: the access control is the LOOPBACK BIND, not a secret. Why
+  # not a token: PR #521.
   manifestJSON = builtins.toJSON {
     servers = lib.mapAttrsToList (name: s: {
       inherit name;
@@ -349,10 +347,8 @@ in
             s.command;
         base = {
           description = "MCP server: ${s.displayName}";
-          # TRUE, unlike webServices: an auto-assigned port can be renumbered by a
-          # rebuild, and a server that does not rebind would leave the manifest
-          # pointing at a dead port. Safe because the agent session is rebuilt on a
-          # manifest change anyway.
+          # TRUE, unlike webServices: a renumbered port must rebind or the manifest
+          # points at a dead port. Why this differs: PR #521.
           restartIfChanged = true;
           wantedBy = lib.optionals s.autoStart [ "multi-user.target" ];
           path = [ "/run/current-system/sw" "/run/wrappers" ];
