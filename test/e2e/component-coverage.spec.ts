@@ -10,7 +10,7 @@
  * (assertConsistent) — so touching one component can't quietly corrupt another.
  */
 
-import { test, expect, snapshot, assertConsistent } from "./fixtures.js";
+import { test, expect, snapshot, assertConsistent, fillSidebarSearch } from "./fixtures.js";
 
 const sb = {
   list: '[data-testid="session-list"]',
@@ -148,9 +148,9 @@ test.describe("sidebar / session components", () => {
     const total = await page.locator(sb.item).count();
     expect(total, "both conversations are listed").toBeGreaterThanOrEqual(2);
 
-    await page.locator(sb.search).fill("alpha");
+    await fillSidebarSearch(page, "alpha");
     await expect.poll(async () => page.locator(sb.item).count(), { timeout: 20_000 }).toBeLessThan(total);
-    await page.locator(sb.search).fill("");
+    await fillSidebarSearch(page, "");
     // Restoring means "the narrowing is undone", not "the list is byte-identical to a sample
     // taken 20s ago". `total` came from the AGGREGATED list of a shared fleet, which other
     // specs are concurrently adding to and deleting from, and which can also serve a degraded

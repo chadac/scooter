@@ -7,7 +7,7 @@
  * conversation title for its linked-resource name.
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, fillSidebarSearch } from "./fixtures.js";
 import { isFull } from "./target.js";
 
 const sb = {
@@ -157,7 +157,7 @@ test.describe("sidebar search + filter + label mode", () => {
     // and that merge is a separate refresh from the one that delivered the rows. On a shard
     // where this spec runs first the whole cluster is cold, so the merge lands later still.
     // Observed on CI: rowA resolved to 0 for the full 30s as test #1 on a fresh shard.
-    await page.locator(sb.search).fill("#203");
+    await fillSidebarSearch(page, "#203");
     await expect(rowA, "the link name must be searchable once the merge lands").toHaveCount(1, {
       timeout: 90_000,
     });
@@ -170,7 +170,7 @@ test.describe("sidebar search + filter + label mode", () => {
     // that list degrades to a PARTIAL one while pods churn. Observed on CI: rowB
     // resolved to 0 for the full default 15s here while its sibling assertions — the
     // ones that were given an explicit budget — passed in the same run.
-    await page.locator(sb.search).fill("scratch");
+    await fillSidebarSearch(page, "scratch");
     await expect(rowB).toHaveCount(1, { timeout: 30_000 });
     await expect(rowA).toHaveCount(0, { timeout: 30_000 });
     // A non-matching query yields the empty-state.
@@ -182,7 +182,7 @@ test.describe("sidebar search + filter + label mode", () => {
     // repainted yet, and asserting the empty-state directly turned that into a 30s timeout
     // that named the wrong thing. Polling the rows first makes the wait land on the filter
     // taking effect, and keeps the empty-state assertion as the real check afterwards.
-    await page.locator(sb.search).fill("zzz-nomatch");
+    await fillSidebarSearch(page, "zzz-nomatch");
     await expect(rowA).toHaveCount(0, { timeout: 30_000 });
     await expect(rowB).toHaveCount(0, { timeout: 30_000 });
     // The EMPTY-STATE itself is fast-only. It renders only when the sidebar has zero rows,
@@ -191,7 +191,7 @@ test.describe("sidebar search + filter + label mode", () => {
     // filter is. What this test owns is that ITS OWN rows are filtered out, asserted above
     // on both targets; the empty-state is provable only where the backend holds nothing else.
     if (!isFull) await expect(page.locator(sb.empty)).toBeVisible({ timeout: 30_000 });
-    await page.locator(sb.search).fill("");
+    await fillSidebarSearch(page, "");
 
     // (2) Provider filter (icon chips): GitHub keeps the linked conversation and
     // drops the unlinked one.

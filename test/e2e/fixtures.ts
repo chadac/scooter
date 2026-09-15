@@ -454,6 +454,28 @@ test.afterEach(async ({ page, consoleErrors }) => {
 export { expect };
 
 /**
+ * Type `value` into the sidebar's keyword search and CONFIRM it landed there.
+ *
+ * A bare `fill()` is not enough: the composer's autoFocus can take focus between
+ * fill()'s focus and its text insertion, which delivers the text to the composer
+ * instead — the search box stays empty and no filter is ever applied. Why: PR #515.
+ */
+export async function fillSidebarSearch(page: Page, value: string): Promise<void> {
+  const search = page.locator('[data-testid="session-search"]');
+  const composer = page.locator(sel.composerInput).first();
+  await expect(async () => {
+    // Undo a previous attempt that leaked into the composer, so a stray query is
+    // never left to be sent as a message by a later step.
+    if (value && (await composer.inputValue().catch(() => "")) === value) {
+      await composer.fill("");
+    }
+    await search.click();
+    await search.fill(value);
+    await expect(search).toHaveValue(value, { timeout: 2_000 });
+  }).toPass({ timeout: 30_000, intervals: [250, 500, 1_000] });
+}
+
+/**
  * Seed a conversation owned by `user` (null = unowned) via the API, the way the
  * ingress would (x-auth-user), and return the SERVER-minted id.
  *
