@@ -109,8 +109,15 @@ class WebhooksSettings(BaseSettings):
     mention_pattern: str = "@agent"
     label_trigger: str = "scooter"
 
-    # Bot usernames to ignore
+    # Comment/review authors to drop (comma-separated), matched case-insensitively.
+    # GitLab payloads carry no bot flag, so this is the only author lever there.
     ignore_usernames: str = ""
+
+    # Fallback for when github_app_* is unset and the agent's own "<slug>[bot]"
+    # login can't be resolved: drop any Bot-authored GitHub comment/review that
+    # doesn't mention the agent. Its own comments otherwise come back as webhooks
+    # — at interrupt priority for reviews (PR #530).
+    ignore_bot_authors: bool = True
 
     # Public UI base URL for the "View conversation" deep-links posted back to
     # Slack/GitHub/GitLab/Jira: <agent_manager_url>/?thread=<id>. Distinct from

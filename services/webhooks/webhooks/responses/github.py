@@ -24,6 +24,10 @@ GITHUB_API = "https://api.github.com"
 _token_cache: dict[int, tuple[str, float]] = {}
 _TOKEN_TTL = 50 * 60  # refresh 10 min before expiry
 
+# Our own App's "<slug>[bot]" login (see get_app_login). "" = looked up but the
+# App has no slug; None = not looked up yet.
+_app_login: str | None = None
+
 
 def _load_private_key() -> str | None:
     """Load the GitHub App private key from settings."""
@@ -88,6 +92,42 @@ async def _get_installation_token(installation_id: int) -> str | None:
             extra={**_C, "installation_id": installation_id, "error": format_error(e)},
         )
         return None
+
+
+async def get_app_login() -> str | None:
+    """The `<slug>[bot]` login this platform's comments are authored as.
+
+    One GitHub App backs both the broker (which the agent comments through) and
+    this service, so `GET /app` under our own App JWT names the author to filter.
+    Cached for the process: an App's slug does not change.
+    """
+    global _app_login
+    if _app_login is not None:
+        return _app_login or None
+
+    app_jwt = _generate_jwt()
+    if not app_jwt:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/app",
+                headers={
+                    "Authorization": f"Bearer {app_jwt}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            resp.raise_for_status()
+            slug = resp.json().get("slug", "")
+    except (httpx.HTTPError, ValueError) as e:
+        # Leave the cache unset so a transient failure is retried; the caller
+        # falls back to the bot-author heuristic meanwhile.
+        logger.error("get app slug failed", extra={**_C, "error": format_error(e)})
+        return None
+
+    _app_login = f"{slug}[bot]" if slug else ""
+    return _app_login or None
 
 
 async def _get_installation_id_for_repo(owner: str, repo: str) -> int | None:

@@ -21,7 +21,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..identity_resolve import resolve_owner
-from ..responses.github import post_github_comment
+from ..responses.github import get_app_login, post_github_comment
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.github"}
@@ -59,6 +59,36 @@ def _is_own_comment(body: str) -> bool:
         body.startswith("Scooter is on it")
         or body.startswith("OpenHands is working on this.")
         or "OpenHands status:" in body
+    )
+
+
+async def _is_self_authored(actor: dict, body: str) -> bool:
+    """Should this comment/review be dropped as machine chatter?
+
+    The agent comments through the same GitHub App as this service, so its own
+    comments come back here authored by `<slug>[bot]` — and reviews are forwarded
+    at interrupt priority, so an unfiltered one preempts the run that wrote it.
+    The identity check must win even when the body mentions the agent (it quotes
+    users), so it runs before the mention-gated bot fallback. Why: PR #530.
+    """
+    actor = actor or {}
+    login = actor.get("login", "")
+    if _is_ignored_user(login):
+        return True
+    if _is_own_comment(body):
+        return True
+
+    own_login = await get_app_login()
+    if own_login and login.lower() == own_login.lower():
+        return True
+
+    # Fallback while App credentials aren't wired (get_app_login -> None): drop
+    # bot chatter that isn't addressed to the agent. A bot that wants the agent
+    # mentions it; our own comments are caught above regardless.
+    return (
+        settings.ignore_bot_authors
+        and actor.get("type") == "Bot"
+        and not _contains_mention(body)
     )
 
 
@@ -185,7 +215,8 @@ async def _handle_comment(payload: dict):
 
     comment = payload.get("comment", {})
     comment_body = comment.get("body", "")
-    user = comment.get("user", {}).get("login", "unknown")
+    author = comment.get("user", {})
+    user = author.get("login", "unknown")
     issue = payload.get("issue", {})
     issue_number = issue.get("number")
     issue_title = issue.get("title", "")
@@ -195,9 +226,7 @@ async def _handle_comment(payload: dict):
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
 
-    if _is_ignored_user(user):
-        return
-    if _is_own_comment(comment_body):
+    if await _is_self_authored(author, comment_body):
         return
 
     has_mention = _contains_mention(comment_body)
@@ -289,8 +318,9 @@ async def _handle_review_comment(payload: dict):
 
     comment = payload.get("comment", {})
     body = comment.get("body", "")
-    user = comment.get("user", {}).get("login", "unknown")
-    if _is_ignored_user(user) or _is_own_comment(body):
+    author = comment.get("user", {})
+    user = author.get("login", "unknown")
+    if await _is_self_authored(author, body):
         return
 
     pr = payload.get("pull_request", {})
@@ -327,10 +357,11 @@ async def _handle_review(payload: dict):
         return
 
     review = payload.get("review", {})
-    user = review.get("user", {}).get("login", "unknown")
+    author = review.get("user", {})
+    user = author.get("login", "unknown")
     body = (review.get("body") or "").strip()
     state = (review.get("state") or "").lower()
-    if _is_ignored_user(user) or _is_own_comment(body):
+    if await _is_self_authored(author, body):
         return
 
     pr = payload.get("pull_request", {})

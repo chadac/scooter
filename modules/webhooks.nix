@@ -66,6 +66,60 @@ in
       default = "scooter";
       description = "Issue/PR label name that triggers a conversation (GitHub/GitLab).";
     };
+    ignoreUsernames = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "scooter-acme[bot]" "dependabot[bot]" ];
+      description = ''
+        Comment/review authors to drop outright (IGNORE_USERNAMES), matched
+        case-insensitively — e.g. a noisy third-party bot. GitHub recognizes the
+        agent's own comments from the App identity (githubApp below), so this is
+        for OTHER authors; GitLab payloads carry no bot flag at all, so it is the
+        only lever there.
+      '';
+    };
+    ignoreBotAuthors = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Fallback for deployments with no githubApp credentials: drop GitHub
+        comments/reviews authored by any Bot account unless they mention the
+        agent. With githubApp set the agent's own comments are recognized by
+        login and this only affects OTHER bots. Disable if you rely on a bot
+        relaying human content without a mention.
+      '';
+    };
+    # The agent comments through the BROKER's GitHub App; the same App backs this
+    # service, so `GET /app` here names the author to filter (see handlers/
+    # github.py `_is_self_authored`). Point this at the broker's key Secret —
+    # agentSandbox.broker.githubApp.privateKeySecret, same namespace.
+    #
+    # TODO: hoist shared App credentials (id + key Secret) into one place in the
+    # kubenix catalog that broker and webhooks both reference, instead of each
+    # service re-declaring them and the deployment keeping the two in sync by
+    # hand. Why: PR #530.
+    githubApp = {
+      appId = mkOption {
+        type = types.str;
+        default = "";
+        description = "GitHub App ID (GITHUB_APP_ID). Same App as the broker's.";
+      };
+      privateKeySecret = mkOption {
+        type = types.nullOr (types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (same namespace)."; };
+            key = mkOption { type = types.str; default = "private-key"; description = "Secret key holding the PEM."; };
+          };
+        });
+        default = null;
+        example = { name = "github-app-key"; key = "private-key"; };
+        description = ''
+          Secret holding the GitHub App private key (PEM), mounted as
+          GITHUB_APP_PRIVATE_KEY. Null -> no App identity: webhooks falls back to
+          ignoreBotAuthors, and posts comments with the GITHUB_TOKEN PAT.
+        '';
+      };
+    };
     logLevel = mkOption {
       type = types.str;
       default = "INFO";
@@ -191,6 +245,17 @@ in
                   { name = "SLACK_ENABLED"; value = lib.boolToString wcfg.slackEnabled; }
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
+                  { name = "IGNORE_USERNAMES"; value = lib.concatStringsSep "," wcfg.ignoreUsernames; }
+                  { name = "IGNORE_BOT_AUTHORS"; value = lib.boolToString wcfg.ignoreBotAuthors; }
+                ] ++ lib.optional (wcfg.githubApp.appId != "")
+                  { name = "GITHUB_APP_ID"; value = wcfg.githubApp.appId; }
+                ++ lib.optional (wcfg.githubApp.privateKeySecret != null) {
+                  name = "GITHUB_APP_PRIVATE_KEY";
+                  valueFrom.secretKeyRef = {
+                    name = wcfg.githubApp.privateKeySecret.name;
+                    key = wcfg.githubApp.privateKeySecret.key;
+                  };
+                } ++ [
                   { name = "LOG_LEVEL"; value = wcfg.logLevel; }
                   { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
                 ] ++ [
