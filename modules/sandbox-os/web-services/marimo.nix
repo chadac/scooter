@@ -24,7 +24,7 @@ let
 in
 {
   # The marimo shim on PATH, so the agent can run it by hand (marimo-pair does).
-  environment.systemPackages = [ pkgs.marimo ];
+  environment.systemPackages = lib.mkIf cfg.enable [ pkgs.marimo ];
 
   webServices.marimo = {
     port = lib.mkDefault 2718;
