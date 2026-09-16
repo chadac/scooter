@@ -93,6 +93,11 @@ in
     # service, so `GET /app` here names the author to filter (see handlers/
     # github.py `_is_self_authored`). Point this at the broker's key Secret —
     # agentSandbox.broker.githubApp.privateKeySecret, same namespace.
+    #
+    # TODO: hoist shared App credentials (id + key Secret) into one place in the
+    # kubenix catalog that broker and webhooks both reference, instead of each
+    # service re-declaring them and the deployment keeping the two in sync by
+    # hand. Why: PR #530.
     githubApp = {
       appId = mkOption {
         type = types.str;
