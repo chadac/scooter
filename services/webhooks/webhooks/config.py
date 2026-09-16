@@ -109,15 +109,14 @@ class WebhooksSettings(BaseSettings):
     mention_pattern: str = "@agent"
     label_trigger: str = "scooter"
 
-    # Bot usernames to ignore (comma-separated), matched case-insensitively
-    # against the event's author. Names an identity explicitly — e.g. the
-    # "<app-slug>[bot]" account this platform posts as.
+    # Comment/review authors to drop (comma-separated), matched case-insensitively.
+    # GitLab payloads carry no bot flag, so this is the only author lever there.
     ignore_usernames: str = ""
 
-    # Drop comments/reviews authored by a BOT account unless they mention the
-    # agent. The agent's own comments come back as webhooks (it posts through a
-    # GitHub App) and would otherwise be forwarded into its own conversation —
-    # at interrupt priority for reviews (PR #530). Off -> only ignore_usernames applies.
+    # Fallback for when github_app_* is unset and the agent's own "<slug>[bot]"
+    # login can't be resolved: drop any Bot-authored GitHub comment/review that
+    # doesn't mention the agent. Its own comments otherwise come back as webhooks
+    # — at interrupt priority for reviews (PR #530).
     ignore_bot_authors: bool = True
 
     # Public UI base URL for the "View conversation" deep-links posted back to

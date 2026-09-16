@@ -21,7 +21,7 @@ from ..store import PENDING_CONVERSATION_ID, is_pending
 from ..config import settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..identity_resolve import resolve_owner
-from ..responses.github import post_github_comment
+from ..responses.github import get_app_login, post_github_comment
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.github"}
@@ -62,23 +62,32 @@ def _is_own_comment(body: str) -> bool:
     )
 
 
-def _is_self_authored(actor: dict, body: str) -> bool:
+async def _is_self_authored(actor: dict, body: str) -> bool:
     """Should this comment/review be dropped as machine chatter?
 
-    The agent posts through a GitHub App, so its own comments arrive back here as
-    `user.type == "Bot"`. Reviews are forwarded at interrupt priority, so an
-    unfiltered one preempts the very run that wrote it. A mention is the opt-in
-    for a bot that genuinely wants the agent: without one, no Bot-authored
-    comment is addressed to it. Why: PR #530.
+    The agent comments through the same GitHub App as this service, so its own
+    comments come back here authored by `<slug>[bot]` — and reviews are forwarded
+    at interrupt priority, so an unfiltered one preempts the run that wrote it.
+    The identity check must win even when the body mentions the agent (it quotes
+    users), so it runs before the mention-gated bot fallback. Why: PR #530.
     """
-    login = (actor or {}).get("login", "")
+    actor = actor or {}
+    login = actor.get("login", "")
     if _is_ignored_user(login):
         return True
     if _is_own_comment(body):
         return True
+
+    own_login = await get_app_login()
+    if own_login and login.lower() == own_login.lower():
+        return True
+
+    # Fallback while App credentials aren't wired (get_app_login -> None): drop
+    # bot chatter that isn't addressed to the agent. A bot that wants the agent
+    # mentions it; our own comments are caught above regardless.
     return (
         settings.ignore_bot_authors
-        and (actor or {}).get("type") == "Bot"
+        and actor.get("type") == "Bot"
         and not _contains_mention(body)
     )
 
@@ -210,7 +219,7 @@ async def _handle_comment(payload: dict):
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
 
-    if _is_self_authored(author, comment_body):
+    if await _is_self_authored(author, comment_body):
         return
 
     has_mention = _contains_mention(comment_body)
@@ -302,7 +311,7 @@ async def _handle_review_comment(payload: dict):
     body = comment.get("body", "")
     author = comment.get("user", {})
     user = author.get("login", "unknown")
-    if _is_self_authored(author, body):
+    if await _is_self_authored(author, body):
         return
 
     pr = payload.get("pull_request", {})
@@ -342,7 +351,7 @@ async def _handle_review(payload: dict):
     user = author.get("login", "unknown")
     body = (review.get("body") or "").strip()
     state = (review.get("state") or "").lower()
-    if _is_self_authored(author, body):
+    if await _is_self_authored(author, body):
         return
 
     pr = payload.get("pull_request", {})
