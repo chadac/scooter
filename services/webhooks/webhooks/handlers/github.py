@@ -69,7 +69,7 @@ def _is_self_authored(actor: dict, body: str) -> bool:
     `user.type == "Bot"`. Reviews are forwarded at interrupt priority, so an
     unfiltered one preempts the very run that wrote it. A mention is the opt-in
     for a bot that genuinely wants the agent: without one, no Bot-authored
-    comment is addressed to it.
+    comment is addressed to it. Why: PR #530.
     """
     login = (actor or {}).get("login", "")
     if _is_ignored_user(login):

@@ -117,7 +117,7 @@ class WebhooksSettings(BaseSettings):
     # Drop comments/reviews authored by a BOT account unless they mention the
     # agent. The agent's own comments come back as webhooks (it posts through a
     # GitHub App) and would otherwise be forwarded into its own conversation —
-    # at interrupt priority for reviews. Off -> only ignore_usernames applies.
+    # at interrupt priority for reviews (PR #530). Off -> only ignore_usernames applies.
     ignore_bot_authors: bool = True
 
     # Public UI base URL for the "View conversation" deep-links posted back to
