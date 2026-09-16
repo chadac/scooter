@@ -71,6 +71,34 @@ describe("parseManifest", () => {
     expect(parseManifest("not json")).toEqual([]);
     expect(parseManifest(JSON.stringify({ services: [{ name: "x" }] }))).toEqual([]); // no port
   });
+
+  it("carries a declared resource requirement through", () => {
+    const json = JSON.stringify({
+      services: [{ name: "marimo", port: 2718, resources: { cpu: "4", memory: "8Gi", gpu: 1 } }],
+    });
+    expect(parseManifest(json)[0].resources).toEqual({ cpu: "4", memory: "8Gi", gpu: 1 });
+  });
+
+  it("drops ill-typed dimensions but keeps the service", () => {
+    // The manifest is generated Nix, but it lands in the pod as a plain file. A bad
+    // `resources` block must not cost the service its proxy entry — losing the route
+    // would be a far worse failure than losing an advisory warning.
+    const json = JSON.stringify({
+      services: [{ name: "marimo", port: 2718, resources: { cpu: 4, memory: "8Gi", gpu: "one" } }],
+    });
+    const [svc] = parseManifest(json);
+    expect(svc).toMatchObject({ name: "marimo", port: 2718 });
+    expect(svc.resources).toEqual({ memory: "8Gi" });
+  });
+
+  it("omits `resources` entirely when nothing usable is declared", () => {
+    // Absent must stay distinguishable from "declared zero": absent means we can't
+    // judge and say nothing, whereas a zero would read as a real requirement.
+    for (const r of [undefined, null, "big", {}, { cpu: 4 }]) {
+      const json = JSON.stringify({ services: [{ name: "m", port: 1, resources: r }] });
+      expect(parseManifest(json)[0].resources).toBeUndefined();
+    }
+  });
 });
 
 describe("WebServiceRegistry", () => {

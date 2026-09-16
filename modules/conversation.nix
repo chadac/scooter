@@ -26,10 +26,15 @@ let
     # can't starve its neighbours. This is the Nix-rendered contract for a directly-
     # created Sandbox; the broker's PLATFORM_DEFAULT (resources.py) mirrors this.
     # Deployments tune the default via cfg.defaultSandboxSize + cfg.sandboxSizes.
-  , sandboxResources ? let defaultPreset = cfg.sandboxSizes.${cfg.defaultSandboxSize}; in {
-      requests = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; };
-      limits = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; };
-    }
+    # This lands in a k8s container `resources` block verbatim, so a GPU renders under
+    # its extended-resource name (`nvidia.com/gpu`) on BOTH sides — k8s rejects a GPU
+    # request that differs from its limit. The broker's render_resources does the same
+    # for the runtime path.
+  , sandboxResources ? let
+      defaultPreset = cfg.sandboxSizes.${cfg.defaultSandboxSize};
+      side = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; }
+        // lib.optionalAttrs (defaultPreset.gpu != null) { "nvidia.com/gpu" = toString defaultPreset.gpu; };
+    in { requests = side; limits = side; }
   }: {
     # ServiceAccount sandbox-${id}  (unique per conversation; broker identity)
     serviceAccount = {

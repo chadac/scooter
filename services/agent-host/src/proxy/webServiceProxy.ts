@@ -51,6 +51,10 @@ export interface WebServiceDescriptor {
    *  ROOT. For a service that can't be told its base path (code-server). Default
    *  false — most services handle the prefix themselves (marimo --base-url). */
   stripBasePath?: boolean;
+  /** What this service declares it needs (webServices.<name>.resources). Advisory:
+   *  it never sizes the pod and never blocks a start — it only lets us explain a
+   *  throttle or an OOM kill before it happens. Absent when nothing was declared. */
+  resources?: { cpu?: string; memory?: string; gpu?: number };
 }
 
 /**

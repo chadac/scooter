@@ -81,3 +81,48 @@ describe("set_sandbox_resources", () => {
     expect(res.content[0].text).toContain("broker set size failed");
   });
 });
+
+describe("show_sandbox_resources — the deployment's size presets", () => {
+  const sizes = {
+    small: { cpu: "1", memory: "2Gi", hint: "A single service, small repos." },
+    large: { cpu: "4", memory: "16Gi", hint: "Parallel builds, large test runs." },
+    "gpu-small": { cpu: "4", memory: "16Gi", gpu: 1 },
+  };
+
+  it("lists the presets, marks the default, and carries each deployment hint", async () => {
+    const { deps } = wiring({ availableSizes: async () => ({ sizes, default: "small" }) });
+    const text = (await handleShowSandboxResources(deps, "c1")).content[0].text;
+    expect(text).toContain("small: 1 CPU, 2Gi");
+    expect(text).toContain("large: 4 CPU, 16Gi");
+    // The hint is the whole point of a deployment-authored catalog — without it the
+    // model picks by guessing at numbers.
+    expect(text).toContain("Parallel builds, large test runs.");
+    expect(text).toMatch(/small:.*\(default\)/);
+  });
+
+  it("renders a GPU preset's gpu count, and omits the dash when a preset has no hint", async () => {
+    const { deps } = wiring({ availableSizes: async () => ({ sizes, default: "small" }) });
+    const line = (await handleShowSandboxResources(deps, "c1")).content[0].text
+      .split("\n")
+      .find((l) => l.startsWith("- gpu-small:"))!;
+    expect(line).toContain("1 GPU");
+    expect(line).not.toContain("—");
+  });
+
+  it("still reports the CURRENT size when the preset lookup fails (advice is not load-bearing)", async () => {
+    const { deps } = wiring({
+      availableSizes: async () => {
+        throw new Error("broker unreachable");
+      },
+    });
+    const res = await handleShowSandboxResources(deps, "c1");
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toContain("500m");
+  });
+
+  it("omits the preset block entirely when the deployment configured none", async () => {
+    const { deps } = wiring({ availableSizes: async () => ({ sizes: {}, default: null }) });
+    const text = (await handleShowSandboxResources(deps, "c1")).content[0].text;
+    expect(text).not.toContain("Available size presets");
+  });
+});

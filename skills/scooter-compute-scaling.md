@@ -81,12 +81,21 @@ many can be packed on a node.
 
 ### Named presets (recommended)
 
-Most deployments offer these standard presets (requests == limits for Guaranteed QoS):
+**The preset table is per-deployment** — an operator defines it in kubenix
+(`agentSandbox.sandboxSizes`), so the names below are the shipped defaults, not a
+guarantee. **Don't guess a name.** `show_sandbox_resources` reports the presets this
+deployment actually offers; if a name is rejected, the error lists the valid ones.
+
+The default table (requests == limits for Guaranteed QoS):
 
 - **`tiny`**: 250m CPU, 256Mi memory — minimal for light editing
 - **`small`**: 1 CPU, 2Gi memory — small builds, scripting
 - **`medium`**: 2 CPU, 4Gi memory — **the default**
 - **`large`**: 4 CPU, 16Gi memory — parallel builds, heavy compute
+
+A deployment can also offer **GPU presets** (e.g. `gpu-small` = 4 CPU, 16Gi, 1 GPU).
+A preset is the ONLY way to get a GPU by name — there is no "add a GPU to my current
+size" operation, because a GPU count must match on requests and limits.
 
 Pass the preset name to `set_sandbox_resources`:
 
@@ -108,3 +117,7 @@ gpu a whole number). Omit a field to keep it. Keep requests == limits for Guaran
 ```
 set_sandbox_resources(requestCpu="8", limitCpu="8", requestMemory="32Gi", limitMemory="32Gi")
 ```
+
+Prefer a preset when one fits. A raw size shows in the UI's Sandbox tab as **Custom**
+rather than a named size, and it can land outside what the cluster can actually
+schedule — the preset table is what the operator has confirmed is available.

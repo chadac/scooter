@@ -20,7 +20,8 @@ let
   unitName = name: "webservice-${name}";
 
   # The discovery manifest (contract with the agent-host WebServiceRegistry):
-  #   { "services": [ { name, displayName, port, basePath, unit, stripBasePath }, ... ] }
+  #   { "services": [ { name, displayName, port, basePath, unit, stripBasePath,
+  #                     resources? }, ... ] }
   manifestJSON = builtins.toJSON {
     services = lib.mapAttrsToList (name: s: {
       inherit name;
@@ -29,6 +30,12 @@ let
       basePath = s.basePath;
       unit = unitName name;
       stripBasePath = s.stripBasePath;
+    } // lib.optionalAttrs (s.resources != null) {
+      # Advisory requirement. Only the dimensions actually declared are emitted, so
+      # the consumer can tell "wants 8Gi, doesn't care about cpu" from "wants 0 cpu".
+      resources = lib.filterAttrs (_: v: v != null) {
+        inherit (s.resources) cpu memory gpu;
+      };
     }) enabled;
   };
   manifestFile = pkgs.writeText "web-services.json" manifestJSON;
@@ -232,6 +239,42 @@ let
           --server-base-path). Leave false for services that handle the prefix
           themselves (marimo --base-url, ttyd --base-path) — stripping would then
           double-strip and break their asset URLs.
+        '';
+      };
+
+      resources = lib.mkOption {
+        type = lib.types.nullOr (lib.types.submodule {
+          options = {
+            cpu = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "2";
+              description = "CPU this service wants, as a k8s quantity (\"2\", \"500m\").";
+            };
+            memory = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "8Gi";
+              description = "Memory this service wants, as a k8s quantity (\"8Gi\", \"512Mi\").";
+            };
+            gpu = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.unsigned;
+              default = null;
+              description = "Whole GPUs this service wants.";
+            };
+          };
+        });
+        default = null;
+        example = lib.literalExpression ''{ cpu = "2"; memory = "8Gi"; }'';
+        description = ''
+          What this service NEEDS to run comfortably. Advisory only — it never sizes
+          the pod and never blocks a start. The agent-host compares it against the
+          sandbox's actual allotment and, when the service wants more, hands the agent
+          (and the UI) a concrete "marimo wants 8Gi, this sandbox is 4Gi" note instead
+          of letting it discover the gap as an OOM kill with no explanation.
+
+          It is an ESTIMATE written by whoever declared the service, so it must stay
+          advisory: blocking on it would refuse services that would have run fine.
         '';
       };
 

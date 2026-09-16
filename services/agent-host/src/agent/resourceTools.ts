@@ -13,6 +13,10 @@
 
 import type { ToolResult } from "./mcpServer.js";
 import { validateResources, InvalidResourceError, type SandboxResources } from "../session/resources.js";
+import type { SandboxSizePreset } from "../session/brokerProvisioner.js";
+import { formatError, logger } from "../log.js";
+
+const log = logger("resourceTools");
 
 /** What the resource tools need from the agent-host. */
 export interface SandboxResourceToolsWiring {
@@ -28,7 +32,7 @@ export interface SandboxResourceToolsWiring {
   /** Get the available named sandbox size presets (name → {cpu, memory}) and the
    *  default preset name, from GET /sandbox-sizes. Used to validate preset names and
    *  show the agent what's available. May be async (reads the broker). */
-  availableSizes?(): Promise<{ sizes: Record<string, { cpu: string; memory: string }>; default: string | null }>;
+  availableSizes?(): Promise<{ sizes: Record<string, SandboxSizePreset>; default: string | null }>;
 }
 
 /** The set_sandbox_resources tool input (friendly shape; all optional — an omitted
@@ -79,6 +83,34 @@ export async function handleShowSandboxResources(
   conversationId: string,
 ): Promise<ToolResult> {
   const r = await deps.currentResources(conversationId);
+  // The preset table is per-deployment, so the agent cannot know the valid names
+  // from its skill doc alone — listing them here is what stops it guessing a name
+  // and eating a rejection. A failure to read them is non-fatal: the current size
+  // is still worth reporting.
+  let presetLines = "";
+  if (deps.availableSizes) {
+    try {
+      const { sizes, default: defaultName } = await deps.availableSizes();
+      const names = Object.keys(sizes);
+      if (names.length > 0) {
+        presetLines =
+          "\nAvailable size presets (pass one as set_sandbox_resources(size=...)):\n" +
+          names
+            .map((n) => {
+              const p = sizes[n];
+              const gpu = p.gpu ? `, ${p.gpu} GPU` : "";
+              const isDefault = n === defaultName ? "  (default)" : "";
+              // The deployment's hint is the steer that makes the choice workload-based
+              // rather than a guess at numbers — carry it through verbatim.
+              const hint = p.hint ? ` — ${p.hint}` : "";
+              return `- ${n}: ${p.cpu} CPU, ${p.memory}${gpu}${isDefault}${hint}`;
+            })
+            .join("\n");
+      }
+    } catch (e) {
+      log.warn("could not list size presets", { error: formatError(e) });
+    }
+  }
   return {
     content: [
       {
@@ -87,7 +119,8 @@ export async function handleShowSandboxResources(
           "Your sandbox resources:\n" +
           `- requests: ${sideLine(r.requests)}\n` +
           `- limits: ${sideLine(r.limits)}\n` +
-          "Change them with set_sandbox_resources (applies on the next sandbox restart).",
+          presetLines +
+          "\nChange them with set_sandbox_resources (applies on the next sandbox restart).",
       },
     ],
   };
@@ -118,7 +151,7 @@ export async function handleSetSandboxResources(
         }
       } catch (e) {
         // Sizes query failed — let the broker reject it (don't block the write).
-        console.warn(`[resourceTools] could not query available sizes: ${(e as Error).message}`);
+        log.warn("could not query available sizes; skipping preset validation", { error: formatError(e) });
       }
     }
     // Pass the preset name to the broker as {size: "..."}.

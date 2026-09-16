@@ -112,6 +112,13 @@ export interface WebService {
   /** Path to open the service in the browser (under the full threadId). */
   url: string;
   running: boolean;
+  /** One sentence naming the gap when this service declares more cpu/memory/gpu than
+   *  the sandbox caps at. Advisory — the service still starts. Absent when it fits, or
+   *  when we can't judge (nothing declared / the size is unknown). */
+  fit?: string;
+  /** The same gap in a few words ("Needs 8Gi memory"), for the service card, which is
+   *  ~120px wide. Present exactly when `fit` is. */
+  fitShort?: string;
 }
 
 /** List the conversation's declared web services (marimo/xterm/…) with liveness.
@@ -504,6 +511,71 @@ export async function loadSandboxResources(
     return body.resources ?? null;
   } catch {
     return null;
+  }
+}
+
+/** One named size preset from the deployment's kubenix table. `gpu` is absent on
+ *  CPU-only presets. */
+export interface SandboxSizePreset {
+  cpu: string;
+  memory: string;
+  gpu?: number;
+  /** Deployment guidance for when to pick this size (kubenix
+   *  agentSandbox.sandboxSizes.<name>.hint). Absent when the deploy set none. */
+  hint?: string;
+}
+
+/** The deployment's size presets (GET /sandbox-sizes) and which one is the default.
+ *  An empty map = the deployment configured no presets, and the Sandbox tab hides
+ *  the picker rather than offering an empty dropdown. */
+export interface SandboxSizes {
+  sizes: Record<string, SandboxSizePreset>;
+  default: string | null;
+}
+
+/** Fetch the deployment's named sandbox size presets so the Sandbox tab can offer a
+ *  dropdown. Returns an empty map on any error / when the deployment doesn't expose
+ *  them — the caller then omits the picker. */
+export async function loadSandboxSizes(config: AgentHostConfig): Promise<SandboxSizes> {
+  const empty: SandboxSizes = { sizes: {}, default: null };
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/sandbox-sizes`, {
+      headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+    });
+    if (!res.ok) return empty;
+    const body = (await res.json()) as Partial<SandboxSizes>;
+    return { sizes: body.sizes ?? {}, default: body.default ?? null };
+  } catch {
+    return empty;
+  }
+}
+
+/** Record a size preset for this conversation. Resolves to null on success, or the
+ *  server's error message — the caller SHOWS it rather than silently reverting, so a
+ *  rejected preset doesn't look like the click did nothing. Takes effect on the next
+ *  sandbox restart, not immediately. */
+export async function setSandboxSize(
+  config: AgentHostConfig,
+  conversationId: string,
+  size: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/size`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+        },
+        body: JSON.stringify({ size }),
+      },
+    );
+    if (res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return body.error ?? `request failed (${res.status})`;
+  } catch (e) {
+    return (e as Error).message;
   }
 }
 

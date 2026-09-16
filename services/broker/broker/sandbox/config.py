@@ -71,12 +71,13 @@ def sandbox_sizes(settings: BrokerSettings) -> dict[str, dict]:
 
 
 def preset_to_resources(preset: dict) -> SandboxResources:
-    """Convert a preset {cpu, memory} to SandboxResources (requests == limits for
-    Guaranteed QoS). Validates the quantities."""
-    return validate_resources(SandboxResources(
-        requests={"cpu": preset["cpu"], "memory": preset["memory"]},
-        limits={"cpu": preset["cpu"], "memory": preset["memory"]},
-    ))
+    """Convert a preset {cpu, memory, gpu?} to SandboxResources (requests == limits
+    for Guaranteed QoS). Validates the quantities. gpu is optional and renders on
+    BOTH sides — k8s rejects a GPU request that differs from its limit."""
+    side = {"cpu": preset["cpu"], "memory": preset["memory"]}
+    if preset.get("gpu") is not None:
+        side["gpu"] = preset["gpu"]
+    return validate_resources(SandboxResources(requests=dict(side), limits=dict(side)))
 
 
 def size_store_config(settings: BrokerSettings) -> StoreConfig:

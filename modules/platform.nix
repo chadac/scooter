@@ -162,13 +162,32 @@ in
         options = {
           cpu = mkOption { type = types.str; description = "CPU quantity (requests == limits for Guaranteed QoS), e.g. \"2\" or \"500m\"."; };
           memory = mkOption { type = types.str; description = "Memory quantity (requests == limits for Guaranteed QoS), e.g. \"4Gi\" or \"512Mi\"."; };
+          gpu = mkOption {
+            type = types.nullOr types.ints.unsigned;
+            default = null;
+            # k8s requires gpu request == limit, so one count renders on both sides.
+            description = "Whole GPUs (nvidia.com/gpu) for this preset; null = none.";
+          };
+          hint = mkOption {
+            type = types.str;
+            default = "";
+            example = "Parallel builds, large test runs.";
+            description = ''
+              Deployment guidance for when to pick this size, shown to the AGENT by
+              show_sandbox_resources and to the USER under the Sandbox tab's size
+              picker (not inside the option labels — an <option> can't wrap, so a
+              hint there truncates the cpu/memory numbers). Mirrors
+              agent.availableModels.<id>.hint — both pick by workload rather than
+              guessing at numbers. Empty = no hint.
+            '';
+          };
         };
       });
       default = {
-        tiny = { cpu = "250m"; memory = "256Mi"; };
-        small = { cpu = "1"; memory = "2Gi"; };
-        medium = { cpu = "2"; memory = "4Gi"; };
-        large = { cpu = "4"; memory = "16Gi"; };
+        tiny = { cpu = "250m"; memory = "256Mi"; hint = "Chat and light edits."; };
+        small = { cpu = "1"; memory = "2Gi"; hint = "A single service, small repos."; };
+        medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; };
+        large = { cpu = "4"; memory = "16Gi"; hint = "Parallel builds, large test runs."; };
       };
       example = {
         tiny = { cpu = "250m"; memory = "256Mi"; };
@@ -176,6 +195,7 @@ in
         medium = { cpu = "2"; memory = "4Gi"; };
         large = { cpu = "4"; memory = "16Gi"; };
         xlarge = { cpu = "8"; memory = "32Gi"; };
+        gpu-small = { cpu = "4"; memory = "16Gi"; gpu = 1; };
       };
       description = ''
         Named sandbox size presets — a map of preset-name → {cpu, memory}. Each
@@ -827,19 +847,6 @@ in
           { db = "agent_host"; tables = tablesFor "agent_host"; writeTables = writeTablesFor "agent_host"; }
         ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; writeTables = writeTablesFor "webhooks"; };
       };
-
-    # Eval-time assertions: the default sandbox size must be a key in the sizes map.
-    assertions = [
-      {
-        assertion = cfg.sandboxSizes ? ${cfg.defaultSandboxSize};
-        message = ''
-          agentSandbox.defaultSandboxSize is "${cfg.defaultSandboxSize}" but that preset
-          is not defined in agentSandbox.sandboxSizes. Available presets: ${lib.concatStringsSep ", " (lib.attrNames cfg.sandboxSizes)}.
-          Either add the "${cfg.defaultSandboxSize}" preset to sandboxSizes, or change
-          defaultSandboxSize to an existing preset name.
-        '';
-      }
-    ];
 
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define
     # `deployments` / `services`, and a shallow `//` update would replace the

@@ -589,20 +589,33 @@ in
                   # (Guaranteed QoS) for all presets.
                   { name = "SANDBOX_DEFAULT_RESOURCES_JSON";
                     value = let
-                      preset = cfg.sandboxSizes.${cfg.defaultSandboxSize};
-                    in builtins.toJSON {
-                      requests = { cpu = preset.cpu; memory = preset.memory; };
-                      limits = { cpu = preset.cpu; memory = preset.memory; };
-                    };
+                      # kubenix has no NixOS `assertions` option, so the guard rides the
+                      # VALUE that dereferences the preset — otherwise a bad
+                      # defaultSandboxSize surfaces as an opaque missing-attribute error.
+                      preset =
+                        assert lib.assertMsg (cfg.sandboxSizes ? ${cfg.defaultSandboxSize}) ''
+                          agentSandbox.defaultSandboxSize is "${cfg.defaultSandboxSize}", which is not a preset in
+                          agentSandbox.sandboxSizes (have: ${lib.concatStringsSep ", " (lib.attrNames cfg.sandboxSizes)}).
+                          Add that preset, or point defaultSandboxSize at an existing one.
+                        '';
+                        cfg.sandboxSizes.${cfg.defaultSandboxSize};
+                      # gpu is optional; omit the key entirely when null so the broker
+                      # sees no gpu rather than an explicit zero.
+                      side = { cpu = preset.cpu; memory = preset.memory; }
+                        // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; };
+                    in builtins.toJSON { requests = side; limits = side; };
                   }
                   # The full preset map (name → {cpu, memory}), exposed at GET /sandbox-sizes
                   # so the UI dropdown and the agent can discover what's available. Each preset
                   # renders as requests == limits (Guaranteed QoS).
                   { name = "SANDBOX_SIZES_JSON";
-                    value = builtins.toJSON (lib.mapAttrs (_name: preset: {
-                      cpu = preset.cpu;
-                      memory = preset.memory;
-                    }) cfg.sandboxSizes);
+                    value = builtins.toJSON (lib.mapAttrs (_name: preset:
+                      { cpu = preset.cpu; memory = preset.memory; }
+                      // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; }
+                      # Omit an empty hint rather than emitting "" — the agent and the
+                      # dropdown both branch on presence, not on emptiness.
+                      // lib.optionalAttrs (preset.hint != "") { hint = preset.hint; }
+                    ) cfg.sandboxSizes);
                   }
                   { name = "SANDBOX_DEFAULT_SIZE_NAME"; value = cfg.defaultSandboxSize; }
                 ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])

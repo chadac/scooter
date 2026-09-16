@@ -1351,6 +1351,11 @@ export async function main(
       // The available named sandbox size presets and the default preset name. Broker
       // path only; used by the UI dropdown and the agent to discover available sizes.
       sandboxSizes: brokerProvisioner ? () => brokerProvisioner.getSizes() : undefined,
+      // The Sandbox tab's size dropdown. Keyed by shortId like the resource tools —
+      // the broker stores sizes under the short id.
+      setSandboxSize: brokerProvisioner
+        ? (id: string, size: string) => brokerProvisioner.setSize(shortId(id), { size })
+        : undefined,
       // BYO-Claude Settings section (mint one-liner + connected badge). Undefined = BYO off.
       remoteAgent: remoteAgentUi,
       // Manual compaction — summarize older turns via a one-off SDK query with the

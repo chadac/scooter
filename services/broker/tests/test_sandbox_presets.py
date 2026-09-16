@@ -57,3 +57,33 @@ def test_preset_to_resources_with_valid_quantities():
     # Whole CPU + decimal memory suffix
     spec = preset_to_resources({"cpu": "4", "memory": "2G"})
     assert spec.requests == {"cpu": "4", "memory": "2G"}
+
+
+def test_preset_to_resources_carries_gpu_on_both_sides():
+    """A gpu preset renders the count on requests AND limits — k8s rejects a GPU
+    request that differs from its limit, so one count must land on both."""
+    spec = preset_to_resources({"cpu": "4", "memory": "16Gi", "gpu": 1})
+    assert spec.requests == {"cpu": "4", "memory": "16Gi", "gpu": 1}
+    assert spec.limits == {"cpu": "4", "memory": "16Gi", "gpu": 1}
+
+
+def test_preset_to_resources_omits_gpu_when_absent_or_none():
+    """A CPU-only preset carries NO gpu key — an explicit 0/None would otherwise
+    render as an nvidia.com/gpu request on a cluster with no GPUs."""
+    assert "gpu" not in preset_to_resources({"cpu": "2", "memory": "4Gi"}).requests
+    assert "gpu" not in preset_to_resources({"cpu": "2", "memory": "4Gi", "gpu": None}).requests
+
+
+def test_preset_to_resources_requests_and_limits_are_distinct_objects():
+    """The two sides must not alias: mutating one must not silently change the other."""
+    spec = preset_to_resources({"cpu": "2", "memory": "4Gi", "gpu": 1})
+    spec.requests["cpu"] = "99"
+    assert spec.limits["cpu"] == "2"
+
+
+def test_sandbox_sizes_parses_gpu_presets():
+    """sandbox_sizes() round-trips a gpu preset from SANDBOX_SIZES_JSON."""
+    settings = BrokerSettings(
+        sandbox_sizes_json='{"gpu-small": {"cpu": "4", "memory": "16Gi", "gpu": 1}}'
+    )
+    assert sandbox_sizes(settings)["gpu-small"] == {"cpu": "4", "memory": "16Gi", "gpu": 1}

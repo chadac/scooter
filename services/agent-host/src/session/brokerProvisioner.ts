@@ -20,10 +20,15 @@ import type { SandboxProvisioner } from "./manager.js";
 import type { SandboxResources } from "./resources.js";
 import { brokerAuthHeaders } from "./brokerAuth.js";
 
-/** Named sandbox size preset (cpu + memory; requests == limits). */
+/** Named sandbox size preset (requests == limits). `gpu` is absent on CPU-only
+ *  presets; when present it renders as nvidia.com/gpu on both sides. */
 export interface SandboxSizePreset {
   cpu: string;
   memory: string;
+  gpu?: number;
+  /** Deployment guidance for when to pick this size (kubenix
+   *  agentSandbox.sandboxSizes.<name>.hint). Absent when the deploy set none. */
+  hint?: string;
 }
 
 /** The broker provisioner ALSO exposes the size-spec ops (GET/PUT /sandbox/{conv}/size).
