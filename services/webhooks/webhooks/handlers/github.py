@@ -62,6 +62,27 @@ def _is_own_comment(body: str) -> bool:
     )
 
 
+def _is_self_authored(actor: dict, body: str) -> bool:
+    """Should this comment/review be dropped as machine chatter?
+
+    The agent posts through a GitHub App, so its own comments arrive back here as
+    `user.type == "Bot"`. Reviews are forwarded at interrupt priority, so an
+    unfiltered one preempts the very run that wrote it. A mention is the opt-in
+    for a bot that genuinely wants the agent: without one, no Bot-authored
+    comment is addressed to it.
+    """
+    login = (actor or {}).get("login", "")
+    if _is_ignored_user(login):
+        return True
+    if _is_own_comment(body):
+        return True
+    return (
+        settings.ignore_bot_authors
+        and (actor or {}).get("type") == "Bot"
+        and not _contains_mention(body)
+    )
+
+
 def _resource_id(owner: str, repo: str, number: int) -> str:
     return f"{owner}/{repo}#{number}"
 
@@ -178,7 +199,8 @@ async def _handle_comment(payload: dict):
 
     comment = payload.get("comment", {})
     comment_body = comment.get("body", "")
-    user = comment.get("user", {}).get("login", "unknown")
+    author = comment.get("user", {})
+    user = author.get("login", "unknown")
     issue = payload.get("issue", {})
     issue_number = issue.get("number")
     issue_title = issue.get("title", "")
@@ -188,9 +210,7 @@ async def _handle_comment(payload: dict):
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
 
-    if _is_ignored_user(user):
-        return
-    if _is_own_comment(comment_body):
+    if _is_self_authored(author, comment_body):
         return
 
     has_mention = _contains_mention(comment_body)
@@ -280,8 +300,9 @@ async def _handle_review_comment(payload: dict):
 
     comment = payload.get("comment", {})
     body = comment.get("body", "")
-    user = comment.get("user", {}).get("login", "unknown")
-    if _is_ignored_user(user) or _is_own_comment(body):
+    author = comment.get("user", {})
+    user = author.get("login", "unknown")
+    if _is_self_authored(author, body):
         return
 
     pr = payload.get("pull_request", {})
@@ -317,10 +338,11 @@ async def _handle_review(payload: dict):
         return
 
     review = payload.get("review", {})
-    user = review.get("user", {}).get("login", "unknown")
+    author = review.get("user", {})
+    user = author.get("login", "unknown")
     body = (review.get("body") or "").strip()
     state = (review.get("state") or "").lower()
-    if _is_ignored_user(user) or _is_own_comment(body):
+    if _is_self_authored(author, body):
         return
 
     pr = payload.get("pull_request", {})

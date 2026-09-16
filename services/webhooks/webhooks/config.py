@@ -109,8 +109,16 @@ class WebhooksSettings(BaseSettings):
     mention_pattern: str = "@agent"
     label_trigger: str = "scooter"
 
-    # Bot usernames to ignore
+    # Bot usernames to ignore (comma-separated), matched case-insensitively
+    # against the event's author. Names an identity explicitly — e.g. the
+    # "<app-slug>[bot]" account this platform posts as.
     ignore_usernames: str = ""
+
+    # Drop comments/reviews authored by a BOT account unless they mention the
+    # agent. The agent's own comments come back as webhooks (it posts through a
+    # GitHub App) and would otherwise be forwarded into its own conversation —
+    # at interrupt priority for reviews. Off -> only ignore_usernames applies.
+    ignore_bot_authors: bool = True
 
     # Public UI base URL for the "View conversation" deep-links posted back to
     # Slack/GitHub/GitLab/Jira: <agent_manager_url>/?thread=<id>. Distinct from

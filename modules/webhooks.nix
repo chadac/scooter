@@ -66,6 +66,30 @@ in
       default = "scooter";
       description = "Issue/PR label name that triggers a conversation (GitHub/GitLab).";
     };
+    ignoreUsernames = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "scooter-acme[bot]" "dependabot[bot]" ];
+      description = ''
+        Comment/review authors to drop outright (IGNORE_USERNAMES), matched
+        case-insensitively. Name the "<app-slug>[bot]" account the agent posts
+        as when it differs per provider, or a noisy third-party bot. GitHub
+        already drops Bot-authored comments that don't mention the agent
+        (ignoreBotAuthors); this is the explicit, provider-agnostic list —
+        GitLab payloads carry no bot flag, so it is the only lever there.
+      '';
+    };
+    ignoreBotAuthors = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Drop GitHub comments/reviews authored by a Bot account unless they
+        mention the agent. The agent posts through a GitHub App, so its own
+        comments arrive back as webhooks — and reviews are forwarded at
+        interrupt priority, preempting the run that wrote them. Disable only if
+        you rely on a bot relaying human content without a mention.
+      '';
+    };
     logLevel = mkOption {
       type = types.str;
       default = "INFO";
@@ -191,6 +215,8 @@ in
                   { name = "SLACK_ENABLED"; value = lib.boolToString wcfg.slackEnabled; }
                   { name = "MENTION_PATTERN"; value = wcfg.mentionPattern; }
                   { name = "LABEL_TRIGGER"; value = wcfg.labelTrigger; }
+                  { name = "IGNORE_USERNAMES"; value = lib.concatStringsSep "," wcfg.ignoreUsernames; }
+                  { name = "IGNORE_BOT_AUTHORS"; value = lib.boolToString wcfg.ignoreBotAuthors; }
                   { name = "LOG_LEVEL"; value = wcfg.logLevel; }
                   { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
                 ] ++ [
