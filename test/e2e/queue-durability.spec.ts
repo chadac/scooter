@@ -44,39 +44,37 @@ test.describe("queue rendering while a run is in flight", () => {
     await expect(page.locator('[data-testid="queued-message-text"]').first()).toContainText("queued while busy");
   });
 
-  test("THREE messages sent mid-run all queue, in FIFO order", async ({ chat, page }) => {
+  test("THREE messages sent mid-run all queue, in FIFO order", async ({ chat }) => {
     await chat.open();
     await chat.startLongRun(RUN_SEC);
-    await chat.sendWhileRunning("first queued");
-    await chat.sendWhileRunning("second queued");
-    await chat.sendWhileRunning("third queued");
-    await chat.openQueueTab();
-    await expect(chat.queuedMessages()).toHaveCount(3, { timeout: 15_000 });
 
-    // The rendered order is (priority DESC, arrival ASC) — see QueuedMessages.tsx. FIFO is
-    // therefore a property of rows that SHARE a priority, not of the list as a whole. A send's
-    // priority is `runIsActive() ? 10 : undefined`, derived from the REPLAYED integrity log; on
-    // the cluster that derivation round-trips the router, so if the run's state lands late
-    // between two of these three rapid sends, one row is ranked 0 while its siblings are ranked
-    // 10 and the sort legitimately floats it above them.
-    //
-    // That is what CI kept showing: "third queued" at index 8 with "second queued" at 54. Note
-    // this survived lengthening the run to RUN_SEC (the previous fix, which assumed the sends
-    // were straddling the END of the run) — the same 54-vs-8 split came back, because the cause
-    // is the priority the rows were assigned, not whether the run was still going.
-    //
-    // So assert the real invariant: within each priority group, arrival order is preserved, and
-    // all three messages are present exactly once. A genuine FIFO regression still fails (any
-    // group with its rows transposed), without asserting a cross-priority total order the UI
-    // never promised.
+    // Open the queue BEFORE sending, and confirm each row before sending the next.
+    // sendWhileRunning returns when the COMPOSER clears — client-side only, with the POST
+    // still in flight — so back-to-back sends race and the server may persist them in any
+    // order. A queued row is server state (QUEUE_UPDATED, no optimistic insert), so waiting
+    // for it is what actually fixes arrival order. Why: PR #518.
+    // Wait for THIS row by text, not for a count: the queue can hold a row this test
+    // never sent (a prior run's `!sleep` that queued instead of starting), and a count
+    // wait is satisfied by that stray row while the real send is still in flight —
+    // which put the sends back in a race and rendered them 1, 0, 2.
+    await chat.openQueueTab();
+    const sends = ["first queued", "second queued", "third queued"];
+    for (const text of sends) {
+      await chat.sendWhileRunning(text);
+      await expect(chat.queuedMessages().filter({ hasText: text })).toHaveCount(1, { timeout: 30_000 });
+    }
+
+    // Rows sort (priority DESC, arrival ASC) — see QueuedMessages.tsx — so FIFO is a property
+    // of rows SHARING a priority, not of the list as a whole: a send's priority is derived from
+    // the replayed log, and on the cluster a late derivation can legitimately rank one row 0
+    // while its siblings are 10. Assert per group instead. Why: PR #472, PR #518.
     const rows = await chat.queuedMessages().evaluateAll((els) =>
       els.map((el) => ({
         priority: el.getAttribute("data-priority") ?? "false",
         text: el.querySelector('[data-testid="queued-message-text"]')?.textContent ?? "",
       })),
     );
-    const sent = ["first queued", "second queued", "third queued"];
-    const arrivalOf = (text: string) => sent.findIndex((s) => text.includes(s));
+    const arrivalOf = (text: string) => sends.findIndex((s) => text.includes(s));
 
     for (const group of new Set(rows.map((r) => r.priority))) {
       const arrivals = rows.filter((r) => r.priority === group).map((r) => arrivalOf(r.text));
