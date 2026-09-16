@@ -107,16 +107,33 @@ def _response_instructions(owner: str, repo: str, number: int, is_pr: bool) -> s
     )
 
 
+def _reaction_hint(owner: str, repo: str, comment_id: int | None, *, line_comment: bool) -> str:
+    """How to acknowledge THIS comment with a 👀 (the GitHub twin of Slack's `message_ts`).
+
+    The collection differs by comment kind and the wrong one 404s: line comments
+    live under `pulls/comments/<id>`, timeline comments under `issues/comments/<id>`.
+    """
+    if not comment_id:
+        return ""
+    path = "pulls" if line_comment else "issues"
+    return (
+        f"\n\n(comment_id: {comment_id} — acknowledge it FIRST, before starting work:\n"
+        f"`agent-broker github/repos/{owner}/{repo}/{path}/comments/{comment_id}/reactions "
+        f"-X POST -H 'Content-Type: application/json' -d '{{\"content\":\"eyes\"}}'`\n"
+        f"A reaction only says \"seen\" — it never substitutes for the reply or the work.)"
+    )
+
+
 def _format_forwarded_message(
     comment_body: str, owner: str, repo: str, number: int,
-    is_pr: bool, has_mention: bool,
+    is_pr: bool, has_mention: bool, comment_id: int | None = None,
 ) -> str:
     kind = "pull request" if is_pr else "issue"
 
     if has_mention:
         preamble = (
             f"You were mentioned in a comment on GitHub {kind} #{number} in {owner}/{repo}. "
-            f"First, post an acknowledgment so the requester knows you've seen it. "
+            f"First, acknowledge it so the requester knows you've seen it. "
             f"Then work on the task. When finished, post a follow-up comment with your results."
         )
     else:
@@ -129,6 +146,7 @@ def _format_forwarded_message(
         "To respond, use the `github_comment` tool (this PR/issue is already known — "
         "you just provide the comment body). It reports the real result."
     )
+    reply_instruction += _reaction_hint(owner, repo, comment_id, line_comment=False)
 
     return f"{preamble}\n\n---\n\n{comment_body}\n\n---\n\n{reply_instruction}"
 
@@ -205,16 +223,18 @@ async def _handle_comment(payload: dict):
     message_text = comment_body.replace(settings.mention_pattern, "").strip()
     comment_text = f"@{user} commented:\n\n{message_text}"
 
+    comment_id = comment.get("id")
+
     if is_pending(existing):
         forward_msg = _format_forwarded_message(
-            comment_text, owner, repo, issue_number, is_pr, has_mention,
+            comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
         await db.store_pending_message("github", res_type, res_id, forward_msg)
         return
 
     if existing:
         forward_msg = _format_forwarded_message(
-            comment_text, owner, repo, issue_number, is_pr, has_mention,
+            comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
         ok = await send_message(existing, forward_msg, priority=has_mention, source="github")
         if ok:
@@ -307,6 +327,7 @@ async def _handle_review_comment(payload: dict):
         f"about the PR as a whole.\n\n"
         f"If the comment asks for a change, make it and push — a reply alone does not "
         f"address it."
+        + _reaction_hint(owner, repo, comment_id, line_comment=True)
     )
     await _forward_or_ignore(_resource_id(owner, repo, number), message)
 
