@@ -166,8 +166,9 @@
     # its neighbours. This map is the ONLY set of sizes the UI dropdown offers and the
     # only set the agent's set_sandbox_resources will accept — a deployment therefore
     # can't be asked for a shape its nodes can't schedule. `hint` is shown to the agent
-    # so it picks by workload rather than by guessing at numbers. Shown explicitly here
-    # (it has a sensible built-in default) so the render check exercises the wiring.
+    # so it picks by workload rather than by guessing at numbers. The built-in table is
+    # just tiny + medium; this overrides it to show a deployment opting into bigger and
+    # GPU sizes, which also makes the render check exercise the wiring.
     sandboxSizes = {
       small = { cpu = "1"; memory = "2Gi"; hint = "A single service, small repos."; };
       # Exactly one preset carries `default = true` — the size a new sandbox comes up

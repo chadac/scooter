@@ -193,11 +193,13 @@ in
           };
         };
       });
+      # Deliberately just two: a cheap size for chat/light edits and the medium that a
+      # sandbox comes up with. Every additional preset is a claim about what the
+      # cluster's nodes can schedule, which the platform cannot make for a deployment —
+      # so bigger sizes (and any GPU size) are opt-in. See the example config.
       default = {
-        tiny = { cpu = "250m"; memory = "256Mi"; hint = "Chat and light edits."; };
-        small = { cpu = "1"; memory = "2Gi"; hint = "A single service, small repos."; };
+        tiny = { cpu = "250m"; memory = "512Mi"; hint = "Chat and light edits."; };
         medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; default = true; };
-        large = { cpu = "4"; memory = "16Gi"; hint = "Parallel builds, large test runs."; };
       };
       example = {
         tiny = { cpu = "250m"; memory = "256Mi"; };
@@ -214,11 +216,16 @@ in
         resources. The agent can request a preset by name (via set_sandbox_resources),
         and the UI shows a dropdown. Requests == limits for all presets.
 
-        The default table ships tiny / small / medium / large; a deployment can
-        override the map to retune the sizes, add presets, or remove ones it doesn't
-        want offered. Exactly one preset sets `default = true` — the size a new
-        sandbox comes up with. Set the map to { } to offer no presets at all (the
-        UI then hides the picker and the platform default applies).
+        The built-in table ships only `tiny` and `medium`, because every preset is a
+        promise that the cluster can schedule that shape — which the platform can't
+        make on a deployment's behalf. Bigger sizes and GPU sizes are opt-in: override
+        the map to retune, add or remove presets (examples/kubenix-config.nix shows a
+        fuller menu). NOTE that with the built-in table there is no size ABOVE the
+        default, so a deployment whose agents do heavy builds should add one.
+
+        Exactly one preset sets `default = true` — the size a new sandbox comes up
+        with. Set the map to { } to offer no presets at all (the UI then hides the
+        picker and the platform default applies).
       '';
     };
     defaultSandboxSizeName = mkOption {
