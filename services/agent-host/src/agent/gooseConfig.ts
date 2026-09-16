@@ -7,7 +7,7 @@
  * MCP server — so for every real session this file is never read. The developer
  * extension is enabled by the `--with-builtin developer` flag in index.ts's
  * agent launch config; that flag, not this file, is what routes shell/file tools
- * through AcpTools to the sandbox. See PR #TODO.
+ * through AcpTools to the sandbox. See PR #524.
  *
  * Kept because it is correct for a goose that does consult config.yaml (e.g. a
  * session started with no mcpServers) and because ensureGooseConfig's fatal
