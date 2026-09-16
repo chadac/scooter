@@ -111,7 +111,7 @@ def _reaction_hint(owner: str, repo: str, comment_id: int | None, *, line_commen
     """How to acknowledge THIS comment with a 👀 (the GitHub twin of Slack's `message_ts`).
 
     The collection differs by comment kind and the wrong one 404s: line comments
-    live under `pulls/comments/<id>`, timeline comments under `issues/comments/<id>`.
+    live under `pulls/comments/<id>`, timeline under `issues/comments/<id>`. PR #528.
     """
     if not comment_id:
         return ""
