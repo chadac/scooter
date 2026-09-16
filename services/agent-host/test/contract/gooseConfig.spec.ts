@@ -1,14 +1,16 @@
 /**
  * Tier 1 contract test — ensureGooseConfig must FAIL LOUDLY on a real deployment.
  *
- * Audit finding #1 (HIGH): writeGooseConfig is the SOLE mechanism enabling goose's
- * developer extension, which is what redirects shell/file tool calls to the
- * sandbox. If the write fails (or $HOME is unset) and we proceed, goose runs the
- * agent's tools LOCALLY in the agent-host pod — a silent isolation breach that
- * still passes /healthz. So on a real deployment the failure must be FATAL, not a
- * console.warn. On a fake/dev sandbox it stays best-effort (no real goose).
+ * This file was written believing writeGooseConfig was the SOLE mechanism enabling
+ * goose's developer extension. It is not, and never was for ACP sessions — goose
+ * reads config.yaml only when no mcpServers are passed, and we always pass
+ * scooter-env. The developer extension is enabled by `--with-builtin developer`
+ * (see gooseAcpBuiltins.spec.ts, which is the real guard for that).
  *
- * RED until ensureGooseConfig throws instead of swallowing.
+ * What these cases still pin is the $HOME contract: goose keeps its session db and
+ * state under $HOME, so an unset/unwritable $HOME must be FATAL on a real
+ * deployment rather than a console.warn that still passes /healthz. On a fake/dev
+ * sandbox it stays best-effort (no real goose).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -42,7 +44,7 @@ describe("ensureGooseConfig", () => {
     expect(() => ensureGooseConfig(home, { fatal: true })).toThrow();
   });
 
-  it("THROWS on a real deployment when home is missing (would silently mis-isolate)", () => {
+  it("THROWS on a real deployment when home is missing (goose has nowhere for its session db)", () => {
     expect(() => ensureGooseConfig(undefined, { fatal: true })).toThrow(/HOME/i);
   });
 

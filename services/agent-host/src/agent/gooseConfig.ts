@@ -1,32 +1,31 @@
 /**
- * goose config — ensure the `developer` extension is ENABLED.
+ * goose config — a best-effort config.yaml enabling the `developer` extension.
  *
- * Why this matters: goose's ACP server only redirects file/shell tools to the
- * ACP client (our sandbox-backed fs/terminal handlers) when the developer
- * extension is enabled — see goose's apply_acp_extension_overrides, which
- * REPLACES the developer extension's client with AcpTools iff
- * is_extension_enabled("developer"). With no config, that flag defaults to
- * false, so goose runs its built-in shell/edit tools LOCALLY (in the agent-host
- * pod) instead of in the sandbox.
+ * NOT the mechanism that enables developer for ACP sessions. Verified on goose
+ * 1.47.0: `initial_session_extensions` reads config.yaml only in its
+ * `mcp_servers.is_empty()` branch, and agent-host always passes the scooter-env
+ * MCP server — so for every real session this file is never read. The developer
+ * extension is enabled by the `--with-builtin developer` flag in index.ts's
+ * agent launch config; that flag, not this file, is what routes shell/file tools
+ * through AcpTools to the sandbox. See PR #TODO.
  *
- * So we write goose's config.yaml (at $HOME/.config/goose/config.yaml) with the
- * developer extension enabled. Combined with the client capabilities we
- * advertise on initialize (fs + terminal), goose then routes every shell/file
- * tool call to our ACP handlers -> the sandbox.
+ * Kept because it is correct for a goose that does consult config.yaml (e.g. a
+ * session started with no mcpServers) and because ensureGooseConfig's fatal
+ * unwritable-$HOME check is a cheap startup canary for a broken HOME mount.
  *
- * `available_tools` (allowlist) — INEFFECTIVE on current goose, kept as intent:
- * goose's AcpTools only REDIRECTS read/write/edit/shell to the ACP client; `tree`
- * and `read_image` fall through to goose's LOCAL developer impl (std::fs in the
- * agent-host pod, not the sandbox) — so a `tree`/list would show the WRONG
- * filesystem. We'd like to restrict the developer extension to only the
- * sandbox-routed tools via available_tools — BUT goose (verified on 1.28.0)
- * rewrites config.yaml on every launch, expanding all bundled extensions and
- * resetting every `available_tools` back to `[]` (= all tools). So the allowlist
- * we write here does NOT survive; `tree`/`read_image` remain callable and run
- * locally. We still write it (harmless; correct for a goose that honors it), but
- * the ACTUAL guard against `tree` is an instruction in the agent's identity
- * prompt (see identityPrompt in skills.ts) telling it to use `shell` (ls/find)
- * for listing instead of the host-reading `tree`/`read_image` tools.
+ * `available_tools` (allowlist) — INEFFECTIVE, kept as intent. goose's AcpTools
+ * only REDIRECTS read/write/edit/shell to the ACP client; `tree` and `read_image`
+ * fall through to the LOCAL developer impl (std::fs in the agent-host pod, not the
+ * sandbox), so a `tree`/list would show the WRONG filesystem. Restricting the
+ * extension to the sandbox-routed tools would fix that — but the allowlist never
+ * reaches goose: on 1.28.0 goose rewrote config.yaml on launch and reset every
+ * `available_tools` to `[]`, and on 1.47.0 the `--with-builtin` path builds the
+ * extension via `builtin_to_extension_config`, which hardcodes
+ * `available_tools: vec![]`. Either way `tree`/`read_image` stay callable and run
+ * locally. The ACTUAL guard is an instruction in the agent's identity prompt (see
+ * identityPrompt in skills.ts) telling it to use `shell` (ls/find) for listing.
+ * An enforceable allowlist needs `_meta.enabledExtensions` on session/new — see
+ * the follow-up issue.
  * (Empty available_tools = all tools; a non-empty list is an allowlist.)
  */
 
@@ -65,19 +64,17 @@ export function writeGooseConfig(home: string): void {
 }
 
 /**
- * Ensure goose's developer-enabled config exists — and FAIL LOUDLY when it can't
- * on a real deployment.
+ * Write the config and FAIL LOUDLY when it can't be written on a real deployment.
  *
- * Audit finding #1 (HIGH): without this config goose's developer extension
- * defaults to enabled=false, so it runs the agent's shell/file tools LOCALLY in
- * the agent-host pod instead of redirecting them to the per-conversation sandbox
- * — a silent isolation breach (the pod still passes /healthz). So:
+ * This is NOT what enables developer for ACP sessions (see the header) — that is
+ * the `--with-builtin developer` flag. What survives is the $HOME check: goose
+ * keeps its session db and state under $HOME, so an unset or unwritable $HOME is
+ * a broken deployment we want to reject at startup rather than discover per-turn.
  *   - fatal=true  (real goose):  a missing $HOME or a write failure THROWS, so
- *                                main() rejects and the process exits rather than
- *                                serving mis-isolated.
- *   - fatal=false (fake/dev):    best-effort no-op; there is no real goose to
- *                                mis-route, so a missing home / write failure is
- *                                swallowed (with a warning) and startup proceeds.
+ *                                main() rejects and the process exits.
+ *   - fatal=false (fake/dev):    best-effort no-op; there is no real goose, so a
+ *                                missing home / write failure is swallowed (with
+ *                                a warning) and startup proceeds.
  */
 export function ensureGooseConfig(
   home: string | undefined,
@@ -86,22 +83,25 @@ export function ensureGooseConfig(
   if (!home) {
     if (opts.fatal) {
       throw new Error(
-        "goose config: $HOME is unset on a real deployment — cannot enable the " +
-          "developer extension, so goose would run tools in the agent-host pod " +
-          "instead of the sandbox (isolation breach). Refusing to start.",
+        "goose config: $HOME is unset on a real deployment — goose keeps its session " +
+          "db and state under $HOME, so it cannot run correctly. Refusing to start.",
       );
     }
     return; // fake/dev: nothing to configure
   }
   try {
     writeGooseConfig(home);
-    log.info("wrote goose config (developer enabled)", { path: join(home, ".config", "goose") });
+    // NOT "developer enabled" — ACP sessions ignore this file (see the header).
+    // The old wording claimed an effect it never had, on every single start.
+    log.info("wrote goose config.yaml (ignored by ACP sessions; developer comes from --with-builtin)", {
+      path: join(home, ".config", "goose"),
+    });
   } catch (e) {
     if (opts.fatal) {
       throw new Error(
-        `goose config: failed to write ${home}/.config/goose — goose would run ` +
-          `tools in the agent-host pod instead of the sandbox (isolation breach). ` +
-          `Refusing to start. Cause: ${(e as Error)?.message ?? e}`,
+        `goose config: failed to write ${home}/.config/goose — $HOME is unusable, so ` +
+          `goose cannot keep its session db or state. Refusing to start. ` +
+          `Cause: ${(e as Error)?.message ?? e}`,
         { cause: e },
       );
     }
