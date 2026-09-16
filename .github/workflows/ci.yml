@@ -274,8 +274,27 @@ jobs:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
+      # virtiofsd holds one HOST fd per guest-visible inode, so a test that reads a
+      # big tree off the shared store (a whole-nixpkgs eval) exhausts the runner's
+      # default 65536 and the guest gets ENFILE. Why: PR #516.
+      - name: raise the fd limit virtiofsd inherits
+        run: |
+          # Only matters if this runner's nix uses a daemon; the build step raises
+          # its own shell's limit for the single-user case.
+          if systemctl list-unit-files nix-daemon.service >/dev/null 2>&1; then
+            sudo mkdir -p /etc/systemd/system/nix-daemon.service.d
+            printf '[Service]\nLimitNOFILE=1048576\n' \
+              | sudo tee /etc/systemd/system/nix-daemon.service.d/nofile.conf
+            sudo systemctl daemon-reload
+            sudo systemctl restart nix-daemon.service || true
+          fi
+
       - name: build ${{ matrix.test }}
-        run: nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
+        run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          ulimit -n 1048576
+          ulimit -n
+          nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
 
   # Decide whether the cluster jobs need to run: only when the sandbox
   # image, its NixOS modules, or the image-boot cluster specs change. Most PRs

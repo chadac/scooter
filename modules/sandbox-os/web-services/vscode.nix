@@ -22,7 +22,7 @@ let
 in
 {
   # The code-server shim on PATH, so the agent can run it by hand.
-  environment.systemPackages = [ pkgs.code-server ];
+  environment.systemPackages = lib.mkIf cfg.enable [ pkgs.code-server ];
 
   webServices.vscode = {
     port = lib.mkDefault 8443;
