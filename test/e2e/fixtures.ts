@@ -454,6 +454,33 @@ test.afterEach(async ({ page, consoleErrors }) => {
 export { expect };
 
 /**
+ * Fill a text input and PROVE the text landed in THAT input; re-fill if it did not.
+ *
+ * `fill()` focuses the element, then inserts the text into whatever holds focus AT INSERT
+ * TIME — so the `autoFocus` composer, which re-grabs focus as a run settles, can swallow
+ * the keystrokes. The target inputs are CONTROLLED, so losing that race leaves them empty
+ * and later assertions silently measure an unfiltered list. Why: PR #525.
+ */
+export async function fillStable(input: Locator, value: string, timeout = 15_000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  for (let attempt = 1; ; attempt++) {
+    await input.fill(value);
+    try {
+      await expect(input).toHaveValue(value, { timeout: 2_000 });
+      return;
+    } catch (err) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `fillStable: "${value}" never stuck in ${await input.evaluate((el) => el.outerHTML).catch(() => "<input>")} ` +
+            `after ${attempt} attempts — focus is being stolen (check for an autoFocus composer).\n${String(err)}`,
+        );
+      }
+      await input.page().waitForTimeout(250);
+    }
+  }
+}
+
+/**
  * Seed a conversation owned by `user` (null = unowned) via the API, the way the
  * ingress would (x-auth-user), and return the SERVER-minted id.
  *
