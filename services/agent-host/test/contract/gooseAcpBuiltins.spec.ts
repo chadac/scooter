@@ -1,23 +1,7 @@
 /**
- * `goose acp` must be launched with `--with-builtin developer`.
- *
- * Without the flag the agent has NO shell/read/write/edit tools at all — only the
- * scooter-env MCP tools — because goose's ACP entrypoint takes its builtin set
- * ONLY from the flag:
- *
- *   1. `Command::Acp { builtins }` -> `acp::server::run` builds
- *      `AcpBuiltinSelection { explicit: builtins, ..Default::default() }`, so
- *      `defaults` is EMPTY. (`goose serve` falls back to `defaults: ["developer"]`;
- *      `goose acp` deliberately does not — an upstream asymmetry.)
- *   2. `initial_session_extensions` consults config.yaml only in its
- *      `mcp_servers.is_empty()` branch. agent-host ALWAYS passes scooter-env, so
- *      config.yaml is never read and writeGooseConfig cannot enable developer.
- *   3. `apply_acp_extension_overrides` early-returns unless
- *      `is_extension_enabled("developer")`, so AcpTools never replaces the
- *      developer client and the sandbox-routed tools never appear.
- *
- * Verified against goose v1.47.0. This flag is therefore the SOLE mechanism
- * giving the agent a shell; a bare `["acp"]` is a silent, total tool loss.
+ * `goose acp` must be launched with `--with-builtin developer` — without it the
+ * agent has NO shell/read/write/edit tools at all (config.yaml cannot substitute,
+ * since we always pass mcpServers). Verified on goose v1.47.0; details in PR #524.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 

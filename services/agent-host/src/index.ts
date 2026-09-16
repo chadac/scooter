@@ -253,9 +253,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     },
     agent: useFakeAgent
       ? { command: process.execPath, args: [fakeAgentPath], env: {} }
-      : // `--with-builtin developer` is the ONLY thing that gives the agent a
-        // shell: `goose acp` takes its builtin set solely from this flag and
-        // never reads config.yaml once we pass mcpServers. Why: PR #524.
+      : // Without --with-builtin the agent gets NO shell/file tools at all. PR #524.
         {
           command: process.env.GOOSE_BIN ?? "goose",
           args: ["acp", "--with-builtin", "developer"],

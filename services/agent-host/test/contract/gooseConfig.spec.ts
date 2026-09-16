@@ -1,16 +1,7 @@
 /**
- * Tier 1 contract test — ensureGooseConfig must FAIL LOUDLY on a real deployment.
- *
- * This file was written believing writeGooseConfig was the SOLE mechanism enabling
- * goose's developer extension. It is not, and never was for ACP sessions — goose
- * reads config.yaml only when no mcpServers are passed, and we always pass
- * scooter-env. The developer extension is enabled by `--with-builtin developer`
- * (see gooseAcpBuiltins.spec.ts, which is the real guard for that).
- *
- * What these cases still pin is the $HOME contract: goose keeps its session db and
- * state under $HOME, so an unset/unwritable $HOME must be FATAL on a real
- * deployment rather than a console.warn that still passes /healthz. On a fake/dev
- * sandbox it stays best-effort (no real goose).
+ * ensureGooseConfig must FAIL LOUDLY on a real deployment: goose keeps its session
+ * db under $HOME, so an unset/unwritable $HOME is a broken deployment. This does
+ * NOT guard the developer extension — see gooseAcpBuiltins.spec.ts and PR #524.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
