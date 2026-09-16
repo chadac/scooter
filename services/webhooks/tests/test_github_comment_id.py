@@ -6,10 +6,9 @@ silence until the run finishes. GitHub had no equivalent: an issue_comment
 forward named the PR but never the comment, so there was nothing for the agent
 to react to and no acknowledgment was possible at all.
 
-These tests pin the id (and the endpoint hint that goes with it) into the
-forwarded text. Line comments need `pulls/comments/<id>/reactions`, timeline
-comments need `issues/comments/<id>/reactions`; naming the wrong collection 404s,
-so the message tells the agent which one applies.
+The id is ALL the handler adds. Which endpoint that id belongs to, when to react
+and with what live in the scooter-github skill: this forwarder stays a data pipe
+with no behavior of its own (PR #528), and the last two tests pin that boundary.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -61,37 +60,44 @@ def forwarded():
         yield send
 
 
-class TestIssueComment:
+class TestTheIdIsCarried:
     @pytest.mark.asyncio
-    async def test_forward_names_the_comment_id(self, forwarded):
+    async def test_a_pr_comment_names_its_id(self, forwarded):
         await gh._handle_comment(issue_comment(cid=991))
         assert "comment_id: 991" in forwarded.call_args[0][1]
 
     @pytest.mark.asyncio
-    async def test_forward_asks_for_an_acknowledging_reaction(self, forwarded):
-        await gh._handle_comment(issue_comment())
-        msg = forwarded.call_args[0][1]
-        assert "react" in msg.lower()
-        # the timeline-comment collection, not pulls/
-        assert "issues/comments/991/reactions" in msg
-
-    @pytest.mark.asyncio
-    async def test_an_issue_not_a_pr_gets_the_same_treatment(self, forwarded):
+    async def test_an_issue_comment_names_its_id(self, forwarded):
         await gh._handle_comment(issue_comment(cid=77, is_pr=False))
         assert "comment_id: 77" in forwarded.call_args[0][1]
 
-
-class TestReviewComment:
     @pytest.mark.asyncio
-    async def test_line_comment_points_at_the_PULLS_reaction_endpoint(self, forwarded):
+    async def test_a_line_comment_names_its_id(self, forwarded):
         await gh._handle_review_comment(review_comment(cid=555))
-        msg = forwarded.call_args[0][1]
-        assert "pulls/comments/555/reactions" in msg
-        assert "issues/comments/555/reactions" not in msg
+        assert "comment_id: 555" in forwarded.call_args[0][1]
 
     @pytest.mark.asyncio
-    async def test_line_comment_still_says_to_reply_in_thread(self, forwarded):
-        """The reaction hint must not displace the in_reply_to instruction —
-        acknowledging is not answering."""
+    async def test_a_line_comment_still_says_to_reply_in_thread(self, forwarded):
+        """The id must not displace the in_reply_to instruction — acknowledging a
+        comment is not answering it."""
         await gh._handle_review_comment(review_comment(cid=555))
         assert "in_reply_to=555" in forwarded.call_args[0][1]
+
+
+class TestTheHandlerStaysADataPipe:
+    """No endpoints, no commands, no react-first policy in the forwarder — that
+    knowledge belongs to the skill, which can be corrected without a redeploy."""
+
+    @pytest.mark.asyncio
+    async def test_no_reaction_endpoint_is_baked_into_a_pr_comment(self, forwarded):
+        await gh._handle_comment(issue_comment())
+        msg = forwarded.call_args[0][1]
+        assert "reactions" not in msg
+        assert "agent-broker" not in msg
+
+    @pytest.mark.asyncio
+    async def test_no_reaction_endpoint_is_baked_into_a_line_comment(self, forwarded):
+        await gh._handle_review_comment(review_comment())
+        msg = forwarded.call_args[0][1]
+        assert "reactions" not in msg
+        assert "agent-broker" not in msg

@@ -107,21 +107,10 @@ def _response_instructions(owner: str, repo: str, number: int, is_pr: bool) -> s
     )
 
 
-def _reaction_hint(owner: str, repo: str, comment_id: int | None, *, line_comment: bool) -> str:
-    """How to acknowledge THIS comment with a 👀 (the GitHub twin of Slack's `message_ts`).
-
-    The collection differs by comment kind and the wrong one 404s: line comments
-    live under `pulls/comments/<id>`, timeline under `issues/comments/<id>`. PR #528.
-    """
-    if not comment_id:
-        return ""
-    path = "pulls" if line_comment else "issues"
-    return (
-        f"\n\n(comment_id: {comment_id} — acknowledge it FIRST, before starting work:\n"
-        f"`agent-broker github/repos/{owner}/{repo}/{path}/comments/{comment_id}/reactions "
-        f"-X POST -H 'Content-Type: application/json' -d '{{\"content\":\"eyes\"}}'`\n"
-        f"A reaction only says \"seen\" — it never substitutes for the reply or the work.)"
-    )
+def _comment_ref(comment_id: int | None) -> str:
+    """The id of THIS comment, so a reply/reaction can target it. Data only — what
+    to do with it is the scooter-github skill's business, not the forwarder's."""
+    return f"\n\n(comment_id: {comment_id})" if comment_id else ""
 
 
 def _format_forwarded_message(
@@ -146,7 +135,7 @@ def _format_forwarded_message(
         "To respond, use the `github_comment` tool (this PR/issue is already known — "
         "you just provide the comment body). It reports the real result."
     )
-    reply_instruction += _reaction_hint(owner, repo, comment_id, line_comment=False)
+    reply_instruction += _comment_ref(comment_id)
 
     return f"{preamble}\n\n---\n\n{comment_body}\n\n---\n\n{reply_instruction}"
 
@@ -327,7 +316,7 @@ async def _handle_review_comment(payload: dict):
         f"about the PR as a whole.\n\n"
         f"If the comment asks for a change, make it and push — a reply alone does not "
         f"address it."
-        + _reaction_hint(owner, repo, comment_id, line_comment=True)
+        + _comment_ref(comment_id)
     )
     await _forward_or_ignore(_resource_id(owner, repo, number), message)
 

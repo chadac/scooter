@@ -77,21 +77,26 @@ thread.
 reading the repo, before planning, before any of the work. Then do the task, then
 reply with `github_comment`.
 
-The forwarded message hands you the id to react to:
+The forwarded message hands you the id, and nothing else — picking the endpoint
+is yours:
 
 ```
-@chadac commented on PR #42 in chadac/scooter:
+@chadac commented on a specific LINE of PR #42 in chadac/scooter:
 ...
-(comment_id: 2371885432 — react to THIS comment to acknowledge it)
+(comment_id: 2371885432)
 ```
 
 Two endpoints, and **picking the wrong one 404s** — a PR timeline comment and a
-comment anchored to a line of the diff live in different collections:
+comment anchored to a line of the diff live in different collections. The
+forwarded message says which kind you got; read the first line:
 
-| What the comment is | Endpoint |
-|---|---|
-| A top-level comment on a PR or issue (the timeline) | `repos/O/R/issues/comments/<id>/reactions` |
-| A **review** comment (anchored to a line of the diff) | `repos/O/R/pulls/comments/<id>/reactions` |
+| What the comment is | How the forward names it | Endpoint |
+|---|---|---|
+| A top-level comment on a PR or issue (the timeline) | "commented on GitHub pull request #42" | `repos/O/R/issues/comments/<id>/reactions` |
+| A **review** comment (anchored to a line of the diff) | "commented on a specific **LINE** of PR #42" | `repos/O/R/pulls/comments/<id>/reactions` |
+
+A 404 here almost always means you used the other collection's endpoint — it
+does **not** mean reactions are disabled. Try the other one before giving up.
 
 ```bash
 # acknowledge a PR/issue comment
