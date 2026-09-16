@@ -27,7 +27,7 @@ _MEMORY_RE = re.compile(r"^\d+(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$")  # "1Gi", "512
 # can't burst into its neighbours' CPU/memory and starve them (the "a single bad pod
 # blows up everything" failure). No gpu by default. Deployments override this via
 # SANDBOX_DEFAULT_RESOURCES_JSON (tier 2 in resolve_resources), which is rendered from
-# cfg.sandboxSizes.${cfg.defaultSandboxSize} in kubenix.
+# the cfg.sandboxSizes preset marked `default = true` in kubenix.
 PLATFORM_DEFAULT: dict = {
     "requests": {"cpu": "2", "memory": "4Gi"},
     "limits": {"cpu": "2", "memory": "4Gi"},

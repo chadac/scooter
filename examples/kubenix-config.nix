@@ -170,13 +170,14 @@
     # (it has a sensible built-in default) so the render check exercises the wiring.
     sandboxSizes = {
       small = { cpu = "1"; memory = "2Gi"; hint = "A single service, small repos."; };
-      medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; };
+      # Exactly one preset carries `default = true` — the size a new sandbox comes up
+      # with. Marking none, or more than one, fails the render with a named error.
+      medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; default = true; };
       large = { cpu = "4"; memory = "16Gi"; hint = "Parallel builds, large test runs."; };
       # A GPU preset renders nvidia.com/gpu on BOTH sides (k8s requires request == limit
       # for extended resources). Drop it on a cluster with no GPU nodes.
       gpu-small = { cpu = "4"; memory = "16Gi"; gpu = 1; hint = "Local model inference."; };
     };
-    defaultSandboxSize = "medium";
 
     # Fleet sizing + lifecycle. `replicas` is the agent-host floor (the conversation
     # controller autoscales above it to fit live demand); `statelessReplicas` sizes the

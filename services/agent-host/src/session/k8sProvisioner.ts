@@ -140,7 +140,8 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // Sandbox container resources (see the option doc): default is the "medium" preset
   // (2 CPU / 4Gi, requests == limits => Guaranteed QoS), so one runaway sandbox is
   // hard-capped and can't starve its neighbours. Deployment-overridable via presets
-  // (cfg.defaultSandboxSize); the agent can also resize its own sandbox via the tool.
+  // (the sandboxSizes preset marked `default = true`); the agent can also resize its
+  // own sandbox via the tool.
   const sandboxResources = opts.sandboxResources ?? {
     requests: { cpu: "2", memory: "4Gi" },
     limits: { cpu: "2", memory: "4Gi" },

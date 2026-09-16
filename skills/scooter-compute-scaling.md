@@ -32,10 +32,12 @@ triggers:
 
 # Scale your sandbox's compute BEFORE heavy work (anticipate, don't react)
 
-Your sandbox runs with a fixed CPU + memory size. **By default you start at the
-`medium` preset: `cpu: 2`, `memory: 4Gi`, with requests == limits (Guaranteed QoS).**
-That means the size is a HARD cap: you are throttled at 2 CPU and **OOM-killed**
-past 4Gi. It also means you can't "borrow" spare capacity from the node — you get
+Your sandbox runs with a fixed CPU + memory size, set by your deployment —
+`show_sandbox_resources` reports the actual numbers, and the platform's own fallback
+is `cpu: 2`, `memory: 4Gi`. **Whatever the value, requests == limits (Guaranteed
+QoS).** That means the size is a HARD cap: you are throttled at your CPU limit and
+**OOM-killed** past your memory limit. It also means you can't "borrow" spare
+capacity from the node — you get
 exactly what you reserved, and so does everyone else (that isolation is deliberate:
 it stops one runaway sandbox from starving its neighbours).
 
@@ -70,9 +72,9 @@ cap was too low: raise `memory`, restart, retry — don't just re-run at the sam
 ## When to scale DOWN
 
 When a heavy phase is done and the conversation goes back to light editing/chat,
-size back toward the default (`medium`: `cpu: 2`, `memory: 4Gi`) so you're not
-holding a big reservation idle. Bigger sandboxes are more expensive and reduce how
-many can be packed on a node.
+size back down to the default your deployment reports so you're not holding a big
+reservation idle. Bigger sandboxes are more expensive and reduce how many can be
+packed on a node.
 
 ## How
 
@@ -82,32 +84,29 @@ many can be packed on a node.
 ### Named presets (recommended)
 
 **The preset table is per-deployment** — an operator defines it in kubenix
-(`agentSandbox.sandboxSizes`), so the names below are the shipped defaults, not a
-guarantee. **Don't guess a name.** `show_sandbox_resources` reports the presets this
-deployment actually offers; if a name is rejected, the error lists the valid ones.
+(`agentSandbox.sandboxSizes`), and a deployment may offer none at all. So there are
+no preset names to memorise, and **this skill deliberately doesn't list any**: any
+table here would be a guess about your cluster.
 
-The default table (requests == limits for Guaranteed QoS):
-
-- **`tiny`**: 250m CPU, 256Mi memory — minimal for light editing
-- **`small`**: 1 CPU, 2Gi memory — small builds, scripting
-- **`medium`**: 2 CPU, 4Gi memory — **the default**
-- **`large`**: 4 CPU, 16Gi memory — parallel builds, heavy compute
-
-A deployment can also offer **GPU presets** (e.g. `gpu-small` = 4 CPU, 16Gi, 1 GPU).
-A preset is the ONLY way to get a GPU by name — there is no "add a GPU to my current
-size" operation, because a GPU count must match on requests and limits.
-
-Pass the preset name to `set_sandbox_resources`:
+**Ask, don't guess.** `show_sandbox_resources` reports the presets this deployment
+actually offers, each with its cpu/memory/gpu, the deployment's own guidance for when
+to pick it, and which one is the default. Read that, then pass the name:
 
 ```
-set_sandbox_resources(size="large")
+show_sandbox_resources()             # → the presets available HERE
+set_sandbox_resources(size="<name>") # one of those names
 ```
 
-Then let the sandbox restart pick it up, and start the build. When you're done:
+If a name isn't offered, the error lists the valid ones — that error is the
+authority, not any documentation. If `show_sandbox_resources` reports no presets,
+this deployment hasn't configured any: use raw resources (below).
 
-```
-set_sandbox_resources(size="medium")
-```
+A deployment may also offer **GPU presets**. A preset is the ONLY way to get a GPU
+by name — there is no "add a GPU to my current size" operation, because a GPU count
+must match on requests and limits.
+
+When the heavy phase is done, set the size back to the default that
+`show_sandbox_resources` names, so you're not holding a big reservation idle.
 
 ### Raw resources (advanced)
 

@@ -585,20 +585,14 @@ in
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
                   # The deployment default size (tier 2 in the broker's resolve_resources:
                   # conversation override → this → PLATFORM_DEFAULT). Rendered from the
-                  # defaultSandboxSize preset name → its {cpu, memory}. Requests == limits
+                  # preset marked `default = true` → its {cpu, memory}. Requests == limits
                   # (Guaranteed QoS) for all presets.
+                  # Empty when the deployment offers no presets — the broker then falls
+                  # through to PLATFORM_DEFAULT rather than being handed a size.
                   { name = "SANDBOX_DEFAULT_RESOURCES_JSON";
-                    value = let
-                      # kubenix has no NixOS `assertions` option, so the guard rides the
-                      # VALUE that dereferences the preset — otherwise a bad
-                      # defaultSandboxSize surfaces as an opaque missing-attribute error.
-                      preset =
-                        assert lib.assertMsg (cfg.sandboxSizes ? ${cfg.defaultSandboxSize}) ''
-                          agentSandbox.defaultSandboxSize is "${cfg.defaultSandboxSize}", which is not a preset in
-                          agentSandbox.sandboxSizes (have: ${lib.concatStringsSep ", " (lib.attrNames cfg.sandboxSizes)}).
-                          Add that preset, or point defaultSandboxSize at an existing one.
-                        '';
-                        cfg.sandboxSizes.${cfg.defaultSandboxSize};
+                    value = if cfg.defaultSandboxSizeName == null then "" else
+                    let
+                      preset = cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
                       # gpu is optional; omit the key entirely when null so the broker
                       # sees no gpu rather than an explicit zero.
                       side = { cpu = preset.cpu; memory = preset.memory; }
@@ -617,7 +611,11 @@ in
                       // lib.optionalAttrs (preset.hint != "") { hint = preset.hint; }
                     ) cfg.sandboxSizes);
                   }
-                  { name = "SANDBOX_DEFAULT_SIZE_NAME"; value = cfg.defaultSandboxSize; }
+                  # "" (not null) when no presets are configured — an env value must be a
+                  # string, and the broker reads empty as "no deployment default".
+                  { name = "SANDBOX_DEFAULT_SIZE_NAME";
+                    value = if cfg.defaultSandboxSizeName == null then "" else cfg.defaultSandboxSizeName;
+                  }
                 ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
                   # Extra projected-token audiences a deployment's tools need
                   # (was SCOOTER_TOKEN_AUDIENCES on the agent-host).

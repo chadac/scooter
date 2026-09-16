@@ -181,17 +181,27 @@ in
               guessing at numbers. Empty = no hint.
             '';
           };
+          default = mkOption {
+            type = types.bool;
+            default = false;
+            description = ''
+              Mark this preset as the size a new sandbox comes up with. EXACTLY ONE
+              preset must set it (see agentSandbox.defaultSandboxSizeName), so the
+              default lives beside the numbers it selects rather than in a separate
+              option naming a key that has to be kept in sync.
+            '';
+          };
         };
       });
       default = {
         tiny = { cpu = "250m"; memory = "256Mi"; hint = "Chat and light edits."; };
         small = { cpu = "1"; memory = "2Gi"; hint = "A single service, small repos."; };
-        medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; };
+        medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; default = true; };
         large = { cpu = "4"; memory = "16Gi"; hint = "Parallel builds, large test runs."; };
       };
       example = {
         tiny = { cpu = "250m"; memory = "256Mi"; };
-        small = { cpu = "1"; memory = "2Gi"; };
+        small = { cpu = "1"; memory = "2Gi"; default = true; };
         medium = { cpu = "2"; memory = "4Gi"; };
         large = { cpu = "4"; memory = "16Gi"; };
         xlarge = { cpu = "8"; memory = "32Gi"; };
@@ -206,22 +216,42 @@ in
 
         The default table ships tiny / small / medium / large; a deployment can
         override the map to retune the sizes, add presets, or remove ones it doesn't
-        want offered. The default preset (defaultSandboxSize) MUST be a key in this
-        map — an eval-time assertion enforces it.
+        want offered. Exactly one preset sets `default = true` — the size a new
+        sandbox comes up with. Set the map to { } to offer no presets at all (the
+        UI then hides the picker and the platform default applies).
       '';
     };
-    defaultSandboxSize = mkOption {
-      type = types.str;
-      default = "medium";
+    defaultSandboxSizeName = mkOption {
+      type = types.nullOr types.str;
+      internal = true;
+      readOnly = true;
+      # Derived, not set: the default is declared on the preset itself, so there is
+      # no second option naming a key that can drift out of sync with the map.
+      default =
+        let
+          flagged = lib.attrNames (lib.filterAttrs (_: p: p.default) cfg.sandboxSizes);
+          names = lib.concatStringsSep ", " (lib.attrNames cfg.sandboxSizes);
+        in
+        # A `throw` rather than an assertion because kubenix's module system has no
+        # NixOS `assertions` option — an assertions block there evaluates as a plain
+        # attribute and silently checks nothing.
+        if cfg.sandboxSizes == { } then null
+        else if lib.length flagged == 1 then lib.head flagged
+        else if flagged == [ ] then
+          throw ''
+            No preset in agentSandbox.sandboxSizes sets `default = true`, so a new
+            sandbox has no size to come up with. Mark exactly one (have: ${names}).
+          ''
+        else
+          throw ''
+            ${toString (lib.length flagged)} presets in agentSandbox.sandboxSizes set
+            `default = true` (${lib.concatStringsSep ", " flagged}); exactly one may.
+          '';
       description = ''
-        The default sandbox size preset name (must be a key in sandboxSizes). A
-        conversation with no size spec gets this preset's resources. The broker
-        resolves: conversation override → this deployment default → platform default
-        (the last fallback, when this is unset or the preset is absent — currently
-        medium's 2/4Gi, mirroring PLATFORM_DEFAULT in resources.py).
-
-        An eval-time assertion enforces that this names a preset in sandboxSizes, so
-        a typo fails the build rather than silently falling back.
+        The preset marked `default = true`, resolved from sandboxSizes; null when a
+        deployment offers no presets. Read by the broker (SANDBOX_DEFAULT_SIZE_NAME +
+        SANDBOX_DEFAULT_RESOURCES_JSON) and by conversation.nix. Not settable —
+        declare the default on the preset.
       '';
     };
     # Generic, DEPLOYMENT-parameterized tool injection — the platform doesn't know
