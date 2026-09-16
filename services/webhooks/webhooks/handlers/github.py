@@ -107,16 +107,22 @@ def _response_instructions(owner: str, repo: str, number: int, is_pr: bool) -> s
     )
 
 
+def _comment_ref(comment_id: int | None) -> str:
+    """The id of THIS comment, so a reply/reaction can target it. Data only — what
+    to do with it is the scooter-github skill's business, not the forwarder's."""
+    return f"\n\n(comment_id: {comment_id})" if comment_id else ""
+
+
 def _format_forwarded_message(
     comment_body: str, owner: str, repo: str, number: int,
-    is_pr: bool, has_mention: bool,
+    is_pr: bool, has_mention: bool, comment_id: int | None = None,
 ) -> str:
     kind = "pull request" if is_pr else "issue"
 
     if has_mention:
         preamble = (
             f"You were mentioned in a comment on GitHub {kind} #{number} in {owner}/{repo}. "
-            f"First, post an acknowledgment so the requester knows you've seen it. "
+            f"First, acknowledge it so the requester knows you've seen it. "
             f"Then work on the task. When finished, post a follow-up comment with your results."
         )
     else:
@@ -129,6 +135,7 @@ def _format_forwarded_message(
         "To respond, use the `github_comment` tool (this PR/issue is already known — "
         "you just provide the comment body). It reports the real result."
     )
+    reply_instruction += _comment_ref(comment_id)
 
     return f"{preamble}\n\n---\n\n{comment_body}\n\n---\n\n{reply_instruction}"
 
@@ -205,16 +212,18 @@ async def _handle_comment(payload: dict):
     message_text = comment_body.replace(settings.mention_pattern, "").strip()
     comment_text = f"@{user} commented:\n\n{message_text}"
 
+    comment_id = comment.get("id")
+
     if is_pending(existing):
         forward_msg = _format_forwarded_message(
-            comment_text, owner, repo, issue_number, is_pr, has_mention,
+            comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
         await db.store_pending_message("github", res_type, res_id, forward_msg)
         return
 
     if existing:
         forward_msg = _format_forwarded_message(
-            comment_text, owner, repo, issue_number, is_pr, has_mention,
+            comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
         ok = await send_message(existing, forward_msg, priority=has_mention, source="github")
         if ok:
@@ -307,6 +316,7 @@ async def _handle_review_comment(payload: dict):
         f"about the PR as a whole.\n\n"
         f"If the comment asks for a change, make it and push — a reply alone does not "
         f"address it."
+        + _comment_ref(comment_id)
     )
     await _forward_or_ignore(_resource_id(owner, repo, number), message)
 
