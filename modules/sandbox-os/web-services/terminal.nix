@@ -30,7 +30,9 @@ in
   # tmux backs the terminal session; keep it always available (small, and useful for the
   # agent's own shells too).
   # The ttyd shim stays on PATH too, so an agent can run it by hand.
-  environment.systemPackages = [ pkgs.tmux pkgs.ttyd ];
+  # tmux stays unconditional (small, and useful in the agent's own shells); ttyd rides
+  # the service, so a disabled terminal contributes nothing to the closure.
+  environment.systemPackages = [ pkgs.tmux ] ++ lib.optionals cfg.enable [ pkgs.ttyd ];
 
   webServices.terminal = {
     port = lib.mkDefault 7681;
