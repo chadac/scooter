@@ -54,62 +54,64 @@
   --color-brand-foreground: var(--brand-foreground);
   --color-status-active: var(--status-active);
   --color-header: var(--header);
-  /* --chat = the conversation pane surface: a lighter, cooler grey than the warm
-     paper body, so the chat reads as the focal surface. */
+  /* --chat = the conversation pane surface, kept a step lighter than the body
+     (--background) so the chat reads as the focal surface. */
   --color-chat: var(--chat);
 }
 
-/* Solarized Light — Ethan Schoonover's palette, brightened. We keep the canonical
-   Solarized INK ramp (base01 #586e75 body, base1 #93a1a1 muted) and the fixed
-   accents (blue #268bd2 links/ring, green/yellow/red for success/warning/error),
-   but lift the neutral SURFACES toward near-white (dropping base2/base3's yellow
-   chroma) so the UI reads bright rather than tan. Mapped onto the shadcn token
-   names so every component shifts as one system. Ref: ethanschoonover.com/solarized */
+/* Warm Paper (light) — warm paper SURFACES with near-black INK. Replaces Solarized
+   Light, whose base1 muted ink sat at 2.6:1 and read washed out; every text pair
+   here clears WCAG AA (body 17:1, muted 7.4:1). Two ink rules make it work:
+   ink is stone-neutral (#1c1917/#57534e) so warm surfaces read as paper, not tan;
+   and --border (decorative dividers) is deliberately lighter than --input (control
+   boundaries, 3.3:1 per WCAG 1.4.11) — do NOT collapse them back into one value or
+   composer/search outlines disappear again. Dark theme is still Solarized. PR #538. */
 :root {
   --radius: 0.625rem;
-  --background: #fbfbf9; /* near-white body, a hair of warmth */
-  --foreground: #586e75; /* base01 — body ink */
-  --card: #ffffff; /* pure-white raised surfaces */
-  --card-foreground: #586e75;
-  --popover: #ffffff;
-  --popover-foreground: #586e75;
-  --primary: #073642; /* base02 — near-dark ink for buttons/emphasis */
-  --primary-foreground: #fdf6e3;
-  --secondary: #edeeea; /* cool light-grey fill (not tan base2) */
-  --secondary-foreground: #073642;
-  --muted: #edeeea;
-  --muted-foreground: #93a1a1; /* base1 */
-  --accent: #e3e4de; /* slightly deeper grey for hover/active */
-  --accent-foreground: #073642;
-  --destructive: #dc322f; /* Solarized red */
-  --success: #859900; /* Solarized green */
-  --warning: #b58900; /* Solarized yellow */
-  --border: #e3e4de;
-  --input: #e3e4de;
-  --ring: #268bd2; /* Solarized blue */
-  --brand: #268bd2;
-  --brand-foreground: #fdf6e3;
-  --status-active: #268bd2;
-  --header: #f4f4f1;
-  --chat: #fbfbf9;
-  --chart-1: #268bd2; /* blue   */
-  --chart-2: #2aa198; /* cyan   */
-  --chart-3: #859900; /* green  */
-  --chart-4: #b58900; /* yellow */
-  --chart-5: #cb4b16; /* orange */
-  --sidebar: #f4f4f1;
-  --sidebar-foreground: #586e75;
-  --sidebar-primary: #073642;
-  --sidebar-primary-foreground: #fdf6e3;
-  --sidebar-accent: #e3e4de;
-  --sidebar-accent-foreground: #073642;
-  --sidebar-border: #e3e4de;
-  --sidebar-ring: #268bd2;
+  --background: #faf8f3; /* warm paper body */
+  --foreground: #1c1917; /* near-black ink (stone-900) */
+  --card: #fffefa; /* raised surfaces, a hair warm of white */
+  --card-foreground: #1c1917;
+  --popover: #fffefa;
+  --popover-foreground: #1c1917;
+  --primary: #1c1917; /* same near-black for buttons/emphasis */
+  --primary-foreground: #faf8f3;
+  --secondary: #f0ece1; /* warm fill */
+  --secondary-foreground: #1c1917;
+  --muted: #f0ece1;
+  --muted-foreground: #57534e; /* stone-600 — 7.4:1, AAA */
+  --accent: #e6e1d3; /* deeper warm fill for hover/active */
+  --accent-foreground: #1c1917;
+  --destructive: #b3261e;
+  --success: #4d6b00;
+  --warning: #8a6100;
+  --border: #d2ccbc; /* dividers only — see the note above */
+  --input: #948d80; /* control boundaries: 3.3:1 on --card */
+  --ring: #145d8f;
+  --brand: #145d8f; /* darkened blue: 6.8:1 as link text */
+  --brand-foreground: #fffefa;
+  --status-active: #145d8f;
+  --header: #f3f0e7;
+  --chat: #fdfcf8; /* the conversation pane, lightest surface */
+  --chart-1: #145d8f; /* blue   */
+  --chart-2: #1f6f68; /* teal   */
+  --chart-3: #4d6b00; /* green  */
+  --chart-4: #8a6100; /* yellow */
+  --chart-5: #a6390f; /* orange */
+  --sidebar: #f3f0e7;
+  --sidebar-foreground: #1c1917;
+  --sidebar-primary: #1c1917;
+  --sidebar-primary-foreground: #faf8f3;
+  --sidebar-accent: #e6e1d3;
+  --sidebar-accent-foreground: #1c1917;
+  --sidebar-border: #d2ccbc;
+  --sidebar-ring: #145d8f;
 }
 
 /* Solarized Dark — canonical values: base03 #002b36 background, base02 #073642
-   raised surfaces, base0/base1 ink, same fixed accents as light so the two themes
-   are one system. Ref: ethanschoonover.com/solarized */
+   raised surfaces, base0/base1 ink, and the fixed Solarized accents. Untouched by
+   the Warm Paper light reskin: on dark the accents already clear AA, so only the
+   light theme moved. Ref: ethanschoonover.com/solarized */
 .dark {
   --background: #002b36; /* base03 */
   --foreground: #839496; /* base0 — body ink */

@@ -78,7 +78,7 @@ function TaskForm({
           value={form.title}
           onChange={(e) => set("title", e.target.value)}
           placeholder="Morning dashboard check"
-          className="rounded-md border bg-background px-2 py-1.5 text-sm"
+          className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
         />
       </div>
       <div className="flex flex-col gap-1">
@@ -89,7 +89,7 @@ function TaskForm({
           onChange={(e) => set("prompt", e.target.value)}
           placeholder="Check the CI dashboard and post a summary of anything red."
           rows={3}
-          className="rounded-md border bg-background px-2 py-1.5 text-sm"
+          className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
         />
       </div>
       <div className="flex flex-col gap-3 sm:flex-row">
@@ -100,7 +100,7 @@ function TaskForm({
             value={form.cron}
             onChange={(e) => set("cron", e.target.value)}
             placeholder="0 9 * * 1-5"
-            className="rounded-md border bg-background px-2 py-1.5 font-mono text-sm"
+            className="rounded-md border border-input bg-background px-2 py-1.5 font-mono text-sm"
           />
           <span className="text-[11px] text-muted-foreground">5 fields: min hour dom mon dow — e.g. “0 9 * * 1-5” = 9am on weekdays.</span>
         </div>
@@ -111,7 +111,7 @@ function TaskForm({
             value={form.timezone ?? "UTC"}
             onChange={(e) => set("timezone", e.target.value)}
             placeholder="UTC"
-            className="rounded-md border bg-background px-2 py-1.5 text-sm"
+            className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
           />
         </div>
       </div>

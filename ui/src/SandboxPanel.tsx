@@ -296,7 +296,7 @@ export function ModulesSection({ conversationId }: { conversationId: string }) {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search modules…"
-                  className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
+                  className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs"
                 />
                 <Button variant="outline" size="xs" type="submit">
                   Search
