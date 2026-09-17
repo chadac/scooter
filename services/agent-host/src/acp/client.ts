@@ -25,6 +25,10 @@ import type * as schema from "@zed-industries/agent-client-protocol";
 
 import type { ExecBackend } from "../types.js";
 import { createSandboxClientHandlers } from "./sandboxHandlers.js";
+import {
+  contextUsageFromUsageUpdate,
+  filterUnsupportedSessionUpdates,
+} from "./sessionUpdateFilter.js";
 import { debug, debugError } from "../debug.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
@@ -219,9 +223,36 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   // Adapt the child's Node stdio to the Web streams ndJsonStream expects.
   const toAgent = Writable.toWeb(child.stdin) as WritableStream<Uint8Array>;
   const fromAgent = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
-  const stream: Stream = ndJsonStream(toAgent, fromAgent);
+  const rawStream: Stream = ndJsonStream(toAgent, fromAgent);
 
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
+  // TRANSCRIPT: record the (normalized) ACP update — the shape the fake ACP agent
+  // must reproduce (no-op when unset) — then fan out. Updates salvaged from the
+  // stream filter below go through here too, so the transcript stays complete.
+  const emitUpdate = (sessionId: string, u: SessionUpdate): void => {
+    deps.recordRaw?.(u);
+    for (const cb of updateCbs) cb(sessionId, u);
+  };
+
+  // session/update variants the pinned SDK can't parse are removed BEFORE it
+  // decodes them; left in, its closed zod union rejects the whole notification
+  // with -32602 and logs an error for every one. `usage_update` is salvaged into
+  // our context_usage (the UI's context bar) on the way out; everything else is
+  // dropped with one debug line per variant, not per message. Why: PR #535.
+  const loggedVariants = new Set<string>();
+  const stream = filterUnsupportedSessionUpdates(rawStream, (dropped) => {
+    const usage = contextUsageFromUsageUpdate(dropped);
+    if (usage) {
+      emitUpdate(dropped.sessionId, { sessionUpdate: "context_usage", ...usage });
+    }
+    if (loggedVariants.has(dropped.variant)) return;
+    loggedVariants.add(dropped.variant);
+    debug(
+      `[acp] session/update variant "${dropped.variant}" is not in the pinned SDK schema — ` +
+        `${usage ? "mapped to context_usage" : "ignored"} (logged once per variant)`,
+    );
+  });
+
   const terminalCreatedCbs = new Set<(terminalId: string, command: string, args: string[]) => void>();
   let permissionHandler:
     | ((req: PermissionRequest) => Promise<PermissionAnswer>)
@@ -241,12 +272,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   const makeClient = (_agent: Agent): Client => ({
     async sessionUpdate(params: schema.SessionNotification): Promise<void> {
       const norm = normalizeUpdate(params);
-      if (norm) {
-        // TRANSCRIPT: record the (normalized) ACP update — the shape the fake ACP
-        // agent must reproduce (no-op when unset).
-        deps.recordRaw?.(norm);
-        for (const cb of updateCbs) cb(params.sessionId, norm);
-      }
+      if (norm) emitUpdate(params.sessionId, norm);
     },
 
     async requestPermission(
