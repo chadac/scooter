@@ -198,7 +198,7 @@ const SessionRow = memo(function SessionRow({
               sessionStore.clearEditing(s.id);
             }
           }}
-          className="min-w-0 flex-1 rounded border bg-background px-2 py-1.5 text-sm"
+          className="min-w-0 flex-1 rounded border border-input bg-background px-2 py-1.5 text-sm"
         />
       ) : (
         <Button
@@ -369,7 +369,7 @@ export const Sidebar = memo(function Sidebar() {
           onChange={(e) => sessionStore.setQuery(e.target.value)}
           placeholder="Search chats…"
           aria-label="Search conversations"
-          className="w-full rounded-md border bg-background px-2 py-1.5 text-sm placeholder:text-muted-foreground"
+          className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm placeholder:text-muted-foreground"
         />
       </div>
 
