@@ -73,9 +73,23 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
 #      race: force-delete the Sandbox (reclaims the leaked running pod) and mark the conversation
 #      Failed (a terminal phase reconcile then leaves inert; an operator investigates). Logged
 #      ONCE, not per tick.
+#
+# (3) only works if the attempt COUNT survives the oscillation it is counting. A suspend that
+# lands makes the Sandbox Suspended, so the next tick is a NoOp — and dropping the record there
+# resets `suspends` to 0. The race then resumes the sandbox and the whole budget starts over, so
+# the bound is never reached and the sandbox IS re-suspended forever: the exact behaviour (2) and
+# (3) exist to prevent. Reproduced at 40 suspends over 120 ticks with escalation never firing.
+#
+# So the record is dropped only when the conversation has genuinely LEFT the zombie state (a real
+# revive: phase no longer Suspended, or it is hosted again, or the Sandbox is gone). "Still
+# Suspended + unhosted, Sandbox now Suspended" is not recovery — it is the quiescent half of the
+# oscillation, and it keeps its budget. That state is forgotten only after it HOLDS for
+# _ZOMBIE_FORGET_TICKS, which is what actually distinguishes a settled sandbox from a bouncing
+# one. Why: PR #537.
 _ZOMBIE_CONFIRM_TICKS = 2          # consecutive sightings before the first suspend (false-positive guard)
 _ZOMBIE_SUSPEND_BACKOFF_TICKS = 3  # ticks to wait between suspends (no re-issue every tick)
 _ZOMBIE_MAX_SUSPENDS = 3           # bounded suspend attempts before the terminal escalation
+_ZOMBIE_FORGET_TICKS = 12          # consecutive quiescent ticks before the attempt budget is forgotten
 
 
 @dataclass
@@ -84,6 +98,7 @@ class _ZombieProgress:
     suspends: int = 0       # suspend patches issued so far
     cooldown: int = 0       # ticks remaining before the next suspend is allowed (backoff window)
     resolved: bool = False  # terminal escalation done — take no further action, and do NOT re-log
+    quiescent: int = 0      # consecutive ticks the suspend has HELD (see _ZOMBIE_FORGET_TICKS)
 
 
 _zombie_progress: dict[str, _ZombieProgress] = {}
@@ -291,11 +306,39 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                     exc_info=True,
                 )
 
-    # Reset zombie state for any conversation NOT flagged this pass: this resets the two-tick
-    # confirmation on a false positive (a revive mid-flight), and GCs a resolved record once the
-    # conversation is terminal (Failed → reconcile no longer returns SuspendSandbox for it).
-    for name in list(_zombie_progress.keys()):
-        if name not in zombie_flagged:
+    # Retire zombie state for conversations NOT flagged this pass — but distinguish the two very
+    # different reasons a conversation stops being flagged.
+    #
+    #   RECOVERED — a real revive (phase no longer Suspended / hosted again), a terminal Failed,
+    #     or the Sandbox is gone. Nothing left to repair: drop the record. This is what resets the
+    #     two-tick confirmation on a false positive and GCs a resolved record.
+    #
+    #   QUIESCENT — still phase=Suspended and unhosted, but the Sandbox now reads Suspended: OUR
+    #     PATCH LANDED. This is NOT recovery; it is the down-half of the oscillation the escalation
+    #     budget exists to measure. Dropping it here reset `suspends` to 0 every cycle, so the
+    #     bound was never reached and the sandbox was re-suspended indefinitely. Keep the budget;
+    #     reset only `confirms`, so a later resume still earns its two-tick confirmation before
+    #     the next suspend. Forget it once the suspend has HELD for _ZOMBIE_FORGET_TICKS — a
+    #     sandbox that stays down that long has settled, and a genuinely new episode later should
+    #     start from a clean budget.
+    quiescent = {
+        c.name
+        for c in convs
+        if c.phase == "Suspended"
+        and c.host_pod is None
+        and c.host_ip is None
+        and c.sandbox_mode == "Suspended"
+    }
+    for name, prog in list(_zombie_progress.items()):
+        if name in zombie_flagged:
+            prog.quiescent = 0
+            continue
+        if name not in quiescent:
+            del _zombie_progress[name]
+            continue
+        prog.confirms = 0
+        prog.quiescent += 1
+        if prog.quiescent >= _ZOMBIE_FORGET_TICKS:
             del _zombie_progress[name]
 
     # A conversation that did NOT drift this pass is forgotten, so a future drift is loud.
