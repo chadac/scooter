@@ -1,5 +1,7 @@
 """Tests for OpenTelemetry metrics — RED first (fail until implementation lands)."""
 
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -248,3 +250,136 @@ async def test_retention_sweep_disabled_when_zero(store):
     runs = await store.list_runs(t.id, "a")
     assert len(runs) == 1
     assert runs[0].id == run_id
+
+
+# --- gauge guard + feed -----------------------------------------------------
+
+
+def test_gauge_callback_failure_is_reported_once_not_every_cycle(metrics_sink, caplog):
+    """CONTRACT: a raising gauge callback must NOT produce 'Callback failed for instrument
+    <name>' on every collection cycle forever. The body's failure drops that cycle's data
+    point and is reported ONCE; the instrument stays quiet until it collects cleanly again."""
+    boom = RuntimeError("gauge body exploded")
+
+    def explode():
+        raise boom
+
+    with caplog.at_level(logging.ERROR):
+        for _ in range(5):
+            assert metrics_sink._guarded("scheduler_tasks", explode) == []
+
+    failures = [r for r in caplog.records if "observable-gauge callback failed" in r.getMessage()]
+    assert len(failures) == 1, f"expected 1 report for 5 failed collections, got {len(failures)}"
+
+    # A clean collection re-arms the report, so a LATER episode is still visible.
+    caplog.clear()
+    assert metrics_sink._guarded("scheduler_tasks", lambda: [Observation(1)]) != []
+    with caplog.at_level(logging.ERROR):
+        metrics_sink._guarded("scheduler_tasks", explode)
+    assert len([r for r in caplog.records if "observable-gauge callback failed" in r.getMessage()]) == 1
+
+
+def test_sdk_never_logs_callback_failed_for_instrument(metrics_reader, metrics_sink, caplog):
+    """THE REPORTED SYMPTOM: 'Callback failed for instrument scheduler_tasks'. The SDK logs
+    that itself, at error, on EVERY collection cycle a callback raises. Our guard must absorb
+    the raise so the SDK never sees it — while the other gauge still collects normally."""
+    metrics_sink.set_due_backlog(count=9)
+    # Make the gauge BODY raise the way the original bug did (it read an attribute that
+    # was not there — CallbackOptions.observe — and raised AttributeError every cycle).
+    del metrics_sink._task_count_enabled
+
+    with caplog.at_level(logging.ERROR):
+        assert _get_metric_value(metrics_reader, "scheduler_due_backlog") == 9
+
+    sdk_errors = [r for r in caplog.records if "Callback failed for instrument" in r.getMessage()]
+    assert not sdk_errors, f"the SDK logged {len(sdk_errors)} callback failures; the guard must absorb them"
+
+
+def test_setters_coerce_to_int(metrics_sink):
+    """Coercion happens at the setter, so a bad value is attributable to its caller rather
+    than surfacing as an anonymous callback failure at the next collection."""
+    metrics_sink.set_task_counts(enabled=True, disabled=2.0)
+    metrics_sink.set_due_backlog(count=3.7)
+
+    opts = CallbackOptions()
+    by_enabled = {dict(o.attributes)["enabled"]: o.value for o in metrics_sink._observe_tasks(opts)}
+    assert by_enabled == {"true": 1, "false": 2}
+    assert all(isinstance(v, int) for v in by_enabled.values())
+    assert metrics_sink._observe_backlog(opts)[0].value == 3
+
+
+@pytest.mark.asyncio
+async def test_gauge_counts_reports_enabled_disabled_and_backlog(store):
+    """gauge_counts is the feed the gauges never had: enabled/disabled split plus the
+    number of tasks actually overdue."""
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(hours=1)
+    future = now + timedelta(hours=1)
+
+    overdue = await store.create_task(
+        title="overdue", prompt="p", cron="* * * * *", timezone_="UTC", owner="a", enabled=True
+    )
+    await store.reschedule(overdue.id, last_run_at=past, next_run_at=past)
+    later = await store.create_task(
+        title="later", prompt="p", cron="* * * * *", timezone_="UTC", owner="a", enabled=True
+    )
+    await store.reschedule(later.id, last_run_at=past, next_run_at=future)
+    off = await store.create_task(
+        title="off", prompt="p", cron="* * * * *", timezone_="UTC", owner="b", enabled=False
+    )
+    await store.reschedule(off.id, last_run_at=past, next_run_at=past)
+
+    enabled, disabled, backlog = await store.gauge_counts(now)
+
+    assert (enabled, disabled) == (2, 1)
+    # A DISABLED task that is overdue is not backlog — it is never going to fire.
+    assert backlog == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_feeds_the_gauges_before_claiming(store, metrics_reader, metrics_sink):
+    """REGRESSION: nothing called set_task_counts/set_due_backlog, so both gauges reported 0
+    forever. The tick must feed them — and must do so BEFORE claim_due, which advances
+    next_run_at and would otherwise zero the very backlog it is meant to report."""
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(hours=1)
+    t = await store.create_task(
+        title="overdue", prompt="p", cron="* * * * *", timezone_="UTC", owner="a", enabled=True
+    )
+    await store.reschedule(t.id, last_run_at=past, next_run_at=past)
+
+    stop = asyncio.Event()
+
+    async def one_tick():
+        # Let exactly one tick run, then stop the loop.
+        await asyncio.sleep(0.05)
+        stop.set()
+
+    from scheduler.app import _scheduler_loop
+
+    with patch("scheduler.app.spawn_conversation", new_callable=AsyncMock) as mock_spawn:
+        mock_spawn.return_value = "conv-1"
+        await asyncio.gather(_scheduler_loop(store, metrics_sink, stop), one_tick())
+
+    assert _get_metric_value(metrics_reader, "scheduler_tasks", {"enabled": "true"}) == 1
+    assert _get_metric_value(metrics_reader, "scheduler_tasks", {"enabled": "false"}) == 0
+    # Read before the claim, so the overdue task is still counted as backlog.
+    assert _get_metric_value(metrics_reader, "scheduler_due_backlog") == 1
+
+
+@pytest.mark.asyncio
+async def test_gauge_refresh_failure_does_not_fail_the_tick(store, metrics_reader, metrics_sink):
+    """A gauge refresh is observability, not the job: if it raises, the tick still runs and
+    still reports outcome=ok (the dead-loop detector must not be poisoned by a metrics bug)."""
+    stop = asyncio.Event()
+
+    async def one_tick():
+        await asyncio.sleep(0.05)
+        stop.set()
+
+    from scheduler.app import _scheduler_loop
+
+    with patch.object(store, "gauge_counts", side_effect=RuntimeError("no db")):
+        await asyncio.gather(_scheduler_loop(store, metrics_sink, stop), one_tick())
+
+    assert _get_metric_value(metrics_reader, "scheduler_ticks_total", {"outcome": "ok"}) == 1

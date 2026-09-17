@@ -72,6 +72,18 @@ async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Even
         outcome = "ok"
         try:
             now = _utcnow()
+            # Feed the observable gauges BEFORE claiming: claim_due advances next_run_at as
+            # it claims, so a backlog read after it has already been zeroed by the very tick
+            # that is meant to report it. A gauge refresh must never fail a tick — it is
+            # observability, not the job — so its failure is logged and swallowed here
+            # rather than flowing into `outcome`.
+            try:
+                enabled, disabled, backlog = await store.gauge_counts(now)
+                metrics.set_task_counts(enabled=enabled, disabled=disabled)
+                metrics.set_due_backlog(count=backlog)
+            except Exception:
+                logger.warning("gauge refresh failed — task gauges will report their last value", exc_info=True)
+
             # claim_due ATOMICALLY claims + advances next_run_at, so with 2+ replicas
             # each due task is fired by exactly one replica (no double-fire). If a
             # spawn then fails, next_run_at has already advanced — the run is recorded
