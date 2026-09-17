@@ -603,3 +603,107 @@ def test_a_drift_that_CLEARS_and_returns_is_loud_again(caplog):
     _rearm(k8s)
     reconcile_once(k8s, cap=10)          # drifts again -> loud
     assert len(_drift(caplog, "WARNING")) == 2
+
+
+# --- the escalation budget must survive the oscillation it is counting ------------------
+#
+# The zombie repair's bound (N suspends, then escalate) assumed a suspend that NEVER takes —
+# which is what _zombie()'s fake models, since its suspend_sandbox doesn't change the Sandbox.
+# Production is the other shape: the suspend LANDS, the Sandbox reads Suspended for a tick or
+# two, and the racing agent-host resume-on-missing-pod self-heal flips it back to Running.
+#
+# That quiescent tick used to DELETE the progress record, resetting `suspends` to 0. The budget
+# then restarted on every cycle, the bound was never reached, and the sandbox was re-suspended
+# indefinitely — the exact behaviour the backoff + escalation exist to prevent.
+
+
+class OscillatingK8s(FakeK8s):
+    """A zombie whose suspend LANDS and is then undone by the upstream resume race.
+
+    `resume_after` = ticks the Sandbox is observed Suspended before the race resumes it. 2 means
+    one full tick of quiescence, which is what wiped the budget.
+    """
+
+    def __init__(self, *args, resume_after=2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._resume_after = resume_after
+        self._pending_resume = 0
+
+    def suspend_sandbox(self, name):
+        super().suspend_sandbox(name)
+        self._sandboxes[name] = SandboxRef(name, age_seconds=1000, operating_mode="Suspended")
+        self._pending_resume = self._resume_after
+
+    def list_sandboxes(self):
+        if self._pending_resume:
+            self._pending_resume -= 1
+            if not self._pending_resume:
+                for n in list(self._sandboxes):
+                    self._sandboxes[n] = SandboxRef(n, age_seconds=1000, operating_mode="Running")
+        return super().list_sandboxes()
+
+
+def _oscillating_zombie(**kwargs):
+    return OscillatingK8s(
+        [Pod("a", True)],
+        [_cr("z1", phase="Suspended", gen=2, sandbox_ref="conv-z1")],
+        sandboxes=[SandboxRef("conv-z1", age_seconds=1000, operating_mode="Running")],
+        **kwargs,
+    )
+
+
+def test_oscillating_zombie_still_reaches_the_terminal_escalation():
+    # REGRESSION: a suspend that lands and is then undone must still exhaust the budget. Before
+    # the fix this issued 40 suspends in 120 ticks and NEVER escalated.
+    k = _oscillating_zombie()
+    for _ in range(120):
+        reconcile_once(k, cap=10)
+
+    assert len(k.suspends) <= 5, (
+        f"budget reset by the quiescent tick — {len(k.suspends)} suspends in 120 ticks"
+    )
+    assert k.force_deleted == ["conv-z1"], "escalation never fired despite a persistent zombie"
+    assert k.status("z1")["phase"] == "Failed"
+
+
+def test_quiescent_tick_keeps_the_budget_but_still_re_confirms():
+    # The quiescent tick must keep `suspends` (the escalation budget) while resetting `confirms`
+    # (the false-positive guard) — a later resume still earns its two-tick confirmation rather
+    # than being suspended on sight.
+    k = _oscillating_zombie()
+    reconcile_once(k, cap=10)  # t1: suspect
+    reconcile_once(k, cap=10)  # t2: confirmed -> first suspend
+    assert len(k.suspends) == 1
+
+    reconcile_once(k, cap=10)  # t3: quiescent — sandbox reads Suspended
+    prog = loop_mod._zombie_progress["z1"]
+    assert prog.suspends == 1, "the escalation budget must survive a quiescent tick"
+    assert prog.confirms == 0, "the false-positive confirmation must reset"
+
+
+def test_a_settled_sandbox_is_eventually_forgotten():
+    # The other direction: a suspend that HOLDS is a genuine resolution, so the record is dropped
+    # once quiescence has lasted _ZOMBIE_FORGET_TICKS. Otherwise a much later, unrelated episode
+    # would inherit a stale budget and escalate early.
+    k = _oscillating_zombie(resume_after=0)  # the suspend sticks for good
+    for _ in range(2 + loop_mod._ZOMBIE_FORGET_TICKS + 1):
+        reconcile_once(k, cap=10)
+
+    assert len(k.suspends) == 1, "a sandbox that stays suspended needs exactly one suspend"
+    assert k.force_deleted == [], "a suspend that held must NOT escalate"
+    assert "z1" not in loop_mod._zombie_progress, "a settled sandbox must be forgotten"
+
+
+def test_a_real_revive_drops_the_record_immediately():
+    # Recovery is not quiescence: a conversation that genuinely revives (hosted again) has
+    # nothing left to repair, so its record goes at once rather than lingering for the
+    # forget window.
+    k = _oscillating_zombie()
+    reconcile_once(k, cap=10)  # t1: suspect
+    assert "z1" in loop_mod._zombie_progress
+
+    k._convs["z1"]["status"].update({"phase": "Assigned", "hostPod": "a"})
+    reconcile_once(k, cap=10)
+
+    assert "z1" not in loop_mod._zombie_progress
+    assert k.suspends == []
