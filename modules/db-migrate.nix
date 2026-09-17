@@ -11,6 +11,9 @@
 # It connects as each per-consumer role (agent-pg-<db>) to that role's database, so
 # it can only touch a database it owns. It runs alongside the services' own table
 # creation for now; the services stop self-creating tables in a later phase.
+#
+# A `wait-for-db` initContainer gates the Job on those databases/roles actually
+# existing — agent-postgres-init creates them and nothing sequences the two Jobs.
 
 { config, lib, ... }:
 
@@ -37,6 +40,58 @@ let
   # `tr '[:lower:]-' '[:upper:]_'` so the two always agree; a bare lib.toUpper would
   # emit AGENT-HOST_DB_PASSWORD for a hyphenated name, which is not a legal env name.
   pwEnvOf = db: "${lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] db)}_DB_PASSWORD";
+  # A SHELL reference to that var ("$WEBHOOKS_DB_PASSWORD"), built in Nix so the
+  # generated script never needs `${!var}` indirection — the wait image's /bin/sh is
+  # BusyBox ash, which has no such expansion.
+  pwRefOf = db: "$" + pwEnvOf db;
+
+  # The per-consumer password env, shared by the gate initContainer and the migrator:
+  # both connect as the same roles, so they must read the same Secrets.
+  pwEnv = map
+    (k: {
+      name = pwEnvOf (dbOf k);
+      valueFrom.secretKeyRef = { name = "agent-pg-${k}"; key = "password"; };
+    })
+    enabledKeys;
+
+  # ORDERING GATE. agent-postgres-init creates each per-consumer database + role; this
+  # Job connects AS those roles. Nothing sequences the two Jobs, so the migrator used to
+  # discover the gap by failing: ~30 internal retries per database, times the Job's own
+  # backoff, each printing the connection error — the bulk of a deploy's error-level log
+  # volume, and pure noise since the only cure was waiting.
+  #
+  # So wait HERE instead, in an initContainer, where a not-yet-provisioned database is a
+  # quiet expected state rather than an error. The probe is a real connect as the
+  # consumer role to its own database — NOT pg_isready, which reports the SERVER as
+  # accepting connections while the role and database still do not exist, i.e. it goes
+  # green exactly when the gate must still be closed.
+  #
+  # Identity note: the probe uses the DATABASE name as the role name because the migrator
+  # does (`postgres://$env:$pw@…/$env`). Resolving `.user` here instead could let the gate
+  # pass with a role the migrator never uses.
+  waitScript = ''
+    set -eu
+  '' + lib.optionalString (pcfg.sslmode != null) ''
+    export PGSSLMODE="${pcfg.sslmode}"
+  '' + lib.concatMapStrings
+    (k:
+      let db = dbOf k; in ''
+        echo "[${db}] waiting for database + role ..."
+        n=0
+        until PGPASSWORD="${pwRefOf db}" psql -h "${pcfg.host}" -p "${toString pcfg.port}" \
+          -U "${db}" -d "${db}" -tAc 'SELECT 1' >/dev/null 2>&1; do
+          n=$((n + 1))
+          if [ "$n" -ge 150 ]; then
+            echo "[${db}] still unreachable after $n attempts (~5m) — giving up" >&2
+            exit 1
+          fi
+          sleep 2
+        done
+        echo "[${db}] ready"
+      '')
+    enabledKeys + ''
+    echo "all target databases reachable"
+  '';
 in
 {
   options.agentSandbox.dbMigrate = with lib; {
@@ -65,12 +120,21 @@ in
         annotations."agent-sandbox/migrates" = lib.concatStringsSep "," (map dbOf enabledKeys);
       };
       spec = {
-        # Generous retries: the per-consumer databases/roles are created by the
-        # agent-postgres-init Job, which has no ordering guarantee relative to this
-        # one — the image also retries internally, but let the Job recover too.
-        backoffLimit = 10;
+        # Ordering is the `wait-for-db` initContainer's job now, not the backoff's, so
+        # these retries only cover a genuinely failing migration — where 10 attempts
+        # just reprint the same error 10 times. Why: PR #533.
+        backoffLimit = 3;
         template.spec = {
           restartPolicy = "OnFailure";
+          # Block until every target database + role exists (see waitScript). Needs a
+          # psql client, which the migrator image does not carry — the postgres image
+          # does, and is already pulled on every node running the shared server.
+          initContainers = [{
+            name = "wait-for-db";
+            image = pcfg.image;
+            command = [ "/bin/sh" "-c" waitScript ];
+            env = pwEnv;
+          }];
           containers.migrate = {
             name = "migrate";
             image = mcfg.image;
@@ -84,12 +148,7 @@ in
             # The script derives its var name from the DB name in DB_ENVS, while the
             # Secret is named for the consumer KEY — so resolve each side separately
             # rather than assuming they are the same string.
-            ++ map
-              (k: {
-                name = pwEnvOf (dbOf k);
-                valueFrom.secretKeyRef = { name = "agent-pg-${k}"; key = "password"; };
-              })
-              enabledKeys;
+            ++ pwEnv;
           };
         };
       };
