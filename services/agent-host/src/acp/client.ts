@@ -25,6 +25,11 @@ import type * as schema from "@zed-industries/agent-client-protocol";
 
 import type { ExecBackend } from "../types.js";
 import { createSandboxClientHandlers } from "./sandboxHandlers.js";
+import {
+  contextUsageFromUsageUpdate,
+  filterUnsupportedSessionUpdates,
+  type UnsupportedSessionUpdate,
+} from "./sessionUpdateFilter.js";
 import { debug, debugError } from "../debug.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
@@ -170,6 +175,35 @@ export function autoAnswerPermission(
   return { outcome: { outcome: "selected", optionId: allow } };
 }
 
+/**
+ * What to do with a session/update the SDK could not parse (see sessionUpdateFilter).
+ *
+ * `usage_update` is SALVAGED rather than dropped: it is the ACP-native context fill, and
+ * the bridge already renders `context_usage` for the claude-sdk provider — the SDK
+ * rejecting the notification is the only reason a goose session never had a fill bar.
+ *
+ * Everything else is logged ONCE PER VARIANT, not once per notification. Re-logging every
+ * occurrence is the behaviour this whole change exists to remove; logging the first makes
+ * a newly-appearing variant discoverable. Returns a stateful handler (it remembers which
+ * variants it has reported), so each client gets its own. Exported for unit testing.
+ */
+export function handleDroppedSessionUpdate(deps: {
+  emit: (sessionId: string, update: SessionUpdate) => void;
+  log: (message: string) => void;
+}): (dropped: UnsupportedSessionUpdate) => void {
+  const seen = new Set<string>();
+  return (dropped) => {
+    const usage = contextUsageFromUsageUpdate(dropped);
+    if (usage) {
+      deps.emit(dropped.sessionId, { sessionUpdate: "context_usage", ...usage });
+      return;
+    }
+    if (seen.has(dropped.variant)) return;
+    seen.add(dropped.variant);
+    deps.log(`[acp] ignoring session/update variant the SDK cannot parse: ${dropped.variant}`);
+  };
+}
+
 /** Spawns `goose acp` and returns a connected ACP client. */
 export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   // stdout is the ACP ndjson channel (piped). stderr is where goose writes its
@@ -219,7 +253,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   // Adapt the child's Node stdio to the Web streams ndJsonStream expects.
   const toAgent = Writable.toWeb(child.stdin) as WritableStream<Uint8Array>;
   const fromAgent = Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
-  const stream: Stream = ndJsonStream(toAgent, fromAgent);
+  const rawStream: Stream = ndJsonStream(toAgent, fromAgent);
 
   const updateCbs = new Set<(sessionId: string, u: SessionUpdate) => void>();
   const terminalCreatedCbs = new Set<(terminalId: string, command: string, args: string[]) => void>();
@@ -298,6 +332,21 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     releaseTerminal: sandbox.releaseTerminal,
     killTerminal: sandbox.killTerminal,
   });
+
+  // Strip session/update variants the pinned SDK's closed zod union would reject. Without
+  // this the SDK answers each one with -32602 and logs it, so a variant we simply don't
+  // consume (the agent's usage_update / session_info_update) is an error line rather than
+  // a no-op. Salvage the ones we CAN use on the way past. Why: PR #536.
+  const stream = filterUnsupportedSessionUpdates(
+    rawStream,
+    handleDroppedSessionUpdate({
+      emit: (sessionId, norm) => {
+        deps.recordRaw?.(norm);
+        for (const cb of updateCbs) cb(sessionId, norm);
+      },
+      log: debug,
+    }),
+  );
 
   const conn = new ClientSideConnection(makeClient, stream);
 
