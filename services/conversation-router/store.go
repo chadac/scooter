@@ -113,14 +113,17 @@ func (s *Store) CountConversations(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-// Conversations returns every conversation's durable metadata, newest-active first — the row
-// set the fleet-aggregate list is built from.
+// Conversations returns every conversation's durable metadata, most-recently-active first — the row
+// set the fleet-aggregate list is built from. This ORDER BY is the ONLY thing that establishes the
+// GET /conversations order: assembleList filters but does not re-sort, so changing it here changes
+// the endpoint. created_at breaks ties — rows sharing a last_activity_at (bulk-migrated ones do)
+// would otherwise come back in an arbitrary order that reshuffles between polls. Why: issue #540.
 func (s *Store) Conversations(ctx context.Context) ([]ConversationRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, thread_id, title, created_at, last_activity_at,
 		       model, owner, parent_id, user_titled, starred
 		  FROM conversations
-		 ORDER BY last_activity_at DESC`)
+		 ORDER BY last_activity_at DESC, created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

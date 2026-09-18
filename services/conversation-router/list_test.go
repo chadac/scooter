@@ -57,14 +57,14 @@ func TestAssembleList(t *testing.T) {
 		"a": {{Source: "github", ResourceType: "pull", URL: sp("http://x")}, {Source: "slack", ResourceType: "thread"}},
 	}
 
-	t.Run("all scope joins meta+CR+links, omits CR-less, sorts most-recently-active first", func(t *testing.T) {
+	t.Run("all scope joins meta+CR+links, omits CR-less, preserves input order", func(t *testing.T) {
 		rows := assembleList(metas, crsOf(crs), links, 1000, "", "all")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows (ended omitted), got %d", len(rows))
 		}
-		// The fixtures order createdAt and lastActivityAt OPPOSITELY on purpose, so this
-		// pins which one the endpoint sorts on: a(activity 900) before b(800), even though
-		// b was created later. Sorting on createdAt would invert it.
+		// Order is the store's (ORDER BY last_activity_at DESC, created_at DESC), not this
+		// function's — a and b arrive in that order and must come out in it, with the
+		// filtered-out "ended" closing the gap rather than shifting anything.
 		if rows[0].ID != "a" || rows[1].ID != "b" {
 			t.Fatalf("wrong order: %s,%s", rows[0].ID, rows[1].ID)
 		}
@@ -89,20 +89,25 @@ func TestAssembleList(t *testing.T) {
 		}
 	})
 
-	// Bulk-migrated rows share a last_activity_at. Without the createdAt tiebreak their relative
-	// order is arbitrary, so the sidebar reshuffles between polls.
-	t.Run("rows sharing a lastActivityAt fall back to newest-created", func(t *testing.T) {
-		tied := []ConversationRow{
-			{ID: "old", ThreadID: "old", Title: "Old", CreatedAt: 100, LastActivityAt: 500},
-			{ID: "new", ThreadID: "new", Title: "New", CreatedAt: 300, LastActivityAt: 500},
-			{ID: "mid", ThreadID: "mid", Title: "Mid", CreatedAt: 200, LastActivityAt: 500},
+	// The ORDER BY in Store.Conversations is now the only thing establishing the endpoint's order,
+	// which makes "assembleList must not reorder" a load-bearing contract with nothing else
+	// guarding it. This pins it WITHOUT touching the query: feed an order that matches neither
+	// timestamp and require it back verbatim. A map iteration or a regroup added to assembleList
+	// fails here instead of silently shuffling the sidebar.
+	t.Run("does not reorder: input order is returned verbatim", func(t *testing.T) {
+		scrambled := []ConversationRow{
+			{ID: "m", ThreadID: "m", Title: "M", CreatedAt: 200, LastActivityAt: 500},
+			{ID: "z", ThreadID: "z", Title: "Z", CreatedAt: 900, LastActivityAt: 100},
+			{ID: "q", ThreadID: "q", Title: "Q", CreatedAt: 100, LastActivityAt: 900},
 		}
-		rows := assembleList(tied, allExisting{}, nil, 1000, "", "all")
+		rows := assembleList(scrambled, allExisting{}, nil, 1000, "", "all")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
-		if rows[0].ID != "new" || rows[1].ID != "mid" || rows[2].ID != "old" {
-			t.Fatalf("tiebreak should be newest-created: %s,%s,%s", rows[0].ID, rows[1].ID, rows[2].ID)
+		for i, want := range []string{"m", "z", "q"} {
+			if rows[i].ID != want {
+				t.Fatalf("assembleList reordered rows: got %s,%s,%s", rows[0].ID, rows[1].ID, rows[2].ID)
+			}
 		}
 	})
 
