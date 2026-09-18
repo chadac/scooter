@@ -41,6 +41,8 @@ import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
 import type { SchedulerClient } from "../agent/schedulerTools.js";
 import type { SandboxResources } from "../session/resources.js";
+import { fitAdvice, fitSummary } from "../session/resourceFit.js";
+import type { SandboxSizePreset } from "../session/brokerProvisioner.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { logger } from "../log.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
@@ -161,6 +163,14 @@ export interface ManagementDeps {
    *  SA token, so the agent-host relays the query under its own control/approver SA,
    *  passing the conversation's short-id); absent = the tab reports none. */
   listShares?: (conversationId: string) => Promise<ConversationShares>;
+  /** The available named sandbox size presets (name → {cpu, memory}) and the default
+   *  preset name, from GET /sandbox-sizes. Used by the UI dropdown and the agent to
+   *  discover available sizes. Wired only on the broker path; absent = no presets. */
+  sandboxSizes?: () => Promise<{ sizes: Record<string, SandboxSizePreset>; default: string | null }>;
+  /** Record a named size preset for a conversation (the Sandbox tab's dropdown).
+   *  Rejects an unknown preset name. Wired only on the broker path; absent = the
+   *  route reports 501 and the UI renders the dropdown read-only. */
+  setSandboxSize?: (conversationId: string, size: string) => Promise<void>;
   /** Bring-your-own-Claude (Increment 2): powers the Settings "Connect your Claude agent"
    *  section — mint an owner-bound join token + the copyable docker one-liner, and report whether
    *  the caller's agent is currently connected (for the live badge). Optional — absent when BYO
@@ -968,6 +978,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // tells us it happened.
     const force = ctx.query.get("refresh") === "1";
     const services = await deps.webServices.list(id, { force });
+    // One size read for the whole list, not one per service. Absent (fake mode / no
+    // broker) leaves every `fit` undefined, which the UI renders as no warning at all
+    // — the right default, since we genuinely can't judge.
+    const size = deps.sandboxResources ? await deps.sandboxResources(id).catch(() => undefined) : undefined;
     const withState = await Promise.all(
       services.map(async (s) => ({
         name: s.name,
@@ -975,6 +989,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
         // The browser opens the service under the FULL threadId path.
         url: `/c/${encodeURIComponent(sessions.get(id)?.threadId ?? id)}/${s.name}/`,
         running: await deps.webServices!.isRunning(id, s.name).catch(() => false),
+        resources: s.resources,
+        // Two forms of the same gap: `fitShort` fits the card, `fit` is the full
+        // sentence the card shows on hover.
+        fit: s.resources ? fitAdvice(s.displayName, s.resources, size) : undefined,
+        fitShort: s.resources ? fitSummary(s.resources, size) : undefined,
       })),
     );
     return { json: { services: withState } };
@@ -988,6 +1007,46 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!id || !deps.sandboxResources) return { json: { resources: null } };
     const resources = (await deps.sandboxResources(id).catch(() => undefined)) ?? null;
     return { json: { resources } };
+  });
+
+  // The available named sandbox size presets (name → {cpu, memory, gpu?}) and the
+  // default preset name. Used by the UI dropdown and the agent to discover available
+  // sizes. Absent getter (no broker / fake mode) -> {sizes: {}, default: null}.
+  r.get("/sandbox-sizes", async () => {
+    if (!deps.sandboxSizes) return { json: { sizes: {}, default: null } };
+    const result = (await deps.sandboxSizes().catch(() => ({ sizes: {}, default: null })));
+    return { json: result };
+  });
+
+  // Pick a size preset for this conversation (the Sandbox tab's dropdown). Preset
+  // NAME only — the raw-resources path stays agent-only, so the UI can't invent a
+  // size outside the deployment's table. Takes effect on the next sandbox restart.
+  // PATCH, not PUT: the agent-host Router (src/http/router.ts) exposes
+  // get/post/patch/del only, and this is a partial update of one conversation field
+  // exactly like the sibling title/starred writes.
+  r.patch("/conversations/:id/size", async (ctx) => {
+    if (!deps.setSandboxSize) return { status: 501, json: { error: "sandbox sizing unavailable" } };
+    // Hydrate-if-absent so a size write against an idle conversation doesn't 404,
+    // mirroring the title/star writes.
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
+    // Ownership is enforced here, not just in the broker: resizing is a real
+    // privilege (it changes what the cluster reserves), so it follows the same
+    // mutableFor gate as the other conversation mutations.
+    const { conv, error } = mutableFor(ctx.params.id, ctx.user);
+    if (error === 404) return { status: 404, json: { error: "not found" } };
+    if (error === 403) return { status: 403, json: { error: "not your conversation" } };
+    const size = (await ctx.body<{ size?: unknown }>().catch(() => undefined))?.size;
+    if (typeof size !== "string" || !size.trim()) {
+      return { status: 400, json: { error: "body must be {size: \"<preset-name>\"}" } };
+    }
+    try {
+      await deps.setSandboxSize(conv!.id, size.trim());
+    } catch (e) {
+      // The broker validates the preset name; surface its message (e.g. the list of
+      // available presets) rather than a bare 500, so the UI can show why it failed.
+      return { status: 400, json: { error: (e as Error).message } };
+    }
+    return { json: { size: size.trim() } };
   });
 
   r.post("/conversations/:id/web-services/:name/start", async (ctx) => {

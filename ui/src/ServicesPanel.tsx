@@ -7,7 +7,7 @@
  * two-column grid; `onAdd` renders a trailing dashed "add" card when provided.
  */
 
-import { Notebook, SquareTerminal, Code, AppWindow, Power, ExternalLink, Plus } from "lucide-react";
+import { Notebook, SquareTerminal, Code, AppWindow, Power, ExternalLink, Plus, TriangleAlert } from "lucide-react";
 
 import type { WebService } from "./client.js";
 import { Button } from "@/components/ui/button";
@@ -76,6 +76,21 @@ export function ServiceRows({
             <div className="mt-2 truncate text-sm font-medium" title={s.displayName}>
               {s.displayName}
             </div>
+
+            {/* Advisory: this service declares more than the sandbox caps at. Shown
+                because an OOM kill leaves nothing in the service's own log, so without
+                it the failure is near-undiagnosable from inside the pod. Terse here,
+                full sentence on hover — the card is ~120px wide. */}
+            {s.fitShort ? (
+              <div
+                data-testid="service-fit"
+                title={s.fit}
+                className="mt-1 flex items-start gap-1 text-[11px] leading-snug text-warning"
+              >
+                <TriangleAlert className="mt-px size-3 shrink-0" aria-hidden />
+                <span>{s.fitShort}</span>
+              </div>
+            ) : null}
 
             <div className="mt-auto flex items-center justify-between pt-2">
               {s.running ? (

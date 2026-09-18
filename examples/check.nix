@@ -251,10 +251,13 @@ let
   # NOT hardcode (they default off registryPrefix, which the example does set); the
   # conversation controller is ON by default; postgres is provisioned implicitly by the
   # features that need it; legacyStateMigration is a one-shot upgrade path, not a feature.
+  # defaultSandboxSizeName is readOnly — derived from the sandboxSizes preset marked
+  # `default = true`, so a config CANNOT set it. The sizeGuard checks below cover it
+  # instead, which is stronger than a mention in the example.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
     "sandboxRuntimeClass" "sandboxViaBroker" "serviceAccountRoleArn"
-    "agentHostImage" "sandboxImage" "uiImage"
+    "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
   ];
   uncovered = builtins.filter
     (n: !(builtins.elem n coverageExempt)
@@ -278,8 +281,35 @@ let
     (if hasGrafanaSkill true then [ ] else [ "scooter-grafana.md missing when broker.grafana.enable = true" ])
     ++ (if hasGrafanaSkill false then [ "scooter-grafana.md SHIPPED when broker.grafana.enable = false (the agent will chase a 404)" ] else [ ]);
 
-  allProblems = skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  # SIZE-DEFAULT GUARD: exactly one sandboxSizes preset may set `default = true`.
+  # kubenix has no NixOS `assertions` option, so that rule is enforced by a `throw` in
+  # agentSandbox.defaultSandboxSizeName — and a throw only fires when something READS
+  # the option, which happens in broker mode (where sizes are actually consumed). A
+  # guard that silently stops firing is worse than no guard, so pin both directions
+  # here rather than trusting it.
+  renderSizes = sizes:
+    let
+      e = flake.inputs.kubenix.evalModules.${system} {
+        module = { lib, ... }: {
+          imports = [ ./kubenix-config.nix ];
+          agentSandbox.sandboxSizes = lib.mkForce sizes;
+          # Broker mode is what reads the resolved default, so the guard only has
+          # teeth here — see the comment above.
+          agentSandbox.sandboxViaBroker = lib.mkForce true;
+        };
+      };
+    in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
+
+  sizeGuardProblems =
+    (if renderSizes { a = { cpu = "1"; memory = "2Gi"; default = true; }; b = { cpu = "2"; memory = "4Gi"; }; }
+     then [ ] else [ "a catalog with exactly one `default = true` failed to render" ])
+    ++ (if renderSizes { a = { cpu = "1"; memory = "2Gi"; }; b = { cpu = "2"; memory = "4Gi"; }; }
+        then [ "a catalog with NO `default = true` rendered — the guard is a no-op" ] else [ ])
+    ++ (if renderSizes { a = { cpu = "1"; memory = "2Gi"; default = true; }; b = { cpu = "2"; memory = "4Gi"; default = true; }; }
+        then [ "a catalog with TWO `default = true` rendered — the guard is a no-op" ] else [ ]);
+
+  allProblems = sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability\n"
+then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

@@ -29,6 +29,19 @@ export interface WebServiceRegistryDeps {
   connect(ref: SandboxRef): Promise<ExecLike>;
 }
 
+/** The manifest's optional `resources` block → a descriptor field, keeping only
+ *  well-typed dimensions. Returns `{}` (not `{resources: {}}`) when nothing usable
+ *  is declared, so "declared nothing" stays distinguishable from "declared zero". */
+function parseNeed(v: unknown): { resources?: { cpu?: string; memory?: string; gpu?: number } } {
+  if (typeof v !== "object" || v === null) return {};
+  const o = v as Record<string, unknown>;
+  const need: { cpu?: string; memory?: string; gpu?: number } = {};
+  if (typeof o.cpu === "string") need.cpu = o.cpu;
+  if (typeof o.memory === "string") need.memory = o.memory;
+  if (typeof o.gpu === "number") need.gpu = o.gpu;
+  return Object.keys(need).length ? { resources: need } : {};
+}
+
 /** Parse the manifest JSON into descriptors, tolerating a missing/garbage file. */
 export function parseManifest(json: string): WebServiceDescriptor[] {
   try {
@@ -45,6 +58,7 @@ export function parseManifest(json: string): WebServiceDescriptor[] {
         basePath: typeof o.basePath === "string" ? o.basePath : `/c/*/${o.name}`,
         unit: typeof o.unit === "string" ? o.unit : `webservice-${o.name}`,
         stripBasePath: o.stripBasePath === true,
+        ...parseNeed(o.resources),
       }];
     });
   } catch {

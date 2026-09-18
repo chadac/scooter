@@ -161,6 +161,25 @@
       goldenExpr = "nixpkgs#awscli2 nixpkgs#nodejs";
     };
 
+    # The sandbox size menu. Each preset renders requests == limits (Guaranteed QoS),
+    # so a sandbox is hard-capped at what it reserved and one runaway pod can't starve
+    # its neighbours. This map is the ONLY set of sizes the UI dropdown offers and the
+    # only set the agent's set_sandbox_resources will accept — a deployment therefore
+    # can't be asked for a shape its nodes can't schedule. `hint` is shown to the agent
+    # so it picks by workload rather than by guessing at numbers. The built-in table is
+    # just tiny + medium; this overrides it to show a deployment opting into bigger and
+    # GPU sizes, which also makes the render check exercise the wiring.
+    sandboxSizes = {
+      small = { cpu = "1"; memory = "2Gi"; hint = "A single service, small repos."; };
+      # Exactly one preset carries `default = true` — the size a new sandbox comes up
+      # with. Marking none, or more than one, fails the render with a named error.
+      medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; default = true; };
+      large = { cpu = "4"; memory = "16Gi"; hint = "Parallel builds, large test runs."; };
+      # A GPU preset renders nvidia.com/gpu on BOTH sides (k8s requires request == limit
+      # for extended resources). Drop it on a cluster with no GPU nodes.
+      gpu-small = { cpu = "4"; memory = "16Gi"; gpu = 1; hint = "Local model inference."; };
+    };
+
     # Fleet sizing + lifecycle. `replicas` is the agent-host floor (the conversation
     # controller autoscales above it to fit live demand); `statelessReplicas` sizes the
     # stateless services (router/UI). An idle conversation suspends after idleSuspendMs —

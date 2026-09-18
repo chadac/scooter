@@ -19,6 +19,8 @@ import {
   resumeConversation,
   loadSandboxReady,
   loadSandboxResources,
+  loadSandboxSizes,
+  setSandboxSize,
   loadWebServices,
   startWebService,
   stopWebService,
@@ -27,6 +29,7 @@ import {
   type WebService,
   type RegistryModule,
   type SandboxResources,
+  type SandboxSizePreset,
 } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { useSessions, currentConversation } from "./sessions.js";
@@ -398,6 +401,101 @@ export function ResourcesSection({ resources }: { resources: SandboxResources })
   );
 }
 
+/** Which preset does the CURRENT allotment correspond to? The broker stores raw
+ *  resources, not the preset name that produced them, so the selected option is
+ *  derived by matching cpu/memory/gpu against the table. Returns "" when nothing
+ *  matches — a size the agent set with raw values, which the dropdown shows as
+ *  "Custom" rather than silently mis-highlighting a preset it isn't. */
+export function matchPreset(
+  sizes: Record<string, SandboxSizePreset>,
+  resources: SandboxResources | null | undefined,
+): string {
+  const limits = resources?.limits;
+  if (!limits) return "";
+  return (
+    Object.keys(sizes).find((name) => {
+      const p = sizes[name];
+      return p.cpu === limits.cpu && p.memory === limits.memory && (p.gpu ?? undefined) === (limits.gpu ?? undefined);
+    }) ?? ""
+  );
+}
+
+/** One preset rendered for the dropdown: "medium — 2 CPU · 4Gi · 1 GPU". */
+function formatPreset(name: string, p: SandboxSizePreset): string {
+  const parts = [`${p.cpu} CPU`, p.memory];
+  if (p.gpu) parts.push(`${p.gpu} GPU`);
+  return `${name} — ${parts.join(" · ")}`;
+}
+
+export interface SizeSectionProps {
+  sizes: Record<string, SandboxSizePreset>;
+  /** The currently-applied allotment, used to derive the selected option. */
+  resources?: SandboxResources | null;
+  onSelect: (size: string) => void;
+  /** A write is in flight — the select is disabled so a double-pick can't race. */
+  saving?: boolean;
+  /** The server's rejection message, shown inline. We never silently revert: a
+   *  rejected preset must not look like the click did nothing. */
+  error?: string | null;
+  /** A size was recorded and is waiting for the next restart to take effect. */
+  pendingRestart?: boolean;
+}
+
+/** Sandbox size picker — the deployment's named presets from kubenix. Rendered only
+ *  when the deployment configured presets; otherwise the Sandbox tab shows just the
+ *  read-only allotment, as before. */
+export function SizeSection({ sizes, resources, onSelect, saving, error, pendingRestart }: SizeSectionProps) {
+  const names = Object.keys(sizes);
+  const selected = matchPreset(sizes, resources);
+  // Absent for "Custom" (no preset is selected) and for presets the deployment gave
+  // no hint, so the line appears only when it can actually say something.
+  const hint = selected ? (sizes[selected]?.hint ?? "") : "";
+  return (
+    <div data-testid="sandbox-size">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">Size</div>
+      <select
+        data-testid="sandbox-size-select"
+        className="w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground disabled:opacity-50"
+        value={selected}
+        disabled={saving}
+        onChange={(e) => onSelect(e.target.value)}
+      >
+        {/* Only present when the applied size matches no preset (agent-set raw
+            values). Not selectable as an action — picking a preset is the only
+            thing this control does. */}
+        {selected === "" ? (
+          <option value="" disabled>
+            Custom
+          </option>
+        ) : null}
+        {names.map((name) => (
+          <option key={name} value={name}>
+            {formatPreset(name, sizes[name])}
+          </option>
+        ))}
+      </select>
+      {/* The deployment's guidance for the SELECTED preset. Kept out of the option
+          labels: an <option> can't wrap or dim, so appending it there truncates the
+          numbers at this panel's width (320px). Sits directly under the select and
+          above the transient note so its position never shifts. */}
+      {hint ? (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="sandbox-size-hint">
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="mt-1 text-xs text-destructive" data-testid="sandbox-size-error">
+          {error}
+        </p>
+      ) : pendingRestart ? (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="sandbox-size-pending">
+          Takes effect when the sandbox next restarts.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export interface SandboxPanelViewProps {
   state: SandboxState;
   services: WebService[];
@@ -408,6 +506,12 @@ export interface SandboxPanelViewProps {
   owner?: string | null;
   /** The sandbox's resource allotment (cpu/memory/gpu). null/empty -> not shown. */
   resources?: SandboxResources | null;
+  /** The deployment's named size presets. Empty -> the size picker is hidden. */
+  sizes?: Record<string, SandboxSizePreset>;
+  onSelectSize?: (size: string) => void;
+  sizeSaving?: boolean;
+  sizeError?: string | null;
+  sizePendingRestart?: boolean;
   onStartSandbox: () => void;
   onStartService: (name: string) => void;
   onStopService: (name: string) => void;
@@ -426,6 +530,11 @@ export function SandboxPanelView({
   conversationId,
   owner,
   resources,
+  sizes,
+  onSelectSize,
+  sizeSaving,
+  sizeError,
+  sizePendingRestart,
   onStartSandbox,
   onStartService,
   onStopService,
@@ -488,6 +597,20 @@ export function SandboxPanelView({
       {/* Resource allotment — shown regardless of running state (the size is set even
           while suspended, and it's what the pod will come up with). */}
       {hasResources(resources) ? <ResourcesSection resources={resources} /> : null}
+
+      {/* Size picker — only when the deployment configured presets AND a write path
+          is wired (broker mode). Sits under the allotment: the allotment is what the
+          pod HAS, this is what it will come up with next restart. */}
+      {sizes && Object.keys(sizes).length > 0 && onSelectSize ? (
+        <SizeSection
+          sizes={sizes}
+          resources={resources}
+          onSelect={onSelectSize}
+          saving={sizeSaving}
+          error={sizeError}
+          pendingRestart={sizePendingRestart}
+        />
+      ) : null}
 
       {/* Body: services + modules when running; a hint otherwise. */}
       {state === "running" ? (
@@ -559,6 +682,52 @@ export function SandboxPanel() {
     };
   }, [currentId, s.state]);
 
+  // The deployment's preset table. Deployment-wide (not per-conversation), so it's
+  // fetched once rather than per conversation change.
+  const [sizes, setSizes] = useState<Record<string, SandboxSizePreset>>({});
+  useEffect(() => {
+    let alive = true;
+    void loadSandboxSizes({ baseUrl: BASE_URL }).then((r) => {
+      if (alive) setSizes(r.sizes);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const [sizeSaving, setSizeSaving] = useState(false);
+  const [sizeError, setSizeError] = useState<string | null>(null);
+  const [sizePendingRestart, setSizePendingRestart] = useState(false);
+
+  const onSelectSize = (size: string) => {
+    const preset = sizes[size];
+    // Bail BEFORE setting `saving`: with no conversation yet there is nothing to
+    // PUT to, and an early return after setSizeSaving(true) would leave the select
+    // disabled forever with no request in flight to re-enable it.
+    const conv = currentConversation();
+    if (!preset || !conv) return;
+    setSizeSaving(true);
+    setSizeError(null);
+    void conv
+      .ifCreated((id) => setSandboxSize({ baseUrl: BASE_URL }, id, size), "no conversation" as string | null)
+      .then((err) => {
+        setSizeSaving(false);
+        if (err) {
+          setSizeError(err);
+          return;
+        }
+        setSizePendingRestart(true);
+        // Reflect the pick immediately. The broker applies it on the NEXT restart, so
+        // re-reading /resources here would return the OLD size and the dropdown would
+        // snap back — looking like the change was rejected. The note under the select
+        // is what tells the user it hasn't taken effect yet.
+        setResources({
+          requests: { cpu: preset.cpu, memory: preset.memory, gpu: preset.gpu },
+          limits: { cpu: preset.cpu, memory: preset.memory, gpu: preset.gpu },
+        });
+      });
+  };
+
   return (
     <SandboxPanelView
       state={s.state}
@@ -569,6 +738,11 @@ export function SandboxPanel() {
       conversationId={s.conversationId}
       owner={owner}
       resources={resources}
+      sizes={sizes}
+      onSelectSize={onSelectSize}
+      sizeSaving={sizeSaving}
+      sizeError={sizeError}
+      sizePendingRestart={sizePendingRestart}
       onStartSandbox={() => void s.startSandbox()}
       onStartService={s.startService}
       onStopService={s.stopService}

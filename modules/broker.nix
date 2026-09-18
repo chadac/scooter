@@ -583,6 +583,39 @@ in
                   # — the agent-host SA (a sandbox SA is only ever allowed its OWN size).
                   { name = "SANDBOX_CONTROL_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # The deployment default size (tier 2 in the broker's resolve_resources:
+                  # conversation override → this → PLATFORM_DEFAULT). Rendered from the
+                  # preset marked `default = true` → its {cpu, memory}. Requests == limits
+                  # (Guaranteed QoS) for all presets.
+                  # Empty when the deployment offers no presets — the broker then falls
+                  # through to PLATFORM_DEFAULT rather than being handed a size.
+                  { name = "SANDBOX_DEFAULT_RESOURCES_JSON";
+                    value = if cfg.defaultSandboxSizeName == null then "" else
+                    let
+                      preset = cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
+                      # gpu is optional; omit the key entirely when null so the broker
+                      # sees no gpu rather than an explicit zero.
+                      side = { cpu = preset.cpu; memory = preset.memory; }
+                        // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; };
+                    in builtins.toJSON { requests = side; limits = side; };
+                  }
+                  # The full preset map (name → {cpu, memory}), exposed at GET /sandbox-sizes
+                  # so the UI dropdown and the agent can discover what's available. Each preset
+                  # renders as requests == limits (Guaranteed QoS).
+                  { name = "SANDBOX_SIZES_JSON";
+                    value = builtins.toJSON (lib.mapAttrs (_name: preset:
+                      { cpu = preset.cpu; memory = preset.memory; }
+                      // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; }
+                      # Omit an empty hint rather than emitting "" — the agent and the
+                      # dropdown both branch on presence, not on emptiness.
+                      // lib.optionalAttrs (preset.hint != "") { hint = preset.hint; }
+                    ) cfg.sandboxSizes);
+                  }
+                  # "" (not null) when no presets are configured — an env value must be a
+                  # string, and the broker reads empty as "no deployment default".
+                  { name = "SANDBOX_DEFAULT_SIZE_NAME";
+                    value = if cfg.defaultSandboxSizeName == null then "" else cfg.defaultSandboxSizeName;
+                  }
                 ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
                   # Extra projected-token audiences a deployment's tools need
                   # (was SCOOTER_TOKEN_AUDIENCES on the agent-host).

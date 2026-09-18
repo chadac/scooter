@@ -21,12 +21,25 @@ let
 
   # Shape of one conversation's resources. `id` = conversationId.
   mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker", overlayStore ? false, overlayStorage ? "20Gi"
-    # MUST mirror the broker's PLATFORM_DEFAULT (sandbox/resources.py): requests ==
-    # limits (cpu AND memory) => Guaranteed QoS, so one runaway sandbox is hard-capped
-    # and can't starve its neighbours (the "single bad pod blows up everything" case).
-    # This file is the Nix-rendered contract for a directly-created Sandbox; a mismatch
-    # drifts from what the provisioner produces at runtime.
-  , sandboxResources ? { requests = { cpu = "2"; memory = "4Gi"; }; limits = { cpu = "2"; memory = "4Gi"; }; }
+    # Default sandbox size: the preset marked `default = true` in cfg.sandboxSizes.
+    # Requests == limits (Guaranteed QoS) so one runaway sandbox is hard-capped and
+    # can't starve its neighbours. This is the Nix-rendered contract for a directly-
+    # created Sandbox; the broker's PLATFORM_DEFAULT (resources.py) mirrors the
+    # fallback used when a deployment configures no presets at all.
+    # This lands in a k8s container `resources` block verbatim, so a GPU renders under
+    # its extended-resource name (`nvidia.com/gpu`) on BOTH sides — k8s rejects a GPU
+    # request that differs from its limit. The broker's render_resources does the same
+    # for the runtime path.
+  , sandboxResources ? let
+      defaultPreset =
+        if cfg.defaultSandboxSizeName == null
+        # No presets configured: mirror the broker's PLATFORM_DEFAULT literally, so the
+        # two paths that can create a Sandbox agree on the size.
+        then { cpu = "2"; memory = "4Gi"; gpu = null; }
+        else cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
+      side = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; }
+        // lib.optionalAttrs (defaultPreset.gpu != null) { "nvidia.com/gpu" = toString defaultPreset.gpu; };
+    in { requests = side; limits = side; }
   }: {
     # ServiceAccount sandbox-${id}  (unique per conversation; broker identity)
     serviceAccount = {

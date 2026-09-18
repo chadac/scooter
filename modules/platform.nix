@@ -157,6 +157,110 @@ in
         Default false keeps the legacy in-agent-host k8s provisioner (rollback path).
       '';
     };
+    sandboxSizes = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          cpu = mkOption { type = types.str; description = "CPU quantity (requests == limits for Guaranteed QoS), e.g. \"2\" or \"500m\"."; };
+          memory = mkOption { type = types.str; description = "Memory quantity (requests == limits for Guaranteed QoS), e.g. \"4Gi\" or \"512Mi\"."; };
+          gpu = mkOption {
+            type = types.nullOr types.ints.unsigned;
+            default = null;
+            # k8s requires gpu request == limit, so one count renders on both sides.
+            description = "Whole GPUs (nvidia.com/gpu) for this preset; null = none.";
+          };
+          hint = mkOption {
+            type = types.str;
+            default = "";
+            example = "Parallel builds, large test runs.";
+            description = ''
+              Deployment guidance for when to pick this size, shown to the AGENT by
+              show_sandbox_resources and to the USER under the Sandbox tab's size
+              picker (not inside the option labels — an <option> can't wrap, so a
+              hint there truncates the cpu/memory numbers). Mirrors
+              agent.availableModels.<id>.hint — both pick by workload rather than
+              guessing at numbers. Empty = no hint.
+            '';
+          };
+          default = mkOption {
+            type = types.bool;
+            default = false;
+            description = ''
+              Mark this preset as the size a new sandbox comes up with. EXACTLY ONE
+              preset must set it (see agentSandbox.defaultSandboxSizeName), so the
+              default lives beside the numbers it selects rather than in a separate
+              option naming a key that has to be kept in sync.
+            '';
+          };
+        };
+      });
+      # Deliberately just two: a cheap size for chat/light edits and the medium that a
+      # sandbox comes up with. Every additional preset is a claim about what the
+      # cluster's nodes can schedule, which the platform cannot make for a deployment —
+      # so bigger sizes (and any GPU size) are opt-in. See the example config.
+      default = {
+        tiny = { cpu = "250m"; memory = "512Mi"; hint = "Chat and light edits."; };
+        medium = { cpu = "2"; memory = "4Gi"; hint = "Builds and test suites."; default = true; };
+      };
+      example = {
+        tiny = { cpu = "250m"; memory = "256Mi"; };
+        small = { cpu = "1"; memory = "2Gi"; default = true; };
+        medium = { cpu = "2"; memory = "4Gi"; };
+        large = { cpu = "4"; memory = "16Gi"; };
+        xlarge = { cpu = "8"; memory = "32Gi"; };
+        gpu-small = { cpu = "4"; memory = "16Gi"; gpu = 1; };
+      };
+      description = ''
+        Named sandbox size presets — a map of preset-name → {cpu, memory}. Each
+        preset sets BOTH requests and limits to the same value (Guaranteed QoS), so
+        a sandbox at that size is hard-capped and cannot burst into its neighbours'
+        resources. The agent can request a preset by name (via set_sandbox_resources),
+        and the UI shows a dropdown. Requests == limits for all presets.
+
+        The built-in table ships only `tiny` and `medium`, because every preset is a
+        promise that the cluster can schedule that shape — which the platform can't
+        make on a deployment's behalf. Bigger sizes and GPU sizes are opt-in: override
+        the map to retune, add or remove presets (examples/kubenix-config.nix shows a
+        fuller menu). NOTE that with the built-in table there is no size ABOVE the
+        default, so a deployment whose agents do heavy builds should add one.
+
+        Exactly one preset sets `default = true` — the size a new sandbox comes up
+        with. Set the map to { } to offer no presets at all (the UI then hides the
+        picker and the platform default applies).
+      '';
+    };
+    defaultSandboxSizeName = mkOption {
+      type = types.nullOr types.str;
+      internal = true;
+      readOnly = true;
+      # Derived, not set: the default is declared on the preset itself, so there is
+      # no second option naming a key that can drift out of sync with the map.
+      default =
+        let
+          flagged = lib.attrNames (lib.filterAttrs (_: p: p.default) cfg.sandboxSizes);
+          names = lib.concatStringsSep ", " (lib.attrNames cfg.sandboxSizes);
+        in
+        # A `throw` rather than an assertion because kubenix's module system has no
+        # NixOS `assertions` option — an assertions block there evaluates as a plain
+        # attribute and silently checks nothing.
+        if cfg.sandboxSizes == { } then null
+        else if lib.length flagged == 1 then lib.head flagged
+        else if flagged == [ ] then
+          throw ''
+            No preset in agentSandbox.sandboxSizes sets `default = true`, so a new
+            sandbox has no size to come up with. Mark exactly one (have: ${names}).
+          ''
+        else
+          throw ''
+            ${toString (lib.length flagged)} presets in agentSandbox.sandboxSizes set
+            `default = true` (${lib.concatStringsSep ", " flagged}); exactly one may.
+          '';
+      description = ''
+        The preset marked `default = true`, resolved from sandboxSizes; null when a
+        deployment offers no presets. Read by the broker (SANDBOX_DEFAULT_SIZE_NAME +
+        SANDBOX_DEFAULT_RESOURCES_JSON) and by conversation.nix. Not settable —
+        declare the default on the preset.
+      '';
+    };
     # Generic, DEPLOYMENT-parameterized tool injection — the platform doesn't know
     # what's in these; a deployment fills them with its own .scooter tools + the
     # token audiences / env its tools need. See docs/SCOOTER_DIR_INJECTION.md.

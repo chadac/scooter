@@ -13,6 +13,10 @@
 
 import type { ToolResult } from "./mcpServer.js";
 import { validateResources, InvalidResourceError, type SandboxResources } from "../session/resources.js";
+import type { SandboxSizePreset } from "../session/brokerProvisioner.js";
+import { formatError, logger } from "../log.js";
+
+const log = logger("resourceTools");
 
 /** What the resource tools need from the agent-host. */
 export interface SandboxResourceToolsWiring {
@@ -21,14 +25,21 @@ export interface SandboxResourceToolsWiring {
    *  May be async (it reads the broker). */
   currentResources(conversationId: string): SandboxResources | Promise<SandboxResources>;
   /** Write the size spec to the broker (PUT /size). The broker applies it on the
-   *  NEXT sandbox restart — this does NOT restart the pod. Resolves to true when the
-   *  spec was recorded. Rejects if the broker write fails. */
-  setResources(conversationId: string, resources: SandboxResources): Promise<boolean>;
+   *  NEXT sandbox restart — this does NOT restart the pod. Accepts either a preset
+   *  name (via {size: "large"}) OR raw resources. Resolves to true when the spec was
+   *  recorded. Rejects if the broker write fails. */
+  setResources(conversationId: string, resources: SandboxResources | { size: string }): Promise<boolean>;
+  /** Get the available named sandbox size presets (name → {cpu, memory}) and the
+   *  default preset name, from GET /sandbox-sizes. Used to validate preset names and
+   *  show the agent what's available. May be async (reads the broker). */
+  availableSizes?(): Promise<{ sizes: Record<string, SandboxSizePreset>; default: string | null }>;
 }
 
 /** The set_sandbox_resources tool input (friendly shape; all optional — an omitted
- *  dimension keeps its current value). Mirrors SandboxResources; flat for the LLM. */
+ *  dimension keeps its current value). Accepts EITHER a preset name (size) OR raw
+ *  resources (the cpu/memory/gpu fields). Mirrors SandboxResources; flat for the LLM. */
 export interface SetSandboxResourcesArgs {
+  size?: string;
   requestCpu?: string;
   requestMemory?: string;
   requestGpu?: number;
@@ -72,6 +83,34 @@ export async function handleShowSandboxResources(
   conversationId: string,
 ): Promise<ToolResult> {
   const r = await deps.currentResources(conversationId);
+  // The preset table is per-deployment, so the agent cannot know the valid names
+  // from its skill doc alone — listing them here is what stops it guessing a name
+  // and eating a rejection. A failure to read them is non-fatal: the current size
+  // is still worth reporting.
+  let presetLines = "";
+  if (deps.availableSizes) {
+    try {
+      const { sizes, default: defaultName } = await deps.availableSizes();
+      const names = Object.keys(sizes);
+      if (names.length > 0) {
+        presetLines =
+          "\nAvailable size presets (pass one as set_sandbox_resources(size=...)):\n" +
+          names
+            .map((n) => {
+              const p = sizes[n];
+              const gpu = p.gpu ? `, ${p.gpu} GPU` : "";
+              const isDefault = n === defaultName ? "  (default)" : "";
+              // The deployment's hint is the steer that makes the choice workload-based
+              // rather than a guess at numbers — carry it through verbatim.
+              const hint = p.hint ? ` — ${p.hint}` : "";
+              return `- ${n}: ${p.cpu} CPU, ${p.memory}${gpu}${isDefault}${hint}`;
+            })
+            .join("\n");
+      }
+    } catch (e) {
+      log.warn("could not list size presets", { error: formatError(e) });
+    }
+  }
   return {
     content: [
       {
@@ -80,7 +119,8 @@ export async function handleShowSandboxResources(
           "Your sandbox resources:\n" +
           `- requests: ${sideLine(r.requests)}\n` +
           `- limits: ${sideLine(r.limits)}\n` +
-          "Change them with set_sandbox_resources (applies on the next sandbox restart).",
+          presetLines +
+          "\nChange them with set_sandbox_resources (applies on the next sandbox restart).",
       },
     ],
   };
@@ -88,36 +128,75 @@ export async function handleShowSandboxResources(
 
 /** set_sandbox_resources: validate the requested resources, then WRITE the broker
  *  size spec. The broker applies it on the NEXT sandbox restart — this does not
- *  restart the pod now. On a bad quantity returns isError with the exact field to fix. */
+ *  restart the pod now. Accepts EITHER a preset name (size) OR raw resources. On a
+ *  bad quantity or unknown preset returns isError with the exact field/issue to fix. */
 export async function handleSetSandboxResources(
   deps: SandboxResourceToolsWiring,
   conversationId: string,
   args: SetSandboxResourcesArgs,
 ): Promise<ToolResult> {
-  const requested = argsToResources(args);
-  try {
-    validateResources(requested);
-  } catch (e) {
-    if (e instanceof InvalidResourceError) {
-      return { isError: true, content: [{ type: "text", text: `${e.message} (${e.field})` }] };
+  // Preset-name path: pass {size: "..."} straight to the broker (it resolves the preset).
+  // Raw-resources path: validate + fold the flat args into the nested shape.
+  if (args.size) {
+    // Preset name provided — validate it exists if we can query available sizes.
+    if (deps.availableSizes) {
+      try {
+        const { sizes } = await deps.availableSizes();
+        if (!Object.keys(sizes).includes(args.size)) {
+          const available = Object.keys(sizes).join(", ") || "(no presets configured)";
+          return {
+            isError: true,
+            content: [{ type: "text", text: `Unknown size preset "${args.size}". Available: ${available}` }],
+          };
+        }
+      } catch (e) {
+        // Sizes query failed — let the broker reject it (don't block the write).
+        log.warn("could not query available sizes; skipping preset validation", { error: formatError(e) });
+      }
     }
-    throw e;
+    // Pass the preset name to the broker as {size: "..."}.
+    try {
+      await deps.setResources(conversationId, { size: args.size });
+    } catch (e) {
+      return { isError: true, content: [{ type: "text", text: `Could not set the sandbox size: ${(e as Error).message}` }] };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Recorded size preset "${args.size}" — it takes effect on the NEXT sandbox restart (not applied to the ` +
+            "running pod right now). Nothing was interrupted.",
+        },
+      ],
+    };
+  } else {
+    // Raw-resources path: validate + fold the flat args into the nested shape.
+    const requested = argsToResources(args);
+    try {
+      validateResources(requested);
+    } catch (e) {
+      if (e instanceof InvalidResourceError) {
+        return { isError: true, content: [{ type: "text", text: `${e.message} (${e.field})` }] };
+      }
+      throw e;
+    }
+    try {
+      await deps.setResources(conversationId, requested);
+    } catch (e) {
+      // A rejection is a real failure (the broker write failed) — surface it so the
+      // agent knows the resize did NOT take, never hide it.
+      return { isError: true, content: [{ type: "text", text: `Could not set the sandbox size: ${(e as Error).message}` }] };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            "Recorded — your new sandbox size takes effect on the NEXT sandbox restart (it is not applied to the " +
+            "running pod right now). Nothing was interrupted.",
+        },
+      ],
+    };
   }
-  try {
-    await deps.setResources(conversationId, requested);
-  } catch (e) {
-    // A rejection is a real failure (the broker write failed) — surface it so the
-    // agent knows the resize did NOT take, never hide it.
-    return { isError: true, content: [{ type: "text", text: `Could not set the sandbox size: ${(e as Error).message}` }] };
-  }
-  return {
-    content: [
-      {
-        type: "text",
-        text:
-          "Recorded — your new sandbox size takes effect on the NEXT sandbox restart (it is not applied to the " +
-          "running pod right now). Nothing was interrupted.",
-      },
-    ],
-  };
 }
