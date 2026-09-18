@@ -57,20 +57,22 @@ func TestAssembleList(t *testing.T) {
 		"a": {{Source: "github", ResourceType: "pull", URL: sp("http://x")}, {Source: "slack", ResourceType: "thread"}},
 	}
 
-	t.Run("all scope joins meta+CR+links, omits CR-less, sorts newest-first", func(t *testing.T) {
+	t.Run("all scope joins meta+CR+links, omits CR-less, preserves input order", func(t *testing.T) {
 		rows := assembleList(metas, crsOf(crs), links, 1000, "", "all")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows (ended omitted), got %d", len(rows))
 		}
-		// newest createdAt first: b(200) before a(100).
-		if rows[0].ID != "b" || rows[1].ID != "a" {
+		// Order is the store's (ORDER BY last_activity_at DESC, created_at DESC), not this
+		// function's — a and b arrive in that order and must come out in it, with the
+		// filtered-out "ended" closing the gap rather than shifting anything.
+		if rows[0].ID != "a" || rows[1].ID != "b" {
 			t.Fatalf("wrong order: %s,%s", rows[0].ID, rows[1].ID)
 		}
-		// phase->status: Suspended => suspended, Assigned => running.
-		if rows[0].Status != "suspended" || rows[1].Status != "running" {
+		// phase->status: Assigned => running, Suspended => suspended.
+		if rows[0].Status != "running" || rows[1].Status != "suspended" {
 			t.Errorf("status mapping wrong: %q %q", rows[0].Status, rows[1].Status)
 		}
-		a := rows[1]
+		a := rows[0]
 		if !a.Starred || a.IdleMs != 100 || a.AgeMs != 900 || a.Sandbox.Name != "conv-aa" {
 			t.Errorf("row a projection wrong: %+v", a)
 		}
@@ -81,9 +83,31 @@ func TestAssembleList(t *testing.T) {
 		if len(a.Links) != 2 {
 			t.Errorf("links not attached: %v", a.Links)
 		}
-		// a conversation with no links gets empty (non-null) arrays.
-		if rows[0].Sources == nil || rows[0].Links == nil {
-			t.Errorf("empty enrichment must be [] not null: %+v", rows[0])
+		// a conversation with no links gets empty (non-null) arrays. b is the link-less one.
+		if rows[1].Sources == nil || rows[1].Links == nil {
+			t.Errorf("empty enrichment must be [] not null: %+v", rows[1])
+		}
+	})
+
+	// The ORDER BY in Store.Conversations is now the only thing establishing the endpoint's order,
+	// which makes "assembleList must not reorder" a load-bearing contract with nothing else
+	// guarding it. This pins it WITHOUT touching the query: feed an order that matches neither
+	// timestamp and require it back verbatim. A map iteration or a regroup added to assembleList
+	// fails here instead of silently shuffling the sidebar.
+	t.Run("does not reorder: input order is returned verbatim", func(t *testing.T) {
+		scrambled := []ConversationRow{
+			{ID: "m", ThreadID: "m", Title: "M", CreatedAt: 200, LastActivityAt: 500},
+			{ID: "z", ThreadID: "z", Title: "Z", CreatedAt: 900, LastActivityAt: 100},
+			{ID: "q", ThreadID: "q", Title: "Q", CreatedAt: 100, LastActivityAt: 900},
+		}
+		rows := assembleList(scrambled, allExisting{}, nil, 1000, "", "all")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		for i, want := range []string{"m", "z", "q"} {
+			if rows[i].ID != want {
+				t.Fatalf("assembleList reordered rows: got %s,%s,%s", rows[0].ID, rows[1].ID, rows[2].ID)
+			}
 		}
 	})
 
