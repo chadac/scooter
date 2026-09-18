@@ -57,20 +57,22 @@ func TestAssembleList(t *testing.T) {
 		"a": {{Source: "github", ResourceType: "pull", URL: sp("http://x")}, {Source: "slack", ResourceType: "thread"}},
 	}
 
-	t.Run("all scope joins meta+CR+links, omits CR-less, sorts newest-first", func(t *testing.T) {
+	t.Run("all scope joins meta+CR+links, omits CR-less, sorts most-recently-active first", func(t *testing.T) {
 		rows := assembleList(metas, crsOf(crs), links, 1000, "", "all")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows (ended omitted), got %d", len(rows))
 		}
-		// newest createdAt first: b(200) before a(100).
-		if rows[0].ID != "b" || rows[1].ID != "a" {
+		// The fixtures order createdAt and lastActivityAt OPPOSITELY on purpose, so this
+		// pins which one the endpoint sorts on: a(activity 900) before b(800), even though
+		// b was created later. Sorting on createdAt would invert it.
+		if rows[0].ID != "a" || rows[1].ID != "b" {
 			t.Fatalf("wrong order: %s,%s", rows[0].ID, rows[1].ID)
 		}
-		// phase->status: Suspended => suspended, Assigned => running.
-		if rows[0].Status != "suspended" || rows[1].Status != "running" {
+		// phase->status: Assigned => running, Suspended => suspended.
+		if rows[0].Status != "running" || rows[1].Status != "suspended" {
 			t.Errorf("status mapping wrong: %q %q", rows[0].Status, rows[1].Status)
 		}
-		a := rows[1]
+		a := rows[0]
 		if !a.Starred || a.IdleMs != 100 || a.AgeMs != 900 || a.Sandbox.Name != "conv-aa" {
 			t.Errorf("row a projection wrong: %+v", a)
 		}
@@ -81,9 +83,26 @@ func TestAssembleList(t *testing.T) {
 		if len(a.Links) != 2 {
 			t.Errorf("links not attached: %v", a.Links)
 		}
-		// a conversation with no links gets empty (non-null) arrays.
-		if rows[0].Sources == nil || rows[0].Links == nil {
-			t.Errorf("empty enrichment must be [] not null: %+v", rows[0])
+		// a conversation with no links gets empty (non-null) arrays. b is the link-less one.
+		if rows[1].Sources == nil || rows[1].Links == nil {
+			t.Errorf("empty enrichment must be [] not null: %+v", rows[1])
+		}
+	})
+
+	// Bulk-migrated rows share a last_activity_at. Without the createdAt tiebreak their relative
+	// order is arbitrary, so the sidebar reshuffles between polls.
+	t.Run("rows sharing a lastActivityAt fall back to newest-created", func(t *testing.T) {
+		tied := []ConversationRow{
+			{ID: "old", ThreadID: "old", Title: "Old", CreatedAt: 100, LastActivityAt: 500},
+			{ID: "new", ThreadID: "new", Title: "New", CreatedAt: 300, LastActivityAt: 500},
+			{ID: "mid", ThreadID: "mid", Title: "Mid", CreatedAt: 200, LastActivityAt: 500},
+		}
+		rows := assembleList(tied, allExisting{}, nil, 1000, "", "all")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if rows[0].ID != "new" || rows[1].ID != "mid" || rows[2].ID != "old" {
+			t.Fatalf("tiebreak should be newest-created: %s,%s,%s", rows[0].ID, rows[1].ID, rows[2].ID)
 		}
 	})
 

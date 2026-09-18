@@ -47,8 +47,9 @@ type listRow struct {
 }
 
 // assembleList joins metadata with the CR existence set, applies the visibility filter, enriches
-// with links, and sorts newest-first — the whole GET /conversations body, as a pure function so
-// it is unit-testable without a DB or a live watch. Existence comes from crs.CR(id): in cluster the
+// with links, and sorts MOST-RECENTLY-ACTIVE first (not newest-created) — the whole
+// GET /conversations body, as a pure function so it is unit-testable without a DB or a live
+// watch. Existence comes from crs.CR(id): in cluster the
 // CRD watch cache (a metadata row with no CR is an ended conversation, omitted); in the kube-less
 // dev stack allExisting (every row exists).
 func assembleList(metas []ConversationRow, crs crLookup, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
@@ -63,7 +64,14 @@ func assembleList(metas []ConversationRow, crs crLookup, links map[string][]Link
 		}
 		rows = append(rows, makeListRow(m, cr, links[m.ID], now))
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt > rows[j].CreatedAt })
+	// CreatedAt only breaks ties: rows sharing a last_activity_at (bulk-migrated ones do) would
+	// otherwise order arbitrarily and reshuffle between polls. Why: issue #540.
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].LastActivityAt != rows[j].LastActivityAt {
+			return rows[i].LastActivityAt > rows[j].LastActivityAt
+		}
+		return rows[i].CreatedAt > rows[j].CreatedAt
+	})
 	return rows
 }
 
