@@ -116,6 +116,8 @@ class _OTelMetricsSink(MetricsSink):
         self._task_count_enabled = 0
         self._task_count_disabled = 0
         self._due_backlog_count = 0
+        # Instruments whose callback has already reported a failure — see _guarded.
+        self._failed_instruments: set[str] = set()
 
         meter.create_observable_gauge(
             "scheduler_tasks",
@@ -131,14 +133,42 @@ class _OTelMetricsSink(MetricsSink):
     # OTel observable-gauge callbacks. The SDK hands each a CallbackOptions and expects it to
     # RETURN (or yield) Observation objects — CallbackOptions has no `.observe()`, so the old
     # `observer.observe(...)` form raised AttributeError every collection cycle.
+    #
+    # A callback that raises is logged by the SDK as "Callback failed for instrument <name>"
+    # EVERY collection cycle, forever — an unbounded error stream from an observability path
+    # that must never be the loudest thing in the logs. So each one is wrapped: a failure
+    # drops that cycle's data point and is reported ONCE, not once per cycle. Why: PR #534.
     def _observe_tasks(self, options: CallbackOptions) -> list[Observation]:
-        return [
-            Observation(self._task_count_enabled, {"enabled": "true"}),
-            Observation(self._task_count_disabled, {"enabled": "false"}),
-        ]
+        return self._guarded(
+            "scheduler_tasks",
+            lambda: [
+                Observation(self._task_count_enabled, {"enabled": "true"}),
+                Observation(self._task_count_disabled, {"enabled": "false"}),
+            ],
+        )
 
     def _observe_backlog(self, options: CallbackOptions) -> list[Observation]:
-        return [Observation(self._due_backlog_count)]
+        return self._guarded("scheduler_due_backlog", lambda: [Observation(self._due_backlog_count)])
+
+    def _guarded(self, instrument: str, build) -> list[Observation]:
+        """Run a gauge callback body, converting a raise into a dropped data point.
+
+        Reports the FIRST failure per instrument and stays quiet until that instrument
+        collects cleanly again — so a persistent bug is still visible exactly once, and a
+        flapping one is reported on each new episode rather than on each collection.
+        """
+        try:
+            observations = build()
+        except Exception as e:  # observability must not be able to spam the logs
+            if instrument not in self._failed_instruments:
+                self._failed_instruments.add(instrument)
+                logger.error(
+                    "observable-gauge callback failed — dropping this data point",
+                    extra={"instrument": instrument, "error": format_error(e)},
+                )
+            return []
+        self._failed_instruments.discard(instrument)
+        return observations
 
     def fire_completed(self, *, status: str, duration_ms: float) -> None:
         self._fires.add(1, {"status": status})
@@ -150,12 +180,15 @@ class _OTelMetricsSink(MetricsSink):
     def claim_lag(self, *, lag_ms: float) -> None:
         self._claim_lag_hist.record(lag_ms)
 
+    # Coerce at the SETTER, not in the callback: a bad value rejected here is attributable
+    # to the caller that produced it, while the same value rejected at collection time
+    # surfaces as an anonymous callback failure minutes later.
     def set_task_counts(self, *, enabled: int, disabled: int) -> None:
-        self._task_count_enabled = enabled
-        self._task_count_disabled = disabled
+        self._task_count_enabled = int(enabled)
+        self._task_count_disabled = int(disabled)
 
     def set_due_backlog(self, *, count: int) -> None:
-        self._due_backlog_count = count
+        self._due_backlog_count = int(count)
 
     def runs_pruned(self, *, count: int) -> None:
         self._runs_pruned.add(count)

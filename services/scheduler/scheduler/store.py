@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .cron import next_run, validate
@@ -118,6 +118,27 @@ class Store:
         )
         async with self._session() as s:
             return list((await s.scalars(stmt)).all())
+
+    async def gauge_counts(self, now: datetime) -> tuple[int, int, int]:
+        """(enabled, disabled, due_backlog) for the observable gauges, in one round trip.
+
+        Read this BEFORE claim_due: claim_due advances next_run_at as it claims, so a
+        backlog measured after it has already been zeroed by the very tick that is
+        supposed to be reporting it. Cross-owner on purpose — this is a fleet-wide
+        health signal, not a user-facing list, and it carries no owner attribute
+        (unbounded cardinality).
+        """
+        enabled_count = func.count().filter(TaskRow.enabled.is_(True))
+        disabled_count = func.count().filter(TaskRow.enabled.is_(False))
+        backlog_count = func.count().filter(
+            TaskRow.enabled.is_(True),
+            TaskRow.next_run_at.is_not(None),
+            TaskRow.next_run_at <= now,
+        )
+        async with self._session() as s:
+            stmt = select(enabled_count, disabled_count, backlog_count).select_from(TaskRow)
+            row = (await s.execute(stmt)).one()
+        return int(row[0]), int(row[1]), int(row[2])
 
     async def claim_due(self, now: datetime) -> list[TaskRow]:
         """ATOMICALLY claim all due tasks: in ONE transaction, select them
