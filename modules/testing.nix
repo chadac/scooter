@@ -57,6 +57,16 @@ in
         exactly why it is confined to this module.
       '';
     };
+
+    orphanGraceSeconds = mkOption {
+      type = types.int;
+      default = 60;
+      description = ''
+        Reap a Sandbox with no owning Conversation once it is this old. The production default
+        (600s) assumes conversations outlive the window; an e2e shard creates and deletes one
+        per test, so orphans pile up faster than they age out.
+      '';
+    };
   };
 
   config = lib.mkIf tcfg.enable {
@@ -65,6 +75,11 @@ in
     agentSandbox = {
       fakeAgent = lib.mkForce tcfg.fakeAgent;
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
+      # The reaper gates on Sandbox AGE, not on how long it has been orphaned, so a
+      # per-test sandbox stays unreapable for the whole window however early its
+      # conversation is deleted. At 600s on a 4-CPU k3d node that backlog starves new
+      # sandbox boots and the run never starts. Why: PR #539.
+      conversationController.orphanGraceSeconds = lib.mkForce tcfg.orphanGraceSeconds;
       # SMALL sandboxes. The production default is Guaranteed QoS 2cpu/4Gi PER
       # sandbox. Tests assert behaviour, not perf isolation: a fake agent's
       # echo + a short shell command fit comfortably here, and several sandboxes
@@ -90,6 +105,7 @@ in
         warning = "This namespace was rendered with agentSandbox.testing.enable = true. NOT a production deploy.";
         fakeAgent = lib.boolToString tcfg.fakeAgent;
         testWebhook = lib.boolToString tcfg.testWebhook;
+        orphanGraceSeconds = toString tcfg.orphanGraceSeconds;
       };
     };
   };
