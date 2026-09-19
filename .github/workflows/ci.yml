@@ -1193,7 +1193,10 @@ jobs:
       # — a red baseline is the good outcome and must never fail this job.
       - name: control — does it still reproduce on the base?
         id: control
-        if: always() && steps.summary.outputs.verdict == 'fixed'
+        # !cancelled(), not always(): a superseded run (every push and label event
+        # cancels the previous one) must not spend ten minutes on a control whose
+        # verdict nobody will read.
+        if: "!cancelled() && steps.summary.outputs.verdict == 'fixed'"
         continue-on-error: true
         env:
           CI: "1"
@@ -1223,7 +1226,11 @@ jobs:
           fi
 
       - name: flake verdict comment
-        if: always() && github.event_name == 'pull_request'
+        # !cancelled(): a CANCELLED run has no report, so its comment step would
+        # overwrite a good verdict in the SHARED comment with "no report to
+        # summarise" — about a run that was superseded and nobody is waiting on.
+        # A genuinely failed run still comments: that is a real signal.
+        if: "!cancelled() && github.event_name == 'pull_request'"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
@@ -1376,7 +1383,11 @@ jobs:
       # only meaningful when the fix happens to be test-side.
       - name: flake verdict comment
         id: summary
-        if: always() && github.event_name == 'pull_request'
+        # !cancelled(): a CANCELLED run has no report, so its comment step would
+        # overwrite a good verdict in the SHARED comment with "no report to
+        # summarise" — about a run that was superseded and nobody is waiting on.
+        # A genuinely failed run still comments: that is a real signal.
+        if: "!cancelled() && github.event_name == 'pull_request'"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
