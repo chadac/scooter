@@ -156,7 +156,10 @@ export function renderMarkdown(summary, opts = {}) {
       `\`flake-test: ${summary.pattern}\` matched **no executed test**, so this check proves nothing about the flake — it passed by running ${summary.matchedButSkipped > 0 ? "only skipped tests" : "other tests"}.`,
       "",
     );
-    L.push(`- Tests executed in this run: **${summary.executedSpecs}**, none matching the pattern.`);
+    // "distinct": repetitions are aggregated by title, so 6 tests ×5 is 6 here.
+    L.push(
+      `- Distinct tests executed in this run: **${summary.executedSpecs}**, none matching the pattern.`,
+    );
     if (summary.matchedButSkipped > 0)
       L.push(`- ${plural(summary.matchedButSkipped, "matching test")} was skipped (target gating? \`test.skip\`?).`);
     L.push(
