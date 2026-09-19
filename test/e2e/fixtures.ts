@@ -52,10 +52,32 @@ export class Chat {
       .first()
       .waitFor({ state: "visible", timeout: 30_000 })
       .catch(() => {});
+    await this.submit(text);
+  }
+
+  /** Fill the composer and submit, VERIFYING the message actually left it.
+   *
+   *  The idle-wait above is best-effort (`.catch`), so a still-running composer silently
+   *  swallows the keystroke and KEEPS the text — which the next send's fill() then
+   *  overwrites, losing a turn with no error anywhere. An empty composer is the only
+   *  proof the turn left. Why: PR #544. */
+  private async submit(text: string) {
     const input = this.input();
     await input.click();
     await input.fill(text);
     await input.press("Enter");
+    // Poll rather than re-press every tick: an Enter on text that is already mid-submit
+    // sends it TWICE, which is worse than the drop this guards. Why: PR #544.
+    for (let i = 0; i < 20; i++) {
+      const left = await input.inputValue().catch(() => "");
+      if (left.trim() === "") return; // submitted
+      if (i > 0 && i % 4 === 0) {
+        await input.click().catch(() => {});
+        await input.press("Enter").catch(() => {});
+      }
+      await this.page.waitForTimeout(500);
+    }
+    throw new Error(`composer never accepted the message (still holding text): ${text.slice(0, 60)}`);
   }
 
   userMessages(): Locator {
@@ -135,23 +157,8 @@ export class Chat {
    *  (the composer accepts input mid-run; the message becomes a QUEUED item). `send()` deliberately
    *  waits for Send to be visible (idle), which would block here; this fills + submits immediately. */
   async sendWhileRunning(text: string) {
-    const input = this.input();
-    await input.click();
-    await input.fill(text);
-    await input.press("Enter");
-    // VERIFY the send actually landed. Against the fake agent the composer is instantly ready, so a
-    // fill+Enter always took. Against a REAL model the send button can still be disabled (or the
-    // editor not yet mounted) and the keystroke is silently DROPPED — the input keeps the text and
-    // the turn never happens, which reads downstream as "the model never replied". Retry until the
-    // composer is empty (submitted) rather than assuming.
-    for (let i = 0; i < 20; i++) {
-      const left = await input.inputValue().catch(() => "");
-      if (left.trim() === "") return; // submitted
-      await this.page.waitForTimeout(500);
-      await input.click().catch(() => {});
-      await input.press("Enter").catch(() => {});
-    }
-    throw new Error(`composer never accepted the message (still holding text): ${text.slice(0, 60)}`);
+    // Same verified submit as send(), minus the idle-wait: this one MEANS to type mid-run.
+    await this.submit(text);
   }
 
   /** Start a long in-flight run (the fake agent runs a real `sleep <sec>` in the sandbox) and wait

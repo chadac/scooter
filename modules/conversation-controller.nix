@@ -377,6 +377,30 @@ in
         roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "conversation-router"; };
         subjects = [{ kind = "ServiceAccount"; name = "conversation-router"; namespace = cfg.namespace; }];
       };
+
+      # TokenReview is cluster-scoped → ClusterRole + ClusterRoleBinding. The router
+      # verifies the webhooks/scheduler SA token on POST /conversations before honoring a
+      # body `owner`. WITHOUT this grant the review 403s, the router fails closed, and
+      # every webhook-initiated conversation is created unowned — the #527 symptom — so
+      # the grant and the env above must ship together. Mirrors agent-host-tokenreview.
+      clusterRoles.conversation-router-tokenreview = {
+        metadata.name = "conversation-router-tokenreview";
+        rules = [{
+          apiGroups = [ "authentication.k8s.io" ];
+          resources = [ "tokenreviews" ];
+          verbs = [ "create" ];
+        }];
+      };
+
+      clusterRoleBindings.conversation-router-tokenreview = {
+        metadata.name = "conversation-router-tokenreview";
+        roleRef = {
+          apiGroup = "rbac.authorization.k8s.io";
+          kind = "ClusterRole";
+          name = "conversation-router-tokenreview";
+        };
+        subjects = [{ kind = "ServiceAccount"; name = "conversation-router"; namespace = cfg.namespace; }];
+      };
       deployments.conversation-router = {
         metadata = { name = "conversation-router"; namespace = cfg.namespace; };
         spec = {
@@ -427,7 +451,35 @@ in
                   { name = "WEBHOOKS_DB_USER"; value = "conversation_router"; }
                   { name = "WEBHOOKS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-router"; key = "password"; }; }
                 ]
-                ++ lib.optional (cfg.webhooks.enable && cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; };
+                ++ lib.optional (cfg.webhooks.enable && cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                # IDENTITY. The router stamps spec.owner on create and scopes the
+                # conversation LIST (?scope=mine) — so it must read identity exactly as the
+                # agent-host does. It previously got no auth env at all, which meant a
+                # deployment with a renamed header or alb-oidc had to set AUTH_USER_HEADER
+                # out of band, and under alb-oidc could not work at all: every browser
+                # caller looked anonymous, and an anonymous caller sees EVERY
+                # conversation. See #527.
+                ++ lib.optional (cfg.auth.mode != "header")
+                  { name = "AUTH_MODE"; value = cfg.auth.mode; }
+                ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
+                  { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
+                ++ [
+                  # The SA(s) allowed to set `owner` in the POST /conversations BODY —
+                  # webhooks/scheduler, which create conversations on a human's behalf and
+                  # never pass through the ingress that injects an identity header. Verified
+                  # by TokenReview (see the ClusterRole below), so it is not spoofable. Same
+                  # env var + value as the agent-host's /agui check, so ONE setting
+                  # configures both ends of the same trust chain.
+                  { name = "WEBHOOKS_SERVICE_ACCOUNT";
+                    value = lib.concatStringsSep "," (
+                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
+                      ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
+                    ); }
+                  # Audience the callers' projected tokens are minted for. They mount an
+                  # "agent-host" audience token and the router fronts that Service, so the
+                  # same audience verifies here.
+                  { name = "WEBHOOKS_TOKEN_AUDIENCE"; value = "agent-host"; }
+                ];
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 resources = lib.mkDefault {
                   requests = { cpu = "50m"; memory = "64Mi"; };

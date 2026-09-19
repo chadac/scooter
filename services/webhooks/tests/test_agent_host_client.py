@@ -381,3 +381,36 @@ async def test_create_conversation_returns_None_when_create_fails(monkeypatch):
 
     assert await ahc.create_conversation("do a thing") is None
     assert streamed == []  # never reached /agui
+
+
+# --- owner attribution (#527) ---------------------------------------------------
+# The Slack user is resolved to a Scooter owner and must actually REACH the router.
+# It used to travel in a hard-coded `x-auth-user` header while the router read whatever
+# AUTH_USER_HEADER named, so on any deployment that renamed the header (or used
+# alb-oidc, where it is a different header entirely) the owner was silently dropped and
+# scope=mine hid the conversation from the person who started the thread.
+
+
+async def test_create_sends_the_owner_in_the_body_not_a_hardcoded_header(monkeypatch):
+    captured: dict = {}
+    _patch_stream(monkeypatch, _sse('{"type":"RUN_FINISHED","threadId":"t","runId":"r"}'), captured)
+
+    result = await ahc.create_conversation("do a thing", owner="slack-resolved-user")
+
+    assert result is not None
+    # The owner rides the CREATE body — the only place the router reads it from a
+    # trusted in-cluster caller, and the only place immune to the header's name.
+    assert captured["create_json"]["owner"] == "slack-resolved-user"
+    # No identity header: its name is deployment-specific, so guessing it is the bug.
+    assert "x-auth-user" not in {k.lower() for k in captured["create_headers"]}
+
+
+async def test_create_omits_owner_when_there_is_no_human_trigger(monkeypatch):
+    captured: dict = {}
+    _patch_stream(monkeypatch, _sse('{"type":"RUN_FINISHED","threadId":"t","runId":"r"}'), captured)
+
+    await ahc.create_conversation("do a thing")
+
+    # No resolved user => no owner key at all. An empty-string owner would create a
+    # conversation owned by "", which is not the same as unowned.
+    assert "owner" not in captured["create_json"]
