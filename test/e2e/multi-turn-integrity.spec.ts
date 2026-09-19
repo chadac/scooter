@@ -6,7 +6,7 @@
  * the right counts. Uses the race-free `sendTurn` (count-based) so a slow turn never drops.
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, RUN_START_MS } from "./fixtures.js";
 
 test.describe("long multi-turn conversation integrity", () => {
   // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target EVERY turn —
@@ -17,7 +17,7 @@ test.describe("long multi-turn conversation integrity", () => {
   // switch-away test adds a SECOND conversation boot (+25s). The 60s default is
   // arithmetic-bound, not behaviour-bound. 240s = worst case with headroom, matching
   // client-server-identity's two-boot budget. Per-turn waits stay at sendTurn's 45s.
-  test.setTimeout(240_000);
+  test.setTimeout(RUN_START_MS + 210_000);
 
   // The FIRST turn of a conversation is the only one that waits for a COLD sandbox pod
   // (5-25s, longer when the CI node is out of CPU) before its exec even starts, so
@@ -25,8 +25,8 @@ test.describe("long multi-turn conversation integrity", () => {
   // the behaviour these tests are about. Observed on CI: the 12-turn test failed on a reply
   // that never arrived inside 45s, with the thread still EMPTY and the message sitting in
   // the queue — a boot that had not finished, not a dropped message. Later turns reuse the
-  // warm pod (~8s) and need no extra budget. The 240s ceiling above already covers this.
-  const FIRST_TURN_MS = 90_000;
+  // warm pod (~8s) and need no extra budget. The ceiling above already covers this.
+  const FIRST_TURN_MS = RUN_START_MS;
 
   test("12 back-and-forth turns all render (no dropped user or assistant messages)", async ({ chat }) => {
     await chat.open();

@@ -9,7 +9,7 @@
  * Uses the fake agent (deterministic). See fixtures: startLongRun / sendWhileRunning / queuedMessages.
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, RUN_START_MS } from "./fixtures.js";
 
 // How long the run that everything QUEUES BEHIND stays in flight.
 //
@@ -26,14 +26,10 @@ import { test, expect } from "./fixtures.js";
 const RUN_SEC = 60;
 
 test.describe("queue rendering while a run is in flight", () => {
-  // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target `!sleep 20`
-  // runs in a REAL sandbox: the run-status bar appears as soon as the run starts, but
-  // the reload test then pays open ~5s + queue asserts + reload + re-derive while the
-  // sleep (behind a ≤25s cold boot) is still holding the run open — ~60s of expected
-  // work at the 60s suite default. 180s funds every test here with margin; the
-  // per-assert budgets are already generous (the queue itself is server-side state,
-  // not gated on the sandbox).
-  test.setTimeout(180_000);
+  // CLUSTER-HONEST BUDGET = the cold-start budget PLUS the ~150s of work these tests do
+  // (open, queue asserts, reload, re-derive). A ceiling below RUN_START_MS can never spend
+  // it — the test dies before its own run-start wait does. Why: PR #543.
+  test.setTimeout(RUN_START_MS + 150_000);
 
   test("a message sent mid-run RENDERS as a queued item (not dropped)", async ({ chat, page }) => {
     await chat.open();
@@ -125,10 +121,9 @@ test.describe("queue rendering while a run is in flight", () => {
 });
 
 test.describe("queue durability across refresh + drain", () => {
-  // CLUSTER-HONEST BUDGET — same arithmetic as the describe above, plus the drain
-  // tests' tail: boot ≤25s + sleep 3s + the queued turn (exec + streamed reply ~10s)
-  // + a follow-up turn ≈ 70s of expected work on the worst test. 180s with margin.
-  test.setTimeout(180_000);
+  // Same shape as the describe above: the cold-start budget plus this block's own work
+  // (the drain tail — the queued turn's exec + a follow-up turn). Why: PR #543.
+  test.setTimeout(RUN_START_MS + 150_000);
 
   test("queued messages SURVIVE a page reload (they ride the integrity stream, not client-only)", async ({ chat, page }) => {
     await chat.open();
@@ -157,7 +152,7 @@ test.describe("queue durability across refresh + drain", () => {
     await chat.open();
     // A short sleep so the test doesn't wait the full 20s — long enough to queue behind.
     await chat.send("!sleep 3");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.waitForRunStart();
     const before = await chat.assistantMessages().count();
     await chat.sendWhileRunning("run me after the sleep");
 
@@ -182,7 +177,6 @@ test.describe("queue durability across refresh + drain", () => {
     // shorter window than RUN_SEC: long enough to outlast the boot, short enough that the
     // drain it waits on is not needlessly slow.
     await chat.startLongRun(20);
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
     await chat.sendWhileRunning("drain me");
     // After everything settles, a fresh normal turn works first-try (no wedge). 150s:
     // sendTurn first waits for the composer to go idle, which is now behind the cold boot

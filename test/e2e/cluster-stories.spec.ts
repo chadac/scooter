@@ -97,7 +97,7 @@ fullOnly("needs kubectl access to delete the owner pod mid-run")(
 
       // A turn long enough that the pod deletion lands MID-run.
       await chat.send("!sleep 15");
-      await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+      await chat.waitForRunStart();
       const moved = await request.post(`${hook}/move/${thread}`);
       expect(moved.ok(), `the hook must delete the owner pod: ${await moved.text()}`).toBeTruthy();
 

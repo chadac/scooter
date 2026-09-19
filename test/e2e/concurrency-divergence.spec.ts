@@ -121,7 +121,7 @@ test.describe("two tabs on the same conversation", () => {
 
     // A queues a message behind a long run; B must see it in ITS queue tab.
     await chat.send("!sleep 6");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.waitForRunStart();
     await chat.sendWhileRunning("queued in A, visible in B");
     await chatB.openQueueTab();
     await expect
