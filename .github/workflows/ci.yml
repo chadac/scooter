@@ -1099,9 +1099,9 @@ jobs:
       contents: read
       pull-requests: write   # to post/update the sticky flake-verdict comment
     env:
-      # The Playwright JSON report the verdict is computed from. Absolute: the
-      # run steps execute inside `nix develop`, and a relative name would land
-      # wherever that shell's cwd is.
+      # The Playwright JSON report the verdict is computed from. One absolute path
+      # so the writer (inside `nix develop`) and the reader (the summary step) name
+      # the same file without depending on either one's working directory.
       PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-report.json
     steps:
       - uses: actions/checkout@v5
