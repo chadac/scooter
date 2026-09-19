@@ -12,7 +12,7 @@
  * (createTerminal -> localExec child -> SIGTERM on cancel).
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, RUN_START_MS } from "./fixtures.js";
 
 const bar = {
   root: '[data-testid="run-status-bar"]',
@@ -20,22 +20,15 @@ const bar = {
   thinking: '[data-testid="thinking-indicator"]',
 };
 
-/** Budget for the FIRST turn of a fresh conversation.
- *
- *  It is the only turn that waits for a COLD sandbox pod (5-25s, longer when the CI node is
- *  short on CPU) before its exec even starts, so sendTurn's 45s default is a bet on the boot
- *  being quick rather than a measurement of what these tests assert. Observed on CI: "no
- *  spurious branch picker" failed at 50.3s on sendTurn's own reply-count poll — a boot that
- *  had not finished, with nothing wrong with the branch picker. */
-const FIRST_TURN_MS = 90_000;
+/** Budget for the FIRST turn of a fresh conversation — the one that funds the cold
+ *  sandbox boot before its exec starts. Shared with every other spec that pays it, so
+ *  one measurement moves them all. Why: PR #543. */
+const FIRST_TURN_MS = RUN_START_MS;
 
 test.describe("Stop button + thinking indicator", () => {
-  // Every test here opens a fresh conversation, so every one funds a cold sandbox boot
-  // (FIRST_TURN_MS above) before it can assert anything. The 60s default cannot contain a
-  // 90s first turn, so the ceiling has to clear it — 180s covers the boot plus the stop /
-  // retry / follow-up phases the longer tests chain after it. Individual tests that need
-  // more still set their own.
-  test.beforeEach(() => test.setTimeout(180_000));
+  // Every test here opens a fresh conversation, so the ceiling must clear FIRST_TURN_MS
+  // plus the stop / retry / follow-up phases chained after it. Why: PR #543.
+  test.beforeEach(() => test.setTimeout(FIRST_TURN_MS + 150_000));
   test("a running turn shows the indicator + Stop; clicking Stop ends it, then a new prompt works", async ({
     chat,
     page,

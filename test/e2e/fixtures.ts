@@ -25,6 +25,12 @@ export const sel = {
   composerInput: '[aria-label="Message input"]',
 };
 
+/** Budget for the run-status bar appearing after a cold `send` — NOT a UI-render budget.
+ *  On full a send funds a ready-pod wait (53s measured), ACP session init, and agent-host's
+ *  60s dead-on-arrival retry before RUN_STARTED; on fast a run starts in milliseconds, so a
+ *  longer budget there would only slow a genuine hang. Why: PR #543. */
+export const RUN_START_MS = process.env.E2E_TARGET === "full" ? 150_000 : 30_000;
+
 export class Chat {
   constructor(private page: Page) {}
 
@@ -152,16 +158,14 @@ export class Chat {
    *  until the UI shows the working state — so a subsequent sendWhileRunning() genuinely queues. */
   async startLongRun(sec = 20) {
     await this.send(`!sleep ${sec}`);
-    // 90s on the full target, 30s on fast. The run-status bar appears when the RUN starts,
-    // and on a cluster the exec first waits for a ready sandbox pod — on a fresh conversation
-    // that is a cold boot (5-25s, and longer while the shard's other specs contend for
-    // scheduling under CONVERSATION_POD_CAP=1). Observed on CI: three queue-durability tests
-    // failed together here, each with the bar simply not up yet, which then reads downstream
-    // as "the queue is broken". Fast keeps 30s — its run starts in milliseconds, so a longer
-    // budget there would only slow a genuine hang.
-    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({
-      timeout: process.env.E2E_TARGET === "full" ? 90_000 : 30_000,
-    });
+    await this.waitForRunStart();
+  }
+
+  /** Wait until the run has STARTED — the run-status bar is up. Every "assert something
+   *  about an in-flight run" chain begins here, so it must fund the cold path (RUN_START_MS)
+   *  rather than the time the assertion itself is about. */
+  async waitForRunStart(timeout = RUN_START_MS) {
+    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout });
   }
 
   /** The durable queued-message rows (QUEUE_UPDATED-driven + optimistic). */
