@@ -166,7 +166,16 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
  *                  a renamed test — or the control run produced no report).
  */
 export function compareToBaseline(summary, baseline) {
-  if (!baseline || baseline.runs === 0) return { kind: "none" };
+  if (!baseline || baseline.runs === 0)
+    return {
+      kind: "none",
+      // WHY there is no control matters: "the test was renamed" and "the control
+      // run's stack never booted" are different problems, and guessing the first
+      // sent me hunting a renamed test when a Postgres port collision had killed
+      // the run. The base's report tells us which — it either executed other
+      // tests (so the pattern is the problem) or executed nothing at all.
+      noneReason: !baseline ? "not-attempted" : baseline.executedSpecs > 0 ? "no-match" : "no-tests",
+    };
   const baseRate = baseline.failed / baseline.runs;
   // P(zero failures in `summary.runs` draws) if this branch still flaked at the
   // base's observed rate. Assumes independent runs — repetitions share a worker
@@ -307,7 +316,9 @@ export function renderMarkdown(summary, opts = {}) {
       "",
       `#### Control — none`,
       "",
-      `The same pattern matched no test that ran on the base${baseRefLabel} (renamed in this PR? added by it?), so there is no baseline rate to compare against and the clean run above stands alone.`,
+      control.noneReason === "no-tests"
+        ? `The control run on the base${baseRefLabel} executed **no tests at all** — its stack failed to start, so this is an infrastructure failure, not a verdict. The clean run above stands alone; see the \`control\` step in the job log.`
+        : `The same pattern matched no test that ran on the base${baseRefLabel} (renamed in this PR? added by it?), so there is no baseline rate to compare against and the clean run above stands alone.`,
     );
   }
 

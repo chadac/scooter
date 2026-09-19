@@ -1201,8 +1201,16 @@ jobs:
           FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-baseline.json
+          # A DIFFERENT Postgres port from the run above. `pg_ctl` daemonizes, so
+          # the first run's database can outlive playwright's webServer teardown
+          # and still hold 55432 — which is exactly how the first control run in
+          # CI died ("pg_ctl: could not start server") and reported no baseline.
+          E2E_PG_PORT: "55433"
         run: |
           set -euo pipefail
+          # Belt and braces: reap any database the run above left behind, so the
+          # control is not at the mercy of that teardown having worked.
+          pkill -f 'scooter-e2e-pg' 2>/dev/null || true
           git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
           git worktree add --detach ../baseline "$BASE_SHA"
           cd ../baseline

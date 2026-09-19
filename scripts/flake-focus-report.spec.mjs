@@ -242,10 +242,10 @@ describe("renderMarkdown with a control run", () => {
     expect(body).not.toContain("✅");
   });
 
-  it("says so plainly when there was no usable control", () => {
-    const body = md(Array(5).fill("passed"), []);
-    expect(body).toContain("Control — none");
-    expect(body).toContain("matched no test that ran on the base");
+  // Both "no usable control" branches are asserted in "why there is no control"
+  // below, which distinguishes a dead control run from an unmatched pattern.
+  it("reports the absence of a control rather than omitting it silently", () => {
+    expect(md(Array(5).fill("passed"), [])).toContain("Control — none");
   });
 
   it("omits the control section entirely when none was attempted", () => {
@@ -281,5 +281,35 @@ describe("control strength", () => {
     const body = renderMarkdown(clean20, { baseline: baseWith(6), baselineRef: "main@abc" });
     expect(body).toContain("fires on the base, not here");
     expect(body).toContain("real change in behaviour");
+  });
+});
+
+// "No control" has two very different causes, and reporting the wrong one sends
+// the reader after a renamed test when the control's stack actually failed to
+// boot (observed: a Postgres port collision in CI).
+describe("why there is no control", () => {
+  const clean = summarize(targeted(["passed", "passed"]), "THREE messages sent mid-run");
+  const emptyReport = summarize({ suites: [] }, "THREE messages sent mid-run");
+  const ranOtherTests = summarize(
+    report([["test/e2e/sessions.spec.ts", [["renames a session", ["passed"]]]]]),
+    "THREE messages sent mid-run",
+  );
+
+  it("distinguishes a dead control run from a pattern that matched nothing", () => {
+    expect(compareToBaseline(clean, emptyReport).noneReason).toBe("no-tests");
+    expect(compareToBaseline(clean, ranOtherTests).noneReason).toBe("no-match");
+    expect(compareToBaseline(clean, null).noneReason).toBe("not-attempted");
+  });
+
+  it("says infrastructure failure, not 'renamed', when the control ran nothing", () => {
+    const body = renderMarkdown(clean, { baseline: emptyReport, baselineRef: "main@abc" });
+    expect(body).toContain("executed **no tests at all**");
+    expect(body).toContain("infrastructure failure");
+    expect(body).not.toContain("renamed");
+  });
+
+  it("still blames the pattern when the control ran other tests", () => {
+    const body = renderMarkdown(clean, { baseline: ranOtherTests, baselineRef: "main@abc" });
+    expect(body).toContain("renamed in this PR?");
   });
 });
