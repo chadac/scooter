@@ -50,11 +50,8 @@ async def spawn_conversation(
         if title:
             create_body["title"] = title
         if owner:
-            # The owner rides the BODY, not an identity header: the header's name is
-            # deployment-configurable (AUTH_USER_HEADER) and under alb-oidc is a
-            # different header entirely, so a hard-coded one was silently dropped and
-            # the task's conversation was created unowned (#527). Honored only for our
-            # TokenReview-verified SA token.
+            # In the body, NOT an identity header — that header's name is deployment-
+            # configurable, so a hard-coded one gets dropped. Why: PR #546.
             create_body["owner"] = owner
         resp = await client.post(f"{base}/conversations", json=create_body, headers=headers)
         if resp.status_code >= 300:

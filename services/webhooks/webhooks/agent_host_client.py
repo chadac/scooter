@@ -36,13 +36,8 @@ def _conversations_url() -> str:
 async def _create_conversation(owner: str | None) -> str | None:
     """Ask the server for a conversation id (POST /conversations). None on failure.
 
-    `owner` (the resolved Scooter user behind the Slack/GitHub event) rides the BODY,
-    not an identity header: the header's NAME is deployment-configurable
-    (AUTH_USER_HEADER) and under alb-oidc is a different header entirely, so a
-    hard-coded one was silently dropped — the conversation was created unowned and
-    `scope=mine` then hid it from the person who started the thread (#527). The router
-    honors a body owner only for our TokenReview-verified SA token, so it cannot be
-    spoofed by a browser.
+    `owner` rides the body, NOT an identity header — that header's name is
+    deployment-configurable, so a hard-coded one gets dropped. Why: PR #546.
     """
     headers = {"content-type": "application/json"}
     token = _sa_token()
