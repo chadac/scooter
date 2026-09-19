@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   compareToBaseline,
-  marker,
   patternToRegExp,
   renderMarkdown,
   summarize,
@@ -144,9 +143,11 @@ describe("renderMarkdown", () => {
   const md = (statuses, opts) =>
     renderMarkdown(summarize(targeted(statuses), "THREE messages sent mid-run"), opts);
 
-  it("carries the per-target sticky marker so CI updates one comment", () => {
-    expect(md(["passed"], { target: "full" })).toContain(marker("full"));
-    expect(marker("fast")).not.toBe(marker("full"));
+  // The body is a SECTION of the shared comment now; comment-sections.mjs owns
+  // the markers, so this must emit none of its own (two would be posted).
+  it("names its target in the heading and carries no hidden marker", () => {
+    expect(md(["passed"], { target: "full" })).toContain("flake focus (full)");
+    expect(md(["passed"], { target: "fast" })).not.toContain("<!--");
   });
 
   it("names the specific test and the repetition count on green", () => {

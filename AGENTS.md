@@ -132,8 +132,10 @@ flake-specs: test/e2e/queue-durability.spec.ts test/e2e/ui-state-consistency.spe
 cross-spec contention, and CI runs those files together instead of the lone `-g`
 match.
 
-Each focused job then posts (and updates on re-run) **one comment naming that
-test and its verdict** — "no reproduction in 20 repetitions", or "still
+Both focused jobs report into **one shared PR comment**, a section each (fast /
+full), updated in place on every re-run — so a PR carrying both labels shows the
+two verdicts together rather than two comments competing to be "the" answer. Each
+section names the test and its verdict — "no reproduction in 20 repetitions", or "still
 reproduces, 3 of 20", with the failure output. Read the comment, not the green
 check: under `flake-specs:` the job runs whole spec files, so its exit status can
 be red for an unrelated test, and green while the flaky one never ran.

@@ -30,14 +30,12 @@
 //                       the PR's base commit (see compareToBaseline)
 //     --baseline-ref <r> how to name that base in the comment, e.g. `main@abc1234`
 //
-// Output: the markdown comment body (incl. its sticky marker) on stdout. When
+// Output: this target's SECTION of the shared flake-focus comment on stdout
+// (scripts/comment-sections.mjs merges it in). When
 // $GITHUB_OUTPUT is set it also writes `verdict`/`runs`/`failed`/`matched` and
 // `control`/`base_runs`/`base_failed` there — the job gates on `verdict`.
 
 import { readFileSync, appendFileSync } from "node:fs";
-
-/** Marker the CI step greps for to update (rather than duplicate) its comment. */
-export const marker = (target) => `<!-- flake-focus-report:${target} -->`;
 
 /**
  * Playwright's `-g` takes a REGEX, not a literal, and matches it
@@ -211,7 +209,9 @@ export function renderMarkdown(summary, opts = {}) {
   const targetLabel = target === "full" ? "full target — real k3d cluster" : "fast target — fake stack";
   const control = compareToBaseline(summary, baseline);
   const baseRefLabel = baselineRef ? ` (\`${baselineRef}\`)` : "";
-  const L = [marker(target), ""];
+  // No marker here: this body is one SECTION of the shared flake-focus comment,
+  // identified by the tags scripts/comment-sections.mjs wraps around it.
+  const L = [];
 
   if (summary.verdict === "not-run") {
     L.push(`### ⚠️ flake focus (${target}) — the targeted test never ran`, "");
@@ -380,8 +380,6 @@ function main(argv) {
     // Say so plainly rather than rendering a verdict off missing data; the run
     // step has already failed the job, so this only has to be honest.
     const body = [
-      marker(args.target || "fast"),
-      "",
       `### ⚠️ flake focus (${args.target || "fast"}) — no report to summarise`,
       "",
       `The run produced no readable Playwright JSON report (\`${err.message}\`), so whether \`${pattern}\` reproduced is unknown. See the job log${args.runUrl ? ` — [run](${args.runUrl})` : ""}.`,

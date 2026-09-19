@@ -1239,7 +1239,9 @@ jobs:
             --specs "$FLAKE_SPECS" --run-url "$RUN_URL" \
             "${suggest[@]}" "${base[@]}" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
-          .github/scripts/sticky-comment.sh '<!-- flake-focus-report:fast -->' flake-comment.md
+          # ONE comment shared with the full-target job, a section each: the two
+          # verdicts only mean something read together (see comment-sections.mjs).
+          .github/scripts/sticky-comment.sh '<!-- flake-focus-report -->' flake-comment.md --section fast
 
       # A run that executed the flaky test ZERO times is the false green this whole
       # job exists to prevent, and the test command exits 0 for it. Fail here.
@@ -1382,7 +1384,8 @@ jobs:
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
             --specs "$FLAKE_SPECS" --run-url "$RUN_URL" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
-          .github/scripts/sticky-comment.sh '<!-- flake-focus-report:full -->' flake-comment.md
+          # Writes the 'full' section of the SAME comment the fast job writes into.
+          .github/scripts/sticky-comment.sh '<!-- flake-focus-report -->' flake-comment.md --section full
 
       # Zero repetitions of the targeted test = a false green (see the fast job).
       # Costlier here: a cluster run that proved nothing burned ~25 minutes.
