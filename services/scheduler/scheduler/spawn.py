@@ -1,9 +1,10 @@
 """Spawn a Scooter conversation by POSTing a prompt to the agent-host /agui.
 
-Mirrors services/webhooks/webhooks/agent_host_client.create_conversation: generate a
-threadId, POST the task as the user message, and ride the `owner` on the body — which
-the agent-host honors ONLY when we present a valid SA token (its WEBHOOKS_SERVICE_ACCOUNT
-list must include the scheduler's SA). Returns the conversation_id or None on failure.
+Mirrors services/webhooks/webhooks/agent_host_client.create_conversation: ask the server
+for a conversation id, then POST the task as the user message. The task's `owner` rides
+the BODY of both calls — honored ONLY when we present a valid SA token (the
+conversation-router's and agent-host's WEBHOOKS_SERVICE_ACCOUNT list must include the
+scheduler's SA). Returns the conversation_id or None on failure.
 """
 
 from __future__ import annotations
@@ -40,10 +41,6 @@ async def spawn_conversation(
     token = _sa_token()
     if token:
         headers["authorization"] = f"Bearer {token}"
-    if owner:
-        # Honored only for the SA-token-verified caller; the scheduler's SA must be
-        # in the agent-host's trusted list.
-        headers["x-auth-user"] = owner
 
     owns = client is None
     client = client or httpx.AsyncClient(timeout=30.0)
@@ -52,6 +49,10 @@ async def spawn_conversation(
         create_body: dict = {}
         if title:
             create_body["title"] = title
+        if owner:
+            # In the body, NOT an identity header — that header's name is deployment-
+            # configurable, so a hard-coded one gets dropped. Why: PR #546.
+            create_body["owner"] = owner
         resp = await client.post(f"{base}/conversations", json=create_body, headers=headers)
         if resp.status_code >= 300:
             logger.error(

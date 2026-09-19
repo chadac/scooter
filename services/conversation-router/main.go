@@ -74,6 +74,10 @@ func main() {
 	cache := NewOwnershipCache()
 	var crs crLookup = cache
 	var creator ConversationCreator
+	// Body-`owner` trust for the in-cluster callers (webhooks/scheduler). Nil outside a
+	// cluster (no TokenReview to verify against) → a body owner is never honored, and the
+	// header stays the only source, which is the dev/e2e stack's behaviour.
+	var trusted TrustedCaller
 	if devModeEnabled() {
 		u, err := agentHostURLFromEnv()
 		if err != nil {
@@ -92,7 +96,7 @@ func main() {
 		log.Warn("ROUTER_DEV_MODE: kube-less single-host stack (no CRD watch, existence from store)",
 			slog.String("agent_host_url", u.String()))
 	} else {
-		dyn, err := newDynamicClient()
+		dyn, kubeCfg, err := newDynamicClient()
 		if err != nil {
 			log.Error("k8s client init failed", errAttr(err))
 			os.Exit(1)
@@ -100,6 +104,7 @@ func main() {
 		go cache.Run(ctx, dyn, cfg.namespace)
 		creator = &dynamicCreator{dyn: dyn, namespace: cfg.namespace}
 		cfg.fallback = FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
+		trusted = buildTrustedCaller(kubeCfg, log)
 	}
 
 	// Read-only Postgres handle on the agent_host database (conversation metadata). Optional:
@@ -162,7 +167,7 @@ func main() {
 	hub := newSSEHub()
 	go runConversationListener(ctx, store, links, crs, hub)
 
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, crs, creator, store, writeStore, links, hub)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, crs, creator, trusted, store, writeStore, links, hub)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -185,7 +190,7 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, crs crLookup, creator ConversationCreator, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, crs crLookup, creator ConversationCreator, trusted TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The conversation LIST and its live events stream are served HERE from Postgres, not
@@ -199,7 +204,7 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 		// so proxying create would make conversation N*C+1 uncreatable. Writing the
 		// CR consults no agent-host. See create.go.
 		if IsConversationCreate(r.Method, r.URL.Path) {
-			serveConversationCreate(w, r, creator, ownerFrom(r))
+			serveConversationCreate(w, r, creator, ownerFrom(r), trusted)
 			return
 		}
 		if IsConversationListRoute(r.Method, r.URL.Path) {
@@ -376,17 +381,47 @@ func aguiThreadID(r *http.Request) string {
 	return body.ThreadID
 }
 
+// buildTrustedCaller wires the TokenReview verifier that lets webhooks/scheduler set a
+// conversation `owner` in the create BODY. Every failure path is a WARN, not a fatal:
+// the router still serves, owners just fall back to the header (and #527 recurs), so the
+// log has to name that rather than leave it silent.
+func buildTrustedCaller(kubeCfg *rest.Config, log *slog.Logger) TrustedCaller {
+	allowed := trustedServiceAccounts()
+	if len(allowed) == 0 {
+		log.Warn("WEBHOOKS_SERVICE_ACCOUNT unset: an owner resolved by webhooks/scheduler cannot be honored")
+		return nil
+	}
+	review, err := newTokenReviewer(kubeCfg, env("WEBHOOKS_TOKEN_AUDIENCE", "agent-host"))
+	if err != nil {
+		log.Warn("TokenReview client init failed: webhook-resolved conversation owners will be dropped", errAttr(err))
+		return nil
+	}
+	log.Info("body-owner trust enabled", slog.Int("trusted_service_accounts", len(allowed)))
+	return newTrustedCaller(review, allowed)
+}
+
 // --- k8s client + unstructured helpers (used by cache.go) -------------------
 
-func newDynamicClient() (dynamic.Interface, error) {
+// kubeRestConfig is the ONE place the router's apiserver credentials are resolved —
+// the dynamic client (CRD watch + create) and the TokenReview verifier share it.
+func kubeRestConfig() (*rest.Config, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		cfg, err = clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
-		if err != nil {
-			return nil, err
-		}
+		return clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
 	}
-	return dynamic.NewForConfig(cfg)
+	return cfg, nil
+}
+
+func newDynamicClient() (dynamic.Interface, *rest.Config, error) {
+	cfg, err := kubeRestConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return dyn, cfg, nil
 }
 
 func metav1ListOptions() metav1.ListOptions { return metav1.ListOptions{} }

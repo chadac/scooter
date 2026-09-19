@@ -90,9 +90,13 @@ async def test_title_rides_the_create_call():
 async def test_owner_is_sent_on_both_calls():
     agent = _Agent()
     await _spawn(agent, owner="alice")
-    # The router stamps spec.owner from the identity header on CREATE...
-    assert agent.create_headers["x-auth-user"] == "alice"
-    # ...and the agent-host still honors the body owner for the SA-verified caller.
+    # The router stamps spec.owner from the CREATE BODY for an SA-verified caller. NOT
+    # from an identity header: that header's name is deployment-configurable
+    # (AUTH_USER_HEADER) and under alb-oidc is a different header entirely, so the
+    # hard-coded `x-auth-user` this used to send was silently dropped (#527).
+    assert agent.create_body["owner"] == "alice"
+    assert "x-auth-user" not in {k.lower() for k in agent.create_headers}
+    # The agent-host also honors the body owner for the SA-verified caller.
     assert agent.prompt_body["owner"] == "alice"
 
 
@@ -130,5 +134,5 @@ async def test_spawn_omits_optional_fields_when_absent():
         conv = await spawn_conversation("p", title=None, owner=None, client=client)
     assert conv == SERVER_ID
     assert "title" not in agent.create_body
+    assert "owner" not in agent.create_body
     assert "owner" not in agent.prompt_body
-    assert "x-auth-user" not in agent.create_headers
