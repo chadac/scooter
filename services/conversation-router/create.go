@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -49,6 +48,10 @@ type createRequest struct {
 	Title    string `json:"title"`
 	Model    string `json:"model"`
 	ParentID string `json:"parentId"`
+	// Owner is PRIVILEGED and honored ONLY for a TokenReview-verified in-cluster
+	// caller (webhooks/scheduler creating on a human's behalf) — see trustedcaller.go.
+	// From anyone else it is ignored, never an error.
+	Owner string `json:"owner"`
 }
 
 type createResponse struct {
@@ -71,7 +74,12 @@ func IsConversationCreate(method, path string) bool {
 var modelRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // serveConversationCreate returns 201 without waiting for assignment or provisioning.
-func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator ConversationCreator, owner string) {
+//
+// `owner` is the ingress-resolved caller (ownerFrom). `trusted` may be nil; when it is
+// not, a body `owner` from a verified in-cluster caller wins over the header — that is
+// the path webhooks/scheduler use, because the header's NAME is deployment-specific and
+// they do not come through the ingress that sets it (#527).
+func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator ConversationCreator, owner string, trusted TrustedCaller) {
 	var req createRequest
 	if r.Body != nil {
 		dec := json.NewDecoder(r.Body)
@@ -84,6 +92,17 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 	if req.Model != "" && !modelRe.MatchString(req.Model) {
 		writeJSONError(w, http.StatusBadRequest, "invalid model")
 		return
+	}
+
+	if req.Owner != "" && req.Owner != owner {
+		// Verify only when it would change the outcome: a browser create carries no
+		// body owner, so it never pays the TokenReview round-trip.
+		if trusted != nil && trusted(r.Context(), r) {
+			owner = req.Owner
+		} else {
+			logger("create").Warn("ignored a body owner from an unverified caller",
+				slog.Bool("had_header_owner", owner != ""))
+		}
 	}
 
 	id := uuid.NewString()
@@ -126,17 +145,6 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 		CreatedAt: time.Now().UnixMilli(),
 		Owner:     owner,
 	})
-}
-
-// ownerFrom resolves the creator for spec.owner. Same header the agent-host uses.
-// Empty = anonymous, a valid scope. Trusted only because the ingress sets it and
-// strips client copies.
-func ownerFrom(r *http.Request) string {
-	h := os.Getenv("AUTH_USER_HEADER")
-	if h == "" {
-		h = "x-auth-user"
-	}
-	return strings.TrimSpace(r.Header.Get(h))
 }
 
 func writeJSONError(w http.ResponseWriter, code int, msg string) {

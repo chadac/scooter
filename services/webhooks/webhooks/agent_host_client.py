@@ -34,16 +34,21 @@ def _conversations_url() -> str:
 
 
 async def _create_conversation(owner: str | None) -> str | None:
-    """Ask the server for a conversation id (POST /conversations). None on failure."""
+    """Ask the server for a conversation id (POST /conversations). None on failure.
+
+    `owner` rides the body, NOT an identity header — that header's name is
+    deployment-configurable, so a hard-coded one gets dropped. Why: PR #546.
+    """
     headers = {"content-type": "application/json"}
     token = _sa_token()
     if token:
         headers["authorization"] = f"Bearer {token}"
+    body: dict = {}
     if owner:
-        headers["x-auth-user"] = owner
+        body["owner"] = owner
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(_conversations_url(), json={}, headers=headers)
+            resp = await client.post(_conversations_url(), json=body, headers=headers)
         if resp.status_code >= 300:
             logger.error(
                 "create conversation returned an error status",
@@ -226,9 +231,10 @@ class RunErrored(Exception):
 
 
 def _sa_token() -> str | None:
-    """Read the projected ServiceAccount token the agent-host TokenReview verifies
-    (proving we're the trusted webhooks caller, so it honors `payload.owner`). None
-    if not mounted — the owner is then ignored agent-host-side (unowned)."""
+    """Read the projected ServiceAccount token a TokenReview verifies, proving we're the
+    trusted webhooks caller: the conversation-router then honors the `owner` we send on
+    POST /conversations (and the agent-host `payload.owner` on /agui). None if not
+    mounted — the owner is ignored and the conversation is created unowned."""
     path = settings.agent_host_token_path
     try:
         with open(path, encoding="utf-8") as f:

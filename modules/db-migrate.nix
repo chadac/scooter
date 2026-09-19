@@ -14,8 +14,11 @@
 #
 # A `wait-for-db` initContainer gates the Job on those databases/roles actually
 # existing — agent-postgres-init creates them and nothing sequences the two Jobs.
+#
+# The Job's NAME carries a hash of its spec, because a Job's pod template is
+# immutable — see `jobName` below.
 
-{ config, lib, ... }:
+{ config, lib, kubenix, ... }:
 
 let
   cfg = config.agentSandbox;
@@ -92,6 +95,62 @@ let
     enabledKeys + ''
     echo "all target databases reachable"
   '';
+
+  # Stable identity for humans and selectors, independent of the hashed name below:
+  # `kubectl -n … logs -l app.kubernetes.io/name=agent-db-migrate` finds this deploy's
+  # migrator without anyone having to look up the current hash.
+  jobLabels = {
+    "app.kubernetes.io/name" = "agent-db-migrate";
+    "app.kubernetes.io/component" = "migration";
+  };
+
+  jobSpec = {
+    # Ordering is the `wait-for-db` initContainer's job now, not the backoff's, so
+    # these retries only cover a genuinely failing migration — where 10 attempts
+    # just reprint the same error 10 times. Why: PR #533.
+    backoffLimit = 3;
+    # Each spec change leaves the PREVIOUS hash-named Job behind under a deploy that
+    # does not prune (kubectl apply); this reaps it a day later, which is long enough
+    # to read the pod logs after a bad deploy.
+    ttlSecondsAfterFinished = 86400;
+    template = {
+      metadata.labels = jobLabels;
+      spec = {
+        restartPolicy = "OnFailure";
+        # Block until every target database + role exists (see waitScript). Needs a
+        # psql client, which the migrator image does not carry — the postgres image
+        # does, and is already pulled on every node running the shared server.
+        initContainers = [{
+          name = "wait-for-db";
+          image = pcfg.image;
+          command = [ "/bin/sh" "-c" waitScript ];
+          env = pwEnv;
+        }];
+        containers.migrate = {
+          name = "migrate";
+          image = mcfg.image;
+          imagePullPolicy = cfg.pullPolicy;
+          env = [
+            { name = "DB_HOST"; value = pcfg.host; }
+            { name = "DB_PORT"; value = toString pcfg.port; }
+            { name = "DB_ENVS"; value = lib.concatStringsSep " " (map dbOf enabledKeys); }
+          ]
+          ++ lib.optional (pcfg.sslmode != null) { name = "DB_SSLMODE"; value = pcfg.sslmode; }
+          # The script derives its var name from the DB name in DB_ENVS, while the
+          # Secret is named for the consumer KEY — so resolve each side separately
+          # rather than assuming they are the same string.
+          ++ pwEnv;
+        };
+      };
+    };
+  };
+
+  # The spec IS the Job's identity, because a Job's spec.template is IMMUTABLE: a
+  # CHANGED Job re-applied under a FIXED name is rejected apiserver-side, which fails
+  # the whole deploy (helm: UPGRADE FAILED mid-roll) and never runs the migration.
+  # Hashing makes a spec change a CREATE; an unchanged spec keeps its name, so a no-op
+  # deploy does not re-run. Why: PR #542.
+  jobName = kubenix.lib.k8s.mkNameHash { name = "agent-db-migrate"; data = jobSpec; };
 in
 {
   options.agentSandbox.dbMigrate = with lib; {
@@ -113,45 +172,16 @@ in
   };
 
   config = lib.mkIf (mcfg.enable && enabledKeys != [ ]) {
+    # The Nix attr name stays fixed (it is what other modules would reference);
+    # metadata.name is the hashed one that actually lands in the cluster.
     kubernetes.resources.jobs.agent-db-migrate = {
       metadata = {
-        name = "agent-db-migrate";
+        name = jobName;
         namespace = ns;
+        labels = jobLabels;
         annotations."agent-sandbox/migrates" = lib.concatStringsSep "," (map dbOf enabledKeys);
       };
-      spec = {
-        # Ordering is the `wait-for-db` initContainer's job now, not the backoff's, so
-        # these retries only cover a genuinely failing migration — where 10 attempts
-        # just reprint the same error 10 times. Why: PR #533.
-        backoffLimit = 3;
-        template.spec = {
-          restartPolicy = "OnFailure";
-          # Block until every target database + role exists (see waitScript). Needs a
-          # psql client, which the migrator image does not carry — the postgres image
-          # does, and is already pulled on every node running the shared server.
-          initContainers = [{
-            name = "wait-for-db";
-            image = pcfg.image;
-            command = [ "/bin/sh" "-c" waitScript ];
-            env = pwEnv;
-          }];
-          containers.migrate = {
-            name = "migrate";
-            image = mcfg.image;
-            imagePullPolicy = cfg.pullPolicy;
-            env = [
-              { name = "DB_HOST"; value = pcfg.host; }
-              { name = "DB_PORT"; value = toString pcfg.port; }
-              { name = "DB_ENVS"; value = lib.concatStringsSep " " (map dbOf enabledKeys); }
-            ]
-            ++ lib.optional (pcfg.sslmode != null) { name = "DB_SSLMODE"; value = pcfg.sslmode; }
-            # The script derives its var name from the DB name in DB_ENVS, while the
-            # Secret is named for the consumer KEY — so resolve each side separately
-            # rather than assuming they are the same string.
-            ++ pwEnv;
-          };
-        };
-      };
+      spec = jobSpec;
     };
   };
 }

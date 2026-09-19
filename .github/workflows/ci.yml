@@ -1095,8 +1095,20 @@ jobs:
     name: flake focus (targeted ×20)
     if: contains(github.event.pull_request.labels.*.name, 'flake-check')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # to post/update the sticky flake-verdict comment
+    env:
+      # The Playwright JSON report the verdict is computed from. One absolute path
+      # so the writer (inside `nix develop`) and the reader (the summary step) name
+      # the same file without depending on either one's working directory.
+      PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-report.json
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history: the control run below builds a worktree at the PR's BASE
+          # commit, which a depth-1 checkout does not have.
+          fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: cachix/cachix-action@v15
         with:
@@ -1120,7 +1132,10 @@ jobs:
         env:
           CI: "1"
           FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
-        run: nix develop --command bash -c 'npm install && npm run test:e2e -- --repeat-each=5 --reporter=list $FLAKE_SPECS'
+        # `json` alongside `list`: the contention path runs whole spec FILES, so the
+        # exit status cannot say whether the TARGETED test passed, failed, or ever
+        # ran. The report below answers that (scripts/flake-focus-report.mjs).
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- --repeat-each=5 --reporter=list,json $FLAKE_SPECS'
 
       # TARGETED path: no `flake-specs:` — hammer just the matching test 20×.
       - name: e2e ×20 (targeted)
@@ -1140,7 +1155,118 @@ jobs:
         # — the default e2e shards keep retries=0 / on-first-retry untouched. The
         # trace.zip lands under test-results/ (uploaded below); open it with
         # `npx playwright show-trace trace.zip`.
-        run: nix develop --command bash -c 'npm install && npm run test:e2e -- -g "$FLAKE_PATTERN" --repeat-each=20 --trace on --reporter=list'
+        run: nix develop --command bash -c 'npm install && npm run test:e2e -- -g "$FLAKE_PATTERN" --repeat-each=20 --trace on --reporter=list,json'
+
+      # THE POINT OF THE JOB, stated on the PR: did the flake this PR claims to fix
+      # actually stop reproducing? A green job does not answer that — under
+      # `flake-specs:` it can pass having never executed the flaky test — so we
+      # resolve `flake-test:` against the report and post the verdict.
+      #
+      # Plain `node` (not the dev shell): the script is dependency-free ESM, and
+      # this step must still post when the run step died before `nix develop`
+      # finished producing anything.
+      - name: resolve the verdict (no comment yet)
+        id: summary
+        if: always()
+        env:
+          # Via env, never inline `${{ }}` in the script: the pattern/specs come
+          # from the PR DESCRIPTION, so interpolating them into `run:` would let a
+          # PR body execute shell in this job.
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
+        run: |
+          set -euo pipefail
+          mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+            --pattern "$FLAKE_PATTERN" --target fast --mode "$mode" > /dev/null
+
+      # THE CONTROL. "0 failures in 20 runs" is unfalsifiable on its own — a test
+      # that fires once in 200 runs produces exactly that on a branch that fixed
+      # nothing. So run the SAME test with the SAME budget on the PR's base commit:
+      # if it fires there and not here, the budget was adequate and the behaviour
+      # changed; if it fires on neither, this run had no power to detect anything
+      # and the comment says so instead of showing a green tick.
+      #
+      # Only when the PR's own run came back clean: if the flake still reproduces
+      # here we already have the answer, and a control would just burn ~10 minutes.
+      # continue-on-error + `|| true` because the control is EXPECTED to fail tests
+      # — a red baseline is the good outcome and must never fail this job.
+      - name: control — does it still reproduce on the base?
+        id: control
+        # !cancelled(), not always(): a superseded run (every push and label event
+        # cancels the previous one) must not spend ten minutes on a control whose
+        # verdict nobody will read.
+        if: "!cancelled() && steps.summary.outputs.verdict == 'fixed'"
+        continue-on-error: true
+        env:
+          CI: "1"
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-baseline.json
+          # A DIFFERENT Postgres port from the run above. `pg_ctl` daemonizes, so
+          # the first run's database can outlive playwright's webServer teardown
+          # and still hold 55432 — which is exactly how the first control run in
+          # CI died ("pg_ctl: could not start server") and reported no baseline.
+          E2E_PG_PORT: "55433"
+        run: |
+          set -euo pipefail
+          # Belt and braces: reap any database the run above left behind, so the
+          # control is not at the mercy of that teardown having worked.
+          pkill -f 'scooter-e2e-pg' 2>/dev/null || true
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+          git worktree add --detach ../baseline "$BASE_SHA"
+          cd ../baseline
+          # Same commands as above, same repetition counts — an unmatched budget
+          # would make the two rates incomparable, which is the whole measurement.
+          if [ -n "$FLAKE_SPECS" ]; then
+            nix develop --command bash -c 'npm install && npm run test:e2e -- --repeat-each=5 --reporter=list,json $FLAKE_SPECS' || true
+          else
+            nix develop --command bash -c 'npm install && npm run test:e2e -- -g "$FLAKE_PATTERN" --repeat-each=20 --reporter=list,json' || true
+          fi
+
+      - name: flake verdict comment
+        # !cancelled(): a CANCELLED run has no report, so its comment step would
+        # overwrite a good verdict in the SHARED comment with "no report to
+        # summarise" — about a run that was superseded and nobody is waiting on.
+        # A genuinely failed run still comments: that is a real signal.
+        if: "!cancelled() && github.event_name == 'pull_request'"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
+          HAS_FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-full-flake-check') }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          # Only nag about the full target when this PR isn't already running it.
+          suggest=(--suggest-full); [ "$HAS_FULL_LABEL" = "true" ] && suggest=()
+          # Absent when the control was skipped (the flake still reproduces) — the
+          # comment then simply has no control section.
+          base=()
+          [ -f flake-baseline.json ] && base=(--baseline flake-baseline.json --baseline-ref "$BASE_REF@${BASE_SHA:0:7}")
+          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+            --pattern "$FLAKE_PATTERN" --target fast --mode "$mode" \
+            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" \
+            "${suggest[@]}" "${base[@]}" > flake-comment.md
+          cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
+          # ONE comment shared with the full-target job, a section each: the two
+          # verdicts only mean something read together (see comment-sections.mjs).
+          .github/scripts/sticky-comment.sh '<!-- flake-focus-report -->' flake-comment.md --section fast
+
+      # A run that executed the flaky test ZERO times is the false green this whole
+      # job exists to prevent, and the test command exits 0 for it. Fail here.
+      - name: gate — the targeted test must have run
+        if: always() && steps.summary.outputs.verdict == 'not-run'
+        run: |
+          echo "::error::The PR's 'flake-test:' pattern matched no test that ran —" \
+               "this check proved nothing about the flake. See the PR comment."
+          exit 1
+
       # if: always() (not failure()) so the trace.zip survives even when the job is
       # cancelled/retried — the whole point of this job is to capture the artifact.
       - name: upload artifacts
@@ -1148,7 +1274,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flake-focus-results
-          path: test-results/
+          path: |
+            test-results/
+            flake-report.json
+            flake-baseline.json
           retention-days: 14
           if-no-files-found: ignore
 
@@ -1176,7 +1305,12 @@ jobs:
     # exactly the case it was added for.
     if: contains(github.event.pull_request.labels.*.name, 'e2e-full-flake-check')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # to post/update the sticky flake-verdict comment
     env:
+      # Same JSON report the fast job summarises — see `flake verdict comment` there.
+      PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-report.json
       # Repetitions. Each one costs a real sandbox pod and a cold boot, so these
       # are wall-clock knobs with teeth: at cluster pace a targeted repetition is
       # ~30-90s and a contention repetition runs whole spec FILES. Bump here if a
@@ -1218,7 +1352,7 @@ jobs:
         run: |
           set -euo pipefail
           . .github/scripts/e2e-full-serve.sh
-          nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list $FLAKE_SPECS'
+          nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list,json $FLAKE_SPECS'
 
       # TARGETED path: no usable `flake-specs:` — hammer just the matching test.
       # --trace on overrides playwright.config's `trace: on-first-retry`, which
@@ -1235,7 +1369,51 @@ jobs:
         run: |
           set -euo pipefail
           . .github/scripts/e2e-full-serve.sh
-          nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list'
+          nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list,json'
+
+      # The verdict on the PR — identical contract to the fast job, but this one is
+      # the evidence that actually counts for a flake first seen on `e2e-full`, so
+      # its comment says "real k3d cluster" and carries no full-target nudge.
+      #
+      # NO CONTROL RUN here, deliberately. The fast job re-runs the test on the
+      # base commit to show the flake fires there; doing that on this target means
+      # building and deploying the BASE's whole platform to a second cluster (~25m
+      # on top of an already ~25m job). Running the base's tests against the PR's
+      # deployed platform would be cheaper and worse: a mismatched control that is
+      # only meaningful when the fix happens to be test-side.
+      - name: flake verdict comment
+        id: summary
+        # !cancelled(): a CANCELLED run has no report, so its comment step would
+        # overwrite a good verdict in the SHARED comment with "no report to
+        # summarise" — about a run that was superseded and nobody is waiting on.
+        # A genuinely failed run still comments: that is a real signal.
+        if: "!cancelled() && github.event_name == 'pull_request'"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          # Env, not inline `${{ }}` — these come from the PR description (see the
+          # fast job).
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+            --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
+            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" > flake-comment.md
+          cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
+          # Writes the 'full' section of the SAME comment the fast job writes into.
+          .github/scripts/sticky-comment.sh '<!-- flake-focus-report -->' flake-comment.md --section full
+
+      # Zero repetitions of the targeted test = a false green (see the fast job).
+      # Costlier here: a cluster run that proved nothing burned ~25 minutes.
+      - name: gate — the targeted test must have run
+        if: always() && steps.summary.outputs.verdict == 'not-run'
+        run: |
+          echo "::error::The PR's 'flake-test:' pattern matched no test that ran on the" \
+               "full target — this check proved nothing about the flake. See the PR comment."
+          exit 1
 
       - name: dump platform state on failure
         if: failure()
@@ -1250,6 +1428,7 @@ jobs:
           name: flake-focus-full-results
           path: |
             test-results/
+            flake-report.json
             /tmp/pf.log
             /tmp/cluster-sampler.log
             /tmp/rollout-hook.log
