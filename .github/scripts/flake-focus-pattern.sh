@@ -8,6 +8,14 @@
 #
 # e.g.  flake-test: multi-turn re-render
 #
+# The pattern is used TWICE: to select the run (`-g`), and afterwards to find that
+# test in the Playwright JSON report so the job can post a verdict — "the flake did
+# not reproduce in N runs" vs "it still reproduces" (scripts/flake-focus-report.mjs).
+# So it must name a REAL test title even on the contention path below, where it is
+# not passed to `-g`: a pattern matching nothing there yields a green run that
+# never executed the flaky test, and the job fails on that rather than report it
+# fixed.
+#
 # OPTIONAL — some flakes only reproduce under CROSS-SPEC CONTENTION (the flaky
 # test running interleaved with OTHER specs' load), so a lone `-g <test>` run
 # never triggers them. Such a PR ALSO declares the spec files to run together:
