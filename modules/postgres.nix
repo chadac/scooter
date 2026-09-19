@@ -20,7 +20,7 @@
 # The consumer set is assembled by platform.nix from which features are enabled and
 # fed in via `agentSandbox.postgres.consumers`. Each entry: { db; user; }.
 
-{ config, lib, ... }:
+{ config, lib, kubenix, ... }:
 
 let
   cfg = config.agentSandbox;
@@ -150,6 +150,51 @@ let
   '') g.writeTables + ''
     echo "[${name}] granted SELECT on ${g.db}.{${lib.concatStringsSep "," g.tables}}${lib.optionalString (g.writeTables != []) " + read-write on {${lib.concatStringsSep "," g.writeTables}}"} to ${r.user}"
   '') r.grants) readerNames;
+
+  # Stable identity for selectors/logs, independent of the hashed name below.
+  initJobLabels = {
+    "app.kubernetes.io/name" = "agent-postgres-init";
+    "app.kubernetes.io/component" = "provisioning";
+  };
+
+  initJobSpec = {
+    backoffLimit = 6;
+    # Nothing prunes under a plain `kubectl apply`, so reap the superseded Job a day
+    # later — long enough to read its logs after a bad deploy.
+    ttlSecondsAfterFinished = 86400;
+    template = {
+      metadata.labels = initJobLabels;
+      spec = {
+        serviceAccountName = "agent-postgres-init";
+        restartPolicy = "OnFailure";
+        # 1) kubectl: create/reuse the per-consumer secrets, drop the passwords
+        #    onto a shared emptyDir for the psql step to read.
+        initContainers = [{
+          name = "secrets";
+          image = pcfg.kubectlImage;
+          command = [ "/bin/sh" "-c" secretsScript ];
+          volumeMounts = [{ name = "shared"; mountPath = "/shared"; }];
+        }];
+        # 2) psql (postgres image has the client): create roles + databases.
+        containers.sql = {
+          name = "sql";
+          image = pcfg.image;
+          command = [ "/bin/sh" "-c" sqlScript ];
+          env = [
+            { name = "PGPASSWORD"; valueFrom.secretKeyRef = { inherit (adminSecret) name key; }; }
+          ];
+          volumeMounts = [{ name = "shared"; mountPath = "/shared"; }];
+        };
+        volumes = [{ name = "shared"; emptyDir = { }; }];
+      };
+    };
+  };
+
+  # Hashed for the same reason as the migration Job (modules/db-migrate.nix): a Job's
+  # spec.template is immutable. THIS spec changes whenever a feature adds a consumer or
+  # reader, so a fixed name would fail the very deploy that enables the feature — and
+  # leave the databases the migrator waits on unprovisioned. Why: PR #542.
+  initJobName = kubenix.lib.k8s.mkNameHash { name = "agent-postgres-init"; data = initJobSpec; };
 in
 {
   options.agentSandbox.postgres = with lib; {
@@ -285,38 +330,15 @@ in
           subjects = [{ kind = "ServiceAccount"; name = "agent-postgres-init"; namespace = ns; }];
         };
 
+        # The Nix attr name stays fixed; metadata.name is the hashed one (see initJobName).
         jobs.agent-postgres-init = {
           metadata = {
-            name = "agent-postgres-init";
+            name = initJobName;
             namespace = ns;
+            labels = initJobLabels;
             annotations."agent-sandbox/provisions" = lib.concatStringsSep "," secretNames;
           };
-          spec = {
-            backoffLimit = 6;
-            template.spec = {
-              serviceAccountName = "agent-postgres-init";
-              restartPolicy = "OnFailure";
-              # 1) kubectl: create/reuse the per-consumer secrets, drop the passwords
-              #    onto a shared emptyDir for the psql step to read.
-              initContainers = [{
-                name = "secrets";
-                image = pcfg.kubectlImage;
-                command = [ "/bin/sh" "-c" secretsScript ];
-                volumeMounts = [{ name = "shared"; mountPath = "/shared"; }];
-              }];
-              # 2) psql (postgres image has the client): create roles + databases.
-              containers.sql = {
-                name = "sql";
-                image = pcfg.image;
-                command = [ "/bin/sh" "-c" sqlScript ];
-                env = [
-                  { name = "PGPASSWORD"; valueFrom.secretKeyRef = { inherit (adminSecret) name key; }; }
-                ];
-                volumeMounts = [{ name = "shared"; mountPath = "/shared"; }];
-              };
-              volumes = [{ name = "shared"; emptyDir = { }; }];
-            };
-          };
+          spec = initJobSpec;
         };
       })
 

@@ -281,6 +281,44 @@ let
     (if hasGrafanaSkill true then [ ] else [ "scooter-grafana.md missing when broker.grafana.enable = true" ])
     ++ (if hasGrafanaSkill false then [ "scooter-grafana.md SHIPPED when broker.grafana.enable = false (the agent will chase a 404)" ] else [ ]);
 
+  # IMMUTABLE-JOB GUARD. A Job's spec.template CANNOT be patched, so re-applying a
+  # CHANGED deploy-time Job under a FIXED name is rejected by the apiserver ("field is
+  # immutable") — which does not merely skip the Job, it fails the whole deploy (helm
+  # reports UPGRADE FAILED and abandons the release with Deployments half-rolled) while
+  # the migration silently never runs, because nothing ever creates a new pod for it.
+  # Both deploy-time Jobs therefore hash their spec into their NAME, so a spec change is
+  # a CREATE. Assert the hash actually MOVES with the spec: a name merely decorated with
+  # a constant suffix reads as "hashed" and still wedges every upgrade.
+  jobNameOf = p: name: p.config.kubernetes.resources.jobs.${name}.metadata.name or "";
+  bumpedMigrator = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.dbMigrate.image = lib.mkForce "example.test/agent-db-migrator:next";
+    };
+  };
+  bumpedInit = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.postgres.kubectlImage = lib.mkForce "example.test/kubectl:next";
+    };
+  };
+  isHashed = base: n: builtins.match "${base}-[0-9a-f]{10}" n != null;
+  jobImmutabilityProblems = builtins.concatLists (map
+    ({ job, bumped, what }:
+      let here = jobNameOf platform job; there = jobNameOf bumped job; in
+      (if isHashed job here then [ ]
+       else [ "jobs.${job}: metadata.name is '${here}', not ${job}-<spec hash> (a fixed name cannot be re-applied after a spec change)" ])
+      ++ (if here != there then [ ]
+          else [ "jobs.${job}: changing ${what} did NOT change the name ('${here}') — the next upgrade patches an immutable spec.template and fails the deploy" ])
+      # Determinism: the SAME config must render the SAME name, or every deploy
+      # re-creates the Job (and the k8s-diff of a no-op deploy is never empty).
+      ++ (if here == jobNameOf prodPlatform job then [ ]
+          else [ "jobs.${job}: two renders of the same config disagree on the name ('${here}' vs '${jobNameOf prodPlatform job}')" ]))
+    [
+      { job = "agent-db-migrate"; bumped = bumpedMigrator; what = "dbMigrate.image"; }
+      { job = "agent-postgres-init"; bumped = bumpedInit; what = "postgres.kubectlImage"; }
+    ]);
+
   # SIZE-DEFAULT GUARD: exactly one sandboxSizes preset may set `default = true`.
   # kubenix has no NixOS `assertions` option, so that rule is enforced by a `throw` in
   # agentSandbox.defaultSandboxSizeName — and a throw only fires when something READS
@@ -308,8 +346,8 @@ let
     ++ (if renderSizes { a = { cpu = "1"; memory = "2Gi"; default = true; }; b = { cpu = "2"; memory = "4Gi"; default = true; }; }
         then [ "a catalog with TWO `default = true` rendered — the guard is a no-op" ] else [ ]);
 
-  allProblems = sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  allProblems = jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults\n"
+then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"
