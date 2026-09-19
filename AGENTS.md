@@ -132,6 +132,18 @@ flake-specs: test/e2e/queue-durability.spec.ts test/e2e/ui-state-consistency.spe
 cross-spec contention, and CI runs those files together instead of the lone `-g`
 match.
 
+Each focused job then posts (and updates on re-run) **one comment naming that
+test and its verdict** — "no reproduction in 20 repetitions", or "still
+reproduces, 3 of 20", with the failure output. Read the comment, not the green
+check: under `flake-specs:` the job runs whole spec files, so its exit status can
+be red for an unrelated test, and green while the flaky one never ran.
+
+That last case is now a **failure**, not a pass: `flake-test:` must match a test
+that actually executes (it is matched case-insensitively against
+`file › describe › test`, like `-g`) — including on the contention path, where it
+selects nothing but still decides the verdict. A check that ran zero repetitions
+of the flake proves nothing and must not report green.
+
 | Label | Job | Runs against |
 |---|---|---|
 | `flake-check` | flake focus (targeted ×20) | **fast** — fake stack |

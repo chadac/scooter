@@ -82,6 +82,17 @@ export default defineConfig({
         },
       },
       {
+        // CI helper scripts. `scripts/flake-focus-report.mjs` decides whether a
+        // flake-focus run actually proved the flake fixed — a verdict posted on
+        // the PR, so its edge cases (pattern matched nothing, another spec failed
+        // under contention) need units; they are unreachable from the CI job.
+        test: {
+          name: "ci-scripts",
+          include: ["scripts/**/*.spec.mjs"],
+          environment: "node",
+        },
+      },
+      {
         // Match ui/vite.config.ts's "@" -> ui/ alias so tests can import the
         // assistant-ui components (e.g. @/components/assistant-ui/...) the app uses.
         resolve: {
