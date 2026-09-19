@@ -31,7 +31,8 @@
 //     --baseline-ref <r> how to name that base in the comment, e.g. `main@abc1234`
 //
 // Output: the markdown comment body (incl. its sticky marker) on stdout. When
-// $GITHUB_OUTPUT is set it also writes `verdict`/`runs`/`failed`/`matched` there.
+// $GITHUB_OUTPUT is set it also writes `verdict`/`runs`/`failed`/`matched` and
+// `control`/`base_runs`/`base_failed` there — the job gates on `verdict`.
 
 import { readFileSync, appendFileSync } from "node:fs";
 
