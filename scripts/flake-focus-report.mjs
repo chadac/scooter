@@ -26,6 +26,9 @@
 //     --specs "<a> <b>" the `flake-specs:` files, when mode=contention
 //     --run-url <url>   link back to the workflow run (artifacts/traces)
 //     --suggest-full    add the "this was a full-target flake?" nudge on green
+//     --baseline <f>    the CONTROL run's report: the same test, same budget, on
+//                       the PR's base commit (see compareToBaseline)
+//     --baseline-ref <r> how to name that base in the comment, e.g. `main@abc1234`
 //
 // Output: the markdown comment body (incl. its sticky marker) on stdout. When
 // $GITHUB_OUTPUT is set it also writes `verdict`/`runs`/`failed`/`matched` there.
@@ -145,9 +148,68 @@ export function summarize(report, pattern) {
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+/**
+ * The CONTROL: the same test, same repetition budget, on the PR's base commit.
+ *
+ * Without it "0 failures in 20 runs" is unfalsifiable — a test that fires once
+ * in 200 runs produces exactly that result on a branch that fixed nothing. The
+ * control tells us whether the experiment could have detected the flake at all:
+ *
+ *   strong       — it fired on the base and not here. The budget was adequate and
+ *                  the behaviour changed.
+ *   inconclusive — it fired on NEITHER. The run says nothing about the fix; the
+ *                  flake is just rarer than the budget. (Reported loudly, but not
+ *                  a failure: the fix may well be right, and demanding a
+ *                  reproduction would block correct fixes for rare flakes.)
+ *   worse        — it failed MORE here than on the base. Not proof of a
+ *                  regression at these sample sizes, but never call that "fixed".
+ *   none         — no usable control (the pattern matches nothing on the base —
+ *                  a renamed test — or the control run produced no report).
+ */
+export function compareToBaseline(summary, baseline) {
+  if (!baseline || baseline.runs === 0) return { kind: "none" };
+  const baseRate = baseline.failed / baseline.runs;
+  // P(zero failures in `summary.runs` draws) if this branch still flaked at the
+  // base's observed rate. Assumes independent runs — repetitions share a worker
+  // and a server, so treat it as an order of magnitude, not a p-value.
+  const pAllCleanAtBaseRate = (1 - baseRate) ** summary.runs;
+  return {
+    kind:
+      baseline.failed === 0
+        ? "inconclusive"
+        : summary.failed > baseline.failed
+          ? "worse"
+          : summary.failed === 0
+            ? "strong"
+            : "weak",
+    baseRuns: baseline.runs,
+    baseFailed: baseline.failed,
+    baseRate,
+    pAllCleanAtBaseRate,
+    // Did the base fire OFTEN enough that a clean run here means something? A base
+    // that failed 2/20 leaves a ~12% chance of 20 clean runs by luck alone — a
+    // control that weak must not be reported as "the behaviour changed", or the
+    // comment overclaims in exactly the way this whole job exists to prevent.
+    strength: pAllCleanAtBaseRate <= 0.05 ? "tight" : "loose",
+  };
+}
+
+const pct = (x) =>
+  x >= 0.01 ? `${(x * 100).toFixed(0)}%` : x >= 0.0001 ? `${(x * 100).toFixed(2)}%` : "<0.01%";
+
 export function renderMarkdown(summary, opts = {}) {
-  const { target = "fast", mode = "targeted", specs = "", runUrl = "", suggestFull = false } = opts;
+  const {
+    target = "fast",
+    mode = "targeted",
+    specs = "",
+    runUrl = "",
+    suggestFull = false,
+    baseline = null,
+    baselineRef = "",
+  } = opts;
   const targetLabel = target === "full" ? "full target — real k3d cluster" : "fast target — fake stack";
+  const control = compareToBaseline(summary, baseline);
+  const baseRefLabel = baselineRef ? ` (\`${baselineRef}\`)` : "";
   const L = [marker(target), ""];
 
   if (summary.verdict === "not-run") {
@@ -176,6 +238,24 @@ export function renderMarkdown(summary, opts = {}) {
       `\`${summary.pattern}\` failed **${summary.failed} of ${plural(summary.runs, "repetition")}**.`,
       "",
     );
+  } else if (control.kind === "inconclusive") {
+    // Green run, but the control proves the run could not have detected the
+    // flake — lead with that rather than a ✅ someone will read as "fixed".
+    L.push(
+      `### ⚠️ flake focus (${target}) — clean, but the control did not reproduce either`,
+      "",
+      `\`${summary.pattern}\` passed **${summary.runs}/${summary.runs}** here — and also passed ${control.baseRuns}/${control.baseRuns} on the base${baseRefLabel}. The flake never fired in this experiment at all, so a clean run is not evidence the fix works.`,
+      "",
+    );
+  } else if (control.kind === "strong") {
+    L.push(
+      control.strength === "tight"
+        ? `### ✅ flake focus (${target}) — fixed: it fires on the base, not here`
+        : `### ✅ flake focus (${target}) — clean here, but the control is weak (${control.baseFailed}/${control.baseRuns} on the base)`,
+      "",
+      `\`${summary.pattern}\` failed **${control.baseFailed}/${control.baseRuns}** on the base${baseRefLabel} and **0/${summary.runs}** on this PR.`,
+      "",
+    );
   } else {
     L.push(
       `### ✅ flake focus (${target}) — no reproduction in ${plural(summary.runs, "repetition")}`,
@@ -189,6 +269,45 @@ export function renderMarkdown(summary, opts = {}) {
     L.push("", "| targeted test | runs | passed | failed |", "|---|---:|---:|---:|");
     for (const s of summary.matched)
       L.push(`| \`${s.fullTitle}\` | ${s.runs} | ${s.passed} | ${s.failed} |`);
+  }
+
+  if (summary.verdict !== "not-run" && control.kind !== "none") {
+    L.push(
+      "",
+      `#### Control — the same test on the base${baseRefLabel}`,
+      "",
+      "| | repetitions | failures |",
+      "|---|---:|---:|",
+      `| base${baseRefLabel} | ${control.baseRuns} | ${control.baseFailed} |`,
+      `| this PR | ${summary.runs} | ${summary.failed} |`,
+      "",
+    );
+    if (control.kind === "strong")
+      L.push(
+        control.strength === "tight"
+          ? `The flake fires on the base at **${pct(control.baseRate)}** and not at all here. If this branch still flaked at that rate, ${plural(summary.runs, "clean run")} in a row would happen only about **${pct(control.pAllCleanAtBaseRate)}** of the time — so this is a real change in behaviour, bounded rather than proven.`
+          : `⚠️ **The control is too weak to conclude much.** The base only failed ${control.baseFailed}/${control.baseRuns} (**${pct(control.baseRate)}**), so even if this branch still flaked at exactly that rate, ${plural(summary.runs, "clean run")} in a row would happen about **${pct(control.pAllCleanAtBaseRate)}** of the time — luck explains this result almost as well as a fix does. Raise the repetition budget until the base fails often enough to make a clean run here meaningful.`,
+      );
+    else if (control.kind === "inconclusive")
+      L.push(
+        `**The experiment had no power.** The flake did not fire on the base either, so this run cannot distinguish "fixed" from "did not happen to fire". Raise the repetition budget, add \`flake-specs:\` so it runs under contention, or — if it was seen on the nightly \`e2e-full\` — use the \`e2e-full-flake-check\` label, since the fast stack cannot produce those conditions at all.`,
+      );
+    else if (control.kind === "worse")
+      L.push(
+        `⚠️ It failed **more** here than on the base. At these sample sizes that is not proof of a regression, but this PR has not fixed the flake.`,
+      );
+    else
+      L.push(
+        `It still fails here, though less often than on the base — a rate change, not a fix.`,
+      );
+  } else if (summary.verdict === "fixed" && baseline) {
+    // A control was attempted and yielded nothing to compare against.
+    L.push(
+      "",
+      `#### Control — none`,
+      "",
+      `The same pattern matched no test that ran on the base${baseRefLabel} (renamed in this PR? added by it?), so there is no baseline rate to compare against and the clean run above stands alone.`,
+    );
   }
 
   const failing = summary.matched.filter((s) => s.errors.length);
@@ -272,12 +391,28 @@ function main(argv) {
     return;
   }
 
-  process.stdout.write(renderMarkdown(summary, args));
+  // The control run is optional and BEST-EFFORT: it is expected to fail tests
+  // (that is the point), it may not have run at all, and its report may be
+  // missing. None of that may take down the verdict for the PR's own run.
+  let baseline = null;
+  if (args.baseline) {
+    try {
+      baseline = summarize(JSON.parse(readFileSync(args.baseline, "utf8")), pattern);
+    } catch {
+      baseline = { runs: 0, failed: 0, matched: [] };
+    }
+  }
+
+  const control = compareToBaseline(summary, baseline);
+  process.stdout.write(renderMarkdown(summary, { ...args, baseline }));
   writeOutputs({
     verdict: summary.verdict,
     runs: summary.runs,
     failed: summary.failed,
     matched: summary.matched.length,
+    control: control.kind,
+    base_failed: control.baseFailed ?? 0,
+    base_runs: control.baseRuns ?? 0,
   });
 }
 
