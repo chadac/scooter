@@ -346,7 +346,39 @@ let
     ++ (if renderSizes { a = { cpu = "1"; memory = "2Gi"; default = true; }; b = { cpu = "2"; memory = "4Gi"; default = true; }; }
         then [ "a catalog with TWO `default = true` rendered — the guard is a no-op" ] else [ ]);
 
-  allProblems = jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  # OWNER ATTRIBUTION (#527). The ROUTER stamps spec.owner on create and scopes the
+  # conversation list, so it needs (a) the identity config the agent-host gets, and (b) the
+  # SA allowlist + TokenReview grant that let webhooks/scheduler pass a resolved owner in
+  # the create body. All three were absent, and the failure was SILENT — conversations were
+  # created unowned and then hidden from the person who started the Slack thread — so pin
+  # them at render time. The alb-oidc render is the case that could not work at all before:
+  # the router read x-auth-user, which an ALB never sets.
+  routerEnv =
+    let ctrs = builtins.attrValues (res.deployments.conversation-router.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  routerEnvVal = name: let m = builtins.filter (e: e.name == name) routerEnv; in if m == [ ] then "" else (builtins.head m).value;
+  albPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.auth.mode = lib.mkForce "alb-oidc";
+    };
+  };
+  albRouterEnv =
+    let ctrs = builtins.attrValues (albPlatform.config.kubernetes.resources.deployments.conversation-router.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  ownerProblems =
+    (if builtins.match ".*:agent-webhooks.*" (routerEnvVal "WEBHOOKS_SERVICE_ACCOUNT") != null then [ ]
+     else [ "router.env.WEBHOOKS_SERVICE_ACCOUNT (a webhooks-resolved conversation owner is dropped)" ])
+    ++ (if builtins.match ".*:agent-scheduler.*" (routerEnvVal "WEBHOOKS_SERVICE_ACCOUNT") != null then [ ]
+        else [ "router.env.WEBHOOKS_SERVICE_ACCOUNT omits the scheduler SA (scheduled-task owners are dropped)" ])
+    ++ (if routerEnvVal "WEBHOOKS_TOKEN_AUDIENCE" != "" then [ ]
+        else [ "router.env.WEBHOOKS_TOKEN_AUDIENCE (TokenReview rejects the caller's projected token)" ])
+    ++ (if (res.clusterRoleBindings or { }) ? conversation-router-tokenreview then [ ]
+        else [ "clusterRoleBindings.conversation-router-tokenreview (TokenReview 403s, so every webhook conversation is unowned)" ])
+    ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
+        else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
+
+  allProblems = ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"

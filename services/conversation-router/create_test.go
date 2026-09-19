@@ -32,6 +32,13 @@ func (f *fakeCreator) Create(_ context.Context, name string, spec map[string]int
 
 func postCreate(t *testing.T, c ConversationCreator, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postCreateAs(t, c, body, headers, nil)
+}
+
+// postCreateAs is postCreate with an explicit trusted-caller verifier — nil meaning
+// "no in-cluster trust configured", the dev-stack default.
+func postCreateAs(t *testing.T, c ConversationCreator, body string, headers map[string]string, trusted TrustedCaller) *httptest.ResponseRecorder {
+	t.Helper()
 	var r *http.Request
 	if body == "" {
 		r = httptest.NewRequest(http.MethodPost, "/conversations", nil)
@@ -42,7 +49,7 @@ func postCreate(t *testing.T, c ConversationCreator, body string, headers map[st
 		r.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
-	serveConversationCreate(w, r, c, ownerFrom(r))
+	serveConversationCreate(w, r, c, ownerFrom(r), trusted)
 	return w
 }
 
@@ -174,5 +181,79 @@ func TestIsConversationCreateMatchesOnlyThePostRoute(t *testing.T) {
 		if got := IsConversationCreate(tc.method, tc.path); got != tc.want {
 			t.Errorf("IsConversationCreate(%s %s) = %v, want %v", tc.method, tc.path, got, tc.want)
 		}
+	}
+}
+
+// --- owner: the in-cluster (webhooks/scheduler) path -----------------------------
+// These cover issue #527: webhooks resolved the Slack user correctly and then lost it,
+// because it sent a hard-coded `x-auth-user` while the router read whatever
+// AUTH_USER_HEADER named. The owner now rides the BODY for a verified caller, so the two
+// ends cannot drift apart again.
+
+// alwaysTrusted / neverTrusted stand in for the TokenReview verifier.
+func alwaysTrusted() TrustedCaller {
+	return func(context.Context, *http.Request) bool { return true }
+}
+
+func neverTrusted() TrustedCaller {
+	return func(context.Context, *http.Request) bool { return false }
+}
+
+func TestCreateHonorsBodyOwnerFromATrustedCaller(t *testing.T) {
+	c := &fakeCreator{}
+	w := postCreateAs(t, c, `{"owner":"slack-resolved-user"}`, nil, alwaysTrusted())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	if got := c.calls[0].spec["owner"]; got != "slack-resolved-user" {
+		t.Fatalf("want spec.owner=slack-resolved-user, got %v", got)
+	}
+}
+
+// THE regression test for #527: the body owner must survive a NON-DEFAULT identity
+// header. Before the fix the owner travelled in a hard-coded x-auth-user header, so a
+// deployment that renamed the header created every Slack conversation unowned — and
+// scope=mine then hid it from the person who started the thread.
+func TestCreateBodyOwnerSurvivesANonDefaultIdentityHeader(t *testing.T) {
+	t.Setenv("AUTH_USER_HEADER", "x-amzn-oidc-identity")
+	c := &fakeCreator{}
+	w := postCreateAs(t, c, `{"owner":"slack-resolved-user"}`,
+		map[string]string{"x-auth-user": "slack-resolved-user"}, alwaysTrusted())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if got := c.calls[0].spec["owner"]; got != "slack-resolved-user" {
+		t.Fatalf("owner dropped when AUTH_USER_HEADER is renamed: spec=%+v", c.calls[0].spec)
+	}
+}
+
+// The body owner is PRIVILEGED. An unverified caller (a browser posting straight to
+// /conversations) must not be able to claim someone else's identity.
+func TestCreateIgnoresBodyOwnerFromAnUnverifiedCaller(t *testing.T) {
+	c := &fakeCreator{}
+	w := postCreateAs(t, c, `{"owner":"someone-else"}`, nil, neverTrusted())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201 (ignored, not rejected), got %d", w.Code)
+	}
+	if _, present := c.calls[0].spec["owner"]; present {
+		t.Fatalf("an unverified body owner must be dropped, got %+v", c.calls[0].spec)
+	}
+}
+
+// No verifier configured at all (the kube-less dev stack) is the same answer: ignored.
+func TestCreateIgnoresBodyOwnerWhenTrustIsUnconfigured(t *testing.T) {
+	c := &fakeCreator{}
+	postCreateAs(t, c, `{"owner":"someone-else"}`, nil, nil)
+	if _, present := c.calls[0].spec["owner"]; present {
+		t.Fatalf("no verifier => no body owner, got %+v", c.calls[0].spec)
+	}
+}
+
+// An unverified caller must not be able to REPLACE the identity the ingress established.
+func TestCreateBodyOwnerCannotOverrideTheHeaderIdentityUnverified(t *testing.T) {
+	c := &fakeCreator{}
+	postCreateAs(t, c, `{"owner":"victim"}`, map[string]string{"x-auth-user": "attacker"}, neverTrusted())
+	if got := c.calls[0].spec["owner"]; got != "attacker" {
+		t.Fatalf("want the header identity to stand (attacker), got %v", got)
 	}
 }
