@@ -1,19 +1,18 @@
 name: update-flake-lock
 
 # Weekly `nix flake update` → opens a PR bumping flake.lock (nixpkgs, the
-# agent-sandbox input, uv-nix, etc.). Adapted from github:chadac/uv-nix.
+# agent-sandbox input, uv-nix, etc.).
 #
-# TOKEN: update-flake-lock is given a PAT (secrets.FLAKE_LOCK_PAT), NOT the
-# default GITHUB_TOKEN. A PR opened by GITHUB_TOKEN does NOT trigger other
-# workflows (GitHub's recursion guard), so ci.yml would never run on the bump —
-# defeating the point. A fine-grained PAT with `contents: write` +
-# `pull-requests: write` on this repo makes the PR trigger CI normally. If the
-# secret is absent the action falls back to GITHUB_TOKEN (PR still opens, but you
-# must push an empty commit / reopen to kick CI).
+# TOKEN: this job is given a PAT (secrets.FLAKE_LOCK_PAT), NOT the default
+# GITHUB_TOKEN. A PR opened by GITHUB_TOKEN does NOT trigger other workflows
+# (GitHub's recursion guard), so ci.yml would never run on the bump — defeating
+# the point. A fine-grained PAT with `contents: write` + `pull-requests: write`
+# on this repo makes the PR trigger CI normally. If the secret is absent we fall
+# back to GITHUB_TOKEN (PR still opens, but you must close/reopen to kick CI).
 #
-# We also run `nix flake check` AFTER the update so a bump that fails to evaluate
-# surfaces in this run's logs (the PR still opens — CI is the gate — but the log
-# gives an immediate signal).
+# We run `nix flake update` ourselves instead of DeterminateSystems/update-flake-lock
+# so stubs.lock can be regenerated in the same tree as the bumped flake.lock.
+# Why that is not possible with the action: PR #548.
 
 on:
   workflow_dispatch: # manual trigger
@@ -33,25 +32,58 @@ jobs:
       - uses: nixbuild/nix-quick-install-action@v30
 
       # Pull expensive closures from the shared cache so the post-update
-      # `nix flake check` is fast; pushes too when the token is set.
+      # evaluation gate is fast; pushes too when the token is set.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Update flake.lock
-        uses: DeterminateSystems/update-flake-lock@main
+        id: update
+        run: |
+          set -euo pipefail
+          nix flake update 2>&1 | tee /tmp/flake-update.log
+          {
+            echo 'summary<<FLAKE_UPDATE_EOF'
+            sed -n '/Updated input/,$p' /tmp/flake-update.log
+            echo 'FLAKE_UPDATE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # stubs.lock pins its OWN nixpkgs; stub-overlay.nix asserts it matches
+      # flake.lock, so a bump that skips this fails flake EVALUATION. PR #548.
+      - name: Regenerate stubs.lock against the bumped nixpkgs
+        run: |
+          nix run github:chadac/nix-stubs#gen -- \
+            --flake . --attr stubs \
+            --lock modules/sandbox-os/stubs.lock \
+            --flake-lock flake.lock
+
+      # Mirrors `just check-flake`. Advisory: CI on the PR is the real gate, so a
+      # bump that breaks evaluation still gets a PR to look at. PR #548.
+      - name: nix flake show (post-update evaluation sanity)
+        continue-on-error: true
+        run: nix flake show
+
+      - name: Open the bump PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          pr-title: "chore: update flake.lock"
-          pr-labels: |
-            dependencies
-            automated
-          commit-msg: "chore: update flake.lock"
           # PAT so the opened PR triggers ci.yml; falls back to GITHUB_TOKEN.
           token: ${{ secrets.FLAKE_LOCK_PAT || secrets.GITHUB_TOKEN }}
+          branch: update_flake_lock_action
+          delete-branch: true
+          title: "chore: update flake.lock"
+          commit-message: "chore: update flake.lock"
+          labels: |
+            dependencies
+            automated
+          add-paths: |
+            flake.lock
+            modules/sandbox-os/stubs.lock
+          body: |
+            Automated weekly `nix flake update`, with
+            `modules/sandbox-os/stubs.lock` regenerated against the bumped
+            nixpkgs so the flake still evaluates.
 
-      # Sanity gate: does the flake still evaluate after the bump? Mirrors the
-      # repo's `just check-flake` (== `nix flake show`) — cheap, no builds. CI is
-      # the real gate; a red here is just an instant heads-up in this run's log.
-      - name: nix flake show (post-update evaluation sanity)
-        run: nix flake show
+            ```
+            ${{ steps.update.outputs.summary }}
+            ```
