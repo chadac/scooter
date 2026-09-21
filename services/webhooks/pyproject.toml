@@ -21,6 +21,12 @@ dependencies = [
 [project.scripts]
 agent-webhooks = "webhooks.app:main"
 
+# External packages can contribute handler modules via this entry-point group
+# (mirrors the broker's `agent_broker.providers`). webhooks/registry.py scans it
+# at startup; adding a handler never edits the service.
+[project.entry-points."scooter_webhooks.handlers"]
+# example = "my_pkg.handlers:my_handler"
+
 [tool.setuptools.packages.find]
 include = ["webhooks*"]
 
