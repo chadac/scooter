@@ -41,10 +41,8 @@ def test_webhooks_settings_carries_the_shared_agent_host_fields():
 
 
 def test_webhooks_keeps_its_in_cluster_agent_host_default(monkeypatch):
-    # webhooks deliberately OVERRIDES the lib's "" default: for the broker an
-    # unset url means "auto-linking off", a real mode; for webhooks, spawning a
-    # conversation is the job, so an unset url is a misconfiguration. Collapsing
-    # the two onto one default silently breaks one of them.
+    # Deliberate override: "" means "auto-linking off" to the broker, but a
+    # misconfiguration here. Collapsing the two silently breaks one.
     monkeypatch.delenv("AGENT_HOST_URL", raising=False)
 
     from webhooks.config import WebhooksSettings

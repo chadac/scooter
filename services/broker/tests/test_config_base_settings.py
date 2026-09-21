@@ -1,9 +1,7 @@
-"""BrokerSettings inherits the agent-host fields without changing broker behaviour.
+"""Inheriting from scooter_lib must not change broker behaviour.
 
-`agent_host_url == ""` is the broker's auto-linking OFF switch (see
-scooter_broker_lib.autolink, which returns early on a falsy url). Inheriting the
-field from scooter_lib must not quietly give it a real default, or auto-linking
-turns itself on in every environment that does not set the variable.
+`agent_host_url == ""` is the auto-linking OFF switch; a real default here would
+turn it on wherever the variable is unset.
 """
 
 from __future__ import annotations

@@ -1,9 +1,7 @@
-"""ScooterBaseSettings — the shared settings base a contrib uses instead of the app.
+"""ScooterBaseSettings — the shared settings base.
 
-The subclassing tests matter more than they look: the two services disagree on
-the `agent_host_url` default, and the disagreement is semantic, not cosmetic.
-Collapsing them onto one default would silently change behaviour in a way no
-existing test covers.
+The default tests are the point: the two services disagree on `agent_host_url`
+and the disagreement is semantic, so collapsing it breaks one of them silently.
 """
 
 from __future__ import annotations
@@ -20,11 +18,8 @@ def _clean_env(monkeypatch):
 
 
 def test_agent_host_url_defaults_to_empty():
-    # EMPTY IS MEANINGFUL. The broker's auto-linking clients treat a falsy url as
-    # "not configured, do nothing" rather than an error. If this ever defaulted
-    # to a real in-cluster address, auto-linking would switch itself ON wherever
-    # the variable is unset — including local runs — and start POSTing to a host
-    # that may not exist.
+    # A real default here would switch broker auto-linking ON wherever the var
+    # is unset, and start POSTing to a host that may not exist.
     assert ScooterBaseSettings().agent_host_url == ""
 
 
@@ -46,10 +41,8 @@ def test_agent_manager_url_defaults_to_empty():
     ],
 )
 def test_reads_the_env_var_the_manifests_already_inject(monkeypatch, env_var, field, value):
-    # Wire compatibility is the whole reason the provider migrations can be done
-    # one at a time: a contrib built on this reads the SAME variables
-    # modules/broker.nix and modules/webhooks.nix already set, so no manifest
-    # changes and no flag day.
+    # Same vars the manifests already inject — what lets a migrated contrib run
+    # against a live deployment with no manifest change.
     monkeypatch.setenv(env_var, value)
     assert getattr(ScooterBaseSettings(), field) == value
 
@@ -77,7 +70,6 @@ def test_a_subclass_still_reads_the_env_over_its_own_default(monkeypatch):
 
 
 def test_two_instances_read_the_same_environment(monkeypatch):
-    # A contrib constructs its own instance rather than importing the app's.
-    # Both must see the same deployment config, which is what makes that safe.
+    # A contrib builds its own instance; both must see the same deployment config.
     monkeypatch.setenv("AGENT_HOST_URL", "http://shared:8080")
     assert ScooterBaseSettings().agent_host_url == ScooterBaseSettings().agent_host_url == "http://shared:8080"
