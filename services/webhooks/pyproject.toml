@@ -17,14 +17,15 @@ dependencies = [
   "pyjwt[crypto]", # GitHub App token minting for posting responses
   "scooter-schema", # generated SQLAlchemy models for the webhooks database (single source of truth)
   "scooter-lib",    # shared structured-logging convention (lib/py/scooter-lib)
+  "scooter-webhooks-lib", # the extension surface: handler registry + mapping store
 ]
 
 [project.scripts]
 agent-webhooks = "webhooks.app:main"
 
 # External packages can contribute handler modules via this entry-point group
-# (mirrors the broker's `agent_broker.providers`). webhooks/registry.py scans it
-# at startup; adding a handler never edits the service.
+# (mirrors the broker's `agent_broker.providers`). scooter_webhooks_lib/registry.py
+# scans it at startup; adding a handler never edits the service.
 [project.entry-points."scooter_webhooks.handlers"]
 # example = "my_pkg.handlers:my_handler"
 

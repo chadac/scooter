@@ -22,5 +22,11 @@ dependencies = [
 
 # hatchling auto-detects the `scooter_webhooks_lib` package.
 
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+  "uses_entry_points: test exercises the real entry-point loader (the autouse stub is skipped for it)",
+]

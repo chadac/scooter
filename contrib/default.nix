@@ -1,4 +1,4 @@
-{ lib, python3Packages, broker, webhooks, scooterBrokerLib, ... }:
+{ lib, python3Packages, broker, webhooks, scooterBrokerLib, scooterWebhooksLib, ... }:
 
 # Contrib module builder + registry.
 #
@@ -19,8 +19,8 @@
 # arrangement PR #567 exists to replace.
 #
 # broker/webhooks are still passed as CHECK-only inputs so a contrib's tests can
-# exercise the real registries end-to-end, and because the webhooks half of the
-# surface has not moved yet.
+# exercise the real services end-to-end (the app's own routes, its settings), not
+# just the registries a contrib now depends on directly.
 
 let
   entries = builtins.readDir ./.;
@@ -46,15 +46,16 @@ let
 
         dependencies = [ python3Packages.fastapi ]
           ++ lib.optional (lib.elem "broker" meta.services) scooterBrokerLib
+          ++ lib.optional (lib.elem "webhooks" meta.services) scooterWebhooksLib
           ++ extraDeps;
 
-        # A broker contrib's provider module is import-checked directly: its only
-        # non-stdlib imports are fastapi + the surface lib, both real deps now, so
-        # a bad import is this build's failure. The webhooks half still imports
-        # the app and resolves at runtime, so it stays out until that surface
-        # moves; the check phase below covers it meanwhile.
+        # Each service-coupled module is import-checked directly now that its
+        # surface is a real dependency: a bad import in a contrib's provider or
+        # handler is THIS build's failure, rather than a provider/handler quietly
+        # missing from a running service.
         pythonImportsCheck = [ pyImport ]
-          ++ lib.optional (lib.elem "broker" meta.services) "${pyImport}.broker_provider";
+          ++ lib.optional (lib.elem "broker" meta.services) "${pyImport}.broker_provider"
+          ++ lib.optional (lib.elem "webhooks" meta.services) "${pyImport}.webhooks_handler";
 
         # The contrib's tests run against the REAL broker + webhooks registries
         # (provided as check-only inputs), proving entry-point discovery works.

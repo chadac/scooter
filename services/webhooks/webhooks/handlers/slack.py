@@ -14,8 +14,8 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import store as db
-from ..store import PENDING_CONVERSATION_ID, is_pending
+from scooter_webhooks_lib import store as db
+from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import require_relay_key, settings
 from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
@@ -589,7 +589,7 @@ async def relay_slack_reply(request: Request, req: SlackReplyRequest):
 # provider registry, PR: contrib module system). Handlers self-gate in-route
 # (a disabled provider returns {"status": "disabled"}), so this registers
 # enabled and keeps its per-request gating.
-from ..registry import WebhookHandler, register_webhook
+from scooter_webhooks_lib.registry import WebhookHandler, register_webhook
 
 
 @register_webhook

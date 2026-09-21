@@ -1,18 +1,25 @@
-"""Async database session and query helpers.
+"""The conversation-mapping store — async engine, session, and query helpers.
 
-All services share this module for PostgreSQL access. Each service
-creates its own engine via ``init_db()`` at startup.
+Maps an external thread (a Slack thread, a GitHub PR, a Jira issue) to the
+conversation it spawned, which is the state every handler needs and none of them
+should reimplement. ``init_db()`` is called once at service startup.
+
+CONFIG STAYS IN THE APP. This module takes its database settings as an ARGUMENT
+typed by the `DatabaseConfig` protocol below, rather than importing the webhooks
+app's `config.DatabaseSettings`. That import is the only thing that stood between
+this module and the lib, and a protocol removes it without dragging a settings
+file across the boundary — the arrangement agreed on PR #567.
 """
+
+from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Protocol, runtime_checkable
 
 from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from .config import DatabaseSettings
 
 # Models are the generated, single-source-of-truth ORM classes for the webhooks
 # database (lib/sql/webhooks/schema.sql -> scooter_schema). The generator pluralizes
@@ -28,6 +35,20 @@ from scooter_schema.webhooks import (
 logger = logging.getLogger(__name__)
 _C = {"component": "store"}
 
+
+@runtime_checkable
+class DatabaseConfig(Protocol):
+    """What this store needs from whatever settings object the app hands it.
+
+    Two fields, both already on the app's `DatabaseSettings`: the DSN to connect
+    with, and a host label that is informational (it only ever reaches a log
+    field). Assembling the DSN — from components, from a secretKeyRef password —
+    stays the app's business.
+    """
+
+    dsn: str
+    db_host: str
+
 PENDING_CONVERSATION_ID = "__pending__"
 _PENDING_TIMEOUT_SECONDS = 120
 
@@ -35,15 +56,18 @@ _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-async def init_db(settings: DatabaseSettings | None = None) -> None:
+async def init_db(settings: DatabaseConfig) -> None:
     """Initialize the async engine.
 
     Tables are NOT created here: they are provisioned by the declarative schema +
     Atlas migrate job (lib/sql/webhooks/schema.sql). See PR #412.
+
+    `settings` is REQUIRED. It used to default to constructing the app's
+    DatabaseSettings, which meant a caller who forgot to pass one silently got a
+    second, independently env-read config — and on a misread env, a SQLite file
+    in /tmp instead of the durable Postgres store, with no error anywhere.
     """
     global _engine, _session_factory
-    if settings is None:
-        settings = DatabaseSettings()
     # pool_pre_ping: emit a lightweight liveness check when a connection is checked
     # out of the pool and RECYCLE it if the server (or an idle-timeout / proxy /
     # failover) has closed it underneath us — instead of handing out a dead

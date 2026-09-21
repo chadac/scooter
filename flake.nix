@@ -205,7 +205,7 @@
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
-          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema scooterLib; };
+          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema scooterLib scooterWebhooksLib; };
 
           # Contrib modules: self-contained integration packages discovered via
           # entry points (broker providers / webhooks handlers). Built here and
@@ -215,7 +215,7 @@
           # real registries end-to-end. The prod broker/webhooks above ship no
           # contribs yet (contribs default to []); real integrations move in from
           # slice 3 on.
-          contribs = pkgs.callPackage ./contrib { inherit broker webhooks scooterBrokerLib; };
+          contribs = pkgs.callPackage ./contrib { inherit broker webhooks scooterBrokerLib scooterWebhooksLib; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {

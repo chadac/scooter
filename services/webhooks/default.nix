@@ -1,4 +1,4 @@
-{ lib, python3Packages, scooterSchema, scooterLib, contribs ? [ ], ... }:
+{ lib, python3Packages, scooterSchema, scooterLib, scooterWebhooksLib, contribs ? [ ], ... }:
 
 # Webhooks service (Python/FastAPI). Spawns agent conversations from
 # GitHub/GitLab/Jira/Slack threads via the agent-host /agui endpoint.
@@ -7,7 +7,7 @@
 # `contribs`: out-of-tree handler packages injected into the image. Each is a
 # normal Python dependency, so its dist-info lands on the app's path and the
 # handler registry discovers it via the `scooter_webhooks.handlers` entry point
-# at startup (see webhooks/registry.py). Defaults to none — the flake passes the
+# at startup (see scooter_webhooks_lib/registry.py). Defaults to none — the flake passes the
 # webhooks-targeted subset from ./contrib.
 
 python3Packages.buildPythonApplication {
@@ -31,6 +31,7 @@ python3Packages.buildPythonApplication {
     pyjwt
     scooterSchema  # generated SQLAlchemy models for the webhooks DB (lib/py/scooter-schema)
     scooterLib     # shared structured-logging convention (lib/py/scooter-lib)
+    scooterWebhooksLib # the extension surface a handler composes (lib/py/scooter-webhooks-lib)
   ] ++ contribs;
 
   nativeCheckInputs = with python3Packages; [

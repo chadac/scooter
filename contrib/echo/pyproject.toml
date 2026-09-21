@@ -14,12 +14,10 @@ requires-python = ">=3.11"
 # surface is a real dependency, a broken extension fails THIS package's build
 # instead of vanishing silently at service startup.
 #
-# scooter-webhooks-lib is not here yet: webhooks_handler.py still imports the
-# webhooks app and resolves at runtime. It moves in with the webhooks half of
-# the lib split (PR #567, next commit).
 dependencies = [
   "fastapi",
   "scooter-broker-lib",
+  "scooter-webhooks-lib",
 ]
 
 # The two extension seams a contrib can plug into. A contrib may declare EITHER

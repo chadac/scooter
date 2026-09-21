@@ -7,7 +7,7 @@ plug into one or more services:
 | Service    | Entry-point group           | Registry                     |
 |------------|-----------------------------|------------------------------|
 | `broker`   | `agent_broker.providers`    | `scooter_broker_lib/registry.py` |
-| `webhooks` | `scooter_webhooks.handlers` | `webhooks/registry.py`       |
+| `webhooks` | `scooter_webhooks.handlers` | `scooter_webhooks_lib/registry.py` |
 
 At startup each service scans its group, loads every advertised factory (which
 self-registers via `@register_provider` / `@register_webhook`), and mounts what

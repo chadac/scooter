@@ -25,9 +25,14 @@ python3Packages.buildPythonPackage {
     asyncpg
   ];
 
-  # No pytestCheckHook yet — skeleton (0 tests would fail collection).
-  # Re-added with the modules + their tests in the follow-up commits.
-  pythonImportsCheck = [ "scooter_webhooks_lib" ];
+  nativeCheckInputs = with python3Packages; [
+    pytestCheckHook
+    pytest-asyncio
+  ];
+  pythonImportsCheck = [
+    "scooter_webhooks_lib.registry"
+    "scooter_webhooks_lib.store"
+  ];
 
   meta.description = "The webhooks extension surface for Scooter handlers";
 }

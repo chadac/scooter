@@ -1,5 +1,9 @@
 """Tests for the webhook handler registry (plugin discovery).
 
+These are the APP-side assertions: the built-in handlers under webhooks.handlers
+self-register and app.py mounts whatever is discovered. The registry mechanism
+itself (the parameterized scan, entry points) is tested in the lib that owns it.
+
 Mirrors the broker's provider-registry contract: handler modules self-register
 via @register_webhook and app.py mounts whatever is discovered — no hardcoded
 per-provider wiring.
@@ -7,7 +11,9 @@ per-provider wiring.
 
 from fastapi import APIRouter
 
-from webhooks.registry import (
+from webhooks import handlers
+
+from scooter_webhooks_lib.registry import (
     WebhookHandler,
     discover_webhooks,
     register_webhook,
@@ -19,12 +25,12 @@ BUILTIN_HANDLERS = {"github", "gitlab", "jira", "slack", "test"}
 
 def test_discovers_all_builtin_handlers():
     """Every built-in handler module self-registers and is discovered."""
-    names = {h.name for h in discover_webhooks()}
+    names = {h.name for h in discover_webhooks([handlers])}
     assert BUILTIN_HANDLERS <= names
 
 
 def test_every_discovered_handler_has_a_router():
-    for h in discover_webhooks():
+    for h in discover_webhooks([handlers]):
         assert isinstance(h, WebhookHandler)
         assert isinstance(h.router, APIRouter)
 
@@ -58,7 +64,7 @@ def test_disabled_handler_is_omitted_from_discovery():
     def _disabled_probe() -> WebhookHandler:  # noqa: D401
         return WebhookHandler(name="_disabled_probe", router=APIRouter(), enabled=False)
 
-    names = {h.name for h in discover_webhooks()}
+    names = {h.name for h in discover_webhooks([handlers])}
     assert "_disabled_probe" not in names
 
 
@@ -69,6 +75,6 @@ def test_failing_factory_is_skipped_not_fatal():
     def _boom() -> WebhookHandler:
         raise RuntimeError("factory blew up")
 
-    names = {h.name for h in discover_webhooks()}
+    names = {h.name for h in discover_webhooks([handlers])}
     assert BUILTIN_HANDLERS <= names  # the good ones still come through
     assert "_boom" not in names

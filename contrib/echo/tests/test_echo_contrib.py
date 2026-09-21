@@ -37,7 +37,7 @@ def test_broker_discovers_echo_via_entrypoint():
 
 def test_webhooks_discovers_echo_via_entrypoint():
     """The webhooks service's real discovery loads the contrib handler."""
-    from webhooks.registry import discover_webhooks
+    from scooter_webhooks_lib.registry import discover_webhooks
 
     handlers = {h.name: h for h in discover_webhooks()}
     assert CONTRIB_NAME in handlers
