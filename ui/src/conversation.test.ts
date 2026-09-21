@@ -169,6 +169,44 @@ describe("addressing the server", () => {
   });
 });
 
+describe("a BLANK id is not an id", () => {
+  // `""` is the one value that passes every `!== undefined` guard in this class and then
+  // addresses `/conversations//links` — the COLLECTION, not this conversation. The UI
+  // sent that every 10s per open tab.
+  it("treats an empty constructed id as not-yet-created", () => {
+    const c = new Conversation({ key: "local-1", id: "", config: CFG, create: creates("server-1") });
+    expect(c.created).toBe(false);
+    expect(c.serverId()).toBeUndefined();
+  });
+
+  it("does NOT let a blank id reach a read (ifCreated returns the fallback)", async () => {
+    const c = new Conversation({ key: "k", id: "  ", config: CFG, create: creates(null) });
+    const fn = vi.fn(async (id: string) => [id]);
+    expect(await c.ifCreated(fn, ["fallback"])).toEqual(["fallback"]);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("does NOT build a URL from a blank id", () => {
+    const c = new Conversation({ key: "k", id: "", config: CFG, create: creates(null) });
+    expect(c.url("/links")).toBeUndefined();
+    expect(c.shareUrl("https://scooter.example")).toBeUndefined();
+  });
+
+  it("treats a blank id FROM THE MINTER as a failed create, not a created conversation", async () => {
+    const onCreated = vi.fn();
+    const c = new Conversation({ key: "k", config: CFG, create: creates(""), onCreated });
+    expect(await c.ensureCreated()).toBeNull();
+    expect(c.created).toBe(false);
+    expect(onCreated).not.toHaveBeenCalled();
+    await expect(c.withId(async (id) => id)).rejects.toThrow(/could not create/i);
+  });
+
+  it("hasId rejects a blank string", () => {
+    expect(hasId("" as MaybeConversationId)).toBe(false);
+    expect(hasId("   " as MaybeConversationId)).toBe(false);
+  });
+});
+
 describe("AWAITING_ID — the type that blocks the ?? bug", () => {
   it("is NOT nullish, so ?? and || cannot silently substitute a placeholder", () => {
     // The whole reason this is a value rather than `undefined`. With undefined,

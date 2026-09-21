@@ -49,10 +49,22 @@ export type AwaitingId = typeof AWAITING_ID;
 export type MaybeConversationId = string | AwaitingId;
 
 /** Narrow to a usable server id. Prefer this over a truthiness check — it says what the
- *  other case IS. */
+ *  other case IS. A blank string is NOT an id (see serverIssued). */
 export function hasId(id: MaybeConversationId): id is string {
-  return typeof id === "string";
+  return typeof id === "string" && id.trim() !== "";
 }
+
+/**
+ * The id if the SERVER actually issued one, else undefined.
+ *
+ * A blank id is the one value that defeats every guard in this file: `"" !== undefined`,
+ * so it passes `ifCreated`/`url()` and addresses `/conversations//links` — which is not
+ * this conversation, it is the collection. That reached the agent-host as a real request
+ * every 10s per open tab. Normalizing on the way IN means there is one definition of
+ * "created" and no caller has to re-check. Why: PR #554.
+ */
+const serverIssued = (id: string | null | undefined): string | undefined =>
+  typeof id === "string" && id.trim() !== "" ? id : undefined;
 
 export interface ConversationSnapshot {
   /** Stable local identity — never changes, including when the server id arrives. */
@@ -90,7 +102,7 @@ export class Conversation {
     onCreated?: OnCreated;
   }) {
     this.key = opts.key;
-    this.#id = opts.id;
+    this.#id = serverIssued(opts.id);
     this.#config = opts.config;
     this.#create = opts.create;
     this.#onCreated = opts.onCreated;
@@ -143,12 +155,14 @@ export class Conversation {
     if (this.#id !== undefined) return this.#id;
     if (this.#creating) return this.#creating;
     this.#creating = (async () => {
-      const id = await this.#create();
+      // A blank id from the minter is a FAILED create, not a created conversation —
+      // recording it would hand every later call an id the server never issued.
+      const id = serverIssued(await this.#create());
       if (id) {
         this.#id = id;
         this.#onCreated?.(this.key, id);
       }
-      return id;
+      return id ?? null;
     })().finally(() => {
       this.#creating = undefined;
     });
