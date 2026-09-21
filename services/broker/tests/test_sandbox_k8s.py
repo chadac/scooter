@@ -77,6 +77,8 @@ class _FakeCustom:
             raise _ApiExc(self.rec.delete_status)
 
     def get_namespaced_custom_object(self, group, version, namespace, plural, name):
+        if self.rec.get_status:
+            raise _ApiExc(self.rec.get_status)
         return {
             "spec": {
                 "operatingMode": self.rec.operating_mode,
@@ -93,6 +95,8 @@ class _Rec(list):
     image = "img"
     operating_mode = "Running"
     pods_live = 0
+    # Status the Sandbox GET raises instead of returning the CR (404 = it's gone).
+    get_status = None
 
 
 @pytest.fixture(autouse=True)
@@ -132,6 +136,31 @@ def test_resume_without_size_sets_running_only(_mock_apis):
     _sb().resume("c1", resources=None)
     patches = [o for o in _mock_apis if o[0] == "patch"]
     assert patches == [("patch", "conv-c1", {"operatingMode": "Running"})]
+
+
+def test_resume_recreates_a_sandbox_that_is_gone(_mock_apis):
+    """A Sandbox that is GONE cannot be resumed — there is nothing to patch. The
+    conversation's work lives on the workspace PVC, which outlives the Sandbox, so
+    resume recreates it instead of surfacing a raw 404. PR #404."""
+    _mock_apis.get_status = 404
+    ref = _sb().resume("c1", resources=None, thread_id="thread-1")
+    assert ref.name == "conv-c1"
+    ops = [o[0] for o in _mock_apis]
+    assert "sb+" in ops, "the gone Sandbox was not recreated"
+    # The recreated CR carries the FULL thread id in CONVERSATION_URL, not the short
+    # ref name — a deep link built from the short id does not resolve.
+    created = next(o for o in _mock_apis if o[0] == "sb+")
+    assert created[1] == "conv-c1"
+
+
+def test_resume_does_not_recreate_on_a_non_404_failure(_mock_apis):
+    """Only a 404 means "gone". A 500 while reconciling the image is logged and the
+    sandbox is run as-is (PR #565) — it must NOT silently create a SECOND Sandbox."""
+    _mock_apis.get_status = 500
+    _sb().resume("c1", resources=None)
+    ops = [o[0] for o in _mock_apis]
+    assert "sb+" not in ops
+    assert ("patch", "conv-c1", {"operatingMode": "Running"}) in _mock_apis
 
 
 def test_resume_with_size_patches_resources_then_sets_running(_mock_apis):

@@ -18,6 +18,7 @@ VERSION = "v1beta1"
 PLURAL_SANDBOXES = "sandboxes"
 SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name"
 CONFIG_FILES_MOUNT_PATH = "/etc/agent-sandbox/config"
+SCOOTER_DIR_MOUNT_PATH = "/etc/agent-sandbox/scooter"
 
 
 @dataclass
@@ -27,6 +28,13 @@ class DeployConfig:
 
     namespace: str
     sandbox_image: str
+    # imagePullPolicy for the sandbox container. "Always" picks up a re-pushed :latest
+    # on a registry-backed cluster; a SIDE-LOADED cluster (kind/k3s/k3d) has no registry
+    # to pull from and must use IfNotPresent/Never or every sandbox ImagePullBackOffs.
+    pull_policy: str = "Always"
+    # Cgroup-delegating RuntimeClass (e.g. crun) for the systemd sandbox — see the
+    # securityContext note in sandbox_manifest(). None = the cluster default runtime.
+    runtime_class: str | None = None
     workspace_storage: str = "10Gi"
     broker_audience: str = "agent-broker"
     overlay_store: bool = False
@@ -34,6 +42,11 @@ class DeployConfig:
     systemd_image: bool = True
     aws_accounts_configmap: str | None = None
     config_files_configmap: str | None = None
+    # A deployment's .scooter ConfigMap (its own flake + module.nix), mounted at
+    # SCOOTER_DIR_MOUNT_PATH. programs.injectedTools and programs.scooterModule in the
+    # sandbox image default to that path, so an unmounted CM means a deployment's
+    # injected tools silently stop building.
+    scooter_configmap: str | None = None
     extra_token_audiences: list[str] = field(default_factory=list)
     extra_env: list[dict] = field(default_factory=list)  # [{name, value}]
     public_url: str | None = None
@@ -54,16 +67,17 @@ def sandbox_manifest(
     url_thread: str | None = None,  # full threadId for CONVERSATION_URL deep-link
     overlay: dict | None = None,  # parsed consumer overlay (see overlay.apply_overlay)
 ) -> dict:
-    # NOTE: NO module ConfigMap. The pod pulls its module config (deployment defaults
-    # + registry modules) as a tarball from the broker (a root sandbox-os Nix module
-    # fetchTarballs it into /etc/scooter/modules on the workspace PVC), so there is no
-    # per-conversation module CM and no deployment .scooter CM mount here.
+    # NOTE: NO per-conversation module ConfigMap. The pod pulls its module config
+    # (deployment defaults + registry modules) as a tarball from the broker (a root
+    # sandbox-os Nix module fetchTarballs it into /etc/scooter/modules on the workspace
+    # PVC). The DEPLOYMENT's .scooter CM is a different thing and IS mounted below.
     ns = deploy.namespace
     image = deploy.sandbox_image
     audience = deploy.broker_audience
     systemd = deploy.systemd_image
     overlay_store = deploy.overlay_store  # the .scooter-rw PVC flag (NOT the manifest overlay)
     config_files = deploy.config_files_configmap
+    scooter_cm = deploy.scooter_configmap
     aws_cm = deploy.aws_accounts_configmap
     extra_auds = deploy.extra_token_audiences or []
     extra_env = deploy.extra_env or []
@@ -78,6 +92,8 @@ def sandbox_manifest(
         volume_mounts.append({"name": "aws-accounts", "mountPath": "/etc/agent-sandbox/aws", "readOnly": True})
     if systemd:
         volume_mounts += [{"name": "run", "mountPath": "/run"}, {"name": "tmp", "mountPath": "/tmp"}]
+    if scooter_cm:
+        volume_mounts.append({"name": "scooter-tools", "mountPath": SCOOTER_DIR_MOUNT_PATH, "readOnly": True})
     for aud in extra_auds:
         volume_mounts.append({"name": f"tok-{aud}", "mountPath": f"/var/run/secrets/{aud}", "readOnly": True})
     if overlay_store:
@@ -103,14 +119,21 @@ def sandbox_manifest(
     container: dict = {
         "name": "sandbox",
         "image": image,
-        "imagePullPolicy": "Always",
+        "imagePullPolicy": deploy.pull_policy,
         "volumeMounts": volume_mounts,
         "env": env,
     }
     if resources:
         container["resources"] = resources
     if systemd:
-        container["securityContext"] = {"privileged": True}
+        # NON-privileged. `privileged` forces the HOST cgroup namespace, and the
+        # sandbox's systemd PID 1 then churns the host /kubepods.slice tree at boot —
+        # node instability, and on a workstation node a host-session logout (PR #255).
+        # Isolation comes from runtimeClassName below (a cgroup-delegating runtime gives
+        # PID 1 a writable subtree in the pod's OWN cgroup ns). SYS_ADMIN is still
+        # required: NixOS stage-2 `specialfs` mounts /proc, /dev, /run at boot (mount(2)),
+        # and under crun the cap does NOT re-introduce the host cgroup ns.
+        container["securityContext"] = {"capabilities": {"add": ["SYS_ADMIN"]}}
 
     # --- pod volumes ---
     volumes: list[dict] = [
@@ -123,6 +146,8 @@ def sandbox_manifest(
             {"name": "run", "emptyDir": {"medium": "Memory"}},
             {"name": "tmp", "emptyDir": {"medium": "Memory"}},
         ]
+    if scooter_cm:
+        volumes.append({"name": "scooter-tools", "configMap": {"name": scooter_cm}})
     if config_files:
         volumes.append({"name": "deploy-config", "configMap": {"name": config_files}})
     for aud in extra_auds:
@@ -152,6 +177,10 @@ def sandbox_manifest(
                 "spec": {
                     "serviceAccountName": service_account,
                     "automountServiceAccountToken": False,
+                    # Cgroup-delegating runtime for the systemd sandbox — the other half
+                    # of the non-privileged securityContext above (PR #255). Only for the
+                    # systemd image, only when configured; else the cluster default.
+                    **({"runtimeClassName": deploy.runtime_class} if systemd and deploy.runtime_class else {}),
                     "containers": [container],
                     "volumes": volumes,
                 },

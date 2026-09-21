@@ -55,12 +55,55 @@ def test_minimal_manifest_has_workspace_and_broker_token():
     assert any(v["metadata"]["name"] == "workspace" for v in m["spec"]["volumeClaimTemplates"])
 
 
-def test_systemd_image_is_privileged_with_tmpfs():
+def test_systemd_image_is_unprivileged_with_sys_admin_and_tmpfs():
+    """The systemd sandbox must NOT be privileged: that forces the HOST cgroup
+    namespace and lets its PID 1 churn the host /kubepods.slice tree (node
+    instability / host-session logout). It gets CAP_SYS_ADMIN instead, for the
+    stage-2 `specialfs` mounts. See PR #255."""
     m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa", deploy=_deploy(systemd_image=True))
-    assert _container(m)["securityContext"] == {"privileged": True}
+    assert _container(m)["securityContext"] == {"capabilities": {"add": ["SYS_ADMIN"]}}
+    assert "privileged" not in _container(m)["securityContext"]
     assert "run" in _mount_names(m) and "tmp" in _mount_names(m)
     vol_names = {v["name"] for v in _vols(m)}
     assert {"run", "tmp"} <= vol_names
+
+
+def test_runtime_class_only_on_the_systemd_image():
+    """The other half of PR #255: a cgroup-delegating runtime gives PID 1 a writable
+    subtree in the pod's OWN cgroup namespace. Only for the systemd image."""
+    pod = lambda m: m["spec"]["podTemplate"]["spec"]  # noqa: E731
+    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa",
+                         deploy=_deploy(systemd_image=True, runtime_class="crun"))
+    assert pod(m)["runtimeClassName"] == "crun"
+    # Unset -> the key is absent entirely (the cluster default runtime), not null.
+    assert "runtimeClassName" not in pod(sandbox_manifest(
+        conversation_id="c1", name="conv-c1", service_account="sa", deploy=_deploy(systemd_image=True)))
+    assert "runtimeClassName" not in pod(sandbox_manifest(
+        conversation_id="c1", name="conv-c1", service_account="sa",
+        deploy=_deploy(systemd_image=False, runtime_class="crun")))
+
+
+def test_pull_policy_is_configurable():
+    """A side-loaded cluster (kind/k3s/k3d) has no registry behind the image, so
+    "Always" is an ImagePullBackOff on every sandbox."""
+    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa", deploy=_deploy())
+    assert _container(m)["imagePullPolicy"] == "Always"  # registry-backed default
+    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa",
+                         deploy=_deploy(pull_policy="IfNotPresent"))
+    assert _container(m)["imagePullPolicy"] == "IfNotPresent"
+
+
+def test_scooter_configmap_mounts_the_deployment_flake():
+    """programs.injectedTools / programs.scooterModule default to this path; an
+    unmounted CM means a deployment's injected tools silently stop building."""
+    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa", deploy=_deploy())
+    assert "scooter-tools" not in _mount_names(m)
+    m = sandbox_manifest(conversation_id="c1", name="conv-c1", service_account="sa",
+                         deploy=_deploy(scooter_configmap="my-scooter"))
+    mount = next(vm for vm in _container(m)["volumeMounts"] if vm["name"] == "scooter-tools")
+    assert mount["mountPath"] == "/etc/agent-sandbox/scooter"
+    assert mount["readOnly"] is True
+    assert {"name": "scooter-tools", "configMap": {"name": "my-scooter"}} in _vols(m)
 
 
 def test_non_systemd_is_unprivileged_no_tmpfs():

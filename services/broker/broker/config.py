@@ -112,10 +112,9 @@ class BrokerSettings(ScooterBaseSettings):
     fga_authorization_model_id: str = ""
 
     # --- Sandbox lifecycle (broker/sandbox/) — the broker as control plane -----
-    # When on, the broker owns per-conversation Sandbox provisioning (SA/PVC/CR),
-    # the size spec, and the lifecycle API the agent-host calls. See
-    # todo/CONTROL_PLANE_REDESIGN.md.
-    sandbox_lifecycle_enabled: bool = False
+    # The broker owns per-conversation Sandbox provisioning (SA/PVC/CR), the size spec,
+    # and the lifecycle API the agent-host calls. Not optional: it is the ONLY
+    # provisioning path (the agent-host's own k8s provisioner was deleted).
     # SA usernames allowed to drive the sandbox LIFECYCLE (ensure/suspend/resume/
     # end/list) — the CONTROL callers, i.e. the agent-host. CSV of
     # system:serviceaccount:{ns}:{name}. A sandbox SA is NEVER allowed lifecycle
@@ -123,6 +122,15 @@ class BrokerSettings(ScooterBaseSettings):
     # doesn't depend on the AWS broker being enabled.
     sandbox_control_service_accounts: str = ""
     sandbox_image: str = "agent-sandbox-os:latest"
+    # imagePullPolicy for the sandbox container. A side-loaded cluster (kind/k3s/k3d)
+    # has no registry behind the image and MUST override this to IfNotPresent/Never.
+    sandbox_pull_policy: str = "Always"
+    # Cgroup-delegating RuntimeClass (e.g. "crun") for the systemd sandbox, so it runs
+    # non-privileged in its own cgroup namespace (PR #255). Empty -> cluster default.
+    sandbox_runtime_class: str = ""
+    # A deployment's .scooter ConfigMap, mounted at /etc/agent-sandbox/scooter — where
+    # programs.injectedTools / programs.scooterModule look for the deployment flake.
+    sandbox_scooter_configmap: str = ""
     sandbox_workspace_storage: str = "10Gi"
     # The sandbox image always has the writable local-overlay Nix store on, so always mount
     # the .scooter-rw upper (default True). See the agent-host provisioner + pkgs/sandbox-os.

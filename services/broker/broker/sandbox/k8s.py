@@ -175,9 +175,22 @@ class SandboxK8s:
         except client.ApiException as e:
             _ignore(e.status, e, 404)  # already gone == already suspended
 
-    def resume(self, cid: str, resources: dict | None) -> PodRef:
+    def resume(self, cid: str, resources: dict | None, thread_id: str | None = None) -> PodRef:
         name = _sandbox_name(cid)
-        self._run_on_current_image(name, resources=resources)
+        try:
+            self._run_on_current_image(name, resources=resources)
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
+            # A Sandbox that is GONE cannot be resumed — there is nothing to patch.
+            # Recreate it rather than surface a raw 404: the conversation's work lives
+            # on the workspace PVC, which outlives the Sandbox. Mirrors suspend()'s 404
+            # tolerance. PR #404.
+            logger.warning(
+                "resume: the Sandbox is gone; recreating it",
+                extra={"sandbox": name, "namespace": self.ns},
+            )
+            return self.create(cid, thread_id, resources)
         return PodRef(name=name, namespace=self.ns)
 
     # --- image skew ---------------------------------------------------------

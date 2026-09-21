@@ -1,13 +1,11 @@
 /**
- * Broker-backed SandboxProvisioner — the agent-host no longer touches the k8s
- * Sandbox/SA/PVC API directly; it calls the BROKER's lifecycle API, which owns all
- * of that (see todo/CONTROL_PLANE_REDESIGN.md). The agent-host's only remaining
- * direct k8s use is pods/exec.
+ * Broker-backed SandboxProvisioner — the ONLY provisioner. The agent-host does not
+ * touch the k8s Sandbox/SA/PVC API; it calls the BROKER's lifecycle API, which owns
+ * all of that and is the single writer of the Sandbox CR. The agent-host's only
+ * remaining direct k8s use is pods (exec + ready-pod resolution).
  *
- * Implements the same SandboxProvisioner interface as createK8sProvisioner, so the
- * session manager is unchanged — only the construction in index.ts differs (gated by
- * SANDBOX_VIA_BROKER). Authenticates with the agent-host's own SA token (a CONTROL
- * caller the broker allowlists).
+ * Authenticates with the agent-host's own SA token (a CONTROL caller the broker
+ * allowlists).
  *
  * The broker keys sandboxes by the SHORT conversation id; a ref's name is `conv-<id>`,
  * so we derive the id from the ref for suspend/resume/destroy. ensure/resume return
@@ -107,9 +105,11 @@ export function createBrokerProvisioner(opts: BrokerProvisionerOptions): BrokerP
       await json(res, `suspend ${ref.name}`, 404); // a gone sandbox is already suspended
     },
 
-    async resume(ref: SandboxRef): Promise<SandboxRef> {
+    async resume(ref: SandboxRef, threadId?: string): Promise<SandboxRef> {
       // The broker applies the stored size spec on resume (sizing is broker-owned now).
-      const res = await call("POST", `/sandbox/${encodeURIComponent(convId(ref))}/resume`);
+      // threadId is forwarded for the recreate-a-gone-Sandbox path, which has to
+      // re-render CONVERSATION_URL from the FULL thread id, not the short ref name.
+      const res = await call("POST", `/sandbox/${encodeURIComponent(convId(ref))}/resume`, { threadId });
       const r = (await json(res, `resume ${ref.name}`)) as PodRefResponse | undefined;
       return toRef(r, ref.name);
     },

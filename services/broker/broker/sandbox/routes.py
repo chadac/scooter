@@ -86,9 +86,11 @@ def create_sandbox_router(k8s: SandboxK8s, store: SandboxSizeStore) -> APIRouter
         return {"suspended": True}
 
     @router.post("/sandbox/{conv}/resume")
-    async def resume(conv: str = Path(...), identity: Identity = Depends(authenticate)):
+    async def resume(conv: str = Path(...), body: dict = Body(default={}), identity: Identity = Depends(authenticate)):
         _require_control(identity)
-        ref = k8s.resume(conv, await _effective_size(conv))
+        # threadId is only needed on the recreate-a-gone-Sandbox path (the CR carries
+        # the full thread id in CONVERSATION_URL); a resume of a live Sandbox ignores it.
+        ref = k8s.resume(conv, await _effective_size(conv), body.get("threadId"))
         ready = k8s.ready_pod(ref.name)
         return {"name": ready.name, "namespace": ready.namespace, "podIP": ready.pod_ip, "running": ready.running}
 

@@ -37,6 +37,8 @@ def deploy_config(settings: BrokerSettings) -> DeployConfig:
     return DeployConfig(
         namespace=settings.sandbox_namespace,
         sandbox_image=settings.sandbox_image,
+        pull_policy=settings.sandbox_pull_policy,
+        runtime_class=settings.sandbox_runtime_class or None,
         workspace_storage=settings.sandbox_workspace_storage,
         broker_audience=settings.token_audience,
         overlay_store=settings.sandbox_overlay_store,
@@ -44,6 +46,7 @@ def deploy_config(settings: BrokerSettings) -> DeployConfig:
         systemd_image=settings.sandbox_systemd_image,
         aws_accounts_configmap=settings.sandbox_aws_accounts_configmap or None,
         config_files_configmap=settings.sandbox_config_files_configmap or None,
+        scooter_configmap=settings.sandbox_scooter_configmap or None,
         extra_token_audiences=_csv(settings.sandbox_token_audiences),
         extra_env=extra_env,
         public_url=settings.sandbox_public_url or None,
