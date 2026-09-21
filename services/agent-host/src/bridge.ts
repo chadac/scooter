@@ -223,6 +223,39 @@ export function clarifyRunError(raw: string): string {
   return raw;
 }
 
+/** Longest provider diagnostic we paste into a user-facing RUN_ERROR. */
+const DIAGNOSTIC_MAX = 300;
+
+/** Pick the line from an agent subprocess's stderr tail that explains a run which
+ *  produced nothing. `[ede_diagnostic]` (the CLI's stalled-permission-prompt
+ *  signature — see claude-sdk-provider/src/toolPolicy.ts) wins over a generic error
+ *  line even when a later line also matches. Why: PR #565. */
+export function providerDiagnostic(lines: readonly string[] | undefined): string | undefined {
+  if (!lines?.length) return undefined;
+  const clean = lines.map((l) => l.trim()).filter(Boolean);
+  const pick =
+    [...clean].reverse().find((l) => l.includes("ede_diagnostic")) ??
+    [...clean].reverse().find((l) => /error|fail|refus|denied/i.test(l));
+  if (!pick) return undefined;
+  return pick.length > DIAGNOSTIC_MAX ? `${pick.slice(0, DIAGNOSTIC_MAX)}…` : pick;
+}
+
+/** The user-facing text for a dead-on-arrival run (no ACP activity before the
+ *  deadline). `no_activity_timeout` has SEVERAL causes, so this must name the
+ *  candidates rather than assert one — asserting credentials cost hours of a real
+ *  outage's diagnosis while the token was fine. Why: PR #565. */
+export function deadOnArrivalMessage(diagnostic?: string): string {
+  return (
+    "The agent didn't respond — it started but produced nothing. This has several " +
+    "possible causes: a sandbox/platform version skew (the sandbox pod is running an " +
+    "image from before the last upgrade), a model or credential error (e.g. the " +
+    "Bedrock role can't be assumed), or the agent stalling on a tool permission " +
+    "prompt nobody can answer. " +
+    (diagnostic ? `The agent's last diagnostic was: ${diagnostic}. ` : "") +
+    "Try again; if it persists, check the agent-host logs."
+  );
+}
+
 /** An image attached to a user prompt — a reference the bridge resolves to base64
  *  (from the AssetStore) when it builds the ACP image content block. */
 export interface PromptImage {
@@ -645,6 +678,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean; mcpFingerprint: string }>>();
   let acpClient: AcpClient | undefined;
 
+  // A wedged run's cause usually arrives AFTER the watchdog gave up (the abandoned
+  // stream rejects late), by which point the client has been dropped and its own tail
+  // goes with it. So the diagnostic is kept HERE, per conversation, where the next
+  // attempt's message can still reach it. Why: PR #565.
+  const runDiagnostics: string[] = [];
+  const RUN_DIAGNOSTICS_MAX = 5;
+  const noteRunDiagnostic = (line: string): void => {
+    if (!line) return;
+    runDiagnostics.push(line);
+    if (runDiagnostics.length > RUN_DIAGNOSTICS_MAX) runDiagnostics.shift();
+  };
+
   /** Drop the cached ready-session so the next attempt re-initializes a fresh one.
    *  A wedged session fails IDENTICALLY on every retry, so retrying through it just
    *  burns the budget. */
@@ -1047,17 +1092,21 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // LOUD: the RUN_ERROR below tells the USER to check these logs, so this must be
         // in them. Without it a wedged-then-retried run leaves no trace at all — the
         // only evidence is a "prompt: sending" with no matching "returned".
+        // Read the provider's stderr BEFORE we kill the process. It is the process's
+        // tail, so it may predate this run — hence "last diagnostic". Why: PR #565.
+        const diagnostic = providerDiagnostic([
+          ...runDiagnostics, // carried over from earlier attempts (see noteRunDiagnostic)
+          ...(acpClient?.recentDiagnostics?.() ?? []),
+        ]);
         log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
           run_id: st.runId,
           waited_ms: firstActivityTimeoutMs,
           retryable: true,
+          ...(diagnostic ? { provider_diagnostic: diagnostic } : {}),
         });
         emit({
           type: "RUN_ERROR",
-          message:
-            "The agent didn't respond — it started but produced nothing. This usually " +
-            "means a model/credential error (e.g. the Bedrock role can't be assumed). " +
-            "Try again; if it persists, check the agent-host logs.",
+          message: deadOnArrivalMessage(diagnostic),
           code: "no_activity_timeout",
         });
         st.retryable = true; // transient (credential/model blip) — the pump auto-retries with backoff
@@ -1270,6 +1319,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       st.ended = true;
       closeOpenText(st);
       closeOpenReasoning(st);
+      // Record it even when the watchdog already terminated this run — that is the
+      // wedge case, and this rejection is the only account of WHY. PR #565.
+      noteRunDiagnostic(err instanceof Error ? err.message : String(err));
       // The watchdog's self.cancel() makes the pending prompt() reject here — but the
       // watchdog already emitted RUN_ERROR, so skip a duplicate terminal.
       if (!st.terminated) {

@@ -293,6 +293,103 @@ describe("agent-tools: DB fallback for github/gitlab/jira (ref-less links)", () 
   });
 });
 
+describe("agent-tools: a URL-form link IS an attachment (issue #563)", () => {
+  const ok = (): BrokerResponse => ({ status: 201, raw: '{"id":1}', data: { id: 1 } });
+  /** What the broker's auto-link injector writes: url + title, NO ref. 155 of 156
+   *  live resource_links rows were this shape, and none of them resolved. */
+  const urlLink = (source: string, resourceType: string, url: string): ConversationLink => ({
+    source, resourceType, url, title: url,
+  });
+
+  it("github_comment targets the PR named by a ref-less link's url", async () => {
+    const broker = fakeBroker(ok());
+    const ctx = ctxWith([urlLink("github", "pr", "https://github.com/chadac/scooter/pull/561")]);
+    const out = await handleGithubComment({ broker }, ctx, { body: "on it" });
+    expect(out.isError).toBeFalsy();
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(
+      "/github/repos/chadac/scooter/issues/561/comments",
+    );
+  });
+
+  it("registers github_comment for a url-only link (it was silently absent)", async () => {
+    const titles = await registeredTools(ctxWith([urlLink("github", "pr", "https://github.com/o/r/pull/7")]));
+    expect(titles.has("github_comment")).toBe(true);
+  });
+
+  it("gitlab_comment targets the MR named by a ref-less link's url", async () => {
+    const broker = fakeBroker(ok());
+    const ctx = ctxWith([urlLink("gitlab", "mr", "https://gitlab.com/group/proj/-/merge_requests/12")]);
+    await handleGitlabComment({ broker }, ctx, { body: "hi" });
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(
+      "/gitlab/api/v4/projects/group%2Fproj/merge_requests/12/notes",
+    );
+  });
+
+  it("jira_comment targets the issue named by a browse url", async () => {
+    const broker = fakeBroker(ok());
+    const ctx = ctxWith([urlLink("jira", "issue", "https://acme.atlassian.net/browse/ENG-42")]);
+    await handleJiraComment({ broker }, ctx, { body: "done" });
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(
+      "/jira/rest/api/2/issue/ENG-42/comment",
+    );
+  });
+
+  it("accepts the URL form in the conversation_map fallback too", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      links: async () => [],
+      resourceLookup: async () => ({
+        source: "github",
+        resourceType: "pr",
+        resourceId: "https://github.com/o/r/pull/9",
+      }),
+    };
+    await handleGithubComment({ broker }, ctx, { body: "hi" });
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/github/repos/o/r/issues/9/comments");
+  });
+
+  it("a GitLab ISSUE link never comments on the merge request of the same number", async () => {
+    const broker = fakeBroker(ok());
+    // What webhooks wrote before #563: an issue's iid parked in `mrIid`.
+    const legacyIssueLink: ConversationLink = {
+      source: "gitlab",
+      resourceType: "issue",
+      title: "g/p#5",
+      ref: { projectId: "g/p", mrIid: "5" },
+    };
+    await handleGitlabComment({ broker }, ctxWith([legacyIssueLink]), { body: "hi" });
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(
+      "/gitlab/api/v4/projects/g%2Fp/issues/5/notes",
+    );
+  });
+
+  it("the link the conversation STARTED from wins over one the agent created later", async () => {
+    const broker = fakeBroker(ok());
+    const ctx = ctxWith([
+      { source: "github", resourceType: "issue", title: "o/r #1", ref: { owner: "o", repo: "r", number: 1 } },
+      urlLink("github", "pr", "https://github.com/o/r/pull/99"),
+    ]);
+    await handleGithubComment({ broker }, ctx, { body: "hi" });
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe("/github/repos/o/r/issues/1/comments");
+  });
+
+  it("never mixes half a ref with half a mapping (a comment on an unrelated PR)", async () => {
+    const broker = fakeBroker(ok());
+    const ctx: ToolContext = {
+      conversationId: "c1",
+      // A partial ref: owner/repo but no number, and no url to fill it in.
+      links: async () => [{ source: "github", resourceType: "pr", ref: { owner: "o", repo: "r" } }],
+      resourceLookup: async () => ({ source: "github", resourceType: "pr", resourceId: "other/repo#42" }),
+    };
+    await handleGithubComment({ broker }, ctx, { body: "hi" });
+    // The DB row resolves whole — o/r#42 (owner from one repo, number from another) must not.
+    expect((broker.call as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(
+      "/github/repos/other/repo/issues/42/comments",
+    );
+  });
+});
+
 describe("agent-tools: web_fetch SSRF guard", () => {
   const deps: AgentToolsDeps = { broker: fakeBroker({ status: 200, raw: "", data: undefined }) };
 

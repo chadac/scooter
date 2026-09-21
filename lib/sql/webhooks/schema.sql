@@ -43,6 +43,11 @@ CREATE TABLE "jira_tickets" (
 -- Generic cross-platform resource linking. The UNIQUE below is GLOBAL (one
 -- conversation per (source, resource_type, resource_id)); #381's open question is
 -- whether to scope it per-conversation — that decision is made HERE, in one place.
+--
+-- resource_id here is the resource's URL (what agent-host writes) while
+-- conversation_map.resource_id is "owner/repo#n" — that column is matched EXACTLY to
+-- route an incoming webhook, so it is not rewritten. Readers translate instead:
+-- webhooks/resources.py and agent-host's agent/resourceRef.ts. Why: issue #563.
 CREATE TABLE "resource_links" (
   "id"              serial NOT NULL,
   "conversation_id" character varying NOT NULL,

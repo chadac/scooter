@@ -176,6 +176,17 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   let sessionId = "";
   let active: SdkQuery | undefined; // the in-flight query() for cancel()
   let closed = false; // set by close(); the SDK runs in-process, so "alive" == not closed
+
+  // This provider runs IN-PROCESS, so its failures never reach a stderr the agent-host
+  // can tail — they would be lost to the agent-host's own console. Keep the last few
+  // so the dead-on-arrival watchdog can quote one (the `[ede_diagnostic]` signature
+  // lands here). Why: PR #565.
+  const diagnostics: string[] = [];
+  const DIAGNOSTICS_MAX = 20;
+  const noteDiagnostic = (line: string): void => {
+    diagnostics.push(line);
+    if (diagnostics.length > DIAGNOSTICS_MAX) diagnostics.shift();
+  };
   // The SDK's OWN session UUID (from message.session_id), captured each turn and
   // passed as `resume` on the next prompt so the conversation CONTINUES with full
   // history — without it every query() is a fresh, context-free session (the agent
@@ -388,6 +399,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           }
         }
       } catch (e) {
+        const line = `[sdk] prompt: query stream error: ${e instanceof Error ? e.message : String(e)}`;
+        noteDiagnostic(line);
         debugError("[sdk] prompt: query stream error:", e);
         throw e;
       } finally {
@@ -412,6 +425,10 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       // close(). (A hung tool call here is bounded by the ExecBackend command
       // timeout, same as goose — not by this liveness signal.)
       return !closed;
+    },
+
+    recentDiagnostics() {
+      return [...diagnostics];
     },
 
     onSessionUpdate(cb) {
