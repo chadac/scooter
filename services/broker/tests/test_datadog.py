@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from scooter_broker_lib.types import Identity
-from scooter_broker_lib.sources.datadog_keys import DatadogKeysSource
+from broker.sources.datadog_keys import DatadogKeysSource
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 

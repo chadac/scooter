@@ -15,13 +15,21 @@ Contents:
                  `broker.providers`), which is what lets the registry live here
                  at all.
   * autolink   — Link / LinkRule / rule / post_link / create_link / list_links
-  * sources/   — static_token, github_app, atlassian_oauth, datadog_keys
+  * sources/   — static_token (generic; five providers compose it)
   * transports/— http_proxy, git_credential, whoami, token_vend
 
+THE TEST FOR WHAT BELONGS HERE: could a SECOND integration plausibly compose it?
+If only its own can, it is that integration's implementation and it stays with
+the provider, so it travels into that provider's contrib module rather than
+stranding integration-specific code in the shared lib. That is why
+`github_app`, `atlassian_oauth` and `datadog_keys` are in `broker/sources/` and
+not here, and why this package needs no crypto dependency.
+
 What deliberately stayed in the broker app: core/app, core/auth, core/authz,
-core/default_modules, config, providers/, aws/, sandbox/, shares/, the module
-registry/ — and transports/aws_permissions, which pulls the whole AWS subsystem
-and so is the aws provider's implementation rather than reusable surface.
+core/default_modules, config, providers/, the provider-specific sources/, aws/,
+sandbox/, shares/, the module registry/ — and transports/aws_permissions, which
+pulls the whole AWS subsystem and so is the aws provider's implementation rather
+than reusable surface.
 """
 
 from .types import (

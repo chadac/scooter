@@ -1,6 +1,12 @@
-"""Credential sources — how a provider obtains its secret.
+"""GENERIC credential sources — how a provider obtains its secret.
 
-Each implements the `CredentialSource` protocol from `..types`: static PAT,
-GitHub App installation token, Atlassian OAuth refresh, Datadog's key pair.
-A provider picks one (or brings its own).
+Implements the `CredentialSource` protocol from `..types`. Only mechanisms that
+more than one integration can plausibly compose belong here: `static_token` is
+used by five providers today.
+
+Provider-specific sources do NOT live here — a GitHub App token minter is github
+implementation, not shared surface, and keeping it here would leave
+github-specific code in the shared lib after github becomes a contrib. Those sit
+with their provider in `broker/sources/` and move into its contrib with it.
+See PR #567.
 """

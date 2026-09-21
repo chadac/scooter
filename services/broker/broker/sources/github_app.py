@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import httpx
 import jwt
 
-from ..types import Credential, CredentialSource, Identity
+from scooter_broker_lib.types import Credential, CredentialSource, Identity
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ from ..config import settings
 from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
-from scooter_broker_lib.sources.atlassian_oauth import AtlassianOAuthSource
+from ..sources.atlassian_oauth import AtlassianOAuthSource
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 

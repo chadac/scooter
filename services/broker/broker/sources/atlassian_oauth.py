@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from ..types import Credential, CredentialSource, Identity
+from scooter_broker_lib.types import Credential, CredentialSource, Identity
 
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 

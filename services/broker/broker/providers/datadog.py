@@ -10,7 +10,7 @@ from __future__ import annotations
 from ..config import settings
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
-from scooter_broker_lib.sources.datadog_keys import DatadogKeysSource
+from ..sources.datadog_keys import DatadogKeysSource
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 

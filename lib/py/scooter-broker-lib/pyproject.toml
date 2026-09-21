@@ -12,15 +12,12 @@ dependencies = [
   "scooter-lib",
   "fastapi",
   "httpx",
-  "pyjwt[crypto]",
 ]
 
 # hatchling auto-detects the `scooter_broker_lib` package.
 
 [dependency-groups]
-# cryptography only for the tests: the GitHub App source signs a real JWT, so
-# the guard needs a real RSA key rather than a stubbed signer.
-dev = ["pytest", "pytest-asyncio", "cryptography"]
+dev = ["pytest", "pytest-asyncio"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

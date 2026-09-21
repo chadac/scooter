@@ -11,7 +11,7 @@ from ..config import settings
 from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
-from scooter_broker_lib.sources.github_app import GitHubAppSource
+from ..sources.github_app import GitHubAppSource
 from scooter_broker_lib.sources.static_token import StaticTokenSource
 from scooter_broker_lib.transports.git_credential import GitCredential
 from scooter_broker_lib.transports.http_proxy import HttpProxy
