@@ -31,14 +31,18 @@ func TestAllExistingAnyID(t *testing.T) {
 	}
 }
 
-// devRowArgs is the create spec -> conversations-row projection. Locks down which spec keys map to
-// which nullable columns, and that "" / a missing key become a NULL (nil), not an empty string.
+// devRowArgs is the create -> conversations-row projection. Locks down which fields map to which
+// nullable columns, that "" / a missing key become a NULL (nil) rather than an empty string, and
+// that the title comes from the create itself — it is not, and must not be, a spec key.
 func TestDevRowArgs(t *testing.T) {
-	id, now, title, model, owner, parent := devRowArgs("conv-1", map[string]interface{}{
-		"owner":    "alice",
-		"model":    "model-fast",
-		"parentId": "",
-		"title":    "Seeded one",
+	id, now, title, model, owner, parent := devRowArgs(NewConversation{
+		Name:  "conv-1",
+		Title: "Seeded one",
+		Spec: map[string]interface{}{
+			"owner":    "alice",
+			"model":    "model-fast",
+			"parentId": "",
+		},
 	}, 4242)
 	if id != "conv-1" || now != 4242 {
 		t.Fatalf("id/now wrong: %s %d", id, now)
@@ -58,11 +62,22 @@ func TestDevRowArgs(t *testing.T) {
 
 	// A bare spec (top-level create, no owner/model/title): title is "" (NOT NULL column) and the
 	// three nullable columns are NULL.
-	_, _, title, model, owner, parent = devRowArgs("conv-2", map[string]interface{}{}, 1)
+	_, _, title, model, owner, parent = devRowArgs(NewConversation{Name: "conv-2", Spec: map[string]interface{}{}}, 1)
 	if title != "" {
 		t.Errorf("bare spec title must be empty string, got %q", title)
 	}
 	if model != nil || owner != nil || parent != nil {
 		t.Errorf("bare spec must be all-NULL, got model=%v owner=%v parent=%v", model, owner, parent)
+	}
+
+	// A title smuggled into the spec is NOT a title. The spec is the CR's, and the CR has no
+	// such field — the apiserver prunes it, so anything that read it there would be reading a
+	// value production never stores.
+	_, _, title, _, _, _ = devRowArgs(NewConversation{
+		Name: "conv-3",
+		Spec: map[string]interface{}{"title": "from the spec"},
+	}, 1)
+	if title != "" {
+		t.Errorf("spec[title] must not become the row title, got %q", title)
 	}
 }

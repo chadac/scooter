@@ -13,20 +13,22 @@ import (
 // fakeCreator records what would have been written to the API server.
 type fakeCreator struct {
 	calls []struct {
-		name string
-		spec map[string]interface{}
+		name  string
+		spec  map[string]interface{}
+		title string
 	}
 	err error
 }
 
-func (f *fakeCreator) Create(_ context.Context, name string, spec map[string]interface{}) error {
+func (f *fakeCreator) Create(_ context.Context, c NewConversation) error {
 	if f.err != nil {
 		return f.err
 	}
 	f.calls = append(f.calls, struct {
-		name string
-		spec map[string]interface{}
-	}{name, spec})
+		name  string
+		spec  map[string]interface{}
+		title string
+	}{c.Name, c.Spec, c.Title})
 	return nil
 }
 
@@ -255,5 +257,42 @@ func TestCreateBodyOwnerCannotOverrideTheHeaderIdentityUnverified(t *testing.T) 
 	postCreateAs(t, c, `{"owner":"victim"}`, map[string]string{"x-auth-user": "attacker"}, neverTrusted())
 	if got := c.calls[0].spec["owner"]; got != "attacker" {
 		t.Fatalf("want the header identity to stand (attacker), got %v", got)
+	}
+}
+
+// The title is create-time ROW metadata, never a CR spec key.
+//
+// It used to be written into the spec map and removed again by the apiserver, because the
+// structural CRD schema has no `title` property. That worked, but it made an apiserver
+// pruning rule the load-bearing mechanism: nothing at the call site said the key was
+// dropped, and adding `title: {type: string}` to the CRD would have silently changed
+// production behaviour. The router now decides, and the decision is visible here.
+func TestCreateKeepsTitleOutOfTheCRSpec(t *testing.T) {
+	c := &fakeCreator{}
+	w := postCreate(t, c, `{"title":"Seeded one"}`, nil)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	if _, present := c.calls[0].spec["title"]; present {
+		t.Fatalf("title must not be a CR spec key, got spec=%+v", c.calls[0].spec)
+	}
+	if c.calls[0].title != "Seeded one" {
+		t.Fatalf("title must reach the creator as its own field, got %q", c.calls[0].title)
+	}
+}
+
+// The response still echoes the requested title — the caller asked for it, and in dev mode
+// it is what the row was seeded with.
+func TestCreateEchoesTheRequestedTitle(t *testing.T) {
+	c := &fakeCreator{}
+	w := postCreate(t, c, `{"title":"Seeded one"}`, nil)
+
+	var resp createResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if resp.Title != "Seeded one" {
+		t.Fatalf("want the title echoed, got %q", resp.Title)
 	}
 }

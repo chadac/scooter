@@ -101,12 +101,12 @@ func (d *devCreator) Close() {
 
 // Create inserts a fresh conversations row. thread_id == id by construction (create.go mints one id
 // that is both). title is usually "" (the agent's <title> or a rename fills it later), but an
-// API-seeded create MAY carry one (create.go puts it in the spec; the cluster CRD prunes it, dev
-// persists it) — an unprompted seed must still list with its title. ON CONFLICT DO NOTHING keeps a
-// ret/double-create idempotent. The INSERT fires the conversations_changed trigger, so the router's
-// own LISTEN loop pushes the new row to the sidebar.
-func (d *devCreator) Create(ctx context.Context, name string, spec map[string]interface{}) error {
-	id, now, title, model, owner, parent := devRowArgs(name, spec, time.Now().UnixMilli())
+// API-seeded create MAY carry one — an unprompted seed must still list with its title. Only dev
+// mode has somewhere to put it: the cluster path writes a CR, whose schema has no title field.
+// ON CONFLICT DO NOTHING keeps a retry/double-create idempotent. The INSERT fires the
+// conversations_changed trigger, so the router's own LISTEN loop pushes the new row to the sidebar.
+func (d *devCreator) Create(ctx context.Context, c NewConversation) error {
+	id, now, title, model, owner, parent := devRowArgs(c, time.Now().UnixMilli())
 	_, err := d.pool.Exec(ctx, `
 		INSERT INTO conversations
 		  (id, thread_id, title, created_at, last_activity_at, model, owner, parent_id)
@@ -116,12 +116,13 @@ func (d *devCreator) Create(ctx context.Context, name string, spec map[string]in
 	return err
 }
 
-// devRowArgs projects a create spec into the conversations-row columns. Pure, so the spec→column
-// mapping (which spec keys become which columns) is unit-testable without a database. title is a
+// devRowArgs projects a create into the conversations-row columns. Pure, so the mapping (which
+// create field becomes which column) is unit-testable without a database. title comes from the
+// create itself, NOT from the spec map — the spec is the CR's, and the CR has no title. It is a
 // plain string (the column is NOT NULL — absent becomes "", not NULL); the nullable columns use
 // specString.
-func devRowArgs(id string, spec map[string]interface{}, now int64) (rowID string, createdAt int64, title string, model, owner, parent *string) {
-	return id, now, specPlain(spec, "title"), specString(spec, "model"), specString(spec, "owner"), specString(spec, "parentId")
+func devRowArgs(c NewConversation, now int64) (rowID string, createdAt int64, title string, model, owner, parent *string) {
+	return c.Name, now, c.Title, specString(c.Spec, "model"), specString(c.Spec, "owner"), specString(c.Spec, "parentId")
 }
 
 // specString reads a string spec value, treating "" and a non-string as absent (a NULL column).
@@ -130,12 +131,4 @@ func specString(spec map[string]interface{}, k string) *string {
 		return &v
 	}
 	return nil
-}
-
-// specPlain reads a string spec value for a NOT NULL column — absent / non-string becomes "".
-func specPlain(spec map[string]interface{}, k string) string {
-	if v, ok := spec[k].(string); ok {
-		return v
-	}
-	return ""
 }

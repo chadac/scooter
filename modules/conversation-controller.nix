@@ -245,6 +245,8 @@ in
               properties = {
                 spec = {
                   type = "object";
+                  # No `title` on purpose: this schema is structural, so adding a property
+                  # here starts persisting it. Title is row metadata. Why: PR #556.
                   properties = {
                     model = { type = "string"; };
                     owner = { type = "string"; };
