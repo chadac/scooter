@@ -199,23 +199,39 @@
             withClaudeCode = true;
           };
 
+          # The service apps with NO contribs. These exist to break the cycle:
+          # the shipped broker/webhooks below depend on `contribs`, and a
+          # contrib's tests take the real service as a check input — so the
+          # thing they take must be the contrib-free build, not the shipped one.
+          brokerBase = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib scooterBrokerLib; };
+          webhooksBase = pkgs.callPackage ./services/webhooks { inherit scooterSchema scooterLib scooterWebhooksLib; };
+
+          # Contrib modules: self-contained integration packages discovered via
+          # entry points (broker providers / webhooks handlers). Built once per
+          # target service and bucketed, so each service image gets only the
+          # contribs — and only the extension surface — it actually scans.
+          # See contrib/ + contrib/README.md.
+          contribs = pkgs.callPackage ./contrib {
+            broker = brokerBase;
+            webhooks = webhooksBase;
+            inherit scooterBrokerLib scooterWebhooksLib;
+          };
+
+          # Every contrib variant in one derivation. Nothing in a service closure
+          # reaches an `example = true` contrib, so this is the only thing that
+          # builds (and therefore TESTS) it. Keyed by <name>-<service> because both
+          # variants of a contrib share a derivation name. Why: PR #573.
+          contribsAll = pkgs.linkFarm "contribs-all"
+            (pkgs.lib.mapAttrsToList (name: path: { inherit name path; }) contribs.all);
+
           # Credential broker (Python/FastAPI): extensible provider/transport
-          # modules. See services/broker/ + docs/BROKER.md.
-          broker = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib scooterBrokerLib; };
+          # modules, plus the contribs that target it. See services/broker/ +
+          # docs/BROKER.md.
+          broker = brokerBase.override { contribs = contribs.broker; };
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
-          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema scooterLib scooterWebhooksLib; };
-
-          # Contrib modules: self-contained integration packages discovered via
-          # entry points (broker providers / webhooks handlers). Built here and
-          # bucketed by target service; the flake injects the right subset into
-          # each service image. See contrib/ + contrib/README.md. broker/webhooks
-          # are passed as check-only inputs so a contrib's tests can exercise the
-          # real registries end-to-end. The prod broker/webhooks above ship no
-          # contribs yet (contribs default to []); real integrations move in from
-          # slice 3 on.
-          contribs = pkgs.callPackage ./contrib { inherit broker webhooks scooterBrokerLib scooterWebhooksLib; };
+          webhooks = webhooksBase.override { contribs = contribs.webhooks; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {
@@ -535,10 +551,15 @@
             # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
             # contrib, built once PER TARGET SERVICE so each variant carries only that
             # service's extension surface (a single build would drag the webhooks
-            # surface into the broker image). Both run the discovery tests against the
-            # real registries, so `nix flake check` proves the entry-point seam.
+            # surface into the broker image).
             contrib-echo = contribs.packages.echo.broker;
             contrib-echo-webhooks = contribs.packages.echo.webhooks;
+            contrib-datadog = contribs.packages.datadog.broker;
+
+            # nix build .#contribs-all -> every variant of every contrib, so ONE CI
+            # target covers all of them and a new contrib is tested the moment it
+            # exists.
+            contribs-all = contribsAll;
 
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
@@ -653,10 +674,13 @@
 
           checks = {
             inherit agentHost ui;
-            # Both per-service variants of the reference contrib, each running the
-            # entry-point discovery tests against the real broker + webhooks registries.
+            # Every contrib variant, each running its tests against the real broker +
+            # webhooks registries. The aggregate is what CI builds; the individual
+            # attrs stay for bisecting a failure to one variant.
+            contribs-all = contribsAll;
             contrib-echo = contribs.packages.echo.broker;
             contrib-echo-webhooks = contribs.packages.echo.webhooks;
+            contrib-datadog = contribs.packages.datadog.broker;
             # The shared Python libraries (the lib split).
             inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests;

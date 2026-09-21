@@ -7,15 +7,19 @@ Enabled iff BOTH keys are configured. The site is region-specific (config).
 
 from __future__ import annotations
 
-from ..config import settings
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
-from ..sources.datadog_keys import DatadogKeysSource
 from scooter_broker_lib.transports.http_proxy import HttpProxy
+
+from .config import DatadogSettings
+from .datadog_keys import DatadogKeysSource
 
 
 @register_provider
 def datadog() -> Provider:
+    # Read at BUILD time, like every provider factory — the broker calls this
+    # once per create_app(), after refreshing the environment.
+    settings = DatadogSettings()
     site = (settings.datadog_site or "datadoghq.com").strip().lstrip(".")
     return Provider(
         name="datadog",

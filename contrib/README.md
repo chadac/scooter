@@ -46,12 +46,20 @@ A thin, declarative descriptor read by `contrib/default.nix`:
   name = "echo";                  # package = scooter-contrib-<name>, import = scooter_contrib_<name>
   services = [ "broker" "webhooks" ];  # which service image(s) to inject into
   pythonDeps = ps: [ ];           # optional extra Python deps beyond the host service's
+  example = true;                 # optional: build + test it, but never ship it
 }
 ```
 
-`contrib/default.nix` builds each contrib and buckets it by `services`; the flake
-injects the per-service subset via each service's `contribs` argument. `fastapi`
-is already available in both services.
+`contrib/default.nix` builds each contrib ONCE PER TARGET SERVICE — each variant
+depending only on that service's extension surface, so a both-services contrib
+cannot put the webhooks surface on the broker's path — and buckets them by
+`services`. The flake injects the per-service subset via each service's
+`contribs` argument. `fastapi` is already available in both services.
+
+`example = true` marks reference material: it is still built and its tests still
+run (`nix build .#contrib-echo`), but it is left out of what ships. `echo`'s
+provider is unconditionally enabled, so shipping it would serve `/echo/ping`
+from a production broker.
 
 ## Discovery is dual-source (and will become entry-point-first)
 
