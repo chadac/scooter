@@ -245,12 +245,8 @@ in
               properties = {
                 spec = {
                   type = "object";
-                  # Deliberately NO `title`. A conversation's title is row metadata (Postgres,
-                  # and the agent's <title> fills it in later), not part of its identity here.
-                  # This schema is structural, so the apiserver PRUNES anything not listed —
-                  # which is why a router that put a title in the spec saw it vanish on every
-                  # write. The router now keeps it out (see NewConversation in create.go);
-                  # adding a property here would start silently persisting it again. PR #556.
+                  # No `title` on purpose: this schema is structural, so adding a property
+                  # here starts persisting it. Title is row metadata. Why: PR #556.
                   properties = {
                     model = { type = "string"; };
                     owner = { type = "string"; };
