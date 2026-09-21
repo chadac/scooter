@@ -833,7 +833,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         `---\n(You are a subagent. Do the task above, then END your turn with a ` +
         `concise summary of what you found or did — that final message is returned ` +
         `to the agent that spawned you.)`;
-      await entry.bridge?.prompt({ threadId: childThreadId, text: framedPrompt });
+      // FIRE-AND-FORGET, deliberately: prompt() resolves on run COMPLETION, so awaiting it
+      // would block the parent's spawn_subagent call for the child's whole run. The parent
+      // is told via onSubagentComplete instead. Why: PR #568.
+      void entry.bridge?.prompt({ threadId: childThreadId, text: framedPrompt }).catch((err: unknown) => {
+        log.errorWith("subagent initial prompt failed", err, { conversation_id: id, parent_id: parentId });
+      });
       return toConversation(entry);
     },
 

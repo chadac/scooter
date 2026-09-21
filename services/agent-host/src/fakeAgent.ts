@@ -29,6 +29,11 @@ import {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** How long a `~subagent` child stays RUNNING before its turn ends. It must outlast the
+ *  spec asserting on it (the host end()s a subagent as soon as it completes), and it is
+ *  torn down by `cleanState` between tests, so err long. */
+const SUBAGENT_LIFETIME_S = 90;
+
 /** Wrap `s` so `sh -c` sees it as ONE literal argument, whatever it contains.
  *  Single quotes protect everything except a single quote itself, which is emitted as
  *  '\'' — close, escaped literal, reopen. */
@@ -45,13 +50,53 @@ class FakeAgent implements Agent {
   // into one (and, via duplicate message ids, drops a later turn's reply on thread
   // reset). So mirror real behavior and give each tool call a fresh id.
   private toolCallSeq = 0;
+  /** The scooter-env MCP endpoint newSession offers per session (already scoped by ?conv=).
+   *  Kept so the `~subagent` directive can call tools the way goose does. */
+  private mcpUrl = new Map<string, string>();
 
   async initialize(_p: InitializeRequest): Promise<InitializeResponse> {
     return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
   }
 
-  async newSession(_p: NewSessionRequest): Promise<NewSessionResponse> {
-    return { sessionId: `fake-${Math.random().toString(36).slice(2, 10)}` };
+  async newSession(p: NewSessionRequest): Promise<NewSessionResponse> {
+    const sessionId = `fake-${Math.random().toString(36).slice(2, 10)}`;
+    const offered = (p as { mcpServers?: Array<{ name?: string; url?: string }> }).mcpServers ?? [];
+    const env = offered.find((s) => s.name === "scooter-env" && typeof s.url === "string");
+    if (env?.url) this.mcpUrl.set(sessionId, env.url);
+    return { sessionId };
+  }
+
+  /** Call one scooter-env MCP tool. No initialize handshake: the endpoint is STATELESS
+   *  (a fresh McpServer per request), so tools/call stands alone — goose's calls land on
+   *  a fresh server too. Must accept both content types; the reply may be an SSE frame. */
+  private async callTool(sessionId: string, name: string, args: unknown): Promise<string> {
+    const url = this.mcpUrl.get(sessionId);
+    if (!url) return "no scooter-env MCP endpoint was offered to this session";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+    const body = await res.text();
+    if (!res.ok) return `MCP ${name} failed: ${res.status} ${body.slice(0, 200)}`;
+    const frame = body.includes("data:")
+      ? (body.split("\n").filter((l) => l.startsWith("data:")).pop() ?? "").slice(5).trim()
+      : body;
+    try {
+      const parsed = JSON.parse(frame) as {
+        result?: { content?: Array<{ text?: string }> };
+        error?: { message?: string };
+      };
+      if (parsed.error) return `MCP ${name} error: ${parsed.error.message ?? "unknown"}`;
+      return (parsed.result?.content ?? []).map((c) => c.text ?? "").join("\n").trim();
+    } catch {
+      return `MCP ${name} returned unparseable body: ${frame.slice(0, 200)}`;
+    }
   }
 
   async authenticate(_p: AuthenticateRequest): Promise<void> {
@@ -118,6 +163,25 @@ class FakeAgent implements Agent {
     if (userText.startsWith("~images")) {
       const count = params.prompt.filter((b) => b.type === "image").length;
       const reply = `images=${count}`;
+      for (const word of reply.split(" ")) {
+        await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
+        await sleep(10);
+      }
+      return { stopReason: "end_turn" };
+    }
+
+    // A "~subagent <title>" message is a test directive: spawn a REAL subagent via the
+    // scooter-env MCP tool, exactly as goose does — the only way an e2e test can produce a
+    // parent/child conversation pair. The child SLEEPS rather than echoing because the host
+    // end()s a subagent the instant its run completes. See test/e2e/subagent.spec.ts.
+    if (userText.startsWith("~subagent")) {
+      const title = userText.slice("~subagent".length).trim() || "research task";
+      await u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Delegating…" } });
+      const out = await this.callTool(sessionId, "spawn_subagent", {
+        prompt: `!sleep ${SUBAGENT_LIFETIME_S}`,
+        title,
+      });
+      const reply = `🤖 (dummy agent) spawned a subagent: ${out}`;
       for (const word of reply.split(" ")) {
         await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
         await sleep(10);
