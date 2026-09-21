@@ -23,11 +23,9 @@ async function step(page: Page, when: string): Promise<UiSnapshot> {
 
 test.describe("whole-UI consistency through a normal turn", () => {
   test("every surface stays mutually consistent across idle → running → replied", async ({ chat, page, request, baseURL }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). On the full target the exec waits
-    // for a ready sandbox pod first (5-25s measured), so the run lasts up to ~30s; add
-    // open + the multi-surface snapshots and the worst case brushes the 60s default on
-    // arithmetic alone.
-    test.setTimeout(120_000);
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Must clear startLongRun's 90s
+    // full-target bar wait plus the 60s reply poll below. Why: PR #550.
+    test.setTimeout(240_000);
     await chat.open();
     const idle = await step(page, "after open");
     expect(idle.running, "a fresh conversation must not claim to be running").toBe(false);
@@ -42,8 +40,9 @@ test.describe("whole-UI consistency through a normal turn", () => {
     // the test fails with everything behaving correctly (observed: "element(s) not found" after
     // the full 30s). The same arithmetic is why stop-run.spec.ts:75 uses a 20s sleep. Nothing
     // waits for this sleep to finish — the poll below ends the test as soon as the run does.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // startLongRun, not an inline 30s bar wait: it carries the full-target cold-pod budget.
+    // Why: PR #550.
+    await chat.startLongRun(20);
     // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
     // becoming visible doesn't guarantee the user message has been counted yet — observed in
     // nightly run 34018090436 where the snapshot showed 0 user messages while the message was
@@ -124,11 +123,10 @@ test.describe("whole-UI consistency through a normal turn", () => {
 
 test.describe("whole-UI consistency around the QUEUE", () => {
   test("queueing keeps thread, queue, badge, run-state and composer mutually consistent", async ({ chat, page }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). startLongRun's 30s run-bar budget
-    // plus two sendWhileRunning retry loops (up to 10s each) plus three whole-UI
-    // snapshots leave no headroom inside the 60s default once the sandbox wait
-    // (5-25s) stretches the timeline.
-    test.setTimeout(120_000);
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). startLongRun's 90s full-target
+    // run-bar budget plus two sendWhileRunning retry loops plus three whole-UI snapshots
+    // do not fit in 120s. Why: PR #550.
+    test.setTimeout(240_000);
     await chat.open();
     await chat.startLongRun(20);
     const before = await step(page, "long run started");
@@ -163,9 +161,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
   });
 
   test("the queue DRAINS into the thread with counts conserved (nothing lost, nothing duplicated)", async ({ chat, page, request, baseURL }) => {
-    // A 60s wait inside the 60s suite default leaves ZERO headroom — the test dies at the same
-    // moment its own poll would have. Give this one a budget larger than the work it waits on.
-    test.setTimeout(180_000);
+    // Must exceed the work it waits on: startLongRun's 90s full-target bar wait plus the two
+    // 60s drain polls below. Why: PR #550.
+    test.setTimeout(240_000);
     await chat.open();
     // 20s, not 3: the whole point is that the second message QUEUES behind an in-flight run.
     // On the full target the exec waits for a ready sandbox pod before the sleep starts, so a
@@ -173,8 +171,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // IDLE conversation as an ordinary turn, the queue never holds it, and the conservation
     // count comes up one short (observed: expected 2, received 1) while nothing is actually
     // lost. A 20s sleep keeps the run in flight across the queueing window.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // startLongRun, not an inline 30s bar wait: it carries the full-target cold-pod budget.
+    // Why: PR #550.
+    await chat.startLongRun(20);
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
     // The queued ROWS only mount while the Queue tab is selected — open it before reading them.
@@ -197,9 +196,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
   });
 
   test("a reload mid-queue preserves EVERY surface, not just the queue rows", async ({ chat, page, request, baseURL }) => {
-    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75): reload + the 30s re-derive poll on
-    // top of a run whose exec first waits for the sandbox (5-25s) exceeds the 60s default.
-    test.setTimeout(120_000);
+    // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75): startLongRun's 90s full-target bar
+    // wait, then reload + the 60s re-derive loop, do not fit in 120s. Why: PR #550.
+    test.setTimeout(240_000);
     await chat.open();
     // 60s, not 20: the test asserts the queue still holds a row and `running === true` AFTER
     // the reload, so the run must outlive open→send→queue→snapshot→reload→re-derive. On the
@@ -209,8 +208,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // precedes the sleep, so the sleep's own 20s is not the margin it appears to be. Nothing
     // waits for this sleep to finish (the test ends mid-run; cleanState cancels it), so the
     // longer sleep costs no wall-clock time.
-    await chat.send("!sleep 60");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // startLongRun, not an inline 30s bar wait: it carries the full-target cold-pod budget.
+    // Why: PR #550.
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
     await chat.openQueueTab();
     const pre = await step(page, "before reload");
