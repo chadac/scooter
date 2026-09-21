@@ -23,5 +23,6 @@
   "interrupt.spec.ts": 25,
   "revive.spec.ts": 15,
   "chat-search-filter.spec.ts": 15,
+  "subagent.spec.ts": 55,
   "live-real-agent.spec.ts": 300
 }

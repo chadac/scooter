@@ -55,6 +55,14 @@ class BrokerSettings(BaseSettings):
     grafana_url: str = ""
     grafana_token: str = ""
 
+    # --- Airtable (personal access token; http-proxy to api.airtable.com) ---
+    # The broker's airtable provider proxies /airtable/* -> https://api.airtable.com
+    # with the PAT injected, so the agent can read/write bases without seeing it.
+    # Enabled iff the token is set. The upstream host is fixed (single-tenant SaaS),
+    # so — unlike Grafana — there is no URL setting. The PAT's own scopes and base
+    # grants are what bound the agent's access; the broker does not narrow them.
+    airtable_token: str = ""
+
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 

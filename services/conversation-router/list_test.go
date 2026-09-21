@@ -150,3 +150,71 @@ func TestListRowJSONShape(t *testing.T) {
 		t.Errorf("sandbox projection wrong: %v", m["sandbox"])
 	}
 }
+
+// A SUBAGENT is a conversation with a parent. The UI's whole sub-conversation rendering —
+// nesting it under its parent in the sidebar and listing it in the parent's Subagents panel —
+// keys off `parentId` arriving on the row, and off the subagent being LISTED at all. Neither
+// was covered: a subagent dropped by the visibility filter, or serialized without its parent
+// link, renders as an independent top-level chat, which is exactly what it must never do.
+func TestAssembleListSubagent(t *testing.T) {
+	metas := []ConversationRow{
+		{ID: "parent", ThreadID: "parent", Title: "Parent", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice")},
+		// A subagent inherits its parent's owner (session manager spawnChild) and carries parentId.
+		{ID: "sub", ThreadID: "sub", Title: "research", CreatedAt: 200, LastActivityAt: 800, Owner: sp("alice"), ParentID: sp("parent")},
+	}
+	crs := crsOf([]CRInfo{
+		{ID: "parent", Phase: "Assigned", SandboxRef: "conv-p"},
+		// The subagent SHARES the parent's sandbox — it has its own CR pointing at the same ref.
+		{ID: "sub", Phase: "Assigned", SandboxRef: "conv-p"},
+	})
+
+	t.Run("a subagent is listed and carries parentId", func(t *testing.T) {
+		rows := assembleList(metas, crs, nil, 1000, "alice", "mine")
+		if len(rows) != 2 {
+			t.Fatalf("parent + subagent must both be listed, got %d", len(rows))
+		}
+		sub := rows[1]
+		if sub.ParentID == nil {
+			t.Fatal("a subagent row must carry parentId; without it the UI renders it as a top-level chat")
+		}
+		if *sub.ParentID != "parent" {
+			t.Errorf("parentId = %q, want %q", *sub.ParentID, "parent")
+		}
+		if sub.Sandbox.Name != rows[0].Sandbox.Name {
+			t.Errorf("a subagent shares its parent's sandbox: %q vs %q", sub.Sandbox.Name, rows[0].Sandbox.Name)
+		}
+	})
+
+	t.Run("parentId survives JSON as the UI reads it", func(t *testing.T) {
+		rows := assembleList(metas, crs, nil, 1000, "", "all")
+		b, _ := json.Marshal(rows[1])
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		if m["parentId"] != "parent" {
+			t.Errorf("serialized parentId = %v, want \"parent\"", m["parentId"])
+		}
+		// …and a TOP-LEVEL row must omit it rather than send null: the UI treats any
+		// present parentId as "this is a subagent".
+		b0, _ := json.Marshal(rows[0])
+		var m0 map[string]any
+		_ = json.Unmarshal(b0, &m0)
+		if _, ok := m0["parentId"]; ok {
+			t.Error("a top-level conversation must OMIT parentId, not send null")
+		}
+	})
+
+	t.Run("a subagent is not hidden from its owner under mine", func(t *testing.T) {
+		// The subagent inherits the parent's owner, so "mine" must show both. If it did
+		// not, the parent would render with a child it can never display.
+		rows := assembleList(metas, crs, nil, 1000, "alice", "mine")
+		var sawSub bool
+		for _, r := range rows {
+			if r.ID == "sub" {
+				sawSub = true
+			}
+		}
+		if !sawSub {
+			t.Error("a subagent owned by the caller must appear under scope=mine")
+		}
+	})
+}

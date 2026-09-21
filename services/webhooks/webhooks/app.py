@@ -53,6 +53,10 @@ async def link_conversation_resource(request: Request, req: LinkResourceRequest)
 
     Agents call this to register cross-platform links (e.g. a GitLab MR
     created from a Jira conversation).
+
+    The caller's (resource_type, resource_id) is taken as-is here and CANONICALISED by
+    link_resource — normalising in the store, not per caller, is what keeps this path
+    and the webhook handlers writing one shape. Why: issue #563.
     """
     raw_id = request.headers.get("x-conversation-id", "")
     if not raw_id:
