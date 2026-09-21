@@ -1,0 +1,33 @@
+{ lib, python3Packages, scooterLib, scooterSchema, ... }:
+
+# scooter_webhooks_lib — the webhooks extension surface (handler contract + the
+# generic spawn/identity/store building blocks). A webhooks handler — in-tree or a
+# contrib — build-depends on this instead of the webhooks app, breaking the
+# app<->contrib build cycle. Depends on scooter_lib + scooter_schema.
+
+python3Packages.buildPythonPackage {
+  pname = "scooter-webhooks-lib";
+  version = "0.0.0";
+  src = ./.;
+  pyproject = true;
+
+  build-system = [ python3Packages.hatchling ];
+
+  dependencies = with python3Packages; [
+    scooterLib
+    scooterSchema
+    fastapi
+    httpx
+    pydantic
+    pydantic-settings
+    sqlalchemy
+    aiosqlite
+    asyncpg
+  ];
+
+  # No pytestCheckHook yet — skeleton (0 tests would fail collection).
+  # Re-added with the modules + their tests in the follow-up commits.
+  pythonImportsCheck = [ "scooter_webhooks_lib" ];
+
+  meta.description = "The webhooks extension surface for Scooter handlers";
+}

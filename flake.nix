@@ -227,6 +227,14 @@
           # pytest + pythonImportsCheck (proves the generated models are valid).
           scooterSchema = pkgs.callPackage ./lib/py/scooter-schema { };
 
+          # Shared Python libraries (the lib split). scooter_lib is service-agnostic;
+          # the two extension-surface libs hold exactly what a provider/handler
+          # composes, so a contrib build-depends on the lib instead of the service
+          # app (breaking the app<->contrib cycle). See lib/py/*/ + the PR boundary.
+          scooterLib = pkgs.callPackage ./lib/py/scooter-lib { };
+          scooterBrokerLib = pkgs.callPackage ./lib/py/scooter-broker-lib { inherit scooterLib; };
+          scooterWebhooksLib = pkgs.callPackage ./lib/py/scooter-webhooks-lib { inherit scooterLib scooterSchema; };
+
           # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
           # spawning a fresh conversation per run via the agent-host /agui. See
           # services/scheduler/ + todo/SCHEDULED_TASKS.md.
@@ -559,6 +567,12 @@
             # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
             scooter-schema = scooterSchema;
 
+            # nix build .#scooter-lib / .#scooter-broker-lib / .#scooter-webhooks-lib
+            # -> the shared Python libraries (the lib split).
+            scooter-lib = scooterLib;
+            scooter-broker-lib = scooterBrokerLib;
+            scooter-webhooks-lib = scooterWebhooksLib;
+
             # nix build .#scooter-schema-js  ->  generated Drizzle schema package (tsc)
             scooter-schema-js = scooterSchemaJs;
 
@@ -639,6 +653,8 @@
             # Builds the reference contrib, running its entry-point discovery
             # tests against the real broker + webhooks registries.
             contrib-echo = contribs.packages.echo;
+            # The shared Python libraries (the lib split).
+            inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests;
         };
 
