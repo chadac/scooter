@@ -207,6 +207,16 @@
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
           webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema; };
 
+          # Contrib modules: self-contained integration packages discovered via
+          # entry points (broker providers / webhooks handlers). Built here and
+          # bucketed by target service; the flake injects the right subset into
+          # each service image. See contrib/ + contrib/README.md. broker/webhooks
+          # are passed as check-only inputs so a contrib's tests can exercise the
+          # real registries end-to-end. The prod broker/webhooks above ship no
+          # contribs yet (contribs default to []); real integrations move in from
+          # slice 3 on.
+          contribs = pkgs.callPackage ./contrib { inherit broker webhooks; };
+
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {
             inherit pkgs lib n2c webhooks;
@@ -513,6 +523,12 @@
               }).optionsJSON;
 
             inherit agentHost ui broker webhooks scheduler;
+
+            # nix build .#contrib-echo -> the reference contrib package. Its build
+            # runs the discovery tests against the real broker/webhooks registries,
+            # so `nix flake check` (which includes it) proves the entry-point seam.
+            contrib-echo = contribs.packages.echo;
+
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
             byoc-controller = byocController;
@@ -620,6 +636,9 @@
 
           checks = {
             inherit agentHost ui;
+            # Builds the reference contrib, running its entry-point discovery
+            # tests against the real broker + webhooks registries.
+            contrib-echo = contribs.packages.echo;
           } // devEnvTests;
         };
 

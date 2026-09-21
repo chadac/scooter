@@ -1,0 +1,28 @@
+[project]
+name = "scooter-contrib-echo"
+version = "0.0.0"
+license = "MIT"
+description = "Example Scooter contrib module — plugs an echo provider into the broker and an echo handler into the webhooks service, via entry points"
+requires-python = ">=3.11"
+# A contrib declares NO dependency on `broker`/`webhooks`: the host service
+# image provides them on the path, and the contrib's service-coupled modules
+# import them lazily (only when the service loads that entry point). Listing
+# them here would create a build-time cycle (a service depends on its contribs).
+dependencies = [
+  "fastapi",
+]
+
+# The two extension seams a contrib can plug into. A contrib may declare EITHER
+# or BOTH; whichever service loads its group imports only that module (the other
+# is never touched in that image). Mirrors broker's `agent_broker.providers`.
+[project.entry-points."agent_broker.providers"]
+echo = "scooter_contrib_echo.broker_provider:echo_contrib"
+
+[project.entry-points."scooter_webhooks.handlers"]
+echo = "scooter_contrib_echo.webhooks_handler:echo_contrib"
+
+[tool.setuptools.packages.find]
+include = ["scooter_contrib_echo*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
