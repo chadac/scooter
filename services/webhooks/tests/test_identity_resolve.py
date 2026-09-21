@@ -202,16 +202,17 @@ async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(mo
     email = "alice@example.com"
     db_user_id = "scooter-user-abc123"
 
-    async def _email(provider, ext):
-        return email
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
+    monkeypatch.setattr(settings, "agent_host_url", "http://agent-host:8080", raising=False)
 
-    async def _lookup(_email):
-        return db_user_id
+    def handler(req):
+        if "users.info" in str(req.url):
+            return httpx.Response(200, json={"ok": True, "user": {"profile": {"email": email}}})
+        if "/users/by-email" in str(req.url):
+            return httpx.Response(200, json={"id": db_user_id})
+        return httpx.Response(404)
 
-    # Both legs are lib-side now: the registry lookup and the agent-host by-email
-    # call `resolve_owner` composes. Why: PR #575.
-    monkeypatch.setattr(lib_identity, "get_user_email", _email)
-    monkeypatch.setattr(lib_identity, "user_id_for_email", _lookup)
+    _patch(monkeypatch, handler)
 
     with caplog.at_level(_logging.INFO):
         got = await lib_identity.resolve_owner("slack", external)
