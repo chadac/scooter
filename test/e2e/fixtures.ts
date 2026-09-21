@@ -139,7 +139,9 @@ export class Chat {
    *  is the race-free primitive for multi-turn conversations: it guarantees the run
    *  finished (a new assistant message exists) before returning, so the next send
    *  can't be dropped mid-run. */
-  async sendTurn(text: string, timeout = 45_000) {
+  // 90s on the full target, like startLongRun/completeTurn: there a turn's exec waits for a
+  // READY sandbox pod first, and on a fresh conversation that is a cold boot. Why: PR #551.
+  async sendTurn(text: string, timeout = process.env.E2E_TARGET === "full" ? 90_000 : 45_000) {
     const before = await this.assistantMessages().count();
     await this.send(text);
     await expect
