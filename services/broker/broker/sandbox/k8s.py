@@ -143,7 +143,10 @@ class SandboxK8s:
 
         if already:
             try:
-                self._set_operating_mode(name, "Running")
+                # An ADOPTED Sandbox was rendered by whatever platform version created
+                # the conversation — reconcile its image before running it, else a
+                # post-upgrade conversation keeps booting the old sandbox image.
+                self._run_on_current_image(name, resources=None)
             except client.ApiException as e:
                 logger.warning(
                     "adopted an existing Sandbox but resume failed",
@@ -174,26 +177,128 @@ class SandboxK8s:
 
     def resume(self, cid: str, resources: dict | None) -> PodRef:
         name = _sandbox_name(cid)
-        if resources:
-            # Patch container resources FIRST (fail-safe: if this throws, we do NOT
-            # flip operatingMode to Running into a half-patched state).
-            self._patch_resources(name, resources)
-        self._set_operating_mode(name, "Running")
+        self._run_on_current_image(name, resources=resources)
         return PodRef(name=name, namespace=self.ns)
 
-    def _patch_resources(self, name: str, resources: dict) -> None:
+    # --- image skew ---------------------------------------------------------
+    #
+    # A Sandbox CR is broker-generated per conversation, NOT part of the applied
+    # platform manifests, so a `kubectl apply` of an upgrade rolls every Deployment
+    # and leaves every live Sandbox on the image tag it was BORN with. The new
+    # agent-host then drives an old sandbox and every run is dead on arrival. Nothing
+    # re-rendered the spec, so suspend/resume cycled the pod back onto the SAME old
+    # image — the documented recovery didn't recover. Why: issue #560.
+    #
+    # So every path that brings a Sandbox to Running goes through here: reconcile the
+    # image first, and when the pod is already up on a stale one, CYCLE it (a spec
+    # patch alone does not restart a running pod).
+    def _run_on_current_image(self, name: str, resources: dict | None) -> None:
+        """Bring `name` to Running on the deployment's current sandbox image, applying
+        `resources` if given. One call is enough to adopt a new image — callers never
+        have to cycle the sandbox themselves.
+
+        A 404 propagates (the Sandbox is gone — the caller decides); any other failure
+        while reconciling is logged and swallowed, because adopting the image must never
+        be what stops a conversation from resuming."""
+        try:
+            self._reconcile_container(name, resources)
+        except client.ApiException as e:
+            if e.status == 404:
+                raise
+            logger.warning(
+                "could not reconcile the sandbox image; running it as-is",
+                extra={"sandbox": name, "namespace": self.ns, "error": format_error(e)},
+            )
+        self._set_operating_mode(name, "Running")
+
+    def _reconcile_container(self, name: str, resources: dict | None) -> None:
+        """Apply the current image (and `resources`, if given) to the Sandbox's
+        container, cycling the pod when it is already up on a stale image."""
         _, custom = _apis()
         sb = custom.get_namespaced_custom_object(
             group=GROUP, version=VERSION, namespace=self.ns, plural=PLURAL_SANDBOXES, name=name
         )
-        containers = (((sb.get("spec") or {}).get("podTemplate") or {}).get("spec") or {}).get("containers") or []
+        spec = sb.get("spec") or {}
+        containers = ((spec.get("podTemplate") or {}).get("spec") or {}).get("containers") or []
+        was_running = spec.get("operatingMode", "Running") != "Suspended"
+        stale = self._stale_image(containers)
+        if stale:
+            logger.warning(
+                "sandbox image skew: adopting the deployment's current sandbox image",
+                extra={
+                    "sandbox": name,
+                    "namespace": self.ns,
+                    "from_image": stale,
+                    "to_image": self.deploy.sandbox_image,
+                    "cycling_pod": was_running,
+                },
+            )
+        if resources or stale:
+            # Patch the container FIRST (fail-safe: if this throws we do NOT flip
+            # operatingMode to Running into a half-patched state).
+            self._patch_container(
+                name, containers, resources=resources,
+                image=self.deploy.sandbox_image if stale else None,
+            )
+        if stale and was_running:
+            # The pod is already up on the old image; patching the template does not
+            # restart it. Drop it and wait for it to actually GO before resuming —
+            # flipping straight back can be coalesced by the controller into no
+            # restart at all, which is how one suspend/resume changed nothing.
+            self._set_operating_mode(name, "Suspended")
+            self._await_pod_gone(name)
+
+    def _stale_image(self, containers: list[dict]) -> str | None:
+        """The sandbox container's image when it differs from the deployment's current
+        one (i.e. the stale ref we're replacing), else None. An unset image on either
+        side is not skew — there is nothing to reconcile toward."""
+        want = self.deploy.sandbox_image
+        have = containers[0].get("image") if containers else None
+        return have if (want and have and have != want) else None
+
+    def _patch_container(
+        self, name: str, containers: list[dict], *, resources: dict | None = None, image: str | None = None
+    ) -> None:
+        _, custom = _apis()
         if not containers:
-            raise RuntimeError(f"Sandbox {name} has no container to resize")
-        patched = {**containers[0], "resources": resources}
+            raise RuntimeError(f"Sandbox {name} has no container to patch")
+        patched = {**containers[0]}
+        if resources:
+            patched["resources"] = resources
+        if image:
+            patched["image"] = image
         custom.patch_namespaced_custom_object(
             group=GROUP, version=VERSION, namespace=self.ns, plural=PLURAL_SANDBOXES, name=name,
             body={"spec": {"podTemplate": {"spec": {"containers": [patched, *containers[1:]]}}}},
         )
+
+    def _await_pod_gone(self, name: str, timeout_s: float = 60.0, poll_s: float = 1.5, clock=time) -> None:
+        """Block until the Sandbox's pod is gone (or the deadline passes). Timing out is
+        logged, not raised: resuming onto a pod that outlived the wait is no worse than
+        today's behavior, while failing the call would take the conversation down."""
+        deadline = clock.monotonic() + timeout_s
+        while True:
+            if self._pod_gone(name):
+                return
+            if clock.monotonic() > deadline:
+                logger.warning(
+                    "sandbox pod did not terminate before the deadline; resuming anyway",
+                    extra={"sandbox": name, "namespace": self.ns, "timeout_s": timeout_s},
+                )
+                return
+            clock.sleep(poll_s)
+
+    def _pod_gone(self, name: str) -> bool:
+        core, _ = _apis()
+        if core.list_namespaced_pod(namespace=self.ns, label_selector=f"{SANDBOX_LABEL}={name}").items:
+            return False
+        # The controller may name the pod after the Sandbox without propagating the
+        # label (ready_pod carries the same fallback) — check by name too.
+        try:
+            core.read_namespaced_pod(namespace=self.ns, name=name)
+        except client.ApiException as e:
+            return e.status == 404
+        return False
 
     # --- destroy (Sandbox + SA), 404-tolerant, non-404 propagates ---
     def destroy(self, cid: str) -> None:

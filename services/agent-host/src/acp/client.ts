@@ -107,6 +107,14 @@ export interface AcpClient {
    *  process is alive). An in-process fake reports alive until close(). */
   isAlive(): boolean;
 
+  /** The agent subprocess's most recent stderr lines (oldest first), if this client
+   *  has a subprocess to read them from. The provider writes its own failure
+   *  diagnostics here (the claude-sdk-provider's `[sdk] prompt: query stream error`
+   *  line carries the CLI's `[ede_diagnostic]` string), and that is the only place
+   *  the real cause of a dead-on-arrival run exists — ACP itself reports nothing.
+   *  Optional: an in-process fake client has no subprocess. Why: issue #560. */
+  recentStderr?(): string[];
+
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   /** Notified when goose creates a terminal to run a shell command. The command
    *  text lives ONLY here (terminal/create), not in the tool_call's rawInput — the
@@ -388,6 +396,9 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       // A ChildProcess reports exitCode/signalCode === null while running; either
       // becomes non-null once it exits. So alive === both null.
       return child.exitCode === null && child.signalCode === null;
+    },
+    recentStderr() {
+      return [...stderrTail];
     },
     onSessionUpdate(cb) {
       updateCbs.add(cb);

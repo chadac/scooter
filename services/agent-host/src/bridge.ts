@@ -223,6 +223,47 @@ export function clarifyRunError(raw: string): string {
   return raw;
 }
 
+/** Longest provider diagnostic we paste into a user-facing RUN_ERROR. */
+const DIAGNOSTIC_MAX = 300;
+
+/** Pick the line from an agent subprocess's stderr tail that explains a run which
+ *  produced nothing. Preference order matters: `[ede_diagnostic]` is the CLI's own
+ *  "the turn stalled holding a permission prompt" signature (see
+ *  claude-sdk-provider/src/toolPolicy.ts) and is far more specific than a generic
+ *  error line, so it wins even when a later line also matches. Undefined when the
+ *  tail holds nothing diagnostic — the message then just omits the clause.
+ *  Why: issue #560. */
+export function providerDiagnostic(lines: readonly string[] | undefined): string | undefined {
+  if (!lines?.length) return undefined;
+  const clean = lines.map((l) => l.trim()).filter(Boolean);
+  const pick =
+    [...clean].reverse().find((l) => l.includes("ede_diagnostic")) ??
+    [...clean].reverse().find((l) => /error|fail|refus|denied/i.test(l));
+  if (!pick) return undefined;
+  return pick.length > DIAGNOSTIC_MAX ? `${pick.slice(0, DIAGNOSTIC_MAX)}…` : pick;
+}
+
+/** The user-facing text for a dead-on-arrival run (no ACP activity before the
+ *  deadline).
+ *
+ *  This used to assert ONE cause ("this usually means a model/credential error"),
+ *  which sent a real outage's diagnosis down the wrong path for hours while the
+ *  token was fine: the actual cause was a sandbox image left behind by a platform
+ *  upgrade, offering a tool surface the new provider denies. `no_activity_timeout`
+ *  has several causes and the message must not pick one — it names the candidates
+ *  and quotes the provider's own diagnostic when we have it. Why: issue #560. */
+export function deadOnArrivalMessage(diagnostic?: string): string {
+  return (
+    "The agent didn't respond — it started but produced nothing. This has several " +
+    "possible causes: a sandbox/platform version skew (the sandbox pod is running an " +
+    "image from before the last upgrade), a model or credential error (e.g. the " +
+    "Bedrock role can't be assumed), or the agent stalling on a tool permission " +
+    "prompt nobody can answer. " +
+    (diagnostic ? `The agent's last diagnostic was: ${diagnostic}. ` : "") +
+    "Try again; if it persists, check the agent-host logs."
+  );
+}
+
 /** An image attached to a user prompt — a reference the bridge resolves to base64
  *  (from the AssetStore) when it builds the ACP image content block. */
 export interface PromptImage {
@@ -1047,17 +1088,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // LOUD: the RUN_ERROR below tells the USER to check these logs, so this must be
         // in them. Without it a wedged-then-retried run leaves no trace at all — the
         // only evidence is a "prompt: sending" with no matching "returned".
+        // The provider's stderr is the ONLY place the cause exists (ACP reports
+        // nothing for a run that never spoke) — read it before we kill the process.
+        // It is the process's tail, so it may predate this run; the message says
+        // "last diagnostic" rather than claiming it belongs to this one.
+        const diagnostic = providerDiagnostic(acpClient?.recentStderr?.());
         log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
           run_id: st.runId,
           waited_ms: firstActivityTimeoutMs,
           retryable: true,
+          ...(diagnostic ? { provider_diagnostic: diagnostic } : {}),
         });
         emit({
           type: "RUN_ERROR",
-          message:
-            "The agent didn't respond — it started but produced nothing. This usually " +
-            "means a model/credential error (e.g. the Bedrock role can't be assumed). " +
-            "Try again; if it persists, check the agent-host logs.",
+          message: deadOnArrivalMessage(diagnostic),
           code: "no_activity_timeout",
         });
         st.retryable = true; // transient (credential/model blip) — the pump auto-retries with backoff
