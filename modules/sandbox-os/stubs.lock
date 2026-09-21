@@ -11,6 +11,63 @@
     }
   },
   "packages": {
+    "aarch64-linux": {
+      "awscli2": {
+        "attr": "awscli2",
+        "drv": "/nix/store/7bfgrnilpq8ji84s8i2rja65m6vmdr6q-awscli2-2.35.11.drv",
+        "output": "out",
+        "bins": [
+          "aws",
+          "aws_completer"
+        ],
+        "name": "awscli2-2.35.11"
+      },
+      "code-server": {
+        "attr": "code-server",
+        "drv": "/nix/store/spkmj6qabxhlqmgbgg8pbai5xl7yx6al-code-server-4.134.0.drv",
+        "output": "out",
+        "bins": [
+          "code-server"
+        ],
+        "name": "code-server-4.134.0"
+      },
+      "marimo": {
+        "attr": "marimo",
+        "drv": "/nix/store/5xifdh8pb3bp93v1hrjypqnidx2jab7l-python3.14-marimo-0.24.0.drv",
+        "output": "out",
+        "bins": [
+          "marimo"
+        ],
+        "name": "marimo-0.24.0"
+      },
+      "tree": {
+        "attr": "tree",
+        "drv": "/nix/store/pj0p4z5d89hfqhqbxxsshwza5pdb17wl-tree-2.3.2.drv",
+        "output": "out",
+        "bins": [
+          "tree"
+        ],
+        "name": "tree-2.3.2"
+      },
+      "ttyd": {
+        "attr": "ttyd",
+        "drv": "/nix/store/r2xccq3s94n8grcdnnai0bdsc3yw4kh9-ttyd-1.7.7.drv",
+        "output": "out",
+        "bins": [
+          "ttyd"
+        ],
+        "name": "ttyd-1.7.7"
+      },
+      "uv": {
+        "attr": "uv",
+        "drv": "/nix/store/dgyvxhf9dz1hs89qm2rc7nrn2gm0b1i4-uv-0.12.16.drv",
+        "output": "out",
+        "bins": [
+          "uv"
+        ],
+        "name": "uv-0.12.16"
+      }
+    },
     "x86_64-linux": {
       "awscli2": {
         "attr": "awscli2",

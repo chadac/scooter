@@ -156,6 +156,9 @@ jobs:
   manifest:
     name: multi-arch manifest ${{ matrix.image }}
     needs: publish
+    # Run even when a publish leg failed. Without this ONE broken (image, arch) pair skips
+    # the manifest for ALL images, so no `latest` moves and nothing is deployable. PR #557.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       CONTAINERS_REGISTRIES_CONF: ${{ github.workspace }}/.registries.conf
