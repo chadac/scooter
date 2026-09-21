@@ -1,4 +1,4 @@
-{ lib, python3Packages, scooterSchema, scooterLib, contribs ? [ ], ... }:
+{ lib, python3Packages, scooterSchema, scooterLib, scooterBrokerLib, contribs ? [ ], ... }:
 
 # The credential broker (Python/FastAPI). Extensible provider/transport modules;
 # see docs/BROKER.md.
@@ -6,7 +6,7 @@
 # `contribs`: out-of-tree provider packages injected into the image. Each is a
 # normal Python dependency, so its dist-info lands on the app's path and the
 # provider registry discovers it via the `agent_broker.providers` entry point at
-# startup (see broker/core/registry.py). Defaults to none — the flake passes the
+# startup (see scooter_broker_lib/registry.py). Defaults to none — the flake passes the
 # broker-targeted subset from ./contrib.
 
 python3Packages.buildPythonApplication {
@@ -34,6 +34,7 @@ python3Packages.buildPythonApplication {
     openfga-sdk
     scooterSchema  # generated SQLAlchemy models for the broker DB (lib/py/scooter-schema)
     scooterLib     # shared structured-logging convention (lib/py/scooter-lib)
+    scooterBrokerLib # the extension surface a provider composes (lib/py/scooter-broker-lib)
   ] ++ contribs;
 
   nativeCheckInputs = with python3Packages; [

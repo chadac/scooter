@@ -1,4 +1,4 @@
-{ lib, python3Packages, broker, webhooks, ... }:
+{ lib, python3Packages, broker, webhooks, scooterBrokerLib, ... }:
 
 # Contrib module builder + registry.
 #
@@ -12,11 +12,15 @@
 #   broker   = pkgs.callPackage ./services/broker   { contribs = contribs.broker; ... };
 #   webhooks = pkgs.callPackage ./services/webhooks { contribs = contribs.webhooks; ... };
 #
-# A contrib's package declares NO dependency on broker/webhooks (that would be a
-# build cycle: a service depends on its contribs). Its service-coupled modules
-# import the host service at RUNTIME, when the service loads the entry point.
-# broker/webhooks are passed here only as CHECK inputs so a contrib's tests can
-# exercise the real registries end-to-end.
+# A contrib build-depends on the EXTENSION SURFACE libs, never on the
+# broker/webhooks apps (that would be a build cycle: a service depends on its
+# contribs). The surface is a real build input, so a broken extension fails the
+# contrib's own build instead of vanishing at service startup — which is the
+# arrangement PR #567 exists to replace.
+#
+# broker/webhooks are still passed as CHECK-only inputs so a contrib's tests can
+# exercise the real registries end-to-end, and because the webhooks half of the
+# surface has not moved yet.
 
 let
   entries = builtins.readDir ./.;
@@ -40,13 +44,17 @@ let
         # backend as an explicit build input.
         build-system = [ python3Packages.hatchling ];
 
-        dependencies = [ python3Packages.fastapi ] ++ extraDeps;
+        dependencies = [ python3Packages.fastapi ]
+          ++ lib.optional (lib.elem "broker" meta.services) scooterBrokerLib
+          ++ extraDeps;
 
-        # Import-check only the neutral top-level module. The service-coupled
-        # modules (broker_provider / webhooks_handler) import broker/webhooks,
-        # which are absent from a contrib's own runtime deps — they resolve at
-        # runtime in the host image, and are verified by the check phase below.
-        pythonImportsCheck = [ pyImport ];
+        # A broker contrib's provider module is import-checked directly: its only
+        # non-stdlib imports are fastapi + the surface lib, both real deps now, so
+        # a bad import is this build's failure. The webhooks half still imports
+        # the app and resolves at runtime, so it stays out until that surface
+        # moves; the check phase below covers it meanwhile.
+        pythonImportsCheck = [ pyImport ]
+          ++ lib.optional (lib.elem "broker" meta.services) "${pyImport}.broker_provider";
 
         # The contrib's tests run against the REAL broker + webhooks registries
         # (provided as check-only inputs), proving entry-point discovery works.

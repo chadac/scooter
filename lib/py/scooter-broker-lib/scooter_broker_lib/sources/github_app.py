@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import httpx
 import jwt
 
-from ..core.types import Credential, CredentialSource, Identity
+from ..types import Credential, CredentialSource, Identity
 
 logger = logging.getLogger(__name__)
 

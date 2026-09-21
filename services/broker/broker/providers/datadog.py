@@ -8,10 +8,10 @@ Enabled iff BOTH keys are configured. The site is region-specific (config).
 from __future__ import annotations
 
 from ..config import settings
-from ..core.registry import register_provider
-from ..core.types import Provider
-from ..sources.datadog_keys import DatadogKeysSource
-from ..transports.http_proxy import HttpProxy
+from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.types import Provider
+from scooter_broker_lib.sources.datadog_keys import DatadogKeysSource
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 @register_provider

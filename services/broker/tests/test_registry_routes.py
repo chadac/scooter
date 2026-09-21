@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from broker.core.auth import authenticate
-from broker.core.types import Identity
+from scooter_broker_lib.types import Identity
 from broker.registry.routes import create_registry_router
 from broker.registry.store import ModuleRegistryStore
 

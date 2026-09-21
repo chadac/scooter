@@ -201,7 +201,7 @@
 
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules. See services/broker/ + docs/BROKER.md.
-          broker = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib; };
+          broker = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib scooterBrokerLib; };
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
@@ -215,7 +215,7 @@
           # real registries end-to-end. The prod broker/webhooks above ship no
           # contribs yet (contribs default to []); real integrations move in from
           # slice 3 on.
-          contribs = pkgs.callPackage ./contrib { inherit broker webhooks; };
+          contribs = pkgs.callPackage ./contrib { inherit broker webhooks scooterBrokerLib; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {

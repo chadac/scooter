@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from ..core.types import Credential, CredentialSource, Identity
+from ..types import Credential, CredentialSource, Identity
 
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 

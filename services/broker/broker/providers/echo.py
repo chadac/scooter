@@ -16,11 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..config import settings
-from ..core.registry import register_provider
-from ..core.types import Identity, Provider
-from ..sources.static_token import StaticTokenSource
-from ..transports.git_credential import GitCredential
-from ..transports.whoami import WhoAmI
+from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.types import Identity, Provider
+from scooter_broker_lib.sources.static_token import StaticTokenSource
+from scooter_broker_lib.transports.git_credential import GitCredential
+from scooter_broker_lib.transports.whoami import WhoAmI
 
 # A deterministic fake git credential the test provider vends, so the full
 # `git clone` / `git-credential-broker` path can be exercised end-to-end without

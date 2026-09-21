@@ -11,9 +11,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from broker.core.types import Identity
-from broker.sources.datadog_keys import DatadogKeysSource
-from broker.transports.http_proxy import HttpProxy
+from scooter_broker_lib.types import Identity
+from scooter_broker_lib.sources.datadog_keys import DatadogKeysSource
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 def _identity() -> Identity:

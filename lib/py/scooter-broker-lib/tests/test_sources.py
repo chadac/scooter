@@ -11,10 +11,10 @@ import time
 import httpx
 import pytest
 
-from broker.core.types import Identity
-from broker.sources.atlassian_oauth import AtlassianOAuthSource
-from broker.sources.github_app import GitHubAppSource
-from broker.sources.static_token import StaticTokenSource
+from scooter_broker_lib.types import Identity
+from scooter_broker_lib.sources.atlassian_oauth import AtlassianOAuthSource
+from scooter_broker_lib.sources.github_app import GitHubAppSource
+from scooter_broker_lib.sources.static_token import StaticTokenSource
 
 # A throwaway RSA key for signing the App JWT in tests.
 

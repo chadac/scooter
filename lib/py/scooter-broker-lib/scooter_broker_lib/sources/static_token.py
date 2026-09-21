@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.types import Credential, CredentialSource, Identity
+from ..types import Credential, CredentialSource, Identity
 
 
 @dataclass

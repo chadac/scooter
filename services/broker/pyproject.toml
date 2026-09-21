@@ -20,6 +20,7 @@ dependencies = [
   "openfga-sdk",  # OpenFGA authorization (the broker's enforcement point)
   "scooter-schema", # generated SQLAlchemy models for the broker DB (lib/py/scooter-schema)
   "scooter-lib",    # shared structured-logging convention (lib/py/scooter-lib)
+  "scooter-broker-lib", # the extension surface: types/registry/autolink/sources/transports
 ]
 
 [project.scripts]

@@ -17,8 +17,8 @@ from ..aws.service import PermissionService, ServiceConfig
 from ..aws.store import PermissionStore, StoreConfig
 from ..config import settings
 from ..core.authz import authorizer_from_settings, aws_account_object, user_object
-from ..core.registry import register_provider
-from ..core.types import Provider
+from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.types import Provider
 from scooter_lib.logging_config import format_error
 from ..transports.aws_permissions import AwsPermissions
 

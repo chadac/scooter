@@ -21,7 +21,7 @@ from broker.aws.models import StsCredentials  # noqa: E402
 from broker.aws.service import PermissionService, ServiceConfig  # noqa: E402
 from broker.aws.store import PermissionStore, StoreConfig  # noqa: E402
 from broker.core.auth import authenticate  # noqa: E402
-from broker.core.types import Identity  # noqa: E402
+from scooter_broker_lib.types import Identity  # noqa: E402
 from broker.transports.aws_permissions import AwsPermissions  # noqa: E402
 
 from conftest import create_schema

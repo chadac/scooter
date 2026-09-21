@@ -20,9 +20,27 @@ python3Packages.buildPythonPackage {
     pyjwt
   ];
 
-  # No pytestCheckHook yet — skeleton (0 tests would fail collection).
-  # Re-added with the modules + their tests in the follow-up commits.
-  pythonImportsCheck = [ "scooter_broker_lib" ];
+  nativeCheckInputs = with python3Packages; [
+    pytestCheckHook
+    pytest-asyncio
+    cryptography # the GitHub App source signs a real JWT in its tests
+  ];
+  # Every sub-package, so a transport or source that fails to import is this
+  # build's failure rather than a provider quietly missing at broker startup —
+  # the whole point of making the surface a real build dependency.
+  pythonImportsCheck = [
+    "scooter_broker_lib.types"
+    "scooter_broker_lib.registry"
+    "scooter_broker_lib.autolink"
+    "scooter_broker_lib.sources.github_app"
+    "scooter_broker_lib.sources.atlassian_oauth"
+    "scooter_broker_lib.sources.datadog_keys"
+    "scooter_broker_lib.sources.static_token"
+    "scooter_broker_lib.transports.http_proxy"
+    "scooter_broker_lib.transports.git_credential"
+    "scooter_broker_lib.transports.whoami"
+    "scooter_broker_lib.transports.token_vend"
+  ];
 
   meta.description = "The broker extension surface for Scooter providers";
 }

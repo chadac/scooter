@@ -6,11 +6,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from broker.core.autolink import Link
+from scooter_broker_lib.autolink import Link
 from broker.providers.github import _GITHUB_LINK_RULES
 from broker.providers.gitlab import _GITLAB_LINK_RULES
 from broker.providers.jira import _JIRA_LINK_RULES
-from broker.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 # ---- the per-provider rules extract the right link from a real-ish response ----
@@ -83,7 +83,7 @@ async def test_maybe_autolink_posts_on_match(monkeypatch):
     async def fake_post_link(agent_host_url, conversation_id, link):
         posted.append((agent_host_url, conversation_id, link))
 
-    import broker.transports.http_proxy as hp
+    import scooter_broker_lib.transports.http_proxy as hp
     monkeypatch.setattr(hp, "post_link", fake_post_link)
 
     proxy = HttpProxy(
@@ -103,7 +103,7 @@ async def test_maybe_autolink_posts_on_match(monkeypatch):
 @pytest.mark.asyncio
 async def test_maybe_autolink_ignores_non_matching_path(monkeypatch):
     posted: list = []
-    import broker.transports.http_proxy as hp
+    import scooter_broker_lib.transports.http_proxy as hp
     monkeypatch.setattr(hp, "post_link", lambda *a: posted.append(a))
     proxy = HttpProxy(upstream="x", link_rules=_GITHUB_LINK_RULES, agent_host_url="http://h")
     # A comment POST — not a create rule.
@@ -115,7 +115,7 @@ async def test_maybe_autolink_ignores_non_matching_path(monkeypatch):
 @pytest.mark.asyncio
 async def test_maybe_autolink_swallows_bad_response(monkeypatch):
     # A non-JSON / unexpected body must not raise (best-effort).
-    import broker.transports.http_proxy as hp
+    import scooter_broker_lib.transports.http_proxy as hp
     monkeypatch.setattr(hp, "post_link", lambda *a: None)
     proxy = HttpProxy(upstream="x", link_rules=_GITHUB_LINK_RULES, agent_host_url="http://h")
     resp = httpx.Response(201, content=b"not json")

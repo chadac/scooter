@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from ..config import settings
-from ..core.autolink import Link, rule
-from ..core.registry import register_provider
-from ..core.types import Provider
-from ..sources.atlassian_oauth import AtlassianOAuthSource
-from ..transports.http_proxy import HttpProxy
+from scooter_broker_lib.autolink import Link, rule
+from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.types import Provider
+from scooter_broker_lib.sources.atlassian_oauth import AtlassianOAuthSource
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 def _jira_issue_link(r: dict) -> Link | None:
