@@ -583,3 +583,15 @@ async def relay_slack_reply(request: Request, req: SlackReplyRequest):
     if ts is None:
         raise HTTPException(status_code=502, detail="Failed to post Slack reply")
     return {"ok": True, "ts": ts}
+
+
+# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
+# provider registry, PR: contrib module system). Handlers self-gate in-route
+# (a disabled provider returns {"status": "disabled"}), so this registers
+# enabled and keeps its per-request gating.
+from ..registry import WebhookHandler, register_webhook
+
+
+@register_webhook
+def slack() -> WebhookHandler:
+    return WebhookHandler(name="slack", router=router)

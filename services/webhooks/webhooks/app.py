@@ -11,11 +11,7 @@ from . import store as db
 
 from .config import db_settings, require_relay_key, settings
 from .logging_config import configure_logging
-from .handlers.github import router as github_router
-from .handlers.gitlab import router as gitlab_router
-from .handlers.jira import router as jira_router
-from .handlers.slack import router as slack_router
-from .handlers.test import router as test_router
+from .registry import discover_webhooks
 from .agent_host_client import resolve_sandbox_to_conversation
 
 configure_logging("webhooks", settings.log_level)
@@ -32,11 +28,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="agent-manager webhooks", version="0.1.0", lifespan=lifespan)
-app.include_router(github_router)
-app.include_router(gitlab_router)
-app.include_router(jira_router)
-app.include_router(slack_router)
-app.include_router(test_router)
+
+# Discover handler modules and mount each one's router — no hardcoded per-provider
+# wiring here (mirrors the broker's create_app discovery). Adding a handler is a
+# new module under handlers/ with an @register_webhook factory; app.py is untouched.
+for _handler in discover_webhooks():
+    app.include_router(_handler.router)
 
 
 @app.get("/health")

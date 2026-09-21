@@ -274,3 +274,15 @@ async def _clear_pending(issue_key: str) -> None:
     if is_pending(existing):
         await db.clear_conversation("jira", "issue", issue_key)
     await db.get_and_clear_pending_messages("jira", "issue", issue_key)
+
+
+# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
+# provider registry, PR: contrib module system). Handlers self-gate in-route
+# (a disabled provider returns {"status": "disabled"}), so this registers
+# enabled and keeps its per-request gating.
+from ..registry import WebhookHandler, register_webhook
+
+
+@register_webhook
+def jira() -> WebhookHandler:
+    return WebhookHandler(name="jira", router=router)
