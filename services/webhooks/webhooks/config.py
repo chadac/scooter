@@ -23,6 +23,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
+from scooter_lib.settings import AgentHostSettings
+
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -59,15 +61,21 @@ class DatabaseSettings(BaseSettings):
         return self
 
 
-class WebhooksSettings(BaseSettings):
-    """Settings specific to the webhooks service."""
+class WebhooksSettings(AgentHostSettings):
+    """Settings specific to the webhooks service.
+
+    Inherits `agent_host_url` / `agent_host_token_path` / `agent_manager_url`
+    from `scooter_lib`, so a contrib handler can construct those on its own
+    rather than importing this module. Same env vars, same names.
+    """
 
     # The agent-host (AG-UI). Webhooks spawn conversations via POST {url}/agui.
+    #
+    # Overrides the lib's "" default deliberately: for the broker an unset URL
+    # means "auto-linking off", a legitimate local/dev mode. For webhooks,
+    # spawning a conversation IS the job, so an unset URL is a misconfiguration,
+    # not a mode — the in-cluster address stays the default here.
     agent_host_url: str = "http://agent-host.agent-sandbox.svc.cluster.local:8080"
-    # Projected ServiceAccount token (audience agent-host) we present on /agui so the
-    # agent-host can verify us (TokenReview) as the trusted caller and honor a
-    # conversation `owner`. Not mounted -> no token -> owner ignored (unowned).
-    agent_host_token_path: str = "/var/run/secrets/agent-host/token"
 
     # Root log level (LOG_LEVEL env). INFO by default; DEBUG for verbose tracing.
     log_level: str = "INFO"
@@ -134,11 +142,6 @@ class WebhooksSettings(BaseSettings):
     # doesn't mention the agent. Its own comments otherwise come back as webhooks
     # — at interrupt priority for reviews (PR #530).
     ignore_bot_authors: bool = True
-
-    # Public UI base URL for the "View conversation" deep-links posted back to
-    # Slack/GitHub/GitLab/Jira: <agent_manager_url>/?thread=<id>. Distinct from
-    # agent_host_url (the internal API). Empty -> the link degrades to the raw id.
-    agent_manager_url: str = ""
 
     # Default repo
     default_gitlab_repo: str = ""
