@@ -1,4 +1,4 @@
-{ lib, python3Packages, scooterSchema, contribs ? [ ], ... }:
+{ lib, python3Packages, scooterSchema, scooterLib, contribs ? [ ], ... }:
 
 # The credential broker (Python/FastAPI). Extensible provider/transport modules;
 # see docs/BROKER.md.
@@ -33,6 +33,7 @@ python3Packages.buildPythonApplication {
     aiosqlite
     openfga-sdk
     scooterSchema  # generated SQLAlchemy models for the broker DB (lib/py/scooter-schema)
+    scooterLib     # shared structured-logging convention (lib/py/scooter-lib)
   ] ++ contribs;
 
   nativeCheckInputs = with python3Packages; [

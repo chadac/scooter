@@ -17,9 +17,11 @@ python3Packages.buildPythonPackage {
     pydantic-settings
   ];
 
-  # No pytestCheckHook yet — this is a skeleton (0 tests would fail collection).
-  # Re-added with the modules + their tests in the follow-up commits.
-  pythonImportsCheck = [ "scooter_lib" ];
+  nativeCheckInputs = with python3Packages; [
+    pytestCheckHook
+    httpx # format_error is specified against real httpx exception types
+  ];
+  pythonImportsCheck = [ "scooter_lib.logging_config" ];
 
   meta.description = "Shared library for Scooter's Python services";
 }

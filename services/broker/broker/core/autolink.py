@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 

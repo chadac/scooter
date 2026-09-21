@@ -6,7 +6,7 @@ import time
 import httpx
 
 from ..config import settings
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 _C = {"component": "responses.jira"}

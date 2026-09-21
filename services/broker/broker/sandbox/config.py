@@ -15,7 +15,7 @@ from .manifest import DeployConfig
 from .resources import SandboxResources, validate_resources
 from ..aws.store import StoreConfig
 from ..config import BrokerSettings
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 

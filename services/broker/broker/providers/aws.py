@@ -19,7 +19,7 @@ from ..config import settings
 from ..core.authz import authorizer_from_settings, aws_account_object, user_object
 from ..core.registry import register_provider
 from ..core.types import Provider
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 from ..transports.aws_permissions import AwsPermissions
 
 logger = logging.getLogger(__name__)

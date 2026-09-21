@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from . import store as db
 
 from .config import db_settings, require_relay_key, settings
-from .logging_config import configure_logging
+from scooter_lib.logging_config import configure_logging
 from .registry import discover_webhooks
 from .agent_host_client import resolve_sandbox_to_conversation
 

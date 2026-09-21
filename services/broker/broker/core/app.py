@@ -17,7 +17,7 @@ from .autolink import Link, create_link, list_links
 from .registry import discover_providers
 from .types import Identity
 from ..config import settings
-from ..logging_config import configure_logging
+from scooter_lib.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 

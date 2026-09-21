@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from ..core.autolink import Link, LinkRule, post_link
 from ..core.types import AuthDependency, Identity, Provider, Transport
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 

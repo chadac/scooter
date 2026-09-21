@@ -15,5 +15,11 @@ dependencies = [
 
 # hatchling auto-detects the `scooter_lib` package (name matches project name).
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
+[dependency-groups]
+# httpx is test-only: format_error's whole reason to exist is the httpx transport
+# exceptions that stringify to "", so the guard needs the real types.
+dev = ["pytest", "httpx"]
+
+# No [tool.pytest.ini_options] asyncio_mode: nothing here is async, so declaring
+# it only earns an "Unknown config option" warning without pytest-asyncio
+# installed. The extension-surface libs, which do have async tests, keep it.

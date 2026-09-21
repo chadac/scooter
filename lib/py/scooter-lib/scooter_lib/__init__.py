@@ -4,11 +4,15 @@ Holds logic common to ALL Python services (broker, webhooks, scheduler, …) and
 therefore usable by contribs too. Neither of the two extension surfaces
 (`scooter_broker_lib` / `scooter_webhooks_lib`) — those build on THIS.
 
-Planned contents (moved in per the boundary agreed on the PR):
+Contents:
   * logging_config — the structured-logging convention (JSON line format,
-    `format_error`, `configure_logging`). Today duplicated (and drifted) across
-    broker/webhooks; this becomes the single source, parameterized by service name.
+    `format_error`, `configure_logging`). Was duplicated and drifted across
+    broker/webhooks/scheduler; this is the single source, with `service` and the
+    `component` prefix as parameters.
 
-This module is a skeleton pending the boundary sign-off; contents land in
-follow-up commits on the same PR.
+Nothing here may import a service app or either extension-surface lib.
 """
+
+from .logging_config import configure_logging, format_error, get_logger
+
+__all__ = ["configure_logging", "format_error", "get_logger"]
