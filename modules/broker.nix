@@ -195,6 +195,30 @@ in
       };
     };
 
+    # --- Airtable (personal access token; http-proxy to api.airtable.com) ----
+    # The broker's airtable provider proxies /airtable/* -> https://api.airtable.com
+    # with the PAT injected, so the agent can read/write bases WITHOUT seeing the
+    # token. Enabled iff the token secret is set (without it the /airtable/* routes
+    # never mount and calls 404). There is no url option: Airtable is single-tenant
+    # SaaS, so the upstream host is fixed. What the agent can reach is bounded by
+    # the PAT's own scopes + base grants — scope it when you mint it, not here.
+    airtable = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable the Airtable provider (http-proxy to api.airtable.com with a personal access token injected).";
+      };
+      tokenSecret = mkOption {
+        type = types.submodule {
+          options = {
+            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
+            key = mkOption { type = types.str; default = "AIRTABLE_TOKEN"; description = "Secret key holding the Airtable personal access token."; };
+          };
+        };
+        description = "Secret holding an Airtable personal access token (pat…). Injected as AIRTABLE_TOKEN. The secret must exist in the broker namespace.";
+      };
+    };
+
     # --- Static shares (broker/shares/) — persistent static webpages --------
     # The broker's shares feature lets agents publish static bundles, served at
     # /s/<uuid>/ and embeddable in the conversation UI. Off by default; when on,
@@ -510,6 +534,18 @@ in
                     valueFrom.secretKeyRef = {
                       name = bcfg.grafana.tokenSecret.name;
                       key = bcfg.grafana.tokenSecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.airtable.enable [
+                  # Airtable PAT -> the broker's airtable provider proxies
+                  # /airtable/* to api.airtable.com with the token injected.
+                  # Without it the provider is disabled and the agent's
+                  # /airtable/* calls 404.
+                  {
+                    name = "AIRTABLE_TOKEN";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.airtable.tokenSecret.name;
+                      key = bcfg.airtable.tokenSecret.key;
                     };
                   }
                 ] ++ lib.optionals bcfg.shares.enable ([

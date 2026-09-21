@@ -124,15 +124,20 @@ export interface ConversationLink {
    * push_link. Shapes by source (all optional so old links / partial data degrade
    * to an explicit-target request, never a wrong guess):
    *   slack:  { channel, threadTs }
-   *   gitlab: { projectId, mrIid }
+   *   gitlab: { projectId, mrIid } for a merge request; { projectId, iid } for an issue
    *   github: { owner, repo, number }
    *   jira:   { issueKey }
+   *
+   * `iid` exists because `mrIid` cannot describe an ISSUE: a ref that put an issue's
+   * iid in `mrIid` made gitlab_comment post to the merge request of the same number.
+   * `resourceType` decides which endpoint; `iid` is the number for either. Why: #563.
    */
   ref?: {
     channel?: string;
     threadTs?: string;
     projectId?: string;
     mrIid?: string;
+    iid?: string;
     owner?: string;
     repo?: string;
     number?: number;
@@ -833,7 +838,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         `---\n(You are a subagent. Do the task above, then END your turn with a ` +
         `concise summary of what you found or did — that final message is returned ` +
         `to the agent that spawned you.)`;
-      await entry.bridge?.prompt({ threadId: childThreadId, text: framedPrompt });
+      // FIRE-AND-FORGET, deliberately: prompt() resolves on run COMPLETION, so awaiting it
+      // would block the parent's spawn_subagent call for the child's whole run. The parent
+      // is told via onSubagentComplete instead. Why: PR #568.
+      void entry.bridge?.prompt({ threadId: childThreadId, text: framedPrompt }).catch((err: unknown) => {
+        log.errorWith("subagent initial prompt failed", err, { conversation_id: id, parent_id: parentId });
+      });
       return toConversation(entry);
     },
 

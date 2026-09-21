@@ -7,7 +7,15 @@
 
 import { describe, it, expect } from "vitest";
 
-import { createSessionBridge, clarifyRunError, decorateSystemMessage, PRIORITY_INTERRUPT, type AguiEvent } from "../../src/bridge.js";
+import {
+  createSessionBridge,
+  clarifyRunError,
+  decorateSystemMessage,
+  deadOnArrivalMessage,
+  providerDiagnostic,
+  PRIORITY_INTERRUPT,
+  type AguiEvent,
+} from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
@@ -1204,13 +1212,22 @@ describe("bridge run queue + cancel", () => {
 });
 
 describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
-  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, firstActivityTimeoutMs: number) => {
+  const mkBridge = (
+    agent: ReturnType<typeof createFakeAcpAgent>,
+    firstActivityTimeoutMs: number,
+    // The agent subprocess's stderr tail — where the provider writes the diagnostic
+    // that explains a run which produced nothing (issue #560).
+    stderr?: string[],
+    retry?: { deathRetryMax: number; deathRetryBaseMs: number },
+  ) => {
     const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const client = acpClientFromTransport(agent.transport, exec);
     return createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
       exec,
-      acpClient: acpClientFromTransport(agent.transport, exec),
+      acpClient: stderr ? { ...client, recentDiagnostics: () => stderr } : client,
       firstActivityTimeoutMs,
+      ...(retry ?? {}),
     });
   };
   const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -1237,6 +1254,90 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
     // resolve, but st.terminated must suppress a second RUN_FINISHED/RUN_ERROR.
     const terminals = events.filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
     expect(terminals.length).toBe(1);
+  });
+
+  it("does NOT blame credentials for a dead-on-arrival run — it names the candidates", async () => {
+    // The message used to assert ONE cause ("this usually means a model/credential
+    // error"). During a real outage the token was fine and the cause was a sandbox
+    // image left behind by a platform upgrade, so the assertion sent the diagnosis
+    // down the wrong path for hours. Issue #560.
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate();
+    const bridge = mkBridge(agent, 30);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+    await tick(60);
+
+    const message = (events.find((e) => e.type === "RUN_ERROR") as { message?: string }).message ?? "";
+    expect(message).not.toMatch(/usually means a model\/credential error/i);
+    expect(message).toMatch(/skew/i); // version skew is named as a candidate
+    expect(message).toMatch(/credential/i); // …and so is the credential case
+  });
+
+  it("surfaces the provider's own diagnostic in the dead-on-arrival error", async () => {
+    // The `[ede_diagnostic]` line exists ONLY on the provider subprocess's stderr —
+    // ACP reports nothing for a run that never spoke. Without it the user (and the
+    // operator reading the logs) has no thread to pull. Issue #560.
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate();
+    const bridge = mkBridge(agent, 30, [
+      "[sdk] prompt: query start, model=claude-opus-5",
+      "[sdk] prompt: query stream error: Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null",
+    ]);
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+    await tick(60);
+
+    const message = (events.find((e) => e.type === "RUN_ERROR") as { message?: string }).message ?? "";
+    expect(message).toContain("ede_diagnostic");
+  });
+
+  it("carries a LATE diagnostic into the next attempt's message", async () => {
+    // The ordering that makes this necessary: the watchdog gives up at 60s, the
+    // abandoned stream rejects only AFTERWARDS, and the wedged session is dropped in
+    // between — so the cause of attempt N is in hand only by attempt N+1, on a client
+    // that no longer exists. Keeping it on the bridge is what makes the claude-code
+    // path (an in-process provider, with no stderr for the host to tail) work at all.
+    // This is the incident's own shape: retry after retry, each dead on arrival.
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate();
+    // Rejects when the watchdog's cancel releases it — after attempt 1's RUN_ERROR.
+    agent.failNext("Claude Code returned an error result: [ede_diagnostic] result_type=user stop_reason=null");
+    const bridge = mkBridge(agent, 30, undefined, { deathRetryMax: 1, deathRetryBaseMs: 10 });
+    const events = collect(bridge);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "wedged" });
+    await tick(250); // attempt 1 → its late rejection → the auto-retry's attempt 2
+
+    const errors = events.filter((e) => e.type === "RUN_ERROR") as { message?: string }[];
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    // Attempt 1 could not name the cause — it had not happened yet.
+    expect(errors[0].message ?? "").not.toContain("ede_diagnostic");
+    // A later attempt can: the diagnostic outlived the client that produced it.
+    expect(errors.at(-1)!.message ?? "").toContain("ede_diagnostic");
+    agent.releaseGate();
+    await bridge.stop();
+  });
+
+  it("picks the ede_diagnostic line out of a stderr tail, and truncates a long one", () => {
+    expect(providerDiagnostic(undefined)).toBeUndefined();
+    expect(providerDiagnostic(["[sdk] prompt: query start", "  "])).toBeUndefined();
+    // The ede_diagnostic signature wins over a later, more generic error line.
+    expect(
+      providerDiagnostic(["boom: [ede_diagnostic] stop_reason=null", "some later error line"]),
+    ).toContain("ede_diagnostic");
+    // No signature → the most recent error-ish line is better than nothing.
+    expect(providerDiagnostic(["ok", "connect ECONNREFUSED"])).toBe("connect ECONNREFUSED");
+    const long = `x [ede_diagnostic] ${"y".repeat(500)}`;
+    expect(providerDiagnostic([long])!.length).toBeLessThanOrEqual(301);
+    // No diagnostic → the message simply omits the clause rather than saying "undefined".
+    expect(deadOnArrivalMessage()).not.toMatch(/undefined/);
   });
 
   it("does NOT fire when the run emits activity before the timeout (a live run is untouched)", async () => {

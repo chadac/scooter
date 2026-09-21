@@ -46,6 +46,11 @@ let
   ddWired = builtins.any (e: e.name == "DATADOG_API_KEY") brokerEnv;
   ddProblems = if ddWired then [ ] else [ "broker.env.DATADOG_API_KEY (datadog provider not wired)" ];
 
+  # Same for airtable (enabled in the example): without AIRTABLE_TOKEN in the
+  # broker env the provider stays disabled and /airtable/* 404s.
+  atProblems = if builtins.any (e: e.name == "AIRTABLE_TOKEN") brokerEnv then [ ]
+    else [ "broker.env.AIRTABLE_TOKEN (airtable provider not wired)" ];
+
   # Static shares (shares.enable = true in the example): the broker must carry
   # SHARES_ENABLED and a derived public base URL — otherwise the /shares +
   # /s/<uuid>/ routes never mount (or return relative URLs) and publishing 404s.
@@ -267,19 +272,26 @@ let
 
   # GATED SKILLS: a skill for a capability that is not wired teaches the agent to call a
   # route that 404s, and then to misread that 404 as the feature being broken. Render the
-  # platform with grafana on and off and assert the skill follows.
-  skillsWith = enable: let
+  # platform with each gate on and off and assert the skill follows.
+  # mkForce: a gate the EXAMPLE already sets would otherwise conflict, not override.
+  skillsWith = brokerOverride: let
     e = flake.inputs.kubenix.evalModules.${system} {
-      module = { imports = [ ./kubenix-config.nix ]; } // {
-        agentSandbox.broker.grafana = { inherit enable; url = "https://example.grafana.net"; };
+      module = { lib, ... }: {
+        imports = [ ./kubenix-config.nix ];
+        agentSandbox.broker = brokerOverride lib;
       };
     };
     cms = e.config.kubernetes.resources.configMaps or { };
   in if cms ? agent-skills then builtins.attrNames cms.agent-skills.data else [ ];
-  hasGrafanaSkill = enable: builtins.elem "scooter-grafana.md" (skillsWith enable);
+  gateProblems = file: gate: override: let
+    shipped = enable: builtins.elem file (skillsWith (override enable));
+  in (if shipped true then [ ] else [ "${file} missing when ${gate} = true" ])
+     ++ (if shipped false then [ "${file} SHIPPED when ${gate} = false (the agent will chase a 404)" ] else [ ]);
   skillProblems =
-    (if hasGrafanaSkill true then [ ] else [ "scooter-grafana.md missing when broker.grafana.enable = true" ])
-    ++ (if hasGrafanaSkill false then [ "scooter-grafana.md SHIPPED when broker.grafana.enable = false (the agent will chase a 404)" ] else [ ]);
+    gateProblems "scooter-grafana.md" "broker.grafana.enable"
+      (enable: lib: { grafana = { enable = lib.mkForce enable; url = "https://example.grafana.net"; }; })
+    ++ gateProblems "scooter-airtable.md" "broker.airtable.enable"
+      (enable: lib: { airtable.enable = lib.mkForce enable; });
 
   # IMMUTABLE-JOB GUARD. A Job's spec.template CANNOT be patched, so re-applying a
   # CHANGED deploy-time Job under a FIXED name is rejected by the apiserver ("field is
@@ -378,8 +390,8 @@ let
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 
-  allProblems = ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  allProblems = ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

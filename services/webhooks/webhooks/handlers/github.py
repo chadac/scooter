@@ -11,10 +11,10 @@ import httpx
 import hashlib
 import hmac
 import logging
-import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from scooter_webhooks_lib import resources
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
@@ -102,16 +102,10 @@ def _link_variants(res_type: str, res_id: str) -> list[tuple[str, str]]:
     Links are WRITTEN by the agent through agent-host's /links as
     ("pr"|"issue", <html_url>), but this handler asks for
     ("pull_request"|"issue", "owner/repo#N"). Both halves differ, so an exact
-    match never hit and every linked-PR forward was dropped silently. The store
-    is the source of truth; derive its shape here rather than rewriting rows.
+    match never hit and every linked-PR forward was dropped silently. The shape
+    knowledge itself lives in `resources` — every source shares it now (#563).
     """
-    out = [(res_type, res_id)]
-    m = re.fullmatch(r"([^/]+)/([^#]+)#(\d+)", res_id)
-    if m:
-        owner, repo, number = m.groups()
-        kind, path = ("pr", "pull") if res_type == "pull_request" else ("issue", "issues")
-        out.append((kind, f"https://github.com/{owner}/{repo}/{path}/{number}"))
-    return out
+    return resources.link_variants("github", res_type, res_id)
 
 
 async def _resolve_conversation(res_type: str, res_id: str) -> str | None:
