@@ -25,7 +25,7 @@ class BrokerSettings(ScooterBaseSettings):
     github_app_installation_id: int = 0
     github_token: str = ""
 
-    # Slack (static token). GitLab left with its contrib (PR #580).
+    # Slack (static token)
     slack_bot_token: str = ""
 
     # Jira / Atlassian OAuth
