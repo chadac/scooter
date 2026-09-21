@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 /** The subagents (children) of `parentId`, from the session store. `parentId` here is
  *  the store's `currentId` (a local KEY); a subagent's own `parentId` is a SERVER id,
  *  so resolve one to the other before matching — a bare comparison returns [], which
- *  hides the Subagents tab entirely rather than showing it empty. Why: PR #558. */
+ *  hides the Subagents tab entirely rather than showing it empty. Why: PR #568. */
 export function subagentsOf(sessions: Session[], parentId: string | undefined): Session[] {
   if (!parentId) return [];
   const current = sessions.find((s) => s.id === parentId);

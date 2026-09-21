@@ -127,7 +127,7 @@ const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
 
 /** The id the SERVER knows this conversation by. Match anything server-owned (list
  *  membership, a subagent's `parentId`) against THIS, never `id` — `id` is a local
- *  key that for a chat started in this tab is never the server's. Why: PR #558. */
+ *  key that for a chat started in this tab is never the server's. Why: PR #568. */
 export const serverKeyOf = (s: Pick<Session, "id" | "serverId">): string => s.serverId ?? s.id;
 
 /** Do two Session objects carry the same rendered state? Used to REUSE the existing
@@ -395,7 +395,7 @@ export const sessionStore = {
     // upsert with `?? existing` would CLOBBER the poll-populated sources (`[] ?? x === []`),
     // erasing the sidebar provider icon (the order-dependent e2e flake). So a non-authoritative
     // upsert keeps the existing sources/links and lets the poll/snapshot own them. Why: PR #452.
-    // It ALSO gates the prune below: only a full-list read can say a row is GONE. Why: PR #558.
+    // It ALSO gates the prune below: only a full-list read can say a row is GONE. Why: PR #568.
     opts?: { sourcesAuthoritative?: boolean },
   ) {
     const authoritative = opts?.sourcesAuthoritative ?? true;
@@ -490,7 +490,7 @@ export const sessionStore = {
     let sessions = [...byId.values()].filter((s) => {
       if (serverIds.has(serverKeyOf(s))) return true;
       // Absence is only evidence in a FULL-list read; a one-row upsert implies nothing
-      // about rows it never mentioned. Why: PR #558.
+      // about rows it never mentioned. Why: PR #568.
       if (!authoritative) return true;
       if (s.parentId) return false; // an ended subagent — prune it
       return !isPristine(s) || s.id === state.currentId;
@@ -522,7 +522,7 @@ export const sessionStore = {
     // every few seconds and would otherwise re-render on every tick.
     // Compare via sameSession, NOT a hand-listed subset of fields: any field left out of
     // this check is a field whose updates get silently discarded (that dropped every
-    // status-only change, freezing the sidebar dots). Why: PR #558.
+    // status-only change, freezing the sidebar dots). Why: PR #568.
     const unchanged =
       pendingSelect === state.pendingSelect &&
       currentId === state.currentId &&
@@ -757,7 +757,7 @@ export interface SidebarRow {
  *  the children are hidden and the parent carries `childCount` (so the UI can show
  *  "▸ N"). With no activeId, every parent is expanded. */
 export function nestSubagents(sessions: Session[], activeId?: string): SidebarRow[] {
-  // Index by SERVER id: `parentId` is server-owned, `id` is not. Why: PR #558.
+  // Index by SERVER id: `parentId` is server-owned, `id` is not. Why: PR #568.
   const byServerId = new Map<string, Session>();
   for (const s of sessions) byServerId.set(serverKeyOf(s), s);
   const childrenOf = new Map<string, Session[]>();

@@ -19,7 +19,7 @@
  * the same merge the 10s poll uses. A single-row `upsert` carries no information about
  * rows it does not mention, but the merge treated absence as "this subagent ended" and
  * evicted EVERY subagent on each unrelated frame — so subagents flickered out of the
- * sidebar and came back on the next poll. Why: PR #558.
+ * sidebar and came back on the next poll. Why: PR #568.
  */
 
 import { test, expect, assertMatchesServer } from "./fixtures.js";
