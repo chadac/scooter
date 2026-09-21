@@ -181,17 +181,8 @@ class SandboxK8s:
         return PodRef(name=name, namespace=self.ns)
 
     # --- image skew ---------------------------------------------------------
-    #
-    # A Sandbox CR is broker-generated per conversation, NOT part of the applied
-    # platform manifests, so a `kubectl apply` of an upgrade rolls every Deployment
-    # and leaves every live Sandbox on the image tag it was BORN with. The new
-    # agent-host then drives an old sandbox and every run is dead on arrival. Nothing
-    # re-rendered the spec, so suspend/resume cycled the pod back onto the SAME old
-    # image — the documented recovery didn't recover. Why: issue #560.
-    #
-    # So every path that brings a Sandbox to Running goes through here: reconcile the
-    # image first, and when the pod is already up on a stale one, CYCLE it (a spec
-    # patch alone does not restart a running pod).
+    # Nothing re-renders a Sandbox CR, so an upgrade leaves live ones on the image
+    # they were born with. EVERY path to Running must reconcile it. Why: PR #565.
     def _run_on_current_image(self, name: str, resources: dict | None) -> None:
         """Bring `name` to Running on the deployment's current sandbox image, applying
         `resources` if given. One call is enough to adopt a new image — callers never
@@ -241,10 +232,9 @@ class SandboxK8s:
                 image=self.deploy.sandbox_image if stale else None,
             )
         if stale and was_running:
-            # The pod is already up on the old image; patching the template does not
-            # restart it. Drop it and wait for it to actually GO before resuming —
-            # flipping straight back can be coalesced by the controller into no
-            # restart at all, which is how one suspend/resume changed nothing.
+            # A template patch does not restart a running pod. Wait for the pod to GO
+            # before resuming: the controller coalesces an immediate flip-back into no
+            # restart at all. Why: PR #565.
             self._set_operating_mode(name, "Suspended")
             self._await_pod_gone(name)
 
@@ -274,8 +264,7 @@ class SandboxK8s:
 
     def _await_pod_gone(self, name: str, timeout_s: float = 60.0, poll_s: float = 1.5, clock=time) -> None:
         """Block until the Sandbox's pod is gone (or the deadline passes). Timing out is
-        logged, not raised: resuming onto a pod that outlived the wait is no worse than
-        today's behavior, while failing the call would take the conversation down."""
+        logged, not raised — failing here would take the conversation down. PR #565."""
         deadline = clock.monotonic() + timeout_s
         while True:
             if self._pod_gone(name):

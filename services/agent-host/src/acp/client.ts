@@ -107,12 +107,9 @@ export interface AcpClient {
    *  process is alive). An in-process fake reports alive until close(). */
   isAlive(): boolean;
 
-  /** The agent subprocess's most recent stderr lines (oldest first), if this client
-   *  has a subprocess to read them from. The provider writes its own failure
-   *  diagnostics here (the claude-sdk-provider's `[sdk] prompt: query stream error`
-   *  line carries the CLI's `[ede_diagnostic]` string), and that is the only place
-   *  the real cause of a dead-on-arrival run exists — ACP itself reports nothing.
-   *  Optional: an in-process fake client has no subprocess. Why: issue #560. */
+  /** The agent subprocess's most recent stderr lines (oldest first). The ONLY place a
+   *  dead-on-arrival run's cause exists — ACP reports nothing for a run that never
+   *  spoke. Optional: an in-process fake has no subprocess. Why: PR #565. */
   recentStderr?(): string[];
 
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;

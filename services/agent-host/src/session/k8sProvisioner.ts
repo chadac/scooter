@@ -190,13 +190,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   };
 
   // --- image skew ---------------------------------------------------------
-  //
-  // A Sandbox CR is rendered ONCE, at conversation-create time, and nothing
-  // re-renders it: a platform upgrade rolls every Deployment but leaves each live
-  // Sandbox on the image tag it was born with. The new agent-host then drives an old
-  // sandbox and every run is dead on arrival. Worse, suspend/resume recreated the pod
-  // from the UNCHANGED spec, so the documented recovery recovered nothing.
-  // Why: issue #560. Mirrored in broker/sandbox/k8s.py (the control-plane owner).
+  // Nothing re-renders a Sandbox CR, so an upgrade leaves live ones on the image they
+  // were born with. EVERY path to Running must reconcile it. Mirrored in
+  // broker/sandbox/k8s.py (the control-plane owner). Why: PR #565.
 
   /** The sandbox container's image when it differs from the deployment's current one
    *  (i.e. the stale ref being replaced), else undefined. An unset image on either
@@ -261,15 +257,14 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
       );
       if (wasRunning) {
-        // Patching the template does NOT restart a running pod, so drop it — and WAIT
-        // for it to actually go. Flipping straight back to Running can be coalesced by
-        // the controller into no restart at all, which is how one cycle changed nothing.
+        // A template patch does not restart a running pod. Wait for the pod to GO
+        // before resuming: the controller coalesces an immediate flip-back into no
+        // restart at all. Why: PR #565.
         await setOperatingMode(ref, "Suspended");
         const deadline = Date.now() + POD_GONE_TIMEOUT_MS;
         while (!(await podGone(ref).catch(() => false))) {
           if (Date.now() > deadline) {
-            // Not fatal: resuming onto a pod that outlived the wait is no worse than
-            // the old behavior, while failing here would take the conversation down.
+            // Not fatal — failing here would take the conversation down. PR #565.
             log.warn("sandbox pod did not terminate before the deadline; resuming anyway", {
               sandbox: ref.name,
               timeout_ms: POD_GONE_TIMEOUT_MS,

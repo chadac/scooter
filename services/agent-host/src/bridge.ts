@@ -227,12 +227,9 @@ export function clarifyRunError(raw: string): string {
 const DIAGNOSTIC_MAX = 300;
 
 /** Pick the line from an agent subprocess's stderr tail that explains a run which
- *  produced nothing. Preference order matters: `[ede_diagnostic]` is the CLI's own
- *  "the turn stalled holding a permission prompt" signature (see
- *  claude-sdk-provider/src/toolPolicy.ts) and is far more specific than a generic
- *  error line, so it wins even when a later line also matches. Undefined when the
- *  tail holds nothing diagnostic — the message then just omits the clause.
- *  Why: issue #560. */
+ *  produced nothing. `[ede_diagnostic]` (the CLI's stalled-permission-prompt
+ *  signature — see claude-sdk-provider/src/toolPolicy.ts) wins over a generic error
+ *  line even when a later line also matches. Why: PR #565. */
 export function providerDiagnostic(lines: readonly string[] | undefined): string | undefined {
   if (!lines?.length) return undefined;
   const clean = lines.map((l) => l.trim()).filter(Boolean);
@@ -244,14 +241,9 @@ export function providerDiagnostic(lines: readonly string[] | undefined): string
 }
 
 /** The user-facing text for a dead-on-arrival run (no ACP activity before the
- *  deadline).
- *
- *  This used to assert ONE cause ("this usually means a model/credential error"),
- *  which sent a real outage's diagnosis down the wrong path for hours while the
- *  token was fine: the actual cause was a sandbox image left behind by a platform
- *  upgrade, offering a tool surface the new provider denies. `no_activity_timeout`
- *  has several causes and the message must not pick one — it names the candidates
- *  and quotes the provider's own diagnostic when we have it. Why: issue #560. */
+ *  deadline). `no_activity_timeout` has SEVERAL causes, so this must name the
+ *  candidates rather than assert one — asserting credentials cost hours of a real
+ *  outage's diagnosis while the token was fine. Why: PR #565. */
 export function deadOnArrivalMessage(diagnostic?: string): string {
   return (
     "The agent didn't respond — it started but produced nothing. This has several " +
@@ -1088,10 +1080,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // LOUD: the RUN_ERROR below tells the USER to check these logs, so this must be
         // in them. Without it a wedged-then-retried run leaves no trace at all — the
         // only evidence is a "prompt: sending" with no matching "returned".
-        // The provider's stderr is the ONLY place the cause exists (ACP reports
-        // nothing for a run that never spoke) — read it before we kill the process.
-        // It is the process's tail, so it may predate this run; the message says
-        // "last diagnostic" rather than claiming it belongs to this one.
+        // Read the provider's stderr BEFORE we kill the process. It is the process's
+        // tail, so it may predate this run — hence "last diagnostic". Why: PR #565.
         const diagnostic = providerDiagnostic(acpClient?.recentStderr?.());
         log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
           run_id: st.runId,
