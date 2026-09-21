@@ -85,6 +85,14 @@
         appKeySecret = { name = "datadog-keys"; key = "DATADOG_APP_KEY"; };
       };
 
+      # Airtable provider: proxies /airtable/* -> https://api.airtable.com with a
+      # personal access token injected, so the agent can read/write bases without
+      # seeing it. The PAT's own scopes + base grants bound what it can reach.
+      airtable = {
+        enable = true;
+        tokenSecret = { name = "airtable-token"; key = "AIRTABLE_TOKEN"; };
+      };
+
       # AWS permissions broker: dynamic, approval-gated STS access per account. The
       # account registry is rendered into a ConfigMap; the broker pod carries a
       # checksum/aws-accounts annotation so editing an account auto-rolls the pod.
