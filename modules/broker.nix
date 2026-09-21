@@ -560,23 +560,11 @@ in
                   { name = "SHARES_PUBLIC_BASE_URL"; value = sharesBaseUrl; }
                 ++ lib.optional (sharesFrameAncestors != "")
                   { name = "SHARES_FRAME_ANCESTORS"; value = sharesFrameAncestors; }
-                ++ lib.optionals (!bcfg.aws.enable && !cfg.sandboxViaBroker) (
-                  # The shares store reads the shared Postgres `broker` DB via the
-                  # AWS_DB_* components (StoreConfig builds the Postgres DSN when a
-                  # db password is set). Those are otherwise emitted only when the
-                  # AWS broker or the sandbox control-plane is on; when shares is the
-                  # ONLY consumer, emit them here so the store resolves to Postgres
-                  # instead of the SQLite dev default (which would silently lose
-                  # shares on restart). The guard is mutually exclusive with the
-                  # other two AWS_DB_* emissions, so no env is declared twice.
-                  [
-                    { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
-                    { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
-                    { name = "AWS_DB_NAME"; value = "broker"; }
-                    { name = "AWS_DB_USER"; value = "broker"; }
-                    { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
-                  ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
-                )
+                  # NOTE: shares also reads the shared Postgres `broker` DB via the
+                  # AWS_DB_* components, and used to emit them here when it was their
+                  # only consumer. The sandbox control plane is now unconditional and
+                  # always emits them below, so emitting them here too would declare
+                  # the same env twice.
                 ) ++ lib.optionals bcfg.aws.enable ([
                   { name = "AWS_ENABLED"; value = "true"; }
                   { name = "AWS_REGION"; value = bcfg.aws.region; }
@@ -605,28 +593,36 @@ in
                   { name = "FGA_STORE_ID"; value = bcfg.aws.fga.storeId; }
                   { name = "FGA_AUTHORIZATION_MODEL_ID"; value = bcfg.aws.fga.authorizationModelId; }
                 ])
-                # Control-plane move (cfg.sandboxViaBroker): the broker OWNS the
-                # per-conversation Sandbox lifecycle + size, so it gets the
-                # provisioning config that previously lived on the agent-host
-                # (image, overlay, .scooter config-files CM, token audiences, extra
-                # env, public URL). Mirrors the agent-host env → the broker's
-                # sandbox_* settings (pydantic uppercases the field). Gated so the
-                # default (agent-host owns lifecycle) adds NO broker env.
-                # See services/broker/broker/sandbox/config.py + todo/CONTROL_PLANE_REDESIGN.md.
-                ++ lib.optionals cfg.sandboxViaBroker ([
-                  { name = "SANDBOX_LIFECYCLE_ENABLED"; value = "true"; }
+                # The broker OWNS the per-conversation Sandbox lifecycle + size, so it
+                # carries the provisioning config (image, pull policy, runtime class,
+                # overlay, .scooter + config-files CMs, token audiences, extra env,
+                # public URL). These map to the broker's sandbox_* settings (pydantic
+                # uppercases the field name). See services/broker/broker/sandbox/config.py.
+                ++ ([
                   # The control caller(s) allowed to drive ensure/suspend/resume/end
                   # — the agent-host SA (a sandbox SA is only ever allowed its OWN size).
                   { name = "SANDBOX_CONTROL_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
                   { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
+                  # Same pullPolicy the platform's own Deployments use. A side-loaded
+                  # cluster (kind/k3s/k3d) sets IfNotPresent because there is no registry
+                  # behind the image; "Always" there is an ImagePullBackOff per sandbox.
+                  { name = "SANDBOX_PULL_POLICY"; value = cfg.pullPolicy; }
                   # The deployment default size (tier 2 in the broker's resolve_resources:
                   # conversation override → this → PLATFORM_DEFAULT). Rendered from the
                   # preset marked `default = true` → its {cpu, memory}. Requests == limits
                   # (Guaranteed QoS) for all presets.
                   # Empty when the deployment offers no presets — the broker then falls
                   # through to PLATFORM_DEFAULT rather than being handed a size.
+                  # sandboxResources (INTERNAL, set only by modules/testing.nix) WINS over
+                  # the preset default: the test size is deliberately Burstable (near-zero
+                  # requests, real limits) so several sandboxes co-schedule on a 4-vCPU CI
+                  # runner, and a preset cannot express that — presets are requests == limits
+                  # by construction. Without this the cluster/e2e suites reserve the
+                  # production 2cpu/4Gi per sandbox and a second concurrent conversation
+                  # never schedules.
                   { name = "SANDBOX_DEFAULT_RESOURCES_JSON";
-                    value = if cfg.defaultSandboxSizeName == null then "" else
+                    value = if cfg.sandboxResources != null then builtins.toJSON cfg.sandboxResources
+                    else if cfg.defaultSandboxSizeName == null then "" else
                     let
                       preset = cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
                       # gpu is optional; omit the key entirely when null so the broker
@@ -652,7 +648,18 @@ in
                   { name = "SANDBOX_DEFAULT_SIZE_NAME";
                     value = if cfg.defaultSandboxSizeName == null then "" else cfg.defaultSandboxSizeName;
                   }
-                ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
+                ] ++ lib.optional (cfg.sandboxRuntimeClass != null)
+                  # Cgroup-delegating runtime (e.g. crun) for the sandbox's systemd PID 1,
+                  # so it runs NON-privileged in its own cgroup namespace. Without it the
+                  # sandbox churns the host /kubepods.slice tree — node instability, and a
+                  # host-session logout on a workstation node. See PR #255.
+                  { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
+                ++ lib.optional (cfg.deployTools.scooterConfigMap != null)
+                  # A deployment's .scooter CM, mounted at /etc/agent-sandbox/scooter —
+                  # where programs.injectedTools / programs.scooterModule look for the
+                  # deployment flake (was SCOOTER_CONFIGMAP on the agent-host).
+                  { name = "SANDBOX_SCOOTER_CONFIGMAP"; value = cfg.deployTools.scooterConfigMap; }
+                ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
                   # Extra projected-token audiences a deployment's tools need
                   # (was SCOOTER_TOKEN_AUDIENCES on the agent-host).
                   { name = "SANDBOX_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
@@ -714,13 +721,12 @@ in
         };
       };
     }
-    (lib.mkIf cfg.sandboxViaBroker {
-      # Control-plane move: the broker OWNS per-conversation Sandbox provisioning
-      # (Sandbox + SA + PVC + CM CRUD), the RBAC the agent-host sheds. Namespaced
-      # Role bound to the agent-broker SA. Gated on cfg.sandboxViaBroker so the
-      # default (agent-host owns lifecycle) renders NO new Role/binding for the
-      # broker. (The broker keeps its cluster tokenreviews + the AWS accounts-CM
-      # `get` from its other roles — this is additive/supersedes that get.)
+    ({
+      # The broker OWNS per-conversation Sandbox provisioning (Sandbox + SA + PVC + CM
+      # CRUD) — this is the RBAC the agent-host sheds; it keeps only pods/exec.
+      # Namespaced Role bound to the agent-broker SA. (The broker keeps its cluster
+      # tokenreviews + the AWS accounts-CM `get` from its other roles — this is
+      # additive/supersedes that get.)
       roles.agent-broker-sandbox = {
         metadata = { name = "agent-broker-sandbox"; namespace = cfg.namespace; };
         rules = [

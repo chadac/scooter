@@ -29,7 +29,6 @@ import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
-import { createK8sProvisioner } from "./session/k8sProvisioner.js";
 import { createBrokerProvisioner, type BrokerProvisioner } from "./session/brokerProvisioner.js";
 import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
@@ -111,7 +110,6 @@ const transcriptRecorder = createRecorder(process.env.TRANSCRIPT_RECORD_DIR);
 export interface AgentHostConfig {
   port: number;
   namespace: string;
-  sandboxImage: string;
   /** EPHEMERAL per-pod volume: uploaded ASSETS and goose state. Backed by an emptyDir in
    *  cluster, so it does NOT survive a restart. The event log used to live here too (and
    *  its durable copy on an NFS mirror) — both are now Postgres. Assets have not moved
@@ -209,7 +207,6 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
   return {
     port: Number(process.env.PORT ?? 8080),
     namespace: process.env.NAMESPACE ?? "agent-sandbox",
-    sandboxImage: process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest",
     // LOCAL_STATE_PATH is an EPHEMERAL CACHE of the conversations this pod is serving —
     // an emptyDir in cluster, wiped on every restart. It is NOT the durable record, and
     // nothing that answers "which conversations exist?" may depend on it (see
@@ -425,89 +422,34 @@ function bedrockEnv(): Record<string, string> {
 export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
-  // Provisioner selection: fake (local UI) -> noop; the broker control plane when
-  // SANDBOX_VIA_BROKER=1 + BROKER_URL set (the agent-host calls the broker's lifecycle
-  // API instead of touching k8s — see todo/CONTROL_PLANE_REDESIGN.md); else the legacy
-  // in-agent-host k8s provisioner (kept until PR1 St6 as a safe rollback).
+  // Provisioner: fake (local UI) -> noop; otherwise the BROKER, which owns the
+  // Sandbox/SA/PVC lifecycle. There is exactly one provisioning entrypoint and it
+  // writes the Sandbox CR; the agent-host's only direct k8s use is pods/exec.
   const brokerLifecycleUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
-  const useBrokerProvisioner = process.env.SANDBOX_VIA_BROKER === "1" && brokerLifecycleUrl !== "";
-  // Keep a typed handle to the broker provisioner (it ALSO exposes the size-spec
-  // ops getSize/setSize used by the sandbox-resize tools). null unless the broker
-  // lifecycle path is on — a fake/local or legacy-k8s sandbox has no broker size spec.
-  const brokerProvisioner: BrokerProvisioner | null =
-    !config.fakeSandbox && useBrokerProvisioner
-      ? createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl })
-      : null;
-  const provisioner = config.fakeSandbox
-    ? createNoopProvisioner()
-    : brokerProvisioner
-    ? brokerProvisioner
-    : createK8sProvisioner({
-        namespace: config.namespace,
-        sandboxImage: config.sandboxImage,
-        // imagePullPolicy for the per-conversation sandbox pod. Default "Always"
-        // (registry-backed); set SANDBOX_PULL_POLICY=IfNotPresent on a side-loaded
-        // local cluster (kind/k3s) where "Always" fails with ImagePullBackOff.
-        sandboxPullPolicy:
-          (process.env.SANDBOX_PULL_POLICY as "Always" | "IfNotPresent" | "Never") || undefined,
-        // When the AWS permissions broker is on, mount its account-registry
-        // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
-        awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,
-        // The sandbox is ALWAYS the NixOS systemd-PID-1 image now (the legacy
-        // generic image was retired): always provision privileged + tmpfs /run,/tmp
-        // so systemd PID 1 boots.
-        systemdImage: true,
-        // RuntimeClass for the sandbox pod (SANDBOX_RUNTIME_CLASS, e.g. "crun"). A
-        // cgroup-delegating runtime gives systemd PID 1 a writable cgroup subtree in
-        // the pod's OWN private cgroup namespace, so the sandbox runs NON-privileged
-        // (privileged forces the host cgroup ns → the sandbox churns the host
-        // /kubepods.slice tree → node instability / host session logout). Unset = the
-        // cluster default runtime.
-        sandboxRuntimeClass: process.env.SANDBOX_RUNTIME_CLASS || undefined,
-        // The sandbox image ALWAYS has the local-overlay Nix store on, so ALWAYS mount a
-        // disk-backed PVC upper at /nix/.scooter-rw — the overlay's writable layer, holding
-        // runtime nix builds (tool installs, re-converge) + persisting them across
-        // suspend/resume. Default ON; SANDBOX_OVERLAY_STORE=0 opts out (ephemeral emptyDir
-        // upper — the overlay still works, writes just don't persist).
-        // Sandbox pod sizing. Default (unset) = the provisioner's Guaranteed 2cpu/4Gi.
-        // SANDBOX_RESOURCES is a JSON {requests:{cpu,memory},limits:{cpu,memory}} —
-        // set by the TEST platform to small values: on a 4-vCPU CI runner the 2cpu
-        // Guaranteed default makes a SECOND concurrent sandbox unschedulable
-        // (Insufficient cpu -> Pending forever), which failed exactly the one e2e
-        // test that holds two live conversations at once.
-        sandboxResources: process.env.SANDBOX_RESOURCES
-          ? (JSON.parse(process.env.SANDBOX_RESOURCES) as {
-              requests?: { cpu?: string; memory?: string };
-              limits?: { cpu?: string; memory?: string };
-            })
-          : undefined,
-        overlayStore: (process.env.SANDBOX_OVERLAY_STORE || "1") !== "0",
-        overlayStorage: process.env.SANDBOX_OVERLAY_STORAGE || undefined,
-        // Deployment-supplied tool injection (generic — the platform doesn't know
-        // what's in these; a deployment sets them to its .scooter
-        // ConfigMap, the token audiences its tools need, and their env vars).
-        // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (JSON —
-        // lossless for multi-line values like NIX_CONFIG; legacy k=v;k=v accepted).
-        scooterConfigMap: process.env.SCOOTER_CONFIGMAP || undefined,
-        // A ConfigMap of deployment config FILES (filename -> contents) mounted as a
-        // flat dir at /etc/agent-sandbox/config. File-based (not SCOOTER_ENV) so
-        // multi-line config survives the sandbox CRD controller's newline mangling.
-        configFilesConfigMap: process.env.SCOOTER_CONFIG_FILES_CONFIGMAP || undefined,
-        extraTokenAudiences: (process.env.SCOOTER_TOKEN_AUDIENCES || "")
-          .split(",").map((s) => s.trim()).filter(Boolean),
-        extraEnv: parseScooterEnv(process.env.SCOOTER_ENV),
-        // Public chat UI base URL → each sandbox gets CONVERSATION_URL for its own
-        // conversation (so the agent can share a link, e.g. to approve an AWS req).
-        publicUrl: process.env.PUBLIC_URL || undefined,
-      });
-    // WHICH provisioner did we get? A noop provisioner silently creates no sandbox, so
-    // every turn hangs with nothing logged — that cost a long investigation on k3d.
-    // Say it once at boot so the answer is in the first page of any log.
-    hostLog.info("sandbox provisioner selected", {
-      provisioner: config.fakeSandbox ? "noop" : brokerProvisioner ? "broker" : "k8s",
-      fake_sandbox: config.fakeSandbox,
-      in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
-    });
+  if (!config.fakeSandbox && brokerLifecycleUrl === "") {
+    // Fail at BOOT, not at the first turn. Without a broker there is nothing that can
+    // create a sandbox, and the symptom (every turn hangs with no sandbox) is one of
+    // the most expensive failures to diagnose from the outside.
+    throw new Error(
+      "BROKER_URL is not set: the broker provisions sandboxes, so the agent-host cannot " +
+        "run without it. Set agentSandbox.broker.enable = true (or SANDBOX_FAKE=1 for a local UI).",
+    );
+  }
+  // The broker provisioner ALSO exposes the size-spec ops (getSize/setSize/getSizes)
+  // used by the sandbox-resize tools. null only for a fake sandbox, which has no
+  // broker and therefore no size spec.
+  const brokerProvisioner: BrokerProvisioner | null = config.fakeSandbox
+    ? null
+    : createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl });
+  const provisioner = brokerProvisioner ?? createNoopProvisioner();
+  // A noop provisioner silently creates no sandbox, so every turn hangs with nothing
+  // logged — that cost a long investigation on k3d. Say it once at boot so the answer
+  // is in the first page of any log.
+  hostLog.info("sandbox provisioner selected", {
+    provisioner: config.fakeSandbox ? "noop" : "broker",
+    fake_sandbox: config.fakeSandbox,
+    in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
+  });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
   // of running them locally in this pod. On a REAL deployment a failure here is
@@ -1007,7 +949,8 @@ export async function main(
       : undefined;
 
   // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources) —
-  // wired ONLY on the broker path (the broker owns + applies the size). The MCP
+  // present on every real deployment; absent only for a fake sandbox, which has no
+  // broker to own the size. The MCP
   // `conv` param is the FULL conversationId (= threadId); the broker keys the size
   // spec by the SHORT id (the same id ensure/resume/create use), so map through
   // shortId() before every broker size call — otherwise the tool would write a spec

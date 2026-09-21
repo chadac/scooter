@@ -144,20 +144,6 @@ in
         cluster (`kubectl get runtimeclass`).
       '';
     };
-    sandboxViaBroker = mkOption {
-      type = types.bool;
-      default = false;
-      description = ''
-        Route the sandbox LIFECYCLE (create/suspend/resume/destroy + sizing) through
-        the BROKER instead of the agent-host touching k8s directly (the control-plane
-        move — see todo/CONTROL_PLANE_REDESIGN.md). When true:
-          - the agent-host runs with SANDBOX_VIA_BROKER=1 and its RBAC collapses to
-            pods/exec only (the broker owns Sandbox/SA/PVC/CM CRUD),
-          - the broker gets the provisioning RBAC + the deployment provisioning config
-            (image, overlay, .scooter CM, default size, …) as its own env.
-        Default false keeps the legacy in-agent-host k8s provisioner (rollback path).
-      '';
-    };
     sandboxSizes = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
@@ -904,39 +890,32 @@ in
         };
       };
 
-      # The agent-host provisions per-conversation Sandboxes/SAs/PVCs and execs
-      # into sandbox pods, so it needs broad-but-namespaced RBAC.
-      #
-      # Control-plane move (cfg.sandboxViaBroker): the broker owns Sandbox/SA/PVC/CM
-      # CRUD, so the agent-host RBAC COLLAPSES to `pods/exec` only. Default false
-      # keeps ALL current rules (the legacy in-agent-host k8s provisioner).
+      # The broker owns Sandbox/SA/PVC CRUD, so the agent-host holds NO provisioning
+      # RBAC: it execs into sandbox pods, reads them to resolve a ready pod, and owns
+      # the Conversation CRs. Anything beyond that belongs to the broker's own Role
+      # (agent-broker-sandbox in modules/broker.nix).
       roles.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         rules =
-          # The one rule kept in BOTH paths: exec is how the ExecBackend runs the
-          # agent's commands in the pod. `get` AND `create`: the WebSocket exec
-          # stream (client-node, kubectl) opens with an HTTP GET upgrade, which RBAC
-          # checks as `get pods/exec` — `create` alone passes `can-i create
-          # pods/exec` but the real exec 403s ("cannot get resource pods/exec").
-          let execRule = {
-            apiGroups = [ "" ];
-            resources = [ "pods/exec" ];
-            verbs = [ "get" "create" ];
-          };
-          in if cfg.sandboxViaBroker then [ execRule ] else [
+          [
             {
-              apiGroups = [ "agents.x-k8s.io" ];
-              resources = [ "sandboxes" ];
-              verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
-            }
-            {
+              # exec is how the ExecBackend runs the agent's commands in the pod.
+              # `get` AND `create`: the WebSocket exec stream (client-node, kubectl)
+              # opens with an HTTP GET upgrade, which RBAC checks as `get pods/exec` —
+              # `create` alone passes `can-i create pods/exec` but the real exec 403s
+              # ("cannot get resource pods/exec").
               apiGroups = [ "" ];
-              # configmaps: destroy() reaps the legacy per-conversation module ConfigMap
-              # that older clusters still carry. Drop the verb once none remain.
-              resources = [ "serviceaccounts" "persistentvolumeclaims" "pods" "configmaps" ];
-              verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+              resources = [ "pods/exec" ];
+              verbs = [ "get" "create" ];
             }
-            execRule
+            {
+              # READ-ONLY on pods. Not provisioning: exec/resolveReadyPod (exec/k8sExec.ts)
+              # lists the sandbox's pods and waits for one that is Running+Ready before
+              # attaching. Without this every exec fails at pod resolution, not at exec.
+              apiGroups = [ "" ];
+              resources = [ "pods" ];
+              verbs = [ "get" "list" "watch" ];
+            }
             {
               # Multi-replica: the agent-host WATCHES Conversations (ownershipGuard fencing)
               # and CREATES one per new conversation (conversationRegistry) so the controller
@@ -1085,12 +1064,6 @@ in
                   # unconditionally (harmless single-replica); the StatefulSet gives it
                   # the stable ordinal name (agent-host-<n>).
                   { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
-                  { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
-                  # imagePullPolicy for the per-conversation sandbox pods — mirror the
-                  # platform pullPolicy (IfNotPresent for side-loaded kind/k3s, Always
-                  # for a registry). Without this the provisioner defaults to "Always",
-                  # which fails ImagePullBackOff on a local cluster with no registry.
-                  { name = "SANDBOX_PULL_POLICY"; value = cfg.pullPolicy; }
                   # The trusted SA(s) the agent-host lets set a conversation `owner`
                   # on /agui (verified via TokenReview) — COMMA-SEPARATED. The webhooks
                   # service always; the scheduler too when enabled (both spawn
@@ -1123,13 +1096,6 @@ in
                   { name = "TUNNEL_TRACE"; value = "1"; }
                 ++ [
                 ]
-                ++ lib.optional (cfg.sandboxRuntimeClass != null)
-                  # RuntimeClass for the sandbox pod (e.g. crun) — a cgroup-delegating
-                  # runtime so the sandbox's systemd PID 1 runs NON-privileged in its
-                  # own private cgroup namespace (privileged forces the host cgroup ns
-                  # → the sandbox churns the host /kubepods.slice tree → node instability
-                  # / host logout). Unset ⇒ cluster default runtime.
-                  { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
                 ++ lib.optional (cfg.retentionMaxAgeMs > 0)
                   # Auto-delete unstarred conversations inactive past the window
                   # (0/default = off, so absent unless a deployment opts in).
@@ -1218,9 +1184,6 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; }
-                ++ lib.optional (cfg.sandboxResources != null)
-                  # Per-sandbox pod sizing (JSON) — see the sandboxResources option.
-                  { name = "SANDBOX_RESOURCES"; value = builtins.toJSON cfg.sandboxResources; }
                 ++ lib.optionals cfg.agent.remoteAgent.enable [
                   # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
                   # The HS256 signing key for owner-bound join tokens (one server-side secret).
@@ -1240,41 +1203,33 @@ in
                   # ownership, and sends every ACP frame. Without this there is NO BYO path and every
                   # run takes the cloud floor.
                   { name = "BYOC_CONTROLLER_URL"; value = "http://byoc-controller.${cfg.namespace}.svc.cluster.local:8080"; }
-                ++ lib.optionals cfg.broker.aws.enable [
-                  # AWS permissions broker: the agent-host mounts the account
-                  # ConfigMap into each sandbox, and resolves approvals against the
-                  # broker (BROKER_URL + the projected SA token).
-                  { name = "AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
-                ] ++ lib.optionals (cfg.broker.aws.enable || cfg.sandboxViaBroker) [
-                  # BROKER_URL + the projected broker token: needed by the AWS
-                  # approve/deny relay AND by the sandbox-lifecycle broker client
-                  # (SANDBOX_VIA_BROKER). Emit once under either flag so the two
-                  # paths don't double-declare the same env keys.
-                  { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
+                ++ [
+                  # BROKER_URL + the projected broker token. Unconditional: the broker
+                  # is what provisions sandboxes (the agent-host's provisioner is an
+                  # HTTP client of it), so an agent-host that cannot reach the broker
+                  # has no sandboxes at all. Also used by the AWS approve/deny relay.
+                  # The agent-host REFUSES TO BOOT without BROKER_URL — see index.ts.
+                  #
+                  # A deployment with the broker off would render a manifest whose
+                  # agent-host points at a Service that does not exist, and every
+                  # conversation would hang with no sandbox. Fail at EVAL instead.
+                  # kubenix has no NixOS `assertions`, hence a throw in a value that
+                  # the agent-host Deployment always reads.
+                  { name = "BROKER_URL"; value =
+                      if cfg.broker.enable
+                      then "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"
+                      else throw ("agentSandbox.broker.enable must be true: the broker provisions "
+                                  + "every sandbox (the agent-host no longer talks to the Sandbox API). "
+                                  + "Set agentSandbox.broker.enable = true.");
+                  }
                   { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
-                ] ++ lib.optionals cfg.sandboxViaBroker [
-                  # Control-plane move: route the sandbox LIFECYCLE through the broker
-                  # (the agent-host's provisioner becomes an HTTP client). Gated so
-                  # the default (legacy in-agent-host k8s provisioner) is unchanged.
-                  { name = "SANDBOX_VIA_BROKER"; value = "1"; }
-                ] ++ lib.optionals (cfg.deployTools.scooterConfigMap != null) [
-                  # Deployment tool injection (generic): the agent-host mounts the
-                  # deployment's .scooter ConfigMap + projects the named token
-                  # audiences + sets the deployment env on each sandbox.
-                  { name = "SCOOTER_CONFIGMAP"; value = cfg.deployTools.scooterConfigMap; }
-                ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
-                  { name = "SCOOTER_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
-                ++ lib.optional (cfg.deployTools.env != { })
-                  # JSON, not `k=v;k=v` — a value with a newline (a multi-line
-                  # NIX_CONFIG), a `;`, or a `=` cannot survive the flat encoding
-                  # (it splits/mangles, and the parser's trim() ate the newlines).
-                  # toJSON round-trips every value losslessly into the pod env.
-                  { name = "SCOOTER_ENV"; value = builtins.toJSON cfg.deployTools.env; }
-                ++ lib.optional (cfg.deployTools.configFiles != { })
-                  # The agent-host mounts this ConfigMap (filename -> contents) as a
-                  # flat dir at /etc/agent-sandbox/config in each sandbox. File-based
-                  # (not env) so multi-line config survives the CRD controller.
-                  { name = "SCOOTER_CONFIG_FILES_CONFIGMAP"; value = "deploy-config-files"; }
+                ]
+                # NOTE: the deployment's sandbox-shaping env (AWS_ACCOUNTS_CONFIGMAP,
+                # SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES, SCOOTER_ENV,
+                # SCOOTER_CONFIG_FILES_CONFIGMAP, SANDBOX_PULL_POLICY,
+                # SANDBOX_RUNTIME_CLASS, SANDBOX_RESOURCES) is NOT emitted here any
+                # more. It shapes the Sandbox manifest, which only the broker renders —
+                # see the SANDBOX_* block in modules/broker.nix.
                 ++ lib.optionals cfg.observability.otel.enable ([
                   # OTel metrics ON. The OTLP endpoint/headers come from the
                   # OTEL_EXPORTER_OTLP_* env in observability.otel.env (the SDK
@@ -1337,11 +1292,12 @@ in
                 ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                   # Per-model price table -> cost derivation (AGENT_PRICING_FILE).
                   { name = "pricing"; mountPath = "/etc/agent-sandbox/pricing"; readOnly = true; }
-                ++ lib.optional (cfg.broker.aws.enable || cfg.sandboxViaBroker)
-                  # The agent-host's own broker token — used to relay AWS approve/deny
-                  # AND (control-plane move) to authenticate to the broker's sandbox
-                  # lifecycle API. Mounted under either flag.
-                  { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; };
+                ++ [
+                  # The agent-host's own broker token — it authenticates to the broker's
+                  # sandbox lifecycle API with it (and relays AWS approve/deny). Not
+                  # optional: without it the agent-host cannot provision anything.
+                  { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; }
+                ];
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 # Graceful drain on rollout. preStop sleeps briefly so the Service
                 # stops routing NEW traffic to this pod (endpoint removal propagates)
@@ -1371,8 +1327,9 @@ in
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                 { name = "pricing"; configMap.name = "agent-pricing"; }
-              ++ lib.optional (cfg.broker.aws.enable || cfg.sandboxViaBroker)
-                { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; };
+              ++ [
+                { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; }
+              ];
             };
           };
         };
@@ -1391,7 +1348,7 @@ in
         # Deployment config FILES (filename -> contents), mounted as a flat dir at
         # /etc/agent-sandbox/config in each sandbox. File-based, so multi-line config
         # (e.g. a nix.conf) survives the sandbox CRD controller's env-var newline
-        # corruption. The agent-host provisioner mounts it (SCOOTER_CONFIG_FILES_CONFIGMAP).
+        # corruption. The broker mounts it (SANDBOX_CONFIG_FILES_CONFIGMAP).
         deploy-config-files = {
           metadata = { name = "deploy-config-files"; namespace = cfg.namespace; };
           data = cfg.deployTools.configFiles;

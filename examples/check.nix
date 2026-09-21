@@ -62,16 +62,34 @@ let
         else [ "broker.env.SHARES_PUBLIC_BASE_URL (should derive from ingress.host)" ]);
 
   # deployTools.configFiles (enabled in the example) must (a) render the
-  # deploy-config-files ConfigMap with the file, and (b) tell the agent-host to
-  # mount it via SCOOTER_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files.
+  # deploy-config-files ConfigMap with the file, and (b) tell the BROKER to mount it
+  # via SANDBOX_CONFIG_FILES_CONFIGMAP — else sandboxes never get the files. It is the
+  # broker, not the agent-host, because the broker is the only thing that renders a
+  # Sandbox manifest (see PR #574).
   hostEnv =
     let ctrs = builtins.attrValues (res.deployments.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
-  cfWired = builtins.any (e: e.name == "SCOOTER_CONFIG_FILES_CONFIGMAP") hostEnv;
+  cfWired = builtins.any (e: e.name == "SANDBOX_CONFIG_FILES_CONFIGMAP") brokerEnv;
   cfHasFile = (res.configMaps.deploy-config-files.data or { }) ? "nix.conf";
   cfProblems =
-    (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
+    (if cfWired then [ ] else [ "broker.env.SANDBOX_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
+
+  # The sandbox-shaping env MUST live on the broker and NOT on the agent-host. This is
+  # the invariant this PR exists to protect: two provisioning entrypoints is how the
+  # manifest silently forked (agent-host honoured pullPolicy/runtimeClass, the broker
+  # did not). If any of these reappears in the agent-host env, someone is rebuilding
+  # the second provisioner.
+  sandboxShapingEnv = [
+    "SANDBOX_IMAGE" "SANDBOX_PULL_POLICY" "SANDBOX_RUNTIME_CLASS" "SANDBOX_RESOURCES"
+    "SCOOTER_CONFIGMAP" "SCOOTER_CONFIG_FILES_CONFIGMAP" "SCOOTER_TOKEN_AUDIENCES" "SCOOTER_ENV"
+    "SANDBOX_VIA_BROKER"
+  ];
+  oneEntrypointProblems =
+    map (n: "host.env.${n} — sandbox-shaping env belongs to the BROKER (the single provisioning entrypoint), not the agent-host")
+      (builtins.filter (n: builtins.any (e: e.name == n) hostEnv) sandboxShapingEnv)
+    ++ (if builtins.any (e: e.name == "SANDBOX_PULL_POLICY") brokerEnv then [ ]
+        else [ "broker.env.SANDBOX_PULL_POLICY (a side-loaded cluster ImagePullBackOffs every sandbox)" ]);
 
   # Rollout-drain topology invariants (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — the fields a
   # seamless rollout depends on. A regression here (reverting to a StatefulSet, dropping the
@@ -261,7 +279,7 @@ let
   # instead, which is stronger than a mention in the example.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
-    "sandboxRuntimeClass" "sandboxViaBroker" "serviceAccountRoleArn"
+    "sandboxRuntimeClass" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
   ];
   uncovered = builtins.filter
@@ -334,18 +352,15 @@ let
   # SIZE-DEFAULT GUARD: exactly one sandboxSizes preset may set `default = true`.
   # kubenix has no NixOS `assertions` option, so that rule is enforced by a `throw` in
   # agentSandbox.defaultSandboxSizeName — and a throw only fires when something READS
-  # the option, which happens in broker mode (where sizes are actually consumed). A
-  # guard that silently stops firing is worse than no guard, so pin both directions
-  # here rather than trusting it.
+  # the option. The broker always reads it now (it is the only provisioner), so the
+  # guard always has teeth. A guard that silently stops firing is worse than no guard,
+  # so pin both directions here rather than trusting it.
   renderSizes = sizes:
     let
       e = flake.inputs.kubenix.evalModules.${system} {
         module = { lib, ... }: {
           imports = [ ./kubenix-config.nix ];
           agentSandbox.sandboxSizes = lib.mkForce sizes;
-          # Broker mode is what reads the resolved default, so the guard only has
-          # teeth here — see the comment above.
-          agentSandbox.sandboxViaBroker = lib.mkForce true;
         };
       };
     in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
@@ -390,8 +405,8 @@ let
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 
-  allProblems = ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is broker-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

@@ -3,9 +3,9 @@
 # Per-conversation resources: a COLD Sandbox carrying a unique ServiceAccount
 # and two PVCs. This is the durable handle for a conversation.
 #
-# Design stage: this file documents the SHAPE the agent-host renders at runtime
-# (the agent-host creates these per conversation via the kube API), and provides
-# a `mkConversation` function the agent-host's provisioner mirrors.
+# This file documents the SHAPE that is rendered at runtime (the BROKER creates these
+# per conversation via the kube API — services/broker/broker/sandbox/manifest.py), and
+# provides a `mkConversation` function that renderer mirrors.
 #
 # WHY cold + not warm-pooled (verified against agent-sandbox source):
 #   - A SandboxClaim cannot override the SA; per-conversation SA must be in the
@@ -62,9 +62,9 @@ let
           containers = [{
             name = "sandbox";
             image = sandboxImage;
-            # Mirror the platform pullPolicy (the agent-host provisioner reads
-            # SANDBOX_PULL_POLICY): "Always" for a registry, "IfNotPresent"/"Never"
-            # for a side-loaded local cluster where "Always" fails ImagePullBackOff.
+            # Mirror the platform pullPolicy (the broker reads SANDBOX_PULL_POLICY):
+            # "Always" for a registry, "IfNotPresent"/"Never" for a side-loaded local
+            # cluster where "Always" fails ImagePullBackOff.
             imagePullPolicy = cfg.pullPolicy;
             resources = sandboxResources;
             ports = [{ containerPort = 8888; }];
@@ -143,6 +143,6 @@ let
   };
 in
 {
-  # Exposed for the agent-host provisioner to mirror, and for tests.
+  # Exposed for the broker's manifest renderer to mirror, and for tests.
   config._module.args.mkConversation = mkConversation;
 }
