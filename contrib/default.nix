@@ -36,6 +36,18 @@ let
       meta = import (./. + "/${dir}/module.nix");
       pyImport = "scooter_contrib_${meta.name}";
       extraDeps = (meta.pythonDeps or (_: [ ])) python3Packages;
+      # Contrib -> contrib, declared PER SERVICE. Allowed and expected: integrations
+      # reference each other (gitlab reads Jira keys). Per service because a flat
+      # list drags the dep into variants that never use it. A CYCLE is an eval-time
+      # infinite recursion, not a runtime bug -- if two contribs ever need each
+      # other, the shared part belongs in a third package. Why: PR #583.
+      contribDepPkgs = map (d: buildContrib d svc) (meta.contribDeps.${svc} or [ ]);
+      # Every contrib dep of ANY of this contrib's services, for the CHECK phase
+      # only. tests/ is shared by both variants, so a webhooks-only test still has
+      # to import in the broker variant -- the same reason the services themselves
+      # are check inputs. Check-only, so this does not widen the runtime closure.
+      checkContribDepPkgs = map (d: buildContrib d svc) (lib.unique
+        (lib.concatMap (s: meta.contribDeps.${s} or [ ]) meta.services));
       # The surface for THIS service, and the module that composes it.
       surface = { broker = scooterBrokerLib; webhooks = scooterWebhooksLib; }.${svc};
       entryModule = { broker = "broker_provider"; webhooks = "webhooks_handler"; }.${svc};
@@ -53,7 +65,7 @@ let
       # backend as an explicit build input.
       build-system = [ python3Packages.hatchling ];
 
-      dependencies = [ python3Packages.fastapi surface ] ++ extraDeps;
+      dependencies = [ python3Packages.fastapi surface ] ++ extraDeps ++ contribDepPkgs;
 
       # Checked in the environment it will actually live in, so a bad import
       # fails this build instead of vanishing at service startup.
@@ -61,12 +73,12 @@ let
 
       # Check-only, so they do NOT enter the runtime closure: the full
       # cross-service suite runs in both variants, neither ships the other.
-      nativeCheckInputs = with python3Packages; [
+      nativeCheckInputs = (with python3Packages; [
         pytestCheckHook
         pytest-asyncio
         broker
         webhooks
-      ];
+      ]) ++ checkContribDepPkgs;
 
       meta.description = "Scooter contrib module: ${meta.name} (${svc})";
     };

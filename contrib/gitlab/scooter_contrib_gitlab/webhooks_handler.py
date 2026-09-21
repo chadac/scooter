@@ -9,7 +9,6 @@ Trigger rules:
 import asyncio
 import hmac
 import logging
-import re
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
@@ -18,6 +17,7 @@ from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_contrib_jira.issue_keys import extract_issue_keys
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from .responses import post_gitlab_comment
@@ -25,10 +25,6 @@ from .responses import post_gitlab_comment
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.gitlab"}
 router = APIRouter()
-
-_JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
-_JIRA_KEY_EXCLUDE_RE = re.compile(r"-0+$")
-
 
 def _verify_signature(body: bytes, token: str) -> bool:
     if not settings.gitlab_webhook_secret:
@@ -43,17 +39,6 @@ def _extract_repo(payload: dict) -> str:
 def _resource_id(repo: str, resource_type: str, iid: int) -> str:
     sep = "!" if resource_type == "merge_request" else "#"
     return f"{repo}{sep}{iid}"
-
-
-def _extract_jira_keys(*texts: str) -> list[str]:
-    keys: list[str] = []
-    seen: set[str] = set()
-    for text in texts:
-        for match in _JIRA_KEY_RE.findall(text):
-            if match not in seen and not _JIRA_KEY_EXCLUDE_RE.search(match):
-                keys.append(match)
-                seen.add(match)
-    return keys
 
 
 async def _infer_conversation_from_jira(
@@ -232,12 +217,12 @@ async def _handle_note(payload: dict):
     # Try Jira cross-linking
     if not existing and noteable_type == "MergeRequest":
         mr_desc = mr.get("description", "")
-        jira_keys = _extract_jira_keys(mr_title, source_branch, mr_desc)
+        jira_keys = extract_issue_keys(mr_title, source_branch, mr_desc)
         if jira_keys:
             existing = await _infer_conversation_from_jira(jira_keys, res_type, res_id)
     elif not existing and noteable_type == "Issue":
         issue_desc = issue.get("description", "")
-        jira_keys = _extract_jira_keys(issue_title, issue_desc)
+        jira_keys = extract_issue_keys(issue_title, issue_desc)
         if jira_keys:
             existing = await _infer_conversation_from_jira(jira_keys, res_type, res_id)
 
@@ -311,7 +296,7 @@ async def _handle_issue(payload: dict):
     project_id = payload.get("project", {}).get("id")
     res_id = _resource_id(repo, "issue", issue_iid)
 
-    jira_keys = _extract_jira_keys(issue_title, issue_desc)
+    jira_keys = extract_issue_keys(issue_title, issue_desc)
     if jira_keys:
         await _infer_conversation_from_jira(jira_keys, "issue", res_id)
 
@@ -347,7 +332,7 @@ async def _handle_merge_request(payload: dict):
     project_id = payload.get("project", {}).get("id")
     res_id = _resource_id(repo, "merge_request", mr_iid)
 
-    jira_keys = _extract_jira_keys(mr_title, source_branch, mr_desc)
+    jira_keys = extract_issue_keys(mr_title, source_branch, mr_desc)
     if jira_keys:
         await _infer_conversation_from_jira(jira_keys, "merge_request", res_id)
 

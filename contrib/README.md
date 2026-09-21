@@ -47,8 +47,30 @@ A thin, declarative descriptor read by `contrib/default.nix`:
   services = [ "broker" "webhooks" ];  # which service image(s) to inject into
   pythonDeps = ps: [ ];           # optional extra Python deps beyond the host service's
   example = true;                 # optional: build + test it, but never ship it
+  contribDeps = { webhooks = [ "jira" ]; };  # optional: other contribs this one uses,
+                                  # PER SERVICE (see below)
 }
 ```
+
+### Depending on another contrib
+
+Integrations reference each other — gitlab reads Jira keys out of MR titles to
+attach an MR to the conversation that ticket already opened — so `contribDeps`
+is allowed and expected.
+
+It is keyed **by service**: only gitlab's webhooks half needs jira, and a flat
+list would drag jira into the broker variant's closure, which is the surface
+leak the per-service split exists to stop.
+
+Depend on the smallest thing that does the job: jira exports its issue-key
+grammar as a pure-text module (no settings, no store, no routes), so the
+dependency costs a regex. Note that installing a contrib makes its ENTRY POINTS
+discoverable, so a service that ships gitlab also mounts jira's route — inert
+unless jira is enabled, but present.
+
+A dependency CYCLE is an eval-time infinite recursion in `contrib/default.nix`,
+not a runtime bug. If two contribs genuinely need each other, move the shared
+part into a third package rather than breaking the cycle with a late import.
 
 `contrib/default.nix` builds each contrib ONCE PER TARGET SERVICE — each variant
 depending only on that service's extension surface, so a both-services contrib

@@ -17,7 +17,10 @@ dependencies = [
 # One EXTRA per service, so `pip install` obeys the same split the Nix build does.
 [project.optional-dependencies]
 broker = ["scooter-broker-lib", "scooter-lib"]
-webhooks = ["scooter-webhooks-lib", "scooter-lib"]
+# scooter-contrib-jira for its ISSUE-KEY GRAMMAR only (a pure-text module): the
+# handler reads Jira keys out of MR titles/branches to attach an MR to the
+# conversation that ticket already opened. Why: PR #583.
+webhooks = ["scooter-webhooks-lib", "scooter-lib", "scooter-contrib-jira"]
 
 [project.entry-points."agent_broker.providers"]
 gitlab = "scooter_contrib_gitlab.broker_provider:gitlab"
