@@ -48,15 +48,6 @@ def test_an_unparseable_id_invents_no_url():
     assert ids == ["not-a-resource-id"]
 
 
-def test_gitlab_url_offers_the_short_forms():
-    assert "group/proj!12" in resource_id_variants(
-        "gitlab", "merge_request", "https://gitlab.com/group/proj/-/merge_requests/12"
-    )
-    assert "group/proj#5" in resource_id_variants(
-        "gitlab", "issue", "https://gitlab.com/group/proj/-/issues/5"
-    )
-
-
 def test_jira_browse_url_offers_the_issue_key():
     assert "ENG-42" in resource_id_variants(
         "jira", "issue", "https://acme.atlassian.net/browse/ENG-42"
@@ -65,7 +56,6 @@ def test_jira_browse_url_offers_the_issue_key():
 
 def test_type_aliases_are_two_way():
     assert canonical_resource_type("github", "pr") == "pull_request"
-    assert canonical_resource_type("gitlab", "mr") == "merge_request"
     assert canonical_resource_type("jira", "ticket") == "issue"
     # An unknown type passes through rather than being mangled into a wrong one.
     assert canonical_resource_type("github", "discussion") == "discussion"
@@ -81,6 +71,5 @@ def test_canonical_link_stores_the_long_type_and_the_url():
 
 
 def test_canonical_link_keeps_an_id_it_cannot_widen():
-    # No gitlab host in the short form, no jira site for a key: leave them be.
-    assert canonical_link("gitlab", "mr", "group/proj!12") == ("merge_request", "group/proj!12")
+    # No jira site for a bare key: leave it be.
     assert canonical_link("jira", "ticket", "ENG-9") == ("issue", "ENG-9")

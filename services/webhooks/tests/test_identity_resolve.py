@@ -69,22 +69,6 @@ async def test_github_private_email_is_none(monkeypatch):
     assert await lib_identity.get_user_email("github", "octocat") is None
 
 
-async def test_gitlab_email(monkeypatch):
-    monkeypatch.setattr(settings, "gitlab_token", "glpat-1", raising=False)
-
-    def handler(req):
-        assert req.headers["private-token"] == "glpat-1"
-        return httpx.Response(200, json=[{"username": "alice", "email": "alice@gl.io"}])
-
-    _patch(monkeypatch, handler)
-    assert await lib_identity.get_user_email("gitlab", "alice") == "alice@gl.io"
-
-
-async def test_gitlab_no_token(monkeypatch):
-    monkeypatch.setattr(settings, "gitlab_token", "", raising=False)
-    assert await lib_identity.get_user_email("gitlab", "alice") is None
-
-
 async def test_unknown_provider(monkeypatch):
     assert await lib_identity.get_user_email("bitbucket", "x") is None
 

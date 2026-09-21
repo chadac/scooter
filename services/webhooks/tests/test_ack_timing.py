@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, patch
 
 from webhooks.handlers import slack as slack_h
 from webhooks.handlers import github as github_h
-from webhooks.handlers import gitlab as gitlab_h
 from webhooks.handlers import jira as jira_h
 
 
@@ -73,31 +72,6 @@ async def test_github_ack_posts_before_the_run():
         await github_h._background_create_conversation(
             res_type="pull_request", res_id="o/r#5", message="hi", repo="o/r",
             conv_title="t", owner="o", repo_name="r", issue_number=5,
-        )
-
-    assert order == ["ack", "run"]
-    assert "conv-xyz" in post.call_args.kwargs["body"]
-
-
-async def test_gitlab_ack_posts_before_the_run():
-    order: list[str] = []
-
-    async def rec_post(*a, **k):
-        order.append("ack")
-
-    with (
-        patch.object(gitlab_h, "db") as db,
-        patch.object(gitlab_h, "create_conversation", _fake_create_conversation(order)),
-        patch.object(gitlab_h, "push_link", AsyncMock()),
-        patch.object(gitlab_h, "post_gitlab_comment", side_effect=rec_post) as post,
-        patch.object(gitlab_h, "conversation_url", lambda cid: f"https://ui/?thread={cid}"),
-    ):
-        db.store_conversation = AsyncMock()
-        db.get_and_clear_pending_messages = AsyncMock(return_value=[])
-        await gitlab_h._background_create_conversation(
-            source="gitlab", res_type="merge_request", res_id="g/p!3", message="hi",
-            repo="g/p", conv_title="t", project_id=1, note_api_type="merge_requests",
-            noteable_iid=3,
         )
 
     assert order == ["ack", "run"]

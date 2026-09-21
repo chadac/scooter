@@ -555,6 +555,8 @@
             contrib-echo = contribs.packages.echo.broker;
             contrib-echo-webhooks = contribs.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-gitlab = contribs.packages.gitlab.broker;
+            contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
 
             # nix build .#contribs-all -> every variant of every contrib, so ONE CI
             # target covers all of them and a new contrib is tested the moment it
@@ -681,6 +683,8 @@
             contrib-echo = contribs.packages.echo.broker;
             contrib-echo-webhooks = contribs.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-gitlab = contribs.packages.gitlab.broker;
+            contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
             # The shared Python libraries (the lib split).
             inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests;

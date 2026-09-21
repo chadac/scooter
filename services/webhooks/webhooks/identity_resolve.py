@@ -2,7 +2,7 @@
 
 The orchestration (registry, agent-host reverse lookup, `resolve_owner`) is in
 `scooter_webhooks_lib.identity`. What stays here is the part that is genuinely
-provider-specific: how to ask slack/github/gitlab for a user's email, and the
+provider-specific: how to ask slack/github for a user's email, and the
 token each needs. Each of these travels into its provider's contrib as that
 provider migrates (#576+), at which point this module goes away entirely.
 
@@ -26,7 +26,6 @@ _C = {"component": "identity_resolve"}
 
 _SLACK_API = "https://slack.com/api"
 _GITHUB_API = "https://api.github.com"
-_GITLAB_API = "https://gitlab.com/api/v4"
 
 
 @register_email_resolver("slack")
@@ -81,30 +80,3 @@ async def github_email(login: str) -> str | None:
         )
         return None
 
-
-@register_email_resolver("gitlab")
-async def gitlab_email(username: str) -> str | None:
-    """The email for a GitLab username (GET /users?username=). Needs a token with
-    scope to see the email (admin, or the user's own); often null otherwise."""
-    token = settings.gitlab_token
-    if not token or not username:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{_GITLAB_API}/users",
-                headers={"PRIVATE-TOKEN": token},
-                params={"username": username},
-            )
-            if resp.status_code != 200:
-                return None
-            users = resp.json()
-        if not isinstance(users, list) or not users:
-            return None
-        return users[0].get("email") or None
-    except (httpx.HTTPError, ValueError) as e:
-        logger.warning(
-            "email lookup failed",
-            extra={**_C, "provider": "gitlab", "external_user": pseudonym(username), "error": format_error(e)},
-        )
-        return None
