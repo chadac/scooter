@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from broker.core.app import create_app  # noqa: E402
 from broker.core.auth import authenticate  # noqa: E402
-from broker.core.types import Identity  # noqa: E402
+from scooter_broker_lib.types import Identity  # noqa: E402
 from broker.providers.echo import recorder  # noqa: E402
 
 

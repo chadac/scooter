@@ -14,10 +14,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import broker.transports.http_proxy as http_proxy_mod
-from broker.core.types import Identity, Provider
+import scooter_broker_lib.transports.http_proxy as http_proxy_mod
+from scooter_broker_lib.types import Identity, Provider
 from broker.providers.gitlab import gitlab
-from broker.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 def _identity() -> Identity:

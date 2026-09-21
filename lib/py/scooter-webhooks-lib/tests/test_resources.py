@@ -6,7 +6,7 @@ exact-match lookup in either shape found nothing written in the other, so forwar
 were dropped and the agent's reply tools were never armed (issue #563).
 """
 
-from webhooks.resources import (
+from scooter_webhooks_lib.resources import (
     canonical_link,
     canonical_resource_type,
     link_variants,

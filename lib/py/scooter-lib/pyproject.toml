@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-lib"
+version = "0.0.0"
+license = "MIT"
+description = "Shared library for Scooter's Python services (logging, common config/auth primitives) — service-agnostic, imported by broker/webhooks/scheduler and by contribs"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic",
+  "pydantic-settings",
+]
+
+# hatchling auto-detects the `scooter_lib` package (name matches project name).
+
+[dependency-groups]
+# httpx is test-only: format_error's whole reason to exist is the httpx transport
+# exceptions that stringify to "", so the guard needs the real types.
+dev = ["pytest", "httpx"]
+
+# No [tool.pytest.ini_options] asyncio_mode: nothing here is async, so declaring
+# it only earns an "Unknown config option" warning without pytest-asyncio
+# installed. The extension-surface libs, which do have async tests, keep it.

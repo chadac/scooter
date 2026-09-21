@@ -1,9 +1,14 @@
 """Webhook handler registry — plugin discovery.
 
-Mirrors the broker's provider registry (`broker/core/registry.py`). Handler
-modules self-register via @register_webhook on import; external packages can
-also contribute via the "scooter_webhooks.handlers" entry-point group. The app
-discovers all registered handlers at startup and mounts each one's router.
+Mirrors the broker's provider registry (`scooter_broker_lib/registry.py`), down
+to the built-in scan being a PARAMETER rather than a hardcoded `from . import
+handlers`: that import is what would tie this module to the webhooks app and
+keep it out of the lib. The app passes its own `webhooks.handlers`; a contrib
+passes nothing and is found through the entry-point group.
+
+Handler modules self-register via @register_webhook on import; external packages
+can also contribute via the "scooter_webhooks.handlers" entry-point group. The
+app discovers all registered handlers at startup and mounts each one's router.
 Adding a handler never edits `app.py`.
 
 Unlike the broker — whose providers are filtered out entirely when disabled —
@@ -19,11 +24,17 @@ import importlib
 import logging
 import pkgutil
 from dataclasses import dataclass
-from typing import Callable
+from types import ModuleType
+from typing import Callable, Iterable, Sequence
 
 from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
+
+# The entry-point group external packages contribute handlers through. Named here
+# rather than at the call site so a contrib's pyproject and the loader can never
+# disagree about the spelling.
+ENTRY_POINT_GROUP = "scooter_webhooks.handlers"
 
 
 @dataclass
@@ -49,13 +60,12 @@ def register_webhook(factory: WebhookFactory) -> WebhookFactory:
     return factory
 
 
-def _import_builtin_handlers() -> None:
-    """Import every module under webhooks.handlers so their @register_webhook
+def _import_builtin_handlers(packages: Sequence[ModuleType]) -> None:
+    """Import every module under each given package so their @register_webhook
     decorators run."""
-    from . import handlers
-
-    for mod in pkgutil.iter_modules(handlers.__path__):
-        importlib.import_module(f"{handlers.__name__}.{mod.name}")
+    for package in packages:
+        for mod in pkgutil.iter_modules(package.__path__):
+            importlib.import_module(f"{package.__name__}.{mod.name}")
 
 
 def _load_entrypoint_handlers() -> None:
@@ -64,7 +74,7 @@ def _load_entrypoint_handlers() -> None:
         from importlib.metadata import entry_points
     except ImportError:  # pragma: no cover
         return
-    for ep in entry_points(group="scooter_webhooks.handlers"):
+    for ep in entry_points(group=ENTRY_POINT_GROUP):
         try:
             ep.load()  # importing registers via @register_webhook
         except Exception:  # pragma: no cover
@@ -74,9 +84,17 @@ def _load_entrypoint_handlers() -> None:
             )
 
 
-def discover_webhooks() -> list[WebhookHandler]:
-    """Build all registered + entry-point handlers, keeping enabled ones."""
-    _import_builtin_handlers()
+def discover_webhooks(
+    builtin_packages: Iterable[ModuleType] = (),
+) -> list[WebhookHandler]:
+    """Build all registered + entry-point handlers, keeping enabled ones.
+
+    `builtin_packages`: packages whose modules are imported so their
+    @register_webhook decorators run — the webhooks app passes
+    `webhooks.handlers`. Entry-point handlers are loaded regardless, so a caller
+    with no in-tree handlers passes nothing.
+    """
+    _import_builtin_handlers(tuple(builtin_packages))
     _load_entrypoint_handlers()
     handlers: list[WebhookHandler] = []
     for name, factory in _REGISTRY.items():

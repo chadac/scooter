@@ -7,11 +7,11 @@ import uvicorn
 from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel
 
-from . import store as db
+from scooter_webhooks_lib import store as db
 
 from .config import db_settings, require_relay_key, settings
-from .logging_config import configure_logging
-from .registry import discover_webhooks
+from scooter_lib.logging_config import configure_logging
+from scooter_webhooks_lib.registry import discover_webhooks
 from .agent_host_client import resolve_sandbox_to_conversation
 
 configure_logging("webhooks", settings.log_level)
@@ -32,7 +32,12 @@ app = FastAPI(title="agent-manager webhooks", version="0.1.0", lifespan=lifespan
 # Discover handler modules and mount each one's router — no hardcoded per-provider
 # wiring here (mirrors the broker's create_app discovery). Adding a handler is a
 # new module under handlers/ with an @register_webhook factory; app.py is untouched.
-for _handler in discover_webhooks():
+#
+# The built-in package is passed in rather than hardcoded in the registry, so the
+# registry carries no import of this app. See PR #567.
+from . import handlers as _builtin_handlers  # noqa: E402
+
+for _handler in discover_webhooks([_builtin_handlers]):
     app.include_router(_handler.router)
 
 

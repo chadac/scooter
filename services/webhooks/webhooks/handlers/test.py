@@ -47,7 +47,7 @@ async def test_webhook(event: TestEvent) -> dict:
 # provider registry, PR: contrib module system). Handlers self-gate in-route
 # (a disabled provider returns {"status": "disabled"}), so this registers
 # enabled and keeps its per-request gating.
-from ..registry import WebhookHandler, register_webhook
+from scooter_webhooks_lib.registry import WebhookHandler, register_webhook
 
 
 @register_webhook

@@ -8,13 +8,13 @@ routes (/github/{path} and /github/git-credentials) fall out automatically.
 from __future__ import annotations
 
 from ..config import settings
-from ..core.autolink import Link, rule
-from ..core.registry import register_provider
-from ..core.types import Provider
+from scooter_broker_lib.autolink import Link, rule
+from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.types import Provider
 from ..sources.github_app import GitHubAppSource
-from ..sources.static_token import StaticTokenSource
-from ..transports.git_credential import GitCredential
-from ..transports.http_proxy import HttpProxy
+from scooter_broker_lib.sources.static_token import StaticTokenSource
+from scooter_broker_lib.transports.git_credential import GitCredential
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 # Auto-link the PRs / issues an agent creates via the proxy. GitHub's create

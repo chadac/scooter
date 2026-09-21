@@ -16,7 +16,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from broker.core.auth import authenticate  # noqa: E402
-from broker.core.types import Identity  # noqa: E402
+from scooter_broker_lib.types import Identity  # noqa: E402
 from broker.sandbox.k8s import PodRef  # noqa: E402
 from broker.sandbox.resources import SandboxResources  # noqa: E402
 from broker.sandbox.routes import create_sandbox_router  # noqa: E402

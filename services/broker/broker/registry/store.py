@@ -93,7 +93,7 @@ class ModuleRegistryStore:
         # underneath us — instead of handing out a dead connection and failing the request with
         # asyncpg "connection is closed" on the next transaction. pool_recycle caps a connection's
         # lifetime below common idle-timeout windows so stale ones retire proactively. Mirrors the
-        # webhooks engine (services/webhooks/webhooks/store.py), which added these after exactly
+        # webhooks engine (scooter_webhooks_lib/store.py), which added these after exactly
         # that failure in production; without them a postgres restart / failover breaks this
         # service until it is itself restarted.
         self._engine: AsyncEngine = create_async_engine(

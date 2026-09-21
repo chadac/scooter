@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from ..core.types import Credential, CredentialSource, Identity
+from scooter_broker_lib.types import Credential, CredentialSource, Identity
 
 
 @dataclass

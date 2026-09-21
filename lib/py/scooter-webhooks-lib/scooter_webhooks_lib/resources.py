@@ -4,6 +4,10 @@ knows ("pull_request", "o/r#7") and ("pr", "<html_url>") are the same resource.
 Nothing here rewrites conversation_map: its resource_id is matched EXACTLY to route an
 incoming webhook, so we normalise what we WRITE to resource_links and match every known
 shape on READ. Why: PR #571.
+
+In the lib, not the webhooks app: `store.link_resource` and the app-side github
+handler both need it, so app-local would mean the lib importing app code. The URL
+regexes are provider-specific and follow their providers into contribs. Why: PR #567.
 """
 
 from __future__ import annotations

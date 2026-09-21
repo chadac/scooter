@@ -13,17 +13,28 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException
 
 from .auth import authenticate
-from .autolink import Link, create_link, list_links
-from .registry import discover_providers
-from .types import Identity
-from ..config import settings
-from ..logging_config import configure_logging
+from ..config import refresh_settings, settings
+from scooter_broker_lib.autolink import Link, create_link, list_links
+from scooter_broker_lib.registry import discover_providers
+from scooter_broker_lib.types import Identity
+from scooter_lib.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
-    providers = list(discover_providers())
+    # Re-read env into the shared settings so provider factories (which read
+    # `config.settings` at build time) reflect the CURRENT environment, not a
+    # snapshot frozen at first import — which is what makes create_app()
+    # deterministic regardless of test import order. The registry used to do this
+    # itself; it cannot now, because `config` is the app's, not the lib's.
+    refresh_settings()
+
+    # The built-in providers to scan. Passed in rather than hardcoded in the
+    # registry so the lib carries no import of this app. See PR #567.
+    from .. import providers as builtin_providers
+
+    providers = list(discover_providers([builtin_providers]))
 
     # Sandbox lifecycle (the broker as control plane). Built when enabled; its size
     # store is init'd in the lifespan and its router mounted top-level (like /link).

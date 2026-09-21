@@ -13,7 +13,7 @@ import re
 from fastapi import HTTPException, Request
 from kubernetes import client, config
 
-from .types import Identity
+from scooter_broker_lib.types import Identity
 from ..config import settings
 
 # SA username pattern: system:serviceaccount:{ns}:sandbox-{conversationId}

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import broker.core.app as app_mod
 from broker.core.app import create_app
 from broker.core.auth import authenticate
-from broker.core.types import Identity
+from scooter_broker_lib.types import Identity
 
 
 def _fake_identity() -> Identity:

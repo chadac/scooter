@@ -24,7 +24,7 @@ def test_entrypoints_declared():
 
 def test_broker_discovers_echo_via_entrypoint():
     """The broker's real discovery loads the contrib through the entry point."""
-    from broker.core.registry import discover_providers
+    from scooter_broker_lib.registry import discover_providers
 
     providers = {p.name: p for p in discover_providers()}
     assert CONTRIB_NAME in providers
@@ -37,7 +37,7 @@ def test_broker_discovers_echo_via_entrypoint():
 
 def test_webhooks_discovers_echo_via_entrypoint():
     """The webhooks service's real discovery loads the contrib handler."""
-    from webhooks.registry import discover_webhooks
+    from scooter_webhooks_lib.registry import discover_webhooks
 
     handlers = {h.name: h for h in discover_webhooks()}
     assert CONTRIB_NAME in handlers
@@ -46,7 +46,7 @@ def test_webhooks_discovers_echo_via_entrypoint():
 
 
 async def _noop_auth():  # pragma: no cover - placeholder auth dependency
-    from broker.core.types import Identity
+    from scooter_broker_lib.types import Identity
 
     return Identity(
         conversation_id="test",

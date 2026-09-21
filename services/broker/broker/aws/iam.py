@@ -22,7 +22,7 @@ import logging
 import time
 
 from .models import StsCredentials
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 

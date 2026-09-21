@@ -1,9 +1,11 @@
 """Echo broker provider — the broker half of the reference contrib.
 
 Registered into the broker via the ``agent_broker.providers`` entry point
-(see pyproject.toml). The broker imports this module only when it loads that
-entry-point group, so ``broker.*`` is guaranteed present at import time — a
-contrib never needs to depend on the broker package itself.
+(see pyproject.toml). It build-depends on ``scooter_broker_lib`` — the broker's
+extension surface — and on nothing from the broker APP, so a typo here fails
+this package's own build rather than surfacing as a missing provider at broker
+startup. That replaces the "declare no dependency, resolve at import time"
+arrangement this contrib used before PR #567.
 
 The provider mounts a self-contained ``/echo/ping`` transport that
 authenticates the caller exactly like every real transport (SA token ->
@@ -18,8 +20,8 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends
 
-from broker.core.registry import register_provider
-from broker.core.types import AuthDependency, Identity, Provider, Transport
+from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
 PROVIDER_NAME = "echo"
 

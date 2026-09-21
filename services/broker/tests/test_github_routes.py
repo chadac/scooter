@@ -14,8 +14,8 @@ provider's first transport must be the GitCredential one.
 from __future__ import annotations
 
 from broker.providers.github import github
-from broker.transports.git_credential import GitCredential
-from broker.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.git_credential import GitCredential
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 def test_git_credential_transport_precedes_proxy():

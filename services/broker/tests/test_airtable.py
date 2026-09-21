@@ -12,9 +12,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from broker.core.types import Identity
-from broker.sources.static_token import StaticTokenSource
-from broker.transports.http_proxy import HttpProxy
+from scooter_broker_lib.types import Identity
+from scooter_broker_lib.sources.static_token import StaticTokenSource
+from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 def _identity() -> Identity:

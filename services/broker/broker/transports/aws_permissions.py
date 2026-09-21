@@ -32,7 +32,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ..aws.models import PermissionRequest, RequestStatus, StsCredentials
 from ..aws.service import PermissionService, RequestError
-from ..core.types import AuthDependency, Identity, Provider, Transport
+from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
 logger = logging.getLogger(__name__)
 

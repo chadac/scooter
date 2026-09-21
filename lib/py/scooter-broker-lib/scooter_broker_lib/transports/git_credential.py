@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..core.types import AuthDependency, Identity, Provider, Transport
+from ..types import AuthDependency, Identity, Provider, Transport
 
 
 @dataclass

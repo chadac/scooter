@@ -201,11 +201,11 @@
 
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules. See services/broker/ + docs/BROKER.md.
-          broker = pkgs.callPackage ./services/broker { inherit scooterSchema; };
+          broker = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib scooterBrokerLib; };
 
           # Webhooks (Python/FastAPI): spawn agent conversations from
           # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
-          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema; };
+          webhooks = pkgs.callPackage ./services/webhooks { inherit scooterSchema scooterLib scooterWebhooksLib; };
 
           # Contrib modules: self-contained integration packages discovered via
           # entry points (broker providers / webhooks handlers). Built here and
@@ -215,7 +215,7 @@
           # real registries end-to-end. The prod broker/webhooks above ship no
           # contribs yet (contribs default to []); real integrations move in from
           # slice 3 on.
-          contribs = pkgs.callPackage ./contrib { inherit broker webhooks; };
+          contribs = pkgs.callPackage ./contrib { inherit broker webhooks scooterBrokerLib scooterWebhooksLib; };
 
           # Webhooks OCI image.
           webhooksImage = import ./pkgs/webhooks-image {
@@ -226,6 +226,14 @@
           # `just db-generate`). Imported by the Python services; its nix build runs
           # pytest + pythonImportsCheck (proves the generated models are valid).
           scooterSchema = pkgs.callPackage ./lib/py/scooter-schema { };
+
+          # Shared Python libraries (the lib split). scooter_lib is service-agnostic;
+          # the two extension-surface libs hold exactly what a provider/handler
+          # composes, so a contrib build-depends on the lib instead of the service
+          # app (breaking the app<->contrib cycle). See lib/py/*/ + the PR boundary.
+          scooterLib = pkgs.callPackage ./lib/py/scooter-lib { };
+          scooterBrokerLib = pkgs.callPackage ./lib/py/scooter-broker-lib { inherit scooterLib; };
+          scooterWebhooksLib = pkgs.callPackage ./lib/py/scooter-webhooks-lib { inherit scooterLib scooterSchema; };
 
           # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
           # spawning a fresh conversation per run via the agent-host /agui. See
@@ -524,10 +532,13 @@
 
             inherit agentHost ui broker webhooks scheduler;
 
-            # nix build .#contrib-echo -> the reference contrib package. Its build
-            # runs the discovery tests against the real broker/webhooks registries,
-            # so `nix flake check` (which includes it) proves the entry-point seam.
-            contrib-echo = contribs.packages.echo;
+            # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
+            # contrib, built once PER TARGET SERVICE so each variant carries only that
+            # service's extension surface (a single build would drag the webhooks
+            # surface into the broker image). Both run the discovery tests against the
+            # real registries, so `nix flake check` proves the entry-point seam.
+            contrib-echo = contribs.packages.echo.broker;
+            contrib-echo-webhooks = contribs.packages.echo.webhooks;
 
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
@@ -558,6 +569,12 @@
 
             # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
             scooter-schema = scooterSchema;
+
+            # nix build .#scooter-lib / .#scooter-broker-lib / .#scooter-webhooks-lib
+            # -> the shared Python libraries (the lib split).
+            scooter-lib = scooterLib;
+            scooter-broker-lib = scooterBrokerLib;
+            scooter-webhooks-lib = scooterWebhooksLib;
 
             # nix build .#scooter-schema-js  ->  generated Drizzle schema package (tsc)
             scooter-schema-js = scooterSchemaJs;
@@ -636,9 +653,12 @@
 
           checks = {
             inherit agentHost ui;
-            # Builds the reference contrib, running its entry-point discovery
-            # tests against the real broker + webhooks registries.
-            contrib-echo = contribs.packages.echo;
+            # Both per-service variants of the reference contrib, each running the
+            # entry-point discovery tests against the real broker + webhooks registries.
+            contrib-echo = contribs.packages.echo.broker;
+            contrib-echo-webhooks = contribs.packages.echo.webhooks;
+            # The shared Python libraries (the lib split).
+            inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests;
         };
 

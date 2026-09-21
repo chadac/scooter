@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from kubernetes import client, config
 
 from .manifest import GROUP, PLURAL_SANDBOXES, VERSION, DeployConfig, sandbox_manifest
-from ..logging_config import format_error
+from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,10 @@
 """Echo webhooks handler — the webhooks half of the reference contrib.
 
 Registered into the webhooks service via the ``scooter_webhooks.handlers``
-entry point (see pyproject.toml). The service imports this module only when it
-loads that entry-point group, so ``webhooks.*`` is present at import time.
+entry point (see pyproject.toml). It build-depends on ``scooter_webhooks_lib`` —
+the webhooks extension surface — and on nothing from the webhooks APP, so a typo
+here fails this package's own build rather than surfacing as a missing handler
+at service startup. See PR #567.
 
 Mounts ``POST /webhooks/echo`` — a signature-free endpoint that echoes its
 payload back. It does NOT spawn a conversation, so it is inert if ever mounted
@@ -14,7 +16,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from webhooks.registry import WebhookHandler, register_webhook
+from scooter_webhooks_lib.registry import WebhookHandler, register_webhook
 
 HANDLER_NAME = "echo"
 

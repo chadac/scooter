@@ -1,7 +1,12 @@
-"""Unit tests for credential sources — mocked HTTP, no real GitHub/Atlassian.
+"""The provider-SPECIFIC credential sources — mocked HTTP, no real GitHub/Atlassian.
 
 Proves the JWT/installation-token and client-credentials flows produce the right
 Credential, cache it, and serve the cache on the second call.
+
+These live with their providers rather than in the extension surface: a GitHub
+App token minter is github implementation, and it travels into the github
+contrib with the rest of github in the integration slices. The generic
+`static_token` is tested in scooter_broker_lib. See PR #567.
 """
 
 from __future__ import annotations
@@ -11,12 +16,9 @@ import time
 import httpx
 import pytest
 
-from broker.core.types import Identity
 from broker.sources.atlassian_oauth import AtlassianOAuthSource
 from broker.sources.github_app import GitHubAppSource
-from broker.sources.static_token import StaticTokenSource
-
-# A throwaway RSA key for signing the App JWT in tests.
+from scooter_broker_lib.types import Identity
 
 
 def _identity() -> Identity:
@@ -34,31 +36,6 @@ def _rsa_key() -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-
-
-def _req() -> httpx.Request:
-    """A throwaway outbound request for inject() to mutate."""
-    return httpx.Request("GET", "https://example.test/x")
-
-
-@pytest.mark.asyncio
-async def test_static_token_source():
-    src = StaticTokenSource(token="abc", kind="bearer")
-    cred = await src.get(_identity())
-    assert cred.kind == "bearer"
-    assert cred.value == "abc"
-    req = _req()
-    cred.inject(req)
-    assert req.headers["Authorization"] == "Bearer abc"
-
-
-@pytest.mark.asyncio
-async def test_static_token_header_kind():
-    src = StaticTokenSource(token="glpat-x", kind="header", header_name="PRIVATE-TOKEN")
-    cred = await src.get(_identity())
-    req = _req()
-    cred.inject(req)
-    assert req.headers["PRIVATE-TOKEN"] == "glpat-x"
 
 
 @pytest.mark.asyncio

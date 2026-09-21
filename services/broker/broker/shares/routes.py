@@ -43,7 +43,7 @@ from fastapi.responses import Response
 
 from .store import ShareFile, ShareStore
 from ..core.auth import authenticate
-from ..core.types import Identity
+from scooter_broker_lib.types import Identity
 
 logger = logging.getLogger(__name__)
 

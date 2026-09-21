@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter
 
-from ..core.types import AuthDependency, Provider, Transport
+from ..types import AuthDependency, Provider, Transport
 
 
 @dataclass

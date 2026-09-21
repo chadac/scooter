@@ -1,13 +1,15 @@
-"""The webhooks async DB engine must survive a postgres restart / failover / idle-timeout.
+"""The conversation-mapping engine must survive a postgres restart / failover / idle-timeout.
 
 Without `pool_pre_ping` the pool hands out a connection the server has already closed and the
 request dies with asyncpg "connection is closed" on the next transaction — the service then stays
 broken until it is itself restarted. `pool_recycle` retires connections proactively before common
 idle-timeout windows rather than waiting to be bitten.
 
-Scoped to THIS service's modules: each service's nix build sandbox contains only its own source, so
-a cross-service check would fail to find the files (it did — see the CI failure that introduced this
-split). The broker carries the same check for its three stores.
+This check travelled here with the engine it guards (PR #567). It resolves the module through the
+IMPORT rather than a repo-relative path: each package's nix build sandbox contains only its own
+source, so a path reaching across that boundary finds nothing — which is exactly how this check
+broke when store.py moved, and what the per-service split it already carried was working around.
+The broker carries the same check for its three stores.
 """
 
 from __future__ import annotations
@@ -17,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-ENGINE_MODULES = [Path(__file__).resolve().parents[1] / "webhooks/store.py"]
+from scooter_webhooks_lib import store
+
+ENGINE_MODULES = [Path(store.__file__)]
 
 
 def engine_calls(path: Path) -> list[ast.Call]:
