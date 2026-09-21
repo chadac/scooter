@@ -29,7 +29,6 @@ from . import resources
 # helpers below are unchanged. Why: PR #412.
 from scooter_schema.webhooks import (
     ConversationMap,
-    JiraTickets as JiraTicket,
     PendingMessages as PendingMessage,
     ResourceLinks as ResourceLink,
 )
@@ -253,68 +252,6 @@ async def get_active_conversations() -> list[dict]:
             }
             for r in rows
         ]
-
-
-# ---------------------------------------------------------------------------
-# Jira ticket helpers
-# ---------------------------------------------------------------------------
-
-
-async def link_jira_ticket(conversation_id: str, issue_key: str) -> bool:
-    """Link a Jira ticket to a conversation. Returns True if newly inserted."""
-    async with get_session() as session:
-        existing = (
-            await session.execute(
-                select(JiraTicket).where(JiraTicket.issue_key == issue_key)
-            )
-        ).scalar_one_or_none()
-
-        if existing:
-            return False
-
-        session.add(JiraTicket(conversation_id=conversation_id, issue_key=issue_key))
-
-    # Also store in generic resource_links
-    await link_resource(conversation_id, "jira", "issue", issue_key)
-    return True
-
-
-async def get_primary_jira_ticket(conversation_id: str) -> str | None:
-    """Get the primary (first-created) Jira ticket for a conversation."""
-    async with get_session() as session:
-        row = (
-            await session.execute(
-                select(JiraTicket)
-                .where(JiraTicket.conversation_id == conversation_id)
-                .order_by(JiraTicket.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        return row.issue_key if row else None
-
-
-async def get_jira_tickets(conversation_id: str) -> list[str]:
-    """Get all Jira ticket keys linked to a conversation."""
-    async with get_session() as session:
-        rows = (
-            await session.execute(
-                select(JiraTicket)
-                .where(JiraTicket.conversation_id == conversation_id)
-                .order_by(JiraTicket.id.asc())
-            )
-        ).scalars().all()
-        return [r.issue_key for r in rows]
-
-
-async def get_conversation_for_jira_ticket(issue_key: str) -> str | None:
-    """Look up the conversation linked to a Jira ticket."""
-    async with get_session() as session:
-        row = (
-            await session.execute(
-                select(JiraTicket).where(JiraTicket.issue_key == issue_key)
-            )
-        ).scalar_one_or_none()
-        return row.conversation_id if row else None
 
 
 # ---------------------------------------------------------------------------

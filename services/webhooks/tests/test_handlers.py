@@ -62,14 +62,6 @@ def test_github_webhook_disabled(client):
 # ---------------------------------------------------------------------------
 
 
-def test_jira_webhook_disabled(client):
-    """Jira webhook returns disabled when toggle is off."""
-    with patch("webhooks.handlers.jira.settings") as mock_settings:
-        mock_settings.jira_enabled = False
-        resp = client.post("/webhooks/jira", json={})
-        assert resp.json()["status"] == "disabled"
-
-
 # ---------------------------------------------------------------------------
 # Slack webhook
 # ---------------------------------------------------------------------------

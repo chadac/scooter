@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, patch
 
 from webhooks.handlers import slack as slack_h
 from webhooks.handlers import github as github_h
-from webhooks.handlers import jira as jira_h
 
 
 def _fake_create_conversation(order: list[str]):
@@ -72,29 +71,6 @@ async def test_github_ack_posts_before_the_run():
         await github_h._background_create_conversation(
             res_type="pull_request", res_id="o/r#5", message="hi", repo="o/r",
             conv_title="t", owner="o", repo_name="r", issue_number=5,
-        )
-
-    assert order == ["ack", "run"]
-    assert "conv-xyz" in post.call_args.kwargs["body"]
-
-
-async def test_jira_ack_posts_before_the_run():
-    order: list[str] = []
-
-    async def rec_post(*a, **k):
-        order.append("ack")
-
-    with (
-        patch.object(jira_h, "db") as db,
-        patch.object(jira_h, "create_conversation", _fake_create_conversation(order)),
-        patch.object(jira_h, "post_jira_comment", side_effect=rec_post) as post,
-        patch.object(jira_h, "conversation_url", lambda cid: f"https://ui/?thread={cid}"),
-    ):
-        db.store_conversation = AsyncMock()
-        db.link_jira_ticket = AsyncMock()
-        db.get_and_clear_pending_messages = AsyncMock(return_value=[])
-        await jira_h._background_create_conversation(
-            issue_key="ENG-1", message="hi", conv_title="t",
         )
 
     assert order == ["ack", "run"]

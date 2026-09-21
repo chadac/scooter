@@ -16,10 +16,10 @@ from fastapi import APIRouter, Request
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
-from ..config import settings
+from .config import settings
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
-from ..responses.jira import post_jira_comment
+from .responses import post_jira_comment
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.jira"}
@@ -111,7 +111,7 @@ async def _handle_comment(payload: dict):
 
     existing = (
         await db.lookup_conversation("jira", "issue", issue_key)
-        or await db.get_conversation_for_jira_ticket(issue_key)
+        or await db.get_conversation_for_resource("jira", "issue", issue_key)
         or await db.get_conversation_for_resource("jira", "issue", issue_key)
     )
 
@@ -143,7 +143,7 @@ async def _handle_comment(payload: dict):
         )
 
     await db.store_conversation("jira", "issue", issue_key, PENDING_CONVERSATION_ID)
-    await db.link_jira_ticket(PENDING_CONVERSATION_ID, issue_key)
+    await db.link_resource(PENDING_CONVERSATION_ID, "jira", "issue", issue_key)
 
     conv_title = f"Jira {issue_key}: {issue_summary}"
     reply_hint = _response_instructions(issue_key)
@@ -179,13 +179,13 @@ async def _handle_issue_updated(payload: dict):
 
     existing = (
         await db.lookup_conversation("jira", "issue", issue_key)
-        or await db.get_conversation_for_jira_ticket(issue_key)
+        or await db.get_conversation_for_resource("jira", "issue", issue_key)
     )
     if existing:
         return
 
     await db.store_conversation("jira", "issue", issue_key, PENDING_CONVERSATION_ID)
-    await db.link_jira_ticket(PENDING_CONVERSATION_ID, issue_key)
+    await db.link_resource(PENDING_CONVERSATION_ID, "jira", "issue", issue_key)
 
     reply_hint = _response_instructions(issue_key)
     message = f"Jira issue {issue_key} '{issue_summary}'\n\n{issue_desc}{reply_hint}"
@@ -207,7 +207,7 @@ async def _background_create_conversation(
     # entire run (the 5-10min lag). Only conv_id is needed, known in the hook.
     async def _register(conv_id: str) -> None:
         await db.store_conversation("jira", "issue", issue_key, conv_id)
-        await db.link_jira_ticket(conv_id, issue_key)
+        await db.link_resource(conv_id, "jira", "issue", issue_key)
         # Push the link to the agent-host too: without it the conversation shows no
         # Jira ticket in the linked-resources panel, and jira_comment registers only
         # via the conversation_map fallback. No url — the site base isn't configured

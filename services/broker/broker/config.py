@@ -28,16 +28,6 @@ class BrokerSettings(ScooterBaseSettings):
     # Slack (static token)
     slack_bot_token: str = ""
 
-    # Jira / Atlassian OAuth
-    atlassian_client_id: str = ""
-    atlassian_client_secret: str = ""
-    atlassian_cloud_id: str = ""
-    # The Jira SITE base URL (e.g. https://acme.atlassian.net), used to build a
-    # human `/browse/{KEY}` link for an auto-linked issue (the create-issue API
-    # response only carries the API `self` URL). Empty -> auto-link falls back to
-    # the API self URL.
-    jira_site_url: str = ""
-
     # --- Grafana (service-account token; http-proxy to a Grafana stack) -----
     # The broker's grafana provider proxies /grafana/* -> <grafana_url>, injecting
     # the token so the agent can query dashboards/datasources (and through the
