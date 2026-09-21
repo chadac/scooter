@@ -33,7 +33,10 @@ const clusterUrl = process.env.E2E_CLUSTER_URL ?? "";
 
 export default defineConfig({
   testDir: "./test/e2e",
-  timeout: 60_000,
+  // 180s on the full target. A ceiling BELOW the helpers it contains (startLongRun waits 90s
+  // there, completeTurn 120s) kills them mid-wait, replacing their call log with a bare "Test
+  // timeout exceeded". Why: PR #551.
+  timeout: full ? 180_000 : 60_000,
   expect: { timeout: 15_000 },
   // The whole suite shares ONE agent-host webServer + its persisted conversation
   // state (the `cleanState` fixture wipes conversations between tests). Running
