@@ -477,3 +477,15 @@ async def _clear_pending(source: str, res_type: str, res_id: str) -> None:
     if is_pending(existing):
         await db.clear_conversation(source, res_type, res_id)
     await db.get_and_clear_pending_messages(source, res_type, res_id)
+
+
+# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
+# provider registry, PR: contrib module system). Handlers self-gate in-route
+# (a disabled provider returns {"status": "disabled"}), so this registers
+# enabled and keeps its per-request gating.
+from ..registry import WebhookHandler, register_webhook
+
+
+@register_webhook
+def gitlab() -> WebhookHandler:
+    return WebhookHandler(name="gitlab", router=router)

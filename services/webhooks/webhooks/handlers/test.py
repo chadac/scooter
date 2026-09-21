@@ -41,3 +41,15 @@ async def test_webhook(event: TestEvent) -> dict:
         "conversation_id": result["conversation_id"],
         "result": result.get("result", ""),
     }
+
+
+# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
+# provider registry, PR: contrib module system). Handlers self-gate in-route
+# (a disabled provider returns {"status": "disabled"}), so this registers
+# enabled and keeps its per-request gating.
+from ..registry import WebhookHandler, register_webhook
+
+
+@register_webhook
+def test() -> WebhookHandler:
+    return WebhookHandler(name="test", router=router)
