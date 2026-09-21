@@ -26,7 +26,8 @@ let
     echo 'nogroup:x:65534:' >> $out/etc/group
   '';
 
-  # nginx.conf with a ${AGENT_HOST_URL} placeholder substituted at start.
+  # nginx.conf with the agent-host placeholders (derived from ${AGENT_HOST_URL}) and the
+  # broker/collector URLs substituted at start.
   nginxConfTemplate = pkgs.writeText "nginx.conf.template" ''
     worker_processes auto;
     error_log /dev/stderr warn;
@@ -45,6 +46,17 @@ let
       # xterm PTY, vscode RPC): "upgrade" when the client requests it, else "".
       map $http_upgrade $connection_upgrade { default upgrade; "" ""; }
 
+      # Keep-alive pool to the agent-host. `proxy_set_header Connection ""` alone does
+      # NOT pool: nginx only reuses an upstream connection that came from an upstream{}
+      # group with `keepalive`, so every proxied request opened and closed its own socket
+      # and the UI's /conversations polling exhausted ephemeral ports. Why: PR #553.
+      upstream agent_host {
+        server ''${AGENT_HOST_SERVER};
+        keepalive 32;
+        keepalive_requests 1000;
+        keepalive_timeout 60s;
+      }
+
       server {
         listen 8080;
         root ${ui};
@@ -55,7 +67,7 @@ let
         # they MUST disable buffering and use HTTP/1.1 keep-alive or events would
         # be batched/withheld and the live UI stream would stall.
         location /agui {
-          proxy_pass ''${AGENT_HOST_URL};
+          proxy_pass ''${AGENT_HOST_PROXY};
           proxy_set_header Host $host;
           proxy_http_version 1.1;
           proxy_set_header Connection "";
@@ -63,7 +75,7 @@ let
           proxy_read_timeout 3600s;
         }
         location /conversations {
-          proxy_pass ''${AGENT_HOST_URL};
+          proxy_pass ''${AGENT_HOST_PROXY};
           proxy_set_header Host $host;
           proxy_http_version 1.1;
           proxy_set_header Connection "";
@@ -104,22 +116,25 @@ let
           return 200 '{"enabled":''${TELEMETRY_ENABLED},"sampleRatio":''${TELEMETRY_SAMPLE_RATIO}}';
         }
 
-        location /sessions      { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
-        location /models        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        # `Connection ""` on every agent-host location, not just the SSE ones: it clears
+        # the hop-by-hop `close` nginx would otherwise send, which is what lets the
+        # upstream{} pool above actually reuse the connection.
+        location /sessions      { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
+        location /models        { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # The caller's identity (used by the UI for the Mine/All filter + the user
         # badge). MUST be proxied — otherwise it falls through to `location /` and
         # returns index.html instead of the JSON, and the badge/filter break. The
         # ingress-injected identity headers (x-auth-* or x-amzn-oidc-*) pass through
         # by default (only Host is overridden).
-        location /whoami        { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        location /whoami        { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # Scheduled-tasks CRUD (the Settings page). MUST be proxied — otherwise it
         # falls through to `location /`, where GET returns index.html (200) and any
         # POST/PATCH/DELETE hits the static handler and 405s. (This is the /whoami
         # bug class: an agent-host API path missing a proxy location.)
-        location /scheduled-tasks { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        location /scheduled-tasks { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # The settings Users page lists learned users (/users); also covers the
         # webhooks reverse lookup (/users/by-email). Same proxy-or-405 rule as above.
-        location /users         { proxy_pass ''${AGENT_HOST_URL}; proxy_set_header Host $host; }
+        location /users         { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
 
         # Bring-your-own-Claude (Increment 2): /remote-agent/status + /remote-agent/join-token are
         # JSON (Settings section), and /remote-agent/connect is a persistent WebSocket the user's
@@ -127,7 +142,7 @@ let
         # timeout (like /c/). Same proxy-or-405 rule: without this location, /remote-agent/* falls
         # through to `location /` (SPA HTML on GET, 405 on the POST).
         location /remote-agent {
-          proxy_pass ''${AGENT_HOST_URL};
+          proxy_pass ''${AGENT_HOST_PROXY};
           proxy_set_header Host $host;
           proxy_http_version 1.1;
           proxy_set_header Upgrade $http_upgrade;
@@ -141,7 +156,7 @@ let
         # WebSocket upgrade (marimo kernel / xterm PTY / vscode RPC) and no
         # buffering. The agent-host owns id->pod resolution + the (existing) auth.
         location /c/ {
-          proxy_pass ''${AGENT_HOST_URL};
+          proxy_pass ''${AGENT_HOST_PROXY};
           proxy_set_header Host $host;
           proxy_http_version 1.1;
           proxy_set_header Upgrade $http_upgrade;
@@ -188,10 +203,26 @@ let
     }
   '';
 
-  # Entry script: substitute AGENT_HOST_URL into the conf, then exec nginx.
+  # Entry script: derive the agent-host placeholders from AGENT_HOST_URL, substitute
+  # them into the conf, then exec nginx.
   entrypoint = pkgs.writeShellScript "ui-entrypoint" ''
     set -e
     : "''${AGENT_HOST_URL:=http://agent-host:8080}"
+    # Split AGENT_HOST_URL into what upstream{} and proxy_pass each need: an upstream
+    # `server` takes a bare host:port (no scheme), and only a named upstream group can
+    # pool connections. Keeping AGENT_HOST_URL as the deployment's single knob.
+    agent_host_scheme="''${AGENT_HOST_URL%%://*}"
+    agent_host_authority="''${AGENT_HOST_URL#*://}"
+    if [ "$agent_host_scheme" = "$AGENT_HOST_URL" ]; then agent_host_scheme=http; fi
+    agent_host_authority="''${agent_host_authority%%/*}"
+    # An upstream `server` with no port defaults to 80 even for https, so be explicit.
+    case "$agent_host_authority" in
+      *:[0-9]*) ;;
+      *) if [ "$agent_host_scheme" = https ]; then agent_host_authority="$agent_host_authority:443"; else agent_host_authority="$agent_host_authority:80"; fi ;;
+    esac
+    AGENT_HOST_SERVER="$agent_host_authority"
+    AGENT_HOST_PROXY="$agent_host_scheme://agent_host"
+    export AGENT_HOST_SERVER AGENT_HOST_PROXY
     # Where nginx forwards /s/ (static shares). Defaults to the in-namespace broker
     # Service; the deployment overrides it with the fully-qualified svc address.
     : "''${BROKER_URL:=http://agent-broker:8080}"
@@ -208,7 +239,7 @@ let
     : "''${OTEL_COLLECTOR_URL:=http://127.0.0.1:1}"
     : "''${TELEMETRY_SAMPLE_RATIO:=1}"
     export TELEMETRY_ENABLED TELEMETRY_SAMPLE_RATIO
-    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_URL $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO' \
+    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_SERVER $AGENT_HOST_PROXY $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO' \
       < ${nginxConfTemplate} > /tmp/nginx.conf
     exec ${pkgs.nginx}/bin/nginx -c /tmp/nginx.conf -g 'daemon off;'
   '';
