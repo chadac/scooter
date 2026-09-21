@@ -11,7 +11,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { noopRegistry } from "../../src/session/conversationRegistry.js";
-import { createK8sConversationRegistry } from "../../src/session/k8sConversationRegistry.js";
+import { createK8sConversationRegistry, retryAfterMs } from "../../src/session/k8sConversationRegistry.js";
 
 /** A fake KubeConfig whose CustomObjectsApi records create + status-patch calls and can be
  *  told to fail (create failures via opts.code; status-patch failures via opts.patchCode). */
@@ -147,5 +147,179 @@ describe("k8sConversationRegistry.setPhase (liveness → status.phase)", () => {
     await expect(createK8sConversationRegistry("ns", kc).setPhase("conv-1", "Suspended")).resolves.toBeUndefined();
     expect(err).toHaveBeenCalled();
     err.mockRestore();
+  });
+});
+
+/**
+ * Tier 1 contract — a 429 is "later", not "no".
+ *
+ * The apiserver throttles under priority-and-fairness (59 of them in a day on a live
+ * cluster). Treated as a plain failure, a 429 is a LOST write: the phase never lands, the
+ * CR goes stale, and the ownership fence then reads a view that disagrees with reality.
+ * These tests pin the retry, the Retry-After it must honour, and the coalescing that stops
+ * the registry generating the burst in the first place.
+ */
+
+/** Records every call and can be told to fail the next N with a given error. */
+function throttlingKc(opts: { failStatus?: Array<{ code: number; headers?: Record<string, string> }>; failCreate?: Array<{ code: number; headers?: Record<string, string> }> } = {}) {
+  const failStatus = [...(opts.failStatus ?? [])];
+  const failCreate = [...(opts.failCreate ?? [])];
+  const phases: string[] = [];
+  const creates: number[] = [];
+  let holdNext = false;
+  let release: (() => void) | undefined;
+  const api = {
+    patchNamespacedCustomObjectStatus: async (args: Record<string, unknown>) => {
+      phases.push(((args.body as { status: { phase: string } }).status.phase));
+      if (holdNext) {
+        holdNext = false;
+        await new Promise<void>((r) => (release = r));
+      }
+      const f = failStatus.shift();
+      if (f) throw Object.assign(new Error("k8s"), f);
+      return {};
+    },
+    createNamespacedCustomObject: async () => {
+      creates.push(1);
+      const f = failCreate.shift();
+      if (f) throw Object.assign(new Error("k8s"), f);
+      return {};
+    },
+    patchNamespacedCustomObject: async () => ({}),
+    deleteNamespacedCustomObject: async () => ({}),
+  };
+  return {
+    kc: { makeApiClient: () => api as never } as never,
+    phases,
+    creates,
+    hold: () => {
+      holdNext = true;
+    },
+    release: () => release?.(),
+  };
+}
+
+/** An instant sleep that RECORDS what it was asked to wait — the delay is the behaviour
+ *  under test, so a real timer would only make the suite slow, not more truthful. */
+function recordingSleep() {
+  const waits: number[] = [];
+  return { waits, sleep: async (ms: number) => void waits.push(ms) };
+}
+
+describe("k8sConversationRegistry throttling (429)", () => {
+  it("retries a throttled create instead of dropping the CR", async () => {
+    const { kc, creates } = throttlingKc({ failCreate: [{ code: 429 }] });
+    const { sleep, waits } = recordingSleep();
+    await createK8sConversationRegistry("ns", kc, { sleep }).register("conv-1", { model: "m" });
+    expect(creates).toHaveLength(2); // throttled once, then landed
+    expect(waits).toHaveLength(1);
+  });
+
+  it("waits exactly as long as Retry-After asks, rather than guessing", async () => {
+    // The apiserver knows when its queue will have room; a client retrying on its own
+    // schedule is what turns a throttle into a storm.
+    const { kc } = throttlingKc({ failStatus: [{ code: 429, headers: { "retry-after": "2" } }] });
+    const { sleep, waits } = recordingSleep();
+    await createK8sConversationRegistry("ns", kc, { sleep }).setPhase("conv-1", "Suspended");
+    expect(waits).toEqual([2000]);
+  });
+
+  it("backs off EXPONENTIALLY when the server sends no Retry-After", async () => {
+    const { kc } = throttlingKc({ failStatus: [{ code: 429 }, { code: 429 }, { code: 429 }] });
+    const { sleep, waits } = recordingSleep();
+    await createK8sConversationRegistry("ns", kc, { sleep }).setPhase("conv-1", "Suspended");
+    expect(waits).toHaveLength(3);
+    // Jittered (half the ceiling to the ceiling), so assert the envelope, not a value —
+    // without jitter the whole fleet retries in lockstep and rebuilds the burst.
+    expect(waits[0]).toBeGreaterThanOrEqual(125);
+    expect(waits[0]).toBeLessThanOrEqual(250);
+    expect(waits[2]).toBeGreaterThan(waits[0]);
+    expect(waits[2]).toBeLessThanOrEqual(1000);
+  });
+
+  it("gives up after the attempt budget WITHOUT throwing (a write must not fail suspend)", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { kc, phases } = throttlingKc({ failStatus: Array(5).fill({ code: 429 }) });
+    const { sleep } = recordingSleep();
+    const reg = createK8sConversationRegistry("ns", kc, { sleep, maxAttempts: 3 });
+    await expect(reg.setPhase("conv-1", "Suspended")).resolves.toBeUndefined();
+    expect(phases).toHaveLength(3);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("does NOT retry a 404/409/500 — those mean something other than 'later'", async () => {
+    const { kc, phases } = throttlingKc({ failStatus: [{ code: 404 }] });
+    const { sleep, waits } = recordingSleep();
+    await createK8sConversationRegistry("ns", kc, { sleep }).setPhase("conv-1", "Assigned");
+    expect(phases).toHaveLength(1);
+    expect(waits).toEqual([]);
+  });
+});
+
+describe("k8sConversationRegistry.setPhase coalescing", () => {
+  it("does not re-publish a phase the CR already carries", async () => {
+    const { kc, phases } = throttlingKc();
+    const reg = createK8sConversationRegistry("ns", kc);
+    await reg.setPhase("conv-1", "Suspended");
+    await reg.setPhase("conv-1", "Suspended");
+    await reg.setPhase("conv-1", "Suspended");
+    expect(phases).toEqual(["Suspended"]);
+  });
+
+  it("folds a burst into the write in flight plus ONE write of the final phase", async () => {
+    // Liveness is a level, not an edge: the intermediate values of a burst are not
+    // information, they are just requests the apiserver has to answer.
+    const f = throttlingKc();
+    const reg = createK8sConversationRegistry("ns", f.kc);
+    f.hold();
+    const first = reg.setPhase("conv-1", "Suspended");
+    void reg.setPhase("conv-1", "Assigned");
+    void reg.setPhase("conv-1", "Suspended");
+    void reg.setPhase("conv-1", "Assigned");
+    f.release();
+    await first;
+    expect(f.phases).toEqual(["Suspended", "Assigned"]);
+  });
+
+  it("re-publishes after a FAILED write rather than believing a phase that never landed", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { kc, phases } = throttlingKc({ failStatus: [{ code: 500 }] });
+    const reg = createK8sConversationRegistry("ns", kc);
+    await reg.setPhase("conv-1", "Suspended");
+    await reg.setPhase("conv-1", "Suspended");
+    expect(phases).toEqual(["Suspended", "Suspended"]);
+    err.mockRestore();
+  });
+
+  it("forgets the published phase when the CR is removed (a recreated id starts clean)", async () => {
+    const { kc, phases } = throttlingKc();
+    const reg = createK8sConversationRegistry("ns", kc);
+    await reg.setPhase("conv-1", "Assigned");
+    await reg.remove("conv-1");
+    await reg.setPhase("conv-1", "Assigned");
+    expect(phases).toEqual(["Assigned", "Assigned"]);
+  });
+});
+
+describe("retryAfterMs", () => {
+  it("reads delta-seconds", () => {
+    expect(retryAfterMs({ headers: { "retry-after": "3" } })).toBe(3000);
+  });
+
+  it("reads the HTTP-date form, relative to now", () => {
+    const now = Date.parse("2026-01-01T00:00:00Z");
+    expect(retryAfterMs({ headers: { "Retry-After": "Thu, 01 Jan 2026 00:00:05 GMT" } }, now)).toBe(5000);
+  });
+
+  it("never returns a negative wait for a date already past", () => {
+    const now = Date.parse("2026-01-01T00:00:10Z");
+    expect(retryAfterMs({ headers: { "retry-after": "Thu, 01 Jan 2026 00:00:05 GMT" } }, now)).toBe(0);
+  });
+
+  it("is undefined when there is no usable header, so the caller backs off on its own", () => {
+    expect(retryAfterMs({})).toBeUndefined();
+    expect(retryAfterMs({ headers: {} })).toBeUndefined();
+    expect(retryAfterMs({ headers: { "retry-after": "soon" } })).toBeUndefined();
   });
 });
