@@ -25,6 +25,10 @@ import { lookup } from "node:dns/promises";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ConversationLink } from "../session/manager.js";
+import { logger } from "../log.js";
+import { parseGithubUrl, parseGitlabUrl, parseJiraUrl } from "./resourceRef.js";
+
+const log = logger("agentTools");
 
 /** An MCP tool result (matches mcpServer.ts's ToolResult). */
 export interface ToolResult {
@@ -35,7 +39,8 @@ export interface ToolResult {
 /** The external resource a conversation maps to, as recorded by the webhooks
  *  service in Postgres (conversation_map). The FALLBACK source of the target when
  *  a conversation's link has no structured `ref` (e.g. it was created before ref
- *  existed). `resourceId` is source-specific:
+ *  existed). `resourceId` is source-specific — and the resource's URL is accepted for
+ *  every one of them, since that is the shape the agent-host API stores (#563):
  *    slack:  "<channel>:<thread_ts>"
  *    github: "<owner>/<repo>#<number>"
  *    gitlab: "<repo>!<iid>" (MR) or "<repo>#<iid>" (issue) */
@@ -155,17 +160,22 @@ function parseSlackResourceId(resourceId: string): { channel?: string; threadTs?
   return { channel: resourceId.slice(0, i), threadTs: resourceId.slice(i + 1) };
 }
 
-/** github: "<owner>/<repo>#<number>". */
-function parseGithubResourceId(resourceId: string): { owner?: string; repo?: string; number?: number } {
+/** github: "<owner>/<repo>#<number>", OR the html_url form the agent-host API stores.
+ *  Both shapes exist for the same resource (see resourceRef.ts), so accept either. */
+export function parseGithubResourceId(resourceId: string): { owner?: string; repo?: string; number?: number } {
   const m = resourceId.match(/^([^/]+)\/(.+)#(\d+)$/);
-  if (!m) return {};
-  return { owner: m[1], repo: m[2], number: Number(m[3]) };
+  if (m) return { owner: m[1], repo: m[2], number: Number(m[3]) };
+  return parseGithubUrl(resourceId) ?? {};
 }
 
 /** gitlab: "<repo>!<iid>" (MR) or "<repo>#<iid>" (issue). `repo` is the project
  *  PATH — GitLab's API accepts a URL-encoded path in place of the numeric id, so
  *  we return it as `projectId`. `isMr` distinguishes the endpoint. */
-function parseGitlabResourceId(resourceId: string): { projectId?: string; iid?: string; isMr?: boolean } {
+export function parseGitlabResourceId(resourceId: string): { projectId?: string; iid?: string; isMr?: boolean } {
+  // URL first: a web_url ending in a "#<n>" fragment would otherwise match the
+  // "<repo>#<iid>" shape below and yield the whole URL as the project path.
+  const fromUrl = parseGitlabUrl(resourceId);
+  if (fromUrl) return fromUrl;
   const mr = resourceId.match(/^(.+)!(\d+)$/);
   if (mr) return { projectId: mr[1], iid: mr[2], isMr: true };
   const issue = resourceId.match(/^(.+)#(\d+)$/);
@@ -200,57 +210,88 @@ export async function resolveSlackTarget(
   return undefined;
 }
 
+/** Links of one source, oldest first (listLinks orders by insert id) — so the resource
+ *  the conversation was STARTED from wins over one the agent created later. */
+function linksFor(links: ConversationLink[], source: string): ConversationLink[] {
+  return links.filter((l) => l.source === source);
+}
+
+/**
+ * The first link of `source` that yields a COMPLETE target, via `resolve`.
+ *
+ * Completeness is per link: fields are never mixed across links or with the DB
+ * fallback. Half a ref plus half a mapping once produced an owner from one repo and a
+ * number from another — a comment on an unrelated PR.
+ */
+function firstTarget<T>(
+  links: ConversationLink[],
+  source: string,
+  resolve: (link: ConversationLink) => T | undefined,
+): T | undefined {
+  for (const link of linksFor(links, source)) {
+    const t = resolve(link);
+    if (t) return t;
+  }
+  return undefined;
+}
+
 /** The GitHub PR/issue this conversation is attached to, or undefined. */
 export async function resolveGithubTarget(
   ctx: ToolContext,
 ): Promise<{ owner: string; repo: string; number: number } | undefined> {
-  const ref = inferRef(await ctx.links(), "github");
-  let owner = ref?.owner;
-  let repo = ref?.repo;
-  let number: number | undefined = ref?.number;
-  if (!owner || !repo || number == null) {
-    const m = await ctx.resourceLookup?.("github");
-    if (m) {
-      const p = parseGithubResourceId(m.resourceId);
-      owner = owner ?? p.owner;
-      repo = repo ?? p.repo;
-      number = number ?? p.number;
-    }
-  }
-  if (!owner || !repo || number == null) return undefined;
-  return { owner, repo, number };
+  // ref first, then the link's URL — a link posted through the agent-host API (broker
+  // auto-link, `link add`) carries only url/title, which is the majority of real rows.
+  const fromLinks = firstTarget(await ctx.links(), "github", (l) =>
+    l.ref?.owner && l.ref.repo && l.ref.number != null
+      ? { owner: l.ref.owner, repo: l.ref.repo, number: l.ref.number }
+      : parseGithubUrl(l.url),
+  );
+  if (fromLinks) return fromLinks;
+  const m = await ctx.resourceLookup?.("github");
+  if (!m) return undefined;
+  const p = parseGithubResourceId(m.resourceId);
+  if (!p.owner || !p.repo || p.number == null) return undefined;
+  return { owner: p.owner, repo: p.repo, number: p.number };
+}
+
+/** Does this GitLab link point at an MR or an issue? The type is spelled differently
+ *  by each writer ("merge_request" from the webhooks handler, "mr" from the broker's
+ *  auto-link), and an unrecognised one falls back to which ref field carried the iid. */
+function isGitlabMrLink(resourceType: string, hasMrIid: boolean): boolean {
+  if (["merge_request", "merge_requests", "mr"].includes(resourceType)) return true;
+  if (["issue", "issues"].includes(resourceType)) return false;
+  return hasMrIid;
 }
 
 /** The GitLab MR/issue this conversation is attached to, or undefined. */
 export async function resolveGitlabTarget(
   ctx: ToolContext,
 ): Promise<{ projectId: string; iid: string; isMr: boolean } | undefined> {
-  const ref = inferRef(await ctx.links(), "gitlab");
-  let projectId = ref?.projectId;
-  let iid: string | undefined = ref?.mrIid;
-  let isMr = true;
-  if (!projectId || !iid) {
-    const m = await ctx.resourceLookup?.("gitlab");
-    if (m) {
-      const p = parseGitlabResourceId(m.resourceId);
-      projectId = projectId ?? p.projectId;
-      iid = iid ?? p.iid;
-      isMr = p.isMr ?? true;
-    }
-  }
-  if (!projectId || !iid) return undefined;
-  return { projectId, iid, isMr };
+  const fromLinks = firstTarget(await ctx.links(), "gitlab", (l) => {
+    const iid = l.ref?.mrIid ?? l.ref?.iid;
+    if (!l.ref?.projectId || !iid) return parseGitlabUrl(l.url);
+    // resourceType decides the endpoint: an issue link whose iid landed in `mrIid`
+    // (what webhooks wrote before #563) must NOT comment on the MR of that number.
+    return { projectId: l.ref.projectId, iid, isMr: isGitlabMrLink(l.resourceType, l.ref.mrIid != null) };
+  });
+  if (fromLinks) return fromLinks;
+  const m = await ctx.resourceLookup?.("gitlab");
+  if (!m) return undefined;
+  const p = parseGitlabResourceId(m.resourceId);
+  if (!p.projectId || !p.iid) return undefined;
+  return { projectId: p.projectId, iid: p.iid, isMr: p.isMr ?? true };
 }
 
 /** The Jira issue this conversation is attached to, or undefined. */
 export async function resolveJiraTarget(ctx: ToolContext): Promise<{ issueKey: string } | undefined> {
-  const ref = inferRef(await ctx.links(), "jira");
-  let issueKey = ref?.issueKey;
-  if (!issueKey) {
-    const m = await ctx.resourceLookup?.("jira");
-    if (m?.resourceId) issueKey = m.resourceId;
-  }
-  return issueKey ? { issueKey } : undefined;
+  const fromLinks = firstTarget(await ctx.links(), "jira", (l) =>
+    l.ref?.issueKey ? { issueKey: l.ref.issueKey } : parseJiraUrl(l.url),
+  );
+  if (fromLinks) return fromLinks;
+  const m = await ctx.resourceLookup?.("jira");
+  if (!m?.resourceId) return undefined;
+  // conversation_map holds the bare key; a resource_links row may hold the browse URL.
+  return parseJiraUrl(m.resourceId) ?? { issueKey: m.resourceId };
 }
 
 /** Post to the current Slack thread (channel + thread_ts inferred). */
@@ -658,6 +699,15 @@ export async function registerAgentTools(
     resolveGitlabTarget(ctx).catch(() => undefined),
     resolveJiraTarget(ctx).catch(() => undefined),
   ]);
+  // Say which providers resolved. An absent tool was previously invisible — no error,
+  // no log line — so "the agent never commented on the PR" had nothing to grep for.
+  log.info("provider reply tools resolved", {
+    conversation_id: ctx.conversationId,
+    slack: Boolean(slack),
+    github: Boolean(github),
+    gitlab: Boolean(gitlab),
+    jira: Boolean(jira),
+  });
 
   if (slack) {
     server.registerTool(

@@ -402,10 +402,14 @@ async def _background_create_conversation(
     # entire run (the 5-10min lag). Only conv_id is needed, known in the hook.
     async def _register(conv_id: str) -> None:
         await db.store_conversation(source, res_type, res_id, conv_id)
+        # An ISSUE's iid goes in `iid`, not `mrIid`: gitlab_comment reads mrIid as
+        # "this is merge request N", so an issue link posted the agent's comment on
+        # the MR of the same number. Why: issue #563.
+        iid_key = "mrIid" if res_type == "merge_request" else "iid"
         await push_link(
             conv_id, source="gitlab", resource_type=res_type,
             title=res_id,
-            ref={"projectId": str(project_id), "mrIid": str(noteable_iid)},
+            ref={"projectId": str(project_id), iid_key: str(noteable_iid)},
         )
         await post_gitlab_comment(
             project_id=project_id, noteable_type=note_api_type,

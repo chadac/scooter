@@ -32,9 +32,11 @@ def test_native_shape_is_tried_first():
     )
 
 
-def test_unparseable_id_yields_only_itself():
+def test_unparseable_id_yields_no_invented_url():
     # No guessing: an id that is not owner/repo#N gets no invented URL, so an
-    # unlinked resource still resolves to nothing and the agent stays quiet.
-    assert _link_variants("pull_request", "not-a-resource-id") == [
-        ("pull_request", "not-a-resource-id")
-    ]
+    # unlinked resource still resolves to nothing and the agent stays quiet. (The
+    # type is still tried in both spellings — a "pr" row naming the same id IS this
+    # resource; only the id may not be invented.)
+    variants = _link_variants("pull_request", "not-a-resource-id")
+    assert {rid for _, rid in variants} == {"not-a-resource-id"}
+    assert variants[0] == ("pull_request", "not-a-resource-id")
