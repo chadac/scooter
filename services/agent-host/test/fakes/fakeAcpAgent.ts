@@ -67,6 +67,10 @@ export interface FakeAcpAgent {
   /** Bring a died agent back alive (isAlive() → true) — so a test can assert the pump's
    *  auto-retry SUCCEEDS on a later attempt after a transient death. */
   heal(): void;
+  /** Make the next prompt REJECT with `message` once it is released. A real agent's
+   *  abandoned stream rejects late — often after the dead-on-arrival watchdog has
+   *  already given up — and that rejection carries the only account of why. */
+  failNext(message: string): void;
   /** Push a session update to the CURRENTLY-RUNNING prompt's onUpdate — for a
    *  test to deliver a tool_call_update result while the run is gated. */
   emit(u: SessionUpdate): void;
@@ -84,6 +88,7 @@ export function createFakeAcpAgent(): FakeAcpAgent {
   let kills = 0;
   let starts = 0;
   let alive = true;
+  let failWith: string | undefined; // see failNext()
   const cancelledSessions = new Set<string>();
   // The live onUpdate of the currently-running prompt, so a test can push an
   // update MID-RUN (e.g. a tool_call_update result while the run is gated).
@@ -121,8 +126,15 @@ export function createFakeAcpAgent(): FakeAcpAgent {
       if (gated) {
         await new Promise<void>((res) => { releaseGateFn = res; });
       }
-      // A cancel that landed while gated resolves the prompt as cancelled.
-      if (cancelledSessions.delete(sessionId)) stopReason = "cancelled";
+      // Consume the cancel flag first either way, so it can't leak into a later prompt.
+      const wasCancelled = cancelledSessions.delete(sessionId);
+      // A rejection wins over it: the stream FAILED, it did not end cleanly.
+      if (failWith !== undefined) {
+        const message = failWith;
+        failWith = undefined;
+        throw new Error(message);
+      }
+      if (wasCancelled) stopReason = "cancelled";
       return { stopReason };
     },
     async cancel(sessionId: string) {
@@ -163,6 +175,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     startedCount() {
       return starts;
+    },
+    failNext(message: string) {
+      failWith = message;
     },
     die() {
       alive = false;

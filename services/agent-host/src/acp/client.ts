@@ -107,10 +107,11 @@ export interface AcpClient {
    *  process is alive). An in-process fake reports alive until close(). */
   isAlive(): boolean;
 
-  /** The agent subprocess's most recent stderr lines (oldest first). The ONLY place a
-   *  dead-on-arrival run's cause exists — ACP reports nothing for a run that never
-   *  spoke. Optional: an in-process fake has no subprocess. Why: PR #565. */
-  recentStderr?(): string[];
+  /** The agent's most recent diagnostic lines (oldest first) — a subprocess client's
+   *  stderr tail, or an in-process provider's captured errors. The ONLY place a
+   *  dead-on-arrival run's cause exists: ACP reports nothing for a run that never
+   *  spoke. Optional: a fake has none. Why: PR #565. */
+  recentDiagnostics?(): string[];
 
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   /** Notified when goose creates a terminal to run a shell command. The command
@@ -394,7 +395,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       // becomes non-null once it exits. So alive === both null.
       return child.exitCode === null && child.signalCode === null;
     },
-    recentStderr() {
+    recentDiagnostics() {
       return [...stderrTail];
     },
     onSessionUpdate(cb) {

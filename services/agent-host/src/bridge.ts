@@ -678,6 +678,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const readySessions = new Map<string, Promise<{ client: AcpClient; acpSessionId: string; historySeeded: boolean; mcpFingerprint: string }>>();
   let acpClient: AcpClient | undefined;
 
+  // A wedged run's cause usually arrives AFTER the watchdog gave up (the abandoned
+  // stream rejects late), by which point the client has been dropped and its own tail
+  // goes with it. So the diagnostic is kept HERE, per conversation, where the next
+  // attempt's message can still reach it. Why: PR #565.
+  const runDiagnostics: string[] = [];
+  const RUN_DIAGNOSTICS_MAX = 5;
+  const noteRunDiagnostic = (line: string): void => {
+    if (!line) return;
+    runDiagnostics.push(line);
+    if (runDiagnostics.length > RUN_DIAGNOSTICS_MAX) runDiagnostics.shift();
+  };
+
   /** Drop the cached ready-session so the next attempt re-initializes a fresh one.
    *  A wedged session fails IDENTICALLY on every retry, so retrying through it just
    *  burns the budget. */
@@ -1082,7 +1094,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // only evidence is a "prompt: sending" with no matching "returned".
         // Read the provider's stderr BEFORE we kill the process. It is the process's
         // tail, so it may predate this run — hence "last diagnostic". Why: PR #565.
-        const diagnostic = providerDiagnostic(acpClient?.recentStderr?.());
+        const diagnostic = providerDiagnostic([
+          ...runDiagnostics, // carried over from earlier attempts (see noteRunDiagnostic)
+          ...(acpClient?.recentDiagnostics?.() ?? []),
+        ]);
         log.warn("run wedged: no ACP activity before the deadline (dead on arrival)", {
           run_id: st.runId,
           waited_ms: firstActivityTimeoutMs,
@@ -1304,6 +1319,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       st.ended = true;
       closeOpenText(st);
       closeOpenReasoning(st);
+      // Record it even when the watchdog already terminated this run — that is the
+      // wedge case, and this rejection is the only account of WHY. PR #565.
+      noteRunDiagnostic(err instanceof Error ? err.message : String(err));
       // The watchdog's self.cancel() makes the pending prompt() reject here — but the
       // watchdog already emitted RUN_ERROR, so skip a duplicate terminal.
       if (!st.terminated) {
