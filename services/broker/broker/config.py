@@ -39,15 +39,6 @@ class BrokerSettings(ScooterBaseSettings):
     # the API self URL.
     jira_site_url: str = ""
 
-    # Datadog (two-key header auth: DD-API-KEY + DD-APPLICATION-KEY). The provider
-    # proxies /datadog/* -> https://api.<site> with both keys injected, so the
-    # agent can query metrics/logs/monitors WITHOUT seeing the keys. Enabled iff
-    # BOTH keys are set. `site` is region-specific (datadoghq.com | datadoghq.eu |
-    # us3.datadoghq.com | us5.datadoghq.com | ap1.datadoghq.com | ddog-gov.com).
-    datadog_api_key: str = ""
-    datadog_app_key: str = ""
-    datadog_site: str = "datadoghq.com"
-
     # --- Grafana (service-account token; http-proxy to a Grafana stack) -----
     # The broker's grafana provider proxies /grafana/* -> <grafana_url>, injecting
     # the token so the agent can query dashboards/datasources (and through the

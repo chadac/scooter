@@ -1,8 +1,8 @@
 """Provider-SPECIFIC credential sources.
 
-Each of these belongs to exactly one integration — `github_app` to github,
-`atlassian_oauth` to jira, `datadog_keys` to datadog — so each travels WITH its
-provider into that provider's contrib module in the integration slices. Putting
+Each belongs to exactly one integration — `github_app` to github,
+`atlassian_oauth` to jira — so each travels WITH its provider into that
+provider's contrib module. `datadog_keys` already has (contrib/datadog). Putting
 them in the shared surface would have kept github-specific code in `shared`,
 which is the opposite of what splitting into contribs is for (PR #567).
 

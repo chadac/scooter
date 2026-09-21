@@ -73,9 +73,18 @@ let
 
   metaOf = dir: import (./. + "/${dir}/module.nix");
 
+  targets = svc: dir: lib.elem svc (metaOf dir).services;
+  isExample = dir: (metaOf dir).example or false;
+
+  # What actually ships into a service image. `example = true` contribs are
+  # excluded: they are reference material, still built and tested via
+  # packages.<name>.<svc>, but an example whose provider is unconditionally
+  # enabled must not mount its routes on a production service.
   forService = svc:
     map (dir: buildContrib dir svc)
-      (lib.filter (dir: lib.elem svc (metaOf dir).services) contribNames);
+      (lib.filter (dir: targets svc dir && !isExample dir) contribNames);
+
+  everyVariant = svc: map (dir: buildContrib dir svc) (lib.filter (targets svc) contribNames);
 
   # packages.<name>.<service>. No flat packages.<name>: which surface a contrib
   # carries is part of its identity now.
@@ -95,8 +104,8 @@ in
   # carries only that service's extension surface.
   broker = forService "broker";
   webhooks = forService "webhooks";
-  # Every variant of every contrib, and lookup by name+service
-  # (e.g. contribs.packages.echo.broker).
-  all = forService "broker" ++ forService "webhooks";
+  # Every variant of every contrib INCLUDING examples, and lookup by
+  # name+service (e.g. contribs.packages.echo.broker).
+  all = everyVariant "broker" ++ everyVariant "webhooks";
   packages = byName;
 }
