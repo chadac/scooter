@@ -599,6 +599,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
     }
     if (entries.has(m.id)) return entries.get(m.id);
+    // Never re-adopt a conversation end() destroyed. A store/CR read that started
+    // before the delete lands after it, and adopting it here would put the id back
+    // in `entries` — where saveMeta's fence can no longer help. Why: PR #549.
+    if (endedIds.has(m.id)) return undefined;
     // Reconcile just this conversation's Sandbox so we track a still-running pod
     // correctly (best-effort; on failure revive() recreates from the placeholder).
     let onCluster: { ref: SandboxRef; running: boolean } | undefined;
@@ -625,23 +629,40 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return hydrated;
   };
 
+  // Ids end() has torn down. A late write for one must never land: end() awaits
+  // bridge.stop + destroy + removeConversation, and a concurrent prompt/revive
+  // holding the Entry writes the meta row back INSIDE that window, resurrecting
+  // the conversation with a pod the DELETE was meant to reclaim. Why: PR #549.
+  const endedIds = new Set<SessionId>();
+  const ENDED_TOMBSTONES = 4096;
+  const tombstone = (id: SessionId) => {
+    // Bounded FIFO: Set preserves insertion order, so the first key is the oldest.
+    if (endedIds.size >= ENDED_TOMBSTONES) {
+      const oldest = endedIds.values().next();
+      if (!oldest.done) endedIds.delete(oldest.value);
+    }
+    endedIds.add(id);
+  };
+
   // Returns the persist promise so callers that must guarantee durability (e.g.
   // start(), before returning to the caller) can await it; fire-and-forget
   // callers (setTitle) just ignore it.
   const saveMeta = (e: Entry): Promise<void> =>
-    store.saveMeta?.({
-      id: e.id,
-      threadId: e.threadId,
-      title: e.title,
-      createdAt: e.createdAt,
-      lastActivityAt: e.lastActivityAt,
-      model: e.model,
-      owner: e.owner,
-      parentId: e.parentId,
-      userTitled: e.userTitled,
-      starred: e.starred,
-      pendingQueue: e.pendingQueue,
-    }) ?? Promise.resolve();
+    endedIds.has(e.id)
+      ? Promise.resolve()
+      : store.saveMeta?.({
+          id: e.id,
+          threadId: e.threadId,
+          title: e.title,
+          createdAt: e.createdAt,
+          lastActivityAt: e.lastActivityAt,
+          model: e.model,
+          owner: e.owner,
+          parentId: e.parentId,
+          userTitled: e.userTitled,
+          starred: e.starred,
+          pendingQueue: e.pendingQueue,
+        }) ?? Promise.resolve();
 
   /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
   const fencedDrops = new Map<SessionId, number>();
@@ -819,6 +840,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async revive(id) {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
+      // end() tombstones BEFORE it awaits teardown, so a resume nudge that raced the
+      // DELETE still holds this Entry. Reviving it would provision a fresh pod and
+      // re-register the CR that end() is in the middle of removing. Why: PR #549.
+      if (endedIds.has(id)) throw new Error(`conversation was ended: ${id}`);
 
       // A HYDRATED conversation (restored from disk after a restart) has a
       // placeholder sandbox ref with no namespace — its pod was never created in
@@ -827,6 +852,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       entry.sandbox = entry.sandbox.namespace
         ? await provisioner.resume(entry.sandbox, entry.threadId)
         : await provisioner.create(shortId(entry.threadId), entry.threadId);
+      // end() may have landed while we were provisioning. Bail BEFORE the side effects:
+      // register() below would re-create the CR end() just removed, and hydrate()
+      // re-adopts a surviving CR. Destroy the pod we just made — end()'s own destroy
+      // ran against the ref we replaced, so nothing else will reclaim it. Why: PR #549.
+      if (endedIds.has(id)) {
+        await provisioner.destroy(entry.sandbox).catch((err: unknown) => {
+          log.errorWith("failed to destroy a pod revived into a deleted conversation", err, {
+            conversation_id: id,
+          });
+        });
+        throw new Error(`conversation was ended: ${id}`);
+      }
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model, owner: entry.owner }) ?? entry.bridge;
       entry.status = "running";
       // RE-REGISTER the CR on revive. register() is only called on start()/spawnChild(), so a
@@ -1213,6 +1250,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const endSubtree = async (targetId: SessionId, destroyPod: boolean): Promise<void> => {
         const e = entries.get(targetId);
         if (!e) return;
+        // Fence FIRST, before the teardown's awaits: bridge.stop + destroy +
+        // removeConversation are the window a concurrent prompt/revive writes the
+        // conversation back in. Tombstoning after entries.delete leaves it open —
+        // the resurrected row then answers 200 forever. Why: PR #549.
+        tombstone(targetId);
         // Depth-first: end descendants before this node.
         const children = [...entries.values()].filter((c) => c.parentId === targetId);
         for (const child of children) await endSubtree(child.id, false);
