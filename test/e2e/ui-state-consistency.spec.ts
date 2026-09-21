@@ -37,10 +37,10 @@ test.describe("whole-UI consistency through a normal turn", () => {
     // 20s, not 3: this asserts the run bar is VISIBLE, so the run must still be in flight when
     // the assertion polls. On the full target the exec waits for a ready sandbox pod BEFORE the
     // sleep starts, so a 3s sleep can begin and END inside that wait — the bar never renders and
-    // the test fails with everything behaving correctly (observed: "element(s) not found" after
-    // the full 30s). The same arithmetic is why stop-run.spec.ts:75 uses a 20s sleep. Nothing
-    // waits for this sleep to finish — the poll below ends the test as soon as the run does.
-    // startLongRun, not an inline 30s bar wait: it carries the full-target cold-pod budget.
+    // the test fails with everything behaving correctly. The same arithmetic is why
+    // stop-run.spec.ts:75 uses a 20s sleep. Nothing waits for this sleep to finish — the poll
+    // below ends the test as soon as the run does.
+    // startLongRun, not an inline bar wait: it carries the full-target cold-pod budget.
     // Why: PR #550.
     await chat.startLongRun(20);
     // Wait for the user message to be fully rendered before snapshotting. The run-status-bar
@@ -171,7 +171,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // IDLE conversation as an ordinary turn, the queue never holds it, and the conservation
     // count comes up one short (observed: expected 2, received 1) while nothing is actually
     // lost. A 20s sleep keeps the run in flight across the queueing window.
-    // startLongRun, not an inline 30s bar wait: it carries the full-target cold-pod budget.
+    // startLongRun, not an inline bar wait: it carries the full-target cold-pod budget.
     // Why: PR #550.
     await chat.startLongRun(20);
     const start = await step(page, "run started");
@@ -208,7 +208,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // precedes the sleep, so the sleep's own 20s is not the margin it appears to be. Nothing
     // waits for this sleep to finish (the test ends mid-run; cleanState cancels it), so the
     // longer sleep costs no wall-clock time.
-    // startLongRun, not an inline 30s bar wait: it carries the full-target cold-pod budget.
+    // startLongRun, not an inline bar wait: it carries the full-target cold-pod budget.
     // Why: PR #550.
     await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
