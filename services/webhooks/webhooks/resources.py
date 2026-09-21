@@ -1,18 +1,9 @@
-"""Canonical shapes for (source, resource_type, resource_id).
+"""Canonical shapes for (source, resource_type, resource_id) — the ONE place that
+knows ("pull_request", "o/r#7") and ("pr", "<html_url>") are the same resource.
 
-The same external resource is described two ways by two writers:
-
-  conversation_map   this service          ("pull_request", "chadac/scooter#487")
-  resource_links     agent-host /links     ("pr", "https://github.com/chadac/scooter/pull/487")
-
-Neither is wrong, but an exact-match lookup in one shape never finds a row written in
-the other — which silently dropped forwards and left the agent's reply tools unarmed
-(issue #563). This module is the ONE place that knows the shapes are the same resource.
-
-`conversation_map.resource_id` is a lookup key matched exactly, so nothing here
-rewrites existing rows: we normalise what we WRITE to resource_links and match ALL
-known shapes on READ. That keeps incoming webhooks routing to the open conversation
-instead of spawning duplicates.
+Nothing here rewrites conversation_map: its resource_id is matched EXACTLY to route an
+incoming webhook, so we normalise what we WRITE to resource_links and match every known
+shape on READ. Why: PR #571.
 """
 
 from __future__ import annotations

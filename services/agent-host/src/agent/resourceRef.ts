@@ -1,19 +1,10 @@
 /**
- * One place that turns a linked resource's IDENTITY — a URL, or a webhooks
- * `resource_id` — into the structured target the reply tools need (owner/repo/number,
- * project/iid, issue key).
+ * A linked resource's URL -> the structured target the reply tools need. One resource
+ * is written in two shapes by two writers, and this is where they meet.
  *
- * WHY THIS EXISTS: the same resource is written in two shapes by two writers. The
- * webhooks service stores `chadac/scooter#487` in `conversation_map`; every link that
- * arrives through the agent-host API (the broker's auto-link injector, an explicit
- * `link add`) stores the `html_url` in `resource_links` and carries NO `ref`. A
- * resolver that understood only one shape found nothing for the other, so
- * `github_comment` was silently never registered for URL-form links — the agent had no
- * way to reply on the PR it was working on. Why: PR #570 / issue #563.
- *
- * Parsers are deliberately host-agnostic (the link's `source` already says which
- * provider it is) and return undefined rather than guess — a wrong target posts a
- * comment on someone else's PR, which is worse than no tool at all.
+ * Parsers are host-agnostic (the link's `source` already names the provider) and return
+ * undefined rather than guess: a wrong target comments on someone else's PR, which is
+ * worse than no tool at all. Why: PR #571.
  */
 
 import type { ConversationLink } from "../session/manager.js";
