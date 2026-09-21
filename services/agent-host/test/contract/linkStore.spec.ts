@@ -29,6 +29,12 @@ const pr = (over: Partial<ConversationLink> = {}): ConversationLink => ({
   ...over,
 });
 
+/** The same PR as the store returns it: the `ref` is derived from the url when the
+ *  writer supplied none, so a link posted by the broker (url + title only) still names
+ *  its target for the reply tools. Why: issue #563. */
+const storedPr = (over: Partial<ConversationLink> = {}): ConversationLink =>
+  pr({ ref: { owner: "example-org", repo: "example-app", number: 203 }, ...over });
+
 /**
  * A tiny in-memory Postgres under a REAL drizzle client, so the store's generated-model
  * queries are exercised rather than a hand-rolled SQL shim. Drizzle builds the SQL; this
@@ -140,7 +146,7 @@ describe("linked resources in Postgres", () => {
     const store = createPgLinkStore({ db, legacy });
 
     await store.addLink(CONV, pr());
-    expect(await store.listLinks(CONV)).toEqual([pr()]);
+    expect(await store.listLinks(CONV)).toEqual([storedPr()]);
   });
 
   it("round-trips the full ConversationLink shape, ref included", async () => {
@@ -194,14 +200,58 @@ describe("linked resources in Postgres", () => {
 
   it("ENRICHES an existing link when a later post adds a ref", async () => {
     // The webhooks service posts a bare link first, then fills in structured targets.
+    // A Slack thread, deliberately: nothing about it is derivable from a url, so this
+    // still tests the enrich path rather than the derivation added in #563.
     const { db, rows } = fakeDb();
     const store = createPgLinkStore({ db });
-    await store.addLink(CONV, pr({ ref: undefined }));
-    await store.addLink(CONV, pr({ ref: { owner: "example-org", repo: "example-app", number: 203 } }));
+    const thread = (over: Partial<ConversationLink> = {}): ConversationLink => ({
+      source: "slack", resourceType: "thread", title: "#eng thread", ...over,
+    });
+    await store.addLink(CONV, thread());
+    await store.addLink(CONV, thread({ ref: { channel: "C123", threadTs: "1700.5" } }));
 
     const listed = await store.listLinks(CONV);
     expect(listed).toHaveLength(1);
-    expect(listed[0].ref).toEqual({ owner: "example-org", repo: "example-app", number: 203 });
+    expect(listed[0].ref).toEqual({ channel: "C123", threadTs: "1700.5" });
+  });
+
+  it("DERIVES the ref from the url when the writer supplied none", async () => {
+    // The broker's auto-link injector posts url + title only. Those rows had no ref at
+    // all, so the reply tools saw no attachment and github_comment never registered —
+    // the whole of issue #563. The store fills the documented contract in.
+    const { db, rows } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink(CONV, pr({ ref: undefined }));
+
+    // Asserted on the ROW, not just the read: the ref has to be persisted, so a
+    // reader that doesn't derive (the UI, a future consumer) sees it too. jsonb is
+    // bound as text by the driver, hence the parse.
+    expect(JSON.parse((rows[0] as { ref: string }).ref)).toEqual({
+      owner: "example-org",
+      repo: "example-app",
+      number: 203,
+    });
+    expect((await store.listLinks(CONV))[0].ref).toEqual({ owner: "example-org", repo: "example-app", number: 203 });
+  });
+
+  it("an EXPLICIT ref is never overwritten by the derived one", async () => {
+    // The webhooks handlers know more than a url does (a GitLab issue's project id, a
+    // Slack thread) — derivation only ever fills a gap.
+    const { db, rows } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink(CONV, pr({ ref: { owner: "example-org", repo: "example-app", number: 7 } }));
+
+    expect((await store.listLinks(CONV))[0].ref).toMatchObject({ number: 7 });
+  });
+
+  it("surfaces a derived ref for a row STORED without one (no migration needed)", async () => {
+    // The 155 live rows predate the write-side derivation; they must resolve on read.
+    const { db, rows } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink(CONV, pr());
+    (rows[0] as { ref: unknown }).ref = null; // as the deployed rows actually are
+
+    expect((await store.listLinks(CONV))[0].ref).toEqual({ owner: "example-org", repo: "example-app", number: 203 });
   });
 
   it("a sparser re-post never blanks a column we already have", async () => {
@@ -293,7 +343,7 @@ describe("read-through to file-backed links", () => {
     await store.listLinks(CONV); // reads through + backfills
     legacy.listLinks.mockClear();
 
-    expect(await store.listLinks(CONV)).toEqual([pr()]);
+    expect(await store.listLinks(CONV)).toEqual([storedPr()]);
     expect(legacy.listLinks).not.toHaveBeenCalled();
   });
 

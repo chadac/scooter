@@ -27,6 +27,7 @@ import { webhooks } from "@scooter/schema";
 
 import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
+import { withDerivedRef } from "../agent/resourceRef.js";
 
 import type { ConversationLink } from "./manager.js";
 import type { SessionId } from "../types.js";
@@ -90,19 +91,27 @@ export function createPgLinkStore(config: PgLinkStoreConfig): LinkStore {
     ref: ConversationLink["ref"] | string | null;
   };
 
-  const rowToLink = (row: LinkRow): ConversationLink => ({
-    source: row.source,
-    resourceType: row.resourceType,
-    ...(row.url == null ? {} : { url: row.url }),
-    ...(row.title == null ? {} : { title: row.title }),
-    // jsonb arrives parsed, but a driver configured to return raw text must not
-    // produce a string where the tools expect an object.
-    ...(row.ref == null
-      ? {}
-      : { ref: typeof row.ref === "string" ? JSON.parse(row.ref) : row.ref }),
-  });
+  // withDerivedRef on READ as well as write: rows already stored ref-less must resolve
+  // without a data migration, and GET /links must show the ref the UI/tools expect.
+  const rowToLink = (row: LinkRow): ConversationLink =>
+    withDerivedRef({
+      source: row.source,
+      resourceType: row.resourceType,
+      ...(row.url == null ? {} : { url: row.url }),
+      ...(row.title == null ? {} : { title: row.title }),
+      // jsonb arrives parsed, but a driver configured to return raw text must not
+      // produce a string where the tools expect an object.
+      ...(row.ref == null
+        ? {}
+        : { ref: typeof row.ref === "string" ? JSON.parse(row.ref) : row.ref }),
+    });
 
-  const insert = async (id: string, link: ConversationLink, overwrite: boolean): Promise<number> => {
+  const insert = async (id: string, rawLink: ConversationLink, overwrite: boolean): Promise<number> => {
+    // Derive the structured `ref` from the URL when the writer supplied none. The
+    // broker's auto-link injector posts url+title only, so rows written that way had
+    // no ref at all — and ref is the documented contract the reply tools read first.
+    // Why: issue #563.
+    const link = withDerivedRef(rawLink);
     const values = {
       conversationId: id,
       source: link.source,

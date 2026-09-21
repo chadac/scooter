@@ -12,6 +12,7 @@ from typing import AsyncGenerator
 from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from . import resources
 from .config import DatabaseSettings
 
 # Models are the generated, single-source-of-truth ORM classes for the webhooks
@@ -332,26 +333,33 @@ async def get_conversation_for_jira_ticket(issue_key: str) -> str | None:
 async def link_resource(
     conversation_id: str, source: str, resource_type: str, resource_id: str
 ) -> bool:
-    """Link a resource to a conversation. Returns True if newly inserted."""
-    async with get_session() as session:
-        existing = (
-            await session.execute(
-                select(ResourceLink).where(
-                    ResourceLink.source == source,
-                    ResourceLink.resource_type == resource_type,
-                    ResourceLink.resource_id == resource_id,
-                )
-            )
-        ).scalar_one_or_none()
+    """Link a resource to a conversation. Returns True if newly inserted.
 
-        if existing:
-            return False
+    Normalises rather than trusting the caller: the row is stored in the canonical
+    shape, and an existing row in ANY known shape counts as already-linked. Without
+    this, the same PR arriving as ("pull_request", "o/r#7") and ("pr", "<html_url>")
+    produced two rows the other writer could never find. Why: issue #563.
+    """
+    rtype, rid = resources.canonical_link(source, resource_type, resource_id)
+    async with get_session() as session:
+        for vtype, vid in resources.link_variants(source, resource_type, resource_id):
+            existing = (
+                await session.execute(
+                    select(ResourceLink).where(
+                        ResourceLink.source == source,
+                        ResourceLink.resource_type == vtype,
+                        ResourceLink.resource_id == vid,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing:
+                return False
 
         session.add(ResourceLink(
             conversation_id=conversation_id,
             source=source,
-            resource_type=resource_type,
-            resource_id=resource_id,
+            resource_type=rtype,
+            resource_id=rid,
         ))
         return True
 
@@ -359,18 +367,22 @@ async def link_resource(
 async def get_conversation_for_resource(
     source: str, resource_type: str, resource_id: str
 ) -> str | None:
-    """Look up the conversation linked to a resource."""
+    """Look up the conversation linked to a resource, in any shape it may be stored
+    in (see resources.link_variants) — the caller's own shape is tried first."""
     async with get_session() as session:
-        row = (
-            await session.execute(
-                select(ResourceLink).where(
-                    ResourceLink.source == source,
-                    ResourceLink.resource_type == resource_type,
-                    ResourceLink.resource_id == resource_id,
+        for vtype, vid in resources.link_variants(source, resource_type, resource_id):
+            row = (
+                await session.execute(
+                    select(ResourceLink).where(
+                        ResourceLink.source == source,
+                        ResourceLink.resource_type == vtype,
+                        ResourceLink.resource_id == vid,
+                    )
                 )
-            )
-        ).scalar_one_or_none()
-        return row.conversation_id if row else None
+            ).scalar_one_or_none()
+            if row:
+                return row.conversation_id
+        return None
 
 
 # ---------------------------------------------------------------------------
