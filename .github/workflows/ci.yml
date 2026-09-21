@@ -753,6 +753,11 @@ jobs:
           [ "$DISTRIBUTE_RESULT" = "success" ] && [ "$SHARDS_RESULT" = "success" ]
 
       - name: download shard reports
+        # always(): the `gate on shard results` step above FAILS the job on a red
+        # night, which would otherwise skip this step and the merge+upload below —
+        # discarding the report for exactly the nights worth measuring. The gate
+        # still fails the job; the artifact is just no longer collateral.
+        if: always()
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-full-report-shard-*
@@ -761,6 +766,7 @@ jobs:
         continue-on-error: true
 
       - name: merge reports → e2e-full-report
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -768,21 +774,30 @@ jobs:
             const fs = require("fs");
             const dir = "shard-reports";
             let suites = [];
+            // A shard that dies before writing its JSON contributes nothing, so a merged
+            // report silently UNDERCOUNTS specs. Record how many shards actually landed:
+            // a lost shard is otherwise indistinguishable from a pile of failures, which
+            // is precisely the ambiguity this artifact exists to remove.
+            let shardReports = 0;
             for (const f of (fs.existsSync(dir) ? fs.readdirSync(dir) : [])) {
               if (!f.endsWith(".json")) continue;
-              try { const r = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")); suites = suites.concat(r.suites || []); } catch {}
+              try { const r = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")); suites = suites.concat(r.suites || []); shardReports++; } catch {}
             }
-            fs.writeFileSync("report.json", JSON.stringify({ suites }));
-            console.log("merged " + suites.length + " top-level suites into report.json");
+            fs.writeFileSync("report.json", JSON.stringify({ suites, meta: { shardReports } }));
+            console.log("merged " + suites.length + " top-level suites from " + shardReports + " shard reports");
           '
 
-      - name: upload merged e2e-full-report (for next run's shard weights)
-        if: needs.e2e-full-shard.result == 'success'
+      # Kept for the next run's shard weights AND as the per-night record of which
+      # specs passed. `e2e-full-distribute` still weights from the last SUCCESSFUL
+      # run only, so retaining red nights cannot skew the sharding.
+      - name: upload merged e2e-full-report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-full-report
           path: report.json
-          retention-days: 14
+          # 90d, not 14d: a baseline needs a window long enough to show the spread.
+          retention-days: 90
           if-no-files-found: ignore
 
   # e2e fast — Playwright through the UI against the fake-agent stack (no
