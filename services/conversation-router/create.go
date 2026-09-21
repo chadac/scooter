@@ -20,10 +20,28 @@ import (
 // Conversation CR, return. No agent-host is consulted, so this succeeds even when
 // the fleet is at capacity — the conversation is Pending until assigned.
 
+// NewConversation is the conversation to persist: the CR spec, plus the create-time
+// metadata that is NOT part of the CR.
+//
+// Title is separate from Spec on purpose. It used to be put in the spec map, where the
+// cluster's structural CRD schema — which has no `title` property — silently PRUNED it,
+// and only dev mode (a Postgres row, no schema) ever saw it. That made an apiserver
+// pruning rule the mechanism a feature depended on: invisible in the code, undetectable
+// at the call site, and one `title: {type: string}` away from changing behaviour in
+// production by accident. The field now says where it applies, and the CR carries only
+// what its schema declares. Why: PR #556.
+type NewConversation struct {
+	Name string
+	Spec map[string]interface{}
+	// Title is create-time ROW metadata, not a CR field. In cluster it is dropped here
+	// rather than by the apiserver: the title arrives later, from the agent's <title>.
+	Title string
+}
+
 // ConversationCreator creates a Conversation CR. Narrow so the route is testable
 // with a hand-written fake.
 type ConversationCreator interface {
-	Create(ctx context.Context, name string, spec map[string]interface{}) error
+	Create(ctx context.Context, c NewConversation) error
 }
 
 // dynamicCreator uses the same dynamic client as the ownership cache.
@@ -32,12 +50,14 @@ type dynamicCreator struct {
 	namespace string
 }
 
-func (d *dynamicCreator) Create(ctx context.Context, name string, spec map[string]interface{}) error {
+func (d *dynamicCreator) Create(ctx context.Context, c NewConversation) error {
+	// c.Title is deliberately not written: it is not in the CRD schema, so the apiserver
+	// would prune it anyway. Dropping it here makes that visible in the code.
 	obj := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": conversationGVR.Group + "/" + conversationGVR.Version,
 		"kind":       "Conversation",
-		"metadata":   map[string]interface{}{"name": name, "namespace": d.namespace},
-		"spec":       spec,
+		"metadata":   map[string]interface{}{"name": c.Name, "namespace": d.namespace},
+		"spec":       c.Spec,
 	}}
 	_, err := d.dyn.Resource(conversationGVR).Namespace(d.namespace).Create(ctx, obj, metav1.CreateOptions{})
 	return err
@@ -116,18 +136,12 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 	if req.ParentID != "" {
 		spec["parentId"] = req.ParentID
 	}
-	// A create-time title. In cluster the CRD is a structural schema with no `title` property, so
-	// the apiserver PRUNES this key — production keeps its "title arrives later (agent <title>)"
-	// behaviour untouched. In dev mode devCreator reads it and persists it on the row, so an
-	// API-seeded conversation that is never prompted still lists with its title (sessions.spec.ts
-	// "fresh first visit", fast-only).
-	if req.Title != "" {
-		spec["title"] = req.Title
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if err := creator.Create(ctx, id, spec); err != nil {
+	// The title rides ALONGSIDE the spec, not in it: dev mode persists it on the row (so an
+	// API-seeded conversation that is never prompted still lists with its title —
+	// sessions.spec.ts "fresh first visit", fast-only), and the CR has no field for it.
+	if err := creator.Create(ctx, NewConversation{Name: id, Spec: spec, Title: req.Title}); err != nil {
 		logger("create").Error("conversation create failed",
 			convAttr(id),
 			slog.String("owner", owner),
