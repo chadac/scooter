@@ -116,6 +116,45 @@ let
         [ $# -ge 2 ] && printf '%s\n' "$2" > "$status_dir/error" || : > "$status_dir/error"
       }
 
+      # --- Helper: check if a lock is stale (F1 — PID + timestamp validation) ---
+      # A lock (status=building|switching) is STALE if:
+      #   - No PID file exists, OR
+      #   - PID file exists but the process is gone (kill -0 fails), OR
+      #   - Timestamp is > 1 hour old (generous ceiling; real builds finish in minutes)
+      # Returns 0 (true/stale) if the lock should be cleared, 1 (false/live) otherwise.
+      is_lock_stale() {
+        local st="$1"
+        # Not a lock state at all -> not stale (caller's responsibility to check)
+        [ "$st" != "building" ] && [ "$st" != "switching" ] && return 1
+
+        # No PID file -> stale (old lock format, or process died without cleanup)
+        [ ! -f "$status_dir/pid" ] && return 0
+
+        local pid
+        pid=$(cat "$status_dir/pid" 2>/dev/null || echo "")
+        [ -z "$pid" ] && return 0  # empty/unreadable PID file -> stale
+
+        # PID recorded but process is gone -> stale
+        if ! kill -0 "$pid" 2>/dev/null; then
+          return 0
+        fi
+
+        # Process is alive; check timestamp as a backstop (defends against a
+        # runaway build that wedges forever). Defensive: old locks won't have a
+        # timestamp file; absence is NOT grounds for clearing a live-PID lock.
+        if [ -f "$status_dir/timestamp" ]; then
+          local ts now age
+          ts=$(cat "$status_dir/timestamp" 2>/dev/null || echo 0)
+          now=$(date +%s)
+          age=$((now - ts))
+          # Stale if > 1 hour. A sandbox build+switch should finish in minutes;
+          # 1h is a generous ceiling that catches hung processes.
+          [ "$age" -gt 3600 ] && return 0
+        fi
+
+        return 1  # lock is LIVE (process exists, timestamp reasonable)
+      }
+
       # --- --detach: re-exec THIS run in a SEPARATE systemd unit, then return ---
       # The background converge must OUTLIVE its caller. setsid alone is NOT enough:
       # setsid escapes the controlling terminal + process group, but the child stays
@@ -132,15 +171,45 @@ let
       # child does the real work WITHOUT --detach and maintains status/log. mkdir the
       # status dir FIRST (foreground) so the log redirect can't race it (the
       # run_background mkdir-before-& lesson). A switch already in flight
-      # (status=building|switching) is refused — no overlapping switches in one pod.
+      # (status=building|switching) is refused — no overlapping switches in one pod,
+      # UNLESS the lock is stale (no live holder) — then clear it and proceed (F2).
       if [ "$detach" -eq 1 ]; then
         mkdir -p "$status_dir"
         cur=$(cat "$status_dir/status" 2>/dev/null || echo idle)
+
+        # F2 — BOOT RESET / STALE LOCK CLEARING: if status is building|switching but
+        # the lock is STALE (no live PID, or PID gone, or timestamp > 1h), CLEAR it
+        # and proceed. The boot unit knows nothing it spawned could still be running,
+        # so a stale lock at boot is always safe to clear. Also clears locks stranded
+        # by an OOMKill / container-restart (same pod, /run persists, but process gone).
+        # Log the clear (F3 — make failure visible) so it's diagnosable.
+        if [ "$cur" = "building" ] || [ "$cur" = "switching" ]; then
+          if is_lock_stale "$cur"; then
+            echo "scooter-apply-module: clearing stale lock (status=$cur, holder gone) — proceeding" >&2
+            printf 'idle\n' > "$status_dir/status"
+            : > "$status_dir/pid" 2>/dev/null || true
+            : > "$status_dir/timestamp" 2>/dev/null || true
+            # Log the clear to the switch log so scooter-env-status can surface it (F3).
+            echo "$(date -Iseconds): cleared stale $cur lock (PID gone or timeout)" >> "$status_dir/log" 2>/dev/null || true
+            cur="idle"
+          fi
+        fi
+
+        # NOW check if a LIVE lock is held (after clearing stale ones). If still
+        # in-progress, a genuine build/switch is running -> refuse to overlap.
         if [ "$cur" = "building" ] || [ "$cur" = "switching" ]; then
           echo "scooter-apply-module: a switch is already in progress ($cur) — refusing" >&2
           exit 3
         fi
+
+        # F1 — ACQUIRE LOCK with PID + timestamp validation. Write our PID + the
+        # current timestamp alongside the status so future invocations can validate
+        # we're still alive. Fail-safe direction: a stale lock CLEARS (proceeds), not
+        # blocks — refusing forever is strictly worse than a rare overlapping switch.
         write_status building
+        printf '%s\n' "$$" > "$status_dir/pid"
+        date +%s > "$status_dir/timestamp"
+
         # Re-exec the SAME command ("$0" = this script's store path, the exact same
         # build) WITHOUT --detach, as a transient unit. StandardOutput/Error -> the
         # log file (append so the caller's building status line is preserved). It is
