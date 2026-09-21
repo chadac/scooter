@@ -33,9 +33,9 @@ const clusterUrl = process.env.E2E_CLUSTER_URL ?? "";
 
 export default defineConfig({
   testDir: "./test/e2e",
-  // 180s on the full target: there a turn's exec first waits for a READY sandbox pod, so the
-  // helpers are budgeted at 90s (sendTurn/startLongRun) and 120s (completeTurn) — a flat 60s
-  // ceiling guillotines them before they can report. Why: PR #551.
+  // 180s on the full target. A ceiling BELOW the helpers it contains (startLongRun waits 90s
+  // there, completeTurn 120s) kills them mid-wait, replacing their call log with a bare "Test
+  // timeout exceeded". Why: PR #551.
   timeout: full ? 180_000 : 60_000,
   expect: { timeout: 15_000 },
   // The whole suite shares ONE agent-host webServer + its persisted conversation
