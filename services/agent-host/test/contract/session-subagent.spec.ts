@@ -87,6 +87,51 @@ describe("SessionManager subagents", () => {
     expect(child.owner).toBe("alice");
   });
 
+  it("spawnChild RETURNS while the child is still working (it must not await the run)", async () => {
+    // The whole point of a subagent is that it works in the BACKGROUND: spawn_subagent's
+    // contract is "returns a subagent id — after spawning, END YOUR TURN, you'll be nudged
+    // when it finishes". SessionBridge.prompt() resolves when the run COMPLETES, not when
+    // it is enqueued, so awaiting it inside spawnChild holds the parent's turn hostage for
+    // the entire duration of the child's work — the parent's tool call never returns, the
+    // UI shows the parent still running, and the delegation bought nothing.
+    //
+    // Every other test here uses a fake bridge whose prompt() resolves immediately, which
+    // models the one case that cannot expose this. So: a child whose run never finishes.
+    const provisioner = fakeProvisioner();
+    let promptCalls = 0;
+    const neverFinishes = () =>
+      ({
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        prompt: () => {
+          promptCalls++;
+          return new Promise<void>(() => {}); // a long-running turn: enqueued, never completes
+        },
+        cancel: () => {},
+        stop: async () => {},
+        start: async () => {},
+        queueState: () => ({ running: true, currentRunMs: 0, queued: 0, maxQueuedPriority: 0 }),
+        answerPermission: () => {},
+      }) as unknown as import("../../src/bridge.js").SessionBridge;
+
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      bridgeFactory: neverFinishes,
+    });
+    const parent = await sessions.start("p", undefined, "alice");
+
+    const child = await Promise.race([
+      sessions.spawnChild(parent.id, "c-bg", { prompt: "long job" }),
+      new Promise((_r, reject) => setTimeout(() => reject(new Error("spawnChild BLOCKED on the child's run")), 1_000)),
+    ]);
+
+    expect((child as { id: string }).id).toBe("c-bg");
+    expect(promptCalls, "the child's work must still be kicked off").toBe(1);
+    // …and the child is registered, so the parent can see it immediately.
+    expect(sessions.get("c-bg" as SessionId)?.parentId).toBe(parent.id);
+  });
+
   it("lists a parent's children via parentId", async () => {
     const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
     const parent = await sessions.start("p", undefined, "alice");

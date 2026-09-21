@@ -6,13 +6,18 @@
  * sidebar uses (server-sourced, live via /conversations/events).
  */
 
-import { sessionStore, useSessions, type Session } from "./sessions.js";
+import { sessionStore, useSessions, serverKeyOf, type Session } from "./sessions.js";
 import { Button } from "@/components/ui/button";
 
-/** The subagents (children) of `parentId`, from the session store. */
+/** The subagents (children) of `parentId`, from the session store. `parentId` here is
+ *  the store's `currentId` (a local KEY); a subagent's own `parentId` is a SERVER id,
+ *  so resolve one to the other before matching — a bare comparison returns [], which
+ *  hides the Subagents tab entirely rather than showing it empty. Why: PR #558. */
 export function subagentsOf(sessions: Session[], parentId: string | undefined): Session[] {
   if (!parentId) return [];
-  return sessions.filter((s) => s.parentId === parentId);
+  const current = sessions.find((s) => s.id === parentId);
+  const serverId = serverKeyOf(current ?? { id: parentId });
+  return sessions.filter((s) => s.parentId === serverId);
 }
 
 const STATUS_DOT: Record<string, string> = {
