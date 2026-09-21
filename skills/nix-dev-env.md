@@ -76,3 +76,91 @@ The set is declared when the image is built
 (`modules/sandbox-os/stubs.nix` in the scooter repo). A module you write in the
 sandbox cannot add to it: any other package you install is built or downloaded
 then and there, not on first use.
+
+## Building here: `/homeless-shelter` and why the build aborts near the end
+
+This sandbox runs Nix with **`sandbox = false`** (a container can't nest the
+build sandbox). One Nix safety check only fires in that mode, and it looks like a
+flaky build:
+
+```
+error: home directory "/homeless-shelter" exists; please remove it to assure
+purity of builds without sandboxing
+```
+
+**What it means.** Nix runs every builder with `HOME=/homeless-shelter`, a path
+that is deliberately supposed to NOT exist, so a build that reaches for `$HOME`
+fails loudly instead of silently picking up your real dotfiles. With the sandbox
+ON, that home is inside the build's private mount namespace and nobody else can
+see it. With the sandbox OFF there is only the one real filesystem, so Nix checks
+the path before EVERY build and refuses if something created it.
+
+**Why it bites mid-run.** Some builder in the dependency graph (npm, cargo, go —
+anything that mkdir's `$HOME`) creates `/homeless-shelter` and leaves it behind.
+Every later build in the same run then aborts on the check. So a long
+`nix develop` can download and build for ten minutes and fail at the end, and the
+error names a directory you never touched. It is not your flake, and not a
+network flake.
+
+**The fix.** Remove it and re-run — the store keeps everything already built, so
+a retry resumes rather than restarts:
+
+```bash
+rm -rf /homeless-shelter
+nix develop --no-sandbox -c <command>
+```
+
+**When a single `rm` isn't enough** (a builder recreates it partway through), run
+a janitor beside the build:
+
+```bash
+(while true; do rm -rf /homeless-shelter 2>/dev/null; sleep 0.5; done) & JAN=$!
+cd /workspace/<repo>
+nix develop --no-sandbox -c <command>
+kill $JAN
+```
+
+Two traps worth knowing:
+
+- **Background the janitor, not your build.** `cd /repo && (janitor) & ...` binds
+  the `&` to the WHOLE `cd && (…)` compound, so the `cd` is what gets
+  backgrounded and your build runs from the wrong directory (`error: could not
+  find a flake.nix file`). Start the janitor first, then `cd` on its own line.
+- Use `run_background` for the build itself — a `nix develop` on a cold store is
+  far past the ~5min foreground timeout.
+
+**Don't** "fix" this by setting `sandbox = true` (it can't work here) or by
+pointing `HOME` somewhere real for the build — the check is protecting build
+purity, and the directory is genuinely garbage left by another builder.
+
+## The same trap, second form: helpers that DROP privileges
+
+`/homeless-shelter` is one instance of a general pattern here: **you are uid 0, and the
+nix dev shell puts you in a private `TMPDIR` that only root may enter.** Anything that
+drops privileges to do its work then cannot reach its own files.
+
+The one you will actually hit is Postgres, which hard-refuses to run as root, so test
+harnesses re-exec it as `nobody`:
+
+```
+initdb: error: could not access directory "/tmp/nix-shell.XXXX/pg/data": Permission denied
+```
+
+The data dir gets chowned to `nobody` — but its PARENT, the shell's `$TMPDIR`, is mode
+700 root-owned, so `nobody` cannot traverse into it. Run the harness with a
+world-traversable tmpdir:
+
+```bash
+nix develop --no-sandbox -c env TMPDIR=/tmp <the test command>
+```
+
+Related: if you SIGKILL such a harness (`kill_background` does), the Postgres it started
+**survives** and squats its port, so the next run dies with `pg_ctl: could not start
+server` and a log that explains nothing. Reap it before re-running:
+
+```bash
+pkill -f "[p]ostgres"; rm -rf /tmp/scooter-e2e-pg-*
+```
+
+CI runners are non-root, so none of this reproduces there. It is an artifact of being
+root in this sandbox — never a reason to change the harness.
