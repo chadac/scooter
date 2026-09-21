@@ -4,8 +4,8 @@
 # the CURRENT sandbox image tag: tops up (warm Jobs), GCs retired tags, returns claimed
 # PVCs on suspend, recovers leaks. Runs ALONGSIDE the upstream agent-sandbox controller
 # (which owns the Sandbox→pod/PVC lifecycle — we install it from a release, don't fork).
-# The agent-host provisioner does the CLAIM (claimName swap). See
-# todo/docs/WARM_STORE_PVC_MANAGER.md.
+# Placement pre-binds a warm PV to the sandbox's scooter-rw PVC via claimRef (PR #403); the
+# agent-host vct just declares that PVC. See todo/docs/WARM_STORE_PVC_MANAGER.md.
 #
 # OFF by default (`agentSandbox.warmStore.enable`): a fresh conversation always gets a
 # working (empty) overlay upper without it — the pool is a hit-rate optimization, not a

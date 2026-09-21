@@ -27,7 +27,7 @@ class FakeK8s:
         self._fail_list = fail_list
         self.reserved = []   # [(pv, pvc, sandbox)]
         self.grown = []      # [(pvc, image_tag)] — pool-class PVCs we created
-        self.adopted = []    # PVC names whose PVs we labelled into the pool
+        self.adopt_calls = 0  # times the loop asked us to sweep+label bound pool PVs
         self.released = []   # [pv]
         self.node_lists = 0  # how many times we asked the API for nodes
 
@@ -60,8 +60,8 @@ class FakeK8s:
     def release_pv(self, pv):
         self.released.append(pv)
 
-    def adopt_bound_pvs(self, pvcs):
-        self.adopted.extend(pvcs)
+    def adopt_bound_pvs(self):
+        self.adopt_calls += 1
 
     def grow_pool(self, pvc_name, image_tag):
         self.grown.append((pvc_name, image_tag))
@@ -305,10 +305,11 @@ def test_a_warm_PV_is_preferred_over_growing():
     assert k8s.grown == []
 
 
-def test_bound_pool_pvcs_get_their_PVs_ADOPTED():
-    # A dynamically-provisioned PV does NOT inherit its PVC's labels, and iter_pool_pvs
-    # selects on PV labels — so without this a grown volume survives its PVC (Retain) but
-    # is invisible to the pool forever, which is worse than never pooling it.
-    k8s = FakeK8s(pvs=[], pending=[want("conv-a")])
+def test_adoption_runs_even_when_NOTHING_is_pending():
+    # The bug this locks out: a grown/placed PV binds (WaitForFirstConsumer) only after a
+    # pod mounts its PVC — i.e. AFTER the sandbox has left list_pending_uppers. If adoption
+    # keyed off `pending` it would never fire on that pass and the PV would stay unlabelled
+    # (invisible to iter_pool_pvs) forever. So the loop must sweep every pass. PR #403.
+    k8s = FakeK8s(pvs=[], pending=[])
     reconcile_once(k8s, CFG, Reservations(), {})
-    assert k8s.adopted == ["scooter-rw-conv-a"]
+    assert k8s.adopt_calls == 1

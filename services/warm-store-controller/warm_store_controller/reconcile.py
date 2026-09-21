@@ -7,12 +7,14 @@ Pool model (see todo/docs/WARM_STORE_PVC_MANAGER.md):
   KEYED by the sandbox image content tag it was warmed against (`warm-store` label).
   A PVC is ONLY claimable by a sandbox whose image tag matches — the no-fixup guarantee.
 - pool-state ∈ {warming, ready, claimed, retiring}.
-- The CONTROLLER owns top-up (warm Jobs) / GC / return-on-suspend / leak-recovery.
-  The agent-host PROVISIONER does the claim (claimName swap) out-of-band; the controller
-  only observes the resulting `claimed-by` label + the owning Sandbox.
+- The CONTROLLER owns top-up (warm Jobs) / GC / return-on-suspend / leak-recovery, AND
+  placement: it pre-binds a warm PV to the sandbox's `scooter-rw` PVC via claimRef so the
+  agent-host vct adopts it (loop._place_one / k8s.reserve_pv, PR #403). The vct itself does
+  no claim swap — it just declares the PVC; the controller decides which PV backs it.
 
-This module decides, per current cluster state, the SET of actions to apply. It does NOT
-claim (that's the provisioner) — it tops up, garbage-collects, and returns.
+This module decides, per current cluster state, the SET of actions to apply for the PVC
+STATE MACHINE (warm / relabel / delete) — it tops up, garbage-collects, and returns.
+PV placement lives in the loop + allocate.py, not here.
 """
 
 from __future__ import annotations

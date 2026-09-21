@@ -4,8 +4,8 @@
 # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag: tops up
 # (warm Jobs), GCs retired tags, returns claimed PVCs on suspend, and recovers leaks. Runs
 # alongside the upstream agent-sandbox controller (which owns the Sandbox→pod/PVC lifecycle).
-# The agent-host provisioner does the CLAIM (claimName swap). See
-# todo/docs/WARM_STORE_PVC_MANAGER.md.
+# Placement pre-binds a warm PV to the sandbox's scooter-rw PVC via claimRef (PR #403); the
+# agent-host vct just declares that PVC. See todo/docs/WARM_STORE_PVC_MANAGER.md.
 
 python3Packages.buildPythonApplication {
   pname = "warm-store-controller";
