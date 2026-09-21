@@ -28,60 +28,75 @@ let
     (name: entries.${name} == "directory" && builtins.pathExists (./. + "/${name}/module.nix"))
     (lib.attrNames entries);
 
-  buildContrib = dir:
+  # Built ONCE PER TARGET SERVICE, each variant depending only on that service's
+  # surface. One build carrying both would drag scooter_webhooks_lib (and
+  # sqlalchemy/asyncpg/aiosqlite) into the broker image. Why: PR #567.
+  buildContrib = dir: svc:
     let
       meta = import (./. + "/${dir}/module.nix");
       pyImport = "scooter_contrib_${meta.name}";
       extraDeps = (meta.pythonDeps or (_: [ ])) python3Packages;
-      package = python3Packages.buildPythonPackage {
-        pname = "scooter-contrib-${meta.name}";
-        version = "0.0.0";
-        src = ./. + "/${dir}";
-        pyproject = true;
-
-        # Contribs standardize on the hatchling backend (declared in each
-        # contrib's [build-system]); passed here because nixpkgs needs the
-        # backend as an explicit build input.
-        build-system = [ python3Packages.hatchling ];
-
-        dependencies = [ python3Packages.fastapi ]
-          ++ lib.optional (lib.elem "broker" meta.services) scooterBrokerLib
-          ++ lib.optional (lib.elem "webhooks" meta.services) scooterWebhooksLib
-          ++ extraDeps;
-
-        # Each service-coupled module is import-checked directly now that its
-        # surface is a real dependency: a bad import in a contrib's provider or
-        # handler is THIS build's failure, rather than a provider/handler quietly
-        # missing from a running service.
-        pythonImportsCheck = [ pyImport ]
-          ++ lib.optional (lib.elem "broker" meta.services) "${pyImport}.broker_provider"
-          ++ lib.optional (lib.elem "webhooks" meta.services) "${pyImport}.webhooks_handler";
-
-        # The contrib's tests run against the REAL broker + webhooks registries
-        # (provided as check-only inputs), proving entry-point discovery works.
-        nativeCheckInputs = with python3Packages; [
-          pytestCheckHook
-          pytest-asyncio
-          broker
-          webhooks
-        ];
-
-        meta.description = "Scooter contrib module: ${meta.name}";
-      };
+      # The surface for THIS service, and the module that composes it.
+      surface = { broker = scooterBrokerLib; webhooks = scooterWebhooksLib; }.${svc};
+      entryModule = { broker = "broker_provider"; webhooks = "webhooks_handler"; }.${svc};
     in
-    { inherit (meta) name services; inherit package; };
+    python3Packages.buildPythonPackage {
+      # Must stay the DISTRIBUTION name: the metadata-check hook looks the wheel
+      # up by it. Variants differ by inputs, not pname.
+      pname = "scooter-contrib-${meta.name}";
+      version = "0.0.0";
+      src = ./. + "/${dir}";
+      pyproject = true;
 
-  built = map buildContrib contribNames;
+      # Contribs standardize on the hatchling backend (declared in each
+      # contrib's [build-system]); passed here because nixpkgs needs the
+      # backend as an explicit build input.
+      build-system = [ python3Packages.hatchling ];
 
-  forService = svc: map (c: c.package) (lib.filter (c: lib.elem svc c.services) built);
+      dependencies = [ python3Packages.fastapi surface ] ++ extraDeps;
 
-  byName = lib.listToAttrs (map (c: { inherit (c) name; value = c.package; }) built);
+      # Checked in the environment it will actually live in, so a bad import
+      # fails this build instead of vanishing at service startup.
+      pythonImportsCheck = [ pyImport "${pyImport}.${entryModule}" ];
+
+      # Check-only, so they do NOT enter the runtime closure: the full
+      # cross-service suite runs in both variants, neither ships the other.
+      nativeCheckInputs = with python3Packages; [
+        pytestCheckHook
+        pytest-asyncio
+        broker
+        webhooks
+      ];
+
+      meta.description = "Scooter contrib module: ${meta.name} (${svc})";
+    };
+
+  metaOf = dir: import (./. + "/${dir}/module.nix");
+
+  forService = svc:
+    map (dir: buildContrib dir svc)
+      (lib.filter (dir: lib.elem svc (metaOf dir).services) contribNames);
+
+  # packages.<name>.<service>. No flat packages.<name>: which surface a contrib
+  # carries is part of its identity now.
+  byName = lib.listToAttrs (map
+    (dir:
+      let m = metaOf dir; in
+      {
+        name = m.name;
+        value = lib.listToAttrs (map
+          (svc: { name = svc; value = buildContrib dir svc; })
+          m.services);
+      })
+    contribNames);
 in
 {
-  # Per-service lists the flake injects into each service build.
+  # Per-service lists the flake injects into each service build. Each entry
+  # carries only that service's extension surface.
   broker = forService "broker";
   webhooks = forService "webhooks";
-  # All contrib packages, and lookup by name (e.g. contribs.packages.echo).
-  all = map (c: c.package) built;
+  # Every variant of every contrib, and lookup by name+service
+  # (e.g. contribs.packages.echo.broker).
+  all = forService "broker" ++ forService "webhooks";
   packages = byName;
 }
