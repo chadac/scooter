@@ -58,6 +58,10 @@ export interface AcpClient {
    *  run silent because its agent is DEAD is terminated; silent because a long
    *  tool is running is healthy. The in-process SDK is alive until close(). */
   isAlive(): boolean;
+  /** Recent diagnostic lines (oldest first) — what a subprocess provider would have
+   *  left on stderr. The agent-host's dead-on-arrival watchdog quotes the last one:
+   *  for a run that produced nothing, ACP carries no cause at all. Why: PR #565. */
+  recentDiagnostics(): string[];
   onSessionUpdate(cb: (sessionId: string, update: SessionUpdate) => void): () => void;
   onTerminalCreated(cb: (terminalId: string, command: string, args: string[]) => void): () => void;
   onPermissionRequest(handler: (req: PermissionRequest) => Promise<PermissionAnswer>): void;

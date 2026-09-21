@@ -73,6 +73,7 @@ let
   bcfg = config.agentSandbox.broker;
   gatedSkills = {
     "scooter-grafana.md" = bcfg.grafana.enable;
+    "scooter-airtable.md" = bcfg.airtable.enable;
   };
   builtins' = lib.optionalAttrs cfg.agent.builtinSkills (
     lib.mapAttrs' (file: _: lib.nameValuePair file (builtins.readFile (./skills + "/${file}")))

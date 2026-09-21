@@ -125,6 +125,11 @@ type State = {
 /** A brand-new, untouched conversation (default title, no messages yet). */
 const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
 
+/** The id the SERVER knows this conversation by. Match anything server-owned (list
+ *  membership, a subagent's `parentId`) against THIS, never `id` — `id` is a local
+ *  key that for a chat started in this tab is never the server's. Why: PR #568. */
+export const serverKeyOf = (s: Pick<Session, "id" | "serverId">): string => s.serverId ?? s.id;
+
 /** Do two Session objects carry the same rendered state? Used to REUSE the existing
  *  object reference across a merge when nothing changed, so React.memo skips the row.
  *  Scalars compared directly; sources/links compared by content (they're small). */
@@ -390,9 +395,10 @@ export const sessionStore = {
     // upsert with `?? existing` would CLOBBER the poll-populated sources (`[] ?? x === []`),
     // erasing the sidebar provider icon (the order-dependent e2e flake). So a non-authoritative
     // upsert keeps the existing sources/links and lets the poll/snapshot own them. Why: PR #452.
+    // It ALSO gates the prune below: only a full-list read can say a row is GONE. Why: PR #568.
     opts?: { sourcesAuthoritative?: boolean },
   ) {
-    const sourcesAuthoritative = opts?.sourcesAuthoritative ?? true;
+    const authoritative = opts?.sourcesAuthoritative ?? true;
     if (convs.length === 0) return;
     // RENAME IN PROGRESS: freeze the WHOLE sidebar. While the user has an inline rename
     // input open (editingId set) the background merge (10s poll + SSE upsert) must not
@@ -449,8 +455,8 @@ export const sessionStore = {
         // Link sources are server-owned (the webhooks push links), but only the poll +
         // connect-snapshot carry them authoritatively — a single-row upsert must not clobber
         // them (see the sourcesAuthoritative note on the signature). Why: PR #452.
-        sources: sourcesAuthoritative ? (c.sources ?? existing?.sources) : existing?.sources,
-        links: sourcesAuthoritative ? (c.links ?? existing?.links) : existing?.links,
+        sources: authoritative ? (c.sources ?? existing?.sources) : existing?.sources,
+        links: authoritative ? (c.links ?? existing?.links) : existing?.links,
         // Owner is server-owned (stamped at creation); take the server's value.
         owner: c.owner ?? existing?.owner,
         // Sandbox lifecycle state is server-owned + live (idle-suspend / resume);
@@ -482,7 +488,10 @@ export const sessionStore = {
     //    one (the user just clicked "New chat" and is about to type; the server
     //    won't know it until the first /agui POST, so a poll must not yank it).
     let sessions = [...byId.values()].filter((s) => {
-      if (serverIds.has(s.id)) return true;
+      if (serverIds.has(serverKeyOf(s))) return true;
+      // Absence is only evidence in a FULL-list read; a one-row upsert implies nothing
+      // about rows it never mentioned. Why: PR #568.
+      if (!authoritative) return true;
       if (s.parentId) return false; // an ended subagent — prune it
       return !isPristine(s) || s.id === state.currentId;
     });
@@ -509,27 +518,17 @@ export const sessionStore = {
       pendingSelect = undefined;
     }
 
-    // No-op if nothing actually changed (same ids+titles+order+selection). The
-    // periodic merge poll calls this every few seconds; without this guard every
-    // poll would setState -> re-render -> churn the runtime even when idle.
-    const sig = (ss: Session[], cur: string) =>
-      cur +
-      "|" +
-      ss
-        .map(
-          (s) =>
-            `${s.id}:${s.title}:${s.starred ? 1 : 0}:${(s.sources ?? []).join(",")}:${(s.links ?? [])
-              .map((l) => l.title ?? l.url ?? "")
-              .join(",")}`,
-        )
-        .join("|");
-    // Include pendingSelect in the change check: if only the pending target was
-    // cleared (selection already applied), the currentId sig already differs.
-    if (
+    // No-op if nothing actually changed (same rows, order and selection) — the poll runs
+    // every few seconds and would otherwise re-render on every tick.
+    // Compare via sameSession, NOT a hand-listed subset of fields: any field left out of
+    // this check is a field whose updates get silently discarded (that dropped every
+    // status-only change, freezing the sidebar dots). Why: PR #568.
+    const unchanged =
       pendingSelect === state.pendingSelect &&
-      sig(sessions, currentId) === sig(state.sessions, state.currentId)
-    )
-      return;
+      currentId === state.currentId &&
+      sessions.length === state.sessions.length &&
+      sessions.every((s, i) => s === state.sessions[i] || sameSession(s, state.sessions[i]));
+    if (unchanged) return;
 
     setState({ ...state, sessions, currentId, pendingSelect });
   },
@@ -758,13 +757,16 @@ export interface SidebarRow {
  *  the children are hidden and the parent carries `childCount` (so the UI can show
  *  "▸ N"). With no activeId, every parent is expanded. */
 export function nestSubagents(sessions: Session[], activeId?: string): SidebarRow[] {
-  const present = new Set(sessions.map((s) => s.id));
+  // Index by SERVER id: `parentId` is server-owned, `id` is not. Why: PR #568.
+  const byServerId = new Map<string, Session>();
+  for (const s of sessions) byServerId.set(serverKeyOf(s), s);
   const childrenOf = new Map<string, Session[]>();
   const tops: Session[] = [];
   for (const s of sessions) {
     // A subagent whose parent IS in the list nests under it; otherwise it's a top.
-    if (s.parentId && present.has(s.parentId)) {
-      (childrenOf.get(s.parentId) ?? childrenOf.set(s.parentId, []).get(s.parentId)!).push(s);
+    const parent = s.parentId ? byServerId.get(s.parentId) : undefined;
+    if (parent && parent !== s) {
+      (childrenOf.get(parent.id) ?? childrenOf.set(parent.id, []).get(parent.id)!).push(s);
     } else {
       tops.push(s);
     }
