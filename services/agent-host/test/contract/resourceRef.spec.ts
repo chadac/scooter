@@ -11,6 +11,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  canonicalResourceType,
   parseGithubUrl,
   parseGitlabUrl,
   parseJiraUrl,
@@ -125,5 +126,24 @@ describe("resourceRef: ref derivation", () => {
   it("leaves a link alone when nothing is derivable", () => {
     const link: ConversationLink = { source: "slack", resourceType: "thread", title: "#eng thread" };
     expect(withDerivedRef(link)).toEqual(link);
+  });
+});
+
+describe("resourceRef: canonical resource_type", () => {
+  // MUST stay in step with webhooks/resources.py `_TYPE_ALIASES` — both services write
+  // resource_links, and the type is part of its unique key.
+  it.each([
+    ["github", "pr", "pull_request"],
+    ["github", "pull_request", "pull_request"],
+    ["gitlab", "mr", "merge_request"],
+    ["jira", "ticket", "issue"],
+    ["slack", "message", "thread"],
+  ])("%s %s -> %s", (source, given, want) => {
+    expect(canonicalResourceType(source, given)).toBe(want);
+  });
+
+  it("passes an unknown type through rather than mangling it into a wrong one", () => {
+    expect(canonicalResourceType("github", "discussion")).toBe("discussion");
+    expect(canonicalResourceType("notion", "page")).toBe("page");
   });
 });

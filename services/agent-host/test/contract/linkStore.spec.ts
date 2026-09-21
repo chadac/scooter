@@ -234,6 +234,20 @@ describe("linked resources in Postgres", () => {
     expect((await store.listLinks(CONV))[0].ref).toEqual({ owner: "example-org", repo: "example-app", number: 203 });
   });
 
+  it("CANONICALISES resource_type, so the two spellings are ONE row", async () => {
+    // resource_type is part of the table's unique key, and this table has two writers:
+    // the broker's auto-link says "pr", the webhooks handler says "pull_request". Left
+    // alone, the same PR occupies two rows and the panel shows it twice. The backfill
+    // migration leaves the long form in the table, so writes must aim at it.
+    const { db, rows } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink(CONV, pr({ resourceType: "pull_request" }));
+    await store.addLink(CONV, pr({ resourceType: "pr", title: "same PR, other writer" }));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].resource_type).toBe("pull_request");
+  });
+
   it("an EXPLICIT ref is never overwritten by the derived one", async () => {
     // The webhooks handlers know more than a url does (a GitLab issue's project id, a
     // Slack thread) — derivation only ever fills a gap.

@@ -111,3 +111,21 @@ export function withDerivedRef(link: ConversationLink): ConversationLink {
   const ref = refFromUrl(link.source, link.url);
   return ref ? { ...link, ref } : link;
 }
+
+/**
+ * The canonical (long) `resource_type` per source — the spelling webhooks writes, the
+ * one the UI renders as "pull request", and the one the backfill migration leaves in
+ * the table. MUST mirror webhooks/resources.py `_TYPE_ALIASES`: the two services write
+ * the same table, and the unique key includes this column, so disagreeing spellings
+ * mean two rows for one resource. Unknown types pass through unchanged.
+ */
+export function canonicalResourceType(source: string, resourceType: string): string {
+  return ALIASES[source]?.[resourceType.toLowerCase()] ?? resourceType;
+}
+
+const ALIASES: Record<string, Record<string, string>> = {
+  github: { pr: "pull_request", pull_request: "pull_request", issue: "issue" },
+  gitlab: { mr: "merge_request", merge_request: "merge_request", issue: "issue" },
+  jira: { ticket: "issue", issue: "issue" },
+  slack: { message: "thread", thread: "thread" },
+};

@@ -360,6 +360,9 @@ async def link_resource(
             source=source,
             resource_type=rtype,
             resource_id=rid,
+            # When the canonical id IS the resource's URL, store it in the url column
+            # too: that is the column the UI links and agent-host derives a ref from.
+            url=rid if rid.startswith(("http://", "https://")) else None,
         ))
         return True
 

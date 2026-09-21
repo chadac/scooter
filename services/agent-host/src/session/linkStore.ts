@@ -27,7 +27,7 @@ import { webhooks } from "@scooter/schema";
 
 import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
-import { withDerivedRef } from "../agent/resourceRef.js";
+import { canonicalResourceType, withDerivedRef } from "../agent/resourceRef.js";
 
 import type { ConversationLink } from "./manager.js";
 import type { SessionId } from "../types.js";
@@ -115,7 +115,10 @@ export function createPgLinkStore(config: PgLinkStoreConfig): LinkStore {
     const values = {
       conversationId: id,
       source: link.source,
-      resourceType: link.resourceType,
+      // Canonical spelling, because it is part of the unique key this upsert conflicts
+      // on: a "pr" write would miss the "pull_request" row for the SAME pull request
+      // and insert a duplicate. Both writers of this table agree on the long form.
+      resourceType: canonicalResourceType(link.source, link.resourceType),
       resourceId: resourceIdOf(link),
       url: link.url ?? null,
       title: link.title ?? null,
