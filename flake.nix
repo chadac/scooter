@@ -217,6 +217,13 @@
             inherit scooterBrokerLib scooterWebhooksLib;
           };
 
+          # Every contrib variant in one derivation. Nothing in a service closure
+          # reaches an `example = true` contrib, so this is the only thing that
+          # builds (and therefore TESTS) it. Keyed by <name>-<service> because both
+          # variants of a contrib share a derivation name. Why: PR #573.
+          contribsAll = pkgs.linkFarm "contribs-all"
+            (pkgs.lib.mapAttrsToList (name: path: { inherit name path; }) contribs.all);
+
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules, plus the contribs that target it. See services/broker/ +
           # docs/BROKER.md.
@@ -544,11 +551,15 @@
             # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
             # contrib, built once PER TARGET SERVICE so each variant carries only that
             # service's extension surface (a single build would drag the webhooks
-            # surface into the broker image). Both run the discovery tests against the
-            # real registries, so `nix flake check` proves the entry-point seam.
+            # surface into the broker image).
             contrib-echo = contribs.packages.echo.broker;
             contrib-echo-webhooks = contribs.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
+
+            # nix build .#contribs-all -> every variant of every contrib, so ONE CI
+            # target covers all of them and a new contrib is tested the moment it
+            # exists.
+            contribs-all = contribsAll;
 
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
@@ -663,8 +674,10 @@
 
           checks = {
             inherit agentHost ui;
-            # Both per-service variants of the reference contrib, each running the
-            # entry-point discovery tests against the real broker + webhooks registries.
+            # Every contrib variant, each running its tests against the real broker +
+            # webhooks registries. The aggregate is what CI builds; the individual
+            # attrs stay for bisecting a failure to one variant.
+            contribs-all = contribsAll;
             contrib-echo = contribs.packages.echo.broker;
             contrib-echo-webhooks = contribs.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;

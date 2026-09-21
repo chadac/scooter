@@ -84,7 +84,14 @@ let
     map (dir: buildContrib dir svc)
       (lib.filter (dir: targets svc dir && !isExample dir) contribNames);
 
-  everyVariant = svc: map (dir: buildContrib dir svc) (lib.filter (targets svc) contribNames);
+  # Keyed `<name>-<service>`, NOT a list: both variants of a two-service contrib
+  # share a derivation name, so a name-keyed consumer (linkFarm) collapses them
+  # and silently drops one. Why: PR #573.
+  everyVariant = lib.listToAttrs (lib.concatMap
+    (svc: map
+      (dir: { name = "${(metaOf dir).name}-${svc}"; value = buildContrib dir svc; })
+      (lib.filter (targets svc) contribNames))
+    [ "broker" "webhooks" ]);
 
   # packages.<name>.<service>. No flat packages.<name>: which surface a contrib
   # carries is part of its identity now.
@@ -104,8 +111,8 @@ in
   # carries only that service's extension surface.
   broker = forService "broker";
   webhooks = forService "webhooks";
-  # Every variant of every contrib INCLUDING examples, and lookup by
-  # name+service (e.g. contribs.packages.echo.broker).
-  all = everyVariant "broker" ++ everyVariant "webhooks";
+  # Every variant of every contrib INCLUDING examples, keyed <name>-<service>,
+  # plus lookup by name+service (e.g. contribs.packages.echo.broker).
+  all = everyVariant;
   packages = byName;
 }
