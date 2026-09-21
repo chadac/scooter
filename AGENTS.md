@@ -100,6 +100,32 @@ Rules of thumb:
 - Before declaring a milestone done, run the full `just test` and report the
   real result — including failures and skips. Never claim green without running.
 
+## Proving a bugfix: `@proves` tests
+
+A bugfix PR should include at least one test whose title ends with **`@proves`** —
+a claim that this test fails without the fix. CI (the `fails-first` job) and
+`just proves` verify the claim mechanically: the marked tests added in your branch
+are run on the PR's base with only the test files grafted over, and every one must
+FAIL there (and pass on your branch). A `@proves` test that passes on base turns
+the check red — it has no discriminating power, which is exactly the bug-shaped
+hole this closes.
+
+- Where a claim runs is decided by its file's path: `test/e2e/` → playwright
+  (fast project); `*.py` under `services/<svc>/tests/` → that service's pytest
+  (via `nix build .#<svc>`); everything else `.spec.ts`/`.test.ts` → vitest.
+  e2e **full** claims are not provable (red-on-base would need a cluster running
+  base images) — prove cluster fixes with a unit- or fast-runnable test.
+- TS: put `@proves` on the same line as `it(`/`test(`, in a plain quoted title
+  (no template strings). Python: `def test_x():  # @proves` — a comment on the
+  def line.
+- Don't mark refactor/characterization tests — only tests that demonstrate the
+  defect being fixed. Unmarked tests are never checked.
+- A base-side failure that never reaches the assertion (the test imports API the
+  PR introduces) is accepted but reported as `load-error` — a weaker proof.
+  Prefer tests that compile on base and fail on the assertion when you can.
+- Run `just proves` locally before pushing (`just proves origin/<base>` when the
+  PR targets a stacked branch).
+
 ## Test suites (see docs/TESTING.md)
 
 - **unit** (`services/agent-host/test/contract/` and friends, vitest): the seams
