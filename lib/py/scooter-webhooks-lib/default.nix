@@ -32,6 +32,7 @@ python3Packages.buildPythonPackage {
   pythonImportsCheck = [
     "scooter_webhooks_lib.registry"
     "scooter_webhooks_lib.store"
+    "scooter_webhooks_lib.resources"
   ];
 
   meta.description = "The webhooks extension surface for Scooter handlers";

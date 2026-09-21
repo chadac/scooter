@@ -17,7 +17,7 @@ from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
-from ..agent_host_client import conversation_url, create_conversation, send_message
+from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..responses.jira import post_jira_comment
 
 logger = logging.getLogger(__name__)
@@ -218,6 +218,14 @@ async def _background_create_conversation(
     async def _register(conv_id: str) -> None:
         await db.store_conversation("jira", "issue", issue_key, conv_id)
         await db.link_jira_ticket(conv_id, issue_key)
+        # Push the link to the agent-host too: without it the conversation shows no
+        # Jira ticket in the linked-resources panel, and jira_comment registers only
+        # via the conversation_map fallback. No url — the site base isn't configured
+        # here — so the ticket key is both the title and the ref. Why: issue #563.
+        await push_link(
+            conv_id, source="jira", resource_type="issue",
+            title=issue_key, ref={"issueKey": issue_key},
+        )
         await post_jira_comment(
             issue_key=issue_key,
             body=f"Scooter is on it — follow along: {conversation_url(conv_id)}",

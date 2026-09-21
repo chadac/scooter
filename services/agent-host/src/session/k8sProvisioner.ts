@@ -44,6 +44,10 @@ const GROUP = "agents.x-k8s.io";
 const VERSION = "v1beta1";
 const PLURAL = "sandboxes";
 const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
+/** How long to wait for a cycled sandbox's pod to actually disappear, and how often
+ *  to look. See runOnCurrentImage (issue #560). */
+const POD_GONE_TIMEOUT_MS = 60_000;
+const POD_GONE_POLL_MS = 1_500;
 
 /** The tag portion of an OCI ref — the part after the LAST ':' that isn't a registry
  *  port. Mirrors the kubenix `lib.last (splitString ":" ...)` AND the controller's
@@ -167,6 +171,8 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // callers already tolerate — far better than a cluster-scope auth failure.)
   const refNs = (ref: SandboxRef) => ref.namespace || ns;
 
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
   // v1beta1: operatingMode "Suspended" = pod dropped (PVCs kept), "Running" = pod up.
   // A plain-object body negotiates application/merge-patch+json.
   const setOperatingMode = async (ref: SandboxRef, operatingMode: "Running" | "Suspended") => {
@@ -181,6 +187,110 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       },
       setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
     );
+  };
+
+  // --- image skew ---------------------------------------------------------
+  // Nothing re-renders a Sandbox CR, so an upgrade leaves live ones on the image they
+  // were born with. EVERY path to Running must reconcile it. Mirrored in
+  // broker/sandbox/k8s.py (the control-plane owner). Why: PR #565.
+
+  /** The sandbox container's image when it differs from the deployment's current one
+   *  (i.e. the stale ref being replaced), else undefined. An unset image on either
+   *  side is not skew — there is nothing to reconcile toward. */
+  const staleImage = (containers: Array<{ image?: string }>): string | undefined => {
+    const have = containers[0]?.image;
+    return have && opts.sandboxImage && have !== opts.sandboxImage ? have : undefined;
+  };
+
+  /** True once the Sandbox's pod is gone (both lookups the controller may use). */
+  const podGone = async (ref: SandboxRef): Promise<boolean> => {
+    const pods = await core.listNamespacedPod({
+      namespace: refNs(ref),
+      labelSelector: `${SANDBOX_NAME_LABEL}=${ref.name}`,
+    });
+    if (pods.items.length > 0) return false;
+    try {
+      await core.readNamespacedPod({ namespace: refNs(ref), name: ref.name });
+      return false;
+    } catch (e) {
+      return (e as { code?: number })?.code === 404;
+    }
+  };
+
+  /** Reconcile `ref`'s image onto the deployment's current one, cycling the pod if it
+   *  is already up on a stale one. Throws only a 404 (the Sandbox is GONE — the caller
+   *  recreates it); any other failure is logged and swallowed, because reconciling the
+   *  image must never be what stops a conversation from resuming. */
+  const reconcileImage = async (ref: SandboxRef): Promise<void> => {
+    const sb = (await custom.getNamespacedCustomObject({
+      group: GROUP,
+      version: VERSION,
+      namespace: refNs(ref),
+      plural: PLURAL,
+      name: ref.name,
+    })) as { spec?: { operatingMode?: string; podTemplate?: { spec?: { containers?: Array<{ image?: string }> } } } };
+    const containers = sb.spec?.podTemplate?.spec?.containers ?? [];
+    const wasRunning = (sb.spec?.operatingMode ?? "Running") !== "Suspended";
+    const stale = staleImage(containers);
+    if (stale) {
+      log.warn("sandbox image skew: adopting the deployment's current sandbox image", {
+        sandbox: ref.name,
+        from_image: stale,
+        to_image: opts.sandboxImage,
+        cycling_pod: wasRunning,
+      });
+      await custom.patchNamespacedCustomObject(
+        {
+          group: GROUP,
+          version: VERSION,
+          namespace: refNs(ref),
+          plural: PLURAL,
+          name: ref.name,
+          body: {
+            spec: {
+              podTemplate: {
+                spec: { containers: [{ ...containers[0], image: opts.sandboxImage }, ...containers.slice(1)] },
+              },
+            },
+          },
+        },
+        setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+      );
+      if (wasRunning) {
+        // A template patch does not restart a running pod. Wait for the pod to GO
+        // before resuming: the controller coalesces an immediate flip-back into no
+        // restart at all. Why: PR #565.
+        await setOperatingMode(ref, "Suspended");
+        const deadline = Date.now() + POD_GONE_TIMEOUT_MS;
+        while (!(await podGone(ref).catch(() => false))) {
+          if (Date.now() > deadline) {
+            // Not fatal — failing here would take the conversation down. PR #565.
+            log.warn("sandbox pod did not terminate before the deadline; resuming anyway", {
+              sandbox: ref.name,
+              timeout_ms: POD_GONE_TIMEOUT_MS,
+            });
+            break;
+          }
+          await sleep(POD_GONE_POLL_MS);
+        }
+      }
+    }
+  };
+
+  /** Bring `ref` to Running on the deployment's CURRENT sandbox image. One call is
+   *  enough to adopt a new image — no caller has to cycle the sandbox itself. */
+  const runOnCurrentImage = async (ref: SandboxRef): Promise<void> => {
+    try {
+      await reconcileImage(ref);
+    } catch (e) {
+      // A 404 means the Sandbox is gone — resume()'s recreate path owns that.
+      if ((e as { code?: number })?.code === 404) throw e;
+      log.warn("could not reconcile the sandbox image; running it as-is", {
+        sandbox: ref.name,
+        error: formatError(e),
+      });
+    }
+    await setOperatingMode(ref, "Running");
   };
 
   return {
@@ -247,7 +357,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // idempotent (a running Sandbox stays running); a create-from-fresh is already
       // Running.
       if (alreadyExisted) {
-        await setOperatingMode({ name, namespace: ns }, "Running").catch((e) => {
+        // An ADOPTED Sandbox was rendered by whatever platform version created the
+        // conversation — reconcile its image before running it, else a post-upgrade
+        // conversation keeps booting the old sandbox image (issue #560).
+        await runOnCurrentImage({ name, namespace: ns }).catch((e) => {
           log.warn("adopted an existing Sandbox but resume failed (may already be running)", {
             sandbox: name,
             error: formatError(e),
@@ -272,7 +385,9 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
       // rather than surface a raw 404: the conversation's work lives on the workspace PVC,
       // which outlives the Sandbox. Mirrors suspend()'s 404 tolerance. PR #404.
       try {
-        await setOperatingMode(ref, "Running");
+        // Reconciles the image on the way up, so ONE suspend/resume is enough to
+        // adopt a new platform version's sandbox image (issue #560).
+        await runOnCurrentImage(ref);
       } catch (e) {
         if ((e as { code?: number })?.code !== 404) throw e;
         log.warn("resume: the Sandbox is gone; recreating it", { sandbox: ref.name });
