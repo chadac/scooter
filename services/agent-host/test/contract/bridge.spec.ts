@@ -1218,14 +1218,16 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
     // The agent subprocess's stderr tail — where the provider writes the diagnostic
     // that explains a run which produced nothing (issue #560).
     stderr?: string[],
+    retry?: { deathRetryMax: number; deathRetryBaseMs: number },
   ) => {
     const exec = createSandboxExecBackend(createFakeSandboxApi());
     const client = acpClientFromTransport(agent.transport, exec);
     return createSessionBridge({
       config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
       exec,
-      acpClient: stderr ? { ...client, recentStderr: () => stderr } : client,
+      acpClient: stderr ? { ...client, recentDiagnostics: () => stderr } : client,
       firstActivityTimeoutMs,
+      ...(retry ?? {}),
     });
   };
   const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -1292,6 +1294,35 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
 
     const message = (events.find((e) => e.type === "RUN_ERROR") as { message?: string }).message ?? "";
     expect(message).toContain("ede_diagnostic");
+  });
+
+  it("carries a LATE diagnostic into the next attempt's message", async () => {
+    // The ordering that makes this necessary: the watchdog gives up at 60s, the
+    // abandoned stream rejects only AFTERWARDS, and the wedged session is dropped in
+    // between — so the cause of attempt N is in hand only by attempt N+1, on a client
+    // that no longer exists. Keeping it on the bridge is what makes the claude-code
+    // path (an in-process provider, with no stderr for the host to tail) work at all.
+    // This is the incident's own shape: retry after retry, each dead on arrival.
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate();
+    // Rejects when the watchdog's cancel releases it — after attempt 1's RUN_ERROR.
+    agent.failNext("Claude Code returned an error result: [ede_diagnostic] result_type=user stop_reason=null");
+    const bridge = mkBridge(agent, 30, undefined, { deathRetryMax: 1, deathRetryBaseMs: 10 });
+    const events = collect(bridge);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "wedged" });
+    await tick(250); // attempt 1 → its late rejection → the auto-retry's attempt 2
+
+    const errors = events.filter((e) => e.type === "RUN_ERROR") as { message?: string }[];
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    // Attempt 1 could not name the cause — it had not happened yet.
+    expect(errors[0].message ?? "").not.toContain("ede_diagnostic");
+    // A later attempt can: the diagnostic outlived the client that produced it.
+    expect(errors.at(-1)!.message ?? "").toContain("ede_diagnostic");
+    agent.releaseGate();
+    await bridge.stop();
   });
 
   it("picks the ede_diagnostic line out of a stderr tail, and truncates a long one", () => {
