@@ -5,15 +5,9 @@ Stays in the app by design (PR #567). `DatabaseSettings` satisfies
 one as an argument rather than importing this module, so the DSN assembly below
 (and the secretKeyRef password it exists for) remains the app's business.
 
-TODO(#567): `agent_host_client` and `identity_resolve` are still in the app
-because both read the module-level `settings` singleton here at call time
-(agent_host_url / agent_host_token_path / agent_manager_url, and the
-per-provider tokens). Moving them to the lib means first choosing how a lib
-module gets its configuration — an injected object, a lib-side base settings
-class the app subclasses, or an explicit argument per call. That is a design
-decision, not a file move, and it is deliberately not made inside this PR.
-Until it is, a contrib handler that needs to SPAWN a conversation still reaches
-into the app; one that only registers a route does not.
+The agent-host client takes the same treatment (PR #575): `app.py` hands it this
+settings object at startup, so a contrib handler can spawn a conversation through
+the lib without reaching into the app.
 """
 
 import hmac

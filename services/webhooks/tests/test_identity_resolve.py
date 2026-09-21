@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 import webhooks.identity_resolve as ir
+from scooter_webhooks_lib import agent_host_client as ahc
+from scooter_webhooks_lib import identity as lib_identity
 from webhooks.config import settings
 
 pytestmark = pytest.mark.asyncio
@@ -18,7 +20,11 @@ def _patch(monkeypatch, handler):
         kwargs.pop("transport", None)
         return real(*args, transport=httpx.MockTransport(handler), **kwargs)
 
+    # BOTH sides of the split: the provider email lookup is app-side (`ir`), the
+    # /users/by-email leg is now the lib agent-host client. Patching only one leaves
+    # the other making a real connection. Why: PR #575.
     monkeypatch.setattr(ir.httpx, "AsyncClient", factory)
+    monkeypatch.setattr(ahc.httpx, "AsyncClient", factory)
 
 
 # --- per-provider email fetch -------------------------------------------------
@@ -33,18 +39,18 @@ async def test_slack_email(monkeypatch):
         return httpx.Response(200, json={"ok": True, "user": {"profile": {"email": "a@x.io"}}})
 
     _patch(monkeypatch, handler)
-    assert await ir.get_user_email("slack", "U123") == "a@x.io"
+    assert await lib_identity.get_user_email("slack", "U123") == "a@x.io"
 
 
 async def test_slack_email_not_ok(monkeypatch):
     monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
     _patch(monkeypatch, lambda req: httpx.Response(200, json={"ok": False, "error": "user_not_found"}))
-    assert await ir.get_user_email("slack", "U123") is None
+    assert await lib_identity.get_user_email("slack", "U123") is None
 
 
 async def test_slack_email_no_token(monkeypatch):
     monkeypatch.setattr(settings, "slack_bot_token", "", raising=False)
-    assert await ir.get_user_email("slack", "U123") is None
+    assert await lib_identity.get_user_email("slack", "U123") is None
 
 
 async def test_github_public_email(monkeypatch):
@@ -55,12 +61,12 @@ async def test_github_public_email(monkeypatch):
         return httpx.Response(200, json={"login": "octocat", "email": "cat@github.com"})
 
     _patch(monkeypatch, handler)
-    assert await ir.get_user_email("github", "octocat") == "cat@github.com"
+    assert await lib_identity.get_user_email("github", "octocat") == "cat@github.com"
 
 
 async def test_github_private_email_is_none(monkeypatch):
     _patch(monkeypatch, lambda req: httpx.Response(200, json={"login": "octocat", "email": None}))
-    assert await ir.get_user_email("github", "octocat") is None
+    assert await lib_identity.get_user_email("github", "octocat") is None
 
 
 async def test_gitlab_email(monkeypatch):
@@ -71,16 +77,16 @@ async def test_gitlab_email(monkeypatch):
         return httpx.Response(200, json=[{"username": "alice", "email": "alice@gl.io"}])
 
     _patch(monkeypatch, handler)
-    assert await ir.get_user_email("gitlab", "alice") == "alice@gl.io"
+    assert await lib_identity.get_user_email("gitlab", "alice") == "alice@gl.io"
 
 
 async def test_gitlab_no_token(monkeypatch):
     monkeypatch.setattr(settings, "gitlab_token", "", raising=False)
-    assert await ir.get_user_email("gitlab", "alice") is None
+    assert await lib_identity.get_user_email("gitlab", "alice") is None
 
 
 async def test_unknown_provider(monkeypatch):
-    assert await ir.get_user_email("bitbucket", "x") is None
+    assert await lib_identity.get_user_email("bitbucket", "x") is None
 
 
 # --- resolve_owner (email -> agent-host by-email) -----------------------------
@@ -99,13 +105,13 @@ async def test_resolve_owner_full_chain(monkeypatch):
         return httpx.Response(404)
 
     _patch(monkeypatch, handler)
-    assert await ir.resolve_owner("slack", "U123") == "scooter-alice"
+    assert await lib_identity.resolve_owner("slack", "U123") == "scooter-alice"
 
 
 async def test_resolve_owner_no_email(monkeypatch):
     monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
     _patch(monkeypatch, lambda req: httpx.Response(200, json={"ok": True, "user": {"profile": {}}}))
-    assert await ir.resolve_owner("slack", "U123") is None
+    assert await lib_identity.resolve_owner("slack", "U123") is None
 
 
 async def test_resolve_owner_no_scooter_match(monkeypatch):
@@ -118,18 +124,18 @@ async def test_resolve_owner_no_scooter_match(monkeypatch):
         return httpx.Response(404)  # by-email: no match
 
     _patch(monkeypatch, handler)
-    assert await ir.resolve_owner("slack", "U123") is None
+    assert await lib_identity.resolve_owner("slack", "U123") is None
 
 
 async def test_resolve_owner_empty_external_id(monkeypatch):
-    assert await ir.resolve_owner("slack", "") is None
+    assert await lib_identity.resolve_owner("slack", "") is None
 
 
 # --- privacy: personal data must not reach a structured log field ---------------
 
 
 def test_pseudonym_is_stable_and_does_not_reveal_the_input():
-    from webhooks.identity_resolve import pseudonym
+    from scooter_lib.logging_config import pseudonym
 
     # Stable: the same principal always correlates across lines and across restarts.
     assert pseudonym("U123ABC") == pseudonym("U123ABC")
@@ -170,7 +176,7 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
     monkeypatch.setattr(ir.httpx, "AsyncClient", _Boom)
 
     with caplog.at_level(_logging.WARNING):
-        await ir.get_user_email("slack", secret_id)
+        await lib_identity.get_user_email("slack", secret_id)
 
     assert caplog.records, "expected a warning to be logged"
     for rec in caplog.records:
@@ -180,7 +186,7 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
             assert secret_id != value, f"raw identifier leaked as field {key}"
         # ...and the pseudonym must be there, so the line is still correlatable.
         # In its OWN field: this is the external identifier, not a Scooter user id.
-        assert getattr(rec, "external_user", None) == ir.pseudonym(secret_id)
+        assert getattr(rec, "external_user", None) == lib_identity.pseudonym(secret_id)
         # user_id means the SCOOTER user and nothing else. Resolution never got that far
         # here, so it must be ABSENT rather than holding a token that joins to nothing.
         assert not hasattr(rec, "user_id")
@@ -192,8 +198,6 @@ async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(mo
     pseudonymized so a leaked log cannot be joined against a database dump."""
     import logging as _logging
 
-    from webhooks import identity_resolve as ir
-
     external = "U-EXTERNAL-123"
     email = "alice@example.com"
     db_user_id = "scooter-user-abc123"
@@ -204,17 +208,19 @@ async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(mo
     async def _lookup(_email):
         return db_user_id
 
-    monkeypatch.setattr(ir, "get_user_email", _email)
-    monkeypatch.setattr(ir, "_scooter_user_for_email", _lookup)
+    # Both legs are lib-side now: the registry lookup and the agent-host by-email
+    # call `resolve_owner` composes. Why: PR #575.
+    monkeypatch.setattr(lib_identity, "get_user_email", _email)
+    monkeypatch.setattr(lib_identity, "user_id_for_email", _lookup)
 
     with caplog.at_level(_logging.INFO):
-        got = await ir.resolve_owner("slack", external)
+        got = await lib_identity.resolve_owner("slack", external)
 
     assert got == db_user_id  # the caller still receives the real id
     rec = next(r for r in caplog.records if "resolved external user" in r.getMessage())
 
     # The logged id is the pseudonymized SCOOTER id...
-    assert rec.user_id == ir.pseudonym(db_user_id)
+    assert rec.user_id == lib_identity.pseudonym(db_user_id)
     # ...and NEITHER the raw db id, the external id, nor the email appears anywhere.
     for value in rec.__dict__.values():
         assert value not in (db_user_id, external, email)

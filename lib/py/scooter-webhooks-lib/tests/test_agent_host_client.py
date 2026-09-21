@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from webhooks import agent_host_client as ahc
+from scooter_webhooks_lib import agent_host_client as ahc
 
 
 def _sse(*events: str) -> bytes:

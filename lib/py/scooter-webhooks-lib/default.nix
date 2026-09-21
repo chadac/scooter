@@ -33,6 +33,8 @@ python3Packages.buildPythonPackage {
     "scooter_webhooks_lib.registry"
     "scooter_webhooks_lib.store"
     "scooter_webhooks_lib.resources"
+    "scooter_webhooks_lib.agent_host_client"
+    "scooter_webhooks_lib.identity"
   ];
 
   meta.description = "The webhooks extension surface for Scooter handlers";

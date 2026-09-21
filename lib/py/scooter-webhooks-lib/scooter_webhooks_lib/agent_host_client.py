@@ -15,22 +15,52 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 import httpx
-
-from .config import settings
-from scooter_lib.logging_config import format_error
+from scooter_lib.logging_config import format_error, pseudonym
 
 logger = logging.getLogger(__name__)
 _C = {"component": "agent_host_client"}
 
 
+class AgentHostConfig(Protocol):
+    """What this client needs from whatever settings object the app hands it.
+
+    CONFIG STAYS IN THE APP, same as `store.DatabaseConfig`: a lib module is given
+    its configuration, it does not read the environment. A contrib is not the app
+    and does own its settings (PR #573) — the two rules don't overlap. Why: PR #575.
+    """
+
+    agent_host_url: str
+    agent_host_token_path: str
+    agent_manager_url: str
+
+
+_config: AgentHostConfig | None = None
+
+
+def init(config: AgentHostConfig) -> None:
+    """Bind the agent-host settings. Called once at service startup, beside
+    `store.init_db`."""
+    global _config
+    _config = config
+
+
+def _cfg() -> AgentHostConfig:
+    # Loud, not silent: an unconfigured client would otherwise POST to "/agui" and
+    # fail as a confusing connection error at the first webhook delivery.
+    if _config is None:
+        raise RuntimeError("scooter_webhooks_lib.agent_host_client.init(config) was never called")
+    return _config
+
+
 def _agui_url() -> str:
-    return f"{settings.agent_host_url.rstrip('/')}/agui"
+    return f"{_cfg().agent_host_url.rstrip('/')}/agui"
 
 
 def _conversations_url() -> str:
-    return f"{settings.agent_host_url.rstrip('/')}/conversations"
+    return f"{_cfg().agent_host_url.rstrip('/')}/conversations"
 
 
 async def _create_conversation(owner: str | None) -> str | None:
@@ -235,7 +265,7 @@ def _sa_token() -> str | None:
     trusted webhooks caller: the conversation-router then honors the `owner` we send on
     POST /conversations (and the agent-host `payload.owner` on /agui). None if not
     mounted — the owner is ignored and the conversation is created unowned."""
-    path = settings.agent_host_token_path
+    path = _cfg().agent_host_token_path
     try:
         with open(path, encoding="utf-8") as f:
             return f.read().strip() or None
@@ -310,7 +340,7 @@ async def push_link(
     github owner/repo/number) so the agent-host's response tools can infer where
     to reply without the agent supplying them. Best-effort — a failure must not
     break the webhook flow."""
-    base = settings.agent_host_url.rstrip("/")
+    base = _cfg().agent_host_url.rstrip("/")
     body: dict = {"source": source, "resourceType": resource_type, "url": url, "title": title}
     if ref is not None:
         body["ref"] = ref
@@ -345,7 +375,7 @@ async def get_conversation_status(conversation_id: str) -> str | None:
     debug, transient at warning) so a persistently-unreachable agent-host is
     visible instead of silently looking like every conversation vanished.
     """
-    base = settings.agent_host_url.rstrip("/")
+    base = _cfg().agent_host_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{base}/conversations/{conversation_id}")
@@ -383,5 +413,34 @@ async def resolve_sandbox_to_conversation(sandbox_or_conv_id: str) -> str | None
 
 
 def conversation_url(conversation_id: str) -> str:
-    base = settings.agent_manager_url.rstrip("/")
+    base = _cfg().agent_manager_url.rstrip("/")
     return f"{base}/?thread={conversation_id}" if base else conversation_id
+
+
+async def user_id_for_email(email: str) -> str | None:
+    """Ask the agent-host which Scooter user has this email (user_identity). None if
+    no match / unreachable.
+
+    Lives with the other agent-host calls rather than in `identity`, so `identity`
+    needs no configuration of its own — it is pure orchestration over a registry.
+    """
+    base = _cfg().agent_host_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/users/by-email", params={"email": email})
+            if resp.status_code != 200:
+                return None
+            return resp.json().get("id") or None
+    except (httpx.HTTPError, ValueError) as e:
+        # Domain alongside the pseudonym: it separates a misconfigured tenant from a
+        # missing user, and names an organisation rather than a person.
+        logger.warning(
+            "by-email lookup failed",
+            extra={
+                **_C,
+                "email": pseudonym(email),
+                "email_domain": email.rpartition("@")[2] or None,
+                "error": format_error(e),
+            },
+        )
+        return None
