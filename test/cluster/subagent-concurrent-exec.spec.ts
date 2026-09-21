@@ -16,9 +16,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
-import { createK8sProvisioner } from "../../services/agent-host/src/session/k8sProvisioner.js";
+import { createSandboxFixture } from "../support/sandboxFixture.js";
 import { connectSandbox } from "../../services/agent-host/src/exec/k8sExec.js";
-import type { SandboxProvisioner } from "../../services/agent-host/src/session/manager.js";
 import type { SandboxApiClient } from "../../services/agent-host/src/exec/sandboxExec.js";
 import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
@@ -30,7 +29,7 @@ const sh = (script: string) => ({ command: "bash", args: ["-c", script] });
 
 maybe("subagents share one pod — concurrent exec into a shared sandbox", () => {
   let cluster: Cluster;
-  let provisioner: SandboxProvisioner;
+  let provisioner: ReturnType<typeof createSandboxFixture>;
   let ref: SandboxRef;
   // Two independent exec clients targeting the SAME ref — what a parent bridge and
   // its subagent's bridge each do (both got the parent's SandboxRef).
@@ -40,7 +39,7 @@ maybe("subagents share one pod — concurrent exec into a shared sandbox", () =>
 
   beforeAll(async () => {
     cluster = await withCluster({ installController: true, namespace: NS });
-    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    provisioner = createSandboxFixture({ namespace: NS, image: IMAGE });
     ref = await provisioner.create(id);
     // Wait for the pod to be exec-able before connecting the clients.
     await cluster.waitFor<{ status: { conditions: Array<{ type: string; status: string }> } }>(

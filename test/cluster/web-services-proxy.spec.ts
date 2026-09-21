@@ -22,12 +22,11 @@ import { connect, type Socket, type AddressInfo } from "node:net";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
-import { createK8sProvisioner } from "../../services/agent-host/src/session/k8sProvisioner.js";
+import { createSandboxFixture } from "../support/sandboxFixture.js";
 import { resolvePodTarget } from "../../services/agent-host/src/exec/k8sExec.js";
 import { connectSandbox } from "../../services/agent-host/src/exec/sandboxExec.js";
 import { createWebServiceProxy } from "../../services/agent-host/src/proxy/webServiceProxy.js";
 import { createWebServiceRegistry } from "../../services/agent-host/src/proxy/webServiceRegistry.js";
-import type { SandboxProvisioner } from "../../services/agent-host/src/session/manager.js";
 import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
@@ -59,7 +58,7 @@ function demoServerPy(id: string): string {
 
 maybe("web-service reverse proxy (real pod)", () => {
   let cluster: Cluster;
-  let provisioner: SandboxProvisioner;
+  let provisioner: ReturnType<typeof createSandboxFixture>;
   let ref: SandboxRef;
   let proxyServer: Server;
   let proxyPort: number;
@@ -67,7 +66,7 @@ maybe("web-service reverse proxy (real pod)", () => {
 
   beforeAll(async () => {
     cluster = await withCluster({ installController: true, namespace: NS });
-    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    provisioner = createSandboxFixture({ namespace: NS, image: IMAGE });
     ref = await provisioner.create(id);
 
     // Wait for the pod Ready + exec-able.

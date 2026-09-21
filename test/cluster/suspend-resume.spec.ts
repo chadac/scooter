@@ -9,8 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
-import { createK8sProvisioner } from "../../services/agent-host/src/session/k8sProvisioner.js";
-import type { SandboxProvisioner } from "../../services/agent-host/src/session/manager.js";
+import { createSandboxFixture } from "../support/sandboxFixture.js";
 import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
@@ -34,13 +33,13 @@ const suspendedP = (s: SandboxStatus) => {
 
 maybe("suspend / resume workspace persistence", () => {
   let cluster: Cluster;
-  let provisioner: SandboxProvisioner;
+  let provisioner: ReturnType<typeof createSandboxFixture>;
   let ref: SandboxRef;
   const id = "testpersist1";
 
   beforeAll(async () => {
     cluster = await withCluster({ installController: true, namespace: NS });
-    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    provisioner = createSandboxFixture({ namespace: NS, image: IMAGE });
     ref = await provisioner.create(id);
     await cluster.waitFor("Sandbox", `conv-${id}`, readyP, 180_000, NS);
   }, 240_000);

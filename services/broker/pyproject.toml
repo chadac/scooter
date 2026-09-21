@@ -29,6 +29,9 @@ agent-broker = "broker.core.app:main"
 # pod's SA token). credential_process helper + the request CLI.
 scooter-aws-credentials = "broker.aws.cli:_credentials_entry"
 scooter-aws = "broker.aws.cli:_cli_entry"
+# Renders a Sandbox manifest to stdout (no cluster writes). The cluster tests use it
+# so there is ONE manifest renderer, not a TS copy that drifts — see sandbox/cli.py.
+scooter-sandbox-manifest = "broker.sandbox.cli:main"
 
 # External packages can contribute provider modules via this entry-point group.
 [project.entry-points."agent_broker.providers"]

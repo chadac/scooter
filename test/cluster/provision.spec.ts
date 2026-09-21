@@ -1,9 +1,11 @@
 /**
  * Tier 2 — per-conversation cold Sandbox provisioning against a real cluster.
  *
- * Drives the REAL provisioner (createK8sProvisioner) — the production code path
- * the agent-host uses — and asserts the cluster reconciles it: unique SA,
- * workspace PVC bound, Sandbox pod Ready, exec-able, broker token projected.
+ * Applies the REAL Sandbox manifest — rendered by the broker's own
+ * sandbox_manifest() via test/support/sandboxFixture.ts — and asserts the cluster
+ * reconciles it: unique SA, workspace PVC bound, Sandbox pod Ready, exec-able,
+ * broker token projected. Manifest CONTENT is unit-tested in the broker
+ * (services/broker/tests/test_sandbox_manifest.py); what this adds is a real cluster.
  *
  * Gated: RUN_CLUSTER_TESTS=1.
  */
@@ -11,8 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { withCluster, clusterTestsEnabled, type Cluster } from "../support/cluster.js";
-import { createK8sProvisioner } from "../../services/agent-host/src/session/k8sProvisioner.js";
-import type { SandboxProvisioner } from "../../services/agent-host/src/session/manager.js";
+import { createSandboxFixture } from "../support/sandboxFixture.js";
 import type { SandboxRef } from "../../services/agent-host/src/types.js";
 
 const maybe = clusterTestsEnabled() ? describe : describe.skip;
@@ -21,13 +22,13 @@ const IMAGE = process.env.SANDBOX_IMAGE ?? "agent-sandbox-os:latest";
 
 maybe("cold Sandbox per conversation", () => {
   let cluster: Cluster;
-  let provisioner: SandboxProvisioner;
+  let provisioner: ReturnType<typeof createSandboxFixture>;
   let ref: SandboxRef;
   const id = "testabc123";
 
   beforeAll(async () => {
     cluster = await withCluster({ installController: true, namespace: NS });
-    provisioner = createK8sProvisioner({ namespace: NS, sandboxImage: IMAGE });
+    provisioner = createSandboxFixture({ namespace: NS, image: IMAGE });
     ref = await provisioner.create(id);
   }, 60_000);
 
