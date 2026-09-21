@@ -8,17 +8,18 @@ version = "0.0.0"
 license = "MIT"
 description = "Example Scooter contrib module — plugs an echo provider into the broker and an echo handler into the webhooks service, via entry points"
 requires-python = ">=3.11"
-# A contrib build-depends on the EXTENSION SURFACE (scooter_broker_lib /
-# scooter_webhooks_lib), never on the `broker`/`webhooks` apps — the apps depend
-# on their contribs, so depending back would be a build cycle. Because the
-# surface is a real dependency, a broken extension fails THIS package's build
-# instead of vanishing silently at service startup.
-#
+# Depends on the extension SURFACE, never on the broker/webhooks apps — they
+# depend on their contribs, so depending back is a cycle. Why: PR #567.
 dependencies = [
   "fastapi",
-  "scooter-broker-lib",
-  "scooter-webhooks-lib",
 ]
+
+# One EXTRA per service, not plain deps: a both-services contrib would otherwise
+# put scooter_webhooks_lib on the broker's path. contrib/default.nix enforces the
+# same split for Nix builds.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib"]
+webhooks = ["scooter-webhooks-lib"]
 
 # The two extension seams a contrib can plug into. A contrib may declare EITHER
 # or BOTH; whichever service loads its group imports only that module (the other

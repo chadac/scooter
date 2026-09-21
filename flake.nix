@@ -532,10 +532,13 @@
 
             inherit agentHost ui broker webhooks scheduler;
 
-            # nix build .#contrib-echo -> the reference contrib package. Its build
-            # runs the discovery tests against the real broker/webhooks registries,
-            # so `nix flake check` (which includes it) proves the entry-point seam.
-            contrib-echo = contribs.packages.echo;
+            # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
+            # contrib, built once PER TARGET SERVICE so each variant carries only that
+            # service's extension surface (a single build would drag the webhooks
+            # surface into the broker image). Both run the discovery tests against the
+            # real registries, so `nix flake check` proves the entry-point seam.
+            contrib-echo = contribs.packages.echo.broker;
+            contrib-echo-webhooks = contribs.packages.echo.webhooks;
 
             conversation-controller = conversationController;
             conversation-router = conversationRouter;
@@ -650,9 +653,10 @@
 
           checks = {
             inherit agentHost ui;
-            # Builds the reference contrib, running its entry-point discovery
-            # tests against the real broker + webhooks registries.
-            contrib-echo = contribs.packages.echo;
+            # Both per-service variants of the reference contrib, each running the
+            # entry-point discovery tests against the real broker + webhooks registries.
+            contrib-echo = contribs.packages.echo.broker;
+            contrib-echo-webhooks = contribs.packages.echo.webhooks;
             # The shared Python libraries (the lib split).
             inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests;
