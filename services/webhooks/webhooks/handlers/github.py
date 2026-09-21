@@ -20,6 +20,7 @@ from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from ..responses.github import get_app_login, post_github_comment
 
@@ -41,27 +42,6 @@ def _verify_signature(body: bytes, signature: str) -> bool:
     return hmac.compare_digest(f"sha256={expected}", signature)
 
 
-def _contains_mention(text: str) -> bool:
-    return settings.mention_pattern.lower() in text.lower()
-
-
-def _is_ignored_user(username: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return username.lower() in ignored
-
-
-def _is_own_comment(body: str) -> bool:
-    # Recognize Scooter's own comments; keep matching the legacy "OpenHands"
-    # markers so in-flight threads created before the rename still match.
-    return (
-        body.startswith("Scooter is on it")
-        or body.startswith("OpenHands is working on this.")
-        or "OpenHands status:" in body
-    )
-
-
 async def _is_self_authored(actor: dict, body: str) -> bool:
     """Should this comment/review be dropped as machine chatter?
 
@@ -73,9 +53,9 @@ async def _is_self_authored(actor: dict, body: str) -> bool:
     """
     actor = actor or {}
     login = actor.get("login", "")
-    if _is_ignored_user(login):
+    if policy.is_ignored_user(login):
         return True
-    if _is_own_comment(body):
+    if policy.is_own_ack(body):
         return True
 
     own_login = await get_app_login()
@@ -86,9 +66,9 @@ async def _is_self_authored(actor: dict, body: str) -> bool:
     # bot chatter that isn't addressed to the agent. A bot that wants the agent
     # mentions it; our own comments are caught above regardless.
     return (
-        settings.ignore_bot_authors
+        policy.ignore_bot_authors()
         and actor.get("type") == "Bot"
-        and not _contains_mention(body)
+        and not policy.mentions_agent(body)
     )
 
 
@@ -223,7 +203,7 @@ async def _handle_comment(payload: dict):
     if await _is_self_authored(author, comment_body):
         return
 
-    has_mention = _contains_mention(comment_body)
+    has_mention = policy.mentions_agent(comment_body)
     res_type = "pull_request" if is_pr else "issue"
     res_id = _resource_id(owner, repo, issue_number)
 
@@ -232,7 +212,7 @@ async def _handle_comment(payload: dict):
     if not has_mention and not existing:
         return
 
-    message_text = comment_body.replace(settings.mention_pattern, "").strip()
+    message_text = policy.strip_mention(comment_body)
     comment_text = f"@{user} commented:\n\n{message_text}"
 
     comment_id = comment.get("id")
@@ -494,7 +474,7 @@ async def _handle_issue_event(payload: dict):
         return
 
     label = payload.get("label", {}).get("name", "")
-    if label.lower() != settings.label_trigger.lower():
+    if not policy.is_trigger_label(label):
         return
 
     issue = payload.get("issue", {})
@@ -530,7 +510,7 @@ async def _handle_pr_event(payload: dict):
         return
 
     label = payload.get("label", {}).get("name", "")
-    if label.lower() != settings.label_trigger.lower():
+    if not policy.is_trigger_label(label):
         return
 
     pr = payload.get("pull_request", {})

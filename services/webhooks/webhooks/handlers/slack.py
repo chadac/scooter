@@ -19,6 +19,7 @@ from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import require_relay_key, settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from .slack_files import DownloadedFiles, download_files
 from ..responses.slack import (
@@ -106,17 +107,6 @@ def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
-
-
-def _contains_mention(text: str) -> bool:
-    return settings.mention_pattern.lower() in text.lower()
-
-
-def _is_ignored_user(user_id: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return user_id.lower() in ignored
 
 
 def _resource_id(channel: str, thread_ts: str) -> str:
@@ -288,7 +278,7 @@ async def _handle_mention(event: dict):
     ts = event.get("ts", "")
     thread_ts = event.get("thread_ts", ts)  # If in thread, use thread_ts; otherwise use message ts
 
-    if _is_ignored_user(user):
+    if policy.is_ignored_user(user):
         return
 
     # A mention arrives as BOTH app_mention + message twin events (different
@@ -318,7 +308,7 @@ async def _handle_mention(event: dict):
     bot_id = await _get_bot_id()
     message_text = text.strip()
     if bot_id:
-        message_text = re.sub(rf"<@{re.escape(bot_id)}>", settings.mention_pattern, message_text)
+        message_text = re.sub(rf"<@{re.escape(bot_id)}>", policy.mention_pattern(), message_text)
     message_text = message_text.strip()
 
     comment_text = f"<@{user}> said:\n\n{message_text}\n\n(message_ts: {ts} — pass this to slack_react to react to THIS message)"
@@ -388,7 +378,7 @@ async def _handle_thread_message(event: dict):
     user = event.get("user", "unknown")
     channel = event.get("channel", "")
 
-    if _is_ignored_user(user):
+    if policy.is_ignored_user(user):
         return
 
     bot_id = await _get_bot_id()
@@ -402,7 +392,7 @@ async def _handle_thread_message(event: dict):
     # agent a 2nd (non-priority) copy. PRIMARY skip: detect BOTH the configured
     # `@scooter` pattern AND the raw `<@BOTID>` form Slack actually puts in the
     # event text (the pattern alone misses the raw form).
-    if _contains_mention(text) or (bot_id and f"<@{bot_id}>" in text):
+    if policy.mentions_agent(text) or (bot_id and f"<@{bot_id}>" in text):
         return
 
     # BACKSTOP skip (order-independent, text-independent): if this exact message

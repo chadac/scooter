@@ -84,8 +84,9 @@ class TestReviewComment:
 
     @pytest.mark.asyncio
     async def test_does_not_react_to_its_OWN_comment(self, forwarded):
-        with patch.object(gh, "_is_own_comment", return_value=True):
-            await gh._handle_review_comment(review_comment())
+        # A real ack body rather than a patched predicate: the recognition itself is
+        # what must keep working, and it is shared policy now. Why: PR #577.
+        await gh._handle_review_comment(review_comment(body="Scooter is on it — conv-1"))
         assert not forwarded.called, "replying to itself would loop"
 
     @pytest.mark.asyncio

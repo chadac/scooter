@@ -17,6 +17,7 @@ from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
+from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
 from ..responses.jira import post_jira_comment
 
@@ -25,23 +26,12 @@ _C = {"component": "handlers.jira"}
 router = APIRouter()
 
 
-def _contains_mention(text: str) -> bool:
-    return settings.mention_pattern.lower() in text.lower()
-
-
 def _is_own_comment(body: str, author_account_id: str) -> bool:
     if settings.jira_bot_account_id and author_account_id == settings.jira_bot_account_id:
         return True
     # Recognize Scooter's own comments; keep matching the legacy "OpenHands"
     # marker so in-flight tickets created before the rename still match.
     return body.startswith("Scooter is on it") or "OpenHands status:" in body
-
-
-def _is_ignored_user(username: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return username.lower() in ignored
 
 
 def _format_forwarded_message(
@@ -114,10 +104,10 @@ async def _handle_comment(payload: dict):
 
     if _is_own_comment(comment_body, author_account_id):
         return
-    if _is_ignored_user(author_name):
+    if policy.is_ignored_user(author_name):
         return
 
-    has_mention = _contains_mention(comment_body)
+    has_mention = policy.mentions_agent(comment_body)
 
     existing = (
         await db.lookup_conversation("jira", "issue", issue_key)
@@ -128,7 +118,7 @@ async def _handle_comment(payload: dict):
     if not has_mention and not existing:
         return
 
-    message_text = comment_body.replace(settings.mention_pattern, "").strip()
+    message_text = policy.strip_mention(comment_body)
     comment_text = f"@{author_name} commented:\n\n{message_text}"
 
     if is_pending(existing):

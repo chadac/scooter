@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+from scooter_webhooks_lib import policy
 from webhooks.handlers import slack as slack_h
 
 
@@ -26,6 +27,9 @@ async def test_mentioning_thread_message_is_NOT_forwarded_by_the_message_handler
     ):
         st.mention_pattern = "@scooter"
         st.ignore_usernames = ""
+        # The handler reads its own settings; the shared trigger policy is bound
+        # separately, so point it at the same stub. Why: PR #577.
+        policy.init(st)
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
@@ -47,6 +51,9 @@ async def test_non_mention_thread_message_IS_forwarded_for_awareness():
     ):
         st.mention_pattern = "@scooter"
         st.ignore_usernames = ""
+        # The handler reads its own settings; the shared trigger policy is bound
+        # separately, so point it at the same stub. Why: PR #577.
+        policy.init(st)
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
@@ -74,6 +81,9 @@ async def test_mention_is_rewritten_to_readable_pattern_not_stripped():
     ):
         st.mention_pattern = "@scooter"
         st.ignore_usernames = ""
+        # The handler reads its own settings; the shared trigger policy is bound
+        # separately, so point it at the same stub. Why: PR #577.
+        policy.init(st)
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
