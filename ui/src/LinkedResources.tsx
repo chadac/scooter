@@ -23,28 +23,33 @@ function linkLabel(l: ConversationLink): string {
 }
 
 export function LinkedResources() {
-  const { currentId } = useSessions();
+  // Subscribe to the store so this re-runs when the selection — or its server id —
+  // changes. The effect keys off the SERVER id, not the session key: the key is a local
+  // placeholder until the first send and does NOT change when the real id arrives, so
+  // keying on it polled a conversation the server had never issued and then never
+  // re-ran once it had one.
+  useSessions();
+  const serverId = currentConversation()?.serverId();
   const [links, setLinks] = useState<ConversationLink[]>([]);
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
-    let cancelled = false;
-    // A conversation the server has not created yet has no links, and asking for them
-    // would GET /conversations/<a key the server never issued>/links — a 404 every poll.
-    const refresh = () =>
-      void currentConversation()
-        ?.ifCreated((id) => loadLinks({ baseUrl: BASE_URL }, id), [] as ConversationLink[])
-        .then((ls) => {
-          if (!cancelled) setLinks(ls);
-        });
     setLinks([]); // clear when switching conversations
+    // Nothing to ask about before creation: don't fetch, and don't start the 10s
+    // interval either — an unsent conversation otherwise polls forever.
+    if (serverId === undefined) return;
+    let cancelled = false;
+    const refresh = () =>
+      void loadLinks({ baseUrl: BASE_URL }, serverId).then((ls) => {
+        if (!cancelled) setLinks(ls);
+      });
     refresh();
     const t = setInterval(refresh, 10000); // a late-arriving link still shows
     return () => {
       cancelled = true;
       clearInterval(t);
     };
-  }, [currentId]);
+  }, [serverId]);
 
   if (links.length === 0) return null;
 
