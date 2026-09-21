@@ -21,12 +21,23 @@
 # nix-stubs' pure-Nix overlay, this repo's flake.lock (the lock is synced to it),
 # and the prebuilt nix-stubs BINARY — recorded as a store path so the in-pod eval
 # references the baked one instead of compiling Rust in the pod.
+#
+# The uv-nix uv rides along for the same reason and by the same store-path trick:
+# it is a flake input, so a re-converge that could not see it would hand the
+# sandbox a vanilla uv (see `uvNix` below).
 
 { pkgs, lib
   # { src; package; } — the nix-stubs flake input's source and its built binary.
   # Optional: a nixosTest that imports modules/sandbox-os bare has no stub overlay
   # to reconstruct, and base-config.nix skips it when the vendored bits are absent.
 , nixStubs ? null
+  # The uv-nix uv, recorded as a store path so the re-converge keeps the PATCHED uv
+  # instead of falling back to vanilla `pkgs.uv` (uv.nix) and dropping marimo to a
+  # bare `marimo edit` (web-services/marimo.nix). A store path, NOT a rebuild: its
+  # `src` is a `builtins.fetchurl`, so re-deriving the package in-pod would try to
+  # fetch a ~50 MB binary at EVAL time — fatal offline, and pointless when the
+  # built uv is already in the image closure.
+, uvNix ? null
 }:
 
 let
@@ -45,6 +56,8 @@ let
     # The binary as a bare store path. It is already in the image closure (every
     # shim references it), so the in-pod eval resolves it offline.
     printf '%s' ${lib.escapeShellArg "${nixStubs.package}"} > $out/nix-stubs-bin
+  '' + lib.optionalString (uvNix != null) ''
+    printf '%s' ${lib.escapeShellArg "${uvNix}"} > $out/uv-nix-bin
   '');
   modulesSrc = "${modulesTree}/modules/sandbox-os";
 in

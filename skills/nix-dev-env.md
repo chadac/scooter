@@ -24,18 +24,26 @@ triggers:
 This sandbox is a **NixOS** dev box with **systemd**. You can build/install tools
 on demand, and run real background services. Three things specific to here:
 
-## 1. Common tools are LAZY — just run them
+## 1. Python: use `uv` — it is patched for Nix
 
-Tools like `uv` are pre-wired as **lazy stubs**: the binary isn't baked into the
-image, but running the command builds it from Nix on first use (slow once, then
-instant) and caches it. So just:
+`uv` is on `PATH` and is **uv-nix**, not stock uv. It patches wheels and the
+Python interpreters it downloads to link against Nix-supplied libraries, so the
+usual NixOS failure — a wheel that installs fine then dies on import with a
+missing `libstdc++`/BLAS, or a downloaded CPython that won't exec at all — does
+not happen:
 
 ```bash
-uv --version        # builds uv the first time, runs it; later calls are instant
-uv pip install ...
+uv venv && uv add numpy scipy matplotlib   # these import; no LD_LIBRARY_PATH
+uv run script.py
 ```
 
-No `nix profile install` needed for these — they're already on `PATH`.
+So reach for `uv` before hand-rolling a venv or hunting for a nixpkgs Python
+package set. If you write a module whose service runs uv, reference
+`config.sandboxOs.uv.package` — **`pkgs.uv` is the vanilla one** and puts the
+import failures back.
+
+Other tools are pre-wired as **lazy stubs**: on `PATH`, but built from Nix on
+first call (slow once, then instant). Just run them — no `nix profile install`.
 
 ## 2. Installing other tools with Nix
 
@@ -68,9 +76,12 @@ forwarding to expose it externally is a separate step — ask if you need it).
 ## Which tools are already lazy
 
 Some tools are STUBS: on `PATH` immediately, fetched for real the first time you
-run them, costing the image only their build recipe. Today that set is `uv`,
-`tree`, `marimo`, `ttyd`, `code-server`, and `awscli2`. Just run them — the first
-call pauses while the tool arrives, and later calls are instant.
+run them, costing the image only their build recipe. Today that set is `tree`,
+`marimo`, `ttyd`, `code-server`, and `awscli2`. Just run them — the first call
+pauses while the tool arrives, and later calls are instant.
+
+`uv` is NOT in that set: it is baked whole, because the sandbox ships uv-nix
+rather than nixpkgs' uv (see §1). It never pauses on first call.
 
 The set is declared when the image is built
 (`modules/sandbox-os/stubs.nix` in the scooter repo). A module you write in the
