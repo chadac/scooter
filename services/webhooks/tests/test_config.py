@@ -33,11 +33,11 @@ def test_explicit_postgres_dsn_wins_over_components(monkeypatch):
 
 
 def test_webhooks_settings_carries_the_shared_agent_host_fields():
-    from scooter_lib.settings import AgentHostSettings
+    from scooter_lib.settings import ScooterBaseSettings
 
     from webhooks.config import WebhooksSettings
 
-    assert issubclass(WebhooksSettings, AgentHostSettings)
+    assert issubclass(WebhooksSettings, ScooterBaseSettings)
 
 
 def test_webhooks_keeps_its_in_cluster_agent_host_default(monkeypatch):

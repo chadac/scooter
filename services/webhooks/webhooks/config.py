@@ -23,7 +23,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
-from scooter_lib.settings import AgentHostSettings
+from scooter_lib.settings import ScooterBaseSettings
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -61,20 +61,11 @@ class DatabaseSettings(BaseSettings):
         return self
 
 
-class WebhooksSettings(AgentHostSettings):
-    """Settings specific to the webhooks service.
+class WebhooksSettings(ScooterBaseSettings):
+    """Settings specific to the webhooks service."""
 
-    Inherits `agent_host_url` / `agent_host_token_path` / `agent_manager_url`
-    from `scooter_lib`, so a contrib handler can construct those on its own
-    rather than importing this module. Same env vars, same names.
-    """
-
-    # The agent-host (AG-UI). Webhooks spawn conversations via POST {url}/agui.
-    #
-    # Overrides the lib's "" default deliberately: for the broker an unset URL
-    # means "auto-linking off", a legitimate local/dev mode. For webhooks,
-    # spawning a conversation IS the job, so an unset URL is a misconfiguration,
-    # not a mode — the in-cluster address stays the default here.
+    # Overrides the lib's "" default on purpose: empty means "auto-linking off"
+    # to the broker, but a misconfiguration here. Don't collapse them. PR #572.
     agent_host_url: str = "http://agent-host.agent-sandbox.svc.cluster.local:8080"
 
     # Root log level (LOG_LEVEL env). INFO by default; DEBUG for verbose tracing.

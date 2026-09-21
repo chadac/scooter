@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from broker.config import BrokerSettings
-from scooter_lib.settings import AgentHostSettings
+from scooter_lib.settings import ScooterBaseSettings
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,7 @@ def _clean_env(monkeypatch):
 
 
 def test_broker_settings_carries_the_shared_agent_host_fields():
-    assert issubclass(BrokerSettings, AgentHostSettings)
+    assert issubclass(BrokerSettings, ScooterBaseSettings)
 
 
 def test_agent_host_url_is_still_empty_by_default():
