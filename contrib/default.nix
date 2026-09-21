@@ -35,7 +35,10 @@ let
         src = ./. + "/${dir}";
         pyproject = true;
 
-        build-system = [ python3Packages.setuptools ];
+        # Contribs standardize on the hatchling backend (declared in each
+        # contrib's [build-system]); passed here because nixpkgs needs the
+        # backend as an explicit build input.
+        build-system = [ python3Packages.hatchling ];
 
         dependencies = [ python3Packages.fastapi ] ++ extraDeps;
 

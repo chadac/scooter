@@ -21,7 +21,7 @@ services.
 
 ```
 contrib/<name>/
-  pyproject.toml            # package + entry points (both groups if it spans services)
+  pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
   module.nix                # Nix descriptor (see schema below)
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "scooter-contrib-echo"
 version = "0.0.0"
@@ -8,6 +12,8 @@ requires-python = ">=3.11"
 # image provides them on the path, and the contrib's service-coupled modules
 # import them lazily (only when the service loads that entry point). Listing
 # them here would create a build-time cycle (a service depends on its contribs).
+# (The `lib` split — scooter_broker_lib / scooter_webhooks_lib — will let a
+# contrib build-depend on the extension surface directly; see the next slice.)
 dependencies = [
   "fastapi",
 ]
@@ -21,8 +27,8 @@ echo = "scooter_contrib_echo.broker_provider:echo_contrib"
 [project.entry-points."scooter_webhooks.handlers"]
 echo = "scooter_contrib_echo.webhooks_handler:echo_contrib"
 
-[tool.setuptools.packages.find]
-include = ["scooter_contrib_echo*"]
+# hatchling auto-detects the `scooter_contrib_echo` package (its name matches the
+# normalized project name); no explicit package list needed.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
