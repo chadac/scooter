@@ -18,6 +18,7 @@ from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from ..responses.gitlab import post_gitlab_comment
 
@@ -35,18 +36,8 @@ def _verify_signature(body: bytes, token: str) -> bool:
     return hmac.compare_digest(token, settings.gitlab_webhook_secret)
 
 
-def _contains_mention(text: str) -> bool:
-    return settings.mention_pattern.lower() in text.lower()
-
-
 def _extract_repo(payload: dict) -> str:
     return payload.get("project", {}).get("path_with_namespace", settings.default_gitlab_repo)
-
-
-def _repo_context(repo: str) -> str:
-    descs = settings.get_repo_descriptions()
-    desc = descs.get(repo)
-    return f"\nRepo description: {desc}\n" if desc else ""
 
 
 def _resource_id(repo: str, resource_type: str, iid: int) -> str:
@@ -89,23 +80,6 @@ async def _infer_conversation_from_jira(
             )
             return conv_id
     return None
-
-
-def _is_ignored_user(username: str) -> bool:
-    if not settings.ignore_usernames:
-        return False
-    ignored = {u.strip().lower() for u in settings.ignore_usernames.split(",")}
-    return username.lower() in ignored
-
-
-def _is_own_comment(body: str) -> bool:
-    # Recognize Scooter's own comments; keep matching the legacy "OpenHands"
-    # markers so in-flight threads created before the rename still match.
-    return (
-        body.startswith("Scooter is on it")
-        or body.startswith("OpenHands is working on this.")
-        or "OpenHands status:" in body
-    )
 
 
 def _response_instructions(noteable_type: str, noteable_iid: int) -> str:
@@ -206,9 +180,9 @@ async def _handle_note(payload: dict):
     repo = _extract_repo(payload)
     noteable_type = note.get("noteable_type", "")
 
-    if _is_ignored_user(user):
+    if policy.is_ignored_user(user):
         return
-    if _is_own_comment(note_body):
+    if policy.is_own_ack(note_body):
         return
 
     # Branch-specific fields, initialized so they're always bound (the later
@@ -246,7 +220,7 @@ async def _handle_note(payload: dict):
     else:
         return
 
-    has_mention = _contains_mention(note_body)
+    has_mention = policy.mentions_agent(note_body)
     existing = (
         await db.lookup_conversation("gitlab", res_type, res_id)
         or await db.get_conversation_for_resource("gitlab", res_type, res_id)
@@ -267,7 +241,7 @@ async def _handle_note(payload: dict):
     if not has_mention and not existing:
         return
 
-    message_text = note_body.replace(settings.mention_pattern, "").strip()
+    message_text = policy.strip_mention(note_body)
     diff_context = _format_diff_context(note)
     comment_body = f"{diff_context}\n\n@{user} commented:\n\n{message_text}" if diff_context else f"@{user} commented:\n\n{message_text}"
 
@@ -308,7 +282,7 @@ async def _handle_note(payload: dict):
         conv_title = f"Issue #{issue_iid}: {issue_title}"
 
     reply_hint = _response_instructions(note_api_type, noteable_iid)
-    full_message = f"{context}\n{_repo_context(repo)}\n{comment_body}{reply_hint}"
+    full_message = f"{context}\n{policy.repo_context(repo)}\n{comment_body}{reply_hint}"
 
     asyncio.create_task(
         _background_create_conversation(
@@ -323,7 +297,7 @@ async def _handle_note(payload: dict):
 async def _handle_issue(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
     labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
-    if action != "update" or settings.label_trigger.lower() not in labels:
+    if action != "update" or not any(policy.is_trigger_label(l) for l in labels):
         return
 
     issue = payload.get("object_attributes", {})
@@ -358,7 +332,7 @@ async def _handle_issue(payload: dict):
 async def _handle_merge_request(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
     labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
-    if action != "update" or settings.label_trigger.lower() not in labels:
+    if action != "update" or not any(policy.is_trigger_label(l) for l in labels):
         return
 
     mr = payload.get("object_attributes", {})

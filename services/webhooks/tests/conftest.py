@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from scooter_webhooks_lib import agent_host_client
+from scooter_webhooks_lib import agent_host_client, policy
 
 import webhooks.identity_resolve  # noqa: F401  (resolver registration)
 import webhooks.resource_shapes  # noqa: F401  (resource-shape registration)
@@ -21,4 +21,5 @@ from webhooks.config import settings
 @pytest.fixture(autouse=True)
 def _bind_agent_host_config():
     agent_host_client.init(settings)
+    policy.init(settings)
     yield
