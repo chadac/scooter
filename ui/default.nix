@@ -1,4 +1,4 @@
-{ lib, buildNpmPackage, nodejs, contribManifest ? null, ... }:
+{ lib, buildNpmPackage, nodejs, ... }:
 
 # UI: assistant-ui frontend + the reusable AG-UI client library (ui/src/client.ts).
 # Builds the static site (vite -> dist/) and installs it to $out, ready to be
@@ -14,15 +14,6 @@ buildNpmPackage {
   src = ./.;
 
   npmDepsHash = "sha256-1cOej29YtcUgfUbhVrDy+IiZ8tq5hcFiCLMIMKXc6+U=";
-
-  # A contrib's UI half is metadata compiled INTO the bundle (the icons are React
-  # components; there is no runtime module loader), so the DEPLOYMENT's contrib
-  # set has to be substituted before vite runs. The committed file is the
-  # in-repo set, which is what makes `npm run dev`/vitest work; a deployment
-  # overrides it here. See contrib/ui-manifest.nix.
-  postPatch = lib.optionalString (contribManifest != null) ''
-    cp ${contribManifest} src/contribManifest.generated.ts
-  '';
 
   # Same-origin: relative /agui + /sessions (reverse-proxied to the agent-host).
   VITE_AGENT_HOST_URL = "";

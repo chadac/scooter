@@ -12,15 +12,15 @@
  * Returns null for anything we don't specialize (web_search, web_fetch,
  * modify_environment, unknown) — the caller renders the generic ToolFallback.
  *
- * A CONTRIB registers its tools through the generated manifest instead of this
- * file (contrib/ui-manifest.nix), which is why the provider is a plain string:
- * the set is open, so there is nothing to switch on exhaustively. The single
+ * A CONTRIB registers its tools through the runtime manifest instead of this
+ * file (contribManifest.ts), which is why the provider is a plain string: the
+ * set is open, so there is nothing to switch on exhaustively. The single
  * consumer (ToolCallView) only passes it to the icon lookup, which already
  * falls back for an unknown name.
  */
 
 import type { ContribToolCard } from "./contribTypes.js";
-import { contribToolCards, contribToolTitles } from "./contribManifest.generated.js";
+import { contribToolCards, contribToolTitles } from "./contribManifest.js";
 
 /** A source name ("slack", a contrib's name) or "shell". */
 export type ToolKind = string;
@@ -43,8 +43,6 @@ const BUILTIN_BY_TOOL: Record<string, ContribToolCard> = {
   github_comment: { provider: "github", argKey: "body", action: "commented on GitHub" },
 };
 
-const BY_TOOL: Record<string, ContribToolCard> = { ...BUILTIN_BY_TOOL, ...contribToolCards };
-
 /** The registerTool `title` strings, accepted as a fallback (some ACP paths may
  *  surface the raw title instead of the "<server>: <Name>" form). */
 const BUILTIN_BY_TITLE: Record<string, string> = {
@@ -53,7 +51,16 @@ const BUILTIN_BY_TITLE: Record<string, string> = {
   "comment on the github pr/issue": "github_comment",
 };
 
-const BY_TITLE: Record<string, string> = { ...BUILTIN_BY_TITLE, ...contribToolTitles };
+/** Both lookups consult the manifest FIRST (a contrib of the same name wins) and
+ *  resolve per CALL: the manifest is fetched at runtime, so a merged table built
+ *  at module load would never see a contrib. Why: PR #601. */
+function cardFor(tool: string): ContribToolCard | undefined {
+  return contribToolCards()[tool] ?? BUILTIN_BY_TOOL[tool];
+}
+
+function toolForTitle(title: string): string | undefined {
+  return contribToolTitles()[title] ?? BUILTIN_BY_TITLE[title];
+}
 
 /** Normalize goose's "Scooter-env: Slack Respond" (or a raw tool name) to the
  *  tool-name identity "slack_respond". Drops any "<server>:" prefix, lowercases,
@@ -78,8 +85,8 @@ function asRecord(v: unknown): Record<string, unknown> {
  */
 export function matchToolCall(toolName: string, args: unknown): ToolCallVisual | null {
   const norm = normalizeToolName(toolName);
-  const tool = BY_TOOL[norm] ? norm : BY_TITLE[toolName.trim().toLowerCase()];
-  const meta = tool ? BY_TOOL[tool] : undefined;
+  const tool = cardFor(norm) ? norm : toolForTitle(toolName.trim().toLowerCase());
+  const meta = tool ? cardFor(tool) : undefined;
   if (meta) {
     const raw = asRecord(args)[meta.argKey];
     const body = typeof raw === "string" ? raw : "";

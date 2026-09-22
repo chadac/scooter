@@ -140,7 +140,7 @@ the app and disabling one left a dead chip behind.
 ui = {
   source = {
     label = "GitLab";
-    icon = { pack = "si"; name = "SiGitlab"; };   # react-icons/si -> SiGitlab
+    icon = ./icon.svg;                             # the brand mark, in this dir
     color = "#FC6D26";                             # or "currentColor"
     linkProvider = true;                           # offer a sidebar filter chip
   };
@@ -158,33 +158,39 @@ row cannot silently render nothing.
 **This is METADATA only.** A contrib shipping real React (a `RightPanel` tab, a
 custom renderer) is a second tier that lands with the first feature needing one.
 
-**Why it is generated at build time rather than served at runtime.** Two
-independent reasons, both in `ui/src/sourceIcon.tsx`: the icons are React
-components imported *per-icon* "so only the ones we use are bundled", so a
-runtime manifest naming `"SiGitlab"` as a string could only resolve by bundling
-all of `react-icons`; and the UI is a static vite `dist/` with no module loader,
-so anything a contrib contributes must exist when vite runs.
+**Why it is served at runtime rather than compiled in.** The UI image is built
+once and deployed to clusters whose contrib set differs, so baking the manifest
+into the bundle would mean re-running vite for every deployment that enables a
+different contrib. `/telemetry/config.json` already solves the same problem the
+same way.
 
-So `contrib/ui-manifest.nix` walks the enabled contribs and emits one TypeScript
-module, which the app merges **on top of** its own entries. The result is
-committed at `ui/src/contribManifest.generated.ts` — that is what makes `npm run
-dev`, `vitest` and a plain `npm run build` work without nix — and
-`just contrib-ui-check` fails CI on drift. A deployment with a different contrib
-set never reads the committed file: `ui/default.nix` substitutes its own.
+So `contrib/ui-manifest.nix` walks the enabled contribs and emits ONE JSON
+document, which nginx serves at `/contrib/manifest.json` and the UI fetches on
+load, merging it **on top of** its own entries. Changing a deployment's contrib
+set relinks that file — the compiled bundle is untouched.
 
-After changing any `ui` option:
+That is only possible because the icon is **data**: a `viewBox` and a single
+`<path d=…>`, read out of the contrib's own `.svg`. A React component could only
+be resolved from a runtime name by bundling a whole `react-icons` pack (~4.9 MB),
+which is what forced the build-time manifest before. Simple Icons (CC0) is a
+convenient source; drop the `.svg` in the contrib's directory and point `icon`
+at it.
+
+The fetch is forgiving by design: a 404, a timeout, a network error or a
+malformed document all mean "no contribs", never a broken page. A deployment
+that enables none gets `{}` and the app's built-in sources.
+
+`npm run dev` and the Playwright fast stack serve no manifest, so contrib rows
+are simply absent there — the same forgiving path, no special case. To see them
+locally:
 
 ```
-nix develop -c just contrib-ui-generate   # then commit the result
+nix build .#contrib-ui-manifest
+mkdir -p ui/public/contrib && cp result ui/public/contrib/manifest.json
 ```
 
-Two constraints worth knowing. The icon `pack` is a **fixed enum**
-(`contrib/ui-icon-packs.nix`) because a contrib cannot add an npm dependency —
-`ui/default.nix` pins `npmDepsHash`, so a contrib-local dep would change the
-UI's lockfile and make "adding a contrib is a new directory" false again, just
-relocated. And the icon `name` is only shape-checked in Nix; its **existence**
-is checked by `tsc` when the UI compiles the manifest, so a typo is a build
-error rather than a missing glyph.
+`ui/public/contrib/` is gitignored: a committed copy is exactly the drift the
+runtime manifest removes.
 
 ### What the framework does with it
 

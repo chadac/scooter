@@ -6,7 +6,7 @@
     # toolCallView.ts,sessions.ts}: a deployment without this contrib now has no
     # GitLab chip, icon or card, instead of a dead one. Why: PR #601.
     ui = {
-      source = { label = "GitLab"; icon = { pack = "si"; name = "SiGitlab"; }; color = "#FC6D26"; linkProvider = true; };
+      source = { label = "GitLab"; icon = ./icon.svg; color = "#FC6D26"; linkProvider = true; };
       tools.gitlab_comment = {
         argKey = "body";
         action = "commented on GitLab";

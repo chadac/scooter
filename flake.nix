@@ -363,14 +363,16 @@
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
-          # The contrib manifest is substituted in at build time: a contrib's UI
-          # half is metadata compiled INTO the bundle, so the deployment's contrib
-          # set has to be known when vite runs. See contrib/ui-manifest.nix.
-          ui = pkgs.callPackage ./ui { contribManifest = contribs.uiManifest; };
+          # The contrib set is NOT an input here: its manifest is a file nginx serves
+          # and the UI fetches, so changing that set relinks an image layer instead of
+          # re-running vite. See contrib/ui-manifest.nix.
+          ui = pkgs.callPackage ./ui { };
 
-          # UI OCI image: nginx serving the static build + proxying the agent-host.
+          # UI OCI image: nginx serving the static build + proxying the agent-host,
+          # plus the contribs' manifest at /contrib/manifest.json.
           uiImage = import ./pkgs/ui-image {
             inherit pkgs lib n2c ui;
+            contribManifest = contribs.uiManifest;
           };
 
           # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
@@ -638,7 +640,7 @@
             ui-image = uiImage.image;
 
             # nix build .#contrib-ui-manifest  ->  the contribs' UI metadata as one
-            # TS module. `just contrib-ui-generate` writes it to ui/src/.
+            # JSON document; the UI image serves it at /contrib/manifest.json.
             contrib-ui-manifest = contribs.uiManifest;
 
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply

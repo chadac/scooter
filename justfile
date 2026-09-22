@@ -462,20 +462,6 @@ check-npm-hashes:
 check-image-coverage:
     @scripts/check-image-coverage.sh
 
-# Regenerate the UI's contrib manifest (ui/src/contribManifest.generated.ts) from
-# the evaluated contrib set. Run after changing any contrib's `ui` options.
-contrib-ui-generate:
-    scripts/contrib-ui-generate.sh
-
-# CI drift guard: a contrib's `ui` options changed without regenerating the
-# manifest would compile fine and silently render the OLD metadata (the file is
-# committed so the UI builds outside nix). Same shape as db-generate-check.
-contrib-ui-check:
-    scripts/contrib-ui-generate.sh
-    @git diff --exit-code -- ui/src/contribManifest.generated.ts \
-      || (echo "❌ contrib UI manifest drift: a contrib's 'ui' options changed without regenerating. Run 'nix develop -c just contrib-ui-generate' and commit the result." && exit 1)
-    @echo "✅ the UI contrib manifest is in sync with the contrib set"
-
 # Every contrib directory must be imported by contrib/all-modules.nix. The import
 # list is explicit for eval performance; this is what stops a contrib being added
 # and silently never built or tested. Why: PR #585.
@@ -539,7 +525,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-contrib-coverage contrib-ui-check check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
+ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).

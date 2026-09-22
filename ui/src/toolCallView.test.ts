@@ -2,8 +2,11 @@
  * UI unit test — the tool-call → provider-visual matcher.
  *
  * Keys off goose's title string (what arrives as toolName) + the provider's arg
- * key; disambiguates the three "comment" tools (which share a `body`). Anything
- * else returns null (→ generic ToolFallback).
+ * key; disambiguates the "comment" tools (which share a `body`). Anything else
+ * returns null (→ generic ToolFallback).
+ *
+ * Scope is the app's OWN tools; a contrib's card arrives in the runtime manifest
+ * and is covered in contribManifest.test.ts. Why: PR #601.
  */
 
 import { describe, it, expect } from "vitest";
@@ -40,8 +43,7 @@ describe("matchToolCall", () => {
 
   it("matches the server-prefixed form for each comment tool", () => {
     expect(matchToolCall("Scooter-env: Github Comment", { body: "LGTM" })).toMatchObject({ provider: "github" });
-    expect(matchToolCall("Scooter-env: Gitlab Comment", { body: "x" })).toMatchObject({ provider: "gitlab" });
-    expect(matchToolCall("Scooter-env: Jira Comment", { body: "x" })).toMatchObject({ provider: "jira" });
+    expect(matchToolCall("Scooter-env: Slack Respond", { text: "x" })).toMatchObject({ provider: "slack" });
   });
 
   it("also matches a raw tool name and the registerTool title (fallbacks)", () => {
@@ -73,11 +75,8 @@ describe("matchToolCall", () => {
     expect(matchToolCall("Comment on the GitHub PR/issue", { body: "LGTM" })).toMatchObject({
       provider: "github", body: "LGTM",
     });
-    expect(matchToolCall("Comment on the GitLab MR", { body: "nit: rename" })).toMatchObject({
-      provider: "gitlab", body: "nit: rename",
-    });
-    expect(matchToolCall("Comment on the Jira issue", { body: "done" })).toMatchObject({
-      provider: "jira", body: "done",
+    expect(matchToolCall("github_comment", { body: "nit: rename" })).toMatchObject({
+      provider: "github", body: "nit: rename",
     });
   });
 
@@ -105,6 +104,8 @@ describe("matchToolCall", () => {
 
   it("tolerates missing/garbage args (empty body, not a crash)", () => {
     expect(matchToolCall("Respond in the Slack thread", undefined)).toMatchObject({ provider: "slack", body: "" });
-    expect(matchToolCall("Comment on the Jira issue", { notBody: 1 })).toMatchObject({ provider: "jira", body: "" });
+    expect(matchToolCall("Comment on the GitHub PR/issue", { notBody: 1 })).toMatchObject({
+      provider: "github", body: "",
+    });
   });
 });

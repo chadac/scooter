@@ -13,7 +13,7 @@ import { useSyncExternalStore } from "react";
 
 import type { AgentHostConfig } from "./client.js";
 import { Conversation } from "./conversation.js";
-import { contribLinkProviders } from "./contribManifest.generated.js";
+import { contribLinkProviders } from "./contribManifest.js";
 
 export interface Session {
   /** STABLE identity. Never changes for the life of the conversation — including at the
@@ -84,9 +84,15 @@ export type Scope = "mine" | "all";
 
 /** The known link providers — offered as icon filter chips AND as the "Show:"
  *  label-mode options. The app's own, then whatever the deployment's contribs
- *  declare (contrib/ui-manifest.nix), so disabling a contrib removes its chip
- *  rather than leaving a dead one. Open set, hence `string` and not a union. */
-export const LINK_PROVIDERS: readonly string[] = ["github", "slack", ...contribLinkProviders];
+ *  declare, so disabling a contrib removes its chip rather than leaving a dead
+ *  one. Open set, hence `string` and not a union.
+ *
+ *  A FUNCTION, not a const: the contrib half is fetched at runtime
+ *  (contribManifest.ts), so a list captured at module load would never carry a
+ *  contrib. Why: PR #601. */
+export function linkProviders(): readonly string[] {
+  return ["github", "slack", ...contribLinkProviders()];
+}
 export type LinkProvider = string;
 
 /** What a sidebar row displays: the conversation title, or the linked resource's
@@ -205,9 +211,11 @@ const loadState = (): State => {
       // Search + provider filter are transient (a stale filter hiding every chat
       // after a refresh would baffle); the label mode persists like scope.
       query: "", providerFilter: [],
-      labelMode: (LINK_PROVIDERS as readonly string[]).includes(parsed.labelMode)
-        ? (parsed.labelMode as LabelMode)
-        : "title",
+      // Any string is accepted rather than checked against linkProviders(): this
+      // module initializes BEFORE the runtime manifest lands, so a contrib mode
+      // would be rejected as unknown. An unrecognized mode already degrades to
+      // the conversation title (sessionLabel). Why: PR #601.
+      labelMode: typeof parsed.labelMode === "string" ? (parsed.labelMode as LabelMode) : "title",
     };
   } catch (e) {
     // Finding #26: corrupt persisted state -> start fresh (recoverable), but log

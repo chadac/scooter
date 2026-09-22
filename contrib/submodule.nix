@@ -54,31 +54,10 @@ let
       meta.description = "Scooter contrib module: ${name} (${svc})";
     };
 
-  iconPacks = import ./ui-icon-packs.nix;
-
   # Tier 1 of the UI surface: METADATA only -- a brand row and tool-card entries
   # the app already keys off a hardcoded name. A contrib shipping React
   # components (a RightPanel tab) is tier 2 and lands with the first feature
   # that needs one. Why: PR #601.
-  iconModule = {
-    options = {
-      pack = mkOption {
-        type = types.enum (lib.attrNames iconPacks);
-        example = "si";
-        description = "Which react-icons pack the icon comes from.";
-      };
-      name = mkOption {
-        type = types.strMatching "[A-Z][A-Za-z0-9]+";
-        example = "SiGrafana";
-        description = ''
-          The exported component name. Checked for shape here and for EXISTENCE by
-          tsc when the UI compiles the generated manifest, so a typo is a build
-          error rather than a missing glyph.
-        '';
-      };
-    };
-  };
-
   sourceModule = {
     options = {
       label = mkOption {
@@ -87,8 +66,16 @@ let
         description = "Human name for this contrib's resources.";
       };
       icon = mkOption {
-        type = types.submodule iconModule;
-        description = "The brand mark, drawn from a pack the UI already bundles.";
+        type = types.path;
+        example = literalExpression "./icon.svg";
+        description = ''
+          The brand mark, as an SVG file in this contrib's own directory: a viewBox
+          and a single <path d=…>, which contrib/ui-manifest.nix reads into the
+          runtime manifest. A file rather than an icon-pack name because the
+          manifest is fetched at runtime — resolving a name in the browser would
+          mean bundling a whole react-icons pack. Simple Icons (CC0) is a good
+          source.
+        '';
       };
       color = mkOption {
         type = types.str;
@@ -237,10 +224,9 @@ in
       default = { };
       type = types.submodule uiModule;
       description = ''
-        What this contrib contributes to the frontend. Compiled INTO the UI
-        bundle (the icons are React components and the UI is a static build), so
-        it reaches a deployment through contrib/ui-manifest.nix rather than a
-        runtime API.
+        What this contrib contributes to the frontend. Rendered into the runtime
+        manifest the UI fetches (contrib/ui-manifest.nix), so changing a
+        deployment's contrib set needs no UI rebuild.
       '';
     };
 
