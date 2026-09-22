@@ -3,10 +3,8 @@
     src = ./.;
     services.broker.enable = true;
     services.webhooks.enable = true;
-    # Reference material: absent from every build. echo's factory returns
-    # enabled=true unconditionally, so shipping it would serve /echo/ping from a
-    # production broker. CI still tests it by overriding this on (flake:
-    # contribsWithExamples). Why: PR #573.
+    # Never ship: echo's factory returns enabled=true unconditionally, so a
+    # production broker would serve /echo/ping. CI forces it on. Why: PR #573.
     enable = false;
   };
 }

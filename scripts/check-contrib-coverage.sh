@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# check-contrib-coverage.sh — every contrib directory must be imported by
-# contrib/all-modules.nix, and every import must name a real contrib.
+# check-contrib-coverage.sh — contrib/all-modules.nix must list every contrib.
 #
-# WHY THIS EXISTS. The import list is explicit (a readDir made every eval walk the
-# directory and defeated Nix's import caching). The cost of that choice is a silent
-# failure mode: add contrib/<name>/default.nix, forget the import, and the contrib
-# is never built and never TESTED — nothing fails, it simply is not there. That is
-# exactly the rot #573 exists to prevent for the reference contrib.
-#
-# Kept out of Nix eval on purpose: the whole point of the explicit list is that
-# eval does not touch the filesystem, so the guard lives here and runs in `just ci`.
+# A missing import is silent: the contrib is never built and never tested. Lives
+# here, not in Nix, because an eval-time check would need the readDir the explicit
+# import list exists to avoid. Why: PR #585.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 

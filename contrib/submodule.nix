@@ -1,71 +1,49 @@
-# The option preset every contrib gets, and the build that turns it into packages.
+# The option preset every contrib gets, plus its build.
 #
-# A MODULE, not a `mkContribSubmodule` function: a contrib's own `options` merge
-# straight into this one, so extending the preset costs nothing and needs no
-# `extraOptions` escape hatch. A contrib that wants its own settings writes the
-# strict module form and they become part of its config tree:
-#
-#   contribs.jira = { config, ... }: {
-#     options.siteUrl = lib.mkOption { type = lib.types.str; };
-#     config.services.broker.enable = true;
-#   };
-#
-# `scooter` is the PARENT config (every contrib, already evaluated), which is what
-# lets one contrib's dependency list name another's package. Why: PR #585.
+# A module, not a mkContribSubmodule function, so a contrib's own `options` merge
+# in without an extraOptions hatch. `scooter` is the parent config. Why: PR #585.
 { name, lib, config, scooter, python3Packages, scooterBrokerLib, scooterWebhooksLib, broker, webhooks, ... }:
 
 let
   inherit (lib) mkOption mkEnableOption types literalExpression;
 
-  # The two extension surfaces. A contrib is built ONCE PER SERVICE against only
-  # the surface of that service: one build carrying both would drag
-  # scooter_webhooks_lib (and sqlalchemy/asyncpg/aiosqlite) into the broker image.
-  # Why: PR #567.
+  # Built once per service against only that service's surface: one build carrying
+  # both drags scooter_webhooks_lib into the broker image. Why: PR #567.
   surfaces = {
     broker = { surface = scooterBrokerLib; entryModule = "broker_provider"; };
     webhooks = { surface = scooterWebhooksLib; entryModule = "webhooks_handler"; };
   };
 
-  # Contribs are prefixed `scooterContrib<Name>`: a bare `ps.jira` would shadow
-  # nixpkgs' own python3Packages.jira (the Jira API client), and a dependency
-  # silently resolving to the wrong package is worse than a longer name.
+  # Prefixed: a bare `ps.jira` would shadow nixpkgs' python3Packages.jira.
   contribAttrName = n:
     "scooterContrib" + lib.toUpper (lib.substring 0 1 n) + lib.substring 1 (-1) n;
 
-  # What a `pythonDeps` function receives: nixpkgs' python3Packages plus every
-  # contrib built for THIS service, so one field expresses both "a library from
-  # nixpkgs" and "another contrib" and a dep cannot pull the wrong surface in.
-  # Restricted to contribs that actually target the service, so depending on one
-  # that does not is a missing-attribute error rather than a bad build.
+  # What pythonDeps receives. Only contribs targeting this service, so depending on
+  # one that does not is a missing-attribute error.
   pkgsFor = svc: python3Packages // lib.mapAttrs'
     (n: c: lib.nameValuePair (contribAttrName n) c.services.${svc}.package)
     (lib.filterAttrs (_: c: c.enable && c.services.${svc}.enable) scooter.contribs);
 
-  # tests/ is shared across variants, so a webhooks-only test still has to import
-  # in the broker variant -- the same reason the real services are check inputs.
-  # Resolved against THIS variant's package set, and check-only, so it never
-  # widens the runtime closure.
+  # tests/ is shared across variants, so every service's deps are check inputs for
+  # each one. Check-only, so the runtime closure stays per-service.
   checkDepsFor = svc: lib.concatMap (s: s.pythonDeps (pkgsFor svc))
     (lib.attrValues (lib.filterAttrs (_: s: s.enable) config.services));
 
   buildFor = svc:
     let s = surfaces.${svc}; in
     python3Packages.buildPythonPackage {
-      # Must stay the DISTRIBUTION name: the metadata-check hook looks the wheel
-      # up by it. Variants differ by inputs, not pname.
+      # Must stay the distribution name: the metadata-check hook looks the wheel up
+      # by it. Variants differ by inputs, not pname.
       pname = config.distName;
       inherit (config) version src;
       pyproject = true;
-
-      # Contribs standardize on hatchling (declared in each contrib's
-      # [build-system]); nixpkgs needs the backend as an explicit build input.
       build-system = [ python3Packages.hatchling ];
 
       dependencies = [ python3Packages.fastapi s.surface ]
         ++ config.services.${svc}.pythonDeps (pkgsFor svc);
 
-      # Checked in the environment it will actually live in, so a bad import fails
-      # this build instead of vanishing at service startup.
+      # Checked in the environment it will live in, so a bad import fails here
+      # rather than at service startup.
       pythonImportsCheck = [ config.pyModule "${config.pyModule}.${s.entryModule}" ];
 
       nativeCheckInputs = (with python3Packages; [
@@ -87,10 +65,8 @@ let
         default = _: [ ];
         example = literalExpression "ps: [ ps.httpx ps.scooterContribJira ]";
         description = ''
-          Extra Python dependencies for the ${svc} variant, beyond fastapi and the
-          ${svc} extension surface. Declared per service because a dep listed for
-          both halves lands in both closures — the surface leak the per-service
-          split exists to stop.
+          Extra deps for the ${svc} variant. Per service: a dep listed for both
+          halves lands in both closures.
         '';
       };
 
@@ -110,20 +86,15 @@ in
       type = types.bool;
       default = true;
       description = ''
-        Build this contrib and inject it into the images of the services it
-        targets.
-
-        `false` means ABSENT, the way it does in NixOS: no derivation is produced
-        and nothing in any build artifact comes from it. Something that must be
-        built anyway (CI testing the reference contrib) turns it back on with a
-        config override — see `withModules` in contrib/default.nix — rather than
-        this flag meaning "built but not shipped".
+        Build this contrib and inject it into the images it targets. `false` means
+        absent — no derivation at all. Build a disabled one with `withModules`
+        (contrib/default.nix) rather than weakening this.
       '';
     };
 
     src = mkOption {
       type = types.path;
-      description = "The contrib's source directory (its pyproject.toml lives here).";
+      description = "The contrib's source directory.";
     };
 
     version = mkOption {
@@ -148,11 +119,7 @@ in
 
     services = mkOption {
       default = { };
-      description = ''
-        Which service image(s) this contrib plugs into, and what each half needs.
-        The set of services is fixed, so a typo is an eval error naming the option
-        rather than a variant that silently never gets built.
-      '';
+      description = "Which services this contrib plugs into. Fixed key set, so a typo is an eval error.";
       type = types.submodule {
         options = lib.mapAttrs
           (svc: _: mkOption {

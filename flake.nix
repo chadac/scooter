@@ -217,25 +217,16 @@
             inherit scooterBrokerLib scooterWebhooksLib;
           };
 
-          # The contrib set CI tests, which is the production set plus the contribs
-          # that ship nowhere. `enable = false` means a contrib produces no
-          # derivation at all (NixOS semantics), so the reference contrib has to be
-          # turned back ON here or nothing would build it — and an untested
-          # reference implementation rots the moment a surface changes. This eval
-          # is reachable only from packages/checks, never from a service image.
-          # mkForce because echo does not merely default to off — it asserts
-          # `enable = false` so a production image can never pick it up. Two plain
-          # definitions are a conflict the module system refuses to resolve, which
-          # is the right outcome: overriding a deliberate "never ship this" should
-          # have to say so.
+          # The set CI tests: production plus the contribs that ship nowhere, which
+          # `enable = false` otherwise leaves unbuilt. Reachable only from
+          # packages/checks. mkForce because echo asserts enable = false, and two
+          # plain definitions are a conflict. Why: PR #585.
           contribsWithExamples = contribs.withModules [{
             contribs.echo.enable = pkgs.lib.mkForce true;
           }];
 
-          # Every contrib variant in one derivation — the only thing that builds
-          # (and therefore TESTS) a contrib that ships nowhere. Keyed by
-          # <name>-<service> because both variants of a contrib share a derivation
-          # name. Why: PR #573.
+          # Keyed <name>-<service>: both variants share a derivation name, so a
+          # name-keyed consumer would collapse them. Why: PR #573.
           contribsAll = pkgs.linkFarm "contribs-all"
             (pkgs.lib.mapAttrsToList (name: path: { inherit name path; })
               contribsWithExamples.all);
@@ -568,8 +559,6 @@
             # contrib, built once PER TARGET SERVICE so each variant carries only that
             # service's extension surface (a single build would drag the webhooks
             # surface into the broker image).
-            # From contribsWithExamples: echo is `enable = false`, so it is absent
-            # from the default eval entirely.
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
@@ -700,8 +689,6 @@
             # webhooks registries. The aggregate is what CI builds; the individual
             # attrs stay for bisecting a failure to one variant.
             contribs-all = contribsAll;
-            # From contribsWithExamples: echo is `enable = false`, so it is absent
-            # from the default eval entirely.
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
