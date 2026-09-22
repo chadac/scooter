@@ -217,12 +217,18 @@
             inherit scooterBrokerLib scooterWebhooksLib;
           };
 
-          # Every contrib variant in one derivation. Nothing in a service closure
-          # reaches an `example = true` contrib, so this is the only thing that
-          # builds (and therefore TESTS) it. Keyed by <name>-<service> because both
-          # variants of a contrib share a derivation name. Why: PR #573.
+          # The set CI tests: adds the contribs that ship nowhere, which are
+          # otherwise unbuilt. mkForce because they assert enable = false, and two
+          # plain definitions conflict. Why: PR #585.
+          contribsWithExamples = contribs.withModules [{
+            contribs.echo.enable = pkgs.lib.mkForce true;
+          }];
+
+          # Keyed <name>-<service>: both variants share a derivation name, so a
+          # name-keyed consumer would collapse them. Why: PR #573.
           contribsAll = pkgs.linkFarm "contribs-all"
-            (pkgs.lib.mapAttrsToList (name: path: { inherit name path; }) contribs.all);
+            (pkgs.lib.mapAttrsToList (name: path: { inherit name path; })
+              contribsWithExamples.all);
 
           # Credential broker (Python/FastAPI): extensible provider/transport
           # modules, plus the contribs that target it. See services/broker/ +
@@ -552,8 +558,8 @@
             # contrib, built once PER TARGET SERVICE so each variant carries only that
             # service's extension surface (a single build would drag the webhooks
             # surface into the broker image).
-            contrib-echo = contribs.packages.echo.broker;
-            contrib-echo-webhooks = contribs.packages.echo.webhooks;
+            contrib-echo = contribsWithExamples.packages.echo.broker;
+            contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
@@ -682,8 +688,8 @@
             # webhooks registries. The aggregate is what CI builds; the individual
             # attrs stay for bisecting a failure to one variant.
             contribs-all = contribsAll;
-            contrib-echo = contribs.packages.echo.broker;
-            contrib-echo-webhooks = contribs.packages.echo.webhooks;
+            contrib-echo = contribsWithExamples.packages.echo.broker;
+            contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
