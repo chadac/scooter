@@ -79,9 +79,9 @@ pkgs.testers.runNixOSTest {
     # them (the driver's backdoor channel, the boot-apply unit); see that file for each
     # case and why a pod is unaffected. The offline nixpkgs pin is no longer needed —
     # base-config pins devEnvNix to the same nixpkgs source automatically.
-    programs.scooterModule.extraReconvergeModules = [
-      "${./fixtures/keep-vm-units.nix}"
-    ];
+    # The SAME list the seeded toplevel layers (extraReconvergeModules takes Nix
+    # expression strings), so the in-pod build reproduces it exactly.
+    programs.scooterModule.extraReconvergeModules = map (m: "${m}") reconverge.vmModules;
   };
 
   testScript = ''

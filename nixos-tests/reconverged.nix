@@ -30,6 +30,34 @@ rec {
     cp -r ${pkgs.path} $out
   '';
 
+  # The modules layered into EVERY re-converge. The test node threads this SAME list
+  # through programs.scooterModule.extraReconvergeModules, so the toplevel seeded
+  # below and the one the pod builds stay identical — the cache hit the VM needs to
+  # activate offline.
+  vmModules = [
+    ./fixtures/keep-vm-units.nix
+
+    # The mounted `.scooter/module.nix` must SURVIVE the switch. In a pod it is a
+    # ConfigMap MOUNT, which activation cannot remove; here it is an environment.etc
+    # symlink that the re-converged config doesn't declare, so the first switch
+    # deletes it ("removing obsolete symlink") — and the test's SECOND, detached
+    # converge then finds no module, builds a toplevel that was never seeded, and
+    # hangs the VM's offline build past the poll timeout. Re-declaring it makes the
+    # re-converge idempotent, which is what production actually does. Generated
+    # rather than a static fixture because the module must carry the fixture's
+    # absolute store path: this file is copied into the store on its own, so a
+    # relative `./scooter/module.nix` inside it would not resolve. Why: PR #610.
+    # Interpolated to its store PATH: a bare writeText is a derivation, and the
+    # module system would read its `system` attribute as an option definition.
+    "${pkgs.writeText "keep-scooter-etc.nix" ''
+      { ... }:
+      {
+        environment.etc."agent-sandbox/scooter/module.nix".source =
+          "${scooterFixture}/module.nix";
+      }
+    ''}"
+  ];
+
   # MUST mirror what scooter-apply-module builds exactly — same modulesSrc, same
   # nixpkgs, same module order — including the keep-vm-units module threaded via
   # extraReconvergeModules.
@@ -43,12 +71,13 @@ rec {
     nixpkgs = toString nixpkgsSrc;
     modulesPath = reconvergeInputs.modulesSrc;
     system = pkgs.system;
-    extraModules = [
-      # base-config.nix force-sets programs.scooterModule.{enable,nixpkgs} itself
-      # (so scooter-rebuild stays on PATH across the re-converge), so we do NOT set
-      # nixpkgs here — a second mkForce would conflict.
-      ./fixtures/keep-vm-units.nix
-      "${scooterFixture}/module.nix"
-    ];
+    # Same ORDER the in-pod build uses: the layered VM modules, then the mounted
+    # module last (scooter-apply-module appends $module_expr after
+    # extraReconvergeModules).
+    #
+    # base-config.nix force-sets programs.scooterModule.{enable,nixpkgs} itself (so
+    # scooter-rebuild stays on PATH across the re-converge), so we do NOT set nixpkgs
+    # here — a second mkForce would conflict.
+    extraModules = vmModules ++ [ "${scooterFixture}/module.nix" ];
   }).toplevel;
 }
