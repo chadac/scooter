@@ -43,7 +43,7 @@ test.describe("whole-UI consistency through a normal turn", () => {
     // the full 30s). The same arithmetic is why stop-run.spec.ts:75 uses a 20s sleep. Nothing
     // waits for this sleep to finish — the poll below ends the test as soon as the run does.
     // The run asserted below must survive the controller's first-prompt hand-off — see
-    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!sleep 20");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
@@ -177,7 +177,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // count comes up one short (observed: expected 2, received 1) while nothing is actually
     // lost. A 20s sleep keeps the run in flight across the queueing window.
     // The run asserted below must survive the controller's first-prompt hand-off — see
-    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!sleep 20");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
@@ -216,7 +216,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // waits for this sleep to finish (the test ends mid-run; cleanState cancels it), so the
     // longer sleep costs no wall-clock time.
     // The run asserted below must survive the controller's first-prompt hand-off — see
-    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!sleep 60");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });

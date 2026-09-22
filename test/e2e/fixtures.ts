@@ -166,7 +166,7 @@ export class Chat {
    *  timeout can fix that: the UI is correctly reflecting a run the server already closed.
    *
    *  It is a first-prompt-only race, so spend it on a throwaway turn. Full target only —
-   *  fast is one in-process agent-host with no controller and no hand-off. Why: PR #578. */
+   *  fast is one in-process agent-host with no controller and no hand-off. Why: PR #598. */
   async settleConversation() {
     if (process.env.E2E_TARGET !== "full") return;
     const sentAt = Date.now();

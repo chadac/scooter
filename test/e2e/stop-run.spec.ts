@@ -45,7 +45,7 @@ test.describe("Stop button + thinking indicator", () => {
     // A long-running turn: the fake agent runs `sleep 20` in the sandbox as a real
     // tool call, so the run stays in flight (RUN_STARTED, no RUN_FINISHED yet).
     // The run asserted below must survive the controller's first-prompt hand-off — see
-    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!sleep 20");
 
@@ -127,7 +127,7 @@ test.describe("Stop button + thinking indicator", () => {
     // running indicator must be visible while the tool runs and clear when it ends.
     await chat.open();
     // The tool spinner asserted below must survive the controller's first-prompt hand-off —
-    // see Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // see Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!sleep 20");
     // FIRST_TURN_MS: first assertion after a cold send. The 60s clear-budget below already

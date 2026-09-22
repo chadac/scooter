@@ -157,7 +157,7 @@ test.describe("queue durability across refresh + drain", () => {
     await chat.open();
     // A short sleep so the test doesn't wait the full 20s — long enough to queue behind.
     // The run asserted below must survive the controller's first-prompt hand-off — see
-    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!sleep 3");
     await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });

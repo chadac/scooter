@@ -39,7 +39,7 @@ test.describe("conversation happy path", () => {
     // command harness — `!agent-broker test/whoami` rides the same path to
     // verify broker/IRSA auth in cluster mode.
     // The tool call asserted below must survive the controller's first-prompt hand-off — see
-    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
     await chat.settleConversation();
     await chat.send("!echo zxcvbnm-marker");
 
