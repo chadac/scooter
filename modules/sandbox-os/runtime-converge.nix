@@ -41,8 +41,19 @@ let
   # a DIFFERENT sandbox-os-src hash that was never built → "path '…-sandbox-os-src' is not
   # valid". Both the `nix build` modulesPath arg AND extraDependencies must use the baked
   # tree, or the re-converged scooter-apply-module bakes the bad path into its own script.
-  effTree = if cfg.modulesTree != null then builtins.storePath cfg.modulesTree else modulesTree;
-  effModulesSrc = if cfg.modulesTree != null then "${builtins.storePath cfg.modulesTree}/modules/sandbox-os" else modulesSrc;
+  #
+  # `storeRef` re-attaches store context to that bare path string, so the tree lands in
+  # the new system's closure. `builtins.storePath` also VALIDATES the path (the "not
+  # valid" diagnostic the boot-time store-settle wait below leans on), so keep it where
+  # it is allowed — but it is banned outright in PURE eval, which is how the
+  # dev-env-scooter-module nixosTest evaluates this module. `appendContext` yields a
+  # byte-identical context, so the toplevel hashes the same either way — the cache hit
+  # that test depends on. Why: PR #610.
+  storeRef = p:
+    if builtins ? currentSystem then builtins.storePath p
+    else builtins.appendContext p { ${p} = { path = true; }; };
+  effTree = if cfg.modulesTree != null then storeRef cfg.modulesTree else modulesTree;
+  effModulesSrc = if cfg.modulesTree != null then "${storeRef cfg.modulesTree}/modules/sandbox-os" else modulesSrc;
 
   # The canonical system profile — registering each switch here gives us the
   # numbered-generation ladder NixOS uses for rollback. The symlinks

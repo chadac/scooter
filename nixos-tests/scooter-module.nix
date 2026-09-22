@@ -19,42 +19,18 @@
 let
   scooterFixture = ../nixos-tests/fixtures/scooter;
 
-  # The nixpkgs source the in-pod build imports. Copy it into the store as a
-  # concrete derivation output so it's a realised path the VM definitely has
-  # (a bare `pkgs.path` source ref isn't reliably present in the VM store).
-  nixpkgsSrc = pkgs.runCommand "nixpkgs-src" { } ''
-    cp -r ${pkgs.path} $out
-  '';
-
   # NOTE: devEnvNix.nixpkgs is pinned by base-config.nix itself (to `path:${nixpkgs}`,
   # the SAME source passed below), so the re-converge resolves OFFLINE against the
   # test's nixpkgs without a separate pin module here.
 
-  # The EXACT inputs the in-pod build feeds base-config.nix, from the SAME helper
-  # runtime-converge.nix uses (single source of truth). `modulesSrc` is a VENDORED
-  # tree (modules/sandbox-os + pkgs/broker-tools at a fixed layout), NOT the bare
-  # module dir: building `reconverged` with `sandboxModule` directly produces a
-  # DIFFERENT derivation than the runtime builds -> cache miss -> from-source build
-  # that hangs OFFLINE in the VM.
-  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
-
-  # Pre-build the re-converged toplevel (base config + the layered modules) so its
-  # closure is in the VM store and the in-pod build is a pure CACHE HIT (offline
-  # activation). MUST mirror what scooter-apply-module builds exactly — same
-  # modulesSrc, same nixpkgs, same module order — including the keep-backdoor module
-  # threaded via extraReconvergeModules.
-  reconverged = (import reconvergeInputs.baseConfig {
-    nixpkgs = toString nixpkgsSrc;
-    modulesPath = reconvergeInputs.modulesSrc;
-    system = pkgs.system;
-    extraModules = [
-      # base-config.nix now force-sets programs.scooterModule.{enable,nixpkgs} itself
-      # (so scooter-rebuild stays on PATH across the re-converge), so we no longer set
-      # nixpkgs here — a second mkForce would conflict.
-      ./fixtures/keep-backdoor.nix
-      "${scooterFixture}/module.nix"
-    ];
-  }).toplevel;
+  # The nixpkgs source + the pre-built re-converged toplevel, from the file the fast
+  # `dev-env-reconverge-eval` check shares — so that cheap per-PR check evaluates
+  # the SAME expression this VM seeds. Pre-seeding the toplevel's closure is what
+  # makes the in-pod build a pure CACHE HIT (offline activation) rather than a
+  # from-source rebuild that hangs in the VM.
+  reconverge = import ./reconverged.nix { inherit pkgs lib; };
+  inherit (reconverge) nixpkgsSrc;
+  reconverged = reconverge.toplevel;
 in
 pkgs.testers.runNixOSTest {
   name = "dev-env-scooter-module";
