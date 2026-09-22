@@ -26,6 +26,18 @@ import {
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
 import { formatError, logger } from "../log.js";
+import { applyOverlay, parseOverlay } from "./sandboxOverlay.js";
+import {
+  InvalidResourceError,
+  type RenderedResources,
+  type SandboxResources,
+  type SandboxSizePreset,
+  parsePresets,
+  presetToResources,
+  renderResources,
+  unrenderResources,
+  validateResources,
+} from "./resources.js";
 
 const log = logger("k8sProvisioner");
 
@@ -46,6 +58,9 @@ const PLURAL = "sandboxes";
 const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
 /** How long to wait for a cycled sandbox's pod to actually disappear, and how often
  *  to look. See runOnCurrentImage (issue #560). */
+/** The ConfigMap key holding the consumer manifest-overlay payload. */
+const OVERLAY_KEY = "overlay.yaml";
+
 const POD_GONE_TIMEOUT_MS = 60_000;
 const POD_GONE_POLL_MS = 1_500;
 
@@ -84,10 +99,14 @@ export interface K8sProvisionerOptions {
    *  amount per pod and a runaway sandbox is HARD-capped there (throttled at 2 cpu,
    *  OOM-killed past 4Gi) instead of bursting into and starving its neighbours.
    *  Deployment-overridable; the agent can also resize its own sandbox on demand. */
-  sandboxResources?: {
-    requests?: { cpu?: string; memory?: string };
-    limits?: { cpu?: string; memory?: string };
-  };
+  sandboxResources?: RenderedResources;
+  /** The deployment's named size catalog as JSON (SANDBOX_SIZES_JSON):
+   *  name -> {cpu, memory, gpu?, hint?}. Empty/absent = no presets, and the agent/UI
+   *  fall back to setting raw resources. */
+  sizePresetsJson?: string;
+  /** Which preset is the default (SANDBOX_DEFAULT_SIZE_NAME). Shown in the UI; the
+   *  rendered default itself arrives as sandboxResources. */
+  defaultSizeName?: string;
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
   /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
@@ -106,6 +125,12 @@ export interface K8sProvisionerOptions {
    *  /etc/agent-sandbox/scooter, where injectedTools builds them. The
    *  CONTENT is deployment-specific (this platform doesn't know what's in it). */
   scooterConfigMap?: string;
+  /** Name of the ConfigMap holding a consumer Sandbox-manifest overlay — a patch
+   *  deep-merged onto the generated Sandbox (nodeSelector, tolerations, extra env,
+   *  …). Undefined = no overlay. The PAYLOAD is read lazily at create time, not
+   *  cached here, so a ConfigMap edit lands on the next conversation without a
+   *  restart. Wired from SANDBOX_MANIFEST_OVERLAY_CONFIGMAP. */
+  manifestOverlayConfigMap?: string;
   /** A deployment's config-FILES ConfigMap (filename -> contents), mounted as a
    *  flat dir at /etc/agent-sandbox/config. File-based (vs SCOOTER_ENV) so multi-
    *  line config survives the sandbox CRD controller's env-var newline corruption. */
@@ -134,7 +159,24 @@ export interface K8sProvisionerOptions {
   kubeConfig?: KubeConfig;
 }
 
-export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvisioner {
+/** The size half of the provisioner: read/write a conversation's size, and list the
+ *  deployment's presets. Distinct from the lifecycle interface because it keys by the
+ *  SHORT conversation id (the one used for resource NAMES), not a SandboxRef. */
+export interface SandboxSizeClient {
+  /** The conversation's size, read off its Sandbox CR. undefined = no Sandbox yet, or
+   *  it carries no resources block. */
+  getSize(id: string): Promise<SandboxResources | undefined>;
+  /** Write the size — a preset name ({size: "large"}) or raw resources. Applied on the
+   *  next sandbox restart. `threadId` is only used when there is no Sandbox yet and one
+   *  has to be created cold (it builds CONVERSATION_URL). */
+  setSize(id: string, spec: SandboxResources | { size: string }, threadId?: string): Promise<void>;
+  /** The deployment's named presets and which one is the default. */
+  getSizes(): { sizes: Record<string, SandboxSizePreset>; default: string | null };
+}
+
+export type K8sProvisioner = SandboxProvisioner & SandboxSizeClient;
+
+export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisioner {
   const kc = opts.kubeConfig ?? defaultKubeConfig();
   const core = kc.makeApiClient(CoreV1Api);
   const custom = kc.makeApiClient(CustomObjectsApi);
@@ -150,6 +192,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     requests: { cpu: "2", memory: "4Gi" },
     limits: { cpu: "2", memory: "4Gi" },
   };
+
+  // The deployment's named size catalog (SANDBOX_SIZES_JSON) + which preset is the
+  // default. The agent and the UI read these to offer sizes by name.
+  const presets = parsePresets(opts.sizePresetsJson);
 
   const sandboxName = (id: string) => `conv-${id}`;
   /** Inverse of sandboxName — recover the conversation id from a Sandbox ref. */
@@ -192,7 +238,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
   // --- image skew ---------------------------------------------------------
   // Nothing re-renders a Sandbox CR, so an upgrade leaves live ones on the image they
   // were born with. EVERY path to Running must reconcile it. Mirrored in
-  // broker/sandbox/k8s.py (the control-plane owner). Why: PR #565.
+  // Why: PR #565.
 
   /** The sandbox container's image when it differs from the deployment's current one
    *  (i.e. the stale ref being replaced), else undefined. An unset image on either
@@ -221,6 +267,34 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
    *  is already up on a stale one. Throws only a 404 (the Sandbox is GONE — the caller
    *  recreates it); any other failure is logged and swallowed, because reconciling the
    *  image must never be what stops a conversation from resuming. */
+  /**
+   * Read + parse the consumer manifest-overlay ConfigMap on EVERY create — no caching,
+   * so a ConfigMap edit takes effect on the next conversation without an agent-host
+   * restart (the extra GET per create is cheap next to the Sandbox create).
+   *
+   * Absent ConfigMap (404) -> no overlay, rather than blocking conversation creation.
+   * A MALFORMED payload throws (OverlayError): a silently-dropped overlay looks to a
+   * deployment like it "didn't take", and the nodeSelector it usually carries is the
+   * difference between scheduling correctly and scheduling anywhere.
+   */
+  const loadManifestOverlay = async (): Promise<Record<string, unknown> | undefined> => {
+    const cmName = opts.manifestOverlayConfigMap;
+    if (!cmName) return undefined;
+    let cm: { data?: Record<string, string> };
+    try {
+      cm = await core.readNamespacedConfigMap({ name: cmName, namespace: ns });
+    } catch (e) {
+      if ((e as { code?: number })?.code !== 404) throw e;
+      log.warn("manifest-overlay ConfigMap not found; no overlay applied", {
+        configmap: cmName,
+        namespace: ns,
+      });
+      return undefined;
+    }
+    const parsed = parseOverlay(cm.data?.[OVERLAY_KEY]);
+    return Object.keys(parsed).length > 0 ? parsed : undefined;
+  };
+
   const reconcileImage = async (ref: SandboxRef): Promise<void> => {
     const sb = (await custom.getNamespacedCustomObject({
       group: GROUP,
@@ -293,6 +367,66 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
     await setOperatingMode(ref, "Running");
   };
 
+  /** Render the Sandbox manifest for a conversation. `operatingMode: "Suspended"` makes
+   *  it COLD — the CR (and its PVCs) exist with no pod, which is how a size set before
+   *  the first turn gets somewhere durable to live. */
+  const manifestFor = async (
+    id: string,
+    urlThread: string,
+    resources: RenderedResources | undefined,
+    operatingMode: "Running" | "Suspended" = "Running",
+  ): Promise<Record<string, any>> => {
+    const m = sandboxManifest(
+      id, sandboxName(id), saName(id), opts.sandboxImage, ns, audience, storage,
+      opts.awsAccountsConfigMap, opts.systemdImage ?? false,
+      {
+        scooterConfigMap: opts.scooterConfigMap,
+        configFilesConfigMap: opts.configFilesConfigMap,
+        extraTokenAudiences: opts.extraTokenAudiences ?? [],
+        // A ready shareable link to THIS conversation (when a public URL is
+        // configured), so the agent can point a human at its own conversation.
+        extraEnv: [
+          ...(opts.publicUrl
+            ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(urlThread)}` }]
+            : []),
+          // The full threadId (what the browser deep-links on and the proxy path uses)
+          // — web services read it to serve under /c/$CONVERSATION_ID/<name> (marimo
+          // --base-url etc.). Always set, even without publicUrl.
+          { name: "CONVERSATION_ID", value: urlThread },
+          ...(opts.extraEnv ?? []),
+        ],
+        overlayStore: opts.overlayStore ?? false,
+        overlayStorage: opts.overlayStorage,
+        pullPolicy: opts.sandboxPullPolicy,
+        sandboxRuntimeClass: opts.sandboxRuntimeClass,
+        resources,
+        overlay: await loadManifestOverlay(),
+      },
+    ) as Record<string, any>;
+    if (operatingMode !== "Running") m.spec.operatingMode = operatingMode;
+    return m;
+  };
+
+  /** Read the container `resources` block off a Sandbox CR. undefined when the CR is
+   *  gone (404) or carries no block. Any other API error propagates — a 403 read must
+   *  not be mistaken for "no size set" and silently reset the pod to the default. */
+  const readSize = async (id: string): Promise<RenderedResources | undefined> => {
+    try {
+      const sb = (await custom.getNamespacedCustomObject({
+        group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name: sandboxName(id),
+      })) as { spec?: { podTemplate?: { spec?: { containers?: Array<{ resources?: RenderedResources }> } } } };
+      return sb.spec?.podTemplate?.spec?.containers?.[0]?.resources;
+    } catch (e) {
+      if ((e as { code?: number })?.code === 404) return undefined;
+      throw e;
+    }
+  };
+
+  /** The size a (re)created Sandbox should come up at: the CR's own block if it has one
+   *  (it is the source of truth and outlives the pod), else the deployment default. */
+  const desiredSize = async (id: string): Promise<RenderedResources | undefined> =>
+    (await readSize(id)) ?? sandboxResources;
+
   return {
     async create(id: string, threadId?: string): Promise<SandboxRef> {
       // The URL deep-links on the FULL conversation id (threadId), NOT the short
@@ -319,28 +453,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
           version: VERSION,
           namespace: ns,
           plural: PLURAL,
-          body: sandboxManifest(id, name, saName(id), opts.sandboxImage, ns, audience, storage, opts.awsAccountsConfigMap, opts.systemdImage ?? false, {
-            scooterConfigMap: opts.scooterConfigMap,
-            configFilesConfigMap: opts.configFilesConfigMap,
-            extraTokenAudiences: opts.extraTokenAudiences ?? [],
-            // A ready shareable link to THIS conversation (when a public URL is
-            // configured), so the agent can point a human at its own conversation.
-            extraEnv: [
-              ...(opts.publicUrl
-                ? [{ name: "CONVERSATION_URL", value: `${opts.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(urlThread)}` }]
-                : []),
-              // The full threadId (what the browser deep-links on and the proxy
-              // path uses) — web services read it to serve under /c/$CONVERSATION_ID/
-              // <name> (marimo --base-url etc.). Always set, even without publicUrl.
-              { name: "CONVERSATION_ID", value: urlThread },
-              ...(opts.extraEnv ?? []),
-            ],
-            overlayStore: opts.overlayStore ?? false,
-            overlayStorage: opts.overlayStorage,
-            pullPolicy: opts.sandboxPullPolicy,
-            sandboxRuntimeClass: opts.sandboxRuntimeClass,
-            resources: sandboxResources,
-          }),
+          body: await manifestFor(id, urlThread, await desiredSize(id)),
         })
         .catch((e: { code?: number }) => {
           // 409 AlreadyExists = the Sandbox is already there. This is the recovery
@@ -444,6 +557,75 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): SandboxProvis
         .deleteNamespacedConfigMap({ name: moduleCmName(id), namespace: dns })
         .catch(ignoreDeleteNotFound);
     },
+
+    // --- size: the Sandbox CR IS the store -----------------------------------
+    // There is no size table. A conversation's size lives in the CR's container
+    // `resources` block, which outlives the pod (suspend keeps the CR) and is what a
+    // (re)start comes up with. Patching it does NOT roll a running pod — that is why
+    // reconcileImage has to suspend/await/resume explicitly (#565) — so a size change
+    // takes effect on the next restart, which is what the UI tells the user.
+
+    async getSize(id: string): Promise<SandboxResources | undefined> {
+      const block = await readSize(id);
+      if (!block) return undefined;
+      const friendly = unrenderResources(block);
+      return Object.keys(friendly).length ? friendly : undefined;
+    },
+
+    async setSize(id: string, spec: SandboxResources | { size: string }, threadId?: string): Promise<void> {
+      // A preset NAME resolves against the deployment catalog; raw resources are
+      // validated as given. Both end up as the same friendly shape.
+      let friendly: SandboxResources;
+      if ("size" in spec) {
+        const preset = presets[spec.size];
+        if (!preset) {
+          const available = Object.keys(presets).join(", ") || "(no presets configured)";
+          throw new InvalidResourceError("size", spec.size, `Unknown size preset "${spec.size}". Available: ${available}`);
+        }
+        friendly = presetToResources(preset);
+      } else {
+        friendly = validateResources(spec);
+      }
+      const resources = renderResources(friendly);
+
+      const patchContainerResources = async (containers: Array<Record<string, unknown>>) =>
+        custom.patchNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name: sandboxName(id),
+          body: { spec: { podTemplate: { spec: { containers: [{ ...containers[0], resources }, ...containers.slice(1)] } } } },
+        });
+
+      let sb: { spec?: { podTemplate?: { spec?: { containers?: Array<Record<string, unknown>> } } } };
+      try {
+        sb = await custom.getNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name: sandboxName(id),
+        });
+      } catch (e) {
+        if ((e as { code?: number })?.code !== 404) throw e;
+        // No Sandbox yet — a size picked before the first turn, or after the pod was
+        // destroyed. Create it COLD (Suspended: the CR + PVCs exist, no pod runs) so
+        // the size has somewhere durable to live. Without this, sizing a brand-new
+        // conversation would silently do nothing.
+        log.info("sizing a conversation with no Sandbox; creating it cold", { sandbox: sandboxName(id) });
+        await core
+          .createNamespacedServiceAccount({ namespace: ns, body: { metadata: { name: saName(id), namespace: ns } } })
+          .catch((err: { code?: number }) => {
+            if (err?.code !== 409) throw err;
+          });
+        await custom.createNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: ns, plural: PLURAL,
+          body: await manifestFor(id, threadId ?? id, resources, "Suspended"),
+        });
+        return;
+      }
+
+      const containers = sb.spec?.podTemplate?.spec?.containers ?? [];
+      if (!containers.length) throw new Error(`Sandbox ${sandboxName(id)} has no container to resize`);
+      await patchContainerResources(containers);
+    },
+
+    getSizes(): { sizes: Record<string, SandboxSizePreset>; default: string | null } {
+      return { sizes: presets, default: opts.defaultSizeName || null };
+    },
   };
 }
 
@@ -475,10 +657,16 @@ export function sandboxManifest(
      *  runtime so systemd PID 1 gets a writable cgroup subtree without `privileged`.
      *  See K8sProvisionerOptions.sandboxRuntimeClass. */
     sandboxRuntimeClass?: string;
+    /** The ALREADY-RENDERED k8s resources block. Arbitrary keys per side, because a
+     *  GPU renders under its extended-resource name (nvidia.com/gpu) — see
+     *  session/resources.ts renderResources. */
     resources?: {
-      requests?: { cpu?: string; memory?: string };
-      limits?: { cpu?: string; memory?: string };
+      requests?: Record<string, string>;
+      limits?: Record<string, string>;
     };
+    /** A consumer manifest overlay (parsed) — deep-merged onto the generated Sandbox
+     *  with Scooter's protected fields re-asserted. See session/sandboxOverlay.ts. */
+    overlay?: Record<string, unknown>;
   } = {},
 ): object {
   const scooter = deploy.scooterConfigMap;
@@ -492,7 +680,7 @@ export function sandboxManifest(
   // (/nix/.scooter-rw). Only when the overlay-store image is in use.
   const overlayStore = deploy.overlayStore ?? false;
   const overlayStorage = deploy.overlayStorage ?? "20Gi";
-  return {
+  const base = {
     apiVersion: `${GROUP}/${VERSION}`,
     kind: "Sandbox",
     metadata: { name, namespace, labels: { [SANDBOX_NAME_LABEL]: name } },
@@ -655,6 +843,10 @@ export function sandboxManifest(
       ],
     },
   };
+  // The consumer overlay is applied LAST (deep-merge, then Scooter's protected fields
+  // re-asserted). No overlay -> `base` unchanged. See sandboxOverlay.ts for the merge
+  // semantics and the protected set.
+  return deploy.overlay ? applyOverlay(base as Record<string, unknown>, deploy.overlay) : base;
 }
 
 function defaultKubeConfig(): KubeConfig {

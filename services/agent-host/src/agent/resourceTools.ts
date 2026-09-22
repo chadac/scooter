@@ -13,7 +13,7 @@
 
 import type { ToolResult } from "./mcpServer.js";
 import { validateResources, InvalidResourceError, type SandboxResources } from "../session/resources.js";
-import type { SandboxSizePreset } from "../session/brokerProvisioner.js";
+import type { SandboxSizePreset } from "../session/resources.js";
 import { formatError, logger } from "../log.js";
 
 const log = logger("resourceTools");
