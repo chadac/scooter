@@ -17,6 +17,11 @@
  * The two tabs' bodies are the existing components: InterruptList (data-testid
  * `interrupt-panel`, so the e2e specs still find it) and QueuedMessages
  * (data-testid `queued-messages`).
+ *
+ * A CONTRIB adds a tab through the generated manifest rather than by editing
+ * this file, which is why `Tab` is a string: the set is open at build time. Its
+ * tabs sit after the app's own, in the manifest's order. See
+ * contrib/ui-manifest.nix.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -26,13 +31,14 @@ import { InterruptList } from "./InterruptPanel.js";
 import { QueuedMessages } from "./QueuedMessages.js";
 import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
 import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
-import { PublishedShares, useShares } from "./PublishedShares.js";
 import { useSessions } from "./sessions.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { contribPanels } from "./contribPanels.generated.js";
 
-type Tab = "sandbox" | "approvals" | "queue" | "subagents" | "shares";
+/** A built-in tab id, or a contrib panel's. */
+type Tab = string;
 
 function TabButton({
   active,
@@ -94,12 +100,18 @@ export function RightPanel() {
   // Published static shares for this conversation. `configured` is false when the
   // broker path isn't wired (local/fake) — hide the tab entirely then, rather than
   // show a permanently-empty one.
-  const { shares: publishedShares, configured: sharesConfigured } = useShares();
 
   // Sandbox is the leftmost, ALWAYS-present tab — so it's the default. It now hosts
   // BOTH the pod status AND the web services (start/stop), so there's no separate
   // Services tab or bottom panel.
   const [active, setActive] = useState<Tab>("sandbox");
+
+  // One hook per contrib panel. Calling hooks from a map is normally a bug; it is
+  // sound here because `contribPanels` is COMPILED IN, so its length cannot change
+  // between renders — the rule exists to stop the hook ORDER varying, which it
+  // cannot. A contrib panel that should not appear returns show:false; it still
+  // runs its hook, so a contrib cannot change the order by hiding itself.
+  const panels = contribPanels.map((p) => ({ ...p, ...p.usePanel() }));
 
   // On mobile the panel is an overlay right-drawer toggled from the header; drawer
   // state drives its slide-in. Desktop (desk+ (≥1200px)) pins it in-flow regardless.
@@ -113,6 +125,14 @@ export function RightPanel() {
     if (nInterrupts > prevInterrupts.current) setActive("approvals");
     prevInterrupts.current = nInterrupts;
   }, [nInterrupts]);
+
+  // A contrib tab can go away under the user — shares hides itself on a
+  // conversation whose broker path isn't wired. Without this the tab strip loses
+  // its selection and the body silently falls through to the Queue.
+  const activeHidden = panels.some((p) => p.id === active && !p.show);
+  useEffect(() => {
+    if (activeHidden) setActive("sandbox");
+  }, [activeHidden]);
 
   // The panel is ALWAYS shown now (the Sandbox status tab is persistent) — as long as
   // there IS a conversation. Only a truly empty app (no conversation) hides it.
@@ -169,13 +189,17 @@ export function RightPanel() {
             count={nSubagents}
           />
         )}
-        {sharesConfigured && (
-          <TabButton
-            active={active === "shares"}
-            onClick={() => setActive("shares")}
-            label="Shares"
-            count={publishedShares.length}
-          />
+        {panels.map(
+          (p) =>
+            p.show && (
+              <TabButton
+                key={p.id}
+                active={active === p.id}
+                onClick={() => setActive(p.id)}
+                label={p.title}
+                count={p.count}
+              />
+            ),
         )}
       </div>
 
@@ -202,8 +226,8 @@ export function RightPanel() {
           )
         ) : active === "subagents" ? (
           <SubagentsPanel />
-        ) : active === "shares" ? (
-          <PublishedShares shares={publishedShares} />
+        ) : panels.some((p) => p.id === active && p.show) ? (
+          panels.find((p) => p.id === active)!.body
         ) : nQueued > 0 ? (
           <QueuedMessages />
         ) : (

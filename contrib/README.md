@@ -155,8 +155,51 @@ ui = {
 `enable` defaults to true as soon as `source` or `tools` is set, so a declared
 row cannot silently render nothing.
 
-**This is METADATA only.** A contrib shipping real React (a `RightPanel` tab, a
-custom renderer) is a second tier that lands with the first feature needing one.
+#### Panels (real React)
+
+A contrib can also contribute a **right-panel tab**:
+
+```nix
+ui.panels = [{
+  id = "shares";
+  title = "Shares";
+  entry = ./ui/SharesPanel.tsx;   # exports usePanel()
+  order = 50;                      # among contrib tabs; ties break on id
+}];
+```
+
+The entry module exports **one hook**:
+
+```tsx
+export const usePanel: ContribPanel["usePanel"] = () => {
+  const { shares, configured } = useShares();
+  return { show: configured, count: shares.length, body: <SharesList shares={shares} /> };
+};
+```
+
+One hook rather than a component plus a separate badge selector, because a panel
+with a subscription would otherwise open it twice — once for the tab's count,
+once for the body. `show: false` hides the tab entirely, which is how a feature
+whose backend is not wired in this deployment stays invisible instead of
+offering an empty tab. `body` is an element, not a component, so re-renders
+reconcile in place rather than remounting.
+
+**A panel may import only `@scooter/ui-kit`** (`ui/src/uiKit.ts`) — React's
+hooks, the conversation store, the design-system primitives, and
+`agentHostGet` for reading the contrib's own agent-host route. It is an alias,
+not an npm package, for the same `npmDepsHash` reason as the icon packs. Reach
+past it with a relative import and you are coupling to app internals that are
+free to change; widen the kit instead, which is a reviewed edit.
+
+**The two generated modules are deliberately separate.** `contribManifest.
+generated.ts` holds metadata; `contribPanels.generated.ts` holds panels. Merging
+them closes an import cycle — a panel imports `@scooter/ui-kit`, which re-exports
+the session store, which reads the metadata manifest — and the symptom is a TDZ
+error at module init, not a compile failure.
+
+**Still out of reach:** a contrib cannot yet contribute a custom message-content
+renderer (shares' `scooter-embed` block is still app-side), and cannot add npm
+dependencies at all.
 
 **Why it is generated at build time rather than served at runtime.** Two
 independent reasons, both in `ui/src/sourceIcon.tsx`: the icons are React
@@ -165,12 +208,18 @@ runtime manifest naming `"SiGitlab"` as a string could only resolve by bundling
 all of `react-icons`; and the UI is a static vite `dist/` with no module loader,
 so anything a contrib contributes must exist when vite runs.
 
-So `contrib/ui-manifest.nix` walks the enabled contribs and emits one TypeScript
-module, which the app merges **on top of** its own entries. The result is
-committed at `ui/src/contribManifest.generated.ts` — that is what makes `npm run
-dev`, `vitest` and a plain `npm run build` work without nix — and
-`just contrib-ui-check` fails CI on drift. A deployment with a different contrib
-set never reads the committed file: `ui/default.nix` substitutes its own.
+So `contrib/ui-manifest.nix` walks the enabled contribs and emits a source
+**overlay** for `ui/src/`: the two generated modules, plus a copy of each panel's
+source under `contrib/<name>/`. The app merges the metadata **on top of** its own
+entries. The overlay is committed — that is what makes `npm run dev`, `vitest`
+and a plain `npm run build` work without nix — and `just contrib-ui-check` fails
+CI on drift. A deployment with a different contrib set never reads the committed
+copy: `ui/default.nix` replaces the whole overlay with its own.
+
+Panel sources are **copied** rather than resolved by alias because a deployment's
+contribs live outside this repo entirely; an alias would have to point somewhere
+different in-tree and out, and that divergence would only show up in the
+deployment that matters.
 
 After changing any `ui` option:
 

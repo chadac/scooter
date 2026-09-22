@@ -13,6 +13,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Longest-prefix first: vite matches aliases in order, and "@" would
+      // otherwise swallow "@scooter/ui-kit".
+      "@scooter/ui-kit": fileURLToPath(new URL("./src/uiKit.ts", import.meta.url)),
       "@": fileURLToPath(new URL("./", import.meta.url)),
     },
   },

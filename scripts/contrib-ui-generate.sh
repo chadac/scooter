@@ -14,9 +14,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-OUT="ui/src/contribManifest.generated.ts"
+OUT="ui/src"
 
-echo "generating $OUT from the contrib set ..."
-manifest="$(nix build --no-link --print-out-paths .#contrib-ui-manifest)"
-install -m 644 "$manifest" "$OUT"
-echo "✅ wrote $OUT"
+echo "generating the contrib UI overlay in $OUT ..."
+overlay="$(nix build --no-link --print-out-paths .#contrib-ui-manifest)"
+
+# Wholesale, not merged: a contrib that lost its panel (or was removed) must not
+# leave its source behind for the manifest to stop importing while tsc still
+# compiles it.
+rm -rf "$OUT/contrib"
+cp -rT "$overlay" "$OUT/"
+chmod -R u+w "$OUT/contribManifest.generated.ts" "$OUT/contribPanels.generated.ts" "$OUT/contrib" 2>/dev/null || true
+echo "✅ wrote $OUT/contrib{Manifest,Panels}.generated.ts$([ -d "$OUT/contrib" ] && echo " + $OUT/contrib/")"

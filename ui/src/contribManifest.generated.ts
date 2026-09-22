@@ -29,3 +29,4 @@ export const contribToolTitles: Record<string, string> = {
 
 /** Sources offered as sidebar filter chips and "Show:" label modes (sessions.ts). */
 export const contribLinkProviders: readonly string[] = ["gitlab", "jira"];
+

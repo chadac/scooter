@@ -15,13 +15,15 @@ buildNpmPackage {
 
   npmDepsHash = "sha256-1cOej29YtcUgfUbhVrDy+IiZ8tq5hcFiCLMIMKXc6+U=";
 
-  # A contrib's UI half is metadata compiled INTO the bundle (the icons are React
-  # components; there is no runtime module loader), so the DEPLOYMENT's contrib
-  # set has to be substituted before vite runs. The committed file is the
-  # in-repo set, which is what makes `npm run dev`/vitest work; a deployment
-  # overrides it here. See contrib/ui-manifest.nix.
+  # A contrib's UI half is compiled INTO the bundle (the icons and panels are
+  # React; there is no runtime module loader), so the DEPLOYMENT's contrib set
+  # has to be substituted before vite runs. The committed overlay is the in-repo
+  # set, which is what makes `npm run dev`/vitest work; a deployment overrides it
+  # here. Replaced wholesale rather than merged, so a contrib the deployment
+  # dropped cannot leave its panel source behind. See contrib/ui-manifest.nix.
   postPatch = lib.optionalString (contribManifest != null) ''
-    cp ${contribManifest} src/contribManifest.generated.ts
+    rm -rf src/contrib
+    cp -rT ${contribManifest} src/
   '';
 
   # Same-origin: relative /agui + /sessions (reverse-proxied to the agent-host).

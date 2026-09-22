@@ -29,6 +29,8 @@ let
 
   buildFor = svc:
     let s = surfaces.${svc}; in
+    assert lib.assertMsg (config.src != null)
+      "contrib ${name}: services.${svc}.enable is set but `src` is not — a service half needs a source directory.";
     python3Packages.buildPythonPackage {
       # Must stay the distribution name: the metadata-check hook looks the wheel up
       # by it. Variants differ by inputs, not pname.
@@ -135,6 +137,44 @@ let
     };
   };
 
+  # Tier 2: a contrib ships real React. The component is COMPILED INTO the UI
+  # bundle -- there is no runtime module loader -- so `entry` is a path the
+  # manifest build copies into the UI source tree. Why: PR #602.
+  panelModule = {
+    options = {
+      id = mkOption {
+        type = types.strMatching "[a-z][a-z0-9-]*";
+        example = "shares";
+        description = "Tab id. Must not collide with another panel's or a built-in tab's.";
+      };
+      title = mkOption {
+        type = types.str;
+        example = "Shares";
+        description = "Tab label.";
+      };
+      entry = mkOption {
+        type = types.path;
+        example = literalExpression "./ui/SharesPanel.tsx";
+        description = ''
+          A .tsx module exporting `usePanel()`, which returns the tab's
+          visibility, its count badge and its body. ONE hook rather than a
+          component plus a separate badge selector, so a panel with a
+          subscription (a poll, a socket) opens it once instead of once per
+          consumer. Checked against ContribPanel by tsc when the UI compiles.
+        '';
+      };
+      order = mkOption {
+        type = types.int;
+        default = 50;
+        description = ''
+          Tab position among the contrib panels, ascending; ties break on id so
+          the order never depends on attrset iteration. Contrib tabs always sit
+          after the app's own.
+        '';
+      };
+    };
+  };
+
   uiModule = { config, ... }: {
     options = {
       enable = mkOption {
@@ -167,9 +207,19 @@ let
           NAME (the identity the UI normalizes an incoming call down to).
         '';
       };
+
+      panels = mkOption {
+        type = types.listOf (types.submodule panelModule);
+        default = [ ];
+        description = ''
+          Right-panel tabs this contrib adds. Each is real React compiled into
+          the bundle, so it may import only the pinned `@scooter/ui-kit` surface
+          -- a contrib cannot add an npm dependency.
+        '';
+      };
     };
 
-    config.enable = lib.mkDefault (config.source != null || config.tools != { });
+    config.enable = lib.mkDefault (config.source != null || config.tools != { } || config.panels != [ ]);
   };
 
   serviceModule = svc: { ... }: {
@@ -209,8 +259,14 @@ in
     };
 
     src = mkOption {
-      type = types.path;
-      description = "The contrib's source directory.";
+      type = types.nullOr types.path;
+      default = null;
+      description = ''
+        The contrib's Python source directory. Optional: a contrib may contribute
+        only UI, in which case it builds no package at all. Required as soon as
+        any `services.<svc>.enable` is set -- asserted at build, since a service
+        half with nothing to build is a typo, not a configuration.
+      '';
     };
 
     version = mkOption {

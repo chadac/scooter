@@ -10,7 +10,7 @@
  * submodule.nix (`ui`) for the options a contrib actually writes.
  */
 
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 /** A react-icons brand mark. */
 export type IconComponent = ComponentType<{
@@ -36,4 +36,30 @@ export interface ContribToolCard {
   argKey: string;
   /** Short verb for the card header, e.g. "commented on GitLab". */
   action: string;
+}
+
+/**
+ * A right-panel tab a contrib contributes.
+ *
+ * `usePanel` is ONE hook rather than a component plus a separate badge selector,
+ * because a panel with a subscription (shares polls the agent-host) would
+ * otherwise open it twice — once for the tab's count, once for the body. It
+ * returns `body` as an element rather than a component so re-renders reconcile
+ * in place instead of remounting the panel on every render.
+ *
+ * RightPanel calls these in list order. That is only sound because the list is
+ * COMPILED IN and therefore fixed for the process's lifetime — the rule against
+ * conditional hooks is about order changing between renders, which it cannot.
+ */
+export interface ContribPanel {
+  /** Tab id; also the `data-testid` suffix. */
+  id: string;
+  title: string;
+  usePanel: () => {
+    /** False hides the tab entirely — how a feature whose backend is not wired
+     *  up stays invisible rather than showing an empty tab. */
+    show: boolean;
+    count: number;
+    body: ReactNode;
+  };
 }

@@ -93,10 +93,14 @@ export default defineConfig({
         },
       },
       {
-        // Match ui/vite.config.ts's "@" -> ui/ alias so tests can import the
-        // assistant-ui components (e.g. @/components/assistant-ui/...) the app uses.
+        // Match ui/vite.config.ts's aliases so tests resolve what the app does:
+        // "@" -> ui/ (the assistant-ui components), and the pinned surface a
+        // contrib's panel imports. Longest prefix first — "@" would swallow it.
         resolve: {
-          alias: { "@": fileURLToPath(new URL("./ui/", import.meta.url)) },
+          alias: {
+            "@scooter/ui-kit": fileURLToPath(new URL("./ui/src/uiKit.ts", import.meta.url)),
+            "@": fileURLToPath(new URL("./ui/", import.meta.url)),
+          },
         },
         test: {
           name: "ui",

@@ -1,4 +1,4 @@
-{ lib, writeText, python3Packages, broker, webhooks, scooterBrokerLib, scooterWebhooksLib, ... }:
+{ lib, writeText, runCommand, python3Packages, broker, webhooks, scooterBrokerLib, scooterWebhooksLib, ... }:
 
 # Contrib registry: evaluates all-modules.nix and buckets it by service.
 #
@@ -10,7 +10,7 @@
 # so a contrib's tests can drive the real services. Why: PR #567.
 
 let
-  mkUiManifest = import ./ui-manifest.nix { inherit lib writeText; };
+  mkUiManifest = import ./ui-manifest.nix { inherit lib writeText runCommand; };
 
   evalWith = extraModules: lib.evalModules {
     specialArgs = {
@@ -45,8 +45,9 @@ let
       webhooks = forService "webhooks";
       all = everyVariant;
 
-      # The UI half: metadata only, compiled into the frontend bundle rather than
-      # injected into an image. Not per-service, so it sits beside the buckets.
+      # The UI half: a source overlay compiled into the frontend bundle rather
+      # than injected into an image. Not per-service, so it sits beside the
+      # buckets.
       uiManifest = mkUiManifest contribs;
       packages = byName;
       inherit eval;
