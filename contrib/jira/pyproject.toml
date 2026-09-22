@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-contrib-jira"
+version = "0.0.0"
+license = "MIT"
+description = "Jira integration for Scooter — broker provider (Atlassian OAuth proxy) and webhooks handler"
+requires-python = ">=3.11"
+# Depends on the extension SURFACES, never on the broker/webhooks apps. Why: PR #567.
+dependencies = [
+  "fastapi",
+  "httpx",
+]
+
+# One EXTRA per service, so `pip install` obeys the same split the Nix build does.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib", "scooter-lib"]
+webhooks = ["scooter-webhooks-lib", "scooter-lib"]
+
+[project.entry-points."agent_broker.providers"]
+jira = "scooter_contrib_jira.broker_provider:jira"
+
+[project.entry-points."scooter_webhooks.handlers"]
+jira = "scooter_contrib_jira.webhooks_handler:jira"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

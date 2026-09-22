@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from ..config import settings
+from .config import JiraSettings
 from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
-from ..sources.atlassian_oauth import AtlassianOAuthSource
+from .atlassian_oauth import AtlassianOAuthSource
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
 def _jira_issue_link(r: dict) -> Link | None:
+    settings = JiraSettings()
     # Create-issue response: {id, key, self}. The API `self` URL isn't a nice
     # human link; prefer the site's /browse/{KEY} when the site URL is configured.
     key = r.get("key")
@@ -29,6 +30,8 @@ _JIRA_LINK_RULES = [
 
 @register_provider
 def jira() -> Provider:
+    # Read at BUILD time, like every provider factory (#573).
+    settings = JiraSettings()
     cloud_id = settings.atlassian_cloud_id
     return Provider(
         name="jira",

@@ -9,7 +9,6 @@ import pytest
 from scooter_broker_lib.autolink import Link
 from broker.providers.github import _GITHUB_LINK_RULES
 
-from broker.providers.jira import _JIRA_LINK_RULES
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
@@ -36,23 +35,6 @@ def test_github_rules_do_not_match_reads_or_comments():
     # A GET, and a POST to a NON-create path (issue comments) must not link.
     assert _match(_GITHUB_LINK_RULES, "GET", "repos/acme/app/pulls") is None
     assert _match(_GITHUB_LINK_RULES, "POST", "repos/acme/app/issues/3/comments") is None
-
-
-def test_jira_issue_rule_builds_browse_url(monkeypatch):
-    import broker.providers.jira as jira_mod
-    monkeypatch.setattr(jira_mod.settings, "jira_site_url", "https://acme.atlassian.net")
-    r = _match(_JIRA_LINK_RULES, "POST", "rest/api/3/issue")
-    link = r.extract({"key": "PROJ-12", "self": "https://api.atlassian.com/.../issue/10001"})
-    assert link.url == "https://acme.atlassian.net/browse/PROJ-12"
-    assert link.resource_type == "issue"
-
-
-def test_jira_falls_back_to_self_url_when_no_site(monkeypatch):
-    import broker.providers.jira as jira_mod
-    monkeypatch.setattr(jira_mod.settings, "jira_site_url", "")
-    r = _match(_JIRA_LINK_RULES, "POST", "rest/api/2/issue")
-    link = r.extract({"key": "PROJ-1", "self": "https://api.atlassian.com/self"})
-    assert link.url == "https://api.atlassian.com/self"
 
 
 # ---- the transport posts a link on a 2xx create, and NOT otherwise ----

@@ -73,12 +73,10 @@ class WebhooksSettings(ScooterBaseSettings):
     # Integration toggles
     github_enabled: bool = False
     slack_enabled: bool = False
-    jira_enabled: bool = False
 
     # Webhook secrets (signature validation)
     github_webhook_secret: str = ""
     slack_signing_secret: str = ""
-    jira_webhook_secret: str = ""
 
     # Tokens for posting responses back to services
     github_token: str = ""  # PAT fallback (used if github_app_id is empty)
@@ -98,12 +96,6 @@ class WebhooksSettings(ScooterBaseSettings):
     github_app_id: str = ""
     github_app_private_key: str = ""  # PEM content or path to .pem file
     github_client_id: str = ""  # Client ID for installation lookup
-
-    # Atlassian OAuth 2.0 client credentials
-    atlassian_client_id: str = ""
-    atlassian_client_secret: str = ""
-    atlassian_cloud_id: str = ""
-    jira_bot_account_id: str = ""
 
     # Shared API key for internal relay endpoints
     relay_api_key: str = ""

@@ -62,7 +62,10 @@ async def _infer_conversation_from_jira(
     for key in jira_keys:
         conv_id = (
             await db.lookup_conversation("jira", "issue", key)
-            or await db.get_conversation_for_jira_ticket(key)
+            # The jira-specific lookup that used to sit between these is gone: it
+            # read a duplicate table, and would have made this contrib depend on
+            # contrib/jira. The generic one matches every known shape (#571), so it
+            # also catches a row written as a browse URL. Why: PR #582.
             or await db.get_conversation_for_resource("jira", "issue", key)
         )
         if conv_id:

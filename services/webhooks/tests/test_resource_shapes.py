@@ -48,15 +48,8 @@ def test_an_unparseable_id_invents_no_url():
     assert ids == ["not-a-resource-id"]
 
 
-def test_jira_browse_url_offers_the_issue_key():
-    assert "ENG-42" in resource_id_variants(
-        "jira", "issue", "https://acme.atlassian.net/browse/ENG-42"
-    )
-
-
 def test_type_aliases_are_two_way():
     assert canonical_resource_type("github", "pr") == "pull_request"
-    assert canonical_resource_type("jira", "ticket") == "issue"
     # An unknown type passes through rather than being mangled into a wrong one.
     assert canonical_resource_type("github", "discussion") == "discussion"
 
@@ -71,5 +64,6 @@ def test_canonical_link_stores_the_long_type_and_the_url():
 
 
 def test_canonical_link_keeps_an_id_it_cannot_widen():
-    # No jira site for a bare key: leave it be.
-    assert canonical_link("jira", "ticket", "ENG-9") == ("issue", "ENG-9")
+    # An id that parses as nothing known keeps its own form: the long type still
+    # applies, but no URL is invented for it.
+    assert canonical_link("github", "pr", "not-an-id") == ("pull_request", "not-an-id")

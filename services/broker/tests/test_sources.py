@@ -1,4 +1,4 @@
-"""The provider-SPECIFIC credential sources — mocked HTTP, no real GitHub/Atlassian.
+"""The provider-SPECIFIC credential sources — mocked HTTP, no real GitHub.
 
 Proves the JWT/installation-token and client-credentials flows produce the right
 Credential, cache it, and serve the cache on the second call.
@@ -16,7 +16,6 @@ import time
 import httpx
 import pytest
 
-from broker.sources.atlassian_oauth import AtlassianOAuthSource
 from broker.sources.github_app import GitHubAppSource
 from scooter_broker_lib.types import Identity
 
@@ -60,22 +59,3 @@ async def test_github_app_source_mints_and_caches(monkeypatch):
     assert calls["n"] == 1
 
 
-@pytest.mark.asyncio
-async def test_atlassian_oauth_source_mints_and_caches(monkeypatch):
-    calls = {"n": 0}
-
-    async def fake_post(self, url, **kwargs):  # noqa: ANN001
-        calls["n"] += 1
-        assert "oauth/token" in url
-        assert kwargs["json"]["grant_type"] == "client_credentials"
-        return httpx.Response(200, json={"access_token": "atl_token", "expires_in": 3600}, request=httpx.Request("POST", url))
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
-
-    src = AtlassianOAuthSource(client_id="cid", client_secret="sec", cloud_id="cloud")
-    cred = await src.get(_identity())
-    assert cred.value == "atl_token"
-    assert cred.expires_at and cred.expires_at > time.time()
-
-    await src.get(_identity())
-    assert calls["n"] == 1  # cached
