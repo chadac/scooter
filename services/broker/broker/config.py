@@ -25,8 +25,7 @@ class BrokerSettings(ScooterBaseSettings):
     github_app_installation_id: int = 0
     github_token: str = ""
 
-    # GitLab / Slack (static tokens)
-    gitlab_token: str = ""
+    # Slack (static token)
     slack_bot_token: str = ""
 
     # Jira / Atlassian OAuth

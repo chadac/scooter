@@ -40,31 +40,6 @@ def test_health_endpoint(client):
 # ---------------------------------------------------------------------------
 
 
-def test_gitlab_webhook_disabled(client):
-    """GitLab webhook returns disabled when toggle is off."""
-    with patch("webhooks.handlers.gitlab.settings") as mock_settings:
-        mock_settings.gitlab_enabled = False
-        resp = client.post(
-            "/webhooks/gitlab",
-            headers={"X-Gitlab-Event": "Note Hook", "X-Gitlab-Token": ""},
-            json={},
-        )
-        assert resp.json()["status"] == "disabled"
-
-
-def test_gitlab_webhook_invalid_token(client):
-    """GitLab webhook rejects invalid token."""
-    with patch("webhooks.handlers.gitlab.settings") as mock_settings:
-        mock_settings.gitlab_enabled = True
-        mock_settings.gitlab_webhook_secret = "real-secret"
-        resp = client.post(
-            "/webhooks/gitlab",
-            headers={"X-Gitlab-Event": "Note Hook", "X-Gitlab-Token": "wrong"},
-            json={},
-        )
-        assert resp.status_code == 401
-
-
 # ---------------------------------------------------------------------------
 # GitHub webhook
 # ---------------------------------------------------------------------------

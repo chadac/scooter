@@ -8,7 +8,7 @@ import pytest
 
 from scooter_broker_lib.autolink import Link
 from broker.providers.github import _GITHUB_LINK_RULES
-from broker.providers.gitlab import _GITLAB_LINK_RULES
+
 from broker.providers.jira import _JIRA_LINK_RULES
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
@@ -36,24 +36,6 @@ def test_github_rules_do_not_match_reads_or_comments():
     # A GET, and a POST to a NON-create path (issue comments) must not link.
     assert _match(_GITHUB_LINK_RULES, "GET", "repos/acme/app/pulls") is None
     assert _match(_GITHUB_LINK_RULES, "POST", "repos/acme/app/issues/3/comments") is None
-
-
-def test_gitlab_mr_rule():
-    # Transparent proxy (bare-host upstream) -> the path includes the api/v4 prefix.
-    r = _match(_GITLAB_LINK_RULES, "POST", "api/v4/projects/42/merge_requests")
-    assert r.extract({"web_url": "https://gitlab.com/acme/app/-/merge_requests/9", "title": "MR"}) == Link(
-        "gitlab", "mr", "https://gitlab.com/acme/app/-/merge_requests/9", "MR"
-    )
-
-
-def test_gitlab_encoded_project_path_matches():
-    # project id may be url-encoded group%2Fproject.
-    assert _match(_GITLAB_LINK_RULES, "POST", "api/v4/projects/acme%2Fapp/issues") is not None
-
-
-def test_gitlab_rule_does_not_match_the_old_prefixless_path():
-    # Guards the double-prefix fix: the old /gitlab/projects/... contract is gone.
-    assert _match(_GITLAB_LINK_RULES, "POST", "projects/42/merge_requests") is None
 
 
 def test_jira_issue_rule_builds_browse_url(monkeypatch):

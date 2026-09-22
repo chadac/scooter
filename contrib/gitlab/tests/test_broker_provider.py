@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 import scooter_broker_lib.transports.http_proxy as http_proxy_mod
 from scooter_broker_lib.types import Identity, Provider
-from broker.providers.gitlab import gitlab
+from scooter_contrib_gitlab.broker_provider import gitlab
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
 
@@ -25,9 +25,9 @@ def _identity() -> Identity:
 
 
 def test_gitlab_upstream_is_bare_host(monkeypatch):
-    from broker import config as cfg
-
-    monkeypatch.setattr(cfg.settings, "gitlab_token", "glpat-xxx", raising=False)
+    # The contrib owns GITLAB_TOKEN now, so the env is what arms the provider —
+    # the broker app has no gitlab field to patch. Why: PR #580.
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-xxx")
     proxy = next(t for t in gitlab().transports if isinstance(t, HttpProxy))
     # Bare host — NOT .../api/v4 (that was the double-prefix bug).
     assert proxy.upstream == "https://gitlab.com"

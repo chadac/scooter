@@ -16,11 +16,11 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
-from ..config import settings
+from .config import settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
-from ..responses.gitlab import post_gitlab_comment
+from .responses import post_gitlab_comment
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.gitlab"}
@@ -453,11 +453,16 @@ async def _clear_pending(source: str, res_type: str, res_id: str) -> None:
     await db.get_and_clear_pending_messages(source, res_type, res_id)
 
 
-# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
-# provider registry, PR: contrib module system). Handlers self-gate in-route
-# (a disabled provider returns {"status": "disabled"}), so this registers
-# enabled and keeps its per-request gating.
+# Discovered + mounted by the webhooks service via the entry-point registry.
+# Handlers self-gate in-route (a disabled provider returns {"status": "disabled"}),
+# so this registers enabled and keeps its per-request gating.
 from scooter_webhooks_lib.registry import WebhookHandler, register_webhook
+
+# Imported for their REGISTRATION side effects: this module is what the webhooks
+# service loads, so gitlab's owner lookup (#575) and resource shapes (#576) arm
+# with it. Nothing else imports either. Why: PR #580.
+from . import identity  # noqa: F401
+from . import resources  # noqa: F401
 
 
 @register_webhook

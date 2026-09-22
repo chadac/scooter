@@ -71,19 +71,16 @@ class WebhooksSettings(ScooterBaseSettings):
     remote_agent_join_secret: str = ""
 
     # Integration toggles
-    gitlab_enabled: bool = True
     github_enabled: bool = False
     slack_enabled: bool = False
     jira_enabled: bool = False
 
     # Webhook secrets (signature validation)
-    gitlab_webhook_secret: str = ""
     github_webhook_secret: str = ""
     slack_signing_secret: str = ""
     jira_webhook_secret: str = ""
 
     # Tokens for posting responses back to services
-    gitlab_token: str = ""
     github_token: str = ""  # PAT fallback (used if github_app_id is empty)
     slack_bot_token: str = ""
 
@@ -127,9 +124,6 @@ class WebhooksSettings(ScooterBaseSettings):
     # doesn't mention the agent. Its own comments otherwise come back as webhooks
     # — at interrupt priority for reviews (PR #530).
     ignore_bot_authors: bool = True
-
-    # Default repo
-    default_gitlab_repo: str = ""
 
     # Pipe-separated repo descriptions
     repo_descriptions: str = ""

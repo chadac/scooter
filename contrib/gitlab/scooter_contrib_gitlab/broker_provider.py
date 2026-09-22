@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..config import settings
+from .config import GitlabSettings
 from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
@@ -31,6 +31,10 @@ _GITLAB_LINK_RULES = [
 
 @register_provider
 def gitlab() -> Provider:
+    # Read at BUILD time, like every provider factory — and constructed here rather
+    # than imported as a singleton so the broker half needs no module-level state.
+    # The webhooks half does keep one (it reads per request). Why: PR #580.
+    settings = GitlabSettings()
     return Provider(
         name="gitlab",
         credential=StaticTokenSource(

@@ -20,7 +20,7 @@ from scooter_webhooks_lib.registry import (
 )
 
 
-BUILTIN_HANDLERS = {"github", "gitlab", "jira", "slack", "test"}
+BUILTIN_HANDLERS = {"github", "jira", "slack", "test"}
 
 
 def test_discovers_all_builtin_handlers():
@@ -47,7 +47,6 @@ def test_app_mounts_discovered_routes():
     paths = set(app.openapi()["paths"].keys())
     for expected in (
         "/webhooks/github",
-        "/webhooks/gitlab",
         "/webhooks/jira",
         "/webhooks/slack",
         "/webhooks/test",
