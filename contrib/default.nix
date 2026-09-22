@@ -27,17 +27,20 @@ let
     modules = [ ./all-modules.nix ];
   };
 
-  contribs = lib.filterAttrs (_: c: c.enable) eval.config.contribs;
+  # NOT filtered by `enable`: every contrib in the tree is built and tested, so a
+  # disabled one (echo) still gets a derivation and still runs its suite. `enable`
+  # gates the IMAGES, below.
+  contribs = eval.config.contribs;
 
   # Services a contrib actually targets, as an attrset of the service submodules.
   enabledServices = c: lib.filterAttrs (_: s: s.enable) c.services;
 
-  # What ships into a service image. `ship = false` contribs are excluded: they
-  # are reference material, still built and tested via packages.<name>.<svc>, but
-  # an example whose provider is unconditionally enabled must not mount its routes
-  # on a production service. Why: PR #573.
+  # What ships into a service image. A disabled contrib is excluded here and ONLY
+  # here: it is reference material, still built and tested via
+  # packages.<name>.<svc>, but an example whose provider is unconditionally
+  # enabled must not mount its routes on a production service. Why: PR #573.
   forService = svc: lib.mapAttrsToList (_: c: c.services.${svc}.package)
-    (lib.filterAttrs (_: c: c.ship && c.services.${svc}.enable) contribs);
+    (lib.filterAttrs (_: c: c.enable && c.services.${svc}.enable) contribs);
 
   # Keyed `<name>-<service>`, NOT a list: both variants of a two-service contrib
   # share a derivation name, so a name-keyed consumer (linkFarm) collapses them
@@ -57,7 +60,7 @@ in
   # carries only that service's extension surface.
   broker = forService "broker";
   webhooks = forService "webhooks";
-  # Every variant of every contrib INCLUDING unshipped ones, keyed <name>-<service>,
+  # Every variant of every contrib INCLUDING disabled ones, keyed <name>-<service>,
   # plus lookup by name+service (e.g. contribs.packages.echo.broker).
   all = everyVariant;
   packages = byName;

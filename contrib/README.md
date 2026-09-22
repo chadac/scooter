@@ -55,8 +55,7 @@ can import.
       enable = true;
       pythonDeps = ps: [ ps.httpx ];    # extra deps for THIS half only
     };
-    # ship = false;                     # build + test it, but never ship it
-    # enable = false;                   # do not build it at all
+    # enable = false;                    # built + tested, but kept out of the images
     # version = "0.0.0";
   };
 }
@@ -129,10 +128,11 @@ contrib cannot put the webhooks surface on the broker's path — and exposes it 
 into the per-service lists the flake injects. `fastapi` is already available in
 both services.
 
-`ship = false` marks reference material: it is still built and its tests still
-run (`nix build .#contrib-echo`), but it is left out of what ships. `echo`'s
+`enable = false` marks reference material. It does NOT mean unbuilt: the contrib
+is still built and its tests still run (`nix build .#contrib-echo`), it is just
+left out of every image, so reference material cannot rot undetected. `echo`'s
 provider is unconditionally enabled, so shipping it would serve `/echo/ping`
-from a production broker.
+from a production broker. "Do not build it" is `rm -r` on the directory.
 
 Because `tests/` is shared by both variants, every enabled service's
 `pythonDeps` are check inputs for *each* variant — a webhooks-only test still has

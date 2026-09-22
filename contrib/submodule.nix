@@ -109,16 +109,13 @@ in
     enable = mkOption {
       type = types.bool;
       default = true;
-      description = "Build and test this contrib at all.";
-    };
-
-    ship = mkOption {
-      type = types.bool;
-      default = true;
       description = ''
-        Inject this contrib into the images of the services it targets. `false`
-        marks reference material: still built, its tests still run, but left out
-        of what ships.
+        Inject this contrib into the images of the services it targets.
+
+        `false` does NOT mean "unbuilt": every contrib in the tree is still built
+        and its tests still run (`nix build .#contrib-echo`, `.#contribs-all`), so
+        reference material cannot rot undetected. Being in no image is what
+        disabled means here; "do not build it" is `rm -r` on the directory.
       '';
     };
 
