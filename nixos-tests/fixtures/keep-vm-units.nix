@@ -37,4 +37,14 @@
   # the thing running the switch, so it is protected as a *changed* unit instead and
   # never restarts. Why: PR #610.
   programs.scooterModule.applyOnBoot = lib.mkForce false;
+
+  # (3) No gettys on the driver's console. The framework's test-instrumentation.nix
+  # disables these because the driver talks to the guest over ttyS0/hvc0 in a base64
+  # protocol; the base config does not, so the switch STARTS them and a login prompt
+  # is interleaved into that stream — the driver dies on `binascii.Error: Incorrect
+  # padding` with the switch itself having worked. Same list as the framework's.
+  systemd.services."serial-getty@ttyS0".enable = false;
+  systemd.services."serial-getty@hvc0".enable = false;
+  systemd.services."getty@tty1".enable = false;
+  systemd.services."autovt@".enable = false;
 }
