@@ -29,7 +29,6 @@ owner = "webhooks"
 
 [webhooks.tables]
 conversation_map  = { writers = ["webhooks"],   readers = ["agent-host"] }
-jira_tickets      = { writers = ["webhooks"],   readers = [] }
 # Webhooks OWNS this table; agent-host also WRITES it (the conversation link panel).
 # Two writers, one table — the same shape as byoc.remote_agents.
 # conversation-router READS it (SELECT-only) to enrich the conversation list with link badges.

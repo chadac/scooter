@@ -34,19 +34,6 @@ class ConversationMap(Base):
     slack_ts: Mapped[Optional[str]] = mapped_column(String)
 
 
-class JiraTickets(Base):
-    __tablename__ = 'jira_tickets'
-    __table_args__ = (
-        PrimaryKeyConstraint('id', name='jira_tickets_pkey'),
-        UniqueConstraint('issue_key', name='jira_tickets_issue_key_key')
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    conversation_id: Mapped[str] = mapped_column(String, nullable=False)
-    issue_key: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
-
-
 class PendingMessages(Base):
     __tablename__ = 'pending_messages'
     __table_args__ = (
