@@ -1,6 +1,7 @@
-# Contrib module metadata — see contrib/README.md for the schema.
 {
-  name = "jira";
-  services = [ "broker" "webhooks" ];
-  pythonDeps = _: _: [ ];
+  contribs.jira = {
+    src = ./.;
+    services.broker.enable = true;
+    services.webhooks.enable = true;
+  };
 }

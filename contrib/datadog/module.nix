@@ -1,6 +1,6 @@
-# Contrib module metadata — see contrib/README.md for the schema.
 {
-  name = "datadog";
-  services = [ "broker" ];
-  pythonDeps = _: _: [ ];
+  contribs.datadog = {
+    src = ./.;
+    services.broker.enable = true;
+  };
 }
