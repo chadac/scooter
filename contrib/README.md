@@ -100,9 +100,12 @@ nothing is threaded in, and nothing has to be carried across a switch. That is
 also why the module must live in the repo, and why anything it refers to
 relatively (`../../pkgs/…`) resolves identically on both sides.
 
-The sandbox half is evaluated with **throwing stubs** for `broker`, `webhooks`
-and `python3Packages`: in the pod those packages do not exist, so a sandbox
-module that reaches for one is an error at eval rather than a failed switch.
+That eval gets **`lib` and nothing else**. The service-side arguments
+`contrib/default.nix` passes — `broker`, `webhooks`, `python3Packages`, the
+surface libs — are built packages, and the pod has neither a flake nor a network
+to produce them, so a sandbox half that reaches for one fails at eval. Keep the
+sandbox module to `pkgs` and plain NixOS config; a contrib may still take those
+args for its *service* half, which this eval never forces.
 
 See `contrib/echo/sandbox.nix` for the reference, and the
 `dev-env-contrib-sandbox` check for what is asserted.
