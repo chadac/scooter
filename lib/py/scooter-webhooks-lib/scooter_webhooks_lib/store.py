@@ -204,27 +204,6 @@ async def store_conversation(
     )
 
 
-async def store_note_metadata(
-    conversation_id: str,
-    project_id: int,
-    noteable_type: str,
-    noteable_iid: int,
-    note_id: int,
-) -> None:
-    """Store GitLab/GitHub comment metadata for status updates."""
-    async with get_session() as session:
-        await session.execute(
-            update(ConversationMap)
-            .where(ConversationMap.conversation_id == conversation_id)
-            .values(
-                project_id=project_id,
-                noteable_type=noteable_type,
-                noteable_iid=noteable_iid,
-                note_id=note_id,
-            )
-        )
-
-
 async def store_slack_metadata(
     conversation_id: str, channel: str, message_ts: str
 ) -> None:
@@ -234,18 +213,6 @@ async def store_slack_metadata(
             update(ConversationMap)
             .where(ConversationMap.conversation_id == conversation_id)
             .values(slack_channel=channel, slack_ts=message_ts)
-        )
-
-
-async def store_jira_comment_id(
-    conversation_id: str, comment_id: str
-) -> None:
-    """Store a Jira comment ID for status updates (reuses note_id column)."""
-    async with get_session() as session:
-        await session.execute(
-            update(ConversationMap)
-            .where(ConversationMap.conversation_id == conversation_id)
-            .values(note_id=int(comment_id))
         )
 
 
@@ -411,6 +378,34 @@ async def get_conversation_for_resource(
             if row:
                 return row.conversation_id
         return None
+
+async def resources_for_conversation(
+    conversation_id: str, source: str | None = None, resource_type: str | None = None
+) -> list[tuple[str, str, str]]:
+    """Every resource linked to a conversation, oldest FIRST.
+
+    The reverse of `get_conversation_for_resource`, and the generic form of the
+    per-provider "which tickets does this conversation have" helpers. Returns
+    (source, resource_type, resource_id) in insertion order, so the caller's
+    "primary" resource is simply the first one.
+
+    `resource_type` is matched against the CANONICAL spelling, because that is what
+    link_resource stores -- asking for "ticket" finds rows written as "issue".
+    Why: PR #581.
+    """
+    wanted_type = (
+        resources.canonical_resource_type(source, resource_type)
+        if source and resource_type
+        else resource_type
+    )
+    async with get_session() as session:
+        stmt = select(ResourceLink).where(ResourceLink.conversation_id == conversation_id)
+        if source:
+            stmt = stmt.where(ResourceLink.source == source)
+        if wanted_type:
+            stmt = stmt.where(ResourceLink.resource_type == wanted_type)
+        rows = (await session.execute(stmt.order_by(ResourceLink.id.asc()))).scalars().all()
+        return [(r.source, r.resource_type, r.resource_id) for r in rows]
 
 
 # ---------------------------------------------------------------------------
