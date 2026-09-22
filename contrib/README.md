@@ -45,22 +45,35 @@ A thin, declarative descriptor read by `contrib/default.nix`:
 {
   name = "echo";                  # package = scooter-contrib-<name>, import = scooter_contrib_<name>
   services = [ "broker" "webhooks" ];  # which service image(s) to inject into
-  pythonDeps = ps: [ ];           # optional extra Python deps beyond the host service's
+  pythonDeps = service: ps: [ ];  # optional deps, PER SERVICE. `ps` is nixpkgs'
+                                  # python3Packages plus every contrib (see below)
   example = true;                 # optional: build + test it, but never ship it
-  contribDeps = { webhooks = [ "jira" ]; };  # optional: other contribs this one uses,
-                                  # PER SERVICE (see below)
 }
 ```
 
 ### Depending on another contrib
 
 Integrations reference each other — gitlab reads Jira keys out of MR titles to
-attach an MR to the conversation that ticket already opened — so `contribDeps`
-is allowed and expected.
+attach an MR to the conversation that ticket already opened — so depending on
+another contrib is allowed and expected.
 
-It is keyed **by service**: only gitlab's webhooks half needs jira, and a flat
-list would drag jira into the broker variant's closure, which is the surface
-leak the per-service split exists to stop.
+There is no separate field for it: `pythonDeps` takes the SERVICE and a package
+set that already contains every contrib, so one declaration covers both "a
+library from nixpkgs" and "another contrib".
+
+```nix
+pythonDeps = service: ps:
+  if service == "webhooks" then [ ps.scooterContribJira ] else [ ];
+```
+
+The service argument is what keeps the closures apart: only gitlab's webhooks half
+needs jira, and depending unconditionally would drag jira into the broker
+variant's closure — the surface leak the per-service split exists to stop.
+
+`ps` holds THIS service's variant of each contrib, so a dep cannot pull the wrong
+surface in, and a typo is an eval error rather than a `ModuleNotFoundError` at
+service startup. Contribs are prefixed `scooterContrib<Name>` because a bare
+`ps.jira` would shadow nixpkgs' own `python3Packages.jira`.
 
 Depend on the smallest thing that does the job: jira exports its issue-key
 grammar as a pure-text module (no settings, no store, no routes), so the
