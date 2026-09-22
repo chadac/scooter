@@ -30,16 +30,6 @@ CREATE TABLE "conversation_map" (
   CONSTRAINT "conversation_map_source_resource_type_resource_id_key" UNIQUE ("source", "resource_type", "resource_id")
 );
 
--- Jira ticket -> conversation (many-to-one).
-CREATE TABLE "jira_tickets" (
-  "id"              serial NOT NULL,
-  "conversation_id" character varying NOT NULL,
-  "issue_key"       character varying NOT NULL,
-  "created_at"      timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY ("id"),
-  CONSTRAINT "jira_tickets_issue_key_key" UNIQUE ("issue_key")
-);
-
 -- Generic cross-platform resource linking. The UNIQUE below is GLOBAL (one
 -- conversation per (source, resource_type, resource_id)); #381's open question is
 -- whether to scope it per-conversation — that decision is made HERE, in one place.

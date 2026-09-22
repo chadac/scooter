@@ -24,15 +24,6 @@ export const conversationMap = pgTable("conversation_map", {
 	unique("conversation_map_source_resource_type_resource_id_key").on(table.source, table.resourceType, table.resourceId),
 ]);
 
-export const jiraTickets = pgTable("jira_tickets", {
-	id: serial().primaryKey().notNull(),
-	conversationId: varchar("conversation_id").notNull(),
-	issueKey: varchar("issue_key").notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	unique("jira_tickets_issue_key_key").on(table.issueKey),
-]);
-
 export const resourceLinks = pgTable("resource_links", {
 	id: serial().primaryKey().notNull(),
 	conversationId: varchar("conversation_id").notNull(),
