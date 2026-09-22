@@ -13,9 +13,9 @@ in
 {
   imports = modules;
 
-  # Which contrib modules this system was built with. The first thing to read in a
-  # pod when a contrib's tools are missing — and the marker dev-env-contrib-sandbox
-  # asserts on, since it is present only if this file is actually imported.
+  # The ONLY observable this file has when no contrib is enabled, and what
+  # dev-env-contrib-sandbox asserts on: the check injects echo through `extraModules`,
+  # so without this marker it stays green with contribs.nix imported by nobody.
   environment.etc."scooter/contrib-modules".text =
     lib.concatMapStrings (m: "${toString m}\n") modules;
 }
