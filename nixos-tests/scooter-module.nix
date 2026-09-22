@@ -60,6 +60,18 @@ pkgs.testers.runNixOSTest {
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     virtualisation.diskSize = 6144;
 
+    # Boot the bus the RE-CONVERGE will target. dbus-container.nix pins the classic
+    # daemon (+ marks it survive-a-switch) only under `boot.isContainer`, on the
+    # stated assumption that a VM can restart its bus cleanly — but base-config.nix
+    # forces isContainer = true, so the toplevel this test switches TO is a container
+    # config pinning classic dbus while the VM booted the stock broker. The switch
+    # then replaces the system bus it is itself talking to: switch-to-configuration
+    # dies mid-stop ("Failed to process dbus messages"), BEFORE activation, so
+    # /run/current-system never moves and the injected module appears not to apply.
+    # Pinning the same implementation here makes the unit match, and the base
+    # config's own survive-a-switch flags then keep it running. Why: PR #610.
+    services.dbus.implementation = lib.mkForce "dbus";
+
     # LAYER the runtime re-converge on top of the running system. scooter-apply-
     # module builds its toplevel from the SHARED base config (modules/sandbox-os),
     # which does NOT include the nixosTest framework's `backdoor.service` (the test
