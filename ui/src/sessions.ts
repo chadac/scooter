@@ -13,6 +13,7 @@ import { useSyncExternalStore } from "react";
 
 import type { AgentHostConfig } from "./client.js";
 import { Conversation } from "./conversation.js";
+import { contribLinkProviders } from "./contribManifest.generated.js";
 
 export interface Session {
   /** STABLE identity. Never changes for the life of the conversation — including at the
@@ -82,9 +83,11 @@ const STORAGE_KEY = "kubenix-agent.sessions.v1";
 export type Scope = "mine" | "all";
 
 /** The known link providers — offered as icon filter chips AND as the "Show:"
- *  label-mode options. */
-export const LINK_PROVIDERS = ["github", "gitlab", "slack", "jira"] as const;
-export type LinkProvider = (typeof LINK_PROVIDERS)[number];
+ *  label-mode options. The app's own, then whatever the deployment's contribs
+ *  declare (contrib/ui-manifest.nix), so disabling a contrib removes its chip
+ *  rather than leaving a dead one. Open set, hence `string` and not a union. */
+export const LINK_PROVIDERS: readonly string[] = ["github", "slack", ...contribLinkProviders];
+export type LinkProvider = string;
 
 /** What a sidebar row displays: the conversation title, or the linked resource's
  *  name for a specific provider (falling back to the title when the row has no link

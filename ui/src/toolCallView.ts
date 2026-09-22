@@ -11,11 +11,19 @@
  *
  * Returns null for anything we don't specialize (web_search, web_fetch,
  * modify_environment, unknown) — the caller renders the generic ToolFallback.
+ *
+ * A CONTRIB registers its tools through the generated manifest instead of this
+ * file (contrib/ui-manifest.nix), which is why the provider is a plain string:
+ * the set is open, so there is nothing to switch on exhaustively. The single
+ * consumer (ToolCallView) only passes it to the icon lookup, which already
+ * falls back for an unknown name.
  */
 
-export type Provider = "slack" | "github" | "gitlab" | "jira";
-/** The visual "kind": a provider message card, or a shell/command card. */
-export type ToolKind = Provider | "shell";
+import type { ContribToolCard } from "./contribTypes.js";
+import { contribToolCards, contribToolTitles } from "./contribManifest.generated.js";
+
+/** A source name ("slack", a contrib's name) or "shell". */
+export type ToolKind = string;
 
 export interface ToolCallVisual {
   /** The provider (slack/…) or "shell". `provider` name kept for back-compat with
@@ -27,26 +35,25 @@ export interface ToolCallVisual {
   action: string;
 }
 
-interface Meta { provider: Provider; argKey: string; action: string }
-
-/** Keyed by the underlying tool NAME (the stable identity). */
-const BY_TOOL: Record<string, Meta> = {
+/** Keyed by the underlying tool NAME (the stable identity). The app's own tools;
+ *  a contrib's arrive through the manifest. */
+const BUILTIN_BY_TOOL: Record<string, ContribToolCard> = {
   slack_respond: { provider: "slack", argKey: "text", action: "replied in Slack" },
   slack_react: { provider: "slack", argKey: "emoji", action: "reacted in Slack" },
   github_comment: { provider: "github", argKey: "body", action: "commented on GitHub" },
-  gitlab_comment: { provider: "gitlab", argKey: "body", action: "commented on GitLab" },
-  jira_comment: { provider: "jira", argKey: "body", action: "commented on Jira" },
 };
+
+const BY_TOOL: Record<string, ContribToolCard> = { ...BUILTIN_BY_TOOL, ...contribToolCards };
 
 /** The registerTool `title` strings, accepted as a fallback (some ACP paths may
  *  surface the raw title instead of the "<server>: <Name>" form). */
-const BY_TITLE: Record<string, string> = {
+const BUILTIN_BY_TITLE: Record<string, string> = {
   "respond in the slack thread": "slack_respond",
   "react to the slack message": "slack_react",
   "comment on the github pr/issue": "github_comment",
-  "comment on the gitlab mr": "gitlab_comment",
-  "comment on the jira issue": "jira_comment",
 };
+
+const BY_TITLE: Record<string, string> = { ...BUILTIN_BY_TITLE, ...contribToolTitles };
 
 /** Normalize goose's "Scooter-env: Slack Respond" (or a raw tool name) to the
  *  tool-name identity "slack_respond". Drops any "<server>:" prefix, lowercases,

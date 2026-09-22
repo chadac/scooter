@@ -9,6 +9,10 @@ plug into one or more services:
 | `broker`   | `agent_broker.providers`    | `scooter_broker_lib/registry.py` |
 | `webhooks` | `scooter_webhooks.handlers` | `scooter_webhooks_lib/registry.py` |
 
+A contrib also contributes **UI metadata** — its brand row and tool cards — which
+reaches the frontend through a generated manifest rather than an entry point,
+because the UI is a compiled static bundle. See [Contributing UI](#contributing-ui-ui).
+
 At startup each service scans its group, loads every advertised factory (which
 self-registers via `@register_provider` / `@register_webhook`), and mounts what
 it discovers. Adding an integration is a new `contrib/<name>/` directory — no
@@ -124,6 +128,63 @@ unless jira is enabled, but present.
 A dependency CYCLE is an eval-time infinite recursion, not a runtime bug. If two
 contribs genuinely need each other, move the shared part into a third package
 rather than breaking the cycle with a late import.
+
+### Contributing UI (`ui`)
+
+A contrib also owns its row in the frontend — the brand label/icon/color shown
+for its linked resources, and how its agent tools render as message cards. These
+used to be hardcoded lists in `ui/src/`, so adding an integration meant editing
+the app and disabling one left a dead chip behind.
+
+```nix
+ui = {
+  source = {
+    label = "GitLab";
+    icon = { pack = "si"; name = "SiGitlab"; };   # react-icons/si -> SiGitlab
+    color = "#FC6D26";                             # or "currentColor"
+    linkProvider = true;                           # offer a sidebar filter chip
+  };
+  tools.gitlab_comment = {
+    argKey = "body";                               # which arg holds the text
+    action = "commented on GitLab";
+    titles = [ "Comment on the GitLab MR" ];       # registerTool title fallback
+  };
+};
+```
+
+`enable` defaults to true as soon as `source` or `tools` is set, so a declared
+row cannot silently render nothing.
+
+**This is METADATA only.** A contrib shipping real React (a `RightPanel` tab, a
+custom renderer) is a second tier that lands with the first feature needing one.
+
+**Why it is generated at build time rather than served at runtime.** Two
+independent reasons, both in `ui/src/sourceIcon.tsx`: the icons are React
+components imported *per-icon* "so only the ones we use are bundled", so a
+runtime manifest naming `"SiGitlab"` as a string could only resolve by bundling
+all of `react-icons`; and the UI is a static vite `dist/` with no module loader,
+so anything a contrib contributes must exist when vite runs.
+
+So `contrib/ui-manifest.nix` walks the enabled contribs and emits one TypeScript
+module, which the app merges **on top of** its own entries. The result is
+committed at `ui/src/contribManifest.generated.ts` — that is what makes `npm run
+dev`, `vitest` and a plain `npm run build` work without nix — and
+`just contrib-ui-check` fails CI on drift. A deployment with a different contrib
+set never reads the committed file: `ui/default.nix` substitutes its own.
+
+After changing any `ui` option:
+
+```
+nix develop -c just contrib-ui-generate   # then commit the result
+```
+
+Two constraints worth knowing. The icon `pack` is a **fixed enum**
+(`contrib/ui-icon-packs.nix`) because a contrib cannot add an npm dependency —
+`ui/default.nix` pins `npmDepsHash`, so a contrib-local dep would change the
+UI's lockfile and make "adding a contrib is a new directory" false again, just
+relocated. And the icon `name` is only shape-checked in Nix; its **existence**
+is checked by `tsc` when the UI compiles the manifest, so a typo is a build
+error rather than a missing glyph.
 
 ### What the framework does with it
 

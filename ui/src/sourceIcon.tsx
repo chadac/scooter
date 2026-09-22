@@ -6,34 +6,36 @@
  * Icons are from `react-icons/si` (Simple Icons — free brand SVGs), imported
  * per-icon so only the ones we use are bundled. Each renders in the provider's
  * official brand color.
+ *
+ * A CONTRIB adds its own row through the generated manifest rather than by
+ * editing this file. Per-icon imports are exactly why that manifest is built at
+ * build time — a runtime name like "SiGrafana" could only resolve by bundling
+ * all of react-icons. See contrib/ui-manifest.nix.
  */
 
-import type { ComponentType } from "react";
-import { SiGithub, SiGitlab, SiJira } from "react-icons/si";
+import { SiGithub } from "react-icons/si";
 // Simple Icons dropped the Slack mark (trademark); FontAwesome still ships it.
 import { FaSlack, FaTerminal } from "react-icons/fa";
 // The Scooter mark — used for the "show the conversation TITLE" option (Scooter's
 // own name for a chat, vs. a provider's linked-resource name).
 import { MdElectricScooter } from "react-icons/md";
+import type { ContribSource } from "./contribTypes.js";
+import { contribSources } from "./contribManifest.generated.js";
 
-interface SourceMeta {
-  label: string;
-  Icon: ComponentType<{ size?: number; color?: string; className?: string; title?: string }>;
-  /** Official brand color. */
-  color: string;
-}
-
-const SOURCES: Record<string, SourceMeta> = {
+/** The app's own sources: the ones that are not contribs (yet). */
+const BUILTIN_SOURCES: Record<string, ContribSource> = {
   // GitHub's brand black is invisible in dark mode -> inherit the theme color.
   github: { label: "GitHub", Icon: SiGithub, color: "currentColor" },
-  gitlab: { label: "GitLab", Icon: SiGitlab, color: "#FC6D26" },
   // Slack's deep aubergine also disappears in dark mode -> use a brighter brand
   // accent that reads on both themes.
   slack: { label: "Slack", Icon: FaSlack, color: "#E01E5A" },
-  jira: { label: "Jira", Icon: SiJira, color: "#0052CC" },
   // Not a linked-resource provider — the shell/command tool card (ToolCallView).
   shell: { label: "Shell", Icon: FaTerminal, color: "currentColor" },
 };
+
+// Contribs merge on TOP: a deployment that swaps an integration for its own
+// contrib of the same name gets that contrib's brand row.
+const SOURCES: Record<string, ContribSource> = { ...BUILTIN_SOURCES, ...contribSources };
 
 export function sourceLabel(source: string): string {
   return SOURCES[source]?.label ?? source;
