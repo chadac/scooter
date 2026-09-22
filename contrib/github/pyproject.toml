@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-contrib-github"
+version = "0.0.0"
+license = "MIT"
+description = "GitHub integration for Scooter — broker provider (App-token proxy + git credentials) and webhooks handler"
+requires-python = ">=3.11"
+# Depends on the extension SURFACES, never on the broker/webhooks apps. Why: PR #567.
+dependencies = [
+  "fastapi",
+  "httpx",
+  "pyjwt[crypto]", # RS256 App JWT -> installation access token
+]
+
+# One EXTRA per service, so `pip install` obeys the same split the Nix build does.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib", "scooter-lib"]
+webhooks = ["scooter-webhooks-lib", "scooter-lib"]
+
+[project.entry-points."agent_broker.providers"]
+github = "scooter_contrib_github.broker_provider:github"
+
+[project.entry-points."scooter_webhooks.handlers"]
+github = "scooter_contrib_github.webhooks_handler:github"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

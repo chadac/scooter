@@ -30,8 +30,8 @@ THE TEST FOR WHAT BELONGS HERE: could a SECOND integration plausibly compose it?
 If only its own can, it is that integration's implementation and it stays with
 the provider, so it travels into that provider's contrib module rather than
 stranding integration-specific code in the shared lib. That is why
-`github_app`, `atlassian_oauth` and `datadog_keys` are in `broker/sources/` and
-not here, and why this package needs no crypto dependency. `store` passes that
+`atlassian_oauth` is in `broker/sources/` and `github_app`/`datadog_keys` in their
+contribs — not here, and why this package needs no crypto dependency. `store` passes that
 test loudly: three stores composed it before a contrib existed.
 
 What deliberately stayed in the broker app: core/app, core/auth, the OpenFGA

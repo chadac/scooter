@@ -10,6 +10,7 @@
     ./aws
     ./datadog
     ./echo
+    ./github
     ./gitlab
     ./grafana
     ./jira

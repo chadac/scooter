@@ -70,20 +70,6 @@ class WebhooksSettings(ScooterBaseSettings):
     # internal /remote-agent/connect. Empty → the bridge is disabled (closes with 4404).
     remote_agent_join_secret: str = ""
 
-    # Integration toggles
-    github_enabled: bool = False
-
-    # Webhook secrets (signature validation)
-    github_webhook_secret: str = ""
-
-    # Tokens for posting responses back to services
-    github_token: str = ""  # PAT fallback (used if github_app_id is empty)
-
-    # GitHub App authentication
-    github_app_id: str = ""
-    github_app_private_key: str = ""  # PEM content or path to .pem file
-    github_client_id: str = ""  # Client ID for installation lookup
-
     # Shared API key for internal relay endpoints
     relay_api_key: str = ""
 
@@ -98,10 +84,11 @@ class WebhooksSettings(ScooterBaseSettings):
     # GitLab payloads carry no bot flag, so this is the only author lever there.
     ignore_usernames: str = ""
 
-    # Fallback for when github_app_* is unset and the agent's own "<slug>[bot]"
-    # login can't be resolved: drop any Bot-authored GitHub comment/review that
-    # doesn't mention the agent. Its own comments otherwise come back as webhooks
-    # — at interrupt priority for reviews (PR #530).
+    # Deployment policy, read by handlers through scooter_webhooks_lib.policy.
+    # Fallback for when a handler cannot resolve the agent's own "<slug>[bot]"
+    # login: drop any Bot-authored comment/review that doesn't mention the agent.
+    # Its own comments otherwise come back as webhooks — at interrupt priority
+    # for reviews (PR #530).
     ignore_bot_authors: bool = True
 
     # Pipe-separated repo descriptions

@@ -18,7 +18,6 @@ from scooter_webhooks_lib.agent_host_client import resolve_sandbox_to_conversati
 # Imported for their REGISTRATION side effects: the per-provider email resolvers
 # (#575) and resource shapes (#576) are registered at import, and nothing else
 # imports either module.
-from . import identity_resolve  # noqa: F401
 from . import resource_shapes  # noqa: F401
 
 # The lib is GIVEN its config, like store.init_db below. Bound at import, not in

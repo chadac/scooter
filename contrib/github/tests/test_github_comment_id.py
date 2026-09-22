@@ -9,13 +9,15 @@ to react to and no acknowledgment was possible at all.
 The id is ALL the handler adds. Which endpoint that id belongs to, when to react
 and with what live in the scooter-github skill: this forwarder stays a data pipe
 with no behavior of its own (PR #528), and the last two tests pin that boundary.
+
+Moved here with the handler (PR #591).
 """
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from webhooks.handlers import github as gh
+from scooter_contrib_github import webhooks_handler as gh
 
 
 def _repo():

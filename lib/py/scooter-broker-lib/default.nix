@@ -6,8 +6,8 @@
 # build cycle. Depends only on scooter_lib.
 #
 # NOTE the absent pyjwt/cryptography: those were here only for the GitHub App
-# credential source, which is github's implementation and now sits with github
-# in broker/sources/. A shared lib pulling a crypto stack for one integration was
+# credential source, which is github's implementation and now sits in
+# contrib/github/. A shared lib pulling a crypto stack for one integration was
 # the boundary being wrong out loud. See PR #567.
 #
 # sqlalchemy IS here, by that same test: three stores already compose `store.py`

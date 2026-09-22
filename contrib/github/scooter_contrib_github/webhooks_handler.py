@@ -14,15 +14,15 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from scooter_webhooks_lib import resources
 from scooter_webhooks_lib import store as db
+from scooter_webhooks_lib.resources import link_variants as _lib_link_variants
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
-from ..config import settings
+from .config import settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
-from ..responses.github import get_app_login, post_github_comment
+from .responses import get_app_login, post_github_comment
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.github"}
@@ -83,9 +83,11 @@ def _link_variants(res_type: str, res_id: str) -> list[tuple[str, str]]:
     ("pr"|"issue", <html_url>), but this handler asks for
     ("pull_request"|"issue", "owner/repo#N"). Both halves differ, so an exact
     match never hit and every linked-PR forward was dropped silently. The shape
-    knowledge itself lives in `resources` — every source shares it now (#563).
+    knowledge itself lives in `scooter_webhooks_lib.resources` — every source
+    shares it now (#563); THIS package's `resources` module is what registers
+    github's half of it, hence the aliased import.
     """
-    return resources.link_variants("github", res_type, res_id)
+    return _lib_link_variants("github", res_type, res_id)
 
 
 async def _resolve_conversation(res_type: str, res_id: str) -> str | None:
@@ -370,7 +372,7 @@ async def _previous_run_failed(owner: str, repo: str, workflow_id, branch: str, 
     error we answer False — a missed red->green notice is better than a spurious one.
     """
     try:
-        from ..responses.github import _headers_for_repo, GITHUB_API
+        from .responses import _headers_for_repo, GITHUB_API
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -448,7 +450,7 @@ async def _handle_workflow_run(payload: dict):
 async def _failed_jobs(owner: str, repo: str, run_id) -> list[str]:
     """Names of the jobs that failed in a run — the useful half of a CI failure."""
     try:
-        from ..responses.github import _headers_for_repo, GITHUB_API
+        from .responses import _headers_for_repo, GITHUB_API
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -624,11 +626,16 @@ async def _clear_pending(res_type: str, res_id: str) -> None:
     await db.get_and_clear_pending_messages("github", res_type, res_id)
 
 
-# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
-# provider registry, PR: contrib module system). Handlers self-gate in-route
-# (a disabled provider returns {"status": "disabled"}), so this registers
-# enabled and keeps its per-request gating.
+# Discovered + mounted by the webhooks service via the entry-point registry.
+# Handlers self-gate in-route (a disabled provider returns {"status": "disabled"}),
+# so this registers enabled and keeps its per-request gating.
 from scooter_webhooks_lib.registry import WebhookHandler, register_webhook
+
+# Imported for their REGISTRATION side effects: this module is what the webhooks
+# service loads, so github's owner lookup (#575) and resource shapes (#576) arm
+# with it. Nothing else imports either. Why: PR #591.
+from . import identity  # noqa: F401
+from . import resources  # noqa: F401
 
 
 @register_webhook

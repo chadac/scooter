@@ -24,12 +24,6 @@ class BrokerSettings(ScooterBaseSettings):
     token_audience: str = "agent-broker"
     sandbox_namespace: str = "agent-sandbox"
 
-    # GitHub (App preferred; PAT fallback)
-    github_app_id: str = ""
-    github_app_private_key: str = ""
-    github_app_installation_id: int = 0
-    github_token: str = ""
-
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 

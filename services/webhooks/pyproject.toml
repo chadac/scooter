@@ -14,7 +14,6 @@ dependencies = [
   "sqlalchemy",
   "aiosqlite",   # default dev store (SQLite)
   "asyncpg",     # Postgres driver for the durable mapping store (prod)
-  "pyjwt[crypto]", # GitHub App token minting for posting responses
   "scooter-schema", # generated SQLAlchemy models for the webhooks database (single source of truth)
   "scooter-lib",    # shared structured-logging convention (lib/py/scooter-lib)
   "scooter-webhooks-lib", # the extension surface: handler registry + mapping store

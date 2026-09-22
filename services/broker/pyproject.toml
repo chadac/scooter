@@ -11,7 +11,6 @@ dependencies = [
   "pydantic",
   "pydantic-settings",
   "kubernetes",   # TokenReview
-  "pyjwt[crypto]", # GitHub App JWT
   # AWS permissions broker (broker/aws/):
   "boto3",        # IAM/STS provisioning
   "sqlalchemy",   # permission-request store

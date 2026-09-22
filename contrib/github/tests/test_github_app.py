@@ -1,22 +1,19 @@
-"""The provider-SPECIFIC credential sources — mocked HTTP, no real GitHub.
+"""The GitHub App credential source — mocked HTTP, no real GitHub.
 
-Proves the JWT/installation-token and client-credentials flows produce the right
-Credential, cache it, and serve the cache on the second call.
+Proves the JWT/installation-token flow produces the right Credential, caches it,
+and serves the cache on the second call.
 
-These live with their providers rather than in the extension surface: a GitHub
-App token minter is github implementation, and it travels into the github
-contrib with the rest of github in the integration slices. The generic
-`static_token` is tested in scooter_broker_lib. See PR #567.
+Moved out of the broker's test_sources with the source (PR #591): an App token
+minter is github implementation, and only the github provider composes it. The
+generic `static_token` is tested in scooter_broker_lib. See PR #567.
 """
 
 from __future__ import annotations
 
-import time
-
 import httpx
 import pytest
 
-from broker.sources.github_app import GitHubAppSource
+from scooter_contrib_github.github_app import GitHubAppSource
 from scooter_broker_lib.types import Identity
 
 
@@ -57,5 +54,3 @@ async def test_github_app_source_mints_and_caches(monkeypatch):
     # second call is served from cache (no new HTTP)
     await src.get(_identity())
     assert calls["n"] == 1
-
-

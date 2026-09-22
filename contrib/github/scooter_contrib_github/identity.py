@@ -1,13 +1,8 @@
-"""The per-provider email lookups behind owner resolution.
+"""Owner resolution for GitHub: a login -> the email Scooter matches on.
 
-The orchestration (registry, agent-host reverse lookup, `resolve_owner`) is in
-`scooter_webhooks_lib.identity`. What stays here is the part that is genuinely
-provider-specific: how to ask github for a user's email, and the
-token each needs. Each of these travels into its provider's contrib as that
-provider migrates (#576+), at which point this module goes away entirely.
-
-Imported for its REGISTRATION side effect — `app.py` imports it at startup, and
-the decorators populate the lib's resolver registry. Why: PR #575.
+Registered into `scooter_webhooks_lib.identity`, which owns the orchestration
+(#575). This is the provider-specific half that used to sit in the webhooks app's
+`identity_resolve`. Why: PR #591.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ from scooter_webhooks_lib.identity import register_email_resolver
 from .config import settings
 
 logger = logging.getLogger(__name__)
-_C = {"component": "identity_resolve"}
+_C = {"component": "contrib.github.identity"}
 
 _GITHUB_API = "https://api.github.com"
 
@@ -48,4 +43,3 @@ async def github_email(login: str) -> str | None:
             extra={**_C, "provider": "github", "external_user": pseudonym(login), "error": format_error(e)},
         )
         return None
-
