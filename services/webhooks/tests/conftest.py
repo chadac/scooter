@@ -13,7 +13,8 @@ import pytest
 
 from scooter_webhooks_lib import agent_host_client
 
-import webhooks.identity_resolve  # noqa: F401  (registration side effect)
+import webhooks.identity_resolve  # noqa: F401  (resolver registration)
+import webhooks.resource_shapes  # noqa: F401  (resource-shape registration)
 from webhooks.config import settings
 
 

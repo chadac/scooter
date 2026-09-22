@@ -15,9 +15,11 @@ from scooter_webhooks_lib.registry import discover_webhooks
 from scooter_webhooks_lib import agent_host_client
 from scooter_webhooks_lib.agent_host_client import resolve_sandbox_to_conversation
 
-# Imported for its REGISTRATION side effect: the per-provider email resolvers are
-# decorated at import, and nothing else imports this module. Why: PR #575.
+# Imported for their REGISTRATION side effects: the per-provider email resolvers
+# (#575) and resource shapes (#576) are registered at import, and nothing else
+# imports either module.
 from . import identity_resolve  # noqa: F401
+from . import resource_shapes  # noqa: F401
 
 # The lib is GIVEN its config, like store.init_db below. Bound at import, not in
 # lifespan: handlers are discovered at import and may build URLs as they register.
