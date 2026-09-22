@@ -38,6 +38,9 @@ test.describe("conversation happy path", () => {
     // subprocess in fake mode, pod exec in cluster mode). This is the e2e
     // command harness — `!agent-broker test/whoami` rides the same path to
     // verify broker/IRSA auth in cluster mode.
+    // The tool call asserted below must survive the controller's first-prompt hand-off — see
+    // Chat.settleConversation() in fixtures.ts. Why: PR #578.
+    await chat.settleConversation();
     await chat.send("!echo zxcvbnm-marker");
 
     // 90s here and below, not 30: this is the conversation's FIRST turn and a real sandbox

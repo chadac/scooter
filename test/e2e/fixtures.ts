@@ -155,9 +155,45 @@ export class Chat {
     await this.submit(text);
   }
 
+  /** Absorb the FIRST-PROMPT HAND-OFF, so the run a test actually asserts on is not the one
+   *  the controller closes underneath it.
+   *
+   *  A conversation is created lazily by its first prompt; the controller then assigns it a
+   *  host pod, and that assignment closes whatever run is still open on the pre-assignment
+   *  host (agent-host logs `closed runs left open by a hand-off`). The sandbox exec keeps
+   *  running, but the run is gone from the event log — so the run-status bar never appears
+   *  (or blinks out ~2s in) even though a 20-60s sleep is demonstrably still executing. No
+   *  timeout can fix that: the UI is correctly reflecting a run the server already closed.
+   *
+   *  It is a first-prompt-only race, so spend it on a throwaway turn. Full target only —
+   *  fast is one in-process agent-host with no controller and no hand-off. Why: PR #578. */
+  async settleConversation() {
+    if (process.env.E2E_TARGET !== "full") return;
+    const sentAt = Date.now();
+    await this.send("settling this conversation before the run under test");
+    const bar = this.page.locator('[data-testid="run-status-bar"]');
+    // Every wait here is best-effort: this helper burns the hand-off window, it must never
+    // be the thing that fails a test. Whether the throwaway turn replies normally or the
+    // hand-off closes it out from under us, both land on "no run in flight" — which is the
+    // only state from which the caller's real run can start cleanly.
+    await expect(bar).toBeVisible({ timeout: 60_000 }).catch(() => {});
+    await expect(bar).toHaveCount(0, { timeout: 60_000 }).catch(() => {});
+    // FLOOR the wait. A hand-off that has ALREADY closed the run leaves both waits above
+    // satisfied in milliseconds — which would hand the caller a conversation whose
+    // assignment is still in flight, i.e. exactly the race this helper exists to spend.
+    // The assignment lands ~2-3s after the first prompt (measured on CI); 8s clears it with
+    // margin and also funds the client's reconnect to the new owner.
+    const HANDOFF_WINDOW_MS = 8_000;
+    const remaining = HANDOFF_WINDOW_MS - (Date.now() - sentAt);
+    if (remaining > 0) await this.page.waitForTimeout(remaining);
+  }
+
   /** Start a long in-flight run (the fake agent runs a real `sleep <sec>` in the sandbox) and wait
    *  until the UI shows the working state — so a subsequent sendWhileRunning() genuinely queues. */
   async startLongRun(sec = 20) {
+    // The run this returns MUST stay in flight for the caller, so it cannot be the first
+    // prompt on a fresh conversation — see settleConversation().
+    await this.settleConversation();
     await this.send(`!sleep ${sec}`);
     // 90s on the full target, 30s on fast. The run-status bar appears when the RUN starts,
     // and on a cluster the exec first waits for a ready sandbox pod — on a fresh conversation
