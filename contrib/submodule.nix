@@ -110,12 +110,14 @@ in
       type = types.bool;
       default = true;
       description = ''
-        Inject this contrib into the images of the services it targets.
+        Build this contrib and inject it into the images of the services it
+        targets.
 
-        `false` does NOT mean "unbuilt": every contrib in the tree is still built
-        and its tests still run (`nix build .#contrib-echo`, `.#contribs-all`), so
-        reference material cannot rot undetected. Being in no image is what
-        disabled means here; "do not build it" is `rm -r` on the directory.
+        `false` means ABSENT, the way it does in NixOS: no derivation is produced
+        and nothing in any build artifact comes from it. Something that must be
+        built anyway (CI testing the reference contrib) turns it back on with a
+        config override — see `withModules` in contrib/default.nix — rather than
+        this flag meaning "built but not shipped".
       '';
     };
 

@@ -1,17 +1,21 @@
 # Every contrib plus the schema, as one module you can simply import.
 #
-# Discovery is still `readDir`, not a hand-written import list: a new
-# contrib/<name>/module.nix is picked up the moment it exists, so adding a contrib
-# stays "make a directory" and cannot fail by forgetting to register it here.
+# The import list is EXPLICIT, not a readDir: a dynamic list makes every eval walk
+# the directory and defeats Nix's import caching, and this list changes about once
+# a quarter. Each contrib is a directory (its module is that directory's
+# default.nix), so an entry is just the path.
+#
+# Forgetting to add one here would leave a contrib silently unbuilt AND untested,
+# which is the rot #573 is about — so `scripts/check-contrib-coverage.sh` compares
+# this list against the tree in CI, outside Nix eval where it costs nothing.
 # Why: PR #585.
-{ lib, ... }:
-
-let
-  entries = builtins.readDir ./.;
-  dirs = lib.filter
-    (n: entries.${n} == "directory" && builtins.pathExists (./. + "/${n}/module.nix"))
-    (lib.attrNames entries);
-in
 {
-  imports = [ ./options.nix ] ++ map (n: ./. + "/${n}/module.nix") dirs;
+  imports = [
+    ./options.nix
+
+    ./datadog
+    ./echo
+    ./gitlab
+    ./jira
+  ];
 }

@@ -22,7 +22,7 @@ services.
 ```
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
-  module.nix                # Nix descriptor (see schema below)
+  default.nix               # the contrib MODULE (see schema below)
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
     broker_provider.py      # imports broker.*  (only loaded in the broker image)
@@ -37,7 +37,7 @@ on `broker`/`webhooks` — doing so would create a build cycle, since a service
 depends on the contribs injected into it. Whichever group a service loads pulls
 in only the matching module; the other is never imported in that image.
 
-## `module.nix` schema
+## The contrib module (`contrib/<name>/default.nix`)
 
 Each contrib is a **module**, and `contribs.<name>` is a typed submodule with a
 preset of options — so the spec has defaults, a contrib declares only what it
@@ -45,6 +45,12 @@ actually needs, and adding a field to the spec no longer means editing every
 contrib. The schema lives in `contrib/options.nix` + `contrib/submodule.nix`;
 `contrib/all-modules.nix` is every contrib plus that schema, as one module you
 can import.
+
+Its import list is **explicit** — a `readDir` made every eval walk the directory
+and defeated Nix's import caching — and since each contrib is a directory whose
+module is its `default.nix`, an entry is just `./<name>`. Adding a contrib means
+adding it there; `just check-contrib-coverage` fails CI if you forget, because an
+unimported contrib is never built and never tested.
 
 ```nix
 {
@@ -55,7 +61,7 @@ can import.
       enable = true;
       pythonDeps = ps: [ ps.httpx ];    # extra deps for THIS half only
     };
-    # enable = false;                    # built + tested, but kept out of the images
+    # enable = false;                    # absent from the build entirely
     # version = "0.0.0";
   };
 }
@@ -128,11 +134,19 @@ contrib cannot put the webhooks surface on the broker's path — and exposes it 
 into the per-service lists the flake injects. `fastapi` is already available in
 both services.
 
-`enable = false` marks reference material. It does NOT mean unbuilt: the contrib
-is still built and its tests still run (`nix build .#contrib-echo`), it is just
-left out of every image, so reference material cannot rot undetected. `echo`'s
-provider is unconditionally enabled, so shipping it would serve `/echo/ping`
-from a production broker. "Do not build it" is `rm -r` on the directory.
+`enable = false` means ABSENT, the way it does in NixOS: no derivation is
+produced and nothing in any build artifact comes from it. `echo` is disabled
+because its provider is unconditionally enabled, so shipping it would serve
+`/echo/ping` from a production broker.
+
+Something that must be built anyway turns it back on with a config override
+instead of `enable` meaning something softer. CI does exactly that, because an
+untested reference implementation rots the moment a surface changes:
+
+```nix
+# flake.nix — reachable only from packages/checks, never from a service image
+contribsWithExamples = contribs.withModules [{ contribs.echo.enable = true; }];
+```
 
 Because `tests/` is shared by both variants, every enabled service's
 `pythonDeps` are check inputs for *each* variant — a webhooks-only test still has

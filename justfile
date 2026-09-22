@@ -462,6 +462,12 @@ check-npm-hashes:
 check-image-coverage:
     @scripts/check-image-coverage.sh
 
+# Every contrib directory must be imported by contrib/all-modules.nix. The import
+# list is explicit for eval performance; this is what stops a contrib being added
+# and silently never built or tested. Why: PR #585.
+check-contrib-coverage:
+    @scripts/check-contrib-coverage.sh
+
 # --- Database schema (Atlas) ------------------------------------------------
 # The shared Postgres schema is declared in lib/sql/<db>/schema.sql (one env per
 # per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
@@ -519,7 +525,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
+ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).
