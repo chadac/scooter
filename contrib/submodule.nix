@@ -1,7 +1,7 @@
 # The option preset every contrib gets, plus its build.
 #
-# A module, not a mkContribSubmodule function, so a contrib's own `options` merge
-# in without an extraOptions hatch. `scooter` is the parent config. Why: PR #585.
+# A module, so a contrib's own `options` merge in. `scooter` is the parent
+# config: every other contrib, already evaluated. Why: PR #585.
 { name, lib, config, scooter, python3Packages, scooterBrokerLib, scooterWebhooksLib, broker, webhooks, ... }:
 
 let
@@ -14,15 +14,13 @@ let
     webhooks = { surface = scooterWebhooksLib; entryModule = "webhooks_handler"; };
   };
 
-  # Prefixed: a bare `ps.jira` would shadow nixpkgs' python3Packages.jira.
-  contribAttrName = n:
-    "scooterContrib" + lib.toUpper (lib.substring 0 1 n) + lib.substring 1 (-1) n;
-
-  # What pythonDeps receives. Only contribs targeting this service, so depending on
-  # one that does not is a missing-attribute error.
-  pkgsFor = svc: python3Packages // lib.mapAttrs'
-    (n: c: lib.nameValuePair (contribAttrName n) c.services.${svc}.package)
-    (lib.filterAttrs (_: c: c.enable && c.services.${svc}.enable) scooter.contribs);
+  # What pythonDeps receives. Nested so contribs cannot shadow nixpkgs
+  # (python3Packages.jira is the Jira client), and holds only contribs targeting
+  # this service, so naming one that does not is an error.
+  pkgsFor = svc: python3Packages // {
+    scooterContrib = lib.mapAttrs (_: c: c.services.${svc}.package)
+      (lib.filterAttrs (_: c: c.enable && c.services.${svc}.enable) scooter.contribs);
+  };
 
   # tests/ is shared across variants, so every service's deps are check inputs for
   # each one. Check-only, so the runtime closure stays per-service.
@@ -63,7 +61,7 @@ let
       pythonDeps = mkOption {
         type = types.functionTo (types.listOf types.package);
         default = _: [ ];
-        example = literalExpression "ps: [ ps.httpx ps.scooterContribJira ]";
+        example = literalExpression "ps: [ ps.httpx ps.scooterContrib.jira ]";
         description = ''
           Extra deps for the ${svc} variant. Per service: a dep listed for both
           halves lands in both closures.

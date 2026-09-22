@@ -100,7 +100,7 @@ another contrib is allowed and expected. There is no separate field for it:
 option covers both "a library from nixpkgs" and "another contrib".
 
 ```nix
-services.webhooks.pythonDeps = ps: [ ps.scooterContribJira ];
+services.webhooks.pythonDeps = ps: [ ps.scooterContrib.jira ];
 ```
 
 Declaring it under `services.webhooks` is what keeps the closures apart: only
@@ -110,7 +110,7 @@ exists to stop.
 
 `ps` holds THIS service's variant of each contrib, so a dep cannot pull the wrong
 surface in, and a typo is an eval error rather than a `ModuleNotFoundError` at
-service startup. Contribs are prefixed `scooterContrib<Name>` because a bare
+service startup. Contribs are prefixed nested under `scooterContrib` because a bare
 `ps.jira` would shadow nixpkgs' own `python3Packages.jira`. Only contribs that
 target the service appear, so depending on one that does not is a
 missing-attribute error.

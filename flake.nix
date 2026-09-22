@@ -217,10 +217,9 @@
             inherit scooterBrokerLib scooterWebhooksLib;
           };
 
-          # The set CI tests: production plus the contribs that ship nowhere, which
-          # `enable = false` otherwise leaves unbuilt. Reachable only from
-          # packages/checks. mkForce because echo asserts enable = false, and two
-          # plain definitions are a conflict. Why: PR #585.
+          # The set CI tests: adds the contribs that ship nowhere, which are
+          # otherwise unbuilt. mkForce because they assert enable = false, and two
+          # plain definitions conflict. Why: PR #585.
           contribsWithExamples = contribs.withModules [{
             contribs.echo.enable = pkgs.lib.mkForce true;
           }];

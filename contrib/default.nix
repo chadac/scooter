@@ -19,7 +19,7 @@ let
 
   mkOutputs = eval:
     let
-      # Dropped here, before anything can reference a package, so `enable = false`
+      # Dropped before anything can reference a package, so a disabled contrib
       # never reaches a derivation.
       contribs = lib.filterAttrs (_: c: c.enable) eval.config.contribs;
 
@@ -47,7 +47,7 @@ let
     };
 in
 mkOutputs (evalWith [ ]) // {
-  # Same tree with modules layered on — how CI builds a contrib that ships
-  # nowhere, without `enable` meaning anything softer than absent.
+  # Same tree with extra modules layered on. CI uses it to build the contribs
+  # that ship nowhere.
   withModules = extraModules: mkOutputs (evalWith extraModules);
 }
