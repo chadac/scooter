@@ -295,6 +295,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
 test.describe("whole-UI consistency around INTERRUPTS", () => {
   test("an interrupt leaves every OTHER surface coherent (panel, badge, run state, composer)", async ({ chat, page }) => {
     await chat.open();
+    // The paused run asserted below must survive the controller's first-prompt hand-off —
+    // see Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("?pick a color");
     await expect(page.locator('[data-testid="interrupt-panel"]')).toBeVisible({ timeout: 30_000 });
     const s = await step(page, "interrupt pending");
@@ -307,6 +310,9 @@ test.describe("whole-UI consistency around INTERRUPTS", () => {
 
   test("answering an interrupt returns EVERY surface to a clean state", async ({ chat, page, request, baseURL }) => {
     await chat.open();
+    // The paused run asserted below must survive the controller's first-prompt hand-off —
+    // see Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("?pick a color");
     await expect(page.locator('[data-testid="interrupt-panel"]')).toBeVisible({ timeout: 30_000 });
     // RETRY the answer while the panel is still up. The panel becomes visible as soon as the

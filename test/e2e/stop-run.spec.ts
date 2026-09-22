@@ -103,6 +103,9 @@ test.describe("Stop button + thinking indicator", () => {
     // is always false); it must be gated on OUR run state instead. Users look at the
     // composer, so the stop belongs there.
     await chat.open();
+    // The run asserted below must survive the controller's first-prompt hand-off — see
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("!sleep 20");
     // FIRST_TURN_MS: first assertion after a cold send — see the note at the top. Why: PR #497.
     await expect(page.locator('[data-testid="composer-stop"]')).toBeVisible({ timeout: FIRST_TURN_MS });

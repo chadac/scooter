@@ -60,6 +60,9 @@ test.describe("conversation happy path", () => {
 
   test("!cmd evaluates shell (not a literal echo of the message)", async ({ chat }) => {
     await chat.open();
+    // The reply asserted below must survive the controller's first-prompt hand-off — see
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("!echo $((6 * 7))");
     // Proves the command runs in a shell — output is 42, not the literal text.
     // 90s, not 30: this is the conversation's FIRST turn and it is a real sandbox exec on
