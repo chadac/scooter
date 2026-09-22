@@ -1,6 +1,6 @@
 """Thin k8s access for the warm-store controller — pool PVCs (by label), per-conversation
 Sandboxes, the clean-shutdown marker, warm Jobs, and the leader-election Lease. Mirrors the
-broker's `_apis()` singleton + 409/404 tolerance (services/broker/broker/sandbox/k8s.py).
+409/404 tolerance mirroring the agent-host's session/k8sProvisioner.ts.
 
 Pure decisions live in reconcile.py; this is the imperative shell the LOOP uses.
 """

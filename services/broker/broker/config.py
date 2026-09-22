@@ -111,47 +111,16 @@ class BrokerSettings(ScooterBaseSettings):
     fga_store_id: str = ""
     fga_authorization_model_id: str = ""
 
-    # --- Sandbox lifecycle (broker/sandbox/) — the broker as control plane -----
-    # When on, the broker owns per-conversation Sandbox provisioning (SA/PVC/CR),
-    # the size spec, and the lifecycle API the agent-host calls. See
-    # todo/CONTROL_PLANE_REDESIGN.md.
-    sandbox_lifecycle_enabled: bool = False
-    # SA usernames allowed to drive the sandbox LIFECYCLE (ensure/suspend/resume/
-    # end/list) — the CONTROL callers, i.e. the agent-host. CSV of
-    # system:serviceaccount:{ns}:{name}. A sandbox SA is NEVER allowed lifecycle
-    # (only its OWN size). Distinct from the AWS approver list so lifecycle auth
-    # doesn't depend on the AWS broker being enabled.
-    sandbox_control_service_accounts: str = ""
-    sandbox_image: str = "agent-sandbox-os:latest"
-    sandbox_workspace_storage: str = "10Gi"
-    # The sandbox image always has the writable local-overlay Nix store on, so always mount
-    # the .scooter-rw upper (default True). See the agent-host provisioner + pkgs/sandbox-os.
-    sandbox_overlay_store: bool = True
-    sandbox_overlay_storage: str = "20Gi"
-    sandbox_systemd_image: bool = True
-    # Deployment default size (friendly {requests,limits} JSON); empty -> platform default.
-    sandbox_default_resources_json: str = ""
-    # Named sandbox size presets (name -> {cpu, memory}); exposed at GET /sandbox-sizes.
-    sandbox_sizes_json: str = ""
-    # The default preset name (must be a key in sandbox_sizes_json when that's set).
-    sandbox_default_size_name: str = ""
-    # Deployment-supplied provisioning config (was K8sProvisionerOptions on the agent-host).
-    sandbox_aws_accounts_configmap: str = ""
-    sandbox_config_files_configmap: str = ""
-    sandbox_token_audiences: str = ""   # CSV of extra projected-token audiences
-    sandbox_extra_env_json: str = ""    # JSON list of {name,value}
-    sandbox_public_url: str = ""
-    # Name of a ConfigMap holding a consumer Sandbox-manifest overlay (deep-merge patch
-    # applied on top of the generated pod manifest — see sandbox/overlay.py). Empty ->
-    # no overlay. Set by kubenix (deployTools.sandboxManifestOverlay -> the CM).
-    sandbox_manifest_overlay_configmap: str = ""
+    # --- Sandbox-adjacent settings --------------------------------------------
+    # The broker does NOT provision sandboxes. Provisioning belongs to the agent-host
+    # (services/agent-host/src/session/k8sProvisioner.ts), because the broker is the one
+    # service a sandbox can reach over the network and so must not be able to create
+    # pods. What remains here is what the broker serves TO an existing sandbox.
+    #
     # A mounted directory of `.nix` files served as the deployment's DEFAULT modules
     # at GET /modules/default.tar.gz (fetched by the pod at re-converge, unauthed).
     # Empty/unset -> an empty tarball (the pod imports nothing).
     sandbox_default_modules_dir: str = ""
-    # Size store DSN (shared Postgres `broker` DB; SQLite default). The DSN
-    # COMPONENTS are shared with AWS (same instance) — see config.py builder.
-    sandbox_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-sandbox.db"
 
     # --- Module registry (broker/registry/) — the shareable-module catalog -----
     # The broker-side catalog: publish/list/download modules. Shares the broker DB

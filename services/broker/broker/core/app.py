@@ -36,18 +36,9 @@ def create_app() -> FastAPI:
 
     providers = list(discover_providers([builtin_providers]))
 
-    # Sandbox lifecycle (the broker as control plane). Built when enabled; its size
-    # store is init'd in the lifespan and its router mounted top-level (like /link).
-    sandbox_store = None
-    sandbox_router = None
-    if settings.sandbox_lifecycle_enabled:
-        from ..sandbox.config import deploy_config, size_store_config
-        from ..sandbox.k8s import SandboxK8s
-        from ..sandbox.routes import create_sandbox_router
-        from ..sandbox.store import SandboxSizeStore
-
-        sandbox_store = SandboxSizeStore(size_store_config(settings))
-        sandbox_router = create_sandbox_router(SandboxK8s(deploy_config(settings)), sandbox_store)
+    # NO sandbox lifecycle here. Provisioning is the AGENT-HOST's (see
+    # services/agent-host/src/session/k8sProvisioner.ts): the broker is the one service
+    # a sandbox can reach over the network, so it must not be able to create pods.
 
     # Module registry (broker/registry/) — the shareable-module catalog. Built when
     # enabled; its store is init'd in the lifespan + its router mounted top-level.
@@ -102,9 +93,6 @@ def create_app() -> FastAPI:
                 await p.on_shutdown()
 
     app = FastAPI(title="kubenix-agent-manager broker", lifespan=lifespan)
-
-    if sandbox_router is not None:
-        app.include_router(sandbox_router)
 
     if registry_router is not None:
         app.include_router(registry_router)

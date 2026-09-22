@@ -1,6 +1,6 @@
 """Thin k8s access for the controller — Conversation CRs, agent-host pods, and the
 leader-election Lease. Mirrors the broker's `_apis()` singleton + 409/404 tolerance
-(services/broker/broker/sandbox/k8s.py)."""
+(the agent-host's session/k8sProvisioner.ts)."""
 
 from __future__ import annotations
 
