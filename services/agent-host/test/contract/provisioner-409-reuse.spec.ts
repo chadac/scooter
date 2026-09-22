@@ -21,6 +21,14 @@ function fakeKc(opts: { sandboxCreate409?: boolean } = {}) {
     createNamespacedServiceAccount: async () => ({}),
     createNamespacedConfigMap: async () => ({}),
     readNamespacedConfigMap: async () => { throw Object.assign(new Error("nf"), { code: 404 }); },
+    // create() READS the CR before creating: a cold Sandbox (made by setSize before the
+    // first turn) already carries its size, which must not be overwritten by the
+    // deployment default. In the 409 scenario the CR exists by definition — that is WHY
+    // the create 409s — so the fake must return one; 404 only in the fresh-create case.
+    getNamespacedCustomObject: async () => {
+      if (!opts.sandboxCreate409) throw Object.assign(new Error("not found"), { code: 404 });
+      return { spec: { podTemplate: { spec: { containers: [{ name: "sandbox", image: "img" }] } } } };
+    },
     createNamespacedCustomObject: async () => {
       calls.push("create:sandbox");
       if (opts.sandboxCreate409) throw Object.assign(new Error("exists"), { code: 409 });

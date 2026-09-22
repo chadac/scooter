@@ -144,20 +144,6 @@ in
         cluster (`kubectl get runtimeclass`).
       '';
     };
-    sandboxViaBroker = mkOption {
-      type = types.bool;
-      default = false;
-      description = ''
-        Route the sandbox LIFECYCLE (create/suspend/resume/destroy + sizing) through
-        the BROKER instead of the agent-host touching k8s directly (the control-plane
-        move — see todo/CONTROL_PLANE_REDESIGN.md). When true:
-          - the agent-host runs with SANDBOX_VIA_BROKER=1 and its RBAC collapses to
-            pods/exec only (the broker owns Sandbox/SA/PVC/CM CRUD),
-          - the broker gets the provisioning RBAC + the deployment provisioning config
-            (image, overlay, .scooter CM, default size, …) as its own env.
-        Default false keeps the legacy in-agent-host k8s provisioner (rollback path).
-      '';
-    };
     sandboxSizes = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
@@ -257,8 +243,8 @@ in
           '';
       description = ''
         The preset marked `default = true`, resolved from sandboxSizes; null when a
-        deployment offers no presets. Read by the broker (SANDBOX_DEFAULT_SIZE_NAME +
-        SANDBOX_DEFAULT_RESOURCES_JSON) and by conversation.nix. Not settable —
+        deployment offers no presets. Read by the agent-host (SANDBOX_DEFAULT_SIZE_NAME + SANDBOX_RESOURCES)
+        and by conversation.nix. Not settable —
         declare the default on the preset.
       '';
     };
@@ -327,13 +313,13 @@ in
           };
         };
         description = ''
-          A recursive PATCH deep-merged on top of the broker-generated per-conversation
+          A recursive PATCH deep-merged on top of the generated per-conversation
           Sandbox manifest — so a deployment can change the pod manifest (nodeSelector,
           tolerations, extra env/volumes, annotations, resources, …) WITHOUT patching
           Scooter's code. Rendered to the ConfigMap `sandbox-manifest-overlay` (one key
-          `overlay.yaml`) and read by the broker at conversation-create time.
+          `overlay.yaml`) and read by the agent-host at conversation-create time.
 
-          Merge semantics (see services/broker/broker/sandbox/overlay.py): dicts merge
+          Merge semantics (see services/agent-host/src/session/sandboxOverlay.ts): dicts merge
           deep; scalars replace; LISTS strategic-merge by `name` (an env/volume/mount
           with a matching `name` is patched, others appended) — so you patch one
           container's env by restating just `{ name = "sandbox"; env = [ … ]; }`.
@@ -904,26 +890,23 @@ in
         };
       };
 
-      # The agent-host provisions per-conversation Sandboxes/SAs/PVCs and execs
-      # into sandbox pods, so it needs broad-but-namespaced RBAC.
-      #
-      # Control-plane move (cfg.sandboxViaBroker): the broker owns Sandbox/SA/PVC/CM
-      # CRUD, so the agent-host RBAC COLLAPSES to `pods/exec` only. Default false
-      # keeps ALL current rules (the legacy in-agent-host k8s provisioner).
+      # The agent-host provisions per-conversation Sandboxes/SAs/PVCs and execs into
+      # sandbox pods, so it needs broad-but-namespaced RBAC. Nothing else gets it —
+      # the broker in particular. Why: PR #584.
       roles.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         rules =
-          # The one rule kept in BOTH paths: exec is how the ExecBackend runs the
-          # agent's commands in the pod. `get` AND `create`: the WebSocket exec
-          # stream (client-node, kubectl) opens with an HTTP GET upgrade, which RBAC
-          # checks as `get pods/exec` — `create` alone passes `can-i create
-          # pods/exec` but the real exec 403s ("cannot get resource pods/exec").
-          let execRule = {
-            apiGroups = [ "" ];
-            resources = [ "pods/exec" ];
-            verbs = [ "get" "create" ];
-          };
-          in if cfg.sandboxViaBroker then [ execRule ] else [
+          [
+            {
+              # exec is how the ExecBackend runs the agent's commands in the pod.
+              # `get` AND `create`: the WebSocket exec stream (client-node, kubectl)
+              # opens with an HTTP GET upgrade, which RBAC checks as `get pods/exec` —
+              # `create` alone passes `can-i create pods/exec` but the real exec 403s
+              # ("cannot get resource pods/exec").
+              apiGroups = [ "" ];
+              resources = [ "pods/exec" ];
+              verbs = [ "get" "create" ];
+            }
             {
               apiGroups = [ "agents.x-k8s.io" ];
               resources = [ "sandboxes" ];
@@ -936,7 +919,6 @@ in
               resources = [ "serviceaccounts" "persistentvolumeclaims" "pods" "configmaps" ];
               verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
             }
-            execRule
             {
               # Multi-replica: the agent-host WATCHES Conversations (ownershipGuard fencing)
               # and CREATES one per new conversation (conversationRegistry) so the controller
@@ -1218,9 +1200,28 @@ in
                   # Run the bundled dummy ACP agent (no model/cluster) — for the
                   # spawn-from-webhook + UI e2e on the cluster.
                   { name = "GOOSE_BIN"; value = "fake"; }
-                ++ lib.optional (cfg.sandboxResources != null)
-                  # Per-sandbox pod sizing (JSON) — see the sandboxResources option.
-                  { name = "SANDBOX_RESOURCES"; value = builtins.toJSON cfg.sandboxResources; }
+                ++ lib.optional (cfg.sandboxResources != null || cfg.defaultSandboxSizeName != null)
+                  # The DEFAULT size a new sandbox comes up at, as a rendered k8s
+                  # resources block. Normally the preset marked `default = true`.
+                  #
+                  # sandboxResources (INTERNAL, set only by modules/testing.nix) WINS:
+                  # the test size is deliberately Burstable (near-zero requests, real
+                  # limits) so several sandboxes co-schedule on a 4-vCPU CI runner, and
+                  # a preset cannot express that — presets are requests == limits by
+                  # construction. Without the override the suites would reserve the
+                  # production size each and a second concurrent conversation would
+                  # never schedule.
+                  { name = "SANDBOX_RESOURCES";
+                    value = if cfg.sandboxResources != null then builtins.toJSON cfg.sandboxResources
+                    else
+                    let
+                      preset = cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
+                      # A GPU renders under its extended-resource name on BOTH sides —
+                      # k8s rejects a GPU request that differs from its limit.
+                      side = { cpu = preset.cpu; memory = preset.memory; }
+                        // lib.optionalAttrs (preset.gpu != null) { "nvidia.com/gpu" = toString preset.gpu; };
+                    in builtins.toJSON { requests = side; limits = side; };
+                  }
                 ++ lib.optionals cfg.agent.remoteAgent.enable [
                   # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
                   # The HS256 signing key for owner-bound join tokens (one server-side secret).
@@ -1245,18 +1246,36 @@ in
                   # ConfigMap into each sandbox, and resolves approvals against the
                   # broker (BROKER_URL + the projected SA token).
                   { name = "AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
-                ] ++ lib.optionals (cfg.broker.aws.enable || cfg.sandboxViaBroker) [
-                  # BROKER_URL + the projected broker token: needed by the AWS
-                  # approve/deny relay AND by the sandbox-lifecycle broker client
-                  # (SANDBOX_VIA_BROKER). Emit once under either flag so the two
-                  # paths don't double-declare the same env keys.
+                ] ++ lib.optionals cfg.broker.enable [
+                  # BROKER_URL + the projected broker token: the AWS approve/deny relay
+                  # and the shares/links queries the agent-host makes on a conversation's
+                  # behalf. NOT provisioning — the agent-host writes the Sandbox CR
+                  # itself and never asks the broker for a pod.
                   { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
-                ] ++ lib.optionals cfg.sandboxViaBroker [
-                  # Control-plane move: route the sandbox LIFECYCLE through the broker
-                  # (the agent-host's provisioner becomes an HTTP client). Gated so
-                  # the default (legacy in-agent-host k8s provisioner) is unchanged.
-                  { name = "SANDBOX_VIA_BROKER"; value = "1"; }
+                ] ++ lib.optionals (cfg.deployTools.sandboxManifestOverlay != { }) [
+                  # The consumer manifest-overlay CM (a patch deep-merged onto the
+                  # generated Sandbox — see session/sandboxOverlay.ts). Read at create
+                  # time, so editing it lands on the next conversation without a restart.
+                  { name = "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"; value = "sandbox-manifest-overlay"; }
+                ] ++ [
+                  # The named size catalog (name → {cpu, memory, gpu?, hint?}) and which
+                  # preset is the default — the UI dropdown and the agent's size
+                  # discovery. Each preset renders requests == limits (Guaranteed QoS).
+                  { name = "SANDBOX_SIZES_JSON";
+                    value = builtins.toJSON (lib.mapAttrs (_name: preset:
+                      { cpu = preset.cpu; memory = preset.memory; }
+                      // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; }
+                      # Omit an empty hint rather than emitting "" — the agent and the
+                      # dropdown both branch on presence, not on emptiness.
+                      // lib.optionalAttrs (preset.hint != "") { hint = preset.hint; }
+                    ) cfg.sandboxSizes);
+                  }
+                  # "" (not null) when no presets are configured — an env value must be a
+                  # string, and the agent-host reads empty as "no deployment default".
+                  { name = "SANDBOX_DEFAULT_SIZE_NAME";
+                    value = if cfg.defaultSandboxSizeName == null then "" else cfg.defaultSandboxSizeName;
+                  }
                 ] ++ lib.optionals (cfg.deployTools.scooterConfigMap != null) [
                   # Deployment tool injection (generic): the agent-host mounts the
                   # deployment's .scooter ConfigMap + projects the named token
@@ -1337,10 +1356,10 @@ in
                 ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                   # Per-model price table -> cost derivation (AGENT_PRICING_FILE).
                   { name = "pricing"; mountPath = "/etc/agent-sandbox/pricing"; readOnly = true; }
-                ++ lib.optional (cfg.broker.aws.enable || cfg.sandboxViaBroker)
-                  # The agent-host's own broker token — used to relay AWS approve/deny
-                  # AND (control-plane move) to authenticate to the broker's sandbox
-                  # lifecycle API. Mounted under either flag.
+                ++ lib.optional cfg.broker.enable
+                  # The agent-host's own broker token — it relays AWS approve/deny and
+                  # queries shares/links on a conversation's behalf. NOT provisioning:
+                  # the agent-host writes the Sandbox CR itself.
                   { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; };
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 # Graceful drain on rollout. preStop sleeps briefly so the Service
@@ -1371,7 +1390,7 @@ in
                 { name = "skills"; configMap.name = "agent-skills"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                 { name = "pricing"; configMap.name = "agent-pricing"; }
-              ++ lib.optional (cfg.broker.aws.enable || cfg.sandboxViaBroker)
+              ++ lib.optional cfg.broker.enable
                 { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; };
             };
           };
@@ -1398,9 +1417,10 @@ in
         };
       } // lib.optionalAttrs (cfg.deployTools.sandboxManifestOverlay != { }) {
         # Consumer manifest overlay (a recursive PATCH deep-merged onto the generated
-        # per-conversation Sandbox — see services/broker/broker/sandbox/overlay.py). The
-        # broker reads this by name (SANDBOX_MANIFEST_OVERLAY_CONFIGMAP) at create time,
-        # so a ConfigMap edit takes effect on the next conversation without a redeploy.
+        # per-conversation Sandbox — see agent-host session/sandboxOverlay.ts). The
+        # agent-host reads it by name (SANDBOX_MANIFEST_OVERLAY_CONFIGMAP) at create
+        # time, so a ConfigMap edit takes effect on the next conversation without a
+        # redeploy.
         sandbox-manifest-overlay = {
           metadata = { name = "sandbox-manifest-overlay"; namespace = cfg.namespace; };
           # One key holding the whole patch as YAML (JSON is valid YAML).

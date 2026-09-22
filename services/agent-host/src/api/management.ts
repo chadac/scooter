@@ -42,7 +42,7 @@ import type { AssetStore } from "../session/assetStore.js";
 import type { SchedulerClient } from "../agent/schedulerTools.js";
 import type { SandboxResources } from "../session/resources.js";
 import { fitAdvice, fitSummary } from "../session/resourceFit.js";
-import type { SandboxSizePreset } from "../session/brokerProvisioner.js";
+import type { SandboxSizePreset } from "../session/resources.js";
 import type { AguiEvent, ApproverIdentity, SessionBridge } from "../bridge.js";
 import { logger } from "../log.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";

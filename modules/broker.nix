@@ -560,15 +560,15 @@ in
                   { name = "SHARES_PUBLIC_BASE_URL"; value = sharesBaseUrl; }
                 ++ lib.optional (sharesFrameAncestors != "")
                   { name = "SHARES_FRAME_ANCESTORS"; value = sharesFrameAncestors; }
-                ++ lib.optionals (!bcfg.aws.enable && !cfg.sandboxViaBroker) (
+                ++ lib.optionals (!bcfg.aws.enable) (
                   # The shares store reads the shared Postgres `broker` DB via the
                   # AWS_DB_* components (StoreConfig builds the Postgres DSN when a
                   # db password is set). Those are otherwise emitted only when the
-                  # AWS broker or the sandbox control-plane is on; when shares is the
+                  # AWS broker is on; when shares/registry are the
                   # ONLY consumer, emit them here so the store resolves to Postgres
                   # instead of the SQLite dev default (which would silently lose
-                  # shares on restart). The guard is mutually exclusive with the
-                  # other two AWS_DB_* emissions, so no env is declared twice.
+                  # shares on restart). Mutually exclusive with the AWS block below, so
+                  # no env is declared twice.
                   [
                     { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
                     { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
@@ -604,94 +604,7 @@ in
                   { name = "FGA_API_URL"; value = bcfg.aws.fga.apiUrl; }
                   { name = "FGA_STORE_ID"; value = bcfg.aws.fga.storeId; }
                   { name = "FGA_AUTHORIZATION_MODEL_ID"; value = bcfg.aws.fga.authorizationModelId; }
-                ])
-                # Control-plane move (cfg.sandboxViaBroker): the broker OWNS the
-                # per-conversation Sandbox lifecycle + size, so it gets the
-                # provisioning config that previously lived on the agent-host
-                # (image, overlay, .scooter config-files CM, token audiences, extra
-                # env, public URL). Mirrors the agent-host env → the broker's
-                # sandbox_* settings (pydantic uppercases the field). Gated so the
-                # default (agent-host owns lifecycle) adds NO broker env.
-                # See services/broker/broker/sandbox/config.py + todo/CONTROL_PLANE_REDESIGN.md.
-                ++ lib.optionals cfg.sandboxViaBroker ([
-                  { name = "SANDBOX_LIFECYCLE_ENABLED"; value = "true"; }
-                  # The control caller(s) allowed to drive ensure/suspend/resume/end
-                  # — the agent-host SA (a sandbox SA is only ever allowed its OWN size).
-                  { name = "SANDBOX_CONTROL_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
-                  { name = "SANDBOX_IMAGE"; value = cfg.sandboxImage; }
-                  # The deployment default size (tier 2 in the broker's resolve_resources:
-                  # conversation override → this → PLATFORM_DEFAULT). Rendered from the
-                  # preset marked `default = true` → its {cpu, memory}. Requests == limits
-                  # (Guaranteed QoS) for all presets.
-                  # Empty when the deployment offers no presets — the broker then falls
-                  # through to PLATFORM_DEFAULT rather than being handed a size.
-                  { name = "SANDBOX_DEFAULT_RESOURCES_JSON";
-                    value = if cfg.defaultSandboxSizeName == null then "" else
-                    let
-                      preset = cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
-                      # gpu is optional; omit the key entirely when null so the broker
-                      # sees no gpu rather than an explicit zero.
-                      side = { cpu = preset.cpu; memory = preset.memory; }
-                        // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; };
-                    in builtins.toJSON { requests = side; limits = side; };
-                  }
-                  # The full preset map (name → {cpu, memory}), exposed at GET /sandbox-sizes
-                  # so the UI dropdown and the agent can discover what's available. Each preset
-                  # renders as requests == limits (Guaranteed QoS).
-                  { name = "SANDBOX_SIZES_JSON";
-                    value = builtins.toJSON (lib.mapAttrs (_name: preset:
-                      { cpu = preset.cpu; memory = preset.memory; }
-                      // lib.optionalAttrs (preset.gpu != null) { gpu = preset.gpu; }
-                      # Omit an empty hint rather than emitting "" — the agent and the
-                      # dropdown both branch on presence, not on emptiness.
-                      // lib.optionalAttrs (preset.hint != "") { hint = preset.hint; }
-                    ) cfg.sandboxSizes);
-                  }
-                  # "" (not null) when no presets are configured — an env value must be a
-                  # string, and the broker reads empty as "no deployment default".
-                  { name = "SANDBOX_DEFAULT_SIZE_NAME";
-                    value = if cfg.defaultSandboxSizeName == null then "" else cfg.defaultSandboxSizeName;
-                  }
-                ] ++ lib.optional (cfg.deployTools.tokenAudiences != [ ])
-                  # Extra projected-token audiences a deployment's tools need
-                  # (was SCOOTER_TOKEN_AUDIENCES on the agent-host).
-                  { name = "SANDBOX_TOKEN_AUDIENCES"; value = lib.concatStringsSep "," cfg.deployTools.tokenAudiences; }
-                ++ lib.optional (cfg.deployTools.env != { })
-                  # Extra sandbox env. The broker's SANDBOX_EXTRA_ENV_JSON is a JSON
-                  # LIST of {name,value} (manifest.py appends it verbatim), whereas the
-                  # agent-host's SCOOTER_ENV is a JSON attrset — so map the attrset to
-                  # the list shape here (values carried losslessly, newlines intact).
-                  { name = "SANDBOX_EXTRA_ENV_JSON";
-                    value = builtins.toJSON (lib.mapAttrsToList (k: v: { name = k; value = v; }) cfg.deployTools.env); }
-                ++ lib.optional (cfg.deployTools.configFiles != { })
-                  # The deploy-config-files CM (filename -> contents), mounted flat
-                  # into each sandbox (was SCOOTER_CONFIG_FILES_CONFIGMAP on the agent-host).
-                  { name = "SANDBOX_CONFIG_FILES_CONFIGMAP"; value = "deploy-config-files"; }
-                ++ lib.optional (cfg.deployTools.sandboxManifestOverlay != { })
-                  # The consumer manifest-overlay CM (recursive patch deep-merged onto
-                  # the generated Sandbox — see sandbox/overlay.py). Read at create time.
-                  { name = "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"; value = "sandbox-manifest-overlay"; }
-                ++ lib.optional (cfg.ingress.host != "")
-                  # Public chat UI base URL → each sandbox's CONVERSATION_URL
-                  # (was PUBLIC_URL on the agent-host).
-                  { name = "SANDBOX_PUBLIC_URL"; value = "https://${cfg.ingress.host}"; }
-                ++ lib.optional bcfg.aws.enable
-                  # The AWS accounts CM the sandbox mounts (was AWS_ACCOUNTS_CONFIGMAP
-                  # on the agent-host). Only when the AWS broker is enabled.
-                  { name = "SANDBOX_AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
-                ++ lib.optionals (!bcfg.aws.enable) (
-                  # The size store uses the shared Postgres `broker` db (size_store_config
-                  # reads aws_db_*). When the AWS broker is ON its env block already sets
-                  # AWS_DB_* — don't double-declare; only set them here when it's OFF.
-                  # Its own auto-provisioned role secret (agent-pg-broker).
-                  [
-                    { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
-                    { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
-                    { name = "AWS_DB_NAME"; value = "broker"; }
-                    { name = "AWS_DB_USER"; value = "broker"; }
-                    { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
-                  ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
-                ));
+                ]);
                 volumeMounts = lib.optionals bcfg.aws.enable [
                   { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
                 ];
@@ -714,35 +627,6 @@ in
         };
       };
     }
-    (lib.mkIf cfg.sandboxViaBroker {
-      # Control-plane move: the broker OWNS per-conversation Sandbox provisioning
-      # (Sandbox + SA + PVC + CM CRUD), the RBAC the agent-host sheds. Namespaced
-      # Role bound to the agent-broker SA. Gated on cfg.sandboxViaBroker so the
-      # default (agent-host owns lifecycle) renders NO new Role/binding for the
-      # broker. (The broker keeps its cluster tokenreviews + the AWS accounts-CM
-      # `get` from its other roles — this is additive/supersedes that get.)
-      roles.agent-broker-sandbox = {
-        metadata = { name = "agent-broker-sandbox"; namespace = cfg.namespace; };
-        rules = [
-          {
-            apiGroups = [ "agents.x-k8s.io" ];
-            resources = [ "sandboxes" ];
-            verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
-          }
-          {
-            apiGroups = [ "" ];
-            resources = [ "serviceaccounts" "persistentvolumeclaims" "pods" "configmaps" ];
-            verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
-          }
-        ];
-      };
-
-      roleBindings.agent-broker-sandbox = {
-        metadata = { name = "agent-broker-sandbox"; namespace = cfg.namespace; };
-        roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "agent-broker-sandbox"; };
-        subjects = [{ kind = "ServiceAccount"; name = "agent-broker"; namespace = cfg.namespace; }];
-      };
-    })
     (lib.mkIf bcfg.aws.enable {
       # The account registry, mounted at /etc/agent-broker/accounts.json. Single
       # source of truth shared with the sandbox's ~/.aws/config profiles. Each

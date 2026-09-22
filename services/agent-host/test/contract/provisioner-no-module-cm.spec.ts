@@ -27,6 +27,11 @@ function fakeKc() {
       reads.push(p.name ?? "");
       throw Object.assign(new Error("not found"), { code: 404 });
     },
+    // create() reads the CR first: a COLD Sandbox made by setSize carries the size,
+    // and it must not be overwritten with the deployment default. 404 = none yet.
+    getNamespacedCustomObject: async () => {
+      throw Object.assign(new Error("not found"), { code: 404 });
+    },
     createNamespacedCustomObject: async (p: { body?: unknown }) => {
       sandboxBody = p.body;
       return {};

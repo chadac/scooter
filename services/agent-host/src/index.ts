@@ -29,8 +29,7 @@ import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
-import { createK8sProvisioner } from "./session/k8sProvisioner.js";
-import { createBrokerProvisioner, type BrokerProvisioner } from "./session/brokerProvisioner.js";
+import { createK8sProvisioner, type K8sProvisioner } from "./session/k8sProvisioner.js";
 import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
@@ -425,23 +424,14 @@ function bedrockEnv(): Record<string, string> {
 export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
-  // Provisioner selection: fake (local UI) -> noop; the broker control plane when
-  // SANDBOX_VIA_BROKER=1 + BROKER_URL set (the agent-host calls the broker's lifecycle
-  // API instead of touching k8s — see todo/CONTROL_PLANE_REDESIGN.md); else the legacy
-  // in-agent-host k8s provisioner (kept until PR1 St6 as a safe rollback).
-  const brokerLifecycleUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
-  const useBrokerProvisioner = process.env.SANDBOX_VIA_BROKER === "1" && brokerLifecycleUrl !== "";
-  // Keep a typed handle to the broker provisioner (it ALSO exposes the size-spec
-  // ops getSize/setSize used by the sandbox-resize tools). null unless the broker
-  // lifecycle path is on — a fake/local or legacy-k8s sandbox has no broker size spec.
-  const brokerProvisioner: BrokerProvisioner | null =
-    !config.fakeSandbox && useBrokerProvisioner
-      ? createBrokerProvisioner({ brokerUrl: brokerLifecycleUrl })
-      : null;
-  const provisioner = config.fakeSandbox
-    ? createNoopProvisioner()
-    : brokerProvisioner
-    ? brokerProvisioner
+  // Provisioner: fake (local UI) -> noop; otherwise the agent-host's own k8s
+  // provisioner. Nothing else writes the Sandbox CR — why: PR #584.
+  //
+  // Keep a typed handle: the provisioner ALSO exposes the size ops (getSize/setSize/
+  // getSizes) used by the resize tools and the UI picker. null only for a fake
+  // sandbox, which has no CR to size.
+  const k8sProvisioner: K8sProvisioner | null = config.fakeSandbox
+    ? null
     : createK8sProvisioner({
         namespace: config.namespace,
         sandboxImage: config.sandboxImage,
@@ -489,6 +479,10 @@ export async function main(
         // SCOOTER_CONFIGMAP, SCOOTER_TOKEN_AUDIENCES (CSV), SCOOTER_ENV (JSON —
         // lossless for multi-line values like NIX_CONFIG; legacy k=v;k=v accepted).
         scooterConfigMap: process.env.SCOOTER_CONFIGMAP || undefined,
+        // A consumer patch deep-merged onto each generated Sandbox (nodeSelector,
+        // tolerations, extra env/volumes). Read fresh at create time, so editing the
+        // ConfigMap takes effect on the next conversation without a restart.
+        manifestOverlayConfigMap: process.env.SANDBOX_MANIFEST_OVERLAY_CONFIGMAP || undefined,
         // A ConfigMap of deployment config FILES (filename -> contents) mounted as a
         // flat dir at /etc/agent-sandbox/config. File-based (not SCOOTER_ENV) so
         // multi-line config survives the sandbox CRD controller's newline mangling.
@@ -499,15 +493,20 @@ export async function main(
         // Public chat UI base URL → each sandbox gets CONVERSATION_URL for its own
         // conversation (so the agent can share a link, e.g. to approve an AWS req).
         publicUrl: process.env.PUBLIC_URL || undefined,
+        // The deployment's named size catalog + which preset is the default, for the
+        // agent's resize tools and the UI picker.
+        sizePresetsJson: process.env.SANDBOX_SIZES_JSON || undefined,
+        defaultSizeName: process.env.SANDBOX_DEFAULT_SIZE_NAME || undefined,
       });
-    // WHICH provisioner did we get? A noop provisioner silently creates no sandbox, so
-    // every turn hangs with nothing logged — that cost a long investigation on k3d.
-    // Say it once at boot so the answer is in the first page of any log.
-    hostLog.info("sandbox provisioner selected", {
-      provisioner: config.fakeSandbox ? "noop" : brokerProvisioner ? "broker" : "k8s",
-      fake_sandbox: config.fakeSandbox,
-      in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
-    });
+  const provisioner = k8sProvisioner ?? createNoopProvisioner();
+  // WHICH provisioner did we get? A noop provisioner silently creates no sandbox, so
+  // every turn hangs with nothing logged — that cost a long investigation on k3d.
+  // Say it once at boot so the answer is in the first page of any log.
+  hostLog.info("sandbox provisioner selected", {
+    provisioner: config.fakeSandbox ? "noop" : "k8s",
+    fake_sandbox: config.fakeSandbox,
+    in_cluster: process.env.KUBERNETES_SERVICE_HOST !== undefined,
+  });
   // Ensure goose's developer extension is enabled in its config, so goose
   // redirects shell/file tool calls to the ACP client (-> the sandbox) instead
   // of running them locally in this pod. On a REAL deployment a failure here is
@@ -1006,21 +1005,22 @@ export async function main(
         }
       : undefined;
 
-  // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources) —
-  // wired ONLY on the broker path (the broker owns + applies the size). The MCP
-  // `conv` param is the FULL conversationId (= threadId); the broker keys the size
-  // spec by the SHORT id (the same id ensure/resume/create use), so map through
-  // shortId() before every broker size call — otherwise the tool would write a spec
-  // the broker never reads at (re)provision time.
-  const resourceToolsWiring = brokerProvisioner
+  // Sandbox right-sizing tools (show_sandbox_resources / set_sandbox_resources).
+  // Present on every real deployment; absent only for a fake sandbox, which has no
+  // Sandbox CR to size. The MCP `conv` param is the FULL conversationId (= threadId),
+  // while the CR is named for the SHORT id (the same one create/resume use), so map
+  // through shortId() — otherwise the tool would size a Sandbox that doesn't exist.
+  // threadId is passed through for the cold-create path (a size set before the first
+  // turn, where the CR has to be created to hold it).
+  const resourceToolsWiring = k8sProvisioner
     ? {
         currentResources: async (id: string): Promise<SandboxResources> =>
-          (await brokerProvisioner.getSize(shortId(id))) ?? {},
+          (await k8sProvisioner.getSize(shortId(id))) ?? {},
         setResources: async (id: string, r: SandboxResources | { size: string }): Promise<boolean> => {
-          await brokerProvisioner.setSize(shortId(id), r);
-          return true; // recorded — the broker applies it on the next sandbox restart
+          await k8sProvisioner.setSize(shortId(id), r, id);
+          return true; // recorded — it applies on the next sandbox restart
         },
-        availableSizes: async () => brokerProvisioner.getSizes(),
+        availableSizes: async () => k8sProvisioner.getSizes(),
       }
     : undefined;
 
@@ -1331,10 +1331,10 @@ export async function main(
       identityStore,
       assets,
       scheduler: schedulerClient,
-      // The current sandbox size (cpu/memory/gpu) for the Sandbox tab. Broker path
-      // only (it owns sizing); keyed by shortId like the show/set resource tools.
-      sandboxResources: brokerProvisioner
-        ? (id: string) => brokerProvisioner.getSize(shortId(id))
+      // The current sandbox size (cpu/memory/gpu) for the Sandbox tab, read off the
+      // Sandbox CR; keyed by shortId like the show/set resource tools.
+      sandboxResources: k8sProvisioner
+        ? (id: string) => k8sProvisioner.getSize(shortId(id))
         : undefined,
       // The conversation's published static shares for the right-panel Shares tab.
       // Broker path only (needs the agent-host SA to relay the query); keyed by
@@ -1348,13 +1348,13 @@ export async function main(
               (status) => hostLog.warn("broker /shares list failed", { conversation_id: id, status }),
             )
         : undefined,
-      // The available named sandbox size presets and the default preset name. Broker
-      // path only; used by the UI dropdown and the agent to discover available sizes.
-      sandboxSizes: brokerProvisioner ? () => brokerProvisioner.getSizes() : undefined,
-      // The Sandbox tab's size dropdown. Keyed by shortId like the resource tools —
-      // the broker stores sizes under the short id.
-      setSandboxSize: brokerProvisioner
-        ? (id: string, size: string) => brokerProvisioner.setSize(shortId(id), { size })
+      // The available named sandbox size presets and the default preset name, for the
+      // UI dropdown and the agent's size discovery.
+      sandboxSizes: k8sProvisioner ? () => Promise.resolve(k8sProvisioner.getSizes()) : undefined,
+      // The Sandbox tab's size dropdown. Keyed by shortId (the CR name); the full id
+      // is passed as threadId for the cold-create path.
+      setSandboxSize: k8sProvisioner
+        ? (id: string, size: string) => k8sProvisioner.setSize(shortId(id), { size }, id)
         : undefined,
       // BYO-Claude Settings section (mint one-liner + connected badge). Undefined = BYO off.
       remoteAgent: remoteAgentUi,

@@ -73,6 +73,23 @@ let
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
 
+  # A sandbox can reach the broker over the network and cannot reach the agent-host, so
+  # sandbox-shaping config must stay off the broker. Why: PR #584.
+  sandboxShapingEnv = [
+    "SANDBOX_IMAGE" "SANDBOX_PULL_POLICY" "SANDBOX_RUNTIME_CLASS" "SANDBOX_RESOURCES"
+    "SANDBOX_SIZES_JSON" "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"
+    "SCOOTER_CONFIGMAP" "SCOOTER_CONFIG_FILES_CONFIGMAP" "SCOOTER_TOKEN_AUDIENCES" "SCOOTER_ENV"
+  ];
+  oneEntrypointProblems =
+    map (n: "broker.env.${n} — sandbox-shaping env belongs to the agent-host")
+      (builtins.filter (n: builtins.any (e: e.name == n) brokerEnv) sandboxShapingEnv)
+    ++ (if (res.roles or { }) ? agent-broker-sandbox
+        then [ "roles.agent-broker-sandbox — the broker must not hold Sandbox/SA/PVC RBAC" ] else [ ])
+    ++ (if builtins.any (e: e.name == "SANDBOX_PULL_POLICY") hostEnv then [ ]
+        else [ "host.env.SANDBOX_PULL_POLICY (a side-loaded cluster ImagePullBackOffs every sandbox)" ])
+    ++ (if builtins.any (e: e.name == "SANDBOX_SIZES_JSON") hostEnv then [ ]
+        else [ "host.env.SANDBOX_SIZES_JSON (the size picker and the agent's resize tools see no presets)" ]);
+
   # Rollout-drain topology invariants (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — the fields a
   # seamless rollout depends on. A regression here (reverting to a StatefulSet, dropping the
   # surge strategy, re-adding a per-pod PVC, or losing the routing IP field) silently
@@ -261,7 +278,7 @@ let
   # instead, which is stronger than a mention in the example.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
-    "sandboxRuntimeClass" "sandboxViaBroker" "serviceAccountRoleArn"
+    "sandboxRuntimeClass" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
   ];
   uncovered = builtins.filter
@@ -334,18 +351,15 @@ let
   # SIZE-DEFAULT GUARD: exactly one sandboxSizes preset may set `default = true`.
   # kubenix has no NixOS `assertions` option, so that rule is enforced by a `throw` in
   # agentSandbox.defaultSandboxSizeName — and a throw only fires when something READS
-  # the option, which happens in broker mode (where sizes are actually consumed). A
-  # guard that silently stops firing is worse than no guard, so pin both directions
-  # here rather than trusting it.
+  # the option. The agent-host always reads it (it renders SANDBOX_RESOURCES), so the
+  # guard always has teeth. A guard that silently stops firing is worse than no guard,
+  # so pin both directions here rather than trusting it.
   renderSizes = sizes:
     let
       e = flake.inputs.kubenix.evalModules.${system} {
         module = { lib, ... }: {
           imports = [ ./kubenix-config.nix ];
           agentSandbox.sandboxSizes = lib.mkForce sizes;
-          # Broker mode is what reads the resolved default, so the guard only has
-          # teeth here — see the comment above.
-          agentSandbox.sandboxViaBroker = lib.mkForce true;
         };
       };
     in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
@@ -390,8 +404,8 @@ let
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 
-  allProblems = ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

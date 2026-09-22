@@ -16,13 +16,12 @@ import pytest
 
 from broker.aws.store import PermissionStore, StoreConfig
 from broker.registry.store import ModuleRegistryStore
-from broker.sandbox.store import SandboxSizeStore
 
 SERVICE_SRC = pathlib.Path(__file__).resolve().parents[1] / "broker"
 
 
 @pytest.mark.parametrize(
-    "store_cls", [PermissionStore, ModuleRegistryStore, SandboxSizeStore], ids=lambda c: c.__name__
+    "store_cls", [PermissionStore, ModuleRegistryStore], ids=lambda c: c.__name__
 )
 def test_stores_expose_NO_schema_creating_method(store_cls):
     # init() used to run create_all. It is gone: nothing on a store builds tables, so a

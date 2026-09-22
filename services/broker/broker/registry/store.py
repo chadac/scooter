@@ -6,7 +6,7 @@ npm/crates style — the FIRST publisher owns a name; a re-publish by another ow
 rejected); the numeric `id` is a secondary stable handle. A module = metadata
 (id/name/owner/description/visibility/version) + its Nix files (a JSON blob
 {filename: contents}). Backed by the shared broker Postgres (SQLAlchemy async),
-mirroring broker/sandbox/store.py. Authoritative: a failed publish PROPAGATES.
+Authoritative: a failed publish PROPAGATES.
 
 Visibility ('private' | 'public') gates the CATALOG listing (own private + all
 public); the download path serves files for any ref (Nix isn't a secret).
