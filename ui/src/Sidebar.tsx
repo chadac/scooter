@@ -14,6 +14,7 @@ import {
   useSessions,
   filteredSessions,
   nestSubagents,
+  splitSections,
   sessionLabel,
   LINK_PROVIDERS,
   type LabelMode,
@@ -309,19 +310,9 @@ export const Sidebar = memo(function Sidebar() {
   // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
   // conversation — so an inactive conversation's subagents don't clutter the list.
   const rows = nestSubagents(filteredSessions(state), currentId);
-  // Split into STARRED / RECENT sections for the paper reskin. Subagent rows
-  // (depth > 0) follow their parent, so they inherit the parent's section — walk the
-  // flat list and route each depth-0 row (and the children after it) by `starred`.
-  // Order within each section is unchanged (byActivity already sorts starred first).
-  const starredRows: typeof rows = [];
-  const recentRows: typeof rows = [];
-  {
-    let bucket = recentRows;
-    for (const r of rows) {
-      if (r.depth === 0) bucket = r.session.starred ? starredRows : recentRows;
-      bucket.push(r);
-    }
-  }
+  // Split into STARRED / RECENT sections. Routing is per CONVERSATION, not per row, so a
+  // starred conversation can never also render in Recent. Why: PR #610.
+  const { starred: starredRows, recent: recentRows } = splitSections(rows);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // On mobile the sidebar is an overlay drawer; picking a conversation (or starting a

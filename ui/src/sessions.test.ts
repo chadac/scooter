@@ -16,7 +16,9 @@ import {
   setConversationMinter,
   visibleSessions,
   nestSubagents,
+  splitSections,
   type Session,
+  type SidebarRow,
 } from "./sessions.js";
 
 beforeEach(() => {
@@ -25,6 +27,9 @@ beforeEach(() => {
   // a prior test (setEditing without a matching clearEditing) now FREEZES every later
   // test's mergeFromServer (the whole-sidebar freeze), so clear it between tests.
   sessionStore.clearEditing();
+  // Likewise the search: a query left behind now also decides whether a rename lock is
+  // still honored (a hidden row releases it), so a leaked one would couple these tests.
+  sessionStore.setQuery("");
 });
 
 describe("deep-link selection (requestSelect)", () => {
@@ -181,6 +186,26 @@ describe("editing lock (rename in progress freezes the sidebar — the CI rename
     expect(sessionStore.get().editingId).toBe("ce-a");
     sessionStore.clearEditing("ce-a");
     expect(sessionStore.get().editingId).toBeUndefined();
+  });
+
+  it("RELEASES a lock whose row has left the rendered list (the freeze can't become permanent)", () => {
+    sessionStore.mergeFromServer([
+      { id: "stuck-a", title: "Alpha", createdAt: 1, lastActivityAt: 1 },
+      { id: "stuck-b", title: "Beta", createdAt: 2, lastActivityAt: 2 },
+    ]);
+    sessionStore.setEditing("stuck-a");
+    // The search now hides the row being renamed, so its input unmounts and no commit,
+    // blur or Escape can ever reach the store. The lock would then freeze EVERY merge
+    // for the rest of the session — the sidebar silently stops reconciling and stale /
+    // duplicate rows survive until a reload.
+    sessionStore.setQuery("Beta");
+    sessionStore.mergeFromServer([
+      { id: "stuck-a", title: "Alpha changed", createdAt: 1, lastActivityAt: 1 },
+      { id: "stuck-b", title: "Beta changed", createdAt: 2, lastActivityAt: 2 },
+    ]);
+    expect(sessionStore.get().editingId).toBeUndefined();
+    expect(byId("stuck-a")?.title).toBe("Alpha changed"); // the merge ran, not just the unlock
+    expect(byId("stuck-b")?.title).toBe("Beta changed");
   });
 
   it("a user rename made during editing survives the merge that arrives before clear", () => {
@@ -480,6 +505,105 @@ describe("nestSubagents (sidebar hierarchy)", () => {
   it("top-level-only list is unchanged (all depth 0)", () => {
     const rows = nestSubagents([s("a"), s("b")]);
     expect(rows.map((r) => r.depth)).toEqual([0, 0]);
+  });
+});
+
+describe("splitSections (Starred / Recent — a conversation appears in exactly ONE)", () => {
+  const row = (s: Partial<Session> & { id: string }, depth = 0): SidebarRow => ({
+    session: { title: s.id, createdAt: 1, lastActivityAt: 1, ...s },
+    depth,
+    childCount: 0,
+  });
+  const ids = (rows: SidebarRow[]) => rows.map((r) => r.session.id);
+
+  it("routes a starred conversation to Starred and everything else to Recent", () => {
+    const { starred, recent } = splitSections([
+      row({ id: "a", starred: true }),
+      row({ id: "b" }),
+      row({ id: "c" }),
+    ]);
+    expect(ids(starred)).toEqual(["a"]);
+    expect(ids(recent)).toEqual(["b", "c"]);
+  });
+
+  it("renders a DOUBLE-HELD conversation once, in Starred — the reported bug", () => {
+    // The list can hold the same conversation twice (a locally-keyed row whose server id
+    // has just been adopted, next to the server's own row). `starred` is a per-ROW flag,
+    // so starring one copy put it in Starred while its twin stayed in Recent — the
+    // conversation showed up in both sections at once.
+    const { starred, recent } = splitSections([
+      row({ id: "local-key", serverId: "conv-1", starred: true }),
+      row({ id: "conv-1", serverId: "conv-1" }),
+      row({ id: "other" }),
+    ]);
+    expect(ids(starred)).toEqual(["local-key"]);
+    expect(ids(recent)).toEqual(["other"]); // NOT the twin
+  });
+
+  it("puts the conversation in Starred even when the unstarred copy comes first", () => {
+    // Routing is by CONVERSATION (starred if ANY copy of it is), not by whichever row
+    // the walk happens to reach first.
+    const { starred, recent } = splitSections([
+      row({ id: "conv-2", serverId: "conv-2" }),
+      row({ id: "local-key-2", serverId: "conv-2", starred: true }),
+    ]);
+    expect(ids(starred)).toEqual(["conv-2"]);
+    expect(recent).toEqual([]);
+  });
+
+  it("subagent rows inherit their parent's section", () => {
+    const { starred, recent } = splitSections([
+      row({ id: "p1", starred: true }),
+      row({ id: "c1", parentId: "p1" }, 1),
+      row({ id: "p2" }),
+      row({ id: "c2", parentId: "p2" }, 1),
+    ]);
+    expect(ids(starred)).toEqual(["p1", "c1"]);
+    expect(ids(recent)).toEqual(["p2", "c2"]);
+  });
+
+  it("a dropped duplicate parent takes its subagent rows with it (no orphans)", () => {
+    const { starred, recent } = splitSections([
+      row({ id: "p-key", serverId: "p", starred: true }),
+      row({ id: "kid", serverId: "kid", parentId: "p" }, 1),
+      row({ id: "p", serverId: "p" }),
+      row({ id: "kid-again", serverId: "kid", parentId: "p" }, 1),
+    ]);
+    expect(ids(starred)).toEqual(["p-key", "kid"]);
+    expect(recent).toEqual([]);
+  });
+});
+
+describe("a phantom local conversation never shadows its real server row", () => {
+  it("prunes a never-created row the server does not list (once it is not the selection)", () => {
+    // A create whose response was lost (or a duplicate row left behind by an older
+    // build) leaves a row with a title but no server id. It has no history and no
+    // sandbox — it can only shadow the conversation it was meant to become, which is
+    // how one conversation ended up rendering in both sidebar sections.
+    const ghost = sessionStore.newSession();
+    sessionStore.setTitle(ghost, "lost create");
+    sessionStore.mergeFromServer([{ id: "phantom-real", title: "lost create" }]);
+    sessionStore.switchTo("phantom-real");
+    sessionStore.mergeFromServer([{ id: "phantom-real", title: "lost create" }]);
+
+    const listed = sessionStore.get().sessions.map((s) => s.id);
+    expect(listed).toContain("phantom-real");
+    expect(listed).not.toContain(ghost);
+  });
+
+  it("keeps it while it IS the selection (an unsent conversation being typed into)", () => {
+    const draft = sessionStore.newSession();
+    sessionStore.setTitle(draft, "typing right now");
+    sessionStore.mergeFromServer([{ id: "phantom-other", title: "Other" }]);
+    expect(sessionStore.get().sessions.map((s) => s.id)).toContain(draft);
+  });
+
+  it("keeps a SERVER-created conversation that a single merge does not mention", () => {
+    // Absence only condemns a row the server never created; a real conversation missing
+    // from one merge may just be scoped out.
+    sessionStore.mergeFromServer([{ id: "phantom-kept", title: "Real chat" }]);
+    sessionStore.mergeFromServer([{ id: "phantom-else", title: "Else" }]);
+    expect(sessionStore.get().sessions.map((s) => s.id)).toContain("phantom-kept");
   });
 });
 
