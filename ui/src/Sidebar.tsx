@@ -311,7 +311,7 @@ export const Sidebar = memo(function Sidebar() {
   // conversation — so an inactive conversation's subagents don't clutter the list.
   const rows = nestSubagents(filteredSessions(state), currentId);
   // Split into STARRED / RECENT sections. Routing is per CONVERSATION, not per row, so a
-  // starred conversation can never also render in Recent. Why: PR #610.
+  // starred conversation can never also render in Recent. Why: PR #611.
   const { starred: starredRows, recent: recentRows } = splitSections(rows);
   const [filtersOpen, setFiltersOpen] = useState(false);
 

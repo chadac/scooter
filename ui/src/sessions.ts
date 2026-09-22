@@ -419,7 +419,7 @@ export const sessionStore = {
     if (state.editingId !== undefined) {
       // ...but ONLY while that row is still rendered. The input lives on the row, so once
       // the row is gone nothing can clear the lock and the freeze is permanent — the
-      // sidebar stops reconciling for the rest of the session. Why: PR #610.
+      // sidebar stops reconciling for the rest of the session. Why: PR #611.
       if (filteredSessions(state).some((s) => s.id === state.editingId)) return;
       setState({ ...state, editingId: undefined });
     }
@@ -508,7 +508,7 @@ export const sessionStore = {
       if (s.id === state.currentId) return true;
       // A row the server never created has no history and no sandbox: it can only shadow
       // the real conversation it was meant to become. A title doesn't redeem it. Exempt:
-      // the CURRENT selection, which may be unsent and typed into. Why: PR #610.
+      // the CURRENT selection, which may be unsent and typed into. Why: PR #611.
       if (!isServerBacked(s)) return false;
       return !isPristine(s);
     });
@@ -806,7 +806,7 @@ export function nestSubagents(sessions: Session[], activeId?: string): SidebarRo
  *  each. Routing is per CONVERSATION (serverKeyOf, starred if ANY row of it is), not per
  *  row, and a conversation held twice renders once — `starred` is a per-row flag, so
  *  routing by row put a double-held conversation in BOTH sections. Subagent rows follow
- *  their parent's section; a dropped duplicate parent takes its children. Why: PR #610. */
+ *  their parent's section; a dropped duplicate parent takes its children. Why: PR #611. */
 export function splitSections(rows: SidebarRow[]): { starred: SidebarRow[]; recent: SidebarRow[] } {
   const starredKeys = new Set<string>();
   for (const r of rows) if (r.session.starred) starredKeys.add(serverKeyOf(r.session));
