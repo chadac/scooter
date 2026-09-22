@@ -72,21 +72,15 @@ pkgs.testers.runNixOSTest {
     # config's own survive-a-switch flags then keep it running. Why: PR #610.
     services.dbus.implementation = lib.mkForce "dbus";
 
-    # LAYER the runtime re-converge on top of the running system. scooter-apply-
-    # module builds its toplevel from the SHARED base config (modules/sandbox-os),
-    # which does NOT include the nixosTest framework's `backdoor.service` (the test
-    # control channel) — so without this, switch-to-configuration stops backdoor as
-    # a "removed" unit, the driver loses its connection, and
-    # `machine.succeed("scooter-apply-module")` HANGS to the 1h timeout. (This is
-    # the pre-existing reason dev-env-scooter-module failed on main; a real pod has
-    # no backdoor, so prod is unaffected.) extraReconvergeModules threads a module
-    # into EVERY re-converge that re-declares backdoor + keeps it across the switch,
-    # so the rebuilt toplevel reflects the currently-running system.
-    # The re-converge always layers keep-backdoor (so the test control channel
-    # survives the switch). The offline nixpkgs pin is no longer needed — base-config
-    # pins devEnvNix to the same nixpkgs source automatically.
+    # LAYER the runtime re-converge on top of the running system. scooter-apply-module
+    # rebuilds from the SHARED base config (modules/sandbox-os), which in a VM differs
+    # from what actually booted — so the switch acts on differences that exist only
+    # here, several of which break the switch or the test. keep-vm-units.nix reconciles
+    # them (the driver's backdoor channel, the boot-apply unit); see that file for each
+    # case and why a pod is unaffected. The offline nixpkgs pin is no longer needed —
+    # base-config pins devEnvNix to the same nixpkgs source automatically.
     programs.scooterModule.extraReconvergeModules = [
-      "${./fixtures/keep-backdoor.nix}"
+      "${./fixtures/keep-vm-units.nix}"
     ];
   };
 

@@ -31,7 +31,7 @@ rec {
   '';
 
   # MUST mirror what scooter-apply-module builds exactly — same modulesSrc, same
-  # nixpkgs, same module order — including the keep-backdoor module threaded via
+  # nixpkgs, same module order — including the keep-vm-units module threaded via
   # extraReconvergeModules.
   #
   # Pass `nixpkgs`/`modulesPath` WITH their store context. base-config.nix reads
@@ -47,7 +47,7 @@ rec {
       # base-config.nix force-sets programs.scooterModule.{enable,nixpkgs} itself
       # (so scooter-rebuild stays on PATH across the re-converge), so we do NOT set
       # nixpkgs here — a second mkForce would conflict.
-      ./fixtures/keep-backdoor.nix
+      ./fixtures/keep-vm-units.nix
       "${scooterFixture}/module.nix"
     ];
   }).toplevel;

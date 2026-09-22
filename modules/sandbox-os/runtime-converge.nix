@@ -619,7 +619,7 @@ in
       # a deployment that injects extra node-level config threads it here.
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [ "/nix/store/…-keep-backdoor.nix" ];
+      example = [ "/nix/store/…-keep-vm-units.nix" ];
       description = "Extra module exprs always layered into the runtime re-converge (keeps currently-running config).";
     };
 
