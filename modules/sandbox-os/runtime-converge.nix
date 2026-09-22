@@ -248,6 +248,12 @@ let
             # Layer the currently-running system's extra config (so the switch
             # preserves what's already active — see extraReconvergeModules).
             ${lib.concatStringsSep "\n            " cfg.extraReconvergeModules}
+            # Re-declare that same list in the REBUILT system, or it survives exactly
+            # ONE switch: the next generation's scooter-apply-module is generated from
+            # THIS eval, and nothing in-pod sets the option. Why: PR #607.
+            { programs.scooterModule.extraReconvergeModules = [ ${
+              lib.concatMapStringsSep " " lib.strings.escapeNixString cfg.extraReconvergeModules
+            } ]; }
             $module_expr
           ];
         }).toplevel
@@ -617,6 +623,9 @@ in
       # nixosTest framework's backdoor.service — without this the switch stops the
       # test's control channel and the test hangs). The image sets none; a test or
       # a deployment that injects extra node-level config threads it here.
+      #
+      # EVERY re-converge re-declares this list in the system it builds, so it holds
+      # across an unbounded chain of switches rather than just the first. Why: #607.
       type = lib.types.listOf lib.types.str;
       default = [ ];
       example = [ "/nix/store/…-keep-vm-units.nix" ];

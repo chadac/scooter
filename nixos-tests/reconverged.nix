@@ -78,6 +78,13 @@ rec {
     # base-config.nix force-sets programs.scooterModule.{enable,nixpkgs} itself (so
     # scooter-rebuild stays on PATH across the re-converge), so we do NOT set nixpkgs
     # here — a second mkForce would conflict.
-    extraModules = vmModules ++ [ "${scooterFixture}/module.nix" ];
+    #
+    # The carry module in the middle is the one scooter-apply-module emits so the
+    # list outlives ONE switch (#607); mirrored here because this toplevel must be
+    # the SAME derivation the pod builds, or the VM loses its offline cache hit.
+    extraModules =
+      vmModules
+      ++ [{ programs.scooterModule.extraReconvergeModules = map (m: "${m}") vmModules; }]
+      ++ [ "${scooterFixture}/module.nix" ];
   }).toplevel;
 }
