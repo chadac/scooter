@@ -201,7 +201,32 @@ in
     };
   };
 
-  config = lib.mkIf wcfg.enable {
+  # mkMerge: the table declarations are UNCONDITIONAL (see modules/db-spec.nix) —
+  # the tables exist in lib/sql whether or not this deployment runs the service —
+  # while everything else stays gated on `enable`. The gated body keeps its own
+  # indentation so this wrapper is the whole diff.
+  config = lib.mkMerge [
+  # The tables the `webhooks` database holds (agentSandbox.db, #606). owners.toml,
+  # the migrator's database list and the postgres GRANTs are all generated from this.
+  {
+    agentSandbox.db.webhooks = {
+      owner = "webhooks";
+      tables = {
+        conversation_map = { writers = [ "webhooks" ]; readers = [ "agent-host" ]; };
+        resource_links = {
+          writers = [ "webhooks" "agent-host" ];
+          readers = [ "conversation-router" ];
+          note = ''
+            Webhooks OWNS this table; agent-host also WRITES it (the conversation link panel).
+            Two writers, one table — the same shape as byoc.remote_agents.
+            conversation-router READS it (SELECT-only) to enrich the conversation list with link badges.'';
+        };
+        pending_messages = { writers = [ "webhooks" ]; };
+        user_identity = { writers = [ "agent-host" ]; readers = [ "webhooks" ]; };
+      };
+    };
+  }
+  (lib.mkIf wcfg.enable {
     # mkMerge (NOT `//`): the postgres block reuses the `deployments`/`services`
     # keys, and a shallow `//` would CLOBBER the app's deployment/service with the
     # DB's. mkMerge deep-merges so both survive.
@@ -347,5 +372,6 @@ in
     # Register with the shared Postgres: the provisioning Job creates the `webhooks`
     # database + a `webhooks` role that owns it (secret agent-pg-webhooks).
     agentSandbox.postgres.consumers.webhooks = { db = "webhooks"; user = "webhooks"; };
-  };
+  })
+  ];
 }

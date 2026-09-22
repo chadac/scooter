@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
-# db-generate.sh — regenerate the per-language ORM bindings from lib/sql.
+# db-generate.sh — regenerate everything derived from the schema spec.
 #
-# The single source of truth is lib/sql/<db>/schema.sql. This script derives:
-#   - lib/ts/scooter-schema/src/<db>.ts   (Drizzle, via drizzle-kit pull)
-#   - lib/py/scooter-schema/src/scooter_schema/<db>.py (SQLAlchemy, via sqlacodegen)
+# TWO sources, in order:
+#
+#   1. The `agentSandbox.db` MODULE OPTION (#606) — the topology: which databases
+#      exist, which tables are in each, who writes and who reads. From it:
+#        - lib/sql/owners.toml     the ownership manifest
+#        - lib/sql/databases.txt   the database list (this script + the justfile read it)
+#        - lib/sql/atlas.hcl       one Atlas env per database
+#      These used to be five hand-maintained lists (here, the justfile, atlas.hcl,
+#      db-migrate.nix's `candidates`, guard.ts's DATABASES) that nothing checked
+#      against each other.
+#
+#   2. lib/sql/<db>/schema.sql — the DDL. From it:
+#        - lib/ts/scooter-schema/src/<db>.ts   (Drizzle, via drizzle-kit pull)
+#        - lib/py/scooter-schema/src/scooter_schema/<db>.py (SQLAlchemy, via sqlacodegen)
+#
+# Step 1 must run first: the database list it writes is what step 2 iterates.
 #
 # Neither generator touches a real/shared Postgres: the schema is loaded into an
 # EMBEDDED pglite (WASM Postgres). drizzle-kit pulls from a pglite data dir; for
@@ -19,7 +32,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-ENVS="webhooks scheduler broker byoc agent_host"
+
+# --- step 1: render the spec artifacts from the module system ----------------
+# Built, not evaluated with `nix eval`, so the three files come out of one
+# derivation and can't disagree with each other.
+echo "rendering lib/sql spec artifacts from agentSandbox.db ..."
+spec="$(nix build --no-link --print-out-paths "$ROOT#db-spec")"
+install -m 644 "$spec/owners.toml"    lib/sql/owners.toml
+install -m 644 "$spec/atlas.hcl"      lib/sql/atlas.hcl
+install -m 644 "$spec/databases.txt"  lib/sql/databases.txt
+
+ENVS="$(tr '\n' ' ' < lib/sql/databases.txt)"
 TS_OUT="lib/ts/scooter-schema/src"
 PY_OUT="lib/py/scooter-schema/src/scooter_schema"
 SQLACODEGEN_VERSION="4.0.4"

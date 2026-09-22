@@ -21,9 +21,37 @@ function tablesInSchema(db: string): string[] {
   return [...sql.matchAll(/CREATE TABLE "([^"]+)"/g)].map((m) => m[1]).sort();
 }
 
+/** The database list GENERATED from the `agentSandbox.db` module option (#606). */
+const generatedDatabases = readFileSync(sqlDir("databases.txt"), "utf8")
+  .split("\n")
+  .filter(Boolean);
+
 describe("ownership manifest (lib/sql/owners.toml)", () => {
   it("lists exactly the databases that have a schema", () => {
     expect(Object.keys(manifest).sort()).toEqual([...DATABASES].sort());
+  });
+
+  // Both guards' DATABASES are hand-written on purpose — guard.ts's is the `as const`
+  // that gives `Database` its literal union, and a generated file would not be. This is
+  // what stops them being SILENT copies: the module option is the source, and a database
+  // added there fails here until each guard is updated.
+  //
+  // The Python guard is checked from here rather than from its own suite because
+  // scooter-schema's nix build sees only lib/py/scooter-schema/ — a test there could not
+  // read lib/sql/databases.txt, so it would skip and check nothing.
+  it("guard.ts DATABASES matches the generated spec", () => {
+    expect([...DATABASES].sort()).toEqual([...generatedDatabases].sort());
+  });
+
+  it("guard.py DATABASES matches the generated spec", () => {
+    const py = readFileSync(
+      fileURLToPath(new URL("../../../py/scooter-schema/src/scooter_schema/guard.py", import.meta.url)),
+      "utf8",
+    );
+    const tuple = py.match(/^DATABASES = \(([^)]*)\)/m);
+    expect(tuple, "guard.py must declare a DATABASES tuple").not.toBeNull();
+    const names = [...tuple![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(names.sort()).toEqual([...generatedDatabases].sort());
   });
 
   for (const db of DATABASES) {

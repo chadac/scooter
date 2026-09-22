@@ -85,7 +85,7 @@ in
   # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
   # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
   # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
-  imports = [ kubenix.modules.k8s ./postgres.nix ./db-migrate.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ];
+  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ];
 
   options.agentSandbox = with lib; {
     namespace = mkOption {
@@ -846,24 +846,59 @@ in
     # password to `agent-pg-agent-host`.
     agentSandbox.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
 
+    # The tables the `agent_host` database holds (agentSandbox.db, #606). Declared
+    # here because this is the module that registers the consumer; owners.toml, the
+    # migrator's database list and the GRANTs below are generated from it.
+    agentSandbox.db.agent_host = {
+      owner = "agent-host";
+      tables = {
+        conversation_jobs = {
+          writers = [ "agent-host" ];
+          note = "The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.";
+        };
+        conversations = {
+          writers = [ "agent-host" "conversation-router" ];
+          note = ''
+            Conversation metadata: the sidebar list + rehydration fields. Two writers, one table (like
+            byoc.remote_agents): agent-host owns the row; conversation-router writes title/starred for IDLE
+            conversations and SELECTs the table for GET /conversations (a writer implies read, so not also a
+            reader). See services/conversation-router.'';
+        };
+        conversation_events = {
+          writers = [ "agent-host" ];
+          note = ''
+            The conversation event log. Replaces events.jsonl + the NFS mirror. Deliberately NO readers:
+            these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
+            read them.'';
+        };
+        conversation_assets = {
+          writers = [ "agent-host" ];
+          note = "Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.";
+        };
+      };
+    };
+
     # The conversation-router gets READ-ONLY access so it can serve the durable conversation
     # list itself instead of fanning out to every agent-host pod. Its `conversation_router` role
     # owns nothing — granted SELECT on EXACTLY the tables the list reads, nothing else (notably
     # NOT conversation_events, the transcripts), and pinned read-only at the server.
     #
-    # The table set is DERIVED from lib/sql/owners.toml: readers → SELECT grants, writers →
-    # read-write grants. The manifest is the single source of truth so the grant can't drift.
+    # The table set is DERIVED from the `agentSandbox.db` spec: readers → SELECT grants,
+    # writers → read-write grants, so the grant can't drift from the declaration.
+    #
+    # This used to read lib/sql/owners.toml with `builtins.fromTOML` — the manifest was
+    # the source and the grant the rendering. #606 inverted it: the option is the source
+    # and owners.toml is now generated FROM it, so a contrib that declares a table also
+    # gets its grants with no second edit.
     agentSandbox.postgres.readers.conversation-router =
       let
-        manifest = builtins.fromTOML (builtins.readFile ../lib/sql/owners.toml);
+        tablesWhere = field: db: lib.attrNames (lib.filterAttrs
+          (_t: rule: builtins.elem "conversation-router" rule.${field})
+          (cfg.db.${db}.tables or { }));
         # Tables in `db` whose readers list includes conversation-router (SELECT-only).
-        tablesFor = db: lib.attrNames (lib.filterAttrs
-          (_t: rule: builtins.elem "conversation-router" (rule.readers or [ ]))
-          (manifest.${db}.tables or { }));
+        tablesFor = tablesWhere "readers";
         # Tables in `db` whose writers list includes conversation-router (read-write). Why: PR #475.
-        writeTablesFor = db: lib.attrNames (lib.filterAttrs
-          (_t: rule: builtins.elem "conversation-router" (rule.writers or [ ]))
-          (manifest.${db}.tables or { }));
+        writeTablesFor = tablesWhere "writers";
       in
       {
         user = "conversation_router";

@@ -473,20 +473,28 @@ check-contrib-coverage:
 # per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
 # computed from schema.sql. Each recipe spins its own EPHEMERAL local Postgres as
 # Atlas's dev database (scripts/atlas-dev.sh) so nothing is shared.
-db_envs := "webhooks scheduler broker byoc agent_host"
+# The database list is GENERATED from the `agentSandbox.db` module option into
+# lib/sql/databases.txt (#606) — this reads it rather than repeating it.
+db_envs := `tr "\n" " " < lib/sql/databases.txt`
 
-# Regenerate the per-language ORM bindings (@scooter/schema, scooter_schema) from
-# lib/sql/<db>/schema.sql. Uses embedded pglite only — no server. Commit the result.
+# Regenerate everything derived from the schema spec: the lib/sql artifacts rendered
+# from the `agentSandbox.db` option (owners.toml, databases.txt, atlas.hcl) and the
+# per-language ORM bindings (@scooter/schema, scooter_schema) from schema.sql.
+# Commit the result.
 db-generate:
     scripts/db-generate.sh
 
-# CI drift guard: regenerate the bindings and fail if the committed output differs —
-# a schema change that forgets to regenerate fails the build (like check-lockfiles).
+# CI drift guard: regenerate and fail if the committed output differs — a spec or
+# schema change that forgets to regenerate fails the build (like check-lockfiles).
+# Covers BOTH sources: an `agentSandbox.db` edit that doesn't refresh owners.toml /
+# databases.txt / atlas.hcl fails here, same as a schema.sql edit that doesn't
+# refresh the ORM bindings.
 db-generate-check:
     scripts/db-generate.sh
     @git diff --exit-code -- lib/ts/scooter-schema/src lib/py/scooter-schema/src \
-      || (echo "❌ generated schema drift: lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
-    @echo "✅ generated ORM bindings are in sync with lib/sql"
+      lib/sql/owners.toml lib/sql/atlas.hcl lib/sql/databases.txt \
+      || (echo "❌ generated drift: the agentSandbox.db spec or lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
+    @echo "✅ generated spec artifacts + ORM bindings are in sync"
 
 # Author migrations from schema.sql for every database. Only databases whose
 # schema actually changed get a new file. Usage: just db-migrate <name>

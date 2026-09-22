@@ -57,7 +57,22 @@ in
     # Postgres knobs; point the platform at RDS via agentSandbox.postgres.external.
   };
 
-  config = lib.mkIf scfg.enable {
+  # mkMerge: the table declarations are UNCONDITIONAL (see modules/db-spec.nix) —
+  # the tables exist in lib/sql whether or not this deployment runs the service —
+  # while everything else stays gated on `enable`. The gated body keeps its own
+  # indentation so this wrapper is the whole diff.
+  config = lib.mkMerge [
+  # The tables the `scheduler` database holds (agentSandbox.db, #606).
+  {
+    agentSandbox.db.scheduler = {
+      owner = "scheduler";
+      tables = {
+        scheduled_tasks = { writers = [ "scheduler" ]; };
+        task_runs = { writers = [ "scheduler" ]; };
+      };
+    };
+  }
+  (lib.mkIf scfg.enable {
     kubernetes.resources = {
       serviceAccounts.agent-scheduler = {
         metadata = { name = "agent-scheduler"; namespace = cfg.namespace; };
@@ -144,5 +159,6 @@ in
     # Register with the shared Postgres so the provisioning Job creates the
     # `scheduler` database + a `scheduler` role that owns it (agent-pg-scheduler).
     agentSandbox.postgres.consumers.scheduler = { db = "scheduler"; user = "scheduler"; };
-  };
+  })
+  ];
 }

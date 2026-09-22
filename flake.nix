@@ -552,6 +552,32 @@
                 };
               }).optionsJSON;
 
+            # `nix build .#db-spec` -> the lib/sql artifacts RENDERED from the
+            # `agentSandbox.db` module option (#606): the ownership manifest, the
+            # database list the justfile + db-generate.sh read, and atlas.hcl's
+            # per-database envs. `just db-generate` copies these into lib/sql and
+            # `just db-generate-check` fails CI on drift — so "which databases exist"
+            # and "who owns which table" have exactly one source.
+            #
+            # Evaluated with an EMPTY agentSandbox config: the in-tree declarations are
+            # unconditional, so the artifacts don't depend on a deployment's feature
+            # flags. (A contrib declaring tables inside `mkIf cfg.enable` — stage 2 of
+            # #606 — is what makes them deployment-shaped; that is the point at which
+            # an out-of-tree deployment regenerates its own.)
+            db-spec =
+              let spec = (mkPlatform { }).config.agentSandbox.dbSpec; in
+              pkgs.runCommand "db-spec" {
+                ownersToml = spec.ownersToml;
+                atlasHcl = spec.atlasHcl;
+                databases = builtins.concatStringsSep "\n" spec.databases + "\n";
+                passAsFile = [ "ownersToml" "atlasHcl" "databases" ];
+              } ''
+                mkdir -p $out
+                cp "$ownersTomlPath" $out/owners.toml
+                cp "$atlasHclPath"   $out/atlas.hcl
+                cp "$databasesPath"  $out/databases.txt
+              '';
+
             inherit agentHost ui broker webhooks scheduler;
 
             # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
