@@ -2,5 +2,5 @@
 {
   name = "jira";
   services = [ "broker" "webhooks" ];
-  pythonDeps = ps: [ ];
+  pythonDeps = _: _: [ ];
 }

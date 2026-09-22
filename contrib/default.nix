@@ -31,11 +31,39 @@ let
   # Built ONCE PER TARGET SERVICE, each variant depending only on that service's
   # surface. One build carrying both would drag scooter_webhooks_lib (and
   # sqlalchemy/asyncpg/aiosqlite) into the broker image. Why: PR #567.
+  # python3Packages PLUS every contrib built for this service, which is what a
+  # module's `pythonDeps = service: ps: ...` receives. So one field expresses both
+  # "a library from nixpkgs" and "another contrib", per service.
+  #
+  # Contribs are prefixed `scooterContrib<Name>`: a bare `ps.jira` would shadow
+  # nixpkgs' own python3Packages.jira (the Jira API client), and a dep silently
+  # resolving to the wrong package is worse than a longer name.
+  #
+  # Lazy (an attrset of thunks), so naming one contrib does not build the rest, and
+  # a dependency CYCLE surfaces as infinite recursion at eval rather than a
+  # half-working image.
+  contribAttrName = name:
+    "scooterContrib" + lib.toUpper (lib.substring 0 1 name) + lib.substring 1 (-1) name;
+
+  pkgsFor = svc: python3Packages // lib.listToAttrs (map
+    (dir: { name = contribAttrName (metaOf dir).name; value = buildContrib dir svc; })
+    contribNames);
+
   buildContrib = dir: svc:
     let
       meta = import (./. + "/${dir}/module.nix");
       pyImport = "scooter_contrib_${meta.name}";
-      extraDeps = (meta.pythonDeps or (_: [ ])) python3Packages;
+      # `service: ps: [ ... ]`. The service argument is what lets a contrib depend on
+      # something for one half and not the other -- gitlab needs jira only in the
+      # webhooks variant, and a flat list would drag it into the broker closure too,
+      # the surface leak the per-service split exists to stop (#567). Why: PR #583.
+      depsFor = s: (meta.pythonDeps or (_: _: [ ])) s (pkgsFor svc);
+      extraDeps = depsFor svc;
+      # Every service's deps, resolved for THIS variant, for the CHECK phase only:
+      # tests/ is shared across variants, so a webhooks-only test still has to
+      # import in the broker variant -- the same reason the real services are check
+      # inputs. Check-only, so it does not widen the runtime closure.
+      checkDeps = lib.concatMap depsFor meta.services;
       # The surface for THIS service, and the module that composes it.
       surface = { broker = scooterBrokerLib; webhooks = scooterWebhooksLib; }.${svc};
       entryModule = { broker = "broker_provider"; webhooks = "webhooks_handler"; }.${svc};
@@ -61,12 +89,12 @@ let
 
       # Check-only, so they do NOT enter the runtime closure: the full
       # cross-service suite runs in both variants, neither ships the other.
-      nativeCheckInputs = with python3Packages; [
+      nativeCheckInputs = (with python3Packages; [
         pytestCheckHook
         pytest-asyncio
         broker
         webhooks
-      ];
+      ]) ++ checkDeps;
 
       meta.description = "Scooter contrib module: ${meta.name} (${svc})";
     };

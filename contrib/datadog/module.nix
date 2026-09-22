@@ -2,5 +2,5 @@
 {
   name = "datadog";
   services = [ "broker" ];
-  pythonDeps = ps: [ ];
+  pythonDeps = _: _: [ ];
 }

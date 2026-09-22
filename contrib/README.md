@@ -45,10 +45,45 @@ A thin, declarative descriptor read by `contrib/default.nix`:
 {
   name = "echo";                  # package = scooter-contrib-<name>, import = scooter_contrib_<name>
   services = [ "broker" "webhooks" ];  # which service image(s) to inject into
-  pythonDeps = ps: [ ];           # optional extra Python deps beyond the host service's
+  pythonDeps = service: ps: [ ];  # optional deps, PER SERVICE. `ps` is nixpkgs'
+                                  # python3Packages plus every contrib (see below)
   example = true;                 # optional: build + test it, but never ship it
 }
 ```
+
+### Depending on another contrib
+
+Integrations reference each other — gitlab reads Jira keys out of MR titles to
+attach an MR to the conversation that ticket already opened — so depending on
+another contrib is allowed and expected.
+
+There is no separate field for it: `pythonDeps` takes the SERVICE and a package
+set that already contains every contrib, so one declaration covers both "a
+library from nixpkgs" and "another contrib".
+
+```nix
+pythonDeps = service: ps:
+  if service == "webhooks" then [ ps.scooterContribJira ] else [ ];
+```
+
+The service argument is what keeps the closures apart: only gitlab's webhooks half
+needs jira, and depending unconditionally would drag jira into the broker
+variant's closure — the surface leak the per-service split exists to stop.
+
+`ps` holds THIS service's variant of each contrib, so a dep cannot pull the wrong
+surface in, and a typo is an eval error rather than a `ModuleNotFoundError` at
+service startup. Contribs are prefixed `scooterContrib<Name>` because a bare
+`ps.jira` would shadow nixpkgs' own `python3Packages.jira`.
+
+Depend on the smallest thing that does the job: jira exports its issue-key
+grammar as a pure-text module (no settings, no store, no routes), so the
+dependency costs a regex. Note that installing a contrib makes its ENTRY POINTS
+discoverable, so a service that ships gitlab also mounts jira's route — inert
+unless jira is enabled, but present.
+
+A dependency CYCLE is an eval-time infinite recursion in `contrib/default.nix`,
+not a runtime bug. If two contribs genuinely need each other, move the shared
+part into a third package rather than breaking the cycle with a late import.
 
 `contrib/default.nix` builds each contrib ONCE PER TARGET SERVICE — each variant
 depending only on that service's extension surface, so a both-services contrib
