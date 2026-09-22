@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from webhooks.handlers import slack as slack_h
+from scooter_contrib_slack import webhooks_handler as slack_h
 
 
 async def _assert_nonblocking(handler_coro):

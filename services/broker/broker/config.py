@@ -25,9 +25,6 @@ class BrokerSettings(ScooterBaseSettings):
     github_app_installation_id: int = 0
     github_token: str = ""
 
-    # Slack (static token)
-    slack_bot_token: str = ""
-
     # --- Grafana (service-account token; http-proxy to a Grafana stack) -----
     # The broker's grafana provider proxies /grafana/* -> <grafana_url>, injecting
     # the token so the agent can query dashboards/datasources (and through the

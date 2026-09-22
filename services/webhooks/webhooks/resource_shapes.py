@@ -2,7 +2,7 @@
 
 The mechanism (registry, variant expansion, canonicalisation) is in
 `scooter_webhooks_lib.resources`. What lives here is the part that is genuinely
-per-provider: how a github/gitlab/jira URL decomposes, and which type spellings mean
+per-provider: how a github URL decomposes, and which type spellings mean
 the same thing. Each block travels into its provider's contrib as that provider
 migrates (#577+), and when the last one goes this module goes with it.
 
@@ -59,10 +59,4 @@ register_resource_shapes(
         type_aliases={"ticket": "issue", "issue": "issue"},
         id_variants=_jira_id_variants,
     ),
-)
-
-# Slack ids have one spelling (channel+ts), so aliases only — no id_variants.
-register_resource_shapes(
-    "slack",
-    ResourceShapes(type_aliases={"message": "thread", "thread": "thread"}),
 )

@@ -10,5 +10,6 @@
     ./echo
     ./gitlab
     ./jira
+    ./slack
   ];
 }

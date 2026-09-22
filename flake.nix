@@ -565,6 +565,8 @@
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-slack = contribs.packages.slack.broker;
+            contrib-slack-webhooks = contribs.packages.slack.webhooks;
 
             # nix build .#contribs-all -> every variant of every contrib, so ONE CI
             # target covers all of them and a new contrib is tested the moment it
@@ -695,6 +697,8 @@
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-slack = contribs.packages.slack.broker;
+            contrib-slack-webhooks = contribs.packages.slack.webhooks;
             # The shared Python libraries (the lib split).
             inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests;
