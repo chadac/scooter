@@ -9,6 +9,7 @@
     ./datadog
     ./echo
     ./gitlab
+    ./grafana
     ./jira
   ];
 }

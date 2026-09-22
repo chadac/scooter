@@ -28,15 +28,6 @@ class BrokerSettings(ScooterBaseSettings):
     # Slack (static token)
     slack_bot_token: str = ""
 
-    # --- Grafana (service-account token; http-proxy to a Grafana stack) -----
-    # The broker's grafana provider proxies /grafana/* -> <grafana_url>, injecting
-    # the token so the agent can query dashboards/datasources (and through the
-    # datasource proxy, Prometheus + Loki) without seeing it. Enabled iff BOTH the
-    # url and token are set. `grafana_url` is the stack base, e.g.
-    # https://myorg.grafana.net (no trailing slash needed; it is stripped).
-    grafana_url: str = ""
-    grafana_token: str = ""
-
     # --- Airtable (personal access token; http-proxy to api.airtable.com) ---
     # The broker's airtable provider proxies /airtable/* -> https://api.airtable.com
     # with the PAT injected, so the agent can read/write bases without seeing it.
