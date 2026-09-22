@@ -36,9 +36,9 @@ def create_app() -> FastAPI:
 
     providers = list(discover_providers([builtin_providers]))
 
-    # NO sandbox lifecycle here. Provisioning is the AGENT-HOST's (see
-    # services/agent-host/src/session/k8sProvisioner.ts): the broker is the one service
-    # a sandbox can reach over the network, so it must not be able to create pods.
+    # Do NOT add a sandbox-lifecycle router here. A sandbox can reach the broker over
+    # the network and cannot reach the agent-host, so provisioning lives there
+    # (session/k8sProvisioner.ts). Why: PR #584.
 
     # Module registry (broker/registry/) — the shareable-module catalog. Built when
     # enabled; its store is init'd in the lifespan + its router mounted top-level.

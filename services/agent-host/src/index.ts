@@ -425,10 +425,7 @@ export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
   // Provisioner: fake (local UI) -> noop; otherwise the agent-host's own k8s
-  // provisioner, which is the SINGLE entrypoint for creating a Sandbox. Nothing else
-  // writes the Sandbox CR — in particular not the broker, which is the one service a
-  // sandbox can reach over the network, and therefore the one that must not be able
-  // to spawn pods.
+  // provisioner. Nothing else writes the Sandbox CR — why: PR #584.
   //
   // Keep a typed handle: the provisioner ALSO exposes the size ops (getSize/setSize/
   // getSizes) used by the resize tools and the UI picker. null only for a fake

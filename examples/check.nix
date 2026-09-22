@@ -73,26 +73,18 @@ let
     (if cfWired then [ ] else [ "host.env.SCOOTER_CONFIG_FILES_CONFIGMAP (configFiles not wired)" ])
     ++ (if cfHasFile then [ ] else [ "configMaps.deploy-config-files.data.nix.conf (file missing)" ]);
 
-  # ONE PROVISIONING ENTRYPOINT. Sandbox provisioning belongs to the AGENT-HOST, and
-  # deliberately NOT to the broker: the broker is the one service a sandbox can reach
-  # over the network, so a provisioning API there is one auth bug away from an agent
-  # spawning its own pods. It is also how the manifest forked once already — two
-  # implementations, one of which quietly lost the cgroup-isolation and pull-policy
-  # fixes. So pin it at render time, in BOTH directions.
+  # A sandbox can reach the broker over the network and cannot reach the agent-host, so
+  # sandbox-shaping config must stay off the broker. Why: PR #584.
   sandboxShapingEnv = [
     "SANDBOX_IMAGE" "SANDBOX_PULL_POLICY" "SANDBOX_RUNTIME_CLASS" "SANDBOX_RESOURCES"
     "SANDBOX_SIZES_JSON" "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"
     "SCOOTER_CONFIGMAP" "SCOOTER_CONFIG_FILES_CONFIGMAP" "SCOOTER_TOKEN_AUDIENCES" "SCOOTER_ENV"
   ];
   oneEntrypointProblems =
-    # (a) the broker must carry NO sandbox-shaping env — it renders no manifest.
-    map (n: "broker.env.${n} — sandbox-shaping env belongs to the AGENT-HOST (the single provisioning entrypoint); a sandbox can reach the broker over the network")
+    map (n: "broker.env.${n} — sandbox-shaping env belongs to the agent-host")
       (builtins.filter (n: builtins.any (e: e.name == n) brokerEnv) sandboxShapingEnv)
-    # (b) and the broker must hold NO Sandbox/SA/PVC RBAC.
     ++ (if (res.roles or { }) ? agent-broker-sandbox
         then [ "roles.agent-broker-sandbox — the broker must not hold Sandbox/SA/PVC RBAC" ] else [ ])
-    # (c) while the agent-host DOES carry them (else provisioning is misconfigured the
-    #     other way and sandboxes come up unshaped).
     ++ (if builtins.any (e: e.name == "SANDBOX_PULL_POLICY") hostEnv then [ ]
         else [ "host.env.SANDBOX_PULL_POLICY (a side-loaded cluster ImagePullBackOffs every sandbox)" ])
     ++ (if builtins.any (e: e.name == "SANDBOX_SIZES_JSON") hostEnv then [ ]

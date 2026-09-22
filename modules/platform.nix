@@ -891,9 +891,8 @@ in
       };
 
       # The agent-host provisions per-conversation Sandboxes/SAs/PVCs and execs into
-      # sandbox pods, so it needs broad-but-namespaced RBAC. It is the ONLY holder of
-      # this RBAC: provisioning deliberately does NOT live in the broker, which is the
-      # one service a sandbox can reach over the network (see modules/broker.nix).
+      # sandbox pods, so it needs broad-but-namespaced RBAC. Nothing else gets it —
+      # the broker in particular. Why: PR #584.
       roles.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         rules =

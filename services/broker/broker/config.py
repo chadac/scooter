@@ -112,10 +112,8 @@ class BrokerSettings(ScooterBaseSettings):
     fga_authorization_model_id: str = ""
 
     # --- Sandbox-adjacent settings --------------------------------------------
-    # The broker does NOT provision sandboxes. Provisioning belongs to the agent-host
-    # (services/agent-host/src/session/k8sProvisioner.ts), because the broker is the one
-    # service a sandbox can reach over the network and so must not be able to create
-    # pods. What remains here is what the broker serves TO an existing sandbox.
+    # What the broker serves TO an existing sandbox. It does not provision them — see
+    # core/app.py.
     #
     # A mounted directory of `.nix` files served as the deployment's DEFAULT modules
     # at GET /modules/default.tar.gz (fetched by the pod at re-converge, unauthed).
