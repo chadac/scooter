@@ -8,9 +8,14 @@
 #
 # Everything downstream is a RENDERING of this option, not a second copy:
 #   - lib/sql/owners.toml        generated (`just db-generate`), CI fails on drift
-#   - lib/sql/databases.txt      generated; the justfile + db-generate.sh read it
+#   - lib/sql/atlas.hcl          generated; one Atlas env per database
 #   - the migrator's database list  modules/db-migrate.nix, derived
 #   - the postgres GRANTs        modules/platform.nix, derived
+#
+# There is deliberately NO separate database-list artifact: owners.toml's top-level
+# `[<database>]` sections ARE that list, and the justfile + scripts/db-generate.sh
+# read it back from there (both need it at shell/parse time, where `nix eval` is too
+# expensive to run on every invocation).
 #
 # The direction used to run the other way: platform.nix read owners.toml with
 # `builtins.fromTOML` to derive the conversation-router's grants, "so the grant

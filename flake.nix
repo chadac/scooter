@@ -553,11 +553,11 @@
               }).optionsJSON;
 
             # `nix build .#db-spec` -> the lib/sql artifacts RENDERED from the
-            # `agentSandbox.db` module option (#606): the ownership manifest, the
-            # database list the justfile + db-generate.sh read, and atlas.hcl's
+            # `agentSandbox.db` module option (#606): the ownership manifest and atlas.hcl's
             # per-database envs. `just db-generate` copies these into lib/sql and
-            # `just db-generate-check` fails CI on drift — so "which databases exist"
-            # and "who owns which table" have exactly one source.
+            # `just db-generate-check` fails CI on drift — so "which databases exist" and
+            # "who owns which table" have exactly one source. (The database LIST is not a
+            # third artifact: owners.toml's top-level sections are it.)
             #
             # Evaluated with an EMPTY agentSandbox config: the in-tree declarations are
             # unconditional, so the artifacts don't depend on a deployment's feature
@@ -569,13 +569,11 @@
               pkgs.runCommand "db-spec" {
                 ownersToml = spec.ownersToml;
                 atlasHcl = spec.atlasHcl;
-                databases = builtins.concatStringsSep "\n" spec.databases + "\n";
-                passAsFile = [ "ownersToml" "atlasHcl" "databases" ];
+                passAsFile = [ "ownersToml" "atlasHcl" ];
               } ''
                 mkdir -p $out
                 cp "$ownersTomlPath" $out/owners.toml
                 cp "$atlasHclPath"   $out/atlas.hcl
-                cp "$databasesPath"  $out/databases.txt
               '';
 
             inherit agentHost ui broker webhooks scheduler;

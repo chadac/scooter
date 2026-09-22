@@ -21,10 +21,11 @@ function tablesInSchema(db: string): string[] {
   return [...sql.matchAll(/CREATE TABLE "([^"]+)"/g)].map((m) => m[1]).sort();
 }
 
-/** The database list GENERATED from the `agentSandbox.db` module option (#606). */
-const generatedDatabases = readFileSync(sqlDir("databases.txt"), "utf8")
-  .split("\n")
-  .filter(Boolean);
+/**
+ * The database list as GENERATED from the `agentSandbox.db` module option (#606) —
+ * owners.toml's top-level sections are that list, so there is no separate file.
+ */
+const generatedDatabases = Object.keys(manifest);
 
 describe("ownership manifest (lib/sql/owners.toml)", () => {
   it("lists exactly the databases that have a schema", () => {
@@ -38,7 +39,7 @@ describe("ownership manifest (lib/sql/owners.toml)", () => {
   //
   // The Python guard is checked from here rather than from its own suite because
   // scooter-schema's nix build sees only lib/py/scooter-schema/ — a test there could not
-  // read lib/sql/databases.txt, so it would skip and check nothing.
+  // read lib/sql at all, so it would skip and check nothing.
   it("guard.ts DATABASES matches the generated spec", () => {
     expect([...DATABASES].sort()).toEqual([...generatedDatabases].sort());
   });

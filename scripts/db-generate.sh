@@ -6,8 +6,9 @@
 #   1. The `agentSandbox.db` MODULE OPTION (#606) — the topology: which databases
 #      exist, which tables are in each, who writes and who reads. From it:
 #        - lib/sql/owners.toml     the ownership manifest
-#        - lib/sql/databases.txt   the database list (this script + the justfile read it)
 #        - lib/sql/atlas.hcl       one Atlas env per database
+#      owners.toml's top-level `[<database>]` sections ARE the database list, which
+#      this script and the justfile read back rather than keeping a third artifact.
 #      These used to be five hand-maintained lists (here, the justfile, atlas.hcl,
 #      db-migrate.nix's `candidates`, guard.ts's DATABASES) that nothing checked
 #      against each other.
@@ -34,15 +35,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # --- step 1: render the spec artifacts from the module system ----------------
-# Built, not evaluated with `nix eval`, so the three files come out of one
+# Built, not evaluated with `nix eval`, so both files come out of one
 # derivation and can't disagree with each other.
 echo "rendering lib/sql spec artifacts from agentSandbox.db ..."
 spec="$(nix build --no-link --print-out-paths "$ROOT#db-spec")"
 install -m 644 "$spec/owners.toml"    lib/sql/owners.toml
 install -m 644 "$spec/atlas.hcl"      lib/sql/atlas.hcl
-install -m 644 "$spec/databases.txt"  lib/sql/databases.txt
 
-ENVS="$(tr '\n' ' ' < lib/sql/databases.txt)"
+# The database set, read back out of the manifest we just wrote — no third artifact.
+ENVS="$(sed -n 's/^\[\([a-z_][a-z_0-9]*\)\]$/\1/p' lib/sql/owners.toml | tr '\n' ' ')"
 TS_OUT="lib/ts/scooter-schema/src"
 PY_OUT="lib/py/scooter-schema/src/scooter_schema"
 SQLACODEGEN_VERSION="4.0.4"

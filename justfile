@@ -473,12 +473,14 @@ check-contrib-coverage:
 # per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
 # computed from schema.sql. Each recipe spins its own EPHEMERAL local Postgres as
 # Atlas's dev database (scripts/atlas-dev.sh) so nothing is shared.
-# The database list is GENERATED from the `agentSandbox.db` module option into
-# lib/sql/databases.txt (#606) — this reads it rather than repeating it.
-db_envs := `tr "\n" " " < lib/sql/databases.txt`
+# The database list comes from the GENERATED ownership manifest — its top-level
+# `[<database>]` sections ARE the database set (#606). Read at parse time (just
+# evaluates this on every invocation), so it has to be a file read, not `nix eval`.
+
+db_envs := `sed -n 's/^\[\([a-z_][a-z_0-9]*\)\]$/\1/p' lib/sql/owners.toml | tr "\n" " "`
 
 # Regenerate everything derived from the schema spec: the lib/sql artifacts rendered
-# from the `agentSandbox.db` option (owners.toml, databases.txt, atlas.hcl) and the
+# from the `agentSandbox.db` option (owners.toml, atlas.hcl) and the
 # per-language ORM bindings (@scooter/schema, scooter_schema) from schema.sql.
 # Commit the result.
 db-generate:
@@ -486,13 +488,13 @@ db-generate:
 
 # CI drift guard: regenerate and fail if the committed output differs — a spec or
 # schema change that forgets to regenerate fails the build (like check-lockfiles).
-# Covers BOTH sources: an `agentSandbox.db` edit that doesn't refresh owners.toml /
-# databases.txt / atlas.hcl fails here, same as a schema.sql edit that doesn't
+# Covers BOTH sources: an `agentSandbox.db` edit that does not refresh owners.toml /
+# atlas.hcl fails here, same as a schema.sql edit that does not
 # refresh the ORM bindings.
 db-generate-check:
     scripts/db-generate.sh
     @git diff --exit-code -- lib/ts/scooter-schema/src lib/py/scooter-schema/src \
-      lib/sql/owners.toml lib/sql/atlas.hcl lib/sql/databases.txt \
+      lib/sql/owners.toml lib/sql/atlas.hcl \
       || (echo "❌ generated drift: the agentSandbox.db spec or lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
     @echo "✅ generated spec artifacts + ORM bindings are in sync"
 

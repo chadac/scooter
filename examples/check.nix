@@ -280,7 +280,7 @@ let
   # #606), not by a deployment — a reference config setting it would be describing
   # lib/sql, which is in-tree. `dbSpec` is readOnly, rendered from it. Both are checked
   # far more strongly than a mention here: `just db-generate-check` regenerates
-  # owners.toml / databases.txt / atlas.hcl from the option and fails CI on any drift.
+  # owners.toml and atlas.hcl from the option and fails CI on any drift.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
     "sandboxRuntimeClass" "serviceAccountRoleArn"
