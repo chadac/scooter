@@ -12,7 +12,16 @@ from scooter_webhooks_lib import store as db
 from .config import db_settings, require_relay_key, settings
 from scooter_lib.logging_config import configure_logging
 from scooter_webhooks_lib.registry import discover_webhooks
-from .agent_host_client import resolve_sandbox_to_conversation
+from scooter_webhooks_lib import agent_host_client
+from scooter_webhooks_lib.agent_host_client import resolve_sandbox_to_conversation
+
+# Imported for its REGISTRATION side effect: the per-provider email resolvers are
+# decorated at import, and nothing else imports this module. Why: PR #575.
+from . import identity_resolve  # noqa: F401
+
+# The lib is GIVEN its config, like store.init_db below. Bound at import, not in
+# lifespan: handlers are discovered at import and may build URLs as they register.
+agent_host_client.init(settings)
 
 configure_logging("webhooks", settings.log_level)
 

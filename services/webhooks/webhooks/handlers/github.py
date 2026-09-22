@@ -19,8 +19,8 @@ from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import settings
-from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
-from ..identity_resolve import resolve_owner
+from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_webhooks_lib.identity import resolve_owner
 from ..responses.github import get_app_login, post_github_comment
 
 logger = logging.getLogger(__name__)

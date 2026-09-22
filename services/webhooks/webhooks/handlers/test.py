@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..agent_host_client import create_conversation
+from scooter_webhooks_lib.agent_host_client import create_conversation
 from ..config import settings
 
 logger = logging.getLogger(__name__)

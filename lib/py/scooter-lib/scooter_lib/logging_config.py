@@ -47,6 +47,7 @@ one app. See PR #567 for the three drifted copies this replaced.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import sys
@@ -387,3 +388,29 @@ def get_logger(service: str, component: str) -> logging.Logger:
     renders as component="spawn".
     """
     return logging.getLogger(f"{service}.{component}")
+
+
+def pseudonym(value: str | None) -> str | None:
+    """A stable, non-reversible stand-in for an identifier, for logs.
+
+    Identifiers are personal data (a Slack id, a GitHub login, an email) or joinable to
+    it (our own user_identity.id), so none is logged raw. A stable token still lets a
+    reader tell whether the SAME principal keeps failing, which is what makes a lookup
+    failure diagnosable at all.
+
+    Each identifier keeps its own field — user_id, external_user, email — because these
+    are different tokens for the same person and one field holding several would split
+    that person across a query.
+
+    Not an HMAC: there is no stable key here (the per-provider webhook secrets rotate,
+    which would break correlation). So this resists an operator reading logs, not an
+    attacker brute-forcing a small id space. Not cached: 0.34 us, and at most one call
+    per delivery.
+
+    Here rather than in the webhooks identity module: the agent-host client logs
+    pseudonymised emails too, and identity<->client would otherwise import each other.
+    Why: PR #575.
+    """
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]

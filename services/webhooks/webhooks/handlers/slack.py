@@ -18,8 +18,8 @@ from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from ..config import require_relay_key, settings
-from ..agent_host_client import conversation_url, create_conversation, push_link, send_message
-from ..identity_resolve import resolve_owner
+from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_webhooks_lib.identity import resolve_owner
 from .slack_files import DownloadedFiles, download_files
 from ..responses.slack import (
     add_slack_reaction,
