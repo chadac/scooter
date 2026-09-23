@@ -17,15 +17,19 @@ Typical agent usage — these are the paths the PROXY sees, so they start after
 
 from __future__ import annotations
 
-from ..config import settings
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_broker_lib.sources.static_token import StaticTokenSource
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
+from .config import AirtableSettings
+
 
 @register_provider
 def airtable() -> Provider:
+    # Read at BUILD time, like every provider factory — the broker calls this
+    # once per create_app(), after refreshing the environment.
+    settings = AirtableSettings()
     token = (settings.airtable_token or "").strip()
     return Provider(
         name="airtable",

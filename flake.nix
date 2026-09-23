@@ -565,6 +565,7 @@
             # surface into the broker image).
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
+            contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
@@ -699,6 +700,7 @@
             contribs-all = contribsAll;
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
+            contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
