@@ -569,6 +569,7 @@
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
+            contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
             contrib-slack = contribs.packages.slack.broker;
@@ -706,6 +707,7 @@
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
+            contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
             contrib-slack = contribs.packages.slack.broker;

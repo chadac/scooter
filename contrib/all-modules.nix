@@ -10,6 +10,7 @@
     ./datadog
     ./echo
     ./gitlab
+    ./grafana
     ./jira
     ./slack
   ];
