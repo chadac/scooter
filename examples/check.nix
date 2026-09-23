@@ -276,10 +276,16 @@ let
   # defaultSandboxSizeName is readOnly — derived from the sandboxSizes preset marked
   # `default = true`, so a config CANNOT set it. The sizeGuard checks below cover it
   # instead, which is stronger than a mention in the example.
+  # `db` is declared by the MODULES that own each service (agentSandbox.db.<database>,
+  # #606), not by a deployment — a reference config setting it would be describing
+  # lib/sql, which is in-tree. `dbSpec` is readOnly, rendered from it. Both are checked
+  # far more strongly than a mention here: `just db-generate-check` regenerates
+  # owners.toml and atlas.hcl from the option and fails CI on any drift.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
     "sandboxRuntimeClass" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
+    "db" "dbSpec"
   ];
   uncovered = builtins.filter
     (n: !(builtins.elem n coverageExempt)

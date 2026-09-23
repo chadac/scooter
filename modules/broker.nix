@@ -377,7 +377,27 @@ in
     };
   };
 
-  config = lib.mkIf bcfg.enable {
+  # mkMerge: the table declarations are UNCONDITIONAL (see modules/db-spec.nix) —
+  # the tables exist in lib/sql whether or not this deployment runs the service —
+  # while everything else stays gated on `enable`. The gated body keeps its own
+  # indentation so this wrapper is the whole diff.
+  config = lib.mkMerge [
+  # The tables the `broker` database holds (agentSandbox.db, #606). static_shares +
+  # static_share_versions move into the shares CONTRIB module in stage 2 of #606 —
+  # this is the declaration that moves, and nothing else changes when it does.
+  {
+    agentSandbox.db.broker = {
+      owner = "broker";
+      tables = {
+        sandbox_size = { writers = [ "broker" ]; };
+        permission_requests = { writers = [ "broker" ]; };
+        module_registry = { writers = [ "broker" ]; };
+        static_shares = { writers = [ "broker" ]; };
+        static_share_versions = { writers = [ "broker" ]; };
+      };
+    };
+  }
+  (lib.mkIf bcfg.enable {
     # mkMerge (not //): the aws + fga blocks each add to `deployments`/`services`,
     # and a shallow // would REPLACE those keys (dropping agent-broker). mkMerge
     # deep-merges so all deployments/services coexist.
@@ -697,5 +717,6 @@ in
       { broker = { db = "broker"; user = "broker"; }; }
       (lib.mkIf bcfg.aws.fga.enable { openfga = { db = "openfga"; user = "openfga"; }; })
     ];
-  };
+  })
+  ];
 }
