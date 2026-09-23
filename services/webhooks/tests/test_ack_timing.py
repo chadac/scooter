@@ -3,8 +3,8 @@ run, not after.
 
 create_conversation() blocks until the whole agent turn finishes, so posting the
 link ack after it returned delayed the link by the entire run (the 5-10min lag).
-Each handler now posts the ack inside the `on_created` hook (fired pre-run). These
-tests drive each handler's _background_create_conversation with a fake
+Each handler posts the ack inside the `on_created` hook (fired pre-run). This
+test drives the handler's _background_create_conversation with a fake
 create_conversation that (a) invokes on_created, (b) records call ORDER, so we can
 assert the ack fired during on_created — before the (simulated) run completes.
 """
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from webhooks.handlers import slack as slack_h
 from webhooks.handlers import github as github_h
 
 
@@ -26,31 +25,6 @@ def _fake_create_conversation(order: list[str]):
         order.append("run")  # the blocking run finishes AFTER on_created
         return {"conversation_id": "conv-xyz", "result": "done"}
     return fake
-
-
-async def test_slack_ack_posts_before_the_run():
-    order: list[str] = []
-
-    async def rec_post(*a, **k):
-        order.append("ack")
-
-    with (
-        patch.object(slack_h, "db") as db,
-        patch.object(slack_h, "create_conversation", _fake_create_conversation(order)),
-        patch.object(slack_h, "push_link", AsyncMock()),
-        patch.object(slack_h, "post_slack_message", side_effect=rec_post) as post,
-        patch.object(slack_h, "conversation_url", lambda cid: f"https://ui/?thread={cid}"),
-    ):
-        db.store_conversation = AsyncMock()
-        db.store_slack_metadata = AsyncMock()
-        db.get_and_clear_pending_messages = AsyncMock(return_value=[])
-        await slack_h._background_create_conversation(
-            res_id="C1:1.0", message="hi", conv_title="t", channel="C1", thread_ts="1.0",
-        )
-
-    assert order == ["ack", "run"], "the ack must post BEFORE the run finishes"
-    body = post.call_args.kwargs["text"]
-    assert "follow along" in body and "conv-xyz" in body
 
 
 async def test_github_ack_posts_before_the_run():

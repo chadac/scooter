@@ -72,25 +72,12 @@ class WebhooksSettings(ScooterBaseSettings):
 
     # Integration toggles
     github_enabled: bool = False
-    slack_enabled: bool = False
 
     # Webhook secrets (signature validation)
     github_webhook_secret: str = ""
-    slack_signing_secret: str = ""
 
     # Tokens for posting responses back to services
     github_token: str = ""  # PAT fallback (used if github_app_id is empty)
-    slack_bot_token: str = ""
-
-    # Max bytes for an inbound image (Slack file download) forwarded to the agent.
-    # Mirrors the agent-host ASSET_MAX_BYTES so a file the agent-host would reject is
-    # skipped up front. ~5MB default.
-    image_max_bytes: int = 5 * 1024 * 1024
-
-    # Max bytes for ANY inbound Slack attachment (text-representable or binary file)
-    # forwarded to the agent. Generalizes image_max_bytes to non-image files. ~10MB
-    # default (binaries land in the sandbox at /workspace/uploads via the agent-host).
-    file_max_bytes: int = 10 * 1024 * 1024
 
     # GitHub App authentication
     github_app_id: str = ""

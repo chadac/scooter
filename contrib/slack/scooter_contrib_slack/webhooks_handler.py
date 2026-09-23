@@ -17,12 +17,12 @@ from pydantic import BaseModel
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
-from ..config import require_relay_key, settings
+from .config import require_relay_key, settings
 from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
-from .slack_files import DownloadedFiles, download_files
-from ..responses.slack import (
+from .files import DownloadedFiles, download_files
+from .responses import (
     add_slack_reaction,
     get_bot_user_id,
     get_thread_history,
@@ -575,11 +575,16 @@ async def relay_slack_reply(request: Request, req: SlackReplyRequest):
     return {"ok": True, "ts": ts}
 
 
-# Discovered + mounted by webhooks.app via the registry (mirrors the broker's
-# provider registry, PR: contrib module system). Handlers self-gate in-route
-# (a disabled provider returns {"status": "disabled"}), so this registers
-# enabled and keeps its per-request gating.
+# Discovered + mounted by the webhooks service via the entry-point registry.
+# Handlers self-gate in-route (a disabled provider returns {"status": "disabled"}),
+# so this registers enabled and keeps its per-request gating.
 from scooter_webhooks_lib.registry import WebhookHandler, register_webhook
+
+# Imported for their REGISTRATION side effects: this module is what the webhooks
+# service loads, so slack's owner lookup (#575) and resource shapes (#576) arm
+# with it. Nothing else imports either. Why: PR #588.
+from . import identity  # noqa: F401
+from . import resources  # noqa: F401
 
 
 @register_webhook

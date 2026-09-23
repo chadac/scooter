@@ -25,9 +25,6 @@ class BrokerSettings(ScooterBaseSettings):
     github_app_installation_id: int = 0
     github_token: str = ""
 
-    # Slack (static token)
-    slack_bot_token: str = ""
-
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 

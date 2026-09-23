@@ -12,5 +12,6 @@
     ./gitlab
     ./grafana
     ./jira
+    ./slack
   ];
 }

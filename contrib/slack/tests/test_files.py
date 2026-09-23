@@ -8,8 +8,8 @@ import base64
 import httpx
 import pytest
 
-import webhooks.handlers.slack_files as sf
-from webhooks.config import settings
+import scooter_contrib_slack.files as sf
+from scooter_contrib_slack.config import settings
 
 pytestmark = pytest.mark.asyncio
 

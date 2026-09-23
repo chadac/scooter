@@ -6,14 +6,17 @@ Slack fires two events for one mention-in-thread: an `app_mention` AND a
 message" one + a "you were mentioned" one). Now _handle_thread_message skips a
 mentioning message (the app_mention handler owns it), and _handle_mention rewrites
 the bot's own <@U…> to "@scooter" instead of deleting it.
+
+Moved here with the handler (PR #588). The trigger pattern it keys on is the
+deployment's, bound by the conftest — the contrib reads it through the lib policy
+rather than owning it (#577).
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from scooter_webhooks_lib import policy
-from webhooks.handlers import slack as slack_h
+from scooter_contrib_slack import webhooks_handler as slack_h
 
 
 async def test_mentioning_thread_message_is_NOT_forwarded_by_the_message_handler():
@@ -23,13 +26,7 @@ async def test_mentioning_thread_message_is_NOT_forwarded_by_the_message_handler
         patch.object(slack_h, "db") as db,
         patch.object(slack_h, "send_message", new=AsyncMock(return_value=True)) as send,
         patch.object(slack_h, "_get_bot_id", new=AsyncMock(return_value="UBOT")),
-        patch.object(slack_h, "settings") as st,
     ):
-        st.mention_pattern = "@scooter"
-        st.ignore_usernames = ""
-        # The handler reads its own settings; the shared trigger policy is bound
-        # separately, so point it at the same stub. Why: PR #577.
-        policy.init(st)
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
@@ -47,13 +44,7 @@ async def test_non_mention_thread_message_IS_forwarded_for_awareness():
         patch.object(slack_h, "db") as db,
         patch.object(slack_h, "send_message", new=AsyncMock(return_value=True)) as send,
         patch.object(slack_h, "_get_bot_id", new=AsyncMock(return_value="UBOT")),
-        patch.object(slack_h, "settings") as st,
     ):
-        st.mention_pattern = "@scooter"
-        st.ignore_usernames = ""
-        # The handler reads its own settings; the shared trigger policy is bound
-        # separately, so point it at the same stub. Why: PR #577.
-        policy.init(st)
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
@@ -77,13 +68,7 @@ async def test_mention_is_rewritten_to_readable_pattern_not_stripped():
         patch.object(slack_h, "send_message", new=AsyncMock(return_value=True)) as send,
         patch.object(slack_h, "_get_bot_id", new=AsyncMock(return_value="UBOT")),
         patch.object(slack_h, "add_slack_reaction", new=AsyncMock()),
-        patch.object(slack_h, "settings") as st,
     ):
-        st.mention_pattern = "@scooter"
-        st.ignore_usernames = ""
-        # The handler reads its own settings; the shared trigger policy is bound
-        # separately, so point it at the same stub. Why: PR #577.
-        policy.init(st)
         db.lookup_conversation = AsyncMock(return_value="conv-1")
         db.get_conversation_for_resource = AsyncMock(return_value="conv-1")
 
