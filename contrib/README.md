@@ -9,6 +9,10 @@ plug into one or more services:
 | `broker`   | `agent_broker.providers`    | `scooter_broker_lib/registry.py` |
 | `webhooks` | `scooter_webhooks.handlers` | `scooter_webhooks_lib/registry.py` |
 
+A contrib also contributes **UI metadata** — its brand row and tool cards — which
+reaches the frontend through a generated manifest rather than an entry point,
+because the UI is a compiled static bundle. See [Contributing UI](#contributing-ui-ui).
+
 At startup each service scans its group, loads every advertised factory (which
 self-registers via `@register_provider` / `@register_webhook`), and mounts what
 it discovers. Adding an integration is a new `contrib/<name>/` directory — no
@@ -124,6 +128,69 @@ unless jira is enabled, but present.
 A dependency CYCLE is an eval-time infinite recursion, not a runtime bug. If two
 contribs genuinely need each other, move the shared part into a third package
 rather than breaking the cycle with a late import.
+
+### Contributing UI (`ui`)
+
+A contrib also owns its row in the frontend — the brand label/icon/color shown
+for its linked resources, and how its agent tools render as message cards. These
+used to be hardcoded lists in `ui/src/`, so adding an integration meant editing
+the app and disabling one left a dead chip behind.
+
+```nix
+ui = {
+  source = {
+    label = "GitLab";
+    icon = ./icon.svg;                             # the brand mark, in this dir
+    color = "#FC6D26";                             # or "currentColor"
+    linkProvider = true;                           # offer a sidebar filter chip
+  };
+  tools.gitlab_comment = {
+    argKey = "body";                               # which arg holds the text
+    action = "commented on GitLab";
+    titles = [ "Comment on the GitLab MR" ];       # registerTool title fallback
+  };
+};
+```
+
+`enable` defaults to true as soon as `source` or `tools` is set, so a declared
+row cannot silently render nothing.
+
+**This is METADATA only.** A contrib shipping real React (a `RightPanel` tab, a
+custom renderer) is a second tier that lands with the first feature needing one.
+
+**Why it is served at runtime rather than compiled in.** The UI image is built
+once and deployed to clusters whose contrib set differs, so baking the manifest
+into the bundle would mean re-running vite for every deployment that enables a
+different contrib. `/telemetry/config.json` already solves the same problem the
+same way.
+
+So `contrib/ui-manifest.nix` walks the enabled contribs and emits ONE JSON
+document, which nginx serves at `/contrib/manifest.json` and the UI fetches on
+load, merging it **on top of** its own entries. Changing a deployment's contrib
+set relinks that file — the compiled bundle is untouched.
+
+That is only possible because the icon is **data**: a `viewBox` and a single
+`<path d=…>`, read out of the contrib's own `.svg`. A React component could only
+be resolved from a runtime name by bundling a whole `react-icons` pack (~4.9 MB),
+which is what forced the build-time manifest before. Simple Icons (CC0) is a
+convenient source; drop the `.svg` in the contrib's directory and point `icon`
+at it.
+
+The fetch is forgiving by design: a 404, a timeout, a network error or a
+malformed document all mean "no contribs", never a broken page. A deployment
+that enables none gets `{}` and the app's built-in sources.
+
+`npm run dev` and the Playwright fast stack serve no manifest, so contrib rows
+are simply absent there — the same forgiving path, no special case. To see them
+locally:
+
+```
+nix build .#contrib-ui-manifest
+mkdir -p ui/public/contrib && cp result ui/public/contrib/manifest.json
+```
+
+`ui/public/contrib/` is gitignored: a committed copy is exactly the drift the
+runtime manifest removes.
 
 ### What the framework does with it
 

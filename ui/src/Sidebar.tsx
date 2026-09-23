@@ -16,7 +16,7 @@ import {
   nestSubagents,
   splitSections,
   sessionLabel,
-  LINK_PROVIDERS,
+  linkProviders,
   type LabelMode,
 } from "./sessions.js";
 import { LinkedResources } from "./LinkedResources.js";
@@ -422,7 +422,7 @@ export const Sidebar = memo(function Sidebar() {
                 <InfoTip text="Only show conversations linked to the selected provider(s)." />
               </span>
               <div data-testid="provider-filter" className="flex flex-1 flex-wrap gap-1.5">
-                {LINK_PROVIDERS.map((p) => {
+                {linkProviders().map((p) => {
                   const active = providerFilter.includes(p);
                   return (
                     <Button
@@ -462,7 +462,7 @@ export const Sidebar = memo(function Sidebar() {
                 aria-label="What each row shows"
                 className="flex flex-1 gap-1 rounded-md border p-0.5"
               >
-                {(["title", ...LINK_PROVIDERS] as const).map((m) => {
+                {["title", ...linkProviders()].map((m) => {
                   const active = labelMode === m;
                   const lbl = m === "title" ? "Conversation title" : `${sourceLabel(m)} link name`;
                   return (
