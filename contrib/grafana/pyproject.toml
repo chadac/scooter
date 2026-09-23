@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-contrib-grafana"
+version = "0.0.0"
+license = "MIT"
+description = "Grafana integration for Scooter's broker — proxies /grafana/* with a service-account token injected"
+requires-python = ">=3.11"
+# Depends on the extension SURFACE, never on the broker app. Why: PR #567.
+dependencies = [
+  "fastapi",
+]
+
+# One EXTRA per service. Why: PR #567.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib", "scooter-lib"]
+
+[project.entry-points."agent_broker.providers"]
+grafana = "scooter_contrib_grafana.broker_provider:grafana"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
