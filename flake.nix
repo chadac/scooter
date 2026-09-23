@@ -527,6 +527,61 @@
             if pkgs.stdenv.isLinux
             then import ./nixos-tests { inherit pkgs lib stubOverlay; }
             else { };
+
+          # The contrib sandbox surface, without building an image. Three links, and
+          # the middle one is what fails silently if it breaks: a contrib whose module
+          # reached the image but not the in-pod rebuild is a `scooter-rebuild switch`
+          # that reports success and drops its tools. echo is the fixture — it ships
+          # nowhere, so it is the only contrib that can carry one until aws moves.
+          # See #599.
+          contribSandbox =
+            let
+              derive = extraModules: import ./contrib/sandbox-modules.nix {
+                inherit lib extraModules;
+              };
+              # echo pins `enable = false` (it must never ship), so the fixture
+              # overrides rather than merges.
+              withEcho = derive [{ contribs.echo.enable = lib.mkForce true; }];
+              sandboxWithEcho = import ./pkgs/sandbox-os {
+                inherit lib n2c uvNix;
+                pkgs = sandboxPkgs;
+                nixStubs = {
+                  src = nix-stubs;
+                  package = nix-stubs.packages.${system}.nix-stubs;
+                };
+                extraModules = withEcho;
+              };
+              # Reached through the CONFIG, not re-derived here, so this fails if the
+              # image stops baking the tree the in-pod rebuild reads.
+              tree = lib.head (lib.filter
+                (d: lib.hasSuffix "-sandbox-os-src" (toString d))
+                sandboxWithEcho.nixos.config.system.extraDependencies);
+            in
+            # 1. A derived module is real sandbox config, not just a valid file.
+            assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
+            # 2. modules/sandbox-os actually imports contribs.nix — only that file
+            # declares this marker, so its absence means the surface is wired to
+            # nothing while (1) and (3) still pass.
+            assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-modules";
+            # 3. …and contribs.nix imports EXACTLY what the deriver returns for this
+            # source. (1) + (2) + (3) is the whole chain: source -> list -> image.
+            assert (import ./modules/sandbox-os/contribs.nix { inherit lib; }).imports
+              == derive [ ];
+            pkgs.runCommand "contrib-sandbox-check" { } ''
+              # 4. The in-pod half: the vendored tree carries contrib/ AND the deriver
+              # at the repo's layout, so a rebuild in the pod computes the same list
+              # from the same source. dev-env-reconverge-eval proves it evaluates.
+              test -f ${tree}/contrib/sandbox-modules.nix
+              test -f ${tree}/contrib/echo/sandbox.nix
+              test -f ${tree}/modules/sandbox-os/contribs.nix
+              touch $out
+            '';
+
+          # dev-env-* so CI's existing matrix enumerates it; Linux-only like
+          # devEnvTests, since it evaluates a NixOS system.
+          contribSandboxChecks = lib.optionalAttrs pkgs.stdenv.isLinux {
+            dev-env-contrib-sandbox = contribSandbox;
+          };
         in
         {
           packages = {
@@ -738,7 +793,7 @@
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
             # The shared Python libraries (the lib split).
             inherit scooterLib scooterBrokerLib scooterWebhooksLib;
-          } // devEnvTests;
+          } // devEnvTests // contribSandboxChecks;
         };
 
       flake = {

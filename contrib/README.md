@@ -76,6 +76,44 @@ unimported contrib is never built and never tested.
 variant that silently never gets built. A contrib that needs no extra deps says
 nothing about them.
 
+### Contributing to the sandbox image
+
+A contrib can also layer a NixOS module into the agent's sandbox — packages,
+systemd units, activation:
+
+```nix
+contribs.aws = {
+  src = ./.;
+  services.broker.enable = true;
+  sandbox.module = ./sandbox.nix;    # a plain NixOS module
+};
+```
+
+There is no separate schema for packages or services: a package is
+`environment.systemPackages` inside that module, a daemon is a
+`systemd.services.*`. There is no `mkIf` either — a disabled contrib is dropped
+before its module is ever imported, so `enable = false` means absent from the
+image, exactly as it already means absent from the services.
+
+**The list is derived from this source tree, and that is the whole design.**
+`contrib/sandbox-modules.nix` evaluates the contrib set and returns the enabled
+contribs' modules; `modules/sandbox-os/contribs.nix` imports that. The in-pod
+re-converge (`scooter-rebuild`) rebuilds from a *vendored copy of the repo*, so
+it runs the same deriver over the same source and reaches the same answer —
+nothing is threaded in, and nothing has to be carried across a switch. That is
+also why the module must live in the repo, and why anything it refers to
+relatively (`../../pkgs/…`) resolves identically on both sides.
+
+That eval gets **`lib` and nothing else**. The service-side arguments
+`contrib/default.nix` passes — `broker`, `webhooks`, `python3Packages`, the
+surface libs — are built packages, and the pod has neither a flake nor a network
+to produce them, so a sandbox half that reaches for one fails at eval. Keep the
+sandbox module to `pkgs` and plain NixOS config; a contrib may still take those
+args for its *service* half, which this eval never forces.
+
+See `contrib/echo/sandbox.nix` for the reference, and the
+`dev-env-contrib-sandbox` check for what is asserted.
+
 ### Extending the preset
 
 A contrib can declare its **own** options by using the strict module form; they

@@ -31,6 +31,8 @@
     ./overlay-store.nix
     ./warm-store-seed.nix
     ./dbus-container.nix
+    # The enabled contribs' sandbox halves, derived from the source (contrib/).
+    ./contribs.nix
   ];
 
   # The agent-editable modules dir lives on the workspace PVC (durable + writable:

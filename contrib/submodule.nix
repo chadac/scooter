@@ -230,6 +230,28 @@ in
       '';
     };
 
+    sandbox = mkOption {
+      default = { };
+      description = "What this contrib adds to the agent's sandbox image.";
+      type = types.submodule {
+        options.module = mkOption {
+          type = types.nullOr types.path;
+          default = null;
+          example = literalExpression "./sandbox.nix";
+          description = ''
+            A NixOS module layered into the sandbox image — packages, systemd units,
+            activation, anything NixOS offers. `null` means this contrib adds nothing
+            to the sandbox.
+
+            Must live inside the repo: the in-pod re-converge rebuilds the system from
+            a vendored copy of it, so a module reached from outside would be in the
+            image and missing from a `scooter-rebuild switch`. Anything the module
+            refers to relatively (`../../pkgs/…`) resolves the same on both sides.
+          '';
+        };
+      };
+    };
+
     services = mkOption {
       default = { };
       description = "Which services this contrib plugs into. Fixed key set, so a typo is an eval error.";
