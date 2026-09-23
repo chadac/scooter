@@ -14,6 +14,8 @@
 { lib, extraModules ? [ ] }:
 
 let
+  # A second module system, so the NixOS-side `imports` gets plain paths rather than
+  # config values it cannot read that early. Collapsing the two: #615.
   eval = lib.evalModules {
     specialArgs = { inherit lib; };
     modules = [ ./all-modules.nix ] ++ extraModules;
