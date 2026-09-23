@@ -4,7 +4,9 @@
 # Runtime, not compiled in, for the same reason /telemetry/config.json is: the UI
 # image is built once and deployed to clusters whose contrib set differs, so a
 # deployment changing that set must not mean recompiling the bundle. nginx serves
-# this at /contrib/manifest.json from a ConfigMap (modules/platform.nix).
+# it at /contrib/manifest.json from the UI image (pkgs/ui-image). Overriding it per
+# deployment needs no platform.nix option: a contrib is a module, so it can mkIf a
+# ConfigMap into the platform render itself.
 #
 # That is only possible because an icon is DATA here — a viewBox plus a single
 # path, read out of the contrib's own .svg — rather than a React component. A
