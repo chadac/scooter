@@ -2,6 +2,11 @@
 driven through the REAL /webhooks/slack HTTP endpoint — not the handlers in
 isolation.
 
+It still drives the real webhooks app (PR #588): the app is a check input, it
+discovers this contrib through the entry point, and the point of the test is the
+whole intake path — swapping in a bare FastAPI would drop the discovery + mount
+half of what it covers.
+
 WHY e2e and not unit: the previous dedup (#83) passed its unit tests yet killed
 Slack intake in prod, because the units mocked _handle_event / _handle_thread_message
 in isolation and never exercised the real twin-event delivery through the endpoint
@@ -25,8 +30,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import webhooks.app
-from webhooks.config import settings
-from webhooks.handlers import slack as slack_h
+from scooter_contrib_slack.config import settings
+from scooter_contrib_slack import webhooks_handler as slack_h
 
 BOT = "UBOT"
 CHANNEL = "C123"
@@ -94,10 +99,10 @@ def _env(existing: str | None = None):
     slack_h._DISPATCHED_MESSAGES.clear()
 
     with (
+        # The two gates this contrib owns. The trigger pattern it keys on is the
+        # deployment's and is bound by the conftest, not set here (#577).
         patch.object(settings, "slack_enabled", True),
         patch.object(settings, "slack_signing_secret", ""),   # bypass sig check
-        patch.object(settings, "mention_pattern", "@scooter"),
-        patch.object(settings, "ignore_usernames", ""),
         patch("webhooks.app.db") as app_db,
         patch.object(slack_h, "db") as db,
         patch.object(slack_h, "send_message", side_effect=spy_send),

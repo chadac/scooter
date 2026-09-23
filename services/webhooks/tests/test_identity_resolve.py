@@ -1,6 +1,10 @@
 """External-user → Scooter-user mapping (identity_resolve): fetch the invoking
 user's email per provider, then match a Scooter user via the agent-host /users/by-email.
-Best-effort: any miss -> None (unowned). See todo/IDENTITY_MAPPING.md."""
+Best-effort: any miss -> None (unowned). See todo/IDENTITY_MAPPING.md.
+
+github is the vehicle for the generic chain: slack's resolver left with its contrib
+(PR #588), and the app's only remaining resolver is github's.
+"""
 
 import httpx
 import pytest
@@ -30,29 +34,6 @@ def _patch(monkeypatch, handler):
 # --- per-provider email fetch -------------------------------------------------
 
 
-async def test_slack_email(monkeypatch):
-    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
-
-    def handler(req):
-        assert "users.info" in str(req.url)
-        assert req.headers["authorization"] == "Bearer xoxb-1"
-        return httpx.Response(200, json={"ok": True, "user": {"profile": {"email": "a@x.io"}}})
-
-    _patch(monkeypatch, handler)
-    assert await lib_identity.get_user_email("slack", "U123") == "a@x.io"
-
-
-async def test_slack_email_not_ok(monkeypatch):
-    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
-    _patch(monkeypatch, lambda req: httpx.Response(200, json={"ok": False, "error": "user_not_found"}))
-    assert await lib_identity.get_user_email("slack", "U123") is None
-
-
-async def test_slack_email_no_token(monkeypatch):
-    monkeypatch.setattr(settings, "slack_bot_token", "", raising=False)
-    assert await lib_identity.get_user_email("slack", "U123") is None
-
-
 async def test_github_public_email(monkeypatch):
     monkeypatch.setattr(settings, "github_token", "", raising=False)
 
@@ -76,43 +57,41 @@ async def test_unknown_provider(monkeypatch):
 # --- resolve_owner (email -> agent-host by-email) -----------------------------
 
 
-async def test_resolve_owner_full_chain(monkeypatch):
-    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
-    monkeypatch.setattr(settings, "agent_host_url", "http://agent-host:8080", raising=False)
+def _chain_handler(email: str | None, scooter_id: str | None):
+    """A transport that answers BOTH legs of the chain. /users/by-email is checked
+    first: the github user lookup is also a /users/ path, so ordering matters."""
 
     def handler(req):
-        if "users.info" in str(req.url):
-            return httpx.Response(200, json={"ok": True, "user": {"profile": {"email": "a@x.io"}}})
-        if "/users/by-email" in str(req.url):
-            assert req.url.params.get("email") == "a@x.io"
-            return httpx.Response(200, json={"id": "scooter-alice"})
-        return httpx.Response(404)
+        url = str(req.url)
+        if "/users/by-email" in url:
+            if scooter_id is None:
+                return httpx.Response(404)
+            assert req.url.params.get("email") == email
+            return httpx.Response(200, json={"id": scooter_id})
+        return httpx.Response(200, json={"login": "octocat", "email": email})
 
-    _patch(monkeypatch, handler)
-    assert await lib_identity.resolve_owner("slack", "U123") == "scooter-alice"
+    return handler
+
+
+async def test_resolve_owner_full_chain(monkeypatch):
+    monkeypatch.setattr(settings, "agent_host_url", "http://agent-host:8080", raising=False)
+    _patch(monkeypatch, _chain_handler("a@x.io", "scooter-alice"))
+    assert await lib_identity.resolve_owner("github", "octocat") == "scooter-alice"
 
 
 async def test_resolve_owner_no_email(monkeypatch):
-    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
-    _patch(monkeypatch, lambda req: httpx.Response(200, json={"ok": True, "user": {"profile": {}}}))
-    assert await lib_identity.resolve_owner("slack", "U123") is None
+    _patch(monkeypatch, _chain_handler(None, "scooter-alice"))
+    assert await lib_identity.resolve_owner("github", "octocat") is None
 
 
 async def test_resolve_owner_no_scooter_match(monkeypatch):
-    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
     monkeypatch.setattr(settings, "agent_host_url", "http://agent-host:8080", raising=False)
-
-    def handler(req):
-        if "users.info" in str(req.url):
-            return httpx.Response(200, json={"ok": True, "user": {"profile": {"email": "nobody@x.io"}}})
-        return httpx.Response(404)  # by-email: no match
-
-    _patch(monkeypatch, handler)
-    assert await lib_identity.resolve_owner("slack", "U123") is None
+    _patch(monkeypatch, _chain_handler("nobody@x.io", None))
+    assert await lib_identity.resolve_owner("github", "octocat") is None
 
 
 async def test_resolve_owner_empty_external_id(monkeypatch):
-    assert await lib_identity.resolve_owner("slack", "") is None
+    assert await lib_identity.resolve_owner("github", "") is None
 
 
 # --- privacy: personal data must not reach a structured log field ---------------
@@ -141,8 +120,7 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
 
     from webhooks import identity_resolve as ir
 
-    secret_id = "U-SECRET-SLACK-ID"
-    monkeypatch.setattr(ir.settings, "slack_bot_token", "xoxb-test", raising=False)
+    secret_id = "octocat-SECRET-LOGIN"
 
     class _Boom:
         def __init__(self, *a, **k):
@@ -160,7 +138,7 @@ async def test_no_raw_identifier_reaches_a_log_field(monkeypatch, caplog):
     monkeypatch.setattr(ir.httpx, "AsyncClient", _Boom)
 
     with caplog.at_level(_logging.WARNING):
-        await lib_identity.get_user_email("slack", secret_id)
+        await lib_identity.get_user_email("github", secret_id)
 
     assert caplog.records, "expected a warning to be logged"
     for rec in caplog.records:
@@ -182,24 +160,15 @@ async def test_success_logs_the_pseudonymized_SCOOTER_id_not_the_external_one(mo
     pseudonymized so a leaked log cannot be joined against a database dump."""
     import logging as _logging
 
-    external = "U-EXTERNAL-123"
+    external = "octocat"
     email = "alice@example.com"
     db_user_id = "scooter-user-abc123"
 
-    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-1", raising=False)
     monkeypatch.setattr(settings, "agent_host_url", "http://agent-host:8080", raising=False)
-
-    def handler(req):
-        if "users.info" in str(req.url):
-            return httpx.Response(200, json={"ok": True, "user": {"profile": {"email": email}}})
-        if "/users/by-email" in str(req.url):
-            return httpx.Response(200, json={"id": db_user_id})
-        return httpx.Response(404)
-
-    _patch(monkeypatch, handler)
+    _patch(monkeypatch, _chain_handler(email, db_user_id))
 
     with caplog.at_level(_logging.INFO):
-        got = await lib_identity.resolve_owner("slack", external)
+        got = await lib_identity.resolve_owner("github", external)
 
     assert got == db_user_id  # the caller still receives the real id
     rec = next(r for r in caplog.records if "resolved external user" in r.getMessage())

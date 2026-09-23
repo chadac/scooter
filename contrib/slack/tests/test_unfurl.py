@@ -9,7 +9,7 @@ import json
 
 import httpx
 
-from webhooks.responses import slack as slack_resp
+from scooter_contrib_slack import responses as slack_resp
 
 # asyncio_mode = "auto" (pyproject) — `async def test_*` run without extra markers.
 

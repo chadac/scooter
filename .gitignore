@@ -31,3 +31,7 @@ site/
 *.egg-info/
 __pycache__/
 .e2e-cluster/
+
+# Local-only copy of the contribs UI manifest (nix build .#contrib-ui-manifest).
+# Committing it would restore the build-time drift the runtime manifest removed.
+ui/public/contrib/

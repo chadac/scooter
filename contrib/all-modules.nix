@@ -6,9 +6,12 @@
   imports = [
     ./options.nix
 
+    ./airtable
     ./datadog
     ./echo
     ./gitlab
+    ./grafana
     ./jira
+    ./slack
   ];
 }

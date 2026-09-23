@@ -29,14 +29,18 @@ let
   # The databases that have an Atlas schema here AND are provisioned in this deploy
   # (postgres.nix only lists a consumer when its feature is enabled).
   #
-  # Matched on the CONSUMER KEY, which is not always the database name: agent-host
+  # The database set comes from `agentSandbox.db` (#606) — it used to be a hardcoded
+  # literal here, a second list that had to be kept in step with lib/sql by hand.
+  #
+  # The Job iterates the CONSUMER KEY, which is not always the database name: agent-host
   # registers `consumers.agent-host = { db = "agent_host"; … }`. The key names the
-  # per-consumer Secret (agent-pg-<key>); `c.db` names the database, the role, and
-  # the lib/sql directory. Keying the filter on the db name instead silently drops
-  # agent-host, whose tables NOTHING then creates (its stores stopped self-creating
-  # in #425) — so the Job must iterate keys and resolve `c.db` for everything else.
-  candidates = [ "webhooks" "scheduler" "broker" "byoc" "agent-host" ];
-  enabledKeys = builtins.filter (k: pcfg.consumers ? ${k}) candidates;
+  # per-consumer Secret (agent-pg-<key>); `c.db` names the database, the role, and the
+  # lib/sql directory. Keying on the db name instead silently drops agent-host, whose
+  # tables NOTHING then creates (its stores stopped self-creating in #425) — so the key
+  # is RESOLVED by matching `consumers.*.db` against the spec rather than written down,
+  # and that mismatch can no longer be introduced by editing one list and not the other.
+  enabledKeys = lib.attrNames
+    (lib.filterAttrs (_k: c: builtins.elem c.db cfg.dbSpec.databases) pcfg.consumers);
   # key -> the database/role/sql-dir name.
   dbOf = k: pcfg.consumers.${k}.db;
   # DB NAME -> the env var the migrator script looks up. Mirror the script's own

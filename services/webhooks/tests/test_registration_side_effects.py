@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from scooter_webhooks_lib import identity, resources
 
-IN_TREE_RESOLVERS = {"github", "slack"}
-IN_TREE_SHAPES = {"github", "slack"}
+IN_TREE_RESOLVERS = {"github"}
+IN_TREE_SHAPES = {"github"}
 
 
 def test_importing_the_app_registers_every_in_tree_resolver():

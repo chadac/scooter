@@ -110,7 +110,25 @@ in
     };
   };
 
-  config = lib.mkIf bcfg.enable {
+  # mkMerge: the table declarations are UNCONDITIONAL (see modules/db-spec.nix) —
+  # the tables exist in lib/sql whether or not this deployment runs the service —
+  # while everything else stays gated on `enable`. The gated body keeps its own
+  # indentation so this wrapper is the whole diff.
+  config = lib.mkMerge [
+  # The tables the `byoc` database holds (agentSandbox.db, #606).
+  {
+    agentSandbox.db.byoc = {
+      owner = "byoc-controller";
+      tables = {
+        remote_agents = {
+          writers = [ "byoc-controller" "agent-host" ];
+          note = "byoc-controller owns session_id; agent-host writes the status/last_seen badge.";
+        };
+        remote_agent_devices = { writers = [ "byoc-controller" ]; };
+      };
+    };
+  }
+  (lib.mkIf bcfg.enable {
     kubernetes.resources = lib.mkMerge [
       {
         deployments.byoc-controller = {
@@ -204,5 +222,6 @@ in
     # Register with the shared Postgres: the provisioning Job creates the `byoc` database + role
     # (secret agent-pg-byoc, referenced above).
     agentSandbox.postgres.consumers.byoc = { db = "byoc"; user = "byoc"; };
-  };
+  })
+  ];
 }

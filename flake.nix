@@ -363,11 +363,16 @@
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
+          # The contrib set is NOT an input here: its manifest is a file nginx serves
+          # and the UI fetches, so changing that set relinks an image layer instead of
+          # re-running vite. See contrib/ui-manifest.nix.
           ui = pkgs.callPackage ./ui { };
 
-          # UI OCI image: nginx serving the static build + proxying the agent-host.
+          # UI OCI image: nginx serving the static build + proxying the agent-host,
+          # plus the contribs' manifest at /contrib/manifest.json.
           uiImage = import ./pkgs/ui-image {
             inherit pkgs lib n2c ui;
+            contribManifest = contribs.uiManifest;
           };
 
           # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
@@ -607,6 +612,30 @@
                 };
               }).optionsJSON;
 
+            # `nix build .#db-spec` -> the lib/sql artifacts RENDERED from the
+            # `agentSandbox.db` module option (#606): the ownership manifest and atlas.hcl's
+            # per-database envs. `just db-generate` copies these into lib/sql and
+            # `just db-generate-check` fails CI on drift — so "which databases exist" and
+            # "who owns which table" have exactly one source. (The database LIST is not a
+            # third artifact: owners.toml's top-level sections are it.)
+            #
+            # Evaluated with an EMPTY agentSandbox config: the in-tree declarations are
+            # unconditional, so the artifacts don't depend on a deployment's feature
+            # flags. (A contrib declaring tables inside `mkIf cfg.enable` — stage 2 of
+            # #606 — is what makes them deployment-shaped; that is the point at which
+            # an out-of-tree deployment regenerates its own.)
+            db-spec =
+              let spec = (mkPlatform { }).config.agentSandbox.dbSpec; in
+              pkgs.runCommand "db-spec" {
+                ownersToml = spec.ownersToml;
+                atlasHcl = spec.atlasHcl;
+                passAsFile = [ "ownersToml" "atlasHcl" ];
+              } ''
+                mkdir -p $out
+                cp "$ownersTomlPath" $out/owners.toml
+                cp "$atlasHclPath"   $out/atlas.hcl
+              '';
+
             inherit agentHost ui broker webhooks scheduler;
 
             # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
@@ -615,11 +644,15 @@
             # surface into the broker image).
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
+            contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
+            contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-slack = contribs.packages.slack.broker;
+            contrib-slack-webhooks = contribs.packages.slack.webhooks;
 
             # nix build .#contribs-all -> every variant of every contrib, so ONE CI
             # target covers all of them and a new contrib is tested the moment it
@@ -689,6 +722,10 @@
             # nix build .#ui-image  ->  UI (nginx + static build) OCI image
             ui-image = uiImage.image;
 
+            # nix build .#contrib-ui-manifest  ->  the contribs' UI metadata as one
+            # JSON document; the UI image serves it at /contrib/manifest.json.
+            contrib-ui-manifest = contribs.uiManifest;
+
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             # (e2e/local flavor: bare side-loaded image names).
             platform-manifests = platform.config.kubernetes.resultYAML;
@@ -745,11 +782,15 @@
             contribs-all = contribsAll;
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
+            contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
+            contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-slack = contribs.packages.slack.broker;
+            contrib-slack-webhooks = contribs.packages.slack.webhooks;
             # The shared Python libraries (the lib split).
             inherit scooterLib scooterBrokerLib scooterWebhooksLib;
           } // devEnvTests // contribSandboxChecks;

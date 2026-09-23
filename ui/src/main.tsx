@@ -12,6 +12,7 @@ import { currentConversation, sessionStore } from "./sessions.js";
 import { loadConversations, loadConversationsResult, loadWhoami } from "./client.js";
 import { subscribeConversations } from "./conversationStream.js";
 import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
+import { loadContribManifest } from "./contribManifest.js";
 
 // Browser telemetry, configured at RUNTIME rather than build time: the image is built once
 // and deployed to clusters that may or may not have a collector, so a VITE_* flag baked
@@ -116,8 +117,16 @@ sessionStore.subscribe(() => {
   }
 });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+// The contrib manifest decides WHAT RENDERS — a source's label, its brand icon, which
+// filter chips exist — so unlike telemetry above (an observability side-effect no rendered
+// output depends on) the first paint WAITS for it, and no consumer has to be reactive.
+// The loader's 1.5s timeout is what makes blocking safe: a missing or hung
+// /contrib/manifest.json degrades to the built-in sources, never to a blank page.
+// Why: PR #601.
+void loadContribManifest().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+});
