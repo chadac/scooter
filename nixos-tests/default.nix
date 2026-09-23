@@ -50,7 +50,13 @@ in
   dev-env-injected-tool = runTest ./injected-tool.nix;
   # A deployment's .scooter/module.nix (a NixOS module declaring its own tools)
   # applied at runtime via switch-to-configuration. The no-rebuild injection path.
+  # HEAVY (nightly / `full-nixos-tests` label only) — see reconverge-eval below.
   dev-env-scooter-module = runTest ./scooter-module.nix;
+  # The eval half of dev-env-scooter-module, cheap enough to run on EVERY PR: the
+  # re-converge expression still evaluates in pure mode and instantiates its toplevel.
+  # The heavy VM test is nightly-only, so without this a pure-eval break is invisible
+  # until a red nightly nobody reads (#609). Fast eval-check, no VM.
+  dev-env-reconverge-eval = runTest ./reconverge-eval.nix;
   # The deployment-DEFAULT module fetch: broker-modules.nix fetches the broker's
   # default.tar.gz and imports the modules it contains; fail-safe to no imports when
   # unconfigured. A fast pure-eval check (not a VM); the in-pod switch is Tier-2.

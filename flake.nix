@@ -363,11 +363,16 @@
           };
 
           # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
+          # The contrib set is NOT an input here: its manifest is a file nginx serves
+          # and the UI fetches, so changing that set relinks an image layer instead of
+          # re-running vite. See contrib/ui-manifest.nix.
           ui = pkgs.callPackage ./ui { };
 
-          # UI OCI image: nginx serving the static build + proxying the agent-host.
+          # UI OCI image: nginx serving the static build + proxying the agent-host,
+          # plus the contribs' manifest at /contrib/manifest.json.
           uiImage = import ./pkgs/ui-image {
             inherit pkgs lib n2c ui;
+            contribManifest = contribs.uiManifest;
           };
 
           # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
@@ -560,6 +565,7 @@
             # surface into the broker image).
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
+            contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
@@ -636,6 +642,10 @@
             # nix build .#ui-image  ->  UI (nginx + static build) OCI image
             ui-image = uiImage.image;
 
+            # nix build .#contrib-ui-manifest  ->  the contribs' UI metadata as one
+            # JSON document; the UI image serves it at /contrib/manifest.json.
+            contrib-ui-manifest = contribs.uiManifest;
+
             # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
             # (e2e/local flavor: bare side-loaded image names).
             platform-manifests = platform.config.kubernetes.resultYAML;
@@ -692,6 +702,7 @@
             contribs-all = contribsAll;
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
+            contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;

@@ -7,6 +7,9 @@
  * for every known provider — rendering actually invokes the icon component, so a
  * dropped/renamed icon (an undefined `Icon`) throws here. A fast unit test now
  * guards it, not just the type-check.
+ *
+ * Scope is the app's OWN sources: a contrib's row is runtime data with no
+ * component to drop, and is covered in contribManifest.test.ts. Why: PR #601.
  */
 
 import { describe, it, expect } from "vitest";
@@ -15,7 +18,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { sourceLabel, SourceBadge } from "./sourceIcon.js";
 
-const KNOWN = ["github", "gitlab", "slack", "jira"];
+const KNOWN = ["github", "slack", "shell"];
 
 describe("sourceIcon", () => {
   it("RENDERS a real icon for every known provider (catches a dropped icon import)", () => {
@@ -36,9 +39,8 @@ describe("sourceIcon", () => {
 
   it("sourceLabel returns the brand label for known providers", () => {
     expect(sourceLabel("github")).toBe("GitHub");
-    expect(sourceLabel("gitlab")).toBe("GitLab");
     expect(sourceLabel("slack")).toBe("Slack");
-    expect(sourceLabel("jira")).toBe("Jira");
+    expect(sourceLabel("shell")).toBe("Shell");
   });
 
   it("sourceLabel falls back to the raw source for unknown providers", () => {

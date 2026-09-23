@@ -19,42 +19,18 @@
 let
   scooterFixture = ../nixos-tests/fixtures/scooter;
 
-  # The nixpkgs source the in-pod build imports. Copy it into the store as a
-  # concrete derivation output so it's a realised path the VM definitely has
-  # (a bare `pkgs.path` source ref isn't reliably present in the VM store).
-  nixpkgsSrc = pkgs.runCommand "nixpkgs-src" { } ''
-    cp -r ${pkgs.path} $out
-  '';
-
   # NOTE: devEnvNix.nixpkgs is pinned by base-config.nix itself (to `path:${nixpkgs}`,
   # the SAME source passed below), so the re-converge resolves OFFLINE against the
   # test's nixpkgs without a separate pin module here.
 
-  # The EXACT inputs the in-pod build feeds base-config.nix, from the SAME helper
-  # runtime-converge.nix uses (single source of truth). `modulesSrc` is a VENDORED
-  # tree (modules/sandbox-os + pkgs/broker-tools at a fixed layout), NOT the bare
-  # module dir: building `reconverged` with `sandboxModule` directly produces a
-  # DIFFERENT derivation than the runtime builds -> cache miss -> from-source build
-  # that hangs OFFLINE in the VM.
-  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
-
-  # Pre-build the re-converged toplevel (base config + the layered modules) so its
-  # closure is in the VM store and the in-pod build is a pure CACHE HIT (offline
-  # activation). MUST mirror what scooter-apply-module builds exactly — same
-  # modulesSrc, same nixpkgs, same module order — including the keep-backdoor module
-  # threaded via extraReconvergeModules.
-  reconverged = (import reconvergeInputs.baseConfig {
-    nixpkgs = toString nixpkgsSrc;
-    modulesPath = reconvergeInputs.modulesSrc;
-    system = pkgs.system;
-    extraModules = [
-      # base-config.nix now force-sets programs.scooterModule.{enable,nixpkgs} itself
-      # (so scooter-rebuild stays on PATH across the re-converge), so we no longer set
-      # nixpkgs here — a second mkForce would conflict.
-      ./fixtures/keep-backdoor.nix
-      "${scooterFixture}/module.nix"
-    ];
-  }).toplevel;
+  # The nixpkgs source + the pre-built re-converged toplevel, from the file the fast
+  # `dev-env-reconverge-eval` check shares — so that cheap per-PR check evaluates
+  # the SAME expression this VM seeds. Pre-seeding the toplevel's closure is what
+  # makes the in-pod build a pure CACHE HIT (offline activation) rather than a
+  # from-source rebuild that hangs in the VM.
+  reconverge = import ./reconverged.nix { inherit pkgs lib; };
+  inherit (reconverge) nixpkgsSrc;
+  reconverged = reconverge.toplevel;
 in
 pkgs.testers.runNixOSTest {
   name = "dev-env-scooter-module";
@@ -84,22 +60,28 @@ pkgs.testers.runNixOSTest {
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     virtualisation.diskSize = 6144;
 
-    # LAYER the runtime re-converge on top of the running system. scooter-apply-
-    # module builds its toplevel from the SHARED base config (modules/sandbox-os),
-    # which does NOT include the nixosTest framework's `backdoor.service` (the test
-    # control channel) — so without this, switch-to-configuration stops backdoor as
-    # a "removed" unit, the driver loses its connection, and
-    # `machine.succeed("scooter-apply-module")` HANGS to the 1h timeout. (This is
-    # the pre-existing reason dev-env-scooter-module failed on main; a real pod has
-    # no backdoor, so prod is unaffected.) extraReconvergeModules threads a module
-    # into EVERY re-converge that re-declares backdoor + keeps it across the switch,
-    # so the rebuilt toplevel reflects the currently-running system.
-    # The re-converge always layers keep-backdoor (so the test control channel
-    # survives the switch). The offline nixpkgs pin is no longer needed — base-config
-    # pins devEnvNix to the same nixpkgs source automatically.
-    programs.scooterModule.extraReconvergeModules = [
-      "${./fixtures/keep-backdoor.nix}"
-    ];
+    # Boot the bus the RE-CONVERGE will target. dbus-container.nix pins the classic
+    # daemon (+ marks it survive-a-switch) only under `boot.isContainer`, on the
+    # stated assumption that a VM can restart its bus cleanly — but base-config.nix
+    # forces isContainer = true, so the toplevel this test switches TO is a container
+    # config pinning classic dbus while the VM booted the stock broker. The switch
+    # then replaces the system bus it is itself talking to: switch-to-configuration
+    # dies mid-stop ("Failed to process dbus messages"), BEFORE activation, so
+    # /run/current-system never moves and the injected module appears not to apply.
+    # Pinning the same implementation here makes the unit match, and the base
+    # config's own survive-a-switch flags then keep it running. Why: PR #610.
+    services.dbus.implementation = lib.mkForce "dbus";
+
+    # LAYER the runtime re-converge on top of the running system. scooter-apply-module
+    # rebuilds from the SHARED base config (modules/sandbox-os), which in a VM differs
+    # from what actually booted — so the switch acts on differences that exist only
+    # here, several of which break the switch or the test. keep-vm-units.nix reconciles
+    # them (the driver's backdoor channel, the boot-apply unit); see that file for each
+    # case and why a pod is unaffected. The offline nixpkgs pin is no longer needed —
+    # base-config pins devEnvNix to the same nixpkgs source automatically.
+    # The SAME list the seeded toplevel layers (extraReconvergeModules takes Nix
+    # expression strings), so the in-pod build reproduces it exactly.
+    programs.scooterModule.extraReconvergeModules = map (m: "${m}") reconverge.vmModules;
   };
 
   testScript = ''

@@ -13,6 +13,7 @@ import { useSyncExternalStore } from "react";
 
 import type { AgentHostConfig } from "./client.js";
 import { Conversation } from "./conversation.js";
+import { contribLinkProviders } from "./contribManifest.js";
 
 export interface Session {
   /** STABLE identity. Never changes for the life of the conversation — including at the
@@ -82,9 +83,17 @@ const STORAGE_KEY = "kubenix-agent.sessions.v1";
 export type Scope = "mine" | "all";
 
 /** The known link providers — offered as icon filter chips AND as the "Show:"
- *  label-mode options. */
-export const LINK_PROVIDERS = ["github", "gitlab", "slack", "jira"] as const;
-export type LinkProvider = (typeof LINK_PROVIDERS)[number];
+ *  label-mode options. The app's own, then whatever the deployment's contribs
+ *  declare, so disabling a contrib removes its chip rather than leaving a dead
+ *  one. Open set, hence `string` and not a union.
+ *
+ *  A FUNCTION, not a const: the contrib half is fetched at runtime
+ *  (contribManifest.ts), so a list captured at module load would never carry a
+ *  contrib. Why: PR #601. */
+export function linkProviders(): readonly string[] {
+  return ["github", "slack", ...contribLinkProviders()];
+}
+export type LinkProvider = string;
 
 /** What a sidebar row displays: the conversation title, or the linked resource's
  *  name for a specific provider (falling back to the title when the row has no link
@@ -124,6 +133,12 @@ type State = {
 
 /** A brand-new, untouched conversation (default title, no messages yet). */
 const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
+
+/** Has the SERVER ever created this conversation? A session seeded locally (newSession /
+ *  freshState / deleteSession's replacement) is NOT server-backed until its first send
+ *  adopts a server id — until then it exists only in this tab. `serverCreated` alone
+ *  covers rows persisted by builds that predate `serverId`. */
+const isServerBacked = (s: Session): boolean => s.serverId !== undefined || s.serverCreated === true;
 
 /** The id the SERVER knows this conversation by. Match anything server-owned (list
  *  membership, a subagent's `parentId`) against THIS, never `id` — `id` is a local
@@ -202,9 +217,11 @@ const loadState = (): State => {
       // Search + provider filter are transient (a stale filter hiding every chat
       // after a refresh would baffle); the label mode persists like scope.
       query: "", providerFilter: [],
-      labelMode: (LINK_PROVIDERS as readonly string[]).includes(parsed.labelMode)
-        ? (parsed.labelMode as LabelMode)
-        : "title",
+      // Any string is accepted rather than checked against linkProviders(): this
+      // module initializes BEFORE the runtime manifest lands, so a contrib mode
+      // would be rejected as unknown. An unrecognized mode already degrades to
+      // the conversation title (sessionLabel). Why: PR #601.
+      labelMode: typeof parsed.labelMode === "string" ? (parsed.labelMode as LabelMode) : "title",
     };
   } catch (e) {
     // Finding #26: corrupt persisted state -> start fresh (recoverable), but log
@@ -410,7 +427,13 @@ export const sessionStore = {
     // 10s poll / SSE frame reconciles) is imperceptible and makes the flake impossible.
     // Per-row locking wasn't enough: it kept the editing row's data stable but the
     // merge still re-rendered the sidebar, and that reconciliation was the disruptor.
-    if (state.editingId !== undefined) return;
+    if (state.editingId !== undefined) {
+      // ...but ONLY while that row is still rendered. The input lives on the row, so once
+      // the row is gone nothing can clear the lock and the freeze is permanent — the
+      // sidebar stops reconciling for the rest of the session. Why: PR #611.
+      if (filteredSessions(state).some((s) => s.id === state.editingId)) return;
+      setState({ ...state, editingId: undefined });
+    }
     const serverIds = new Set(convs.map((c) => c.id));
     // Index by the SERVER id, which is what `convs` is keyed by. A conversation created on
     // its first send keeps its local key, so indexing by `s.id` would miss it and insert a
@@ -493,7 +516,12 @@ export const sessionStore = {
       // about rows it never mentioned. Why: PR #568.
       if (!authoritative) return true;
       if (s.parentId) return false; // an ended subagent — prune it
-      return !isPristine(s) || s.id === state.currentId;
+      if (s.id === state.currentId) return true;
+      // A row the server never created has no history and no sandbox: it can only shadow
+      // the real conversation it was meant to become. A title doesn't redeem it. Exempt:
+      // the CURRENT selection, which may be unsent and typed into. Why: PR #611.
+      if (!isServerBacked(s)) return false;
+      return !isPristine(s);
     });
     // Never end up with zero rows (e.g. server has convs but all local were
     // pristine and got dropped — the server ones remain, which is fine).
@@ -783,6 +811,32 @@ export function nestSubagents(sessions: Session[], activeId?: string): SidebarRo
     if (expand) for (const child of children) rows.push({ session: child, depth: 1, childCount: 0 });
   }
   return rows;
+}
+
+/** Split the sidebar's rows into the Starred / Recent sections, preserving order within
+ *  each. Routing is per CONVERSATION (serverKeyOf, starred if ANY row of it is), not per
+ *  row, and a conversation held twice renders once — `starred` is a per-row flag, so
+ *  routing by row put a double-held conversation in BOTH sections. Subagent rows follow
+ *  their parent's section; a dropped duplicate parent takes its children. Why: PR #611. */
+export function splitSections(rows: SidebarRow[]): { starred: SidebarRow[]; recent: SidebarRow[] } {
+  const starredKeys = new Set<string>();
+  for (const r of rows) if (r.session.starred) starredKeys.add(serverKeyOf(r.session));
+
+  const starred: SidebarRow[] = [];
+  const recent: SidebarRow[] = [];
+  const seen = new Set<string>();
+  // undefined = the current parent was a duplicate, so its children are dropped too.
+  let bucket: SidebarRow[] | undefined = recent;
+  for (const r of rows) {
+    const key = serverKeyOf(r.session);
+    if (r.depth === 0) {
+      bucket = seen.has(key) ? undefined : starredKeys.has(key) ? starred : recent;
+    }
+    if (!bucket || seen.has(key)) continue;
+    seen.add(key);
+    bucket.push(r);
+  }
+  return { starred, recent };
 }
 
 export function useSessions(): State {
