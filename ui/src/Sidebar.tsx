@@ -14,8 +14,9 @@ import {
   useSessions,
   filteredSessions,
   nestSubagents,
+  splitSections,
   sessionLabel,
-  LINK_PROVIDERS,
+  linkProviders,
   type LabelMode,
 } from "./sessions.js";
 import { LinkedResources } from "./LinkedResources.js";
@@ -309,19 +310,9 @@ export const Sidebar = memo(function Sidebar() {
   // AUTO-COLLAPSES a parent's subagents unless it (or a child) is the active
   // conversation — so an inactive conversation's subagents don't clutter the list.
   const rows = nestSubagents(filteredSessions(state), currentId);
-  // Split into STARRED / RECENT sections for the paper reskin. Subagent rows
-  // (depth > 0) follow their parent, so they inherit the parent's section — walk the
-  // flat list and route each depth-0 row (and the children after it) by `starred`.
-  // Order within each section is unchanged (byActivity already sorts starred first).
-  const starredRows: typeof rows = [];
-  const recentRows: typeof rows = [];
-  {
-    let bucket = recentRows;
-    for (const r of rows) {
-      if (r.depth === 0) bucket = r.session.starred ? starredRows : recentRows;
-      bucket.push(r);
-    }
-  }
+  // Split into STARRED / RECENT sections. Routing is per CONVERSATION, not per row, so a
+  // starred conversation can never also render in Recent. Why: PR #611.
+  const { starred: starredRows, recent: recentRows } = splitSections(rows);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // On mobile the sidebar is an overlay drawer; picking a conversation (or starting a
@@ -431,7 +422,7 @@ export const Sidebar = memo(function Sidebar() {
                 <InfoTip text="Only show conversations linked to the selected provider(s)." />
               </span>
               <div data-testid="provider-filter" className="flex flex-1 flex-wrap gap-1.5">
-                {LINK_PROVIDERS.map((p) => {
+                {linkProviders().map((p) => {
                   const active = providerFilter.includes(p);
                   return (
                     <Button
@@ -471,7 +462,7 @@ export const Sidebar = memo(function Sidebar() {
                 aria-label="What each row shows"
                 className="flex flex-1 gap-1 rounded-md border p-0.5"
               >
-                {(["title", ...LINK_PROVIDERS] as const).map((m) => {
+                {["title", ...linkProviders()].map((m) => {
                   const active = labelMode === m;
                   const lbl = m === "title" ? "Conversation title" : `${sourceLabel(m)} link name`;
                   return (

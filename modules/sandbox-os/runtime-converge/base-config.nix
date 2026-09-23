@@ -44,15 +44,30 @@ let
   # Discard the context up front so every derived value is byte-identical either way
   # (nixpkgs-src is guaranteed present out-of-band — system.extraDependencies / the baked
   # image closure — and the `import` below re-establishes the store dependency for eval).
-  nixpkgsStr = builtins.unsafeDiscardStringContext (toString nixpkgs);
+  #
+  # ONE exception, and it is why this file ALSO evaluates in pure mode (the nixosTest
+  # evaluates it through the flake): the values we READ THROUGH — `import`, `pathExists`
+  # — keep their context. A reconstructed absolute path proves nothing about which input
+  # it came from, so pure eval refuses to access it; a context-carrying value IS a store
+  # reference and works in both modes. Nothing EMBEDDED gains context, so the toplevel
+  # hashes identically either way. Why: PR #610.
+  nixpkgsArg = toString nixpkgs; # context PRESERVED — read through this, never embed it
+  nixpkgsStr = builtins.unsafeDiscardStringContext nixpkgsArg;
   hasPathPrefix = builtins.substring 0 5 nixpkgsStr == "path:";
+  prefixLen = if hasPathPrefix then 5 else 0;
   # The bare store-path STRING (no prefix). This is what programs.scooterModule.nixpkgs
   # must hold: applyModule interpolates it UNQUOTED as `nixpkgs = <bare path>;` into the
   # next re-converge's nix expr (a bare path literal), so a `path:`-prefixed value there
   # would break the second-generation build.
-  nixpkgsBare = builtins.substring (if hasPathPrefix then 5 else 0) (-1) nixpkgsStr;
-  # The bare filesystem path, as a real path for `import (… + "/nixos/…")`.
-  nixpkgsPath = /. + nixpkgsBare;
+  nixpkgsBare = builtins.substring prefixLen (-1) nixpkgsStr;
+  # What `import (… + "/nixos/…")` reads: the caller's own path/context when there is
+  # one, reconstructed absolute path only for the pod's context-free `nixpkgs =
+  # /nix/store/…;` literal (where eval is `--impure` anyway). `builtins.substring`
+  # retains its input's context, so stripping `path:` does not strip that.
+  nixpkgsPath =
+    if builtins.isPath nixpkgs then nixpkgs
+    else if builtins.hasContext nixpkgsArg then builtins.substring prefixLen (-1) nixpkgsArg
+    else /. + nixpkgsBare;
   # The `path:` string form (idempotent — don't double-prefix).
   nixpkgsRef = if hasPathPrefix then nixpkgsStr else "path:" + nixpkgsStr;
   # The baked sandbox-os source-tree ROOT: modulesPath is `<tree>/modules/sandbox-os`
@@ -60,15 +75,21 @@ let
   # image baked. Context-free so `programs.scooterModule.modulesTree` (a str option) holds
   # a plain store path; `builtins.storePath` (in runtime-converge.nix) re-adds it as a
   # valid dependency. `lib` isn't a fn arg here, so strip the fixed suffix with builtins.
-  modulesPathStr = builtins.unsafeDiscardStringContext (toString modulesPath);
+  modulesPathArg = toString modulesPath; # context PRESERVED — see nixpkgsPath above
+  modulesPathStr = builtins.unsafeDiscardStringContext modulesPathArg;
   modulesSubdir = "/modules/sandbox-os";
-  modulesTreeRoot =
-    builtins.substring 0 (builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir) modulesPathStr;
+  rootLen = builtins.stringLength modulesPathStr - builtins.stringLength modulesSubdir;
+  modulesTreeRoot = builtins.substring 0 rootLen modulesPathStr;
   # The nix-stubs bits reconverge-inputs.nix vendored, handed to stub-set.nix so
   # the re-converge rebuilds the stub overlay. Without it `pkgs.uv` / `pkgs.marimo`
   # / `pkgs.awscli2` are the REAL packages here and a self-modify re-fattens the
   # system. Null when absent (a nixosTest evaluating this bare). See PR #502.
-  stubBitsRoot = modulesTreeRoot;
+  # Read through the context-carrying value, same rule as nixpkgsPath: `pathExists` on
+  # a context-free absolute path is refused in pure eval. Only the context-free
+  # `modulesTreeRoot` is ever EMBEDDED.
+  stubBitsRoot =
+    if builtins.hasContext modulesPathArg then builtins.substring 0 rootLen modulesPathArg
+    else modulesTreeRoot;
   stubBits =
     if !builtins.pathExists (stubBitsRoot + "/nix-stubs/lock.nix") then null
     else {
@@ -77,9 +98,14 @@ let
       };
       flakeLock = stubBitsRoot + "/flake.lock";
       # The baked binary, not a fresh callPackage — that would compile Rust
-      # inside the pod on every self-modify.
-      nix-stubs = builtins.storePath
-        (builtins.readFile (stubBitsRoot + "/nix-stubs-bin"));
+      # inside the pod on every self-modify. storePath is banned in pure eval and
+      # appendContext yields an identical context — see `storeRef` in
+      # runtime-converge.nix, inlined here because this file is copied into the store
+      # as a LONE file and so cannot import a sibling.
+      nix-stubs =
+        let p = builtins.readFile (stubBitsRoot + "/nix-stubs-bin"); in
+        if builtins ? currentSystem then builtins.storePath p
+        else builtins.appendContext p { ${p} = { path = true; }; };
     };
 
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {

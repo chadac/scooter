@@ -1,4 +1,4 @@
-{ pkgs, lib, n2c, ui, ... }:
+{ pkgs, lib, n2c, ui, contribManifest ? null, ... }:
 
 # OCI image for the conversation UI: nginx serving the static assistant-ui build
 # and reverse-proxying the agent-host API (and the broker's /s/ shares) on the
@@ -114,6 +114,18 @@ let
         location = /telemetry/config.json {
           default_type application/json;
           return 200 '{"enabled":''${TELEMETRY_ENABLED},"sampleRatio":''${TELEMETRY_SAMPLE_RATIO}}';
+        }
+
+        # The enabled contribs' UI metadata, fetched at load. A separate FILE, not
+        # part of the bundle: changing a deployment's contrib set then relinks this
+        # layer instead of re-running vite. Exact match so it beats the SPA handler,
+        # which would answer index.html and make a missing manifest look like a
+        # parse error rather than "no contribs". Why: PR #601.
+        location = /contrib/manifest.json {
+          default_type application/json;
+          ${if contribManifest == null
+            then "return 200 '{}';"
+            else "alias ${contribManifest};"}
         }
 
         # `Connection ""` on every agent-host location, not just the SSE ones: it clears

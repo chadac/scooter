@@ -54,6 +54,111 @@ let
       meta.description = "Scooter contrib module: ${name} (${svc})";
     };
 
+  # Tier 1 of the UI surface: METADATA only -- a brand row and tool-card entries
+  # the app already keys off a hardcoded name. A contrib shipping React
+  # components (a RightPanel tab) is tier 2 and lands with the first feature
+  # that needs one. Why: PR #601.
+  sourceModule = {
+    options = {
+      label = mkOption {
+        type = types.str;
+        example = "GitLab";
+        description = "Human name for this contrib's resources.";
+      };
+      icon = mkOption {
+        type = types.path;
+        example = literalExpression "./icon.svg";
+        description = ''
+          The brand mark, as an SVG file in this contrib's own directory: a viewBox
+          and a single <path d=…>, which contrib/ui-manifest.nix reads into the
+          runtime manifest. A file rather than an icon-pack name because the
+          manifest is fetched at runtime — resolving a name in the browser would
+          mean bundling a whole react-icons pack. Simple Icons (CC0) is a good
+          source.
+        '';
+      };
+      color = mkOption {
+        type = types.str;
+        default = "currentColor";
+        description = ''
+          Brand color for the mark. `currentColor` inherits the theme -- use it for
+          a mark whose brand color vanishes in one of the two themes.
+        '';
+      };
+      linkProvider = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Whether this source is a linked-resource provider, hence offered as a
+          sidebar filter chip and a "Show:" label mode. False for a contrib that
+          only renders tool cards.
+        '';
+      };
+    };
+  };
+
+  toolModule = {
+    options = {
+      argKey = mkOption {
+        type = types.str;
+        example = "body";
+        description = "Which tool argument holds the text the card shows.";
+      };
+      action = mkOption {
+        type = types.str;
+        example = "commented on GitLab";
+        description = "Short verb for the card header.";
+      };
+      titles = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = literalExpression ''[ "Comment on the GitLab MR" ]'';
+        description = ''
+          The tool's registerTool `title`s, accepted as a fallback: some ACP paths
+          surface the title instead of the "<server>: <Name>" form. Matched
+          case-insensitively.
+        '';
+      };
+    };
+  };
+
+  uiModule = { config, ... }: {
+    options = {
+      enable = mkOption {
+        type = types.bool;
+        description = ''
+          Contribute UI metadata. Defaults to true once `source` or `tools` is
+          set, so a declared row cannot silently render nothing; set it false to
+          build the contrib with its UI half dropped.
+        '';
+      };
+
+      source = mkOption {
+        type = types.nullOr (types.submodule sourceModule);
+        default = null;
+        description = ''
+          This contrib's row in the UI's source table -- the label, brand icon and
+          color shown for its linked resources and tool cards. Keyed by the
+          contrib name.
+        '';
+      };
+
+      tools = mkOption {
+        type = types.attrsOf (types.submodule toolModule);
+        default = { };
+        example = literalExpression ''
+          { gitlab_comment = { argKey = "body"; action = "commented on GitLab"; }; }
+        '';
+        description = ''
+          How this contrib's agent tools render as message cards, keyed by tool
+          NAME (the identity the UI normalizes an incoming call down to).
+        '';
+      };
+    };
+
+    config.enable = lib.mkDefault (config.source != null || config.tools != { });
+  };
+
   serviceModule = svc: { ... }: {
     options = {
       enable = mkEnableOption "the ${svc} half of this contrib";
@@ -113,6 +218,16 @@ in
       default = "scooter_contrib_${name}";
       readOnly = true;
       description = "Import name. Fixed by convention; entry points resolve through it.";
+    };
+
+    ui = mkOption {
+      default = { };
+      type = types.submodule uiModule;
+      description = ''
+        What this contrib contributes to the frontend. Rendered into the runtime
+        manifest the UI fetches (contrib/ui-manifest.nix), so changing a
+        deployment's contrib set needs no UI rebuild.
+      '';
     };
 
     services = mkOption {

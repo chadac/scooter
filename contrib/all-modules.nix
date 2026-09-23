@@ -6,6 +6,7 @@
   imports = [
     ./options.nix
 
+    ./airtable
     ./datadog
     ./echo
     ./gitlab
