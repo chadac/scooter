@@ -62,16 +62,19 @@ async def authenticate(request: Request) -> Identity:
     username = status.user.username if status.user else ""
 
     # Approver SAs (e.g. the agent-host relaying a user's approve/deny) aren't
-    # sandboxes — they have no conversation_id but may approve. The sandbox-control
-    # SAs (the agent-host driving the lifecycle API) are admitted the same way: a
-    # non-sandbox SA that authenticated, so a route can gate on the control list.
-    # Both are unioned here so a control SA that isn't in the AWS approver list
-    # still authenticates (it would otherwise 403 on the _SA_PATTERN check below).
+    # sandboxes — they have no conversation_id but may approve, so they are
+    # admitted here rather than failing the _SA_PATTERN check below.
+    #
+    # This used to union a second list, sandbox_control_service_accounts, for the
+    # agent-host driving the broker's sandbox-lifecycle API. #584 moved that API
+    # to the agent-host and deleted the setting, but left this read — and pydantic
+    # raises AttributeError for a field that isn't declared, so EVERY caller got a
+    # 500 here. Don't reintroduce the union: the broker has no lifecycle API to
+    # gate, and the agent-host authenticates via the approver list above.
     approvers = {s.strip() for s in settings.aws_approver_service_accounts.split(",") if s.strip()}
-    control = {s.strip() for s in settings.sandbox_control_service_accounts.split(",") if s.strip()}
-    if username in approvers or username in control:
+    if username in approvers:
         return Identity(conversation_id="", namespace=settings.sandbox_namespace,
-                        service_account=username, is_approver=(username in approvers))
+                        service_account=username, is_approver=True)
 
     m = _SA_PATTERN.match(username or "")
     if not m:
