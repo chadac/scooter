@@ -1,19 +1,21 @@
 # Carry-over from the legacy pkgs/sandbox-image: the broker tooling + the boot
 # steps its entrypoint.sh performed, ported to the NixOS dev-environment image so
 # the agent-host's exec'd commands work unchanged (broker whoami, brokered git
-# clone, AWS credential_process).
+# clone).
 #
 # What moves where:
-#   - the three broker tools (agent-broker, git-credential-broker, scooter-aws*)
-#     -> packages on PATH (same scripts, ONE source of truth — read verbatim from
-#        pkgs/sandbox-image + services/broker, so they can't drift);
+#   - the broker tools (agent-broker, git-credential-broker) -> packages on PATH
+#     (same scripts, ONE source of truth — read verbatim from pkgs/broker-tools, so
+#     they can't drift);
 #   - `git config --global credential.helper broker`  (entrypoint configure_git_broker)
-#     -> a oneshot systemd service at boot;
-#   - render ~/.aws/config from the accounts ConfigMap  (entrypoint configure_aws)
 #     -> a oneshot systemd service at boot.
-# The pod env/volumes (HOME, BROKER_URL, BROKER_TOKEN_PATH, AWS_ACCOUNTS_FILE, the
-# broker token + aws-accounts mounts) are still set by the provisioner — these
-# units just consume them, exactly as the old entrypoint did.
+# The pod env/volumes (HOME, BROKER_URL, BROKER_TOKEN_PATH, the broker token mount)
+# are still set by the provisioner — these units just consume them, exactly as the
+# old entrypoint did.
+#
+# The aws third of this file — the scooter-aws CLIs, the awscli2 stub and the
+# ~/.aws/config render — is contrib/aws/sandbox.nix now. It still reads `home`
+# below, which is the one place that path is declared. Why: #599.
 #
 # The writable Nix store the old entrypoint faked with an overlay is NATIVE here
 # (NixOS has a real store), so that job is dropped.
@@ -29,28 +31,17 @@ let
   # nixpkgs.pkgs). The relative path resolves in the in-pod runtime-converge build
   # too (the modulesTree vendors pkgs/broker-tools at the same layout).
   brokerTools = pkgs.callPackage ../../pkgs/broker-tools { };
-  scooterAwsCredentials = brokerTools.scooter-aws-credentials;
-
-  # awscli2 (+ its python closure) is ~449 MB — too heavy to bake for a tool most
-  # conversations never use. modules/sandbox-os/stubs.nix declares it, so
-  # `pkgs.awscli2` here is a nix-stubs SHIM: the image carries the build recipe and
-  # the real aws-cli materializes into the writable store the first time the agent
-  # runs `aws`. The credential_process (scooter-aws-credentials, python) is a
-  # separate broker tool and stays eager.
-  #
-  # No fallback branch any more: the shim arrives through the pkgs the image is
-  # built with, so a nixosTest importing this module bare just gets the real
-  # package — same expression, no conditional.
 in
 {
   options.programs.scooterCarryOver = {
-    enable = lib.mkEnableOption "the broker/git/aws carry-over from the legacy sandbox image";
+    enable = lib.mkEnableOption "the broker/git carry-over from the legacy sandbox image";
 
     # The agent-host execs commands with HOME pinned to the writable workspace
     # (see k8sProvisioner). systemd PID 1 resets its OWN HOME to /root, so the
     # boot-time config units can't read the container's HOME from PID 1's environ
     # — they target this path directly so they write where the agent's git/aws
-    # will actually read.
+    # will actually read. Declared here and read by contrib/aws/sandbox.nix too,
+    # so the git and aws renders cannot disagree about where the agent's HOME is.
     home = lib.mkOption {
       type = lib.types.str;
       default = "/workspace";
@@ -59,10 +50,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = brokerTools.all ++ [
-      pkgs.git
-      pkgs.awscli2   # a nix-stubs shim; realises the real aws-cli on first `aws` call
-    ];
+    environment.systemPackages = brokerTools.all ++ [ pkgs.git ];
 
     # configure_git_broker: point git's credential helper at the broker, once the
     # broker URL is known. Writes $HOME/.gitconfig (HOME = /workspace, set by the
@@ -85,27 +73,6 @@ in
           mkdir -p ${lib.escapeShellArg cfg.home}
           ${pkgs.git}/bin/git config --file ${lib.escapeShellArg "${cfg.home}/.gitconfig"} credential.helper broker || true
           echo "git credential helper -> broker ($broker_url) in ${cfg.home}/.gitconfig"
-        fi
-      '';
-    };
-
-    # configure_aws: render ~/.aws/config from the mounted accounts ConfigMap, one
-    # [profile <name>] per account wired to the credential_process helper.
-    systemd.services.scooter-aws-config = {
-      description = "Render ~/.aws/config from the accounts ConfigMap";
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        accts=$(tr '\0' '\n' < /proc/1/environ | sed -n 's/^AWS_ACCOUNTS_FILE=//p' | head -1)
-        accts="''${accts:-/etc/agent-sandbox/aws/accounts.json}"
-        if [ -r "$accts" ]; then
-          mkdir -p ${lib.escapeShellArg "${cfg.home}/.aws"}
-          if ${scooterAwsCredentials}/bin/scooter-aws-credentials --render-config "$accts" > ${lib.escapeShellArg "${cfg.home}/.aws/config"} 2>/dev/null; then
-            echo "rendered ${cfg.home}/.aws/config from $accts"
-          fi
         fi
       '';
     };

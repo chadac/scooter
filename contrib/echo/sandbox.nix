@@ -3,8 +3,9 @@
 # A plain NixOS module, layered into the sandbox-os config at image build and
 # re-derived from the vendored source by every in-pod re-converge. Everything NixOS
 # offers is available: packages, systemd units, activation, environment.
-# aws is the real consumer (the `~/.aws/config` render + the awscli2 stub that
-# modules/sandbox-os/carry-over.nix carries today). See #599.
+# contrib/aws/sandbox.nix is the real one (the `~/.aws/config` render + the awscli2
+# stub); this stays as the fixture for the DISABLED-contrib path, which a shipped
+# contrib cannot exercise. See #599.
 { pkgs, ... }:
 
 {

@@ -7,6 +7,7 @@
     ./options.nix
 
     ./airtable
+    ./aws
     ./datadog
     ./echo
     ./gitlab

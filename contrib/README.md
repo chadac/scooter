@@ -84,10 +84,15 @@ systemd units, activation:
 ```nix
 contribs.aws = {
   src = ./.;
-  services.broker.enable = true;
   sandbox.module = ./sandbox.nix;    # a plain NixOS module
 };
 ```
+
+A contrib may ship **only** a sandbox half, as `aws` does today: it needs no
+`services.*.enable`, and no Python package is built for it. `contrib/aws/` is the
+worked example — the `scooter-aws` CLIs, the `awscli2` stub and the
+`~/.aws/config` render, which `modules/sandbox-os/carry-over.nix` carried until
+the surface existed.
 
 There is no separate schema for packages or services: a package is
 `environment.systemPackages` inside that module, a daemon is a
@@ -111,8 +116,10 @@ to produce them, so a sandbox half that reaches for one fails at eval. Keep the
 sandbox module to `pkgs` and plain NixOS config; a contrib may still take those
 args for its *service* half, which this eval never forces.
 
-See `contrib/echo/sandbox.nix` for the reference, and the
-`dev-env-contrib-sandbox` check for what is asserted.
+See `contrib/aws/sandbox.nix` for the shipped one and `contrib/echo/sandbox.nix`
+for the fixture (echo is `enable = false`, so it covers the disabled-contrib path
+a shipped contrib cannot), and the `dev-env-contrib-sandbox` check for what is
+asserted.
 
 ### Extending the preset
 
