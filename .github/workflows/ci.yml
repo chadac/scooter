@@ -747,7 +747,15 @@ jobs:
     # `e2e-full` label is never mistaken for one the full target verified.
     if: always() && needs.e2e-full-distribute.result == 'success'
     runs-on: ubuntu-latest
+    # The verdict comment (below) edits a PR comment; the default token is read-only.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
+      # FIRST, before the artifact downloads: actions/checkout cleans the workspace,
+      # so a checkout placed after them deletes the reports it would compare.
+      - uses: actions/checkout@v5
+
       - name: gate on shard results
         env:
           SHARDS_RESULT: ${{ needs.e2e-full-shard.result }}
@@ -804,6 +812,88 @@ jobs:
           # 90d, not 14d: a baseline needs a window long enough to show the spread.
           retention-days: 90
           if-no-files-found: ignore
+
+      # THE BASELINE. Deliberately NOT `--status success` (which the weights fetch
+      # above still uses): this workflow's conclusion covers every job in it, so one
+      # unrelated red job — the nixosTest has been red for weeks — would void the
+      # comparison. And the full suite itself has not been green since 2026-08-24,
+      # so a success filter here selects nothing, forever. What this needs is the
+      # last run that PRODUCED A REPORT, which is exactly what #564 started retaining.
+      - name: fetch baseline e2e-full report (last run on the default branch)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          mkdir -p baseline
+          # Walk back from newest: the artifact expires (90d) and a run that died
+          # before `merge reports` has none, so "most recent" is not "has one".
+          runs=$(gh run list --workflow "${{ github.workflow }}" --branch "$DEFAULT_BRANCH" \
+            --limit 20 --json databaseId,headSha,createdAt \
+            --jq '.[] | "\(.databaseId) \(.headSha) \(.createdAt)"' 2>/dev/null || true)
+          # A WINDOW, not one run. Against a single baseline the suite's own
+          # night-to-night churn (~7 specs each way, no change between them) reads
+          # as regressions — see scripts/e2e-full-compare.mjs.
+          found=0 newest=""
+          while read -r id sha created; do
+            [ -n "${id:-}" ] || continue
+            [ "$found" -ge 5 ] && break
+            # Skip ourselves: on the nightly, this run IS the newest run on main.
+            if [ "$id" = "${{ github.run_id }}" ]; then continue; fi
+            if gh run download "$id" --name e2e-full-report --dir "baseline/$id" 2>/dev/null; then
+              found=$((found + 1))
+              [ -z "$newest" ] && newest="${DEFAULT_BRANCH}@${sha:0:7} (${created%T*})"
+              echo "baseline run $id (${sha:0:7}, $created)"
+            fi
+          done <<< "$runs"
+          if [ "$found" -gt 0 ]; then
+            echo "BASELINE_REF=$newest" >> "$GITHUB_ENV"
+            echo "baseline window: $found run(s)"
+          else
+            echo "no run on $DEFAULT_BRANCH carries an e2e-full-report — no baseline this time"
+          fi
+
+      # The verdict. The full suite is flaky night to night (13/7/12 failures on
+      # three consecutive nightlies, only partly overlapping), so the failure COUNT
+      # is not a signal and the bare red check taught a reader nothing. The diff
+      # against main is the signal: what this run broke, versus what was already red.
+      - name: compare against the baseline
+        if: always()
+        continue-on-error: true
+        id: compare
+        env:
+          MATRIX: ${{ needs.e2e-full-distribute.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          base=()
+          while IFS= read -r f; do
+            [ -n "$f" ] && base+=(--baseline "$f")
+          done < <(find baseline -name report.json 2>/dev/null | sort)
+          if [ ${#base[@]} -gt 0 ]; then base+=(--baseline-ref "${BASELINE_REF:-unknown}"); fi
+          # A lost shard's specs are absent from the merge, which set difference reads
+          # as "passed" — the compare script voids the diff instead when this is short.
+          shards=$(echo "$MATRIX" | jq '.include | length')
+          node scripts/e2e-full-compare.mjs report.json "${base[@]}" \
+            --expected-shards "$shards" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      # PR only: the nightly has no PR to comment on, and its verdict is in the step
+      # summary above. Sticky, so a re-run replaces the verdict instead of stacking one.
+      - name: post the verdict on the PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('comment.md') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          marker='<!-- e2e-full-report -->'
+          printf '%s\n\n' "$marker" | cat - comment.md > body.md
+          .github/scripts/sticky-comment.sh "$marker" body.md
 
   # e2e fast — Playwright through the UI against the fake-agent stack (no
   # cluster/model). SHARDED across N parallel runners (default 4): distribute →

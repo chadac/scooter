@@ -170,6 +170,26 @@ second cluster.
 | `e2e-full-flake-check` | flake focus full (k3d, targeted ×5) | **full** — a real k3d cluster |
 | `e2e-full` | e2e full (k3d) | the whole full suite, once |
 
+### Reading the `e2e-full` verdict
+
+**`e2e-full` is ALSO path-gated.** The label alone is not enough: the job runs only
+when the change touches the `platform` path filter. Label a PR that only touches
+`ui/` and the job *skips* — the label looks applied and nothing runs, which is not
+the same as a pass.
+
+When it does run, it posts a sticky comment diffing this run against a **window of
+the last few full runs on `main`** — new failures / still failing / newly passing.
+Read the diff, not the red check. The full suite is flaky night to night (three
+consecutive nightlies failed 13, 7 and 12 specs with only partial overlap), so the
+failure *count* carries almost no information; "failed here and passed in every
+baseline run" is the part attributable to your change. A spec listed as "red in 1/5
+baseline runs" is a flake to take to `e2e-full-flake-check`, not a regression.
+
+Two cases where the comment deliberately refuses to give a verdict: no baseline was
+retained, and a shard died before writing its report (its specs are then absent from
+the merge, which a set difference would happily render as a page of green "newly
+passing" rows nobody verified).
+
 **Which one you need depends on where the flake was seen.** A flake reported by
 the nightly `e2e-full` usually cannot reproduce on the fast target at all: the
 fast stack has no sandbox pods, so it has no cold boots, no node CPU saturation,
