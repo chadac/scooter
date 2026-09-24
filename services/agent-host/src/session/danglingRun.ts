@@ -67,7 +67,7 @@ export interface RunOrigin {
  * dangling — preserving the original behaviour rather than silently skipping a resume
  * a rollout depends on.
  */
-function isOwnRun(started: { host?: string; gen?: number }, self?: RunOrigin): boolean {
+export function isOwnRun(started: { host?: string; gen?: number }, self?: RunOrigin): boolean {
   if (!self || started.host === undefined) return false; // unknown origin -> treat as foreign
   if (started.host !== self.host) return false; // a different pod started it
   // Same pod, EARLIER generation: the conversation was reassigned away and back, so
@@ -148,4 +148,24 @@ export function orphanRuns(events: AguiEvent[]): OrphanRun[] {
   return [...started]
     .filter(([runId]) => !ended.has(runId))
     .map(([runId, threadId]) => ({ runId, threadId }));
+}
+/**
+ * The runs the heal pass must NOT close: the conversation's current run, plus every
+ * run this pod started under its CURRENT assignment.
+ *
+ * The positional half alone is self-defeating — the pass appends its terminals at the
+ * END of the log, so the next pass reads a terminal at the tail, protects nothing, and
+ * closes the live run it just spared. The origin half is stable under those appends.
+ *
+ * An own run at an EARLIER generation stays closable: that is the reassigned-away-and-
+ * back case the heal pass exists for. Why: PR #618.
+ */
+export function protectedRunIds(events: AguiEvent[], self?: RunOrigin): Set<string> {
+  const keep = new Set<string>();
+  const tail = tailOpenRun(events);
+  if (tail) keep.add(tail.runId);
+  for (const e of events) {
+    if (e.type === "RUN_STARTED" && isOwnRun(e, self)) keep.add(e.runId);
+  }
+  return keep;
 }

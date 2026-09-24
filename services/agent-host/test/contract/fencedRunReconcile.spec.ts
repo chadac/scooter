@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { danglingRunInfo, orphanRuns, tailOpenRun } from "../../src/session/danglingRun.js";
+import { danglingRunInfo, orphanRuns, tailOpenRun, protectedRunIds } from "../../src/session/danglingRun.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
 const ev = (o: Record<string, unknown>) => o as unknown as AguiEvent;
@@ -383,5 +383,88 @@ describe("adopting a conversation whose own run is STILL IN FLIGHT", () => {
     await sessions.reviveFromMirror(conv.id as SessionId, 2);
 
     expect(openRuns(dump()), "only the live run survives").toEqual(["current"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The heal pass must not defeat its OWN protection on the next invocation.
+//
+// Live evidence (PR #618's first CI run, flake focus full, conversation 615fd95f).
+// Two reconciles 92ms apart, the second reading the first's append:
+//
+//   10:22:50.192  acp prompt: sending   run-0c9a4c7d          (pod A, waiting on a cold pod)
+//   10:22:51.309  acp prompt: sending   run-556a7274          (resume nudge, blocks:2)
+//   10:22:53.510  closed runs left open by a hand-off  run-0c9a4c7d   events_seen:27
+//   10:22:53.602  closed runs left open by a hand-off  run-556a7274   events_seen:28
+//   10:23:00.581  acp prompt: returned  run-0c9a4c7d          (still alive)
+//
+// Pass 1 spared the tail (556a7274) and closed the other — but its terminal is
+// appended at the END, so pass 2 read a terminal at the tail, protected nothing, and
+// closed the run pass 1 had just spared. A positional guard cannot survive its own
+// writes; the origin stamp can.
+// ---------------------------------------------------------------------------
+
+describe("two heal passes in a row (the second reads the first's append)", () => {
+  const ownOpen = (runId: string, gen: number): AguiEvent[] => [
+    ev({ type: "RUN_STARTED", threadId: "c", runId, host: "new-pod", gen }),
+    ev({ type: "TEXT_MESSAGE_START", messageId: `m-${runId}`, role: "assistant" }),
+  ];
+
+  it("does not close on the second pass what the first pass protected @proves", async () => {
+    const { store, dump } = seededStore("t1", [
+      ...ownOpen("run-0c9a4c7d", 2),
+      ...ownOpen("run-556a7274", 2),
+    ] as never);
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store, selfPod: "new-pod",
+    } as never);
+    const conv = await sessions.start("t1" as never);
+
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+
+    expect(openRuns(dump()), "both runs are this pod's, at this generation").toEqual([
+      "run-0c9a4c7d",
+      "run-556a7274",
+    ]);
+  });
+
+  it("still closes a FOREIGN orphan across repeated passes", async () => {
+    // The protection must not become "close nothing": a previous owner's truncated run
+    // is exactly what the pass exists for, and repeat passes must stay idempotent.
+    const { store, dump } = seededStore("t1", [
+      ...truncatedRun("left-by-old-pod"),
+      ...completeRun("later"),
+      ...ownOpen("mine", 2),
+    ] as never);
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store, selfPod: "new-pod",
+    } as never);
+    const conv = await sessions.start("t1" as never);
+
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+    const afterFirst = dump().filter((e) => e.type === "RUN_FINISHED").length;
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+
+    expect(openRuns(dump()), "the foreign orphan closed; mine survives").toEqual(["mine"]);
+    expect(dump().filter((e) => e.type === "RUN_FINISHED").length, "idempotent").toBe(afterFirst);
+  });
+
+  it("an own run at an EARLIER generation is still closable", async () => {
+    // Reassigned away and back: gen 1's run is genuinely stranded even though the host
+    // name matches, so the origin half of the protection must not cover it.
+    const { store, dump } = seededStore("t1", [
+      ...ownOpen("stale-gen", 1),
+      ...completeRun("later"),
+      ...ownOpen("current", 2),
+    ] as never);
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store, selfPod: "new-pod",
+    } as never);
+    const conv = await sessions.start("t1" as never);
+
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+
+    expect(openRuns(dump())).toEqual(["current"]);
   });
 });
