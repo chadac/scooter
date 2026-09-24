@@ -99,6 +99,24 @@ export interface OrphanRun {
 }
 
 /**
+ * The run at the TAIL that has no terminal — the conversation's CURRENT run,
+ * whoever started it — or null if the last run completed.
+ *
+ * Deliberately ownership-blind, unlike `danglingRunInfo`, which answers the
+ * narrower "is the tail run STRANDED?" and so returns null for a run this pod is
+ * driving right now. Using that as the "don't close this one" exclusion inverts
+ * on exactly the runs it must protect. Why: PR #608.
+ */
+export function tailOpenRun(events: AguiEvent[]): OrphanRun | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") return null; // last run completed
+    if (e.type === "RUN_STARTED") return { runId: e.runId, threadId: e.threadId };
+  }
+  return null; // no run markers at all
+}
+
+/**
  * Every run in `events` with a RUN_STARTED and no RUN_FINISHED/RUN_ERROR, oldest
  * first.
  *

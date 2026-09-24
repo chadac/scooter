@@ -14,7 +14,7 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
-import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
+import { danglingRunInfo, orphanRuns, tailOpenRun } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
@@ -1072,7 +1072,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // controller keeps a single hostPod, and the fence stops the old owner — so
         // nobody else can be driving these runs. The run that is genuinely in
         // flight (if any) is excluded below.
-        const inFlight = danglingRunInfo(events, self)?.runId;
+        // Ownership-BLIND on purpose: danglingRunInfo returns null for a run this pod is
+        // driving, which left our own in-flight run unexcluded. Why: PR #608.
+        const inFlight = tailOpenRun(events)?.runId;
         const orphans = orphanRuns(events).filter((o) => o.runId !== inFlight);
         for (const o of orphans) {
           await store.appendEvent(id as SessionId, {

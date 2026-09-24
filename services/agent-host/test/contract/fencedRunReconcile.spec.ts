@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { danglingRunInfo, orphanRuns } from "../../src/session/danglingRun.js";
+import { danglingRunInfo, orphanRuns, tailOpenRun } from "../../src/session/danglingRun.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
 const ev = (o: Record<string, unknown>) => o as unknown as AguiEvent;
@@ -73,16 +73,78 @@ describe("a fence-truncated run followed by a later COMPLETED run", () => {
 });
 
 describe("isOwnRun is not the cause", () => {
-  it("RUN_STARTED carries no host/gen in production, so a foreign run is not skipped", () => {
-    // bridge.ts emits `{ type: "RUN_STARTED", threadId, runId }` — host and gen are
-    // optional on the type and never populated. isOwnRun therefore returns false
-    // (unknown origin -> foreign), so it cannot be what suppresses detection.
+  it("an un-stamped RUN_STARTED reads as foreign, so it is not skipped", () => {
+    // An event from before bridge.ts stamped origin carries no host/gen, so isOwnRun
+    // returns false (unknown origin -> foreign) and cannot suppress detection.
+    // NOTE: bridge.ts DOES stamp host+gen today (`stamp`, bridge.ts) — see the
+    // own-in-flight suite below for what that changes.
     const noOrigin = truncatedRun("fenced");
     expect(danglingRunInfo(noOrigin, SELF)).not.toBeNull();
     // Even claiming to be the same pod at the same generation only matters when the
     // event actually carries that origin:
     const withOrigin = [ev({ type: "RUN_STARTED", threadId: "c", runId: "r", host: SELF.host, gen: SELF.gen })];
     expect(danglingRunInfo(withOrigin, SELF)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The heal pass must not close the run THIS pod is driving right now.
+//
+// Live evidence (nightly e2e full, 2026-09-24, run 35967750871, shard 4). Three
+// stop-run tests failed identically; conversation 80318d91 is representative:
+//
+//   07:25:22.481  acp prompt: sending      run-6f3aa19f   (RUN_STARTED, host+gen stamped)
+//   07:25:22.797  waiting for a ready pod  conv-1lnmrl    (cold sandbox boot)
+//   07:25:26.440  closed runs left open by a hand-off     closed:1 run-6f3aa19f
+//   07:25:26.440  dangling-run check: nothing to settle   events_seen:14
+//   07:25:28.851  ready-pod wait ended
+//   07:25:49.500  acp prompt: returned     run-6f3aa19f   (the run was alive all along)
+//
+// Both log lines at the same millisecond: `danglingRunInfo` said "nothing to
+// settle" BECAUSE the run was ours, which left `inFlight` undefined, which let the
+// orphan pass close the very run the pod was executing. The UI took the terminal at
+// +4s, cleared its run bar, and the test waited 90s for a bar that never returned.
+// ---------------------------------------------------------------------------
+
+describe("a run this pod is DRIVING, when the assignment push arrives mid-run", () => {
+  // What bridge.ts writes today: RUN_STARTED stamped with this pod + generation.
+  const ownInFlight = (runId: string): AguiEvent[] => [
+    ev({ type: "RUN_STARTED", threadId: "c", runId, host: SELF.host, gen: SELF.gen }),
+    ev({ type: "TEXT_MESSAGE_START", messageId: `m-${runId}`, role: "assistant" }),
+  ];
+
+  it("reads as NOT dangling — it is in flight, not stranded", () => {
+    // The premise the orphan pass got wrong: null here means "nothing stranded",
+    // NOT "no run is open".
+    expect(danglingRunInfo(ownInFlight("mine"), SELF)).toBeNull();
+    expect(orphanRuns(ownInFlight("mine")).map((o) => o.runId)).toEqual(["mine"]);
+  });
+
+  it("tailOpenRun still sees it — the ownership-blind exclusion", () => {
+    expect(tailOpenRun(ownInFlight("mine"))).toEqual({ runId: "mine", threadId: "c" });
+  });
+
+  it("tailOpenRun agrees with danglingRunInfo on a FOREIGN stranded tail run", () => {
+    // The pre-existing exclusion must be preserved, not merely replaced: for a run a
+    // dead pod left at the tail, both name the same run.
+    const foreign = truncatedRun("stranded");
+    expect(tailOpenRun(foreign)?.runId).toBe(danglingRunInfo(foreign, SELF)?.runId);
+  });
+
+  it("returns null when the last run completed, so healing is unrestricted", () => {
+    expect(tailOpenRun([...truncatedRun("buried"), ...completeRun("later")])).toBeNull();
+    expect(tailOpenRun([])).toBeNull();
+  });
+
+  it("protects ONLY the tail — this pod's own EARLIER orphan is still healed", () => {
+    // An own run buried under a completed one is genuinely abandoned; the heal pass
+    // must still close it, or the fenced-hand-off bug comes back.
+    const log = [...ownInFlight("mine-abandoned"), ...completeRun("later"), ...ownInFlight("mine-now")];
+    const inFlight = tailOpenRun(log)?.runId;
+    expect(inFlight).toBe("mine-now");
+    expect(orphanRuns(log).filter((o) => o.runId !== inFlight).map((o) => o.runId)).toEqual([
+      "mine-abandoned",
+    ]);
   });
 });
 
@@ -277,5 +339,49 @@ describe("adopting a conversation heals a fenced hand-off", () => {
     await sessions.reviveFromMirror(conv.id as SessionId, 2);
 
     expect(dump().length).toBe(before);
+  });
+});
+
+describe("adopting a conversation whose own run is STILL IN FLIGHT", () => {
+  // The 2026-09-24 nightly trace, through the real SessionManager: the controller's
+  // assignment push lands while this pod's first run is still waiting for a cold
+  // sandbox pod. Closing that run tells the UI the turn ended while the agent is
+  // still working — the run bar clears and never comes back.
+  const ownInFlight = (runId: string, host: string, gen: number): AguiEvent[] => [
+    ev({ type: "RUN_STARTED", threadId: "c", runId, host, gen }),
+    ev({ type: "TEXT_MESSAGE_START", messageId: `m-${runId}`, role: "assistant" }),
+  ];
+
+  it("leaves this pod's in-flight run open @proves", async () => {
+    const { store, dump } = seededStore("t1", ownInFlight("run-6f3aa19f", "new-pod", 2) as never);
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store, selfPod: "new-pod",
+    } as never);
+    const conv = await sessions.start("t1" as never);
+
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+
+    const terminals = dump().filter(
+      (e) => e.type === "RUN_FINISHED" && (e as { runId?: string }).runId === "run-6f3aa19f",
+    );
+    expect(terminals, "the pod is still executing this run — nobody may end it").toEqual([]);
+    expect(openRuns(dump())).toEqual(["run-6f3aa19f"]);
+  });
+
+  it("still heals an own orphan buried beneath that in-flight run", async () => {
+    const { store, dump } = seededStore("t1", [
+      ...ownInFlight("abandoned", "new-pod", 1),
+      ev({ type: "RUN_STARTED", threadId: "c", runId: "done", host: "new-pod", gen: 2 }),
+      ev({ type: "RUN_FINISHED", threadId: "c", runId: "done" }),
+      ...ownInFlight("current", "new-pod", 2),
+    ] as never);
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store, selfPod: "new-pod",
+    } as never);
+    const conv = await sessions.start("t1" as never);
+
+    await sessions.reviveFromMirror(conv.id as SessionId, 2);
+
+    expect(openRuns(dump()), "only the live run survives").toEqual(["current"]);
   });
 });
