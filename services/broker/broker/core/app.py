@@ -13,8 +13,10 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException
 
 from .auth import authenticate
+from .authz import authorizer_from_settings
 from ..config import refresh_settings, settings
 from scooter_broker_lib.autolink import Link, create_link, list_links
+from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.registry import discover_providers
 from scooter_broker_lib.types import Identity
 from scooter_lib.logging_config import configure_logging
@@ -34,7 +36,13 @@ def create_app() -> FastAPI:
     # registry so the lib carries no import of this app. See PR #567.
     from .. import providers as builtin_providers
 
-    providers = list(discover_providers([builtin_providers]))
+    # The substrate a provider must not assemble for itself. Built here, once, and
+    # handed to any factory that declares a parameter (see BrokerContext).
+    context = BrokerContext(
+        authorizer=authorizer_from_settings(settings),
+        store_config=settings.store_config(),
+    )
+    providers = list(discover_providers([builtin_providers], context=context))
 
     # Do NOT add a sandbox-lifecycle router here. A sandbox can reach the broker over
     # the network and cannot reach the agent-host, so provisioning lives there
