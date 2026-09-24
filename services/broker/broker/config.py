@@ -9,9 +9,14 @@ Design stage: shape only.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic_settings import BaseSettings
 
 from scooter_lib.settings import ScooterBaseSettings
+
+if TYPE_CHECKING:  # import at runtime would pull sqlalchemy into every config import
+    from .aws.store import StoreConfig
 
 
 class BrokerSettings(ScooterBaseSettings):
@@ -54,6 +59,10 @@ class BrokerSettings(ScooterBaseSettings):
     aws_db_user: str = "webhooks"
     aws_db_password: str = ""
     aws_db_name: str = "broker"
+    # e.g. "require" for RDS; empty = no ssl param. The kubenix module has always
+    # emitted AWS_DB_SSLMODE from agentSandbox.postgres.sslmode — without this field
+    # pydantic dropped it and every broker store connected unencrypted anyway.
+    aws_db_sslmode: str = ""
     # SA usernames allowed to APPROVE/DENY (the agent-host relays the user's pick
     # after validating it in-conversation). CSV of
     # system:serviceaccount:{ns}:{name}. Default: the agent-host.
@@ -113,6 +122,26 @@ class BrokerSettings(ScooterBaseSettings):
     shares_frame_ancestors: str = "'self'"
 
     port: int = 8080
+
+    def store_config(self, dsn: str = "") -> "StoreConfig":
+        """The shared-Postgres components as a StoreConfig, for any broker store.
+
+        ONE assembly point: the aws, registry and shares stores each built their own
+        from the same `aws_db_*` settings, and all three dropped sslmode. `dsn` is
+        the store's own dev-SQLite default (registry_db_dsn, shares_db_dsn, …),
+        which loses to the assembled Postgres DSN whenever a password is set.
+        """
+        from .aws.store import StoreConfig
+
+        return StoreConfig(
+            dsn=dsn or self.aws_db_dsn,
+            db_host=self.aws_db_host,
+            db_port=self.aws_db_port,
+            db_user=self.aws_db_user,
+            db_password=self.aws_db_password,
+            db_name=self.aws_db_name,
+            db_sslmode=self.aws_db_sslmode,
+        )
 
 
 # The process-wide settings snapshot. Most code reads `config.settings` directly.
