@@ -6,5 +6,6 @@
     # blocked on two things a contrib cannot yet do — own a DB table (stage 2 of
     # #606) and reach core/authz. See #599.
     sandbox.module = ./sandbox.nix;
+    skills."scooter-aws.md" = ./skills/scooter-aws.md;
   };
 }

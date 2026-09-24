@@ -252,6 +252,24 @@ in
       };
     };
 
+    skills = mkOption {
+      type = types.attrsOf types.path;
+      default = { };
+      example = literalExpression ''{ "scooter-aws.md" = ./skills/scooter-aws.md; }'';
+      description = ''
+        Agent skills documenting this contrib, keyed by the filename the agent sees.
+
+        Gated on THIS CONTRIB'S NAME: they ship only where
+        `agentSandbox.broker.<name>.enable` is true, so a contrib shipping skills
+        must have a broker option of the same name (platform.nix throws otherwise).
+        A skill for an integration that is off teaches the agent to call a route
+        that 404s, and then to read that 404 as the feature being broken.
+
+        Paths, not strings: the file stays a readable .md next to the code it
+        documents, and the platform module reads it (contrib/skills.nix).
+      '';
+    };
+
     services = mkOption {
       default = { };
       description = "Which services this contrib plugs into. Fixed key set, so a typo is an eval error.";

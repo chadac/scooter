@@ -204,7 +204,7 @@ per run, ~13-25m before the first repetition).
 | `pkgs/broker-tools/` | broker CLIs (`agent-broker` / `git-credential-broker` / `scooter-aws*`), prebuilt into the sandbox |
 | `modules/` | kubenix: per-conversation cold `Sandbox` (SA + 2 PVCs), agent-host, broker, webhooks, scheduler, warm pool |
 | `ui/` | assistant-ui frontend + AG-UI client library |
-| `skills/` | Markdown agent skills (`scooter-intro`, `scooter-env`, `agent-tools`, `scooter-aws`, …) |
+| `skills/` | Markdown agent skills that document the PLATFORM (`scooter-intro`, `scooter-env`, `agent-tools`, …) — a skill documenting a contrib lives in that contrib, gated on it |
 | `test/`, `nixos-tests/` | cluster-integration + e2e fixtures/fakes; NixOS VM tests for the sandbox image |
 | `services/agent-host/test/` | unit (contract) tests |
 | `docs/` | user-facing mkdocs site; the full `DESIGN.md`/`TESTING.md` are kept locally, outside the repo |
