@@ -39,7 +39,11 @@
 
   outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs, uv-nix }:
     let
-      # The built-in agent skills: every ./skills/*.md read into the
+      # The PLATFORM's agent skills — the ones that document no contrib, so nothing
+      # gates them. A skill for a contrib lives in that contrib and is gated on it
+      # (contrib/skills.nix -> modules/platform.nix), never passed through here.
+      #
+      # Every ./skills/*.md read into the
       # `filename -> content` attrset the platform module's `agent.skills` option
       # expects (rendered to the agent-skills ConfigMap, mounted at SKILLS_DIR,
       # assembled into each conversation's .goosehints). The module default is `{}`

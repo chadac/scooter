@@ -310,11 +310,34 @@ let
     shipped = enable: builtins.elem file (skillsWith (override enable));
   in (if shipped true then [ ] else [ "${file} missing when ${gate} = true" ])
      ++ (if shipped false then [ "${file} SHIPPED when ${gate} = false (the agent will chase a 404)" ] else [ ]);
-  skillProblems =
-    gateProblems "scooter-grafana.md" "broker.grafana.enable"
-      (enable: lib: { grafana = { enable = lib.mkForce enable; url = "https://example.grafana.net"; }; })
-    ++ gateProblems "scooter-airtable.md" "broker.airtable.enable"
-      (enable: lib: { airtable.enable = lib.mkForce enable; });
+  # One override per contrib that ships skills. Written out rather than derived,
+  # because enabling a provider can require its OTHER options (grafana a url, slack a
+  # token secret) — a bare `enable = true` would be an eval error, not a render. For a
+  # provider the example already configures, mkForce on `enable` is the whole override.
+  skillGates = {
+    grafana = enable: lib: { grafana = { enable = lib.mkForce enable; url = "https://example.grafana.net"; }; };
+    airtable = enable: lib: { airtable.enable = lib.mkForce enable; };
+    aws = enable: lib: { aws.enable = lib.mkForce enable; };
+    datadog = enable: lib: { datadog.enable = lib.mkForce enable; };
+    slack = enable: lib: {
+      slack = {
+        enable = lib.mkForce enable;
+        botTokenSecret = { name = "slack-bot"; key = "SLACK_BOT_TOKEN"; };
+      };
+    };
+  };
+  # Driven off contrib/skills.nix — the SAME source platform.nix ships from — so a
+  # contrib that starts shipping a skill fails here until its gate is proven.
+  nixpkgsLib = flake.inputs.nixpkgs.lib;
+  contribSkills = import ../contrib/skills.nix { lib = nixpkgsLib; };
+  skillProblems = nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
+    (name: skills:
+      if !(skillGates ? ${name})
+      then [ ("contrib ${name} ships ${toString (builtins.attrNames skills)} but examples/check.nix has no gate case — add one to skillGates") ]
+      else nixpkgsLib.concatMap
+        (file: gateProblems file "broker.${name}.enable" skillGates.${name})
+        (builtins.attrNames skills))
+    contribSkills);
 
   # IMMUTABLE-JOB GUARD. A Job's spec.template CANNOT be patched, so re-applying a
   # CHANGED deploy-time Job under a FIXED name is rejected by the apiserver ("field is

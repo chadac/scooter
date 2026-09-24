@@ -66,19 +66,26 @@ let
   }) modelIds);
   hasModels = modelIds != [ ];
 
-  # Platform skills, each paired with the capability it documents. A skill whose gate
-  # is false is NOT shipped: the agent should not read instructions for a route that
+  # Contrib skills, each gated on the capability it documents. A skill whose gate is
+  # false is NOT shipped: the agent should not read instructions for a route that
   # 404s. Deployment `skills` win on a filename collision, so an operator can always
   # override one of ours.
+  #
+  # DERIVED from contrib/, not listed here: the .md lives next to the code it
+  # documents and its contrib's NAME is the gate, so no table here can fall out of
+  # date with the contrib set. Why: PR #618.
   bcfg = config.agentSandbox.broker;
-  gatedSkills = {
-    "scooter-grafana.md" = bcfg.grafana.enable;
-    "scooter-airtable.md" = bcfg.airtable.enable;
-  };
-  builtins' = lib.optionalAttrs cfg.agent.builtinSkills (
-    lib.mapAttrs' (file: _: lib.nameValuePair file (builtins.readFile (./skills + "/${file}")))
-      (lib.filterAttrs (_: gate: gate) gatedSkills)
-  );
+  contribSkills = import ../contrib/skills.nix { inherit lib; };
+  gateOf = name:
+    if (bcfg.${name} or null) ? enable then bcfg.${name}.enable
+    else throw ("contrib ${name} ships skills, which are gated on "
+      + "agentSandbox.broker.${name}.enable — but no such option exists. "
+      + "See contrib/README.md.");
+  gatedSkills = lib.concatMapAttrs
+    (name: skills: lib.optionalAttrs (gateOf name) skills)
+    contribSkills;
+  builtins' = lib.optionalAttrs cfg.agent.builtinSkills
+    (lib.mapAttrs (_: file: builtins.readFile file) gatedSkills);
   allSkills = builtins' // cfg.agent.skills;
 in
 {
@@ -546,9 +553,11 @@ in
         type = types.bool;
         default = true;
         description = ''
-          Ship the platform's own skills, each only when the capability it documents
+          Ship the contribs' own skills, each only when the capability it documents
           is enabled (e.g. scooter-grafana only with broker.grafana.enable). Set false
-          to supply every skill yourself via `skills`.
+          to supply every skill yourself via `skills`. The platform's ungated skills
+          are NOT affected — a deployment threads those in through `skills` (the flake
+          exposes them as `lib.scooterSkills`).
         '';
       };
       skills = mkOption {

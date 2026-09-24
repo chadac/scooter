@@ -90,10 +90,10 @@ agent-sandbox controller:  warm pools · suspend (drop Pod, keep PVCs) / resume
 | `services/claude-sdk-provider/` | Claude Agent SDK provider (an alternative brain to goose) |
 | `pkgs/sandbox-os/` | The NixOS systemd-PID-1 sandbox image (exec via the K8s API) |
 | `pkgs/broker-tools/` | Broker CLIs prebuilt into the sandbox: `agent-broker`, `git-credential-broker` |
-| `contrib/` | Integrations as self-contained packages (entry points into broker/webhooks, UI metadata, sandbox modules) — `contrib/aws/` ships the `scooter-aws*` CLIs |
+| `contrib/` | Integrations as self-contained packages (entry points into broker/webhooks, UI metadata, sandbox modules, agent skills) — `contrib/aws/` ships the `scooter-aws*` CLIs and `scooter-aws.md` |
 | `modules/` | kubenix: per-conversation cold `Sandbox` (SA + 2 PVCs), agent-host, broker, webhooks, scheduler, warm pool, web-services |
 | `ui/` | assistant-ui frontend + reusable AG-UI client library |
-| `skills/` | Markdown agent skills (`scooter-intro`, `scooter-env`, `agent-tools`, `scooter-web-services`, `scooter-aws`, …) |
+| `skills/` | Markdown agent skills that document the PLATFORM (`scooter-intro`, `scooter-env`, `agent-tools`, `scooter-web-services`, …) — a skill documenting a contrib lives in that contrib, gated on it |
 | `examples/` | Reference kubenix config + manifest checks |
 | `deploy/` | A separate deployment flake (config + `deploy.sh`) for standing the platform up on a real cluster |
 | `test/` | Tier 2 cluster + Tier 3 e2e fixtures/fakes |

@@ -121,6 +121,39 @@ for the fixture (echo is `enable = false`, so it covers the disabled-contrib pat
 a shipped contrib cannot), and the `dev-env-contrib-sandbox` check for what is
 asserted.
 
+### Contributing agent skills (`skills`)
+
+A contrib documents itself. The `.md` the agent reads lives next to the code it
+describes, and ships only where that code is actually wired:
+
+```nix
+contribs.aws = {
+  src = ./.;
+  skills."scooter-aws.md" = ./skills/scooter-aws.md;
+};
+```
+
+**The gate is the contrib's NAME** — a skill ships iff
+`agentSandbox.broker.<name>.enable` is true in the *deployment*, which is a
+different question from whether the contrib is enabled in this source tree. A
+contrib shipping skills therefore needs a broker option of the same name;
+`platform.nix` throws at eval if there isn't one, rather than shipping a skill
+nothing gates.
+
+That gating is the point, not bookkeeping. A skill for a provider that isn't
+wired teaches the agent to call a route that 404s — and then to read that 404 as
+the feature being *broken*, which is how the grafana skill once sent an agent
+chasing a `loki/` path that never existed. `scooter-aws.md` shipped into every
+deployment, aws or not, until this moved.
+
+`contrib/skills.nix` derives the set the same `lib`-only way
+`contrib/sandbox-modules.nix` does, so `modules/platform.nix` needs no `pkgs` to
+read it. `examples/check.nix` renders the platform with each gate on and off and
+asserts the file follows — and fails if a contrib ships a skill that table
+doesn't cover. Skills that document the *platform* (`scooter-github.md`,
+`sandbox-shell-safety.md`) stay in the top-level `skills/`: they document no
+contrib, and there is nothing to gate them on.
+
 ### Extending the preset
 
 A contrib can declare its **own** options by using the strict module form; they
