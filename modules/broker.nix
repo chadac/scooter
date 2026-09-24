@@ -223,7 +223,8 @@ in
     # The broker's shares feature lets agents publish static bundles, served at
     # /s/<uuid>/ and embeddable in the conversation UI. Off by default; when on,
     # the /shares + /s/<uuid>/ routes mount and the store persists to the shared
-    # Postgres `broker` DB via the AWS_DB_* components already emitted below —
+    # Postgres `broker` DB via the BROKER_DB_* components every broker store
+    # shares —
     # there is deliberately NO SHARES_DB_DSN (setting it would pin the store to
     # the SQLite dev path and silently lose shares on restart). Without this
     # option the shares code ships in the image but the routes never mount.
@@ -485,7 +486,22 @@ in
                   # the broker POSTs it to the agent-host /conversations/{id}/links.
                   # Same agent-host URL the AWS approval notify uses.
                   { name = "AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
-                ] ++ lib.optional (bcfg.jiraSiteUrl != "")
+
+                  # The shared platform `broker` database. Unconditional: the
+                  # `broker` consumer is registered whenever the broker runs (see
+                  # postgres.consumers below), so the role and its agent-pg-broker
+                  # secret always exist — and EVERY broker store resolves its DSN
+                  # from these. A store that finds no password falls back to a
+                  # SQLite dev path and loses its data on restart without an error,
+                  # so emitting these per-feature is the failure, not the saving.
+                  { name = "BROKER_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "BROKER_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "BROKER_DB_NAME"; value = "broker"; }
+                  { name = "BROKER_DB_USER"; value = "broker"; }
+                  { name = "BROKER_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
+                ] ++ lib.optional (cfg.postgres.sslmode != null)
+                  { name = "BROKER_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                ++ lib.optional (bcfg.jiraSiteUrl != "")
                   # Jira create-issue responses have no human URL; the broker builds
                   # <site>/browse/{KEY} from this to auto-link the created issue.
                   { name = "JIRA_SITE_URL"; value = bcfg.jiraSiteUrl; }
@@ -571,8 +587,8 @@ in
                 ] ++ lib.optionals bcfg.shares.enable ([
                   # Static shares -> the broker mounts /shares + /s/<uuid>/ and
                   # persists bundles in the shared Postgres `broker` DB. The store
-                  # reuses the AWS_DB_* components emitted below (StoreConfig builds
-                  # a Postgres DSN whenever a db password is set), so SHARES_DB_DSN
+                  # reuses the BROKER_DB_* components (StoreConfig builds a
+                  # Postgres DSN whenever a db password is set), so SHARES_DB_DSN
                   # is deliberately left unset — setting it would pin the store to
                   # the SQLite dev path and silently lose shares on restart.
                   { name = "SHARES_ENABLED"; value = "true"; }
@@ -580,23 +596,6 @@ in
                   { name = "SHARES_PUBLIC_BASE_URL"; value = sharesBaseUrl; }
                 ++ lib.optional (sharesFrameAncestors != "")
                   { name = "SHARES_FRAME_ANCESTORS"; value = sharesFrameAncestors; }
-                ++ lib.optionals (!bcfg.aws.enable) (
-                  # The shares store reads the shared Postgres `broker` DB via the
-                  # AWS_DB_* components (StoreConfig builds the Postgres DSN when a
-                  # db password is set). Those are otherwise emitted only when the
-                  # AWS broker is on; when shares/registry are the
-                  # ONLY consumer, emit them here so the store resolves to Postgres
-                  # instead of the SQLite dev default (which would silently lose
-                  # shares on restart). Mutually exclusive with the AWS block below, so
-                  # no env is declared twice.
-                  [
-                    { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
-                    { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
-                    { name = "AWS_DB_NAME"; value = "broker"; }
-                    { name = "AWS_DB_USER"; value = "broker"; }
-                    { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
-                  ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
-                )
                 ) ++ lib.optionals bcfg.aws.enable ([
                   { name = "AWS_ENABLED"; value = "true"; }
                   { name = "AWS_REGION"; value = bcfg.aws.region; }
@@ -608,16 +607,6 @@ in
                   { name = "AWS_AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
                   # The agent-host SA may approve/deny (it relays the user's pick).
                   { name = "AWS_APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
-                  # The AWS broker's permission/size store lives in the shared
-                  # platform Postgres (agentSandbox.postgres) — its OWN `broker` db +
-                  # auto-provisioned role (agent-pg-broker), NOT the webhooks user.
-                  { name = "AWS_DB_HOST"; value = cfg.postgres.host; }
-                  { name = "AWS_DB_PORT"; value = toString cfg.postgres.port; }
-                  { name = "AWS_DB_NAME"; value = "broker"; }
-                  { name = "AWS_DB_USER"; value = "broker"; }
-                  { name = "AWS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
-                ] ++ lib.optionals (cfg.postgres.sslmode != null) [
-                  { name = "AWS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ] ++ lib.optionals bcfg.aws.fga.enable [
                   # OpenFGA authorization (the per-account approver gate).
                   { name = "FGA_ENABLED"; value = "true"; }

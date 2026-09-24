@@ -44,8 +44,8 @@ def _aws_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_ENABLED", "true")
     monkeypatch.setenv("AWS_ACCOUNTS_FILE", str(accounts))
     # SQLite, so building the store opens nothing real.
-    monkeypatch.setenv("AWS_DB_DSN", f"sqlite+aiosqlite:///{tmp_path / 'aws.db'}")
-    monkeypatch.delenv("AWS_DB_PASSWORD", raising=False)
+    monkeypatch.setenv("BROKER_DB_DSN", f"sqlite+aiosqlite:///{tmp_path / 'aws.db'}")
+    monkeypatch.delenv("BROKER_DB_PASSWORD", raising=False)
 
 
 def test_aws_routes_are_mounted(_aws_env):

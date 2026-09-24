@@ -433,7 +433,35 @@ let
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  # THE SHARED BROKER DATABASE reaches the broker regardless of which feature wants
+  # it. Every broker store (aws permission requests, the module registry, static
+  # shares) resolves its DSN from BROKER_DB_*, and a store that finds no password
+  # falls back to a SQLite dev path — persisting to the pod's disk and losing
+  # everything on restart, with nothing logged. These used to be AWS_DB_*, emitted
+  # from the aws branch and mirrored in a `!aws.enable` branch to keep shares
+  # working; the mirror covered shares but nothing covered registry-only, and
+  # keeping two copies disjoint was hand-maintained. So assert BOTH halves of what
+  # replaced it: present with aws OFF, and never declared twice with aws ON (k8s
+  # silently keeps the last value of a duplicated env name).
+  awsOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.broker.aws.enable = lib.mkForce false;
+      agentSandbox.broker.shares.enable = lib.mkForce false;
+    };
+  };
+  awsOffBrokerEnv =
+    let ctrs = builtins.attrValues (awsOffPlatform.config.kubernetes.resources.deployments.agent-broker.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  dbEnvNames = [ "BROKER_DB_HOST" "BROKER_DB_PORT" "BROKER_DB_NAME" "BROKER_DB_USER" "BROKER_DB_PASSWORD" ];
+  countNamed = env: n: builtins.length (builtins.filter (e: e.name == n) env);
+  brokerDbProblems =
+    map (n: "aws-off: broker.env.${n} missing — every broker store silently falls back to SQLite and loses its data on restart")
+      (builtins.filter (n: countNamed awsOffBrokerEnv n == 0) dbEnvNames)
+    ++ map (n: "broker.env.${n} declared more than once (k8s keeps the last silently)")
+      (builtins.filter (n: countNamed brokerEnv n > 1) dbEnvNames);
+
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
