@@ -47,6 +47,13 @@ ENVS="$(sed -n 's/^\[\([a-z_][a-z_0-9]*\)\]$/\1/p' lib/sql/owners.toml | tr '\n'
 TS_OUT="lib/ts/scooter-schema/src"
 PY_OUT="lib/py/scooter-schema/src/scooter_schema"
 SQLACODEGEN_VERSION="4.0.4"
+# Pinned for the same reason sqlacodegen is: it decides the OUTPUT. sqlacodegen
+# annotates a JSONB column from the SQLAlchemy version it resolves against, so
+# leaving this to `uv` meant an upstream release rewrote the committed bindings
+# with no commit here — SQLAlchemy 2.1.0 (2026-09-24) turned every
+# `Mapped[dict]` into `Mapped[object]` and made db-generate-check fail on main
+# and on every open PR at once. Bump deliberately, regenerate, review the diff.
+SQLALCHEMY_VERSION="2.0.44"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -96,7 +103,7 @@ CFG
   " > "$work/sock-$env.log" 2>"$work/sock-$env.err" &
   sockpid=$!
   for _ in $(seq 1 60); do grep -q READY "$work/sock-$env.log" 2>/dev/null && break; sleep 0.25; done
-  uv run --quiet --with "sqlacodegen==$SQLACODEGEN_VERSION" --with psycopg2-binary \
+  uv run --quiet --with "sqlacodegen==$SQLACODEGEN_VERSION" --with "sqlalchemy==$SQLALCHEMY_VERSION" --with psycopg2-binary \
     sqlacodegen "postgresql+psycopg2://postgres@127.0.0.1:$port/postgres" > "$work/models-$env.py"
   kill "$sockpid" 2>/dev/null || true
   wait "$sockpid" 2>/dev/null || true
