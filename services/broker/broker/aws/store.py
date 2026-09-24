@@ -36,13 +36,20 @@ class StoreConfig:
     db_user: str = "webhooks"   # shared instance's user; DB name differs
     db_password: str = ""
     db_name: str = "broker"     # SEPARATE database on the shared Postgres
+    db_sslmode: str = ""        # "require" etc.; empty = no ssl param
 
     def resolved_dsn(self) -> str:
         if self.db_password and not self.dsn.startswith("postgresql"):
-            return (
+            dsn = (
                 f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
                 f"@{self.db_host}:{self.db_port}/{self.db_name}"
             )
+            # asyncpg takes ssl as a query param, not libpq's sslmode= — same
+            # mapping as webhooks/scheduler. Dropping it connects in cleartext to a
+            # server the deployment asked to reach over TLS, and says nothing.
+            if self.db_sslmode:
+                dsn += f"?ssl={self.db_sslmode}"
+            return dsn
         return self.dsn
 
 
