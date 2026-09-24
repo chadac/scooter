@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from scooter_schema.broker import Base as _SchemaBase, StaticShares, StaticShareVersions
 
-from broker.aws.store import StoreConfig
+from scooter_broker_lib.store import StoreConfig
 from broker.core.auth import authenticate
 from scooter_broker_lib.types import Identity
 from broker.shares.routes import create_shares_router

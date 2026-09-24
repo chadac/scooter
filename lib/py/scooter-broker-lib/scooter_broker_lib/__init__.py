@@ -17,13 +17,17 @@ Contents:
   * autolink   — Link / LinkRule / rule / post_link / create_link / list_links
   * sources/   — static_token (generic; five providers compose it)
   * transports/— http_proxy, git_credential, whoami, token_vend
+  * store      — StoreConfig + open_sessions: the shared-broker DSN and the ONE
+                 guarded async engine every store (aws, registry, shares, a
+                 contrib's) is built from
 
 THE TEST FOR WHAT BELONGS HERE: could a SECOND integration plausibly compose it?
 If only its own can, it is that integration's implementation and it stays with
 the provider, so it travels into that provider's contrib module rather than
 stranding integration-specific code in the shared lib. That is why
 `github_app`, `atlassian_oauth` and `datadog_keys` are in `broker/sources/` and
-not here, and why this package needs no crypto dependency.
+not here, and why this package needs no crypto dependency. `store` passes that
+test loudly: three stores composed it before a contrib existed.
 
 What deliberately stayed in the broker app: core/app, core/auth, core/authz,
 core/default_modules, config, providers/, the provider-specific sources/, aws/,

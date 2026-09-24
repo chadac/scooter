@@ -24,7 +24,9 @@ import uuid as uuidlib
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from scooter_broker_lib.store import StoreConfig, open_sessions
 
 # Generated ORM models (lib/sql/broker/schema.sql -> scooter_schema), aliased to this
 # store's private row names so the query helpers below read unchanged.
@@ -33,7 +35,6 @@ from scooter_schema.broker import (
     StaticShareVersions as _VersionRow,
 )
 
-from ..aws.store import StoreConfig  # reuse the shared-DB DSN assembly
 
 
 @dataclass
@@ -148,15 +149,8 @@ class ShareStore:
     """
 
     def __init__(self, config: StoreConfig) -> None:
-        # pool_pre_ping + pool_recycle: survive a Postgres restart/failover without a
-        # dead pooled connection failing the next request. Mirrors registry/store.py.
-        self._engine: AsyncEngine = create_async_engine(
-            config.resolved_dsn(),
-            echo=False,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-        )
-        self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._engine: AsyncEngine
+        self._engine, self._session = open_sessions(config)
 
     async def get(self, uuid: str) -> Share | None:
         async with self._session() as s:

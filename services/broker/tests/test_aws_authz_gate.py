@@ -13,7 +13,8 @@ import pytest
 from broker.aws.iam import IamProvisioner
 from broker.aws.models import RequestStatus, StsCredentials
 from broker.aws.service import PermissionService, ServiceConfig, RequestError
-from broker.aws.store import PermissionStore, StoreConfig
+from broker.aws.store import PermissionStore
+from scooter_broker_lib.store import StoreConfig
 from broker.core.authz import NoopAuthorizer
 
 from conftest import create_schema

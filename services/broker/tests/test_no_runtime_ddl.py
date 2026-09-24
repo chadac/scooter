@@ -14,7 +14,8 @@ import pathlib
 
 import pytest
 
-from broker.aws.store import PermissionStore, StoreConfig
+from broker.aws.store import PermissionStore
+from scooter_broker_lib.store import StoreConfig
 from broker.registry.store import ModuleRegistryStore
 
 SERVICE_SRC = pathlib.Path(__file__).resolve().parents[1] / "broker"

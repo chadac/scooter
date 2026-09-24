@@ -9,6 +9,11 @@
 # credential source, which is github's implementation and now sits with github
 # in broker/sources/. A shared lib pulling a crypto stack for one integration was
 # the boundary being wrong out loud. See PR #567.
+#
+# sqlalchemy IS here, by that same test: three stores already compose `store.py`
+# (aws, registry, shares) and a contrib that owns a table is the fourth. The DB
+# DRIVERS stay with the app — engine creation is lazy, so asyncpg/aiosqlite are
+# only needed where a connection is actually opened. See PR #622.
 
 python3Packages.buildPythonPackage {
   pname = "scooter-broker-lib";
@@ -22,6 +27,7 @@ python3Packages.buildPythonPackage {
     scooterLib
     fastapi
     httpx
+    sqlalchemy
   ];
 
   nativeCheckInputs = with python3Packages; [
@@ -40,6 +46,7 @@ python3Packages.buildPythonPackage {
     "scooter_broker_lib.transports.git_credential"
     "scooter_broker_lib.transports.whoami"
     "scooter_broker_lib.transports.token_vend"
+    "scooter_broker_lib.store"
   ];
 
   meta.description = "The broker extension surface for Scooter providers";

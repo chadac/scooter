@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from broker.aws.store import StoreConfig
+from scooter_broker_lib.store import StoreConfig
 from broker.config import BrokerSettings
 
 
