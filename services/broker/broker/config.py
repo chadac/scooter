@@ -16,7 +16,7 @@ from pydantic_settings import BaseSettings
 from scooter_lib.settings import ScooterBaseSettings
 
 if TYPE_CHECKING:  # import at runtime would pull sqlalchemy into every config import
-    from .aws.store import StoreConfig
+    from scooter_broker_lib.store import StoreConfig
 
 
 class BrokerSettings(ScooterBaseSettings):
@@ -131,7 +131,7 @@ class BrokerSettings(ScooterBaseSettings):
         the store's own dev-SQLite default (registry_db_dsn, shares_db_dsn, …),
         which loses to the assembled Postgres DSN whenever a password is set.
         """
-        from .aws.store import StoreConfig
+        from scooter_broker_lib.store import StoreConfig
 
         return StoreConfig(
             dsn=dsn or self.aws_db_dsn,
