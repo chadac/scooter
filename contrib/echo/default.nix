@@ -1,8 +1,9 @@
 {
   contribs.echo = {
     src = ./.;
-    # The fixture for the sandbox surface: echo ships nowhere, so it is the only
-    # contrib that can carry one until aws moves (#599).
+    # The fixture for the sandbox surface. aws now ships a real one, so this covers
+    # what aws cannot: a contrib that is DISABLED in the repo, reached by the check
+    # through `extraModules`.
     sandbox.module = ./sandbox.nix;
     services.broker.enable = true;
     services.webhooks.enable = true;
