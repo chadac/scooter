@@ -22,20 +22,13 @@ function linkLabel(l: ConversationLink): string {
   return `${l.source} ${kind}`;
 }
 
-/**
- * At/above this many links the panel starts collapsed: a long list crowds out the
- * session list it shares the left column with.
- */
+/** At/above this many links the panel starts collapsed (it shares the column with the session list). */
 export const AUTO_COLLAPSE_AT = 5;
 
-/**
- * The panel itself, pure in `links` so the collapse rule is testable without the fetch.
- *
- * `open === null` means "nobody has chosen" -> fall back to the count-based default. A
- * click pins a real boolean, so a later poll growing the list past the threshold cannot
- * re-collapse a panel the user opened.
- */
+/** Pure in `links` so the collapse rule is testable without the fetch. Why: PR #629. */
 export function LinkedResourcesPanel({ links }: { links: ConversationLink[] }) {
+  // null = no user choice yet -> use the count default. A click pins a boolean so a
+  // later poll can't re-collapse what the user opened. Why: PR #629.
   const [open, setOpen] = useState<boolean | null>(null);
   if (links.length === 0) return null;
   const isOpen = open ?? links.length < AUTO_COLLAPSE_AT;
@@ -110,7 +103,6 @@ export function LinkedResources() {
     };
   }, [serverId]);
 
-  // Keyed by conversation: switching threads remounts, dropping any manual
-  // expand/collapse so the count-based default applies afresh.
+  // Keyed by conversation: the remount drops a manual toggle per thread. Why: PR #629.
   return <LinkedResourcesPanel key={serverId ?? "new"} links={links} />;
 }
