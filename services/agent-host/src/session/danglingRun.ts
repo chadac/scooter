@@ -105,7 +105,7 @@ export interface OrphanRun {
  * Deliberately ownership-blind, unlike `danglingRunInfo`, which answers the
  * narrower "is the tail run STRANDED?" and so returns null for a run this pod is
  * driving right now. Using that as the "don't close this one" exclusion inverts
- * on exactly the runs it must protect. Why: PR #608.
+ * on exactly the runs it must protect. Why: PR #618.
  */
 export function tailOpenRun(events: AguiEvent[]): OrphanRun | null {
   for (let i = events.length - 1; i >= 0; i--) {

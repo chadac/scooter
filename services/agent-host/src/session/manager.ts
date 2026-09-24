@@ -1073,7 +1073,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // nobody else can be driving these runs. The run that is genuinely in
         // flight (if any) is excluded below.
         // Ownership-BLIND on purpose: danglingRunInfo returns null for a run this pod is
-        // driving, which left our own in-flight run unexcluded. Why: PR #608.
+        // driving, which left our own in-flight run unexcluded. Why: PR #618.
         const inFlight = tailOpenRun(events)?.runId;
         const orphans = orphanRuns(events).filter((o) => o.runId !== inFlight);
         for (const o of orphans) {
