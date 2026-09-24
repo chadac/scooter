@@ -85,6 +85,46 @@ test.describe("linked resources panel", () => {
     await expect(item.locator("a")).toHaveAttribute("href", /github\.com\/example-org\/example-app\/pull\/203/);
   });
 
+  test("five or more links start collapsed; the toggle still opens them", async ({ chat, page, request, baseURL }) => {
+    // CLUSTER-HONEST BUDGET (see the first spec): a cold-provisioned first reply
+    // (~90s worst) plus the panel's 10s link poll overruns the 60s default.
+    test.setTimeout(150_000);
+    const base = baseURL ?? "http://localhost:5173";
+
+    await chat.open();
+    await chat.send("opening message");
+    await chat.waitForReply(/dummy agent/i, 90_000);
+
+    const threadId = await currentThreadId(page);
+
+    // Five links — the auto-collapse threshold (ui/src/LinkedResources.tsx).
+    for (let i = 1; i <= 5; i++) {
+      const r = await request.post(`${base}/conversations/${threadId}/links`, {
+        data: {
+          source: "github",
+          resourceType: "pull_request",
+          url: `https://github.com/example-org/example-app/pull/${300 + i}`,
+          title: `example-org/example-app #${300 + i}`,
+        },
+      });
+      expect(r.ok()).toBeTruthy();
+    }
+
+    // The panel appears (poll-driven, 90s for the reasons in the first spec) and it is
+    // COLLAPSED: the count is visible, the rows are not.
+    const toggle = page.locator(panel.toggle);
+    await expect(toggle).toBeVisible({ timeout: 90_000 });
+    await expect(toggle).toHaveText(/Linked \(5\)/, { timeout: 30_000 });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(panel.item)).toHaveCount(0);
+
+    // A click opens it, and the open state survives the next refresh poll (>10s).
+    await toggle.click();
+    await expect(page.locator(panel.item)).toHaveCount(5);
+    await page.waitForTimeout(12_000);
+    await expect(page.locator(panel.item)).toHaveCount(5);
+  });
+
   test("the panel is hidden when a conversation has no links", async ({ chat, page }) => {
     // CLUSTER-HONEST BUDGET: one cold-provisioned turn (~90s worst) + the
     // absence assertion; the 60s default only fit the fake stack's ~1s turn.
