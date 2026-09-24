@@ -7,12 +7,9 @@ rest of the broker relies on.
 
 from __future__ import annotations
 
-from broker.core.authz import (
-    NoopAuthorizer,
-    authorizer_from_settings,
-    aws_account_object,
-    user_object,
-)
+from broker.aws.objects import aws_account_object
+from broker.core.authz import authorizer_from_settings
+from scooter_broker_lib.authz import NoopAuthorizer, user_object
 
 
 async def test_noop_allows_everything():

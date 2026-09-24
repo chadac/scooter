@@ -17,6 +17,11 @@ Contents:
   * autolink   — Link / LinkRule / rule / post_link / create_link / list_links
   * sources/   — static_token (generic; five providers compose it)
   * transports/— http_proxy, git_credential, whoami, token_vend
+  * authz      — the Authorizer protocol + NoopAuthorizer + user_object: the
+                 CONTRACT a provider is authorized against (the OpenFGA impl stays
+                 in the app, which hands the built authorizer over)
+  * context    — BrokerContext: what the broker HANDS a factory that asks for it
+                 (authorizer, store_config) — substrate a provider must not build
   * store      — StoreConfig + open_sessions: the shared-broker DSN and the ONE
                  guarded async engine every store (aws, registry, shares, a
                  contrib's) is built from
@@ -29,7 +34,8 @@ stranding integration-specific code in the shared lib. That is why
 not here, and why this package needs no crypto dependency. `store` passes that
 test loudly: three stores composed it before a contrib existed.
 
-What deliberately stayed in the broker app: core/app, core/auth, core/authz,
+What deliberately stayed in the broker app: core/app, core/auth, the OpenFGA
+AUTHORIZER itself (core/authz — implementation and SDK, not the contract),
 core/default_modules, config, providers/, the provider-specific sources/, aws/,
 sandbox/, shares/, the module registry/ — and transports/aws_permissions, which
 pulls the whole AWS subsystem and so is the aws provider's implementation rather

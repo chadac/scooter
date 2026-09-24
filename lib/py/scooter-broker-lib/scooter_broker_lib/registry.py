@@ -16,12 +16,16 @@ because it is the same mechanism for every caller.
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import pkgutil
 from types import ModuleType
-from typing import Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence, Union
 
 from .types import Provider
+
+if TYPE_CHECKING:  # a runtime import would make sqlalchemy a registry dependency
+    from .context import BrokerContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +34,13 @@ logger = logging.getLogger(__name__)
 # never disagree about the spelling.
 ENTRY_POINT_GROUP = "agent_broker.providers"
 
-# A provider factory: builds a Provider (reads its own config/secrets).
-ProviderFactory = Callable[[], Provider]
+# A provider factory: builds a Provider (reads its own config/secrets). It may
+# additionally declare a BrokerContext parameter to receive the substrate it must
+# not build itself — see context.py and `wants_context` below.
+ProviderFactory = Union[
+    Callable[[], Provider],
+    Callable[["BrokerContext"], Provider],
+]
 
 
 _REGISTRY: dict[str, ProviderFactory] = {}
@@ -71,8 +80,19 @@ def _load_entrypoint_providers() -> None:
             )
 
 
+def wants_context(factory: ProviderFactory) -> bool:
+    """Whether this factory asks for the BrokerContext (by declaring a parameter).
+
+    Arity, not a decorator argument or a registry flag: a factory either needs the
+    substrate or it does not, and its own signature already says which. That is what
+    let the context be added without touching the nine factories that take none.
+    """
+    return bool(inspect.signature(factory).parameters)
+
+
 def discover_providers(
     builtin_packages: Iterable[ModuleType] = (),
+    context: "BrokerContext | None" = None,
 ) -> list[Provider]:
     """Build all registered + entry-point providers, keeping enabled ones.
 
@@ -80,6 +100,11 @@ def discover_providers(
     @register_provider decorators run — the broker app passes `broker.providers`.
     Entry-point providers are loaded regardless, so a caller with no in-tree
     providers passes nothing.
+
+    `context`: the substrate the app supplies (authorizer, store config). Passed
+    ONLY to factories that declare a parameter. A factory that wants one when the
+    caller supplied none raises — better an absent provider, logged loudly below,
+    than one silently built with no enforcement point.
 
     Callers whose factories read a module-level settings object must refresh it
     BEFORE calling this; the registry cannot, since that object belongs to the
@@ -90,7 +115,16 @@ def discover_providers(
     providers: list[Provider] = []
     for name, factory in _REGISTRY.items():
         try:
-            provider = factory()
+            if wants_context(factory):
+                if context is None:
+                    raise RuntimeError(
+                        f"provider {name!r} asks for a BrokerContext but the caller "
+                        "supplied none — it would otherwise be built with no "
+                        "authorizer and no database"
+                    )
+                provider = factory(context)
+            else:
+                provider = factory()
         except Exception:
             # A provider whose factory raises is skipped so one bad provider can't
             # take down the whole broker — but it is then ABSENT (its routes

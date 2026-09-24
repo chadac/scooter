@@ -10,12 +10,27 @@ not, so the broker behaves exactly as before until FGA is wired up.
 
 The rest of the broker depends only on the `Authorizer` protocol — never on the
 OpenFGA SDK directly — so "FGA off" is clean and tests inject a fake.
+
+The protocol, NoopAuthorizer and user_object live on the extension surface
+(scooter_broker_lib.authz) so a provider can be TYPED against them; the OpenFGA
+implementation and the settings that select it stay here, and the app hands the
+built authorizer to each provider via BrokerContext. A provider that could build
+its own could build a Noop one and authorize itself.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+
+from scooter_broker_lib.authz import Authorizer, NoopAuthorizer, user_object
+
+__all__ = [
+    "Authorizer",
+    "NoopAuthorizer",
+    "FgaAuthorizer",
+    "authorizer_from_settings",
+    "user_object",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +51,6 @@ def _is_duplicate_tuple_error(exc: Exception) -> bool:
         or "already exists" in text
         or "duplicate" in text
     )
-
-
-class Authorizer(Protocol):
-    async def check(self, *, user: str, relation: str, obj: str) -> bool:
-        """True if `user` has `relation` to `obj` (e.g. user "alice",
-        relation "approver", obj "aws_account:dev")."""
-        ...
-
-    async def grant(self, *, user: str, relation: str, obj: str) -> None:
-        """Record a relationship tuple (used to SEED approver tuples at startup)."""
-        ...
-
-
-class NoopAuthorizer:
-    """FGA unconfigured -> allow everything (the broker's behavior before FGA).
-    grant() is a no-op."""
-
-    async def check(self, *, user: str, relation: str, obj: str) -> bool:
-        return True
-
-    async def grant(self, *, user: str, relation: str, obj: str) -> None:
-        return None
 
 
 class FgaAuthorizer:
@@ -131,13 +124,3 @@ def authorizer_from_settings(settings) -> Authorizer:
             model_id=getattr(settings, "fga_authorization_model_id", "") or None,
         )
     return NoopAuthorizer()
-
-
-def aws_account_object(account: str) -> str:
-    """The OpenFGA object id for an AWS account (registry alias)."""
-    return f"aws_account:{account}"
-
-
-def user_object(user: str) -> str:
-    """The OpenFGA user id for a human."""
-    return f"user:{user}"

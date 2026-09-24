@@ -47,6 +47,8 @@ python3Packages.buildPythonPackage {
     "scooter_broker_lib.transports.whoami"
     "scooter_broker_lib.transports.token_vend"
     "scooter_broker_lib.store"
+    "scooter_broker_lib.authz"
+    "scooter_broker_lib.context"
   ];
 
   meta.description = "The broker extension surface for Scooter providers";

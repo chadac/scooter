@@ -16,7 +16,9 @@ from ..aws.iam import IamProvisioner
 from ..aws.service import PermissionService, ServiceConfig
 from ..aws.store import PermissionStore
 from ..config import settings
-from ..core.authz import authorizer_from_settings, aws_account_object, user_object
+from ..aws.objects import aws_account_object
+from scooter_broker_lib.authz import user_object
+from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_lib.logging_config import format_error
@@ -178,7 +180,9 @@ async def notify_host(req) -> None:
 
 
 @register_provider
-def aws() -> Provider:
+def aws(ctx: BrokerContext) -> Provider:
+    # The first factory to declare a parameter: aws needs the enforcement point and
+    # the shared broker DB, neither of which a provider may assemble for itself.
     registry = _load_registry()
     enabled = settings.aws_enabled and bool(registry)
 
@@ -188,7 +192,7 @@ def aws() -> Provider:
         # Mounted but inert: routes return 503 until configured (set_service unset).
         return Provider(name="aws", transports=[transport], enabled=False)
 
-    store = PermissionStore(settings.store_config())
+    store = PermissionStore(ctx.store_config)
     iam = _iam_override or IamProvisioner(
         region=settings.aws_region,
         external_id=settings.aws_sts_external_id,
@@ -197,9 +201,9 @@ def aws() -> Provider:
     async def _notify_host(req) -> None:
         await notify_host(req)
 
-    # Authorization (the broker's enforcement point): per-account approver gate
-    # on approve/deny. Off (default) -> NoopAuthorizer -> today's behavior.
-    authorizer = authorizer_from_settings(settings)
+    # Authorization (the broker's enforcement point): per-account approver gate on
+    # approve/deny. Built by the app, never here — FGA off -> NoopAuthorizer.
+    authorizer = ctx.authorizer
 
     service = PermissionService(
         store=store,
