@@ -116,7 +116,7 @@ export interface OrphanRun {
  * so writing a terminal here cannot race the run's real author.
  *
  * `self` EXCLUDES runs this pod is still executing: assignment lands seconds after
- * the first prompt starts, so that run is open and is not an orphan. Why: PR #636.
+ * the first prompt starts, so that run is open and is not an orphan. Why: PR #640.
  */
 export function orphanRuns(events: AguiEvent[], self?: RunOrigin): OrphanRun[] {
   const started = new Map<string, { threadId: string; own: boolean }>();
