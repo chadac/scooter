@@ -52,17 +52,25 @@ class BrokerSettings(ScooterBaseSettings):
     # Which identity claim authorizes an approver (must match how the FGA approver
     # tuples are seeded). "email" | "id" | "name". Default email.
     aws_approver_claim: str = "email"
-    # Store DSN components (shared Postgres; SQLite default). Mirrors webhooks.
-    aws_db_dsn: str = "sqlite+aiosqlite:////tmp/broker-aws.db"
-    aws_db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
-    aws_db_port: int = 5432
-    aws_db_user: str = "webhooks"
-    aws_db_password: str = ""
-    aws_db_name: str = "broker"
-    # e.g. "require" for RDS; empty = no ssl param. The kubenix module has always
-    # emitted AWS_DB_SSLMODE from agentSandbox.postgres.sslmode — without this field
-    # pydantic dropped it and every broker store connected unencrypted anyway.
-    aws_db_sslmode: str = ""
+    # --- The shared `broker` database ---------------------------------------
+    # Components for the platform Postgres database named `broker`, which EVERY
+    # broker store uses (aws permission requests, the module registry, static
+    # shares). Named for the database, not for aws: these were AWS_DB_*, which is
+    # why the kubenix module had to emit them once from the aws branch and again
+    # from a `!aws.enable` branch so shares kept working with aws off.
+    # SQLite default = the dev path; a set password wins (see store_config).
+    broker_db_dsn: str = "sqlite+aiosqlite:////tmp/broker.db"
+    broker_db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
+    broker_db_port: int = 5432
+    # The `broker` database's own role. Was "webhooks" under the aws name — a
+    # copy-paste the deployment always overrode, so it only ever misled a reader.
+    broker_db_user: str = "broker"
+    broker_db_password: str = ""
+    broker_db_name: str = "broker"
+    # e.g. "require" for RDS; empty = no ssl param. Without this field pydantic
+    # dropped what the module emitted and every broker store connected
+    # unencrypted anyway. Why: PR #621.
+    broker_db_sslmode: str = ""
     # SA usernames allowed to APPROVE/DENY (the agent-host relays the user's pick
     # after validating it in-conversation). CSV of
     # system:serviceaccount:{ns}:{name}. Default: the agent-host.
@@ -127,20 +135,20 @@ class BrokerSettings(ScooterBaseSettings):
         """The shared-Postgres components as a StoreConfig, for any broker store.
 
         ONE assembly point: the aws, registry and shares stores each built their own
-        from the same `aws_db_*` settings, and all three dropped sslmode. `dsn` is
-        the store's own dev-SQLite default (registry_db_dsn, shares_db_dsn, …),
-        which loses to the assembled Postgres DSN whenever a password is set.
+        from the same settings, and all three dropped sslmode. `dsn` is the store's
+        own dev-SQLite default (registry_db_dsn, shares_db_dsn, …), which loses to
+        the assembled Postgres DSN whenever a password is set.
         """
         from scooter_broker_lib.store import StoreConfig
 
         return StoreConfig(
-            dsn=dsn or self.aws_db_dsn,
-            db_host=self.aws_db_host,
-            db_port=self.aws_db_port,
-            db_user=self.aws_db_user,
-            db_password=self.aws_db_password,
-            db_name=self.aws_db_name,
-            db_sslmode=self.aws_db_sslmode,
+            dsn=dsn or self.broker_db_dsn,
+            db_host=self.broker_db_host,
+            db_port=self.broker_db_port,
+            db_user=self.broker_db_user,
+            db_password=self.broker_db_password,
+            db_name=self.broker_db_name,
+            db_sslmode=self.broker_db_sslmode,
         )
 
 

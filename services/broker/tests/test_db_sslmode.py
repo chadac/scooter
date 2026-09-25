@@ -1,7 +1,7 @@
 """A deployment that asks for TLS to Postgres must actually get it.
 
-The kubenix module emits AWS_DB_SSLMODE from `agentSandbox.postgres.sslmode` (both
-emission sites in modules/broker.nix), but BrokerSettings had no matching field, so
+The kubenix module emits BROKER_DB_SSLMODE from `agentSandbox.postgres.sslmode`,
+but BrokerSettings had no matching field, so
 pydantic dropped the variable and every broker store — aws permission requests, the
 module registry, static shares — opened a cleartext connection to a server the
 deployment had asked to reach over TLS. Nothing failed; the setting was simply not
@@ -38,18 +38,21 @@ def test_sqlite_dev_dsn_is_untouched_by_sslmode():
 
 
 def test_env_var_the_module_emits_is_read(monkeypatch):
-    monkeypatch.setenv("AWS_DB_SSLMODE", "require")
-    monkeypatch.setenv("AWS_DB_PASSWORD", "pw")
+    monkeypatch.setenv("BROKER_DB_SSLMODE", "require")
+    monkeypatch.setenv("BROKER_DB_PASSWORD", "pw")
     assert BrokerSettings().store_config().resolved_dsn().endswith("?ssl=require")
 
 
 @pytest.mark.parametrize("dsn_setting", ["registry_db_dsn", "shares_db_dsn", ""])
 def test_every_store_gets_the_same_components(monkeypatch, dsn_setting):
     """aws (no dsn override), registry and shares all assemble through one place."""
-    monkeypatch.setenv("AWS_DB_SSLMODE", "require")
-    monkeypatch.setenv("AWS_DB_PASSWORD", "pw")
-    monkeypatch.setenv("AWS_DB_HOST", "pg.example")
+    monkeypatch.setenv("BROKER_DB_SSLMODE", "require")
+    monkeypatch.setenv("BROKER_DB_PASSWORD", "pw")
+    monkeypatch.setenv("BROKER_DB_HOST", "pg.example")
     settings = BrokerSettings()
     dsn = settings.store_config(
         dsn=getattr(settings, dsn_setting) if dsn_setting else "").resolved_dsn()
-    assert dsn == "postgresql+asyncpg://webhooks:pw@pg.example:5432/broker?ssl=require"
+    # `broker`, not `webhooks`: the field default used to be copied from the
+    # webhooks service and this assertion encoded it. The deployment always sets
+    # BROKER_DB_USER=broker, so the default only ever misinformed a reader.
+    assert dsn == "postgresql+asyncpg://broker:pw@pg.example:5432/broker?ssl=require"
