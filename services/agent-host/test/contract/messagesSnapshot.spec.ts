@@ -71,7 +71,7 @@ describe("foldToMessages", () => {
     // live UI fold has its own test for it. Snapshotting `arguments` at END drops
     // them here, so a conversation REHYDRATED from the log renders a shell card
     // with no `$ <command>` body — while the same conversation followed live
-    // renders it fine. Why: PR #643.
+    // renders it fine. Why: PR #644.
     const out = foldToMessages([
       ev({ type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }),
       ev({ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "run: echo hi" }),
@@ -85,7 +85,7 @@ describe("foldToMessages", () => {
 
   it("folds streamed arg deltas that straddle TOOL_CALL_END", () => {
     // Args stream as deltas, so a fold that patches the call must accumulate the
-    // ones after END too, not just replace with the last. Why: PR #643.
+    // ones after END too, not just replace with the last. Why: PR #644.
     const out = foldToMessages([
       ev({ type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }),
       ev({ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" }),

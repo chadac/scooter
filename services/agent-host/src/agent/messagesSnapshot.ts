@@ -39,7 +39,7 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
   const toolName = new Map<string, string>();
   const toolArgs = new Map<string, string>();
   // tool_call_id -> the emitted call object, so args that arrive after it was
-  // built (the shell shape) can still be written into it. Why: PR #643.
+  // built (the shell shape) can still be written into it. Why: PR #644.
   const emittedCalls = new Map<string, { function: { arguments: string } }>();
   let openAssistant: SnapshotMessage | undefined;
 
@@ -91,7 +91,7 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
         // The args can arrive AFTER the call was emitted at TOOL_CALL_END — for a
         // shell tool that is the normal order, because the command is only known
         // once terminal/create delivers it. Patch the already-emitted call, or a
-        // rehydrated conversation renders the card with no command. Why: PR #643.
+        // rehydrated conversation renders the card with no command. Why: PR #644.
         const already = emittedCalls.get(e.toolCallId);
         if (already) already.function.arguments = acc;
         break;
