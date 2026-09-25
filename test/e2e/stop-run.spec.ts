@@ -44,6 +44,9 @@ test.describe("Stop button + thinking indicator", () => {
 
     // A long-running turn: the fake agent runs `sleep 20` in the sandbox as a real
     // tool call, so the run stays in flight (RUN_STARTED, no RUN_FINISHED yet).
+    // The run asserted below must survive the controller's first-prompt hand-off — see
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("!sleep 20");
 
     // The thinking indicator + Stop button appear while the run is in flight. The
@@ -100,6 +103,9 @@ test.describe("Stop button + thinking indicator", () => {
     // is always false); it must be gated on OUR run state instead. Users look at the
     // composer, so the stop belongs there.
     await chat.open();
+    // The run asserted below must survive the controller's first-prompt hand-off — see
+    // Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("!sleep 20");
     // FIRST_TURN_MS: first assertion after a cold send — see the note at the top. Why: PR #497.
     await expect(page.locator('[data-testid="composer-stop"]')).toBeVisible({ timeout: FIRST_TURN_MS });
@@ -123,6 +129,9 @@ test.describe("Stop button + thinking indicator", () => {
     // showed no spinner while e.g. `sleep 20` ran — the agent looked idle. The
     // running indicator must be visible while the tool runs and clear when it ends.
     await chat.open();
+    // The tool spinner asserted below must survive the controller's first-prompt hand-off —
+    // see Chat.settleConversation() in fixtures.ts. Why: PR #598.
+    await chat.settleConversation();
     await chat.send("!sleep 20");
     // FIRST_TURN_MS: first assertion after a cold send. The 60s clear-budget below already
     // accounts for the ready-pod wait; this one did not. Why: PR #497.
