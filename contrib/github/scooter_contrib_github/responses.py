@@ -12,7 +12,7 @@ import time
 import httpx
 import jwt
 
-from ..config import settings
+from .config import settings
 from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)

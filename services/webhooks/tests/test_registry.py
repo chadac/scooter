@@ -20,7 +20,7 @@ from scooter_webhooks_lib.registry import (
 )
 
 
-BUILTIN_HANDLERS = {"github", "test"}
+BUILTIN_HANDLERS = {"test"}
 
 
 def test_discovers_all_builtin_handlers():
@@ -46,7 +46,6 @@ def test_app_mounts_discovered_routes():
 
     paths = set(app.openapi()["paths"].keys())
     for expected in (
-        "/webhooks/github",
         "/webhooks/test",
     ):
         assert expected in paths

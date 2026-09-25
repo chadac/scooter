@@ -12,6 +12,7 @@ dependencies = [
   "scooter-lib",
   "fastapi",
   "httpx",
+  "sqlalchemy",
 ]
 
 # hatchling auto-detects the `scooter_broker_lib` package.

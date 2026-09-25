@@ -47,6 +47,15 @@ ENVS="$(sed -n 's/^\[\([a-z_][a-z_0-9]*\)\]$/\1/p' lib/sql/owners.toml | tr '\n'
 TS_OUT="lib/ts/scooter-schema/src"
 PY_OUT="lib/py/scooter-schema/src/scooter_schema"
 SQLACODEGEN_VERSION="4.0.4"
+# …and SQLAlchemy, which sqlacodegen does NOT pin. The generated annotation for a
+# JSONB column is SQLAlchemy's `JSONB.python_type`, and 2.1.0 (2026-09-24) changed
+# it from `dict` to `object` — so main went red with no commit behind it, on a
+# required check, from an upstream release alone. Pinning the tool is not enough
+# when the tool's dependency decides the output.
+#
+# 2.0.54 is the newest 2.0.x, i.e. the latest release that still reproduces the
+# committed bindings. Bump deliberately: raise this, regenerate, review the diff.
+SQLALCHEMY_VERSION="2.0.54"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -96,7 +105,8 @@ CFG
   " > "$work/sock-$env.log" 2>"$work/sock-$env.err" &
   sockpid=$!
   for _ in $(seq 1 60); do grep -q READY "$work/sock-$env.log" 2>/dev/null && break; sleep 0.25; done
-  uv run --quiet --with "sqlacodegen==$SQLACODEGEN_VERSION" --with psycopg2-binary \
+  uv run --quiet --with "sqlacodegen==$SQLACODEGEN_VERSION" \
+    --with "sqlalchemy==$SQLALCHEMY_VERSION" --with psycopg2-binary \
     sqlacodegen "postgresql+psycopg2://postgres@127.0.0.1:$port/postgres" > "$work/models-$env.py"
   kill "$sockpid" 2>/dev/null || true
   wait "$sockpid" 2>/dev/null || true

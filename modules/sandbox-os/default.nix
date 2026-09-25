@@ -115,15 +115,18 @@
   # --- the PoC sample service ------------------------------------------------
   services.sampleDevService.enable = true;
 
-  # --- broker/git/aws carry-over from the legacy sandbox image ---------------
-  # So the agent-host's exec'd commands (broker whoami, brokered git, AWS
-  # credential_process) work unchanged in the new image.
+  # --- broker/git carry-over from the legacy sandbox image -------------------
+  # So the agent-host's exec'd commands (broker whoami, brokered git) work
+  # unchanged in the new image.
   programs.scooterCarryOver.enable = true;
 
   # STAGE 5 carry-over (from the old entrypoint.sh, must not regress):
-  #   - broker tools (agent-broker, git-credential-broker, scooter-aws*)
+  #   - broker tools (agent-broker, git-credential-broker)
   #   - git credential.helper = broker (when BROKER_URL set)
-  #   - ~/.aws/config render from the accounts ConfigMap
   #   - HOME pinned to the writable workspace for exec'd commands
   # These become packages / systemd units / activation scripts here.
+  #
+  # The aws items from that list (scooter-aws*, the awscli2 stub, the ~/.aws/config
+  # render) are contrib/aws/sandbox.nix, layered in through ./contribs.nix — still
+  # in this image, no longer in this file. Why: #599.
 }

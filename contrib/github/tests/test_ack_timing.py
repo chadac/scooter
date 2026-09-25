@@ -1,29 +1,29 @@
-"""The 'Scooter is on it — follow along: <link>' ack must post BEFORE the agent
-run, not after.
+"""The 'Scooter is on it — follow along: <link>' ack must post BEFORE the agent run.
 
 create_conversation() blocks until the whole agent turn finishes, so posting the
 link ack after it returned delayed the link by the entire run (the 5-10min lag).
-Each handler posts the ack inside the `on_created` hook (fired pre-run). This
-test drives the handler's _background_create_conversation with a fake
-create_conversation that (a) invokes on_created, (b) records call ORDER, so we can
-assert the ack fired during on_created — before the (simulated) run completes.
+The handler posts the ack inside the `on_created` hook (fired pre-run); this drives
+_background_create_conversation with a fake create_conversation that (a) invokes
+on_created, (b) records call ORDER, so the ack is proven to fire during on_created.
+
+Moved here with the handler (PR #591) — the webhooks app's copy covered the in-tree
+handlers, and github's half travels with github.
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from webhooks.handlers import github as github_h
+from scooter_contrib_github import webhooks_handler as github_h
 
 
 def _fake_create_conversation(order: list[str]):
-    """A create_conversation stub: fire on_created (recording 'ack' via the posts),
-    then mark 'run' AFTER — so order proves the ack preceded the run."""
     async def fake(*args, on_created=None, **kwargs):
         if on_created is not None:
             await on_created("conv-xyz")
         order.append("run")  # the blocking run finishes AFTER on_created
         return {"conversation_id": "conv-xyz", "result": "done"}
+
     return fake
 
 

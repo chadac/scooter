@@ -9,7 +9,7 @@ Importable as `from conftest import ...` because pyproject sets pythonpath = ["t
 
 from sqlalchemy.orm import DeclarativeBase
 
-from broker.aws.store import StoreConfig
+from scooter_broker_lib.store import StoreConfig
 
 SQLITE = "sqlite+aiosqlite:///:memory:"
 

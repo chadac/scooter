@@ -8,7 +8,7 @@
 #     baseline.json / pr.json : the [{name,bytes,kind}] arrays from image-sizes.sh
 #     growth_pct_flag         : % growth that earns a ⚠️ (default 5)
 #
-# Output (stdout): the full markdown comment body (incl. the sticky marker), ready
+# Output (stdout): the markdown BODY of the image-size section (scripts/ci-report.mjs
 # to hand to `gh pr comment`. An image present in one side but not the other renders
 # with "—" on the missing side (added/removed image).
 set -euo pipefail
@@ -17,8 +17,10 @@ BASELINE="${1:?usage: image-sizes-diff.sh <baseline.json> <pr.json> [growth_pct]
 PR="${2:?usage: image-sizes-diff.sh <baseline.json> <pr.json> [growth_pct]}"
 FLAG_PCT="${3:-5}"
 
-# The marker the CI greps for to find + update its own comment (sticky).
-MARKER="<!-- image-size-benchmark -->"
+# No marker and no heading of its own: this is one SECTION of the shared CI comment
+# now, and ci-report.mjs owns the <details> + summary line around it. A leftover
+# marker here would be a second, dead identity for the same content.
+MARKER=""
 
 # Join baseline & PR by name; compute delta + pct; render one table row each. All
 # arithmetic + human-size formatting is done in jq so there are no bash float woes.
@@ -54,9 +56,7 @@ jq -rn \
   ([ $rows[] | select(.pct != null and .pct >= $flag) ] | length) as $grew |
 
   # render
-  ( $marker + "\n" +
-    "## 📦 Image size report\n\n" +
-    "Sizes vs `origin/main` (tarball images = `.tar.gz` file size; nix2container images = closure size). " +
+  ( "Sizes vs `origin/main` (tarball images = `.tar.gz` file size; nix2container images = closure size). " +
     "⚠️ marks growth ≥ \($flag)%.\n\n" +
     "| Image | main | PR | Δ | Δ% |\n" +
     "|---|--:|--:|--:|--:|\n" +

@@ -1,11 +1,14 @@
 # Broker tools — the credential-broker CLIs the agent's exec'd commands use in the
-# sandbox (broker whoami, brokered git clone, AWS credential_process). These are
-# ALWAYS needed, so they're prebuilt on the sandbox image (not lazy stubs).
+# sandbox (broker whoami, brokered git clone). These are ALWAYS needed, so they're
+# prebuilt on the sandbox image (not lazy stubs).
 #
 # Exposed as an overlay (overlays.brokerTools -> pkgs.scooterBrokerTools) so any
 # evaluation of the sandbox config can pull them in. The shell sources live HERE
-# (one source of truth); the AWS CLIs embed the broker service's own cli.py so the
-# in-sandbox helper can't drift from the broker.
+# (one source of truth).
+#
+# The AWS CLIs used to live here too, embedding services/broker/…/aws/cli.py. They
+# are contrib/aws/sandbox.nix's now: a tool only aws needs belongs to aws, not to
+# every sandbox. Why: #599.
 #
 # Previously these lived in pkgs/sandbox-image (the retired legacy image); they
 # moved here so that image could be deleted while keeping the tools.
@@ -29,32 +32,10 @@ let
     runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
     text = builtins.readFile ./git-credential-broker.sh;
   };
-
-  # The AWS request CLI + credential_process helper — the broker's own cli.py,
-  # embedded verbatim (one source of truth with services/broker).
-  scooterAwsCli = pkgs.writeTextFile {
-    name = "scooter_aws_cli.py";
-    destination = "/lib/scooter_aws_cli.py";
-    text = builtins.readFile ../../services/broker/broker/aws/cli.py;
-  };
-  scooter-aws = pkgs.writeShellApplication {
-    name = "scooter-aws";
-    runtimeInputs = [ pkgs.python3 ];
-    text = ''
-      exec python3 -c 'import runpy,sys; m=runpy.run_path("${scooterAwsCli}/lib/scooter_aws_cli.py"); sys.exit(m["cli_main"](sys.argv[1:]))' "$@"
-    '';
-  };
-  scooter-aws-credentials = pkgs.writeShellApplication {
-    name = "scooter-aws-credentials";
-    runtimeInputs = [ pkgs.python3 ];
-    text = ''
-      exec python3 -c 'import runpy,sys; m=runpy.run_path("${scooterAwsCli}/lib/scooter_aws_cli.py"); sys.exit(m["credentials_main"](sys.argv[1:]))' "$@"
-    '';
-  };
 in
 {
-  inherit agent-broker git-credential-broker scooter-aws scooter-aws-credentials;
+  inherit agent-broker git-credential-broker;
 
-  # All four as a single list, for `environment.systemPackages = scooterBrokerTools.all`.
-  all = [ agent-broker git-credential-broker scooter-aws scooter-aws-credentials ];
+  # Both as a single list, for `environment.systemPackages = scooterBrokerTools.all`.
+  all = [ agent-broker git-credential-broker ];
 }

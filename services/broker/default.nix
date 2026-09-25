@@ -25,7 +25,6 @@ python3Packages.buildPythonApplication {
     pydantic-settings
     kubernetes
     pyyaml # sandbox/overlay.py parses the manifest-overlay ConfigMap payload
-    pyjwt
     # AWS permissions broker
     boto3
     sqlalchemy
@@ -40,7 +39,6 @@ python3Packages.buildPythonApplication {
   nativeCheckInputs = with python3Packages; [
     pytestCheckHook
     pytest-asyncio
-    cryptography
   ];
   pythonImportsCheck = [ "broker.core.app" ];
 

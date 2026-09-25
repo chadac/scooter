@@ -39,7 +39,11 @@
 
   outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs, uv-nix }:
     let
-      # The built-in agent skills: every ./skills/*.md read into the
+      # The PLATFORM's agent skills — the ones that document no contrib, so nothing
+      # gates them. A skill for a contrib lives in that contrib and is gated on it
+      # (contrib/skills.nix -> modules/platform.nix), never passed through here.
+      #
+      # Every ./skills/*.md read into the
       # `filename -> content` attrset the platform module's `agent.skills` option
       # expects (rendered to the agent-skills ConfigMap, mounted at SKILLS_DIR,
       # assembled into each conversation's .goosehints). The module default is `{}`
@@ -321,7 +325,7 @@
             inherit pkgs lib n2c;
           };
 
-          # Broker tools (agent-broker / git-credential-broker / scooter-aws*),
+          # Broker tools (agent-broker / git-credential-broker),
           # prebuilt — always needed, so baked into the sandbox image (the read-only
           # lower of its overlay store). The sandbox-os config callPackages these
           # directly (carry-over.nix), one source of truth (pkgs/broker-tools).
@@ -556,6 +560,17 @@
               tree = lib.head (lib.filter
                 (d: lib.hasSuffix "-sandbox-os-src" (toString d))
                 sandboxWithEcho.nixos.config.system.extraDependencies);
+
+              # The image as it actually SHIPS — no fixture layered on. aws's sandbox
+              # half is the only contrib in it.
+              shipped = import ./pkgs/sandbox-os {
+                inherit lib n2c uvNix;
+                pkgs = sandboxPkgs;
+                nixStubs = {
+                  src = nix-stubs;
+                  package = nix-stubs.packages.${system}.nix-stubs;
+                };
+              };
             in
             # 1. A derived module is real sandbox config, not just a valid file.
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
@@ -567,13 +582,26 @@
             # source. (1) + (2) + (3) is the whole chain: source -> list -> image.
             assert (import ./modules/sandbox-os/contribs.nix { inherit lib; }).imports
               == derive [ ];
+            # 4. The shipped image, with no fixture: aws's half must be in it, or the
+            # sandbox silently lost `~/.aws/config` and every `aws --profile` with it.
+            # Asserted on the UNIT rather than a marker file — that is the thing a
+            # deployment would miss. Covers what (1) cannot: (1) proves a derived
+            # module lands, this proves the one we actually ship does.
+            assert shipped.nixos.config.systemd.services ? "scooter-aws-config";
+            assert lib.any (p: (p.pname or p.name or "") == "scooter-aws")
+              shipped.nixos.config.environment.systemPackages;
             pkgs.runCommand "contrib-sandbox-check" { } ''
-              # 4. The in-pod half: the vendored tree carries contrib/ AND the deriver
+              # 5. The in-pod half: the vendored tree carries contrib/ AND the deriver
               # at the repo's layout, so a rebuild in the pod computes the same list
               # from the same source. dev-env-reconverge-eval proves it evaluates.
               test -f ${tree}/contrib/sandbox-modules.nix
               test -f ${tree}/contrib/echo/sandbox.nix
               test -f ${tree}/modules/sandbox-os/contribs.nix
+              # aws's half reaches ACROSS trees for the broker's cli.py, so the vendored
+              # copy needs both ends. This is the one the whole-repo vendoring (#614)
+              # bought: a curated subset would have shipped the module without its source.
+              test -f ${tree}/contrib/aws/sandbox.nix
+              test -f ${tree}/services/broker/broker/aws/cli.py
               touch $out
             '';
 
@@ -646,6 +674,8 @@
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-github = contribs.packages.github.broker;
+            contrib-github-webhooks = contribs.packages.github.webhooks;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
             contrib-grafana = contribs.packages.grafana.broker;
@@ -670,7 +700,7 @@
             # writable local-overlay Nix store ALWAYS ON (the sole sandbox image now).
             sandbox-os-image = sandboxOsImage.image;
 
-            # The broker tools (agent-broker / git-credential-broker / scooter-aws*),
+            # The broker tools (agent-broker / git-credential-broker),
             # prebuilt; baked into the sandbox-os image via the brokerTools overlay.
             broker-tools = brokerTools.agent-broker;
 
@@ -784,6 +814,8 @@
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-github = contribs.packages.github.broker;
+            contrib-github-webhooks = contribs.packages.github.webhooks;
             contrib-gitlab = contribs.packages.gitlab.broker;
             contrib-gitlab-webhooks = contribs.packages.gitlab.webhooks;
             contrib-grafana = contribs.packages.grafana.broker;

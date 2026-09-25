@@ -24,7 +24,9 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 from . import policy
-from ..core.authz import Authorizer, NoopAuthorizer, aws_account_object, user_object
+from scooter_broker_lib.authz import Authorizer, NoopAuthorizer, user_object
+
+from .objects import aws_account_object
 from .iam import IamProvisioner
 from .models import PermissionRequest, RequestStatus, RiskLevel, StsCredentials
 from .store import PermissionStore

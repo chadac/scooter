@@ -28,7 +28,6 @@ python3Packages.buildPythonApplication {
     sqlalchemy
     aiosqlite
     asyncpg
-    pyjwt
     scooterSchema  # generated SQLAlchemy models for the webhooks DB (lib/py/scooter-schema)
     scooterLib     # shared structured-logging convention (lib/py/scooter-lib)
     scooterWebhooksLib # the extension surface a handler composes (lib/py/scooter-webhooks-lib)

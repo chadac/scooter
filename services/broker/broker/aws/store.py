@@ -18,32 +18,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import String, Text, select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from scooter_broker_lib.store import StoreConfig, open_sessions
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .models import PermissionRequest, RequestStatus, RiskLevel
-
-
-@dataclass
-class StoreConfig:
-    """DSN assembly mirroring the webhooks DatabaseSettings: an explicit `dsn`
-    wins; otherwise, when `db_password` is set, build
-    postgresql+asyncpg://{user}:{pw}@{host}:{port}/{name}. Default = SQLite."""
-
-    dsn: str = "sqlite+aiosqlite:////tmp/broker-aws.db"
-    db_host: str = "agent-shared-db.agent-manager.svc.cluster.local"
-    db_port: int = 5432
-    db_user: str = "webhooks"   # shared instance's user; DB name differs
-    db_password: str = ""
-    db_name: str = "broker"     # SEPARATE database on the shared Postgres
-
-    def resolved_dsn(self) -> str:
-        if self.db_password and not self.dsn.startswith("postgresql"):
-            return (
-                f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
-                f"@{self.db_host}:{self.db_port}/{self.db_name}"
-            )
-        return self.dsn
 
 
 class _Base(DeclarativeBase):
@@ -145,21 +125,8 @@ class PermissionStore:
     it (identity from the SA token). Async (asyncpg/aiosqlite)."""
 
     def __init__(self, config: StoreConfig) -> None:
-        # pool_pre_ping: emit a lightweight liveness check when a connection is checked out of the
-        # pool and RECYCLE it if the server (or an idle-timeout / proxy / failover) closed it
-        # underneath us — instead of handing out a dead connection and failing the request with
-        # asyncpg "connection is closed" on the next transaction. pool_recycle caps a connection's
-        # lifetime below common idle-timeout windows so stale ones retire proactively. Mirrors the
-        # webhooks engine (scooter_webhooks_lib/store.py), which added these after exactly
-        # that failure in production; without them a postgres restart / failover breaks this
-        # service until it is itself restarted.
-        self._engine: AsyncEngine = create_async_engine(
-            config.resolved_dsn(),
-            echo=False,
-            pool_pre_ping=True,
-            pool_recycle=1800,  # recycle connections older than 30 min
-        )
-        self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._engine: AsyncEngine
+        self._engine, self._session = open_sessions(config)
 
     async def insert(self, request: PermissionRequest) -> None:
         async with self._session() as s, s.begin():

@@ -7,8 +7,10 @@
     ./options.nix
 
     ./airtable
+    ./aws
     ./datadog
     ./echo
+    ./github
     ./gitlab
     ./grafana
     ./jira

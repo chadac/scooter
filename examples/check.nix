@@ -310,11 +310,34 @@ let
     shipped = enable: builtins.elem file (skillsWith (override enable));
   in (if shipped true then [ ] else [ "${file} missing when ${gate} = true" ])
      ++ (if shipped false then [ "${file} SHIPPED when ${gate} = false (the agent will chase a 404)" ] else [ ]);
-  skillProblems =
-    gateProblems "scooter-grafana.md" "broker.grafana.enable"
-      (enable: lib: { grafana = { enable = lib.mkForce enable; url = "https://example.grafana.net"; }; })
-    ++ gateProblems "scooter-airtable.md" "broker.airtable.enable"
-      (enable: lib: { airtable.enable = lib.mkForce enable; });
+  # One override per contrib that ships skills. Written out rather than derived,
+  # because enabling a provider can require its OTHER options (grafana a url, slack a
+  # token secret) — a bare `enable = true` would be an eval error, not a render. For a
+  # provider the example already configures, mkForce on `enable` is the whole override.
+  skillGates = {
+    grafana = enable: lib: { grafana = { enable = lib.mkForce enable; url = "https://example.grafana.net"; }; };
+    airtable = enable: lib: { airtable.enable = lib.mkForce enable; };
+    aws = enable: lib: { aws.enable = lib.mkForce enable; };
+    datadog = enable: lib: { datadog.enable = lib.mkForce enable; };
+    slack = enable: lib: {
+      slack = {
+        enable = lib.mkForce enable;
+        botTokenSecret = { name = "slack-bot"; key = "SLACK_BOT_TOKEN"; };
+      };
+    };
+  };
+  # Driven off contrib/skills.nix — the SAME source platform.nix ships from — so a
+  # contrib that starts shipping a skill fails here until its gate is proven.
+  nixpkgsLib = flake.inputs.nixpkgs.lib;
+  contribSkills = import ../contrib/skills.nix { lib = nixpkgsLib; };
+  skillProblems = nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
+    (name: skills:
+      if !(skillGates ? ${name})
+      then [ ("contrib ${name} ships ${toString (builtins.attrNames skills)} but examples/check.nix has no gate case — add one to skillGates") ]
+      else nixpkgsLib.concatMap
+        (file: gateProblems file "broker.${name}.enable" skillGates.${name})
+        (builtins.attrNames skills))
+    contribSkills);
 
   # IMMUTABLE-JOB GUARD. A Job's spec.template CANNOT be patched, so re-applying a
   # CHANGED deploy-time Job under a FIXED name is rejected by the apiserver ("field is
@@ -410,7 +433,97 @@ let
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems;
+  # THE SHARED BROKER DATABASE reaches the broker regardless of which feature wants
+  # it. Every broker store (aws permission requests, the module registry, static
+  # shares) resolves its DSN from BROKER_DB_*, and a store that finds no password
+  # falls back to a SQLite dev path — persisting to the pod's disk and losing
+  # everything on restart, with nothing logged. These used to be AWS_DB_*, emitted
+  # from the aws branch and mirrored in a `!aws.enable` branch to keep shares
+  # working; the mirror covered shares but nothing covered registry-only, and
+  # keeping two copies disjoint was hand-maintained. So assert BOTH halves of what
+  # replaced it: present with aws OFF, and never declared twice with aws ON (k8s
+  # silently keeps the last value of a duplicated env name).
+  awsOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.broker.aws.enable = lib.mkForce false;
+      agentSandbox.broker.shares.enable = lib.mkForce false;
+    };
+  };
+  awsOffBrokerEnv =
+    let ctrs = builtins.attrValues (awsOffPlatform.config.kubernetes.resources.deployments.agent-broker.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  dbEnvNames = [ "BROKER_DB_HOST" "BROKER_DB_PORT" "BROKER_DB_NAME" "BROKER_DB_USER" "BROKER_DB_PASSWORD" ];
+  countNamed = env: n: builtins.length (builtins.filter (e: e.name == n) env);
+  brokerDbProblems =
+    map (n: "aws-off: broker.env.${n} missing — every broker store silently falls back to SQLite and loses its data on restart")
+      (builtins.filter (n: countNamed awsOffBrokerEnv n == 0) dbEnvNames)
+    ++ map (n: "broker.env.${n} declared more than once (k8s keeps the last silently)")
+      (builtins.filter (n: countNamed brokerEnv n > 1) dbEnvNames);
+
+  # TLS TO POSTGRES REACHES EVERY CONSUMER. Each service assembles its own DSN from
+  # separately-emitted components, and each emission site is hand-written — 11 of them
+  # across 8 module files. The failure mode is a MISSING component, not a wrong one:
+  # sslmode is absent, the DSN carries no ssl parameter, and the service connects in
+  # cleartext to a server the deployment asked to reach over TLS. Nothing fails and
+  # nothing logs. #621 was one copy of exactly that (the broker's), and byoc-controller
+  # still had it afterwards — index.ts read DB_SSLMODE while modules/byoc.nix never
+  # emitted it — because "fix the copy you found" cannot catch the copy you didn't.
+  #
+  # So don't enumerate the consumers here: DERIVE the expectation from what each
+  # workload emits. Any container with a `<prefix>DB_HOST` is talking to Postgres and
+  # must also carry `<prefix>DB_SSLMODE` once the deployment sets one. A twelfth copy
+  # that forgets it fails this check on the day it lands, and a new consumer is covered
+  # without editing this file. Needs a NON-cluster render: in-cluster leaves sslmode
+  # null by design, so the example platform emits nothing and proves nothing.
+  tlsPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.postgres.external = {
+        host = "pg.example.invalid";
+        sslmode = "require";
+        user = "postgres";
+        passwordSecret = { name = "pg-admin"; key = "password"; };
+      };
+    };
+  };
+  tlsRes = tlsPlatform.config.kubernetes.resources;
+  # Every container of every workload kind, so a new Deployment/Job is covered too.
+  allWorkloads = builtins.concatMap
+    (kind: builtins.attrValues (tlsRes.${kind} or { }))
+    [ "deployments" "statefulSets" "jobs" "cronJobs" ];
+  containersOf = w:
+    let spec = w.spec.template.spec or (w.spec.jobTemplate.spec.template.spec or { });
+    in builtins.attrValues (spec.containers or { });
+  # "AGENT_HOST_DB_HOST" -> "AGENT_HOST_DB_", "DB_HOST" -> "DB_"
+  prefixOf = name: builtins.substring 0 (builtins.stringLength name - 4) name;
+  # A derived check can pass by scanning nothing — if the render carried no DB_HOST at
+  # all, `missing` would be empty everywhere and this would report green while testing
+  # zero consumers. So count what was actually examined and fail if it collapses.
+  dbHostCount = builtins.length (builtins.concatMap
+    (w: builtins.concatMap
+      (c: builtins.filter (n: builtins.match ".*DB_HOST" n != null) (map (e: e.name) (c.env or [ ])))
+      (containersOf w))
+    allWorkloads);
+  vacuityProblems = if dbHostCount >= 6 then [ ]
+    else [ ("sslmode guard scanned only ${toString dbHostCount} DB_HOST vars (expected >= 6)"
+            + " — the render or the scan broke, and the check is passing vacuously") ];
+
+  sslProblems = builtins.concatMap
+    (w: builtins.concatMap
+      (c:
+        let
+          env = c.env or [ ];
+          names = map (e: e.name) env;
+          hosts = builtins.filter (n: builtins.match ".*DB_HOST" n != null) names;
+          missing = builtins.filter
+            (h: !(builtins.elem "${prefixOf h}SSLMODE" names)) hosts;
+        in map (h: "${w.metadata.name or "?"}: emits ${h} but no ${prefixOf h}SSLMODE "
+                 + "(cleartext to a TLS-only Postgres, silently)") missing)
+      (containersOf w))
+    allWorkloads;
+
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ sslProblems ++ vacuityProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"

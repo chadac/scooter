@@ -13,8 +13,10 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException
 
 from .auth import authenticate
+from .authz import authorizer_from_settings
 from ..config import refresh_settings, settings
 from scooter_broker_lib.autolink import Link, create_link, list_links
+from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.registry import discover_providers
 from scooter_broker_lib.types import Identity
 from scooter_lib.logging_config import configure_logging
@@ -34,7 +36,13 @@ def create_app() -> FastAPI:
     # registry so the lib carries no import of this app. See PR #567.
     from .. import providers as builtin_providers
 
-    providers = list(discover_providers([builtin_providers]))
+    # The substrate a provider must not assemble for itself. Built here, once, and
+    # handed to any factory that declares a parameter (see BrokerContext).
+    context = BrokerContext(
+        authorizer=authorizer_from_settings(settings),
+        store_config=settings.store_config(),
+    )
+    providers = list(discover_providers([builtin_providers], context=context))
 
     # Do NOT add a sandbox-lifecycle router here. A sandbox can reach the broker over
     # the network and cannot reach the agent-host, so provisioning lives there
@@ -45,18 +53,13 @@ def create_app() -> FastAPI:
     registry_store = None
     registry_router = None
     if settings.registry_enabled:
-        from ..aws.store import StoreConfig
         from ..registry.routes import create_registry_router
         from ..registry.store import ModuleRegistryStore
 
         # Share the AWS DB components (same shared Postgres `broker` DB); the SQLite
         # registry_db_dsn is the dev default when no db_password is set.
-        registry_store = ModuleRegistryStore(StoreConfig(
-            dsn=settings.registry_db_dsn,
-            db_host=settings.aws_db_host, db_port=settings.aws_db_port,
-            db_user=settings.aws_db_user, db_password=settings.aws_db_password,
-            db_name=settings.aws_db_name,
-        ))
+        registry_store = ModuleRegistryStore(
+            settings.store_config(dsn=settings.registry_db_dsn))
         registry_router = create_registry_router(registry_store)
 
     # Static shares (broker/shares/) — persistent static webpages served at /s/<uuid>/.
@@ -65,16 +68,10 @@ def create_app() -> FastAPI:
     shares_store = None
     shares_router = None
     if settings.shares_enabled:
-        from ..aws.store import StoreConfig
         from ..shares.routes import create_shares_router
         from ..shares.store import ShareStore
 
-        shares_store = ShareStore(StoreConfig(
-            dsn=settings.shares_db_dsn,
-            db_host=settings.aws_db_host, db_port=settings.aws_db_port,
-            db_user=settings.aws_db_user, db_password=settings.aws_db_password,
-            db_name=settings.aws_db_name,
-        ))
+        shares_store = ShareStore(settings.store_config(dsn=settings.shares_db_dsn))
         shares_router = create_shares_router(
             shares_store,
             public_base_url=settings.shares_public_base_url,

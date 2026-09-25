@@ -4,13 +4,15 @@ Before this, handlers/github.py dispatched only issue_comment / issues /
 pull_request — so a comment on a specific LINE of a diff (the most common way a
 human reviews an agent's PR) hit `else: logger.debug("ignoring event type")` and
 the agent never saw it. Same for CI: nothing told it a run failed.
+
+Moved here with the handler (PR #591).
 """
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from webhooks.handlers import github as gh
+from scooter_contrib_github import webhooks_handler as gh
 
 
 def _repo():

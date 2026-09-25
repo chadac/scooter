@@ -7,14 +7,15 @@ routes (/github/{path} and /github/git-credentials) fall out automatically.
 
 from __future__ import annotations
 
-from ..config import settings
 from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
-from ..sources.github_app import GitHubAppSource
 from scooter_broker_lib.sources.static_token import StaticTokenSource
 from scooter_broker_lib.transports.git_credential import GitCredential
 from scooter_broker_lib.transports.http_proxy import HttpProxy
+
+from .config import GitHubSettings
+from .github_app import GitHubAppSource
 
 
 # Auto-link the PRs / issues an agent creates via the proxy. GitHub's create
@@ -34,6 +35,8 @@ _GITHUB_LINK_RULES = [
 
 @register_provider
 def github() -> Provider:
+    # Read at BUILD time, like every provider factory (#573).
+    settings = GitHubSettings()
     if settings.github_app_id and settings.github_app_private_key:
         credential = GitHubAppSource(
             app_id=settings.github_app_id,
