@@ -64,6 +64,39 @@ describe("foldToMessages", () => {
     expect(tool).toMatchObject({ toolCallId: "t1", content: "a.txt" });
   });
 
+  it("keeps TOOL_CALL_ARGS that arrive AFTER TOOL_CALL_END (the shell shape)", () => {
+    // The REAL order for a shell tool: the command is only known once
+    // terminal/create delivers it, which is after the tool call has been opened
+    // and closed. Captured from the cluster as START, END, ARGS, RESULT, and the
+    // live UI fold has its own test for it. Snapshotting `arguments` at END drops
+    // them here, so a conversation REHYDRATED from the log renders a shell card
+    // with no `$ <command>` body — while the same conversation followed live
+    // renders it fine. Why: PR #643.
+    const out = foldToMessages([
+      ev({ type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }),
+      ev({ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "run: echo hi" }),
+      ev({ type: "TOOL_CALL_END", toolCallId: "t1" }),
+      ev({ type: "TOOL_CALL_ARGS", toolCallId: "t1", delta: '{"command":"echo hi"}' }),
+      ev({ type: "TOOL_CALL_RESULT", toolCallId: "t1", content: "hi" }),
+    ]);
+    const asst = out.find((m) => m.id === "a1")!;
+    expect(asst.toolCalls?.[0].function.arguments, "the late args were dropped").toBe('{"command":"echo hi"}');
+  });
+
+  it("folds streamed arg deltas that straddle TOOL_CALL_END", () => {
+    // Args stream as deltas, so a fold that patches the call must accumulate the
+    // ones after END too, not just replace with the last. Why: PR #643.
+    const out = foldToMessages([
+      ev({ type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" }),
+      ev({ type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "bash" }),
+      ev({ type: "TOOL_CALL_ARGS", toolCallId: "t1", delta: '{"cmd":' }),
+      ev({ type: "TOOL_CALL_END", toolCallId: "t1" }),
+      ev({ type: "TOOL_CALL_ARGS", toolCallId: "t1", delta: '"ls"}' }),
+    ]);
+    const asst = out.find((m) => m.id === "a1")!;
+    expect(asst.toolCalls?.[0].function.arguments).toBe('{"cmd":"ls"}');
+  });
+
   it("a tool call with no open assistant message still gets a carrier", () => {
     // Otherwise the tool RESULT references a toolCallId the client never saw.
     const out = foldToMessages([
