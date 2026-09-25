@@ -597,11 +597,12 @@
               test -f ${tree}/contrib/sandbox-modules.nix
               test -f ${tree}/contrib/echo/sandbox.nix
               test -f ${tree}/modules/sandbox-os/contribs.nix
-              # aws's half reaches ACROSS trees for the broker's cli.py, so the vendored
-              # copy needs both ends. This is the one the whole-repo vendoring (#614)
-              # bought: a curated subset would have shipped the module without its source.
+              # aws's sandbox half embeds the CLI source from its OWN tree, so the
+              # vendored copy needs both ends. This is the one the whole-repo vendoring
+              # (#614) bought: a curated subset would have shipped the module without
+              # its source.
               test -f ${tree}/contrib/aws/sandbox.nix
-              test -f ${tree}/services/broker/broker/aws/cli.py
+              test -f ${tree}/contrib/aws/scooter_contrib_aws/cli.py
               touch $out
             '';
 

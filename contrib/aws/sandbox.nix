@@ -12,14 +12,11 @@ let
   # so the two cannot drift apart.
   home = config.programs.scooterCarryOver.home;
 
-  # The broker's own cli.py, embedded verbatim: the in-sandbox helper cannot drift
-  # from the service that answers it. The reach across trees is temporary — cli.py
-  # moves in here with the rest of aws's Python, and then this is `./cli.py`.
+  # cli.py embedded verbatim: the in-sandbox helper cannot drift from the service
+  # that answers it, and both halves are this contrib's now. Why: PR #633.
   cliPy = pkgs.writeTextFile {
     name = "scooter_aws_cli.py";
     destination = "/lib/scooter_aws_cli.py";
-    # The CLI source is THIS contrib's now. Until #599 this reached back into
-    # services/broker for it — a sandbox half depending on the app it left.
     text = builtins.readFile ./scooter_contrib_aws/cli.py;
   };
 
