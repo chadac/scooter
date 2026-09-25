@@ -39,7 +39,23 @@ SAMPLER_PID=$!
 nix shell nixpkgs#kubectl -c python3 test/e2e/support/rolloutHook.py 8898 >/tmp/rollout-hook.log 2>&1 &
 HOOK_PID=$!
 
-trap 'kill "$PF_PID" "$SAMPLER_PID" "$HOOK_PID" 2>/dev/null || true' EXIT
+# POD LOG CAPTURE, for the same reason the sampler above exists: an end-of-job
+# dump can only read what still EXISTS. These specs DELETE the owner pod mid-run
+# (the hook's /move and /restart), so the logs of the pod that owned a
+# conversation across a hand-off — the exact window a reassignment bug lives in —
+# were gone before `kubectl logs` ran, and a failure on a since-deleted pod could
+# not be attributed at all.
+#
+# stern, not `kubectl logs -l`: it follows pods as they come AND go, and prefixes
+# every line with the pod that wrote it. The dump's selector form cannot do
+# either — it interleaves the 3 replicas (k3d-platform-up scales to 3, with
+# CONVERSATION_POD_CAP=1) into one stream with no attribution.
+nix shell nixpkgs#stern -c stern -n agent-sandbox --color never --timestamps \
+  --selector 'app in (agent-host,conversation-controller,conversation-router)' \
+  >/tmp/pod-logs.log 2>&1 &
+STERN_PID=$!
+
+trap 'kill "$PF_PID" "$SAMPLER_PID" "$HOOK_PID" "$STERN_PID" 2>/dev/null || true' EXIT
 
 # Wait on a real GET, not the port bind — the forward accepts before nginx serves.
 for _ in $(seq 1 60); do
