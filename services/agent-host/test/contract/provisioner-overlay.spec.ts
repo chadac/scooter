@@ -25,7 +25,7 @@ type Manifest = {
 };
 
 const render = (deploy: Record<string, unknown>) =>
-  sandboxManifest("abc", "conv-abc", "sandbox-abc", "img:latest", "ns", "aud", "10Gi", undefined, true, deploy) as Manifest;
+  sandboxManifest("abc", "conv-abc", "sandbox-abc", "img:latest", "ns", "aud", "10Gi", true, deploy) as Manifest;
 
 describe("sandboxManifest overlay-store wiring", () => {
   it("mounts the scooter-rw PVC upper at /nix/.scooter-rw when overlayStore is on", () => {

@@ -19,6 +19,11 @@ in
   imports = [
     ./sandbox-template.nix
     ./conversation.nix
+    # conversation.nix renders the contributed sandbox-pod parts, so the options
+    # must be declared in THIS tree too — it does not import platform.nix. Without
+    # it `mkConversation` is an eval error, which is what it was: it read
+    # `broker.aws.enable`, an option only platform.nix declares. Why: PR #640.
+    ./sandbox-pod.nix
     ./agent-host.nix
   ];
 

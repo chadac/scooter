@@ -18,6 +18,17 @@ let
   # same origin); otherwise it targets the agent-host API directly.
   ingressBackend = if cfg.ui.enable then "ui" else "agent-host";
 
+  # The enabled contribs' sandbox-pod parts (modules/sandbox-pod.nix), serialized for
+  # the agent-host — which creates the real Sandbox CR and so is the only place these
+  # can take effect. null when nothing contributes, so a deployment with no such
+  # contrib carries no env var at all rather than an empty-list payload.
+  sandboxPodParts = {
+    inherit (cfg.sandboxPod) extraEnv extraVolumes extraVolumeMounts;
+  };
+  contribSandboxParts =
+    if lib.all (v: v == [ ]) (lib.attrValues sandboxPodParts) then null
+    else builtins.toJSON sandboxPodParts;
+
   # --- Model catalog: fold availableModels (PROVIDER-FIRST: provider -> model id -> opts) into
   # the rich list the agent-host reads as AGENT_MODELS_JSON. Model ids are provider-specific
   # namespaces (Bedrock ids via "goose"; API ids via "claude-code"/"byoc"), so the provider is
@@ -96,7 +107,7 @@ in
   # each declares its own agentSandbox.broker.<name> options and renders its own
   # manifests, so adding an integration edits no platform file. Same derivation as
   # the skills above. Why: #599.
-  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
+  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
     ++ import ../contrib/deployment-modules.nix { inherit lib; };
 
   options.agentSandbox = with lib; {
@@ -1290,12 +1301,14 @@ in
                   # ownership, and sends every ACP frame. Without this there is NO BYO path and every
                   # run takes the cloud floor.
                   { name = "BYOC_CONTROLLER_URL"; value = "http://byoc-controller.${cfg.namespace}.svc.cluster.local:8080"; }
-                ++ lib.optionals cfg.broker.aws.enable [
-                  # AWS permissions broker: the agent-host mounts the account
-                  # ConfigMap into each sandbox, and resolves approvals against the
-                  # broker (BROKER_URL + the projected SA token).
-                  { name = "AWS_ACCOUNTS_CONFIGMAP"; value = "agent-broker-aws-accounts"; }
-                ] ++ lib.optionals cfg.broker.enable [
+                ++ lib.optional (contribSandboxParts != null)
+                  # The enabled contribs' sandbox-pod parts (env/volumes/mounts), as
+                  # ONE payload. The agent-host is the single provisioning entrypoint,
+                  # so a contrib that needs something in every sandbox reaches it here
+                  # rather than through a per-integration env var the host must know
+                  # the meaning of. Absent when no contrib contributes. Why: PR #640.
+                  { name = "SANDBOX_CONTRIB_JSON"; value = contribSandboxParts; }
+                ++ lib.optionals cfg.broker.enable [
                   # BROKER_URL + the projected broker token: the AWS approve/deny relay
                   # and the shares/links queries the agent-host makes on a conversation's
                   # behalf. NOT provisioning — the agent-host writes the Sandbox CR

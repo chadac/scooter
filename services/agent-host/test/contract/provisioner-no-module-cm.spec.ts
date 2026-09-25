@@ -78,7 +78,7 @@ describe("k8sProvisioner.create — no per-conversation module ConfigMap", () =>
 
 describe("sandboxManifest — the deployment .scooter mount", () => {
   const render = (deploy: Parameters<typeof sandboxManifest>[8]) =>
-    sandboxManifest("id", "conv-id", "sa", "img", "ns", "aud", "10Gi", undefined, true, deploy) as {
+    sandboxManifest("id", "conv-id", "sa", "img", "ns", "aud", "10Gi", true, deploy) as {
       spec: { podTemplate: { spec: { volumes?: Array<{ name: string; configMap?: { name: string } }>; containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string }> }> } } };
     };
 
