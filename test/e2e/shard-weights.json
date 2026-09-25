@@ -5,6 +5,7 @@
   "ui-state-consistency.spec.ts": 90,
   "stop-run.spec.ts": 35,
   "conversation.spec.ts": 30,
+  "integrity-two-streams.spec.ts": 90,
   "sse-resilience.spec.ts": 60,
   "model-selection.spec.ts": 25,
   "image-upload.spec.ts": 15,
