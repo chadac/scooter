@@ -608,6 +608,27 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     // before the delete lands after it, and adopting it here would put the id back
     // in `entries` — where saveMeta's fence can no longer help. Why: PR #549.
     if (endedIds.has(m.id)) return undefined;
+    // endedIds is per-pod, so it only covers the replica that served the DELETE. A store
+    // row is a CACHE of the CR, not proof of existence: on every OTHER replica the row
+    // outlives the CR and adopting from it resurrects a deleted conversation. Only a
+    // DEFINITIVE absence refuses — get() is undefined for 404 and THROWS on a k8s
+    // failure, so an unreadable API still adopts. Why: PR #650.
+    // Both conditions are load-bearing: noopRegistry answers `undefined` for EVERY id
+    // (single-replica has no CRs), so consulting it would read every conversation as
+    // deleted. selfPod alone is not enough — a manager can be built with selfPod set and
+    // no registry, which defaults to noop.
+    if (fromStore && deps.selfPod && conversationRegistry !== noopRegistry) {
+      let absent = false;
+      try {
+        absent = (await conversationRegistry.get(m.id)) === undefined;
+      } catch {
+        /* unreadable ≠ absent: adopt, and leave it to the fence and the reaper */
+      }
+      if (absent) {
+        tombstone(m.id);
+        return undefined;
+      }
+    }
     // Reconcile just this conversation's Sandbox so we track a still-running pod
     // correctly (best-effort; on failure revive() recreates from the placeholder).
     let onCluster: { ref: SandboxRef; running: boolean } | undefined;
