@@ -4,8 +4,8 @@ These run GREEN now (policy.py is fully ported). They lock in the three layers:
 structural validation, the global deny-list, and per-account bounds.
 """
 
-from broker.aws import policy
-from broker.aws.models import RiskLevel
+from scooter_contrib_aws import policy
+from scooter_contrib_aws.models import RiskLevel
 
 V = "2012-10-17"
 

@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from broker.providers import aws as aws_provider
+from scooter_contrib_aws import broker_provider as aws_provider
 
 
 def _set_settings(monkeypatch, *, enabled: bool, path: str):

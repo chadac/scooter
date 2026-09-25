@@ -13,7 +13,7 @@ moto = pytest.importorskip("moto")
 boto3 = pytest.importorskip("boto3")
 from moto import mock_aws  # noqa: E402
 
-from broker.aws.iam import IamProvisioner, trust_policy_for  # noqa: E402
+from scooter_contrib_aws.iam import IamProvisioner, trust_policy_for  # noqa: E402
 
 ACCOUNT_ID = "123456789012"
 BASE_ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/agent-token-broker-base"

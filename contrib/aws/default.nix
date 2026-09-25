@@ -1,10 +1,18 @@
 {
   contribs.aws = {
     src = ./.;
-    # Sandbox half only, for now: the agent-facing tools and the ~/.aws/config
-    # render. aws's service half is still broker/aws + broker/providers/aws.py,
-    # blocked on two things a contrib cannot yet do — own a DB table (stage 2 of
-    # #606) and reach core/authz. See #599.
+
+    # Both halves live here now (#599). The service half needed two things a
+    # contrib could not do when #617 moved the sandbox half: reach the authorizer
+    # without constructing one (BrokerContext, #624) and read the shared broker DB
+    # without reassembling it (StoreConfig on the surface, #622).
+    services.broker = {
+      enable = true;
+      # boto3 came with the provider — it was in the broker app's closure solely
+      # for this integration's IAM/STS calls.
+      pythonDeps = ps: [ ps.boto3 ];
+    };
+
     sandbox.module = ./sandbox.nix;
     skills."scooter-aws.md" = ./skills/scooter-aws.md;
   };

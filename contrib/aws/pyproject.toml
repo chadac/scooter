@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-contrib-aws"
+version = "0.0.0"
+license = "MIT"
+description = "Dynamic, approval-gated AWS access for Scooter's broker — STS credentials per conversation"
+requires-python = ">=3.11"
+# Depends on the extension SURFACE, never on the broker app. Why: PR #567.
+dependencies = [
+  "fastapi",
+  "httpx",        # notify the agent-host so it raises the approval interrupt
+  "boto3",        # IAM/STS provisioning — left the broker app with this contrib
+  "sqlalchemy",   # the permission-request store defines its own row model
+]
+
+# One EXTRA per service. Why: PR #567.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib", "scooter-lib"]
+
+[project.entry-points."agent_broker.providers"]
+aws = "scooter_contrib_aws.broker_provider:aws"
+
+# Sandbox-side tools: shipped in the sandbox IMAGE (see sandbox.nix), not the
+# broker pod. They call the broker with the pod's projected SA token. Declared
+# here because the code is here now; sandbox.nix reads cli.py from this package
+# rather than reaching back into services/broker (which is what it did until #599).
+[project.scripts]
+scooter-aws-credentials = "scooter_contrib_aws.cli:_credentials_entry"
+scooter-aws = "scooter_contrib_aws.cli:_cli_entry"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

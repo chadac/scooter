@@ -18,7 +18,9 @@ let
   cliPy = pkgs.writeTextFile {
     name = "scooter_aws_cli.py";
     destination = "/lib/scooter_aws_cli.py";
-    text = builtins.readFile ../../services/broker/broker/aws/cli.py;
+    # The CLI source is THIS contrib's now. Until #599 this reached back into
+    # services/broker for it — a sandbox half depending on the app it left.
+    text = builtins.readFile ./scooter_contrib_aws/cli.py;
   };
 
   # Two console entries over one module, matching cli.py's own `cli_main` /

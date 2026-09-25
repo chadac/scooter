@@ -10,15 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from broker.aws.iam import IamProvisioner
-from broker.aws.models import RequestStatus, StsCredentials
-from broker.aws.service import PermissionService, ServiceConfig, RequestError
-from broker.aws.store import PermissionStore
+from scooter_contrib_aws.iam import IamProvisioner
+from scooter_contrib_aws.models import RequestStatus, StsCredentials
+from scooter_contrib_aws.service import PermissionService, ServiceConfig, RequestError
+from scooter_contrib_aws.store import PermissionStore
 from scooter_broker_lib.store import StoreConfig
 from scooter_broker_lib.authz import NoopAuthorizer
 
 from conftest import create_schema
-from broker.aws import store as aws_store
+from scooter_contrib_aws import store as aws_store
 
 
 class FakeIam(IamProvisioner):

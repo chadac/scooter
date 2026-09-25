@@ -16,17 +16,28 @@ pytest.importorskip("aiosqlite")
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from broker.aws.iam import IamProvisioner  # noqa: E402
-from broker.aws.models import StsCredentials  # noqa: E402
-from broker.aws.service import PermissionService, ServiceConfig  # noqa: E402
-from broker.aws.store import PermissionStore  # noqa: E402
+from scooter_contrib_aws.iam import IamProvisioner  # noqa: E402
+from scooter_contrib_aws.models import StsCredentials  # noqa: E402
+from scooter_contrib_aws.service import PermissionService, ServiceConfig  # noqa: E402
+from scooter_contrib_aws.store import PermissionStore  # noqa: E402
 from scooter_broker_lib.store import StoreConfig  # noqa: E402
-from broker.core.auth import authenticate  # noqa: E402
 from scooter_broker_lib.types import Identity  # noqa: E402
-from broker.transports.aws_permissions import AwsPermissions  # noqa: E402
+
+
+async def authenticate() -> Identity:  # pragma: no cover - never called
+    """A stand-in for the app's auth dependency.
+
+    The transport takes `authed` as an opaque AuthDependency and these tests
+    replace it via app.dependency_overrides[authenticate] before any request, so
+    the real broker.core.auth.authenticate never runs — importing it only coupled
+    this contrib's suite to the app. The KEY identity is all that matters, and a
+    contrib must not depend on which dependency the app injects. Why: PR #599.
+    """
+    raise AssertionError("dependency_overrides should have replaced this")
+from scooter_contrib_aws.permissions_transport import AwsPermissions  # noqa: E402
 
 from conftest import create_schema
-from broker.aws import store as aws_store
+from scooter_contrib_aws import store as aws_store
 
 REGISTRY = {
     "dev": {"account_id": "123", "broker_role_arn": "arn:...:base", "enabled": True,
