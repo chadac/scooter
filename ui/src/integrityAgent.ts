@@ -118,6 +118,17 @@ export class IntegrityAgent extends AbstractAgent {
     return this.replaying;
   }
 
+  /** Which FOLD the current `messages` belong to. Each connection re-folds from an
+   *  empty accumulator over the server's trailing window, so a re-fold's list is
+   *  legitimately SHORTER than the one before it (paged-in older history is gone;
+   *  opened-but-empty messages the live fold kept are dropped). A consumer that
+   *  suppresses shrinking lists must reset its high-water mark when this changes, or
+   *  it latches and never renders again. Why: PR #641. */
+  private foldEpoch = 0;
+  foldGeneration(): number {
+    return this.foldEpoch;
+  }
+
   /** True while a goose RUN is in flight (a real turn — NOT an out-of-band `ext-`
    *  interrupt run). Derived from the log: RUN_STARTED -> true, RUN_FINISHED /
    *  RUN_ERROR -> false. Drives the composer's Stop button + the thinking
@@ -532,6 +543,13 @@ export class IntegrityAgent extends AbstractAgent {
     return id;
   }
 
+  /** The conversation this agent is currently folding, or AWAITING_ID before the
+   *  server has issued one. For telemetry that fires outside a request (a render-side
+   *  event has no URL to infer it from). */
+  currentConversationId(): MaybeConversationId {
+    return this.cfg.conversationId;
+  }
+
   setConversationId(conversationId: string): void {
     if (conversationId === this.cfg.conversationId) return;
     // The moment a conversation stops being local and becomes the server's. Both ids are
@@ -819,6 +837,9 @@ export class IntegrityAgent extends AbstractAgent {
         this.lastMessageId = null;
         // Entering (re)replay: suppress per-event renders until `synced`.
         this.replaying = true;
+        // A new fold starts here — the accumulator restarts from empty, so consumers
+        // must not compare its length against the previous fold's. Why: PR #641.
+        this.foldEpoch++;
         controller = new AbortController();
         this.controllers.add(controller);
         const events$ = new Subject<BaseEvent>();
