@@ -67,7 +67,7 @@ export interface RunOrigin {
  * dangling — preserving the original behaviour rather than silently skipping a resume
  * a rollout depends on.
  */
-function isOwnRun(started: { host?: string; gen?: number }, self?: RunOrigin): boolean {
+export function isOwnRun(started: { host?: string; gen?: number }, self?: RunOrigin): boolean {
   if (!self || started.host === undefined) return false; // unknown origin -> treat as foreign
   if (started.host !== self.host) return false; // a different pod started it
   // Same pod, EARLIER generation: the conversation was reassigned away and back, so
@@ -114,20 +114,26 @@ export interface OrphanRun {
  * Pairing by runId finds those. Used on adopt to close them: the adopting pod is
  * the sole writer (controller keeps one hostPod, the fence blocks the old one),
  * so writing a terminal here cannot race the run's real author.
+ *
+ * `self` EXCLUDES runs this pod is still executing: assignment lands seconds after
+ * the first prompt starts, so that run is open and is not an orphan. Why: PR #636.
  */
-export function orphanRuns(events: AguiEvent[]): OrphanRun[] {
-  const started = new Map<string, string>(); // runId -> threadId
+export function orphanRuns(events: AguiEvent[], self?: RunOrigin): OrphanRun[] {
+  const started = new Map<string, { threadId: string; own: boolean }>();
   const ended = new Set<string>();
   for (const e of events) {
     const runId = (e as { runId?: string }).runId;
     if (!runId) continue;
     if (e.type === "RUN_STARTED") {
-      started.set(runId, String((e as { threadId?: string }).threadId ?? ""));
+      started.set(runId, {
+        threadId: String((e as { threadId?: string }).threadId ?? ""),
+        own: isOwnRun(e as { host?: string; gen?: number }, self),
+      });
     } else if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") {
       ended.add(runId);
     }
   }
   return [...started]
-    .filter(([runId]) => !ended.has(runId))
-    .map(([runId, threadId]) => ({ runId, threadId }));
+    .filter(([runId, v]) => !ended.has(runId) && !v.own)
+    .map(([runId, v]) => ({ runId, threadId: v.threadId }));
 }

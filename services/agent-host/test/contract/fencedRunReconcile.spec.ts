@@ -73,10 +73,11 @@ describe("a fence-truncated run followed by a later COMPLETED run", () => {
 });
 
 describe("isOwnRun is not the cause", () => {
-  it("RUN_STARTED carries no host/gen in production, so a foreign run is not skipped", () => {
-    // bridge.ts emits `{ type: "RUN_STARTED", threadId, runId }` — host and gen are
-    // optional on the type and never populated. isOwnRun therefore returns false
-    // (unknown origin -> foreign), so it cannot be what suppresses detection.
+  it("a RUN_STARTED with no origin is not skipped", () => {
+    // Origin is OPTIONAL on the event: bridge.ts stamps host/gen when `selfPod` is
+    // configured (multi-replica) and emits a bare `{ type, threadId, runId }`
+    // otherwise. Unstamped therefore reads as foreign, so it cannot be what
+    // suppresses detection here.
     const noOrigin = truncatedRun("fenced");
     expect(danglingRunInfo(noOrigin, SELF)).not.toBeNull();
     // Even claiming to be the same pod at the same generation only matters when the
@@ -116,6 +117,34 @@ describe("orphanRuns — the heal-on-adopt input", () => {
       ev({ type: "RUN_ERROR", message: "boom", runId: "r" }),
     ];
     expect(orphanRuns(log)).toEqual([]);
+  });
+
+  it("does NOT report a run THIS pod is still executing", () => {
+    // The nightly e2e-full shape. A conversation is created, its first prompt starts a
+    // run on this pod, and the controller assigns the conversation ~3s LATER — while
+    // that run is still in flight. The run is open, but it is ours and live, not an
+    // orphan. Without `self` the sweep closed it and the UI went idle mid-run.
+    const live = [ev({ type: "RUN_STARTED", threadId: "c", runId: "live", host: SELF.host })];
+    expect(orphanRuns(live), "no self -> unknown origin, still an orphan").toEqual([
+      { runId: "live", threadId: "c" },
+    ]);
+    expect(orphanRuns(live, SELF)).toEqual([]);
+  });
+
+  it("still reports an open run a DIFFERENT pod started", () => {
+    // The #459 case must keep working: a rollout replaces the pod, so the orphan's
+    // host is the dead one and the adopting pod closes it.
+    const foreign = [ev({ type: "RUN_STARTED", threadId: "c", runId: "dead", host: "old-pod" })];
+    expect(orphanRuns(foreign, SELF)).toEqual([{ runId: "dead", threadId: "c" }]);
+  });
+
+  it("still reports our own run from an EARLIER generation", () => {
+    // Same pod name, but the conversation was assigned away and back: that run was
+    // stranded by the round trip even though the host matches.
+    const stale = [
+      ev({ type: "RUN_STARTED", threadId: "c", runId: "stale", host: SELF.host, gen: SELF.gen - 1 }),
+    ];
+    expect(orphanRuns(stale, SELF)).toEqual([{ runId: "stale", threadId: "c" }]);
   });
 
   it("does not invent runs from events that merely carry a runId", () => {
@@ -264,6 +293,36 @@ describe("adopting a conversation heals a fenced hand-off", () => {
     await sessions.reviveFromMirror(conv.id as SessionId, 3);
 
     expect(dump().filter((e) => e.type === "RUN_FINISHED").length).toBe(afterFirst);
+  });
+
+  it("does NOT close the pod's OWN run that is still in flight @proves", async () => {
+    // Nightly e2e-full, 2026-09-25, conversation bb44a473 (run 36105978997):
+    //   07:24:28.721  bridge  acp prompt: sending      run-2e16e909
+    //   07:24:31.465  controller  assigned  generation 1
+    //   07:24:31.467  manager  closed runs left open by a hand-off  [run-2e16e909]
+    //   07:24:54.316  bridge  acp prompt: returned     stop_reason end_turn
+    // The sweep closed a run that had 23 more seconds to live, on the FIRST
+    // assignment — no hand-off had happened at all. The UI's run bar cleared, and
+    // every spec that observes an in-flight run (stop, queue, priority pill) failed.
+    // 76 such closes in that one nightly, across the 4 shards.
+    const { store, dump } = seededStore("t1", [
+      // No `gen`: the run started BEFORE the conversation was ever assigned, which
+      // is exactly when this fires.
+      ev({ type: "RUN_STARTED", threadId: "c", runId: "live", host: "new-pod" }),
+      ev({ type: "TEXT_MESSAGE_START", messageId: "m", role: "assistant" }),
+    ] as never);
+    const sessions = createSessionManager({
+      provisioner: fakeProvisioner(), store, selfPod: "new-pod",
+    } as never);
+    const conv = await sessions.start("t1" as never);
+
+    await sessions.reviveFromMirror(conv.id as SessionId, 1);
+
+    expect(
+      dump().filter((e) => e.type === "RUN_FINISHED"),
+      "our own live run must survive its own assignment",
+    ).toEqual([]);
+    expect(openRuns(dump())).toEqual(["live"]);
   });
 
   it("leaves a healthy log untouched", async () => {

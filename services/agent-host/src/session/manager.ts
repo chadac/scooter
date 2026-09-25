@@ -1070,10 +1070,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         //
         // Safe to write here: this pod was just assigned the conversation, the
         // controller keeps a single hostPod, and the fence stops the old owner — so
-        // nobody else can be driving these runs. The run that is genuinely in
-        // flight (if any) is excluded below.
+        // nobody else can be driving these runs. `self` keeps our OWN live run out of
+        // the sweep — the first assignment lands mid-run. Why: PR #636.
         const inFlight = danglingRunInfo(events, self)?.runId;
-        const orphans = orphanRuns(events).filter((o) => o.runId !== inFlight);
+        const orphans = orphanRuns(events, self).filter((o) => o.runId !== inFlight);
         for (const o of orphans) {
           await store.appendEvent(id as SessionId, {
             type: "RUN_FINISHED",
