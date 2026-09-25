@@ -67,7 +67,7 @@ export interface RunOrigin {
  * dangling — preserving the original behaviour rather than silently skipping a resume
  * a rollout depends on.
  */
-function isOwnRun(started: { host?: string; gen?: number }, self?: RunOrigin): boolean {
+export function isOwnRun(started: { host?: string; gen?: number }, self?: RunOrigin): boolean {
   if (!self || started.host === undefined) return false; // unknown origin -> treat as foreign
   if (started.host !== self.host) return false; // a different pod started it
   // Same pod, EARLIER generation: the conversation was reassigned away and back, so
@@ -96,6 +96,24 @@ export function lastRunCompleted(events: AguiEvent[]): boolean {
 export interface OrphanRun {
   runId: string;
   threadId: string;
+}
+
+/**
+ * The run at the TAIL that has no terminal — the conversation's CURRENT run,
+ * whoever started it — or null if the last run completed.
+ *
+ * Deliberately ownership-blind, unlike `danglingRunInfo`, which answers the
+ * narrower "is the tail run STRANDED?" and so returns null for a run this pod is
+ * driving right now. Using that as the "don't close this one" exclusion inverts
+ * on exactly the runs it must protect. Why: PR #618.
+ */
+export function tailOpenRun(events: AguiEvent[]): OrphanRun | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") return null; // last run completed
+    if (e.type === "RUN_STARTED") return { runId: e.runId, threadId: e.threadId };
+  }
+  return null; // no run markers at all
 }
 
 /**
@@ -130,4 +148,24 @@ export function orphanRuns(events: AguiEvent[]): OrphanRun[] {
   return [...started]
     .filter(([runId]) => !ended.has(runId))
     .map(([runId, threadId]) => ({ runId, threadId }));
+}
+/**
+ * The runs the heal pass must NOT close: the conversation's current run, plus every
+ * run this pod started under its CURRENT assignment.
+ *
+ * The positional half alone is self-defeating — the pass appends its terminals at the
+ * END of the log, so the next pass reads a terminal at the tail, protects nothing, and
+ * closes the live run it just spared. The origin half is stable under those appends.
+ *
+ * An own run at an EARLIER generation stays closable: that is the reassigned-away-and-
+ * back case the heal pass exists for. Why: PR #618.
+ */
+export function protectedRunIds(events: AguiEvent[], self?: RunOrigin): Set<string> {
+  const keep = new Set<string>();
+  const tail = tailOpenRun(events);
+  if (tail) keep.add(tail.runId);
+  for (const e of events) {
+    if (e.type === "RUN_STARTED" && isOwnRun(e, self)) keep.add(e.runId);
+  }
+  return keep;
 }
