@@ -171,7 +171,12 @@ in
                       name = "DB_PASSWORD";
                       valueFrom.secretKeyRef = { name = "agent-pg-byoc"; key = "password"; };
                     }
-                  ];
+                    # index.ts builds `?sslmode=${DB_SSLMODE}` onto the DSN, so without
+                    # this the controller connects CLEARTEXT to an external Postgres the
+                    # deployment asked to reach over TLS — silently, since the parameter
+                    # is simply absent rather than wrong. Why: #621, same bug one service over.
+                  ] ++ lib.optional (cfg.postgres.sslmode != null)
+                    { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; };
                   readinessProbe.httpGet = { path = "/healthz"; port = "http"; };
                   livenessProbe.httpGet = { path = "/healthz"; port = "http"; };
                 };
