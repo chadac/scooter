@@ -794,6 +794,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // tool_call_ids for which we've already emitted TOOL_CALL_ARGS, so a later
     // tool_call_update carrying rawInput doesn't double-emit the args.
     argsEmitted: Set<string>;
+    // tool_call_ids STARTED but not yet finished. The terminal-create fallback
+    // attributes a command only when exactly one of these still lacks args.
+    openToolCalls: Set<string>;
+    // tool_call_id -> terminalIds a handoff cited, retried on finish because the
+    // terminal-create stash may not have been populated yet. Why: PR #641.
+    toolTerminals: Map<string, string[]>;
     // Set once the run is finishing: late updates are ignored so we never
     // reopen a message after RUN_FINISHED.
     ended?: boolean;
@@ -896,6 +902,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     emit({ type: "TOOL_CALL_ARGS", toolCallId, delta: JSON.stringify(rawInput) });
   };
 
+  // Emit a shell tool's args from the terminal-create stash, by terminalId.
+  // Returns whether it found one, so callers can retry later. Why: PR #641.
+  const emitTerminalArgs = (st: RunState, toolCallId: string, terminalIds: string[]): boolean => {
+    if (st.argsEmitted.has(toolCallId)) return true;
+    for (const tid of terminalIds) {
+      const cmd = terminalCommands.get(tid);
+      if (cmd === undefined) continue;
+      terminalCommands.delete(tid); // consume — ids are unique per spawn
+      emitArgsOnce(st, toolCallId, { command: cmd });
+      return true;
+    }
+    return false;
+  };
+
   const handleUpdate = (st: RunState, u: SessionUpdate) => {
     if (st.ended) return; // never reopen a message after the run is finishing
     // First ACP activity — the run is ALIVE, so disarm the dead-on-arrival
@@ -960,6 +980,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         emitArgsOnce(st, u.toolCallId, u.rawInput);
         emit({ type: "TOOL_CALL_END", toolCallId: u.toolCallId });
         st.toolMessage.set(u.toolCallId, nextId("msg"));
+        st.openToolCalls.add(u.toolCallId);
         st.inFlightTools++; // a tool call is now running (see the "thinking" policy)
         break;
       }
@@ -996,14 +1017,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           // Surface the command that ran (goose put it in terminal/create, not in
           // the tool_call's rawInput) as this tool call's args, so the UI shows
           // `$ <command>` instead of an empty shell card. Look it up by terminalId.
-          for (const tid of handoffTerminalIds(u.content)) {
-            const cmd = terminalCommands.get(tid);
-            if (cmd !== undefined) {
-              terminalCommands.delete(tid); // consume — ids are unique per spawn
-              emitArgsOnce(st, u.toolCallId, { command: cmd });
-              break;
-            }
-          }
+          // Remembered so the finish can retry: terminal/create may land after this
+          // update on the relayed BYO path. Why: PR #641.
+          const ids = handoffTerminalIds(u.content);
+          st.toolTerminals.set(u.toolCallId, ids);
+          emitTerminalArgs(st, u.toolCallId, ids);
           break;
         }
         const terminalWasPending = st.terminalPending.has(u.toolCallId);
@@ -1013,6 +1031,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // goose's SPECULATIVE marker — skip it, or we'd finish the tool before it ran.
         const isFinish = hasRealContent || ((status === "completed" || status === "failed") && terminalWasPending);
         if (!isFinish) break;
+        // Last chance to label the card: a handoff whose terminal/create had not
+        // arrived yet leaves the args unemitted, and nothing after this re-reads
+        // the stash. Why: PR #641.
+        emitTerminalArgs(st, u.toolCallId, st.toolTerminals.get(u.toolCallId) ?? []);
+        st.toolTerminals.delete(u.toolCallId);
+        st.openToolCalls.delete(u.toolCallId);
         st.terminalPending.delete(u.toolCallId);
         if (st.inFlightTools > 0) {
           st.inFlightTools--;
@@ -1064,7 +1088,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     alreadyPersisted = false,
   ): Promise<{ runId: RunId; retryable: boolean }> => {
     const runId = nextId("run");
-    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), inFlightTools: 0, terminalPending: new Set() };
+    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), openToolCalls: new Set(), toolTerminals: new Map(), inFlightTools: 0, terminalPending: new Set() };
     const startedAt = Date.now();
     st.startedAt = startedAt;
     currentRun = st; // visible to cancel() from the moment the run begins
@@ -1560,7 +1584,19 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // goose's shell tool carries the COMMAND in terminal/create, not the tool_call rawInput —
       // stash it by terminalId so the tool_call_update can show `$ <command>`.
       client.onTerminalCreated((terminalId, command, args) => {
-        terminalCommands.set(terminalId, formatCommand(command, args));
+        const cmd = formatCommand(command, args);
+        terminalCommands.set(terminalId, cmd);
+        // An instantaneous command can finish before goose sends the handoff update
+        // that carries this terminalId — then the stash is never read and the card
+        // renders empty forever. Attribute it now, but ONLY when a single open tool
+        // call lacks args: with two in flight the terminal is ambiguous and the
+        // handoff's explicit terminalId is the authority. Why: PR #641.
+        const st = currentRun;
+        if (!st) return;
+        const argless = [...st.openToolCalls].filter((id) => !st.argsEmitted.has(id));
+        if (argless.length !== 1) return;
+        terminalCommands.delete(terminalId);
+        emitArgsOnce(st, argless[0], { command: cmd });
       });
       // The agent asks the user to choose (ACP session/request_permission): emit a PERMISSION
       // interrupt + BLOCK the agent until answerPermission() resolves.
