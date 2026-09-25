@@ -67,6 +67,7 @@ import {
   type PendingInterrupt,
   type ResumeEntry,
 } from "./integrityAgent.js";
+import { ATTR, record } from "./telemetry.js";
 
 /** Sentinel prefixing the text part of a spliced-in SYSTEM message, so thread.tsx
  *  can tell a system-event chip apart from a real assistant message and parse out
@@ -139,6 +140,42 @@ export function spliceSystemMessages(
     flush((m as { id?: string }).id ?? null);
   }
   return out;
+}
+
+/** Decides whether a folded message list may be painted.
+ *
+ *  Two failures pull in opposite directions and both are real:
+ *
+ *    - WITHIN one fold, the list climbs 0,1,2,…N as the async applier drains. Handing
+ *      assistant-ui a shorter list than it is mid-render throws "useClientLookup: Index
+ *      N out of bounds" and blanks the page — so a shrink must be suppressed.
+ *    - ACROSS folds, a shorter list is CORRECT: every reconnect re-folds the server's
+ *      trailing window (INITIAL_SNAPSHOT_MESSAGES), which excludes older history the
+ *      user had paged in and drops opened-but-empty messages the live fold kept. A
+ *      high-water mark carried across folds therefore latches shut — the transcript
+ *      freezes and only a page refresh (which remounts, resetting it) recovers.
+ *
+ *  So the mark is scoped to a fold generation (IntegrityAgent.foldGeneration(), bumped
+ *  per connection) and resets when that changes. Why: PR #641. */
+export interface FoldGate {
+  /** True if this list should be painted; false to skip this push. */
+  accept(generation: number, length: number): boolean;
+}
+
+export function createFoldGate(): FoldGate {
+  let generation: number | null = null;
+  let highWater = 0;
+  return {
+    accept(gen, length) {
+      if (gen !== generation) {
+        generation = gen;
+        highWater = 0;
+      }
+      if (length < highWater) return false;
+      highWater = length;
+      return true;
+    },
+  };
 }
 
 /** The current conversation's pending interrupts + a resume answerer, sourced
@@ -484,10 +521,10 @@ function ConversationRuntime({
   >([]);
   const [renderTick, setRenderTick] = useState(0);
   const [hasOlder, setHasOlder] = useState(false);
-  // Highest message count applied so far — suppresses a SHRINKING reset during a
-  // reconnect re-fold (see push() below). Reset per conversation (this component
-  // remounts on currentId).
-  const lastLen = useRef(0);
+  // Suppresses a SHRINKING list within one fold, but NOT across folds (a reconnect's
+  // re-fold is legitimately shorter — see createFoldGate). Per conversation: this
+  // component remounts on currentId.
+  const foldGate = useRef(createFoldGate());
 
   // Our external-store runtime: renders the repository snapshot incrementally + sends
   // via onNew. Replaces useAgUiRuntime (whose per-run aggregator would merge our
@@ -540,18 +577,21 @@ function ConversationRuntime({
         return next.length === cur.length ? cur : next;
       });
 
-      // Guard against a SHRINKING reset within THIS conversation. A reconnect
-      // re-folds agent.messages from empty (0,1,2,…back up to N); a reset applied
-      // while that fold is still climbing hands assistant-ui a SHORTER list than it
-      // is mid-rendering → "useClientLookup: Index N out of bounds" → the page
-      // blanks (the model-switch flake). The full history only ever GROWS back to
-      // (at least) its prior length, so suppressing shrinking resets drops only the
-      // transient mid-reconnect frames, not any real state. (A thread SWITCH remounts
-      // this component — keyed on currentId — so lastLen resets and can't wrongly
-      // suppress the new, shorter conversation.)
+      // Suppress a shrinking list WITHIN a fold (mid-render index crash) while letting
+      // a reconnect's shorter re-fold through (else the transcript latches until a
+      // refresh). The distinction is the fold generation — see createFoldGate.
       const folded = agent.messages as unknown as unknown[];
-      if (folded.length < lastLen.current) return;
-      lastLen.current = folded.length;
+      if (!foldGate.current.accept(agent.foldGeneration(), folded.length)) {
+        // A suppression is invisible in the UI (it looks like a frozen transcript), so
+        // leave a breadcrumb: a run of these with no paint IS the bug's signature.
+        const convId = agent.currentConversationId();
+        record("ui.fold_suppressed", {
+          [ATTR.conversationId]: hasId(convId) ? convId : "(awaiting-id)",
+          "fold.generation": agent.foldGeneration(),
+          "fold.length": folded.length,
+        });
+        return;
+      }
       // Enrich user messages with their attached images (MESSAGE_IMAGES rides the log
       // but the base applier ignores it) as AG-UI wire image parts, so they survive
       // replay/refresh as attachments. Wire shape + base-prefix are load-bearing — see
