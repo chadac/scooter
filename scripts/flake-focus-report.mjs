@@ -31,7 +31,7 @@
 //     --baseline-ref <r> how to name that base in the comment, e.g. `main@abc1234`
 //
 // Output: this target's SECTION of the shared flake-focus comment on stdout
-// (scripts/comment-sections.mjs merges it in). When
+// (scripts/ci-report.mjs places it as one section of the shared CI comment). When
 // $GITHUB_OUTPUT is set it also writes `verdict`/`runs`/`failed`/`matched` and
 // `control`/`base_runs`/`base_failed` there — the job gates on `verdict`.
 
