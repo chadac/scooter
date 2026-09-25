@@ -60,7 +60,7 @@ async def test_a_sandbox_sa_authenticates(_as, monkeypatch):
 
 
 async def test_an_approver_sa_authenticates(_as, monkeypatch):
-    monkeypatch.setattr(auth_mod.settings, "aws_approver_service_accounts",
+    monkeypatch.setattr(auth_mod.settings, "approver_service_accounts",
                         "system:serviceaccount:agent-sandbox:agent-host")
     _as("system:serviceaccount:agent-sandbox:agent-host")
     identity = await auth_mod.authenticate(_request())

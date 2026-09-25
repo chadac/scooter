@@ -71,7 +71,7 @@ async def authenticate(request: Request) -> Identity:
     # raises AttributeError for a field that isn't declared, so EVERY caller got a
     # 500 here. Don't reintroduce the union: the broker has no lifecycle API to
     # gate, and the agent-host authenticates via the approver list above.
-    approvers = {s.strip() for s in settings.aws_approver_service_accounts.split(",") if s.strip()}
+    approvers = {s.strip() for s in settings.approver_service_accounts.split(",") if s.strip()}
     if username in approvers:
         return Identity(conversation_id="", namespace=settings.sandbox_namespace,
                         service_account=username, is_approver=True)

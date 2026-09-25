@@ -24,6 +24,13 @@ class BrokerSettings(ScooterBaseSettings):
     token_audience: str = "agent-broker"
     sandbox_namespace: str = "agent-sandbox"
 
+    # SA usernames admitted as non-sandbox callers acting for a user, CSV of
+    # system:serviceaccount:{ns}:{name}. Default: the agent-host. Sets
+    # Identity.is_approver, which core auth owns and TWO features consume — aws
+    # approve/deny AND shares' cross-conversation listing — so it is not aws's
+    # setting and was misnamed `aws_approver_service_accounts`. Why: #599.
+    approver_service_accounts: str = ""
+
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 
@@ -65,10 +72,6 @@ class BrokerSettings(ScooterBaseSettings):
     # dropped what the module emitted and every broker store connected
     # unencrypted anyway. Why: PR #621.
     broker_db_sslmode: str = ""
-    # SA usernames allowed to APPROVE/DENY (the agent-host relays the user's pick
-    # after validating it in-conversation). CSV of
-    # system:serviceaccount:{ns}:{name}. Default: the agent-host.
-    aws_approver_service_accounts: str = ""
     # Notify the agent-host when a request is created so it raises the approval
     # interrupt. Empty = no notify (local/dev).
     aws_agent_host_url: str = ""

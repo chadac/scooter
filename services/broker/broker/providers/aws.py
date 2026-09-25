@@ -218,7 +218,7 @@ def aws(ctx: BrokerContext) -> Provider:
         authorizer=authorizer,
     )
     # Admin seam: approve/deny require an APPROVER identity (the agent-host
-    # relaying the user's pick — recognized by auth via aws_approver_service_accounts).
+    # relaying the user's pick — recognized by auth via approver_service_accounts).
     transport.set_service(service, is_admin=lambda identity: identity.is_approver)
 
     _sweep_task: list[asyncio.Task] = []

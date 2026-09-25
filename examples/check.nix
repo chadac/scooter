@@ -461,6 +461,39 @@ let
     ++ map (n: "broker.env.${n} declared more than once (k8s keeps the last silently)")
       (builtins.filter (n: countNamed brokerEnv n > 1) dbEnvNames);
 
+  # THE APPROVER ALLOWLIST IS CORE AUTH'S, NOT AWS'S. core/auth.py admits a listed
+  # SA as a non-sandbox caller and sets Identity.is_approver; TWO features read that
+  # flag — aws approve/deny, and shares' "list another conversation's shares", which
+  # the UI reaches through the agent-host. The list used to be emitted only inside
+  # `bcfg.aws.enable`, so a deployment running shares WITHOUT aws sent an agent-host
+  # that core auth saw as a stranger: 403 on the UI's own list request, from a
+  # feature that has nothing to do with aws.
+  #
+  # The render that proves it is aws OFF with shares ON — #625's awsOffPlatform
+  # forces BOTH off, so it cannot see this. Assert the env is present there, and
+  # that it names the agent-host (an empty value parses to an empty set, which
+  # authenticates nobody and would pass a mere presence check).
+  sharesNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.broker.aws.enable = lib.mkForce false;
+      # shares.enable stays true (the example sets it) — that is the point.
+    };
+  };
+  snaBrokerEnv =
+    let ctrs = builtins.attrValues (sharesNoAwsPlatform.config.kubernetes.resources.deployments.agent-broker.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  snaApprover =
+    let m = builtins.filter (e: e.name == "APPROVER_SERVICE_ACCOUNTS") snaBrokerEnv;
+    in if m == [ ] then "" else (builtins.head m).value or "";
+  approverProblems =
+    (if snaApprover != "" then [ ]
+     else [ ("shares-without-aws: broker.env.APPROVER_SERVICE_ACCOUNTS missing or empty"
+             + " — the agent-host is not an approver, so the UI's cross-conversation"
+             + " share listing 403s") ])
+    ++ (if builtins.match ".*:agent-host" snaApprover != null then [ ]
+        else [ "broker.env.APPROVER_SERVICE_ACCOUNTS does not name the agent-host: '${snaApprover}'" ]);
+
   # TLS TO POSTGRES REACHES EVERY CONSUMER. Each service assembles its own DSN from
   # separately-emitted components, and each emission site is hand-written — 11 of them
   # across 8 module files. The failure mode is a MISSING component, not a wrong one:
@@ -523,7 +556,7 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ sslProblems ++ vacuityProblems;
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
