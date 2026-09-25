@@ -589,10 +589,19 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       const resources = renderResources(friendly);
 
       const patchContainerResources = async (containers: Array<Record<string, unknown>>) =>
-        custom.patchNamespacedCustomObject({
-          group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name: sandboxName(id),
-          body: { spec: { podTemplate: { spec: { containers: [{ ...containers[0], resources }, ...containers.slice(1)] } } } },
-        });
+        custom.patchNamespacedCustomObject(
+          {
+            group: GROUP, version: VERSION, namespace: ns, plural: PLURAL, name: sandboxName(id),
+            body: { spec: { podTemplate: { spec: { containers: [{ ...containers[0], resources }, ...containers.slice(1)] } } } },
+          },
+          // REQUIRED. The client defaults patchNamespacedCustomObject to
+          // `application/json-patch+json`, which expects an ARRAY of ops — so sending
+          // this object got a 400 from the API server ("cannot unmarshal object into
+          // Go value of type []handlers.jsonPatchOp") and EVERY resize failed: the
+          // UI's Sandbox tab, the agent's own resize tool, and the size picker alike.
+          // The other two patch sites in this file always passed it; this one did not.
+          setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+        );
 
       let sb: { spec?: { podTemplate?: { spec?: { containers?: Array<Record<string, unknown>> } } } };
       try {
