@@ -79,30 +79,63 @@ async function raiseApproval(
   requestId: string,
   message: string,
 ) {
-  return request.post(
+  const res = await request.post(
     `${base}/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(contrib)}`,
     { headers: { "Content-Type": "application/json" }, data: { request_id: requestId, message } },
   );
+  // Assert HERE so a routing/addressing failure reports as itself. Without this the
+  // next line waits 30s for a panel that was never raised and blames the UI.
+  expect(res.status(), `the approvals route must accept this (got ${res.status()})`).toBe(202);
+  return res;
 }
 
-/** The current conversation's server id, from the UI's own persisted selection. */
-async function currentConversationId(page: import("@playwright/test").Page): Promise<string> {
-  let id = "";
-  for (let i = 0; i < 30 && !id; i++) {
-    id = await page.evaluate(() => {
+/**
+ * THIS test's conversation id, confirmed to exist server-side.
+ *
+ * Two separate hazards, both of which produce a 404 from the approvals route that
+ * looks like a broken route rather than a racy test:
+ *
+ *  - `currentId` is the stable LOCAL key. For a conversation created on its first
+ *    send it is a placeholder the server never issued, so the server id lives beside
+ *    it as `serverId` — poll until that appears rather than reading once.
+ *  - even then, the id is only useful once the SERVER lists it. So confirm against
+ *    GET /conversations before acting on it (suspended-recovery.spec.ts and
+ *    aws-interrupt.spec.ts read it this way for the same reason).
+ */
+async function currentConversationId(
+  page: import("@playwright/test").Page,
+  request: import("@playwright/test").APIRequestContext,
+  base: string,
+): Promise<string> {
+  for (let i = 0; i < 40; i++) {
+    const id = await page.evaluate(() => {
       try {
         const raw = localStorage.getItem("kubenix-agent.sessions.v1");
         if (!raw) return "";
-        const s = JSON.parse(raw) as { currentId?: string; sessions?: Record<string, { serverId?: string }> };
+        const s = JSON.parse(raw) as {
+          currentId?: string;
+          sessions?: Record<string, { serverId?: string }>;
+        };
         const cur = s.currentId ?? "";
+        // Prefer the SERVER's id, but fall back to the local key: `serverId` is only
+        // recorded when the two DIFFER (a conversation created on its first send).
+        // Requiring it means never resolving the common case at all.
         return (cur && s.sessions?.[cur]?.serverId) || cur;
       } catch {
         return "";
       }
     });
-    if (!id) await page.waitForTimeout(500);
+    if (id) {
+      const res = await request.get(`${base}/conversations`);
+      if (res.ok()) {
+        const rows = (await res.json()) as Array<{ id: string }>;
+        if (rows.some((r) => r.id === id)) return id;
+      }
+    }
+    await page.waitForTimeout(500);
   }
-  return id;
+  expect(false, "the conversation never reached the server's list").toBeTruthy();
+  return "";
 }
 
 // fastOnly: the gate's REFUSING branch needs a controlled can-approve answer. On a
@@ -121,11 +154,10 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await chat.open();
       await chat.send("do something that needs approval");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page);
+      const id = await currentConversationId(page, request, base);
       expect(id, "the conversation must exist before raising an approval").toBeTruthy();
 
-      const res = await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo would like permission.");
-      expect(res.status()).toBe(202);
+      await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo would like permission.");
 
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
       await expect(page.locator(panel.message)).toContainText("Echo would like permission.");
@@ -154,7 +186,7 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await chat.open();
       await chat.send("ask me again");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page);
+      const id = await currentConversationId(page, request, base);
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo asks politely.");
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
@@ -177,7 +209,7 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await chat.open();
       await chat.send("ungated");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page);
+      const id = await currentConversationId(page, request, base);
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo, ungated.");
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
@@ -217,7 +249,7 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await chat.open();
       await chat.send("please approve");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page);
+      const id = await currentConversationId(page, request, base);
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo needs a yes.");
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
