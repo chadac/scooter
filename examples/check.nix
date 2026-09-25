@@ -502,6 +502,20 @@ let
     ++ (if builtins.all (c: countNamed (c.env or [ ]) "AWS_ENABLED" == 0) awsOffCtrs then [ ]
         else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
 
+  # `permission_requests` belongs to contrib/aws/deployment.nix now, and must still
+  # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the
+  # generated schema a function of the source tree rather than of a deploy flag.
+  # Why: PR #637.
+  awsOffTables = awsOffPlatform.config.agentSandbox.db.broker.tables or { };
+  stage2Problems =
+    (if awsOffTables ? permission_requests then [ ]
+     else [ ("aws-off: agentSandbox.db.broker.tables.permission_requests missing —"
+             + " a contrib's table declaration is gated on the DEPLOYMENT running it,"
+             + " so `just db-generate` drops the table and the migration history no"
+             + " longer describes this tree") ])
+    ++ (if (awsOffTables.permission_requests.writers or [ ]) == [ "broker" ] then [ ]
+        else [ "permission_requests.writers should be [\"broker\"] (the contrib writes through the broker's role)" ]);
+
   # OPENFGA IS SUBSTRATE, NOT AWS'S. The authorizer core/authz.py builds from FGA_*
   # is handed to every provider through BrokerContext (#624), so `broker.fga` is a
   # core option: a second feature wanting an approver gate must not have to enable
@@ -620,7 +634,7 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
