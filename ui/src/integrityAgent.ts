@@ -84,6 +84,11 @@ type ConnectionOutcome = "not-found" | "closed" | "error" | "auth-error";
 
 /** A stable empty-queue reference (so getQueuedMessages returns the SAME array
  *  each idle call — a fresh [] every render would defeat React memoization). */
+/** How long a queued POST /agui waits behind its predecessor before going anyway.
+ *  Long enough that a normal (even slow) send keeps the ordering guarantee, short
+ *  enough that a hung request cannot wedge the composer. Why: PR #645. */
+const POST_CHAIN_MAX_WAIT_MS = 10_000;
+
 const EMPTY_QUEUE: ReadonlyArray<{ id: string; text: string; priority: number }> = [];
 const EMPTY_INTERRUPTS: readonly PendingInterrupt[] = [];
 
@@ -1193,8 +1198,32 @@ export class IntegrityAgent extends AbstractAgent {
   }
 
   /** Fire-and-forget POST /agui; deliberately does NOT consume the response body,
-   *  but DOES cancel it (see below). */
-  private async postAgui(body: Record<string, unknown>): Promise<void> {
+   *  but DOES cancel it (see below).
+   *
+   *  SERIALIZED per agent: the caller does not await send(), so without this every
+   *  quick message is in flight at once and the SERVER decides their order. It
+   *  stamps `enqueuedAt` on arrival, and the queue is both rendered AND DRAINED by
+   *  that — so a reordering does not just misdraw the queue, it feeds the agent the
+   *  user's messages in the wrong order. Why: PR #645. */
+  private postChain: Promise<void> = Promise.resolve();
+
+  private postAgui(body: Record<string, unknown>): Promise<void> {
+    const mine = this.postChain
+      // A failed/hung predecessor must not poison or stall the chain: wait for it,
+      // but never longer than the cap, then go regardless. Ordering is a strong
+      // preference, not a reason to wedge the composer.
+      .catch(() => {})
+      .then(() => this.sendPost(body));
+    // The chain waits on a CAPPED view of this POST, so one stuck request delays
+    // the next by at most POST_CHAIN_MAX_WAIT_MS instead of forever.
+    this.postChain = Promise.race([
+      mine.catch(() => {}),
+      new Promise<void>((r) => setTimeout(r, POST_CHAIN_MAX_WAIT_MS)),
+    ]);
+    return mine;
+  }
+
+  private async sendPost(body: Record<string, unknown>): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "text/event-stream",

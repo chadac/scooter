@@ -207,6 +207,65 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("serializes concurrent sends so they REACH the server in call order", async () => {
+    // send() is fire-and-forget and the composer does not await it, so three
+    // quick messages are in flight at once. Whichever the server processes first
+    // gets the earlier `enqueuedAt`, and the queue is ordered — and DRAINED — by
+    // that. Captured on CI: the 2nd send started 106ms after the 1st and finished
+    // 262ms before it, so the agent read "[Message 1] second, [Message 2] first".
+    // Chain the POSTs so arrival order is the user's typed order. Why: PR #645.
+    // The client always ISSUES them in order — what it did not do is wait, so all
+    // three were in flight at once and the server was free to finish them in any
+    // order. The assertion is therefore about OVERLAP, not call order: at most one
+    // POST may be outstanding, which is what makes arrival order deterministic.
+    const started: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchSpy = vi.fn(async (_url: string, init: { body: string }) => {
+      const text = JSON.parse(init.body).messages?.at(-1)?.content ?? "";
+      started.push(String(text));
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // The FIRST request is the slow one — exactly the CI shape.
+      await new Promise((r) => setTimeout(r, started.length === 1 ? 50 : 1));
+      inFlight--;
+      return new Response(new ReadableStream(), { status: 200 });
+    }) as unknown as typeof fetch;
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+    // Deliberately NOT awaited individually — this is how the composer sends.
+    await Promise.all([agent.send("first"), agent.send("second"), agent.send("third")]);
+
+    expect(maxInFlight, "sends overlapped, so the server decides their order").toBe(1);
+    expect(started).toEqual(["first", "second", "third"]);
+    agent.dispose();
+  });
+
+  it("a hung send cannot block later sends forever", async () => {
+    // Serializing must not turn one stuck POST into a wedged composer: the chain
+    // gives up waiting after a cap and lets the next send proceed. Why: PR #645.
+    vi.useFakeTimers();
+    try {
+      const started: string[] = [];
+      const fetchSpy = vi.fn(async (_url: string, init: { body: string }) => {
+        started.push(String(JSON.parse(init.body).messages?.at(-1)?.content ?? ""));
+        if (started.length === 1) await new Promise(() => {}); // never resolves
+        return new Response(new ReadableStream(), { status: 200 });
+      }) as unknown as typeof fetch;
+      const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
+
+      void agent.send("stuck");
+      const second = agent.send("after");
+      await vi.advanceTimersByTimeAsync(11_000);
+      await second;
+
+      expect(started, "the second send never went out behind a hung first").toEqual(["stuck", "after"]);
+      agent.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("submitResume() POSTs /agui with resume[] to answer an interrupt", async () => {
     const fetchSpy = vi.fn(async () => new Response(new ReadableStream(), { status: 200 })) as unknown as typeof fetch;
     const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: fetchSpy });
