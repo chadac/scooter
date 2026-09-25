@@ -461,7 +461,69 @@ let
     ++ map (n: "broker.env.${n} declared more than once (k8s keeps the last silently)")
       (builtins.filter (n: countNamed brokerEnv n > 1) dbEnvNames);
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems;
+  # TLS TO POSTGRES REACHES EVERY CONSUMER. Each service assembles its own DSN from
+  # separately-emitted components, and each emission site is hand-written — 11 of them
+  # across 8 module files. The failure mode is a MISSING component, not a wrong one:
+  # sslmode is absent, the DSN carries no ssl parameter, and the service connects in
+  # cleartext to a server the deployment asked to reach over TLS. Nothing fails and
+  # nothing logs. #621 was one copy of exactly that (the broker's), and byoc-controller
+  # still had it afterwards — index.ts read DB_SSLMODE while modules/byoc.nix never
+  # emitted it — because "fix the copy you found" cannot catch the copy you didn't.
+  #
+  # So don't enumerate the consumers here: DERIVE the expectation from what each
+  # workload emits. Any container with a `<prefix>DB_HOST` is talking to Postgres and
+  # must also carry `<prefix>DB_SSLMODE` once the deployment sets one. A twelfth copy
+  # that forgets it fails this check on the day it lands, and a new consumer is covered
+  # without editing this file. Needs a NON-cluster render: in-cluster leaves sslmode
+  # null by design, so the example platform emits nothing and proves nothing.
+  tlsPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.postgres.external = {
+        host = "pg.example.invalid";
+        sslmode = "require";
+        user = "postgres";
+        passwordSecret = { name = "pg-admin"; key = "password"; };
+      };
+    };
+  };
+  tlsRes = tlsPlatform.config.kubernetes.resources;
+  # Every container of every workload kind, so a new Deployment/Job is covered too.
+  allWorkloads = builtins.concatMap
+    (kind: builtins.attrValues (tlsRes.${kind} or { }))
+    [ "deployments" "statefulSets" "jobs" "cronJobs" ];
+  containersOf = w:
+    let spec = w.spec.template.spec or (w.spec.jobTemplate.spec.template.spec or { });
+    in builtins.attrValues (spec.containers or { });
+  # "AGENT_HOST_DB_HOST" -> "AGENT_HOST_DB_", "DB_HOST" -> "DB_"
+  prefixOf = name: builtins.substring 0 (builtins.stringLength name - 4) name;
+  # A derived check can pass by scanning nothing — if the render carried no DB_HOST at
+  # all, `missing` would be empty everywhere and this would report green while testing
+  # zero consumers. So count what was actually examined and fail if it collapses.
+  dbHostCount = builtins.length (builtins.concatMap
+    (w: builtins.concatMap
+      (c: builtins.filter (n: builtins.match ".*DB_HOST" n != null) (map (e: e.name) (c.env or [ ])))
+      (containersOf w))
+    allWorkloads);
+  vacuityProblems = if dbHostCount >= 6 then [ ]
+    else [ ("sslmode guard scanned only ${toString dbHostCount} DB_HOST vars (expected >= 6)"
+            + " — the render or the scan broke, and the check is passing vacuously") ];
+
+  sslProblems = builtins.concatMap
+    (w: builtins.concatMap
+      (c:
+        let
+          env = c.env or [ ];
+          names = map (e: e.name) env;
+          hosts = builtins.filter (n: builtins.match ".*DB_HOST" n != null) names;
+          missing = builtins.filter
+            (h: !(builtins.elem "${prefixOf h}SSLMODE" names)) hosts;
+        in map (h: "${w.metadata.name or "?"}: emits ${h} but no ${prefixOf h}SSLMODE "
+                 + "(cleartext to a TLS-only Postgres, silently)") missing)
+      (containersOf w))
+    allWorkloads;
+
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ sslProblems ++ vacuityProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
