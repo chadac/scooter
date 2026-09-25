@@ -325,21 +325,29 @@ function historyTable(cmp) {
   ].join("\n");
 }
 
+/**
+ * The verdict, as ONE collapsed section: the whole result in the `<summary>`
+ * line, the per-test evidence behind a click.
+ *
+ * Collapsed by default because this comment is one of several a PR carries, and
+ * a reader scanning them wants a list of one-line verdicts, not five tables
+ * unrolled down the page. Nothing is hidden that the summary does not name.
+ */
 export function renderMarkdown(cmp, opts = {}) {
   const { baselineRef, runUrl } = opts;
   const c = cmp.statusCounts;
-  const parts = [];
+  const tests = `${cmp.totalSpecs} test${cmp.totalSpecs === 1 ? "" : "s"}`;
+  const tally = `${tests} · ${cmp.totalSpecs - cmp.currentFailures.length} passed · ${cmp.currentFailures.length} failed`;
+  let summary;
+  const body = [];
 
   if (cmp.missingShards > 0) {
-    parts.push(
-      `### ⚠️ e2e full (k3d) — no comparison: ${cmp.shardReports}/${cmp.expectedShards} shards reported`,
-      "",
+    summary = `⚠️ <b>e2e full (k3d)</b> — no comparison: ${cmp.shardReports}/${cmp.expectedShards} shards reported`;
+    body.push(
       "A shard that died wrote no specs, which set difference reads as passing. Re-run failed jobs.",
     );
   } else if (!cmp.hasBaseline) {
-    parts.push(
-      `### ⚠️ e2e full (k3d) — ${cmp.totalSpecs} test${cmp.totalSpecs === 1 ? "" : "s"} · ${cmp.totalSpecs - cmp.currentFailures.length} passed · ${cmp.currentFailures.length} failed · no baseline`,
-    );
+    summary = `⚠️ <b>e2e full (k3d)</b> — ${tally} · no baseline`;
   } else {
     // ❌ only when the attributable count clears the suite's own swing: below it,
     // this is the same ❌ the comment prints on a night when nothing changed.
@@ -351,38 +359,34 @@ export function renderMarkdown(cmp, opts = {}) {
           : cmp.currentFailures.length
             ? "🌗"
             : "✅";
-    parts.push(
-      `### ${icon} e2e full (k3d) — ${cmp.totalSpecs} test${cmp.totalSpecs === 1 ? "" : "s"} · ${cmp.totalSpecs - cmp.currentFailures.length} passed · ${cmp.currentFailures.length} failed`,
-      "",
-      [
-        c.new ? `🆕 **${c.new} new**` : "🆕 0 new",
-        c.broken ? `🔴 ${c.broken} broken` : null,
-        c.flaky ? `🌗 ${c.flaky} flaky` : null,
-        c.fixed ? `✅ **${c.fixed} fixed**` : null,
-        c.notRun ? `· ${c.notRun} not run` : null,
-      ]
-        .filter(Boolean)
-        .join(" · "),
-    );
+    const badges = [
+      c.new ? `🆕 <b>${c.new} new</b>` : "🆕 0 new",
+      c.broken ? `🔴 ${c.broken} broken` : null,
+      c.flaky ? `🌗 ${c.flaky} flaky` : null,
+      c.fixed ? `✅ <b>${c.fixed} fixed</b>` : null,
+      c.notRun ? `${c.notRun} not run` : null,
+    ].filter(Boolean);
+    summary = `${icon} <b>e2e full (k3d)</b> — ${tally} · ${badges.join(" · ")}`;
   }
 
   if (cmp.trustworthy) {
     const table = historyTable(cmp);
-    if (table) parts.push("", table);
+    if (table) body.push(table);
     // One baseline column cannot separate a regression from a flake, and the
     // noise floor is 0 in that window — so ❌ above is unearned. Say so once.
     if (cmp.baselineRuns === 1 && c.new > 0)
-      parts.push("", "> ⚠️ Single baseline run — a flake reads as new here.");
+      body.push("> ⚠️ Single baseline run — a flake reads as new here.");
   }
 
-  parts.push(
-    "",
+  body.push(
     `<sub>Each column is one run of the full suite on the default branch, oldest first; the last is this PR. Rate is failures over the runs that ran the test.` +
       `${cmp.noiseFloor > 0 ? ` The suite's failure count swings by ±${cmp.noiseFloor} between baseline runs with no change between them.` : ""}` +
       `${runUrl ? ` · [run](${runUrl})` : ""}${cmp.hasBaseline ? ` · baseline \`${baselineRef}\`` : ""}</sub>`,
   );
 
-  return parts.join("\n");
+  // The blank line after </summary> is load-bearing: without it GitHub renders
+  // the markdown inside as literal text.
+  return `<details><summary>${summary}</summary>\n\n${body.join("\n\n")}\n</details>`;
 }
 
 const FLAGS = [

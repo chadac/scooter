@@ -232,6 +232,7 @@ describe("the per-test history table", () => {
     expect(body).toContain("⚠️");
     expect(body).not.toContain("### ❌");
     expect(body).toContain("swings by ±1");
+    expect(body).toContain("<details><summary>");
     // Still listed — "not separable by counting" is not "ignore it".
     expect(body).toContain("🆕 new");
   });
@@ -248,7 +249,7 @@ describe("the per-test history table", () => {
     );
     expect(cmp.newFailures).toHaveLength(2);
     expect(renderMarkdown(cmp, { baselineRef: "main@abc1234" })).toContain(
-      "### ❌",
+      "❌ <b>e2e full (k3d)</b>",
     );
   });
 
@@ -360,13 +361,15 @@ describe("renderMarkdown", () => {
       ),
       opts,
     );
-    expect(body).toContain("🆕 **1 new**");
+    expect(body).toContain("🆕 <b>1 new</b>");
     expect(body).toContain("main@abc1234");
     expect(body).toContain("a");
     // The counts come before the names: a reader wants "did this get worse" in
     // one glance, which a list of spec titles cannot answer.
     // The counts come first, then the per-test evidence.
-    expect(body.indexOf("🆕 **1 new**")).toBeLessThan(body.indexOf("| test |"));
+    expect(body.indexOf("🆕 <b>1 new</b>")).toBeLessThan(
+      body.indexOf("| test |"),
+    );
     // And the new one carries its history, not just a label.
     expect(body).toMatch(/› a \| ✅ \| ❌ \| 50% \| 🆕 new \|/);
   });
@@ -378,6 +381,8 @@ describe("renderMarkdown", () => {
     );
     expect(body).toContain("🆕 0 new");
     expect(body).toContain("🔴 1 broken");
+    // Collapsed: the whole verdict is in the summary line, the evidence behind it.
+    expect(body).toMatch(/^<details><summary>.*<\/summary>/);
   });
 
   it("states that no baseline was available rather than implying a clean diff", () => {
