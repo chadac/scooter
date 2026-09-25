@@ -845,6 +845,9 @@ jobs:
             if gh run download "$id" --name e2e-full-report --dir "baseline/$id" 2>/dev/null; then
               found=$((found + 1))
               [ -z "$newest" ] && newest="${DEFAULT_BRANCH}@${sha:0:7} (${created%T*})"
+              # The column header for this run in the verdict's history table. A
+              # date reads; a run id does not.
+              printf '%s' "${created%T*}" | cut -c6- > "baseline/$id/label"
               echo "baseline run $id (${sha:0:7}, $created)"
             fi
           done <<< "$runs"
@@ -867,9 +870,14 @@ jobs:
           MATRIX: ${{ needs.e2e-full-distribute.outputs.matrix }}
         run: |
           set -euo pipefail
+          # `sort` on the run-id directory names is chronological (ids increase),
+          # so the history columns read oldest → newest, left to right.
           base=()
           while IFS= read -r f; do
-            [ -n "$f" ] && base+=(--baseline "$f")
+            [ -n "$f" ] || continue
+            base+=(--baseline "$f")
+            label="$(cat "$(dirname "$f")/label" 2>/dev/null || true)"
+            base+=(--baseline-label "${label:-?}")
           done < <(find baseline -name report.json 2>/dev/null | sort)
           if [ ${#base[@]} -gt 0 ]; then base+=(--baseline-ref "${BASELINE_REF:-unknown}"); fi
           # A lost shard's specs are absent from the merge, which set difference reads
