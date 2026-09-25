@@ -24,6 +24,7 @@ import { join } from "node:path";
 
 import { createSessionManager, type SandboxProvisioner, type SandboxRef } from "../../src/session/manager.js";
 import { createFileConversationStore } from "../../src/session/fileStore.js";
+import type { ConversationRegistry } from "../../src/session/conversationRegistry.js";
 import type { AguiEvent } from "../../src/bridge.js";
 
 function makeFakeBridge() {
@@ -157,6 +158,128 @@ describe("end() vs a concurrent revive", () => {
       // pass the tests above and silently stop saving everything else.
       expect(sessions.get(keep.id), "the other conversation is untouched").toBeDefined();
       expect(await sessions.ensureReadable(keep.id)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The same resurrection, one replica over. endedIds (above) is per-pod, so it only
+ * fences the replica that served the DELETE. Every OTHER replica still holds a
+ * Postgres meta row for the conversation, and hydrateByThread adopts from that row
+ * with no CR in sight — so the fleet answers 200 for a conversation it deleted.
+ * Why: PR #650.
+ */
+const replicaHarness = (
+  root: string,
+  provisioner: SandboxProvisioner,
+  registry: Partial<ConversationRegistry>,
+  // NO default: `selfPod = "pod"` would treat an explicit `undefined` as the default and
+  // silently run the single-replica case as multi-replica, passing for the wrong reason.
+  selfPod: string | undefined,
+) =>
+  createSessionManager({
+    provisioner,
+    store: createFileConversationStore(root) as never,
+    bridgeFactory: () => makeFakeBridge() as never,
+    selfPod,
+    conversationRegistry: {
+      async register() {},
+      async setPhase() {},
+      async remove() {},
+      async list() {
+        return [];
+      },
+      async get() {
+        return undefined;
+      },
+      ...registry,
+    } as ConversationRegistry,
+  });
+
+describe("a store row whose CR is gone (the OTHER replica)", () => {
+  it("refuses to adopt — the CR is the source of truth for existence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "replica-gone-"));
+    try {
+      // Replica A creates the conversation, leaving a meta row in the shared store.
+      const a = harness(root, gatedProvisioner().provisioner);
+      const conv = await a.start("thread-replica-1");
+
+      // Replica B has never held it. The CR is gone (end() removed it elsewhere).
+      const b = replicaHarness(root, gatedProvisioner().provisioner, { get: async () => undefined }, "agent-host-2");
+      expect(
+        await b.ensureReadable(conv.id),
+        "a row without a CR is a stale cache, not a live conversation",
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("STILL adopts when the CR read fails — unreadable is not absent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "replica-unreadable-"));
+    try {
+      const a = harness(root, gatedProvisioner().provisioner);
+      const conv = await a.start("thread-replica-2");
+
+      // A k8s blip must not 404 every live conversation on the pod.
+      const b = replicaHarness(
+        root,
+        gatedProvisioner().provisioner,
+        {
+          get: async () => {
+            throw new Error("etcdserver: request timed out");
+          },
+        },
+        "agent-host-2",
+      );
+      expect(
+        await b.ensureReadable(conv.id),
+        "a transient API failure must fail OPEN, not delete the fleet's conversations",
+      ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("adopts when selfPod is set but NO registry is configured — the default is noop", async () => {
+    const root = mkdtempSync(join(tmpdir(), "replica-noreg-"));
+    try {
+      const a = harness(root, gatedProvisioner().provisioner);
+      const conv = await a.start("thread-replica-4");
+
+      // selfPod without a conversationRegistry falls back to noopRegistry, whose blanket
+      // `undefined` must not be mistaken for "the CR is gone". Caught by
+      // cancelledDanglingRun.spec.ts, which builds exactly this manager.
+      const b = createSessionManager({
+        provisioner: gatedProvisioner().provisioner,
+        store: createFileConversationStore(root) as never,
+        bridgeFactory: () => makeFakeBridge() as never,
+        selfPod: "agent-host-2",
+      });
+      expect(
+        await b.ensureReadable(conv.id),
+        "an unconfigured registry cannot answer whether a conversation exists",
+      ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("SINGLE-REPLICA still adopts — noopRegistry.get() is undefined for everything", async () => {
+    const root = mkdtempSync(join(tmpdir(), "replica-single-"));
+    try {
+      const a = harness(root, gatedProvisioner().provisioner);
+      const conv = await a.start("thread-replica-3");
+
+      // No selfPod => no CRs exist at all. Reading noopRegistry's blanket `undefined`
+      // as "deleted" would make every single-replica conversation unreadable.
+      const b = replicaHarness(root, gatedProvisioner().provisioner, {}, undefined);
+      expect(
+        await b.ensureReadable(conv.id),
+        "single-replica has no CRs; absence there means nothing",
+      ).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
