@@ -800,6 +800,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // tool_call_id -> terminalIds a handoff cited, retried on finish because the
     // terminal-create stash may not have been populated yet. Why: PR #641.
     toolTerminals: Map<string, string[]>;
+    // terminalIds created during THIS run that no tool call has claimed — the
+    // terminal can be created before the tool_call announcing it. Run-scoped so a
+    // stale id from an earlier run can never be attributed. Why: PR #641.
+    unclaimedTerminals: string[];
     // Set once the run is finishing: late updates are ignored so we never
     // reopen a message after RUN_FINISHED.
     ended?: boolean;
@@ -981,6 +985,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         emit({ type: "TOOL_CALL_END", toolCallId: u.toolCallId });
         st.toolMessage.set(u.toolCallId, nextId("msg"));
         st.openToolCalls.add(u.toolCallId);
+        // Claim a terminal created BEFORE this tool call was announced (the two are
+        // a request and a notification, so they are not ordered against each
+        // other). Only when exactly one is unclaimed — otherwise it is a guess, and
+        // the handoff's terminalId will correlate it precisely. Why: PR #641.
+        if (st.unclaimedTerminals.length === 1 && emitTerminalArgs(st, u.toolCallId, st.unclaimedTerminals)) {
+          st.unclaimedTerminals = [];
+        }
         st.inFlightTools++; // a tool call is now running (see the "thinking" policy)
         break;
       }
@@ -1021,6 +1032,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           // update on the relayed BYO path. Why: PR #641.
           const ids = handoffTerminalIds(u.content);
           st.toolTerminals.set(u.toolCallId, ids);
+          // This update names the terminal explicitly, so it is no longer unclaimed
+          // — drop it before a later tool_call could claim it by the count rule.
+          st.unclaimedTerminals = st.unclaimedTerminals.filter((t) => !ids.includes(t));
           emitTerminalArgs(st, u.toolCallId, ids);
           break;
         }
@@ -1088,7 +1102,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     alreadyPersisted = false,
   ): Promise<{ runId: RunId; retryable: boolean }> => {
     const runId = nextId("run");
-    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), openToolCalls: new Set(), toolTerminals: new Map(), inFlightTools: 0, terminalPending: new Set() };
+    const st: RunState = { runId, threadId: input.threadId, toolMessage: new Map(), argsEmitted: new Set(), openToolCalls: new Set(), toolTerminals: new Map(), unclaimedTerminals: [], inFlightTools: 0, terminalPending: new Set() };
     const startedAt = Date.now();
     st.startedAt = startedAt;
     currentRun = st; // visible to cancel() from the moment the run begins
@@ -1594,7 +1608,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const st = currentRun;
         if (!st) return;
         const argless = [...st.openToolCalls].filter((id) => !st.argsEmitted.has(id));
-        if (argless.length !== 1) return;
+        if (argless.length !== 1) {
+          // Nothing to attribute it to YET — goose can create the terminal before
+          // it announces the tool call. Hold it for that tool_call to claim.
+          st.unclaimedTerminals.push(terminalId);
+          return;
+        }
         terminalCommands.delete(terminalId);
         emitArgsOnce(st, argless[0], { command: cmd });
       });

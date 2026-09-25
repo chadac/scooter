@@ -185,6 +185,41 @@ describe("ACP -> AG-UI bridge", () => {
     agent.releaseGate();
   });
 
+  it("surfaces the shell command when terminal/create is observed BEFORE the tool_call", async () => {
+    // terminal/create is a client REQUEST goose makes; the tool_call is a
+    // notification. They are not ordered against each other, so the terminal can
+    // be created before the bridge has seen the tool call it belongs to — and
+    // then there is no open tool call to attribute it to. Why: PR #641.
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const agent = createFakeAcpAgent();
+    agent.gate();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "echo it" });
+    await tick();
+
+    // The terminal exists BEFORE the tool call is announced.
+    agent.terminalCreated("term-1", "sh", ["-c", "echo hi"]);
+    await tick();
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c1", title: "run: echo hi", kind: "execute", status: "pending" } as never);
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", content: [{ type: "content", content: { type: "text", text: "hi" } }] } as never);
+    await tick();
+
+    const args = events.find((e) => e.type === "TOOL_CALL_ARGS" && (e as { toolCallId?: string }).toolCallId === "c1") as
+      | { delta: string }
+      | undefined;
+    expect(args, "no TOOL_CALL_ARGS — the terminal predated the tool call").toBeDefined();
+    expect(JSON.parse(args!.delta)).toEqual({ command: "echo hi" });
+
+    agent.releaseGate();
+  });
+
   it("does NOT guess the command when two shell tool calls are in flight", async () => {
     // The creation-time fallback attributes a terminal to the one open, argless
     // tool call. With two open it must decline and leave correlation to the
