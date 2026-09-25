@@ -625,6 +625,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         /* unreadable ≠ absent: adopt, and leave it to the fence and the reaper */
       }
       if (absent) {
+        // LOUD: this refusal makes a conversation unreadable on this pod, and a SILENT
+        // one is indistinguishable from "the row was never there" when reading a CI log.
+        // The ownership fence above carries the same warning for the same reason.
+        log.warn("refused to adopt a store row with no Conversation CR (deleted elsewhere?)", {
+          conversation_id: m.id,
+        });
         tombstone(m.id);
         return undefined;
       }
