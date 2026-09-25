@@ -111,6 +111,155 @@ describe("ACP -> AG-UI bridge", () => {
     agent.releaseGate();
   });
 
+  it("surfaces the shell command even when NO terminal-handoff update ever arrives", async () => {
+    // An instantaneous command (`echo hi`) can finish before goose emits the
+    // handoff update — the next update already carries the real output. The
+    // command must still reach the UI: correlating it ONLY from a handoff makes
+    // the tool card permanently empty, because nothing downstream re-reads the
+    // terminal-create stash. Drove the `!cmd runs a real sandbox command` e2e
+    // flake (2 of 8 nightlies). Why: PR #641.
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const agent = createFakeAcpAgent();
+    agent.gate();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "echo it" });
+    await tick();
+
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c1", title: "run: echo hi", kind: "execute", status: "pending" } as never);
+    agent.terminalCreated("term-1", "sh", ["-c", "echo hi"]);
+    // NO handoff update: the command was instant, so goose's next update is the
+    // finished one, carrying real content.
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", content: [{ type: "content", content: { type: "text", text: "hi" } }] } as never);
+    await tick();
+
+    const args = events.find((e) => e.type === "TOOL_CALL_ARGS" && (e as { toolCallId?: string }).toolCallId === "c1") as
+      | { delta: string }
+      | undefined;
+    expect(args, "no TOOL_CALL_ARGS emitted — the tool card would render empty").toBeDefined();
+    expect(JSON.parse(args!.delta)).toEqual({ command: "echo hi" });
+
+    agent.releaseGate();
+  });
+
+  it("recovers the shell command when terminal/create is observed AFTER the handoff", async () => {
+    // On the BYO-remote path `terminal_created` is relayed as its own stamped
+    // message, separate from the session-update stream, so it can land after the
+    // handoff that cites its terminalId. The handoff lookup misses; the finish
+    // must retry it rather than leave the card empty forever. Why: PR #641.
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const agent = createFakeAcpAgent();
+    agent.gate();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "sleep it" });
+    await tick();
+
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c1", title: "run: sleep 1", kind: "execute", status: "pending" } as never);
+    // Handoff FIRST — the stash has nothing for term-1 yet.
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", content: [{ type: "terminal", terminalId: "term-1" }] } as never);
+    await tick();
+    agent.terminalCreated("term-1", "sh", ["-c", "sleep 1"]);
+    // The real finish.
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" } as never);
+    await tick();
+
+    const args = events.find((e) => e.type === "TOOL_CALL_ARGS" && (e as { toolCallId?: string }).toolCallId === "c1") as
+      | { delta: string }
+      | undefined;
+    expect(args, "the late terminal/create was never re-read").toBeDefined();
+    expect(JSON.parse(args!.delta)).toEqual({ command: "sleep 1" });
+
+    agent.releaseGate();
+  });
+
+  it("surfaces the shell command when terminal/create is observed BEFORE the tool_call", async () => {
+    // terminal/create is a client REQUEST goose makes; the tool_call is a
+    // notification. They are not ordered against each other, so the terminal can
+    // be created before the bridge has seen the tool call it belongs to — and
+    // then there is no open tool call to attribute it to. Why: PR #641.
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const agent = createFakeAcpAgent();
+    agent.gate();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "echo it" });
+    await tick();
+
+    // The terminal exists BEFORE the tool call is announced.
+    agent.terminalCreated("term-1", "sh", ["-c", "echo hi"]);
+    await tick();
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c1", title: "run: echo hi", kind: "execute", status: "pending" } as never);
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed", content: [{ type: "content", content: { type: "text", text: "hi" } }] } as never);
+    await tick();
+
+    const args = events.find((e) => e.type === "TOOL_CALL_ARGS" && (e as { toolCallId?: string }).toolCallId === "c1") as
+      | { delta: string }
+      | undefined;
+    expect(args, "no TOOL_CALL_ARGS — the terminal predated the tool call").toBeDefined();
+    expect(JSON.parse(args!.delta)).toEqual({ command: "echo hi" });
+
+    agent.releaseGate();
+  });
+
+  it("does NOT guess the command when two shell tool calls are in flight", async () => {
+    // The creation-time fallback attributes a terminal to the one open, argless
+    // tool call. With two open it must decline and leave correlation to the
+    // handoff's terminalId — guessing would label a card with another command.
+    // Why: PR #641.
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const agent = createFakeAcpAgent();
+    agent.gate();
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "two" });
+    await tick();
+
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c1", title: "run: a", kind: "execute", status: "pending" } as never);
+    agent.emit({ sessionUpdate: "tool_call", toolCallId: "c2", title: "run: b", kind: "execute", status: "pending" } as never);
+    agent.terminalCreated("term-2", "sh", ["-c", "echo b"]);
+    await tick();
+
+    // Ambiguous: nothing may be attributed to EITHER call on creation alone.
+    const guessed = events.filter((e) => e.type === "TOOL_CALL_ARGS");
+    expect(guessed, "attributed a terminal to an ambiguous tool call").toEqual([]);
+
+    // The handoff names c2 explicitly — that is the authoritative correlation.
+    agent.emit({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "completed", content: [{ type: "terminal", terminalId: "term-2" }] } as never);
+    await tick();
+    const args = events.find((e) => e.type === "TOOL_CALL_ARGS" && (e as { toolCallId?: string }).toolCallId === "c2") as
+      | { delta: string }
+      | undefined;
+    expect(args, "the handoff's explicit terminalId must still correlate").toBeDefined();
+    expect(JSON.parse(args!.delta)).toEqual({ command: "echo b" });
+
+    agent.releaseGate();
+  });
+
   it("maps an agent_message_chunk to TextMessage start/content/end", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([
