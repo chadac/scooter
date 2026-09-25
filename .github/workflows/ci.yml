@@ -61,6 +61,9 @@ concurrency:
 jobs:
   ci:
     name: fast checks (flake + typecheck + unit + python)
+    permissions:
+      contents: read
+      pull-requests: write   # posts its own gate section (scripts/ci-report.mjs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -109,6 +112,28 @@ jobs:
       # `just typecheck` can't see, since it resolves @scooter/schema from the workspace.
       - name: agent-host + byoc-controller + generated Drizzle schema (nix)
         run: nix build .#scooter-schema-js .#agentHost .#byoc-controller --print-build-logs
+
+      # This job IS the 'fast' gate, so it reports itself. always(), or a red run
+      # would leave the gate pending forever and `ci-summary` could never resolve.
+      - name: post fast-checks section
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          OK: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          if [ "$OK" = "success" ]; then
+            status=pass; summary="fast checks — flake · typecheck · unit · python"
+            printf 'All fast checks passed.\n' > fast.md
+          else
+            status=fail; summary="fast checks — FAILED"
+            printf 'See the job log: flake eval, typecheck, unit tests or the python builds failed.\n' > fast.md
+          fi
+          node scripts/ci-report.mjs post --section fast --status "$status" \
+            --summary "$summary" --body fast.md --labels "$LABELS"
 
   # Build the OCI images — REQUIRED, always-on. Assembling the nix2container image
   # (its per-layer builds over the whole system closure) is a distinct failure surface
@@ -176,27 +201,30 @@ jobs:
           git worktree remove --force ../main-baseline
 
       # 3. Render the comparison table and post/update the sticky PR comment.
-      - name: post size report comment
+      - name: post size report section
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           set -euo pipefail
           ./scripts/image-sizes-diff.sh base-sizes.json pr-sizes.json 5 > report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"   # also surface it in the run summary
-          # Sticky comment via the REST API (numeric comment ids, unlike the GraphQL
-          # node ids `gh pr view` returns): find our prior comment by the marker and
-          # PATCH it, else POST a new one.
-          marker='<!-- image-size-benchmark -->'
-          id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
-                 --jq ".[] | select(.body | contains(\"$marker\")) | .id" | tail -n1)
-          if [ -n "$id" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" -X PATCH -F body=@report.md >/dev/null
-            echo "updated sticky comment ${id}"
+          # One SECTION of the shared CI comment, not a comment of its own — see
+          # scripts/ci-report.mjs. The runner's own node runs it: the script has no
+          # dependencies, so this nix-only job needs no npm install.
+          # The TRAILER line, not any ⚠️: the report's legend reads "⚠️ marks growth
+          # ≥ 5%" on EVERY run, so grepping for the emoji reported a failure every time.
+          # warn, never fail: this report is a signal by design (see the job comment) —
+          # image-sizes-diff.sh deliberately never exits non-zero.
+          if grep -q '^✅ No image grew' report.md; then
+            status=pass; summary='image size — no image grew ≥ 5%'
           else
-            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@report.md >/dev/null
-            echo "created sticky comment"
+            grew=$(sed -n 's/^⚠️ \*\*\([0-9]*\) image(s) grew.*/\1/p' report.md)
+            status=warn; summary="image size — ${grew:-some} image(s) grew ≥ 5%"
           fi
+          node scripts/ci-report.mjs post --section size --status "$status" \
+            --summary "$summary" --body report.md --labels "$LABELS"
 
   # Enumerate the dev-env-* nixosTests into a matrix so each VM test runs in its
   # OWN parallel job. This generate job is cheap (eval only). By default the
@@ -897,11 +925,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           set -euo pipefail
-          marker='<!-- e2e-full-report -->'
-          printf '%s\n\n' "$marker" | cat - comment.md > body.md
-          .github/scripts/sticky-comment.sh "$marker" body.md
+          # NO --summary: the compare script renders its own <details> with the whole
+          # verdict in the summary line, so ci-report places the body verbatim. Each
+          # job stays the author of its own presentation.
+          #
+          # ADVISORY (.github/ci-gates.yml), so the status here decides what the gate
+          # table shows, not whether the PR can merge: this suite's own night-to-night
+          # swing is larger than most regressions.
+          status=warn
+          grep -q '^<details><summary>✅' comment.md && status=pass
+          grep -q '^<details><summary>❌' comment.md && status=fail
+          node scripts/ci-report.mjs post --section e2e-full --status "$status" \
+            --body comment.md --labels "$LABELS"
 
   # e2e fast — Playwright through the UI against the fake-agent stack (no
   # cluster/model). SHARDED across N parallel runners (default 4): distribute →
@@ -1061,51 +1099,26 @@ jobs:
       # "all pass" (so a fail→fix→pass sequence doesn't leave a stale ❌ sitting there).
       # It never CREATES a fresh comment on green (no noise on an always-green PR) — it
       # only updates one that already exists. Always runs so the green branch can fire.
-      - name: comment e2e shard result
+      - name: post e2e shard section
         if: always() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           MATRIX: ${{ needs.e2e-distribute.outputs.matrix }}
           SHARDS_RESULT: ${{ needs.e2e-shard.result }}
           DISTRIBUTE_RESULT: ${{ needs.e2e-distribute.result }}
-          # The per-shard results as JSON (GitHub exposes only the aggregate `result`
-          # on `needs`, so we reconstruct per-shard pass/fail from the uploaded report
-          # artifacts: a shard with a report + no failing test passed; a shard whose
-          # report is missing or has failures failed).
         run: |
           set -euo pipefail
-          marker="<!-- e2e-shard-report -->"
-          # Is the whole e2e green this run?
-          if [ "$SHARDS_RESULT" = "success" ] && [ "$DISTRIBUTE_RESULT" = "success" ]; then
-            passed=1
-          else
-            passed=0
-          fi
-
-          # Find our existing sticky comment (if any) up front — on green we only UPDATE
-          # it (never create), so a green PR that never failed stays comment-free.
-          existing=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.number }}/comments" \
-            --jq "[.[] | select(.body | contains(\"$marker\"))][0].id" 2>/dev/null || true)
-
-          if [ "$passed" = "1" ]; then
-            # GREEN: only resolve a previously-posted failure comment; don't create noise.
-            if [ -z "${existing:-}" ] || [ "$existing" = "null" ]; then
-              echo "e2e green and no prior sticky comment — nothing to post."
-              exit 0
-            fi
-            printf '%s\n\n### ✅ e2e (Playwright) — all shards pass\n\nEvery shard is green on the latest run.\n' "$marker" > body.md
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat body.md)" >/dev/null
-            echo "resolved sticky e2e comment to green"
-            exit 0
-          fi
-
-          # FAILURE: determine which shards failed and render the detail. A MISSING report
-          # means that shard crashed before writing one → failed.
+          # GitHub exposes only the AGGREGATE result on `needs`, so per-shard pass/fail
+          # is reconstructed from the uploaded reports: a shard with a report and no
+          # failing test passed; a shard whose report is missing crashed before writing
+          # one, which is a failure and not an absence of tests.
           node -e '
             const fs = require("fs");
+            const path = require("path");
             const matrix = JSON.parse(process.env.MATRIX).include;
             const dir = "shard-reports";
-            const has = (f) => fs.existsSync(dir + "/" + f);
             const failedTests = (report) => {
               const out = [];
               const walk = (n, file) => {
@@ -1116,7 +1129,7 @@ jobs:
                   for (const t of spec.tests || [])
                     for (const r of t.results || [])
                       if (r.status === "failed" || r.status === "timedOut")
-                        out.push(`${require("path").basename(sf)} › ${spec.title || ""}`.trim());
+                        out.push(`${path.basename(sf)} › ${spec.title || ""}`.trim());
                 }
                 for (const c of n.suites || []) walk(c, file);
               };
@@ -1124,30 +1137,44 @@ jobs:
               return out;
             };
             const lines = [];
+            let failures = 0;
             for (const m of matrix) {
               const rf = `report-shard-${m.shard}.json`;
               let bad = [];
-              if (!has(rf)) bad = ["(no report — the shard crashed / timed out before finishing)"];
-              else { try { bad = failedTests(JSON.parse(fs.readFileSync(dir + "/" + rf, "utf8"))); } catch { bad = ["(unreadable report)"]; } }
-              if (bad.length) lines.push(`- **shard ${m.shard}** — ${bad.length} failure(s):\n` + bad.map((b) => `    - ${b}`).join("\n"));
+              if (!fs.existsSync(dir + "/" + rf))
+                bad = ["(no report — the shard crashed / timed out before finishing)"];
+              else {
+                try { bad = failedTests(JSON.parse(fs.readFileSync(dir + "/" + rf, "utf8"))); }
+                catch { bad = ["(unreadable report)"]; }
+              }
+              failures += bad.length;
+              if (bad.length)
+                lines.push(`- **shard ${m.shard}** — ${bad.length} failure(s):\n` + bad.map((b) => `    - ${b}`).join("\n"));
             }
-            // Re-running a SINGLE shard job does NOT re-run this gate (`e2e-collect`) —
-            // GitHub only re-triggers `needs:` dependents from the workflow-level
-            // "Re-run failed jobs" button. So after a fix or a flake, use THAT button
-            // (not the per-shard re-run) or the gate/comment stay stuck on the old result.
-            const rerunNote = `\n\n<sub>⚠️ To re-check after a push or flake, use **“Re-run failed jobs”** on the whole workflow — re-running a single shard alone will NOT refresh this gate.</sub>`;
-            const body = (lines.length
-              ? `### ❌ e2e (Playwright) — failing shards\n\n${lines.join("\n")}\n\n<sub>Sharded run: each shard is a separate runner. See the failed shard job(s) for traces/videos.</sub>`
-              : `### ❌ e2e (Playwright) — a shard failed but no per-test failure was recorded (likely an infra/setup error). See the shard job logs.`) + rerunNote;
-            fs.writeFileSync("comment.md", body);
+            // Re-running a SINGLE shard job does NOT re-run this gate — GitHub only
+            // re-triggers `needs:` dependents from the workflow-level "Re-run failed
+            // jobs" button. So after a fix or a flake, use THAT button or the gate and
+            // this section stay stuck on the old result.
+            const note = "\n\n<sub>⚠️ To re-check after a push or flake, use **“Re-run failed jobs”** on the whole workflow — re-running a single shard alone will NOT refresh this gate.</sub>";
+            const green = process.env.SHARDS_RESULT === "success" && process.env.DISTRIBUTE_RESULT === "success";
+            fs.writeFileSync("shard-count", String(failures));
+            fs.writeFileSync(
+              "comment.md",
+              green
+                ? "Every shard is green on the latest run."
+                : (lines.length
+                    ? lines.join("\n") + note
+                    : "A shard failed but no per-test failure was recorded (likely an infra/setup error). See the shard job logs." + note),
+            );
           '
-          # One sticky comment: edit the existing bot comment if present, else create.
-          printf '%s\n\n' "$marker" | cat - comment.md > body.md
-          if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat body.md)" >/dev/null
+          shards=$(echo "$MATRIX" | jq '.include | length')
+          if [ "$SHARDS_RESULT" = "success" ] && [ "$DISTRIBUTE_RESULT" = "success" ]; then
+            status=pass; summary="e2e fast — $shards/$shards shards pass"
           else
-            gh pr comment "${{ github.event.number }}" --body-file body.md >/dev/null
+            status=fail; summary="e2e fast — $(cat shard-count) failing test(s)"
           fi
+          node scripts/ci-report.mjs post --section e2e-fast --status "$status" \
+            --summary "$summary" --body comment.md --labels "$LABELS"
 
       # The actual gate: fail this job iff any shard failed. (The distribute job failing
       # also fails this via `needs`.)
@@ -1352,6 +1379,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
           FLAKE_SPECS: ${{ steps.pat.outputs.specs }}
           HAS_FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-full-flake-check') }}
@@ -1372,9 +1400,17 @@ jobs:
             --specs "$FLAKE_SPECS" --run-url "$RUN_URL" \
             "${suggest[@]}" "${base[@]}" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
-          # ONE comment shared with the full-target job, a section each: the two
-          # verdicts only mean something read together (see comment-sections.mjs).
-          .github/scripts/sticky-comment.sh '<!-- flake-focus-report -->' flake-comment.md --section fast
+          # ONE section of the shared CI comment (scripts/ci-report.mjs). The report
+          # renders its own heading, so ci-report is given a summary line and folds the
+          # detail behind it. ADVISORY per .github/ci-gates.yml: a reproduction is
+          # information, not a veto — but the gate blocks while it is PENDING, because a
+          # label that asks a question must get its answer before the PR merges.
+          status=pass
+          grep -q "STILL reproduces" flake-comment.md && status=fail
+          grep -q "no power" flake-comment.md && status=warn
+          node scripts/ci-report.mjs post --section flake-fast --status "$status" \
+            --summary "$(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1 | grep . || echo 'flake focus (fast)')" \
+            --body flake-comment.md --labels "$LABELS"
 
       # A run that executed the flaky test ZERO times is the false green this whole
       # job exists to prevent, and the test command exits 0 for it. Fail here.
@@ -1509,6 +1545,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           # Env, not inline `${{ }}` — these come from the PR description (see the
           # fast job).
           FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
@@ -1521,8 +1558,17 @@ jobs:
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
             --specs "$FLAKE_SPECS" --run-url "$RUN_URL" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
-          # Writes the 'full' section of the SAME comment the fast job writes into.
-          .github/scripts/sticky-comment.sh '<!-- flake-focus-report -->' flake-comment.md --section full
+          # ONE section of the shared CI comment (scripts/ci-report.mjs). The report
+          # renders its own heading, so ci-report is given a summary line and folds the
+          # detail behind it. ADVISORY per .github/ci-gates.yml: a reproduction is
+          # information, not a veto — but the gate blocks while it is PENDING, because a
+          # label that asks a question must get its answer before the PR merges.
+          status=pass
+          grep -q "STILL reproduces" flake-comment.md && status=fail
+          grep -q "no power" flake-comment.md && status=warn
+          node scripts/ci-report.mjs post --section flake-full --status "$status" \
+            --summary "$(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1 | grep . || echo 'flake focus (full)')" \
+            --body flake-comment.md --labels "$LABELS"
 
       # Zero repetitions of the targeted test = a false green (see the fast job).
       # Costlier here: a cluster run that proved nothing burned ~25 minutes.
@@ -1556,3 +1602,69 @@ jobs:
       - name: tear down k3d
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+  # ONE section for the whole nixosTest matrix. The legs cannot each write: 13
+  # concurrent read-modify-writes on one comment would spend the retry budget on
+  # each other. This job is the single writer, and it reads the legs' outcome from
+  # `needs` rather than re-deriving it.
+  nixos-report:
+    name: nixosTest report
+    needs: [nixos-tests-matrix, nixos-test]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: post nixosTest section
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          TESTS: ${{ needs.nixos-tests-matrix.outputs.tests }}
+          RESULT: ${{ needs.nixos-test.result }}
+        run: |
+          set -euo pipefail
+          n=$(echo "$TESTS" | jq 'length')
+          if [ "$RESULT" = "success" ]; then
+            status=pass; summary="nixosTests — $n/$n pass"
+          elif [ "$RESULT" = "skipped" ]; then
+            status=skip; summary="nixosTests — skipped"
+          else
+            status=fail; summary="nixosTests — at least one VM test failed"
+          fi
+          # The matrix's aggregate result is all `needs` exposes, so name the legs and
+          # point at the run: which one failed is one click away, and duplicating the
+          # per-leg status here would just be a second source of truth to drift.
+          echo "$TESTS" | jq -r '.[] | "- \(.)"' > nixos.md
+          printf '\n<sub>Per-leg results are the `nixosTest *` checks on this commit.</sub>\n' >> nixos.md
+          node scripts/ci-report.mjs post --section nixos --status "$status" \
+            --summary "$summary" --body nixos.md --labels "$LABELS"
+
+  # THE REQUIRED CHECK. Everything else reports; this decides. It reads the shared
+  # comment every reporting job wrote into and fails when a gate in
+  # .github/ci-gates.yml is failing OR has not reported — because a gate nobody
+  # reported is not a passing gate, and treating absence as success is how an
+  # opt-in suite ends up decorative.
+  #
+  # needs: every producer, so this runs LAST. always(), or a red producer would
+  # skip the summary and leave the PR with no verdict at all.
+  ci-summary:
+    name: ci summary (gates)
+    needs: [ci, image-sizes, nixos-report, e2e-collect, e2e-full-collect, flake-focus, flake-focus-full]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read           # a PR's comments live on the issues endpoint
+    steps:
+      - uses: actions/checkout@v5
+      - name: evaluate the gates
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: node scripts/ci-report.mjs evaluate --labels "$LABELS"

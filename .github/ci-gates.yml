@@ -1,0 +1,73 @@
+# What a PR must satisfy to merge — the declarative half of the CI verdict.
+#
+# One required check (`ci-summary`) reads this file, collects what every
+# reporting job wrote into the shared PR comment, and passes only if each gate
+# below is satisfied. Adding an opt-in suite therefore does NOT mean editing
+# branch protection: declare it here and it is enforced.
+#
+# `require`:
+#   always              — must report, and must pass
+#   when_labelled: <l>  — only in play when the PR carries that label
+#   never               — reports, never gates (advisory)
+#
+# `advisory: true` keeps a gate visible in the table but never blocks, even when
+# it reports a failure. `block_while_pending: false` lets a PR merge before this
+# gate has answered.
+#
+# ORDER IS THE RENDER ORDER of the comment's sections, so the thing most likely
+# to be wrong sits at the top.
+
+gates:
+  - id: flake-full
+    name: flake focus full (k3d, targeted ×5)
+    require: when_labelled
+    label: e2e-full-flake-check
+    # Reproducing a flake is INFORMATION, not a veto: on this suite it usually
+    # means the test is under-budgeted (a 30s run-status-bar assertion against a
+    # 1-2 min pod boot), not that the PR is wrong. But the answer must arrive
+    # before merge — a label that asks a question and then lets the PR merge
+    # before the answer lands is worse than not asking. See PR #628.
+    advisory: true
+    block_while_pending: true
+
+  - id: e2e-full
+    name: e2e full (k3d)
+    require: when_labelled
+    label: e2e-full
+    # ADVISORY. Three runs of one unchanged CI-only diff reported 4, 3 and 2 new
+    # failures, and a spec that read "fixed" in the first read "broken" in the
+    # third. A suite that disagrees with itself run to run cannot gate a merge on
+    # a raw count. The attributable part is in the comment; a human reads it.
+    advisory: true
+    block_while_pending: false
+
+  - id: flake-fast
+    name: flake focus (targeted ×20)
+    require: when_labelled
+    label: flake-check
+    # Same reasoning as flake-full: the answer must arrive, the answer does not veto.
+    advisory: true
+    block_while_pending: true
+
+  - id: e2e-fast
+    name: e2e fast (Playwright, fake stack)
+    require: always
+
+  - id: nixos
+    name: nixosTest dev-env-*
+    require: always
+
+  - id: fast
+    name: fast checks (flake + typecheck + unit + python)
+    require: always
+
+  - id: size
+    name: image size benchmark
+    require: always
+    # ADVISORY, and deliberately so: this report has always been a signal, not a
+    # gate — image-sizes-diff.sh never exits non-zero, and the job's own comment
+    # says "report-only, never fails the PR". Declaring it `required` here would
+    # have silently promoted a 5% closure growth into a merge blocker, which is a
+    # policy change nobody asked for. It still must REPORT before merge: a
+    # closure that balloons should be seen, even if it does not veto.
+    advisory: true
