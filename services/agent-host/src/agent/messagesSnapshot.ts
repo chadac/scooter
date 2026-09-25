@@ -38,6 +38,9 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
   const toolToAssistant = new Map<string, SnapshotMessage>();
   const toolName = new Map<string, string>();
   const toolArgs = new Map<string, string>();
+  // tool_call_id -> the emitted call object, so args that arrive after it was
+  // built (the shell shape) can still be written into it. Why: PR #644.
+  const emittedCalls = new Map<string, { function: { arguments: string } }>();
   let openAssistant: SnapshotMessage | undefined;
 
   const open = (id: string, role: SnapshotMessage["role"]) => {
@@ -82,9 +85,17 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
         if (openAssistant) toolToAssistant.set(e.toolCallId, openAssistant);
         break;
       }
-      case "TOOL_CALL_ARGS":
-        toolArgs.set(e.toolCallId, (toolArgs.get(e.toolCallId) ?? "") + (e.delta ?? ""));
+      case "TOOL_CALL_ARGS": {
+        const acc = (toolArgs.get(e.toolCallId) ?? "") + (e.delta ?? "");
+        toolArgs.set(e.toolCallId, acc);
+        // The args can arrive AFTER the call was emitted at TOOL_CALL_END — for a
+        // shell tool that is the normal order, because the command is only known
+        // once terminal/create delivers it. Patch the already-emitted call, or a
+        // rehydrated conversation renders the card with no command. Why: PR #644.
+        const already = emittedCalls.get(e.toolCallId);
+        if (already) already.function.arguments = acc;
         break;
+      }
       case "TOOL_CALL_END": {
         const host = toolToAssistant.get(e.toolCallId) ?? openAssistant;
         const call = {
@@ -99,6 +110,8 @@ export function foldToMessages(events: Iterable<AguiEvent>): SnapshotMessage[] {
           const m = open(`asst-${e.toolCallId}`, "assistant");
           m.toolCalls = [call];
         }
+        // Held by reference so args arriving after this point can still reach it.
+        emittedCalls.set(e.toolCallId, call);
         break;
       }
       case "TOOL_CALL_RESULT": {
