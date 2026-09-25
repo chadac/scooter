@@ -1224,7 +1224,7 @@ export async function main(
   // answer-routing) and also re-raise directly (covers a live bridge that merely lost
   // the interrupt), then retry. Returns whether it was ultimately answered so the /agui
   // resume branch can close with RUN_ERROR instead of hanging when it genuinely can't.
-  server.onResume(async (sessionId, entry) => {
+  server.onResume(async (sessionId, entry, approver) => {
     // cancelled -> empty optionId (the bridge treats an unknown/empty id as a
     // cancel); resolved -> the chosen optionId from the payload.
     const optionId =
@@ -1232,7 +1232,13 @@ export async function main(
         ? ""
         : ((entry.payload as { optionId?: string } | undefined)?.optionId ?? "");
 
-    const answer = () => sessions.get(sessionId)?.bridge?.answerPermission(entry.interruptId, optionId) ?? false;
+    // `approver` is the human who answered, resolved from the ingress identity on the
+    // resume request. It MUST reach answerPermission: an approval interrupt's onAnswer
+    // relays it to the broker, which authorizes that person. Dropping it falls back to
+    // `{ id: conversationId }` — the broker then checks a principal that is not a user,
+    // and (with FGA on) no approver tuple matches. Why: PR #649.
+    const answer = () =>
+      sessions.get(sessionId)?.bridge?.answerPermission(entry.interruptId, optionId, approver) ?? false;
 
     // 1) Fast path — the run is still live and holding this interrupt.
     if (answer()) return { ok: true };
@@ -1377,10 +1383,15 @@ export async function main(
       },
       resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
-      answerPermission: async (sessionId, toolCallId, optionId) => {
+      answerPermission: async (sessionId, toolCallId, optionId, approver) => {
         // Route the user's choice to the conversation's bridge, which resolves
         // the blocked agent run (ACP request_permission).
-        const answered = sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId);
+        //
+        // `approver` (the route resolves it from ctx.user) must be forwarded: for an
+        // approval interrupt the bridge relays it to the broker as the human being
+        // authorized. This signature took it and dropped it, so no HTTP path ever
+        // delivered an approver. Why: PR #649.
+        const answered = sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId, approver);
         if (!answered) {
           hostLog.warn("no pending permission", { conversation_id: sessionId, tool_call_id: toolCallId });
         }
