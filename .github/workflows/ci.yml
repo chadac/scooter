@@ -620,11 +620,14 @@ jobs:
     # OPT-IN, not on by default. A full run builds a k3d cluster per shard (~25 min
     # each) and the required checks are the unit/nixosTest/e2e-fast set — so the full
     # target runs NIGHTLY, on demand, or on a PR labelled `e2e-full`.
+    # Trigger ONLY — deliberately NOT path-gated on `cluster-changes.platform`, same
+    # as `flake-focus-full` below. That filter covers the specs and the cluster
+    # plumbing but NOT the product code under test, so a labelled UI-only PR was
+    # silently skipped. Why: PR #646.
     if: >-
-      needs.cluster-changes.outputs.platform == 'true' &&
-      (github.event_name == 'schedule' ||
-       github.event_name == 'workflow_dispatch' ||
-       contains(github.event.pull_request.labels.*.name, 'e2e-full'))
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e-full')
     runs-on: ubuntu-latest
     env:
       # 4 here (the link below runs 2). The shard count is not only a wall-clock knob: every
