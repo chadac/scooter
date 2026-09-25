@@ -34,25 +34,6 @@ class BrokerSettings(ScooterBaseSettings):
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 
-    # --- AWS permissions broker (broker/aws/) ------------------------------
-    aws_enabled: bool = False
-    aws_region: str = "us-east-1"
-    aws_sts_external_id: str = "agent-permissions-broker"
-    # The broker's own IRSA role ARN — the principal the dynamic roles trust.
-    aws_broker_principal_arn: str = ""
-    # Path to the account-registry JSON (a mounted ConfigMap): alias ->
-    # {account_id, broker_role_arn, enabled, allowed_policy?, allowed_managed_policies?,
-    #  region?, auto_approve_read_only?, auto_allowed_policy?, auto_allowed_managed_policies?}.
-    # allowed_policy* = the CEILING (a glob superset a request must fall within).
-    # auto_allowed_policy* = an OPT-IN sub-tier auto-granted with NO human approval — a
-    # glob superset (fnmatch Action+Resource; managed-ARN fnmatch) of pre-approved grants,
-    # e.g. sts:AssumeRole to arn:...:role/deploy-*. Checked after the ceiling, so it can
-    # only auto-approve requests already in-bounds. Absent -> nothing auto-approves.
-    aws_accounts_file: str = ""
-    aws_role_ttl_hours: int = 12
-    # Which identity claim authorizes an approver (must match how the FGA approver
-    # tuples are seeded). "email" | "id" | "name". Default email.
-    aws_approver_claim: str = "email"
     # --- The shared `broker` database ---------------------------------------
     # Components for the platform Postgres database named `broker`, which EVERY
     # broker store uses (aws permission requests, the module registry, static
@@ -72,20 +53,6 @@ class BrokerSettings(ScooterBaseSettings):
     # dropped what the module emitted and every broker store connected
     # unencrypted anyway. Why: PR #621.
     broker_db_sslmode: str = ""
-    # Notify the agent-host when a request is created so it raises the approval
-    # interrupt. Empty = no notify (local/dev).
-    aws_agent_host_url: str = ""
-    # Retry budget for that notify. The request is already stored PENDING before we
-    # notify, so a lost notify is recoverable (revive re-queries /aws/pending) — but
-    # it costs the user a visible approval window until then, so retry the transient
-    # cases (5xx / 503-not-yet-revivable / connect errors) a few times.
-    aws_notify_attempts: int = 3
-    # Base backoff between notify attempts (seconds); doubles each retry.
-    aws_notify_backoff: float = 0.5
-
-    # Sweep interval (seconds) for expired dynamic roles.
-    aws_sweep_interval: int = 300
-
     # --- OpenFGA authorization (broker = the policy enforcement point) ------
     # Off by default -> NoopAuthorizer -> the broker behaves as before. When on,
     # the per-account approver gate on approve/deny is enforced via OpenFGA.

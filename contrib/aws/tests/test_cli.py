@@ -7,8 +7,8 @@ pin the ~/.aws/config generation that makes profiles work.
 
 import json
 
-import broker.aws.cli as cli
-from broker.aws.cli import render_aws_config
+import scooter_contrib_aws.cli as cli
+from scooter_contrib_aws.cli import render_aws_config
 
 REGISTRY = {
     "dev": {"account_id": "123", "region": "us-east-1", "enabled": True},
@@ -124,7 +124,7 @@ def test_pick_active_request_takes_newest_nonexpired_not_the_first_zombie():
     zombie whose STS creds lapsed hours ago (teardown stuck) sits at the front of the
     oldest-first list and would hand the SDK an already-expired token. Pick the
     NEWEST active request that isn't past its expiry."""
-    from broker.aws.cli import _pick_active_request
+    from scooter_contrib_aws.cli import _pick_active_request
 
     reqs = [
         # oldest, ALREADY EXPIRED (the zombie the old code picked)
@@ -139,7 +139,7 @@ def test_pick_active_request_takes_newest_nonexpired_not_the_first_zombie():
 
 
 def test_pick_active_request_ignores_other_accounts_and_nonactive():
-    from broker.aws.cli import _pick_active_request
+    from scooter_contrib_aws.cli import _pick_active_request
 
     reqs = [
         {"request_id": "wrong-acct", "status": "active", "target_account": "dev",
@@ -157,7 +157,7 @@ def test_pick_active_request_falls_back_to_newest_when_all_expired():
     """If EVERY active request is past expiry, still return the newest — the broker
     auto-refreshes on status(), so even a lapsed one may re-vend a live token; better
     than 'not granted' when a valid role exists."""
-    from broker.aws.cli import _pick_active_request
+    from scooter_contrib_aws.cli import _pick_active_request
 
     reqs = [
         {"request_id": "old", "status": "active", "target_account": "prod",
@@ -170,7 +170,7 @@ def test_pick_active_request_falls_back_to_newest_when_all_expired():
 
 
 def test_pick_active_request_none_when_no_active():
-    from broker.aws.cli import _pick_active_request
+    from scooter_contrib_aws.cli import _pick_active_request
     assert _pick_active_request([], "prod") is None
 
 

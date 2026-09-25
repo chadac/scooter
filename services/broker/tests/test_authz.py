@@ -3,11 +3,15 @@
 The FgaAuthorizer (OpenFGA-backed) is exercised via the broker's integration
 path, not here (no live OpenFGA in unit tests); these pin the SEAM behavior the
 rest of the broker relies on.
+
+The "aws_account:dev" strings below are OPAQUE object ids, deliberately literal: the
+helper that builds them is aws's and moved to its contrib with the provider (#599).
+The authorizer seam does not know what an aws account is, and this file proves it by
+not importing anything that does.
 """
 
 from __future__ import annotations
 
-from broker.aws.objects import aws_account_object
 from broker.core.authz import authorizer_from_settings
 from scooter_broker_lib.authz import NoopAuthorizer, user_object
 
@@ -56,7 +60,6 @@ def test_authorizer_from_settings_noop_when_url_or_store_missing():
 
 
 def test_object_id_helpers():
-    assert aws_account_object("dev") == "aws_account:dev"
     assert user_object("alice@x.io") == "user:alice@x.io"
 
 

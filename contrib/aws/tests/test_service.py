@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import pytest
 
-from broker.aws.iam import IamProvisioner
-from broker.aws.models import RequestStatus, StsCredentials
-from broker.aws.service import PermissionService, ServiceConfig, RequestError
-from broker.aws.store import PermissionStore
+from scooter_contrib_aws.iam import IamProvisioner
+from scooter_contrib_aws.models import RequestStatus, StsCredentials
+from scooter_contrib_aws.service import PermissionService, ServiceConfig, RequestError
+from scooter_contrib_aws.store import PermissionStore
 from scooter_broker_lib.store import StoreConfig
 
 from conftest import create_schema
-from broker.aws import store as aws_store
+from scooter_contrib_aws import store as aws_store
 
 
 # --- fakes ----------------------------------------------------------------
@@ -149,7 +149,7 @@ async def test_request_creates_pending(tmp_path):
 async def test_readonly_request_auto_approves_when_account_opts_in(tmp_path):
     # The "ro" account has auto_approve_read_only=true; a pure-read request is
     # granted immediately (ACTIVE + creds), no human, recorded as the system approver.
-    from broker.aws.service import AUTO_APPROVE_PRINCIPAL
+    from scooter_contrib_aws.service import AUTO_APPROVE_PRINCIPAL
 
     notified = []
     svc = await make_service(tmp_path)
@@ -168,7 +168,7 @@ async def test_readonly_request_auto_approves_when_account_opts_in(tmp_path):
 async def test_auto_allowed_policy_auto_approves_covered_request(tmp_path):
     # A request covered by the "auto" account's auto_allowed_policy (assume a deploy-*
     # role) is granted immediately, no human, recorded as the system approver.
-    from broker.aws.service import AUTO_APPROVE_PRINCIPAL
+    from scooter_contrib_aws.service import AUTO_APPROVE_PRINCIPAL
 
     notified = []
     svc = await make_service(tmp_path)
@@ -568,7 +568,7 @@ async def test_resolve_approver_picks_the_configured_claim(tmp_path):
 
 
 async def test_resolve_approver_claim_id(tmp_path):
-    from broker.aws.service import ServiceConfig
+    from scooter_contrib_aws.service import ServiceConfig
     svc = await make_service(tmp_path)
     svc._config = ServiceConfig(broker_principal_arn="arn", approver_claim="id")
     ident = {"id": "sub-xyz", "email": "a@x.io"}

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import httpx
 import pytest
 
-from broker.providers import aws as aws_provider
+from scooter_contrib_aws import broker_provider as aws_provider
 
 
 def _errors(caplog):

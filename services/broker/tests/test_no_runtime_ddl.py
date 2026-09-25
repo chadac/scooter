@@ -7,6 +7,11 @@ production for months with no schema entry and no migration.
 
 Schema creation is a TEST concern (conftest.create_schema, SQLite only), so these
 tests assert the production code has no way to do it.
+
+The aws permission store's half of this moved to contrib/aws/tests with the store
+itself (PR #599). The invariant follows the CODE — otherwise moving a store out of
+the app would quietly move it out of this guard, which is the failure this file is
+here to prevent.
 """
 
 import ast
@@ -14,7 +19,6 @@ import pathlib
 
 import pytest
 
-from broker.aws.store import PermissionStore
 from scooter_broker_lib.store import StoreConfig
 from broker.registry.store import ModuleRegistryStore
 
@@ -22,7 +26,7 @@ SERVICE_SRC = pathlib.Path(__file__).resolve().parents[1] / "broker"
 
 
 @pytest.mark.parametrize(
-    "store_cls", [PermissionStore, ModuleRegistryStore], ids=lambda c: c.__name__
+    "store_cls", [ModuleRegistryStore], ids=lambda c: c.__name__
 )
 def test_stores_expose_NO_schema_creating_method(store_cls):
     # init() used to run create_all. It is gone: nothing on a store builds tables, so a
@@ -49,11 +53,11 @@ def test_no_service_module_calls_create_all():
 async def test_create_schema_REFUSES_a_postgres_engine():
     # The test helper must not become a back door to the thing this file forbids.
     from conftest import create_schema
-    from broker.aws import store as aws_store
+    from broker.registry import store as registry_store
 
-    store = PermissionStore(StoreConfig(dsn="postgresql+asyncpg://u:p@127.0.0.1:1/nope"))
+    store = ModuleRegistryStore(StoreConfig(dsn="postgresql+asyncpg://u:p@127.0.0.1:1/nope"))
     with pytest.raises(AssertionError, match="SQLite-only"):
-        await create_schema(store, aws_store._Base)
+        await create_schema(store, registry_store._Base)
 
 
 @pytest.mark.asyncio

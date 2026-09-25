@@ -12,17 +12,17 @@ import asyncio
 import json
 import logging
 
-from ..aws.iam import IamProvisioner
-from ..aws.service import PermissionService, ServiceConfig
-from ..aws.store import PermissionStore
-from ..config import settings
-from ..aws.objects import aws_account_object
-from scooter_broker_lib.authz import user_object
+from .iam import IamProvisioner
+from .service import PermissionService, ServiceConfig
+from .store import PermissionStore
+from .config import settings
+from .objects import aws_account_object
+from scooter_broker_lib.authz import NoopAuthorizer, user_object
 from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_lib.logging_config import format_error
-from ..transports.aws_permissions import AwsPermissions
+from .permissions_transport import AwsPermissions
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,11 @@ def aws(ctx: BrokerContext) -> Provider:
                         "failed seeding approver tuple",
                         extra={"approver": approver, "account_alias": alias},
                     )
-        if settings.fga_enabled:
+        # Ask the AUTHORIZER, not a config flag. The line would be a lie under
+        # NoopAuthorizer (grant() does nothing), and "is FGA configured" is the
+        # app's question — a contrib gets the authorizer, never the settings that
+        # chose it (#595, #624). Same answer, from the object that does the work.
+        if not isinstance(authorizer, NoopAuthorizer):
             logger.info(
                 "seeded approver tuples from the account registry",
                 extra={"account_count": len(registry)},
