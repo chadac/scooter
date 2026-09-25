@@ -213,8 +213,16 @@ jobs:
           # One SECTION of the shared CI comment, not a comment of its own — see
           # scripts/ci-report.mjs. The runner's own node runs it: the script has no
           # dependencies, so this nix-only job needs no npm install.
-          if grep -q '⚠️' report.md; then status=fail; summary='image size — an image grew ≥ 5%';
-          else status=pass; summary='image size — no image grew ≥ 5%'; fi
+          # The TRAILER line, not any ⚠️: the report's legend reads "⚠️ marks growth
+          # ≥ 5%" on EVERY run, so grepping for the emoji reported a failure every time.
+          # warn, never fail: this report is a signal by design (see the job comment) —
+          # image-sizes-diff.sh deliberately never exits non-zero.
+          if grep -q '^✅ No image grew' report.md; then
+            status=pass; summary='image size — no image grew ≥ 5%'
+          else
+            grew=$(sed -n 's/^⚠️ \*\*\([0-9]*\) image(s) grew.*/\1/p' report.md)
+            status=warn; summary="image size — ${grew:-some} image(s) grew ≥ 5%"
+          fi
           node scripts/ci-report.mjs post --section size --status "$status" \
             --summary "$summary" --body report.md --labels "$LABELS"
 
@@ -1401,7 +1409,7 @@ jobs:
           grep -q "STILL reproduces" flake-comment.md && status=fail
           grep -q "no power" flake-comment.md && status=warn
           node scripts/ci-report.mjs post --section flake-fast --status "$status" \
-            --summary "flake focus (fast) — $(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1)" \
+            --summary "$(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1 | grep . || echo 'flake focus (fast)')" \
             --body flake-comment.md --labels "$LABELS"
 
       # A run that executed the flaky test ZERO times is the false green this whole
@@ -1559,7 +1567,7 @@ jobs:
           grep -q "STILL reproduces" flake-comment.md && status=fail
           grep -q "no power" flake-comment.md && status=warn
           node scripts/ci-report.mjs post --section flake-full --status "$status" \
-            --summary "flake focus (full) — $(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1)" \
+            --summary "$(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1 | grep . || echo 'flake focus (full)')" \
             --body flake-comment.md --labels "$LABELS"
 
       # Zero repetitions of the targeted test = a false green (see the fast job).

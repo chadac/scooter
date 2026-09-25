@@ -64,4 +64,10 @@ gates:
   - id: size
     name: image size benchmark
     require: always
-    # The job itself decides: ≥ 5% growth on any image is a failure.
+    # ADVISORY, and deliberately so: this report has always been a signal, not a
+    # gate — image-sizes-diff.sh never exits non-zero, and the job's own comment
+    # says "report-only, never fails the PR". Declaring it `required` here would
+    # have silently promoted a 5% closure growth into a merge blocker, which is a
+    # policy change nobody asked for. It still must REPORT before merge: a
+    # closure that balloons should be seen, even if it does not veto.
+    advisory: true
