@@ -745,6 +745,20 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # always(), not failure() — the same reason `flake focus full` gives for its
+      # artifacts. A shard that RETRIED a flaky test and went green is reported as
+      # 🌗 flaky, and on that path nothing below runs: the one run that reproduced
+      # the flake threw its own evidence away. This is also the only record of pods
+      # the run DELETED (the rollout/move stories), which outlive no dump.
+      - name: upload pod log capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-pod-logs-shard-${{ matrix.shard }}
+          path: /tmp/pod-logs.log
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: upload cluster browser artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -1595,6 +1609,7 @@ jobs:
             flake-report.json
             /tmp/pf.log
             /tmp/cluster-sampler.log
+            /tmp/pod-logs.log
             /tmp/rollout-hook.log
           retention-days: 14
           if-no-files-found: ignore
