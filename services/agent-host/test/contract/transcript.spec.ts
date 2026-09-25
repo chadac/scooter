@@ -106,12 +106,94 @@ describe("transcript: buildHistoryPreamble", () => {
     expect(out).toMatch(/new message follows/i);
   });
 
-  it("caps a very long transcript from the oldest end and marks the elision", () => {
+  // Was "caps from the oldest end": the transcript is now SELECTED under a budget
+  // rather than tail-sliced, so an over-budget log keeps the opening AND the newest
+  // turn and marks whatever it had to drop. Why: PR #652.
+  it("bounds an over-budget transcript, keeps the newest turn, and marks what it dropped", () => {
     const big = "x".repeat(20_000);
     const out = buildHistoryPreamble([...userTurn("u1", big), ...userTurn("u2", "recent")], 5_000);
-    expect(out).toContain("earlier messages omitted");
+    expect(out).toMatch(/omitted/); // the truncation is signalled, not silent
     expect(out).toContain("recent"); // the most recent turn is kept
     expect(out.length).toBeLessThan(6_000);
+  });
+
+  it("includes every turn and NO elision marker when the log fits the budget", () => {
+    const out = buildHistoryPreamble([...userTurn("u1", "the objective"), ...userTurn("u2", "recent")], 5_000);
+    expect(out).toContain("User: the objective");
+    expect(out).toContain("User: recent");
+    expect(out).not.toContain("omitted");
+  });
+
+  // The bug this pins: a conversation states its objective ONCE, at the top. A
+  // tail-only window kept the recent chatter and dropped the goal, so a session
+  // dropped mid-conversation resumed on the last tactical detail and had to be
+  // told what it had been doing all along. Why: PR #652.
+  it("PINS the opening turn when the tail alone would have evicted it", () => {
+    const log = [
+      ...userTurn("u1", "THE OBJECTIVE: make the e2e suite pass"),
+      ...asstTurn("a1", "filler ".repeat(1_000)),
+      ...userTurn("u2", "that's weird, it's not printing"),
+    ];
+    const out = buildHistoryPreamble(log, 2_000);
+    expect(out).toContain("THE OBJECTIVE"); // the head is pinned
+    expect(out).toContain("that's weird"); // the newest turn still makes it
+    expect(out).toContain("earlier messages omitted"); // the middle is marked, not silent
+  });
+
+  it("clips — rather than drops — an opening turn that alone exceeds the head budget", () => {
+    const log = [...userTurn("u1", "OBJECTIVE " + "x".repeat(20_000)), ...userTurn("u2", "recent")];
+    const out = buildHistoryPreamble(log, 2_000);
+    expect(out).toContain("User: OBJECTIVE xxx"); // a truncated objective still orients
+    expect(out).toContain("recent");
+  });
+
+  it("budgets the tool record separately so it can't evict the user/assistant turns", () => {
+    // 60 tool turns of ~900 chars each (~54k) followed by the turns that carry intent.
+    // Unbudgeted, the newest-first walk spends the whole window on `Tool:` lines.
+    const tools: AguiEvent[] = [];
+    for (let i = 0; i < 60; i++) {
+      tools.push(
+        { type: "TOOL_CALL_START", toolCallId: `c${i}`, toolCallName: "bash" },
+        { type: "TOOL_CALL_ARGS", toolCallId: `c${i}`, delta: `{"cmd":"${"z".repeat(400)}"}` },
+        { type: "TOOL_CALL_END", toolCallId: `c${i}` },
+        { type: "TOOL_CALL_RESULT", toolCallId: `c${i}`, messageId: `m${i}`, content: "y".repeat(400) },
+      );
+    }
+    const log = [
+      ...userTurn("u1", "THE OBJECTIVE"),
+      ...tools,
+      ...asstTurn("a1", "here is what I found"),
+      ...userTurn("u2", "and my latest instruction"),
+    ];
+    const out = buildHistoryPreamble(log, 10_000);
+    expect(out).toContain("THE OBJECTIVE");
+    expect(out).toContain("here is what I found");
+    expect(out).toContain("and my latest instruction");
+    // Tool turns are present but bounded — they may not take the whole window.
+    expect(out).toContain("Tool: bash(");
+    const toolChars = out.split("\n\n").filter((l) => l.startsWith("Tool: ")).join("").length;
+    expect(toolChars).toBeLessThan(6_000);
+  });
+
+  it("still carries the NEWEST turn when it alone exceeds the budget (clipped, not dropped)", () => {
+    const log = [...userTurn("u1", "THE OBJECTIVE"), ...asstTurn("a1", "R".repeat(20_000) + " THE LATEST STATE")];
+    const out = buildHistoryPreamble(log, 5_000);
+    expect(out).toContain("THE OBJECTIVE");
+    expect(out).toContain("THE LATEST STATE"); // the tail of the runaway turn survives
+  });
+
+  it("skips a single runaway turn rather than everything older than it", () => {
+    const log = [
+      ...userTurn("u1", "THE OBJECTIVE"),
+      ...asstTurn("a1", "a useful middle turn"),
+      ...asstTurn("a2", "R".repeat(9_000)), // alone bigger than the tail budget
+      ...userTurn("u2", "latest"),
+    ];
+    const out = buildHistoryPreamble(log, 5_000);
+    expect(out).toContain("THE OBJECTIVE");
+    expect(out).toContain("a useful middle turn"); // survived despite the runaway after it
+    expect(out).toContain("latest");
+    expect(out).not.toContain("RRRR");
   });
 
   it("labels tool turns with a `Tool:` prefix and explains them in the framing", () => {
