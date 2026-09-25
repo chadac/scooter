@@ -13,6 +13,7 @@ import json
 import logging
 
 from .iam import IamProvisioner
+from .models import approval_message
 from .service import PermissionService, ServiceConfig
 from .store import PermissionStore
 from .config import settings
@@ -81,13 +82,17 @@ async def notify_host(req) -> None:
     # The broker addresses the conversation by the SHORT id parsed from the sandbox
     # SA name (core/auth.py _SA_PATTERN: `sandbox-{shortId}`); the agent-host resolves
     # it via getByShortId (which also hydrates a suspended/evicted conversation).
-    url = f"{settings.aws_agent_host_url.rstrip('/')}/conversations/{req.conversation_id}/aws-request"
+    # The GENERIC approvals route, addressed by contrib name. The host knows only
+    # "aws wants a human to answer request X"; what is being approved stays here,
+    # which is why the payload is a rendered message rather than aws's fields.
+    # Why: PR #651.
+    url = (
+        f"{settings.aws_agent_host_url.rstrip('/')}"
+        f"/conversations/{req.conversation_id}/approvals/aws"
+    )
     payload = {
         "request_id": req.request_id,
-        "target_account": req.target_account,
-        "risk_level": req.risk_level.value,
-        "policy_summary": req.policy_summary,
-        "justification": req.justification,
+        "message": approval_message(req),
     }
 
     attempts = max(1, settings.aws_notify_attempts)

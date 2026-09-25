@@ -41,9 +41,28 @@ export interface ContribToolCard {
 }
 
 /**
+ * How a contrib's approval interrupt is GATED in the UI.
+ *
+ * Only the presentation half lives here. The browser is deliberately not told where
+ * the contrib's verbs are on the broker — that travels to the agent-host, which does
+ * the relaying. A UI that knew the broker path would be a UI that could be pointed at
+ * one. Both halves are rendered from a single declaration (contrib/approvals.nix), so
+ * the greying and the relay cannot end up describing different things — the split that
+ * caused PR #649's split-brain authorization. Why: PR #651.
+ */
+export interface ContribApproval {
+  /** Which option id is greyed for a viewer the host says may not use it. */
+  gatedOption: string;
+  /** Tooltip on that option when it is greyed. */
+  blockedTitle: string;
+  /** Explanatory line shown under the options when it is greyed. */
+  blockedHint: string;
+}
+
+/**
  * The whole `/contrib/manifest.json` document, NORMALIZED: the loader fills every
  * absent key with an empty value, so consumers never branch on undefined. Any of
- * the four keys may be missing from the served document.
+ * the keys may be missing from the served document.
  */
 export interface ContribManifest {
   /** Brand row per contrib name. */
@@ -54,4 +73,6 @@ export interface ContribManifest {
   toolTitles: Record<string, string>;
   /** Sources offered as sidebar filter chips and "Show:" label modes. */
   linkProviders: readonly string[];
+  /** Approval gating per contrib name (the `metadata.contrib` on the interrupt). */
+  approvals: Record<string, ContribApproval>;
 }

@@ -100,9 +100,22 @@ let
   # date with the contrib set. Why: PR #618.
   bcfg = config.agentSandbox.broker;
   contribSkills = import ../contrib/skills.nix { inherit lib; };
+
+  # The contribs that raise human approvals -> how the agent-host reaches their verbs.
+  # Gated the same way skills are: a contrib's routes ship only where THIS deployment
+  # enabled it, because relaying an answer to a broker that never mounted those routes
+  # turns a user's approval into a 404 they cannot act on.
+  contribApprovals = (import ../contrib/approvals.nix { inherit lib; }).host;
+  enabledApprovals = lib.filterAttrs (name: _: gateOf name) contribApprovals;
+  approvalContribsJson =
+    if enabledApprovals == { } then null else builtins.toJSON enabledApprovals;
+  # Whether THIS deployment runs a contrib. The gate for everything a contrib ships
+  # that would misfire when it is off: skills (an agent taught to call a route that
+  # 404s reads the 404 as the feature being broken) and approvals (an answer relayed
+  # to a broker with no such route is a security decision that silently goes nowhere).
   gateOf = name:
     if (bcfg.${name} or null) ? enable then bcfg.${name}.enable
-    else throw ("contrib ${name} ships skills, which are gated on "
+    else throw ("contrib ${name} ships skills or approvals, which are gated on "
       + "agentSandbox.broker.${name}.enable — but no such option exists. "
       + "See contrib/README.md.");
   gatedSkills = lib.concatMapAttrs
@@ -1314,6 +1327,13 @@ in
                   # ownership, and sends every ACP frame. Without this there is NO BYO path and every
                   # run takes the cloud floor.
                   { name = "BYOC_CONTROLLER_URL"; value = "http://byoc-controller.${cfg.namespace}.svc.cluster.local:8080"; }
+                ++ lib.optional (approvalContribsJson != null)
+                  # The contribs that raise human approvals: name -> where its verbs
+                  # live on the broker. The agent-host relays a user's Approve/Deny
+                  # there. It carries no prose and no policy — what is being approved
+                  # is the contrib's business, and the UI's half of this declaration
+                  # travels separately in the contrib manifest.
+                  { name = "APPROVAL_CONTRIBS_JSON"; value = approvalContribsJson; }
                 ++ lib.optionals cfg.broker.enable [
                   # BROKER_URL + the projected broker token: the AWS approve/deny relay
                   # and the shares/links queries the agent-host makes on a conversation's

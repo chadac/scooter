@@ -285,6 +285,76 @@ in
       };
     };
 
+    approvals = mkOption {
+      default = null;
+      description = ''
+        This contrib raises HUMAN APPROVALS: the agent asks for something, a person
+        answers Approve/Deny in the conversation, and the answer is relayed back to
+        the contrib's broker half. `null` (the default) means it raises none.
+
+        The platform deliberately learns only how to REACH this contrib's verbs —
+        never what it is approving. The prose a human reads is rendered by the
+        contrib and arrives already-formed, so adding an integration with a
+        different notion of "risk" needs no platform change.
+
+        Rendered into two places from this one declaration: APPROVAL_CONTRIBS_JSON
+        on the agent-host (which relays the answer) and the UI's contrib manifest
+        (which greys the gated option for a viewer who may not use it).
+      '';
+      type = types.nullOr (types.submodule {
+        options = {
+          brokerPrefix = mkOption {
+            type = types.str;
+            example = "/aws/aws";
+            description = ''
+              Where this contrib's approval verbs live on the broker. The agent-host
+              appends `/{requestId}/approve|deny` and `/{requestId}/can-approve`.
+
+              Usually doubled (`/aws/aws`): the core mounts every provider under
+              `/{provider.name}`, and a transport's own routes carry their own
+              prefix. Spelled out rather than derived, because that second segment
+              is the transport's choice, not a platform convention.
+            '';
+          };
+          pendingPath = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "/aws/aws/pending";
+            description = ''
+              Where to list this contrib's still-pending requests for a conversation
+              (`?conversation_id=<shortId>`). The agent-host calls it after a revive
+              to re-raise approvals a pod rollout dropped — the in-memory answer
+              routing dies with the old pod, but the request is still pending in the
+              broker, which is the source of truth.
+
+              `null` means no re-raise: the contrib's approvals do NOT survive a
+              rollout, and a user who had an Approve window open loses it silently.
+              Set it unless the contrib's requests are genuinely ephemeral.
+            '';
+          };
+          gatedOption = mkOption {
+            type = types.str;
+            default = "approve";
+            description = ''
+              Which option id the per-viewer authorization check gates. Only this one
+              is greyed for a viewer the broker says may not act; the others (Deny,
+              typically) stay live, because refusing is not a privileged action.
+            '';
+          };
+          blockedTitle = mkOption {
+            type = types.str;
+            default = "You need an admin to approve this request.";
+            description = "Tooltip on the gated option when this viewer may not use it.";
+          };
+          blockedHint = mkOption {
+            type = types.str;
+            default = "You don't have permission to approve this — an admin must.";
+            description = "Text shown under the options when this viewer may not use the gated one.";
+          };
+        };
+      });
+    };
+
     skills = mkOption {
       type = types.attrsOf types.path;
       default = { };

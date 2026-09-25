@@ -89,3 +89,25 @@ class StsCredentials:
     session_token: str
     region: str
     expires_at: str
+
+
+def approval_message(req: PermissionRequest) -> str:
+    """The prose a human reads when asked to approve this request.
+
+    Rendered HERE, not by the agent-host. The platform used to build this string
+    from `target_account` / `risk_level` / `policy_summary`, which meant it knew
+    what an AWS account was and that a "risk level" existed — and an integration
+    with a different vocabulary could not describe itself at all. Now the platform
+    relays an opaque message and this side owns what it says. Why: PR #651.
+
+    Used by BOTH the request-time notify and the pending-list view, so the window a
+    user sees after a rollout is worded identically to the one they lost.
+    """
+    lines = [
+        f"Scooter is requesting AWS access to {req.target_account} "
+        f"(risk: {req.risk_level.value}).",
+    ]
+    if req.policy_summary:
+        lines.append(req.policy_summary)
+    lines.append(f"Reason: {req.justification or '(none)'}")
+    return "\n".join(lines)

@@ -59,8 +59,16 @@ let
     withUi));
 
   linkProviders = lib.attrNames (lib.filterAttrs (_: c: c.ui.source.linkProvider) sourced);
+
+  # The UI half of the approval declarations — which option to grey and what to say.
+  # Taken from contrib/approvals.nix rather than recomputed from `contribs` here, so
+  # the copy the browser renders and the routes the agent-host relays to come from one
+  # source. Note this is NOT gated on `ui.enable`: a contrib may raise approvals while
+  # contributing no icon or tool cards, and greying is a correctness concern rather
+  # than branding.
+  approvals = (import ./approvals.nix { inherit lib; }).ui;
 in
 
 writeText "contrib-manifest.json" (builtins.toJSON {
-  inherit sources toolCards toolTitles linkProviders;
+  inherit sources toolCards toolTitles linkProviders approvals;
 })

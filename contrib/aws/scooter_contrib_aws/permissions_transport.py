@@ -30,7 +30,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from .models import PermissionRequest, RequestStatus, StsCredentials
+from .models import PermissionRequest, RequestStatus, StsCredentials, approval_message
 from .service import PermissionService, RequestError
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
@@ -49,6 +49,10 @@ def _request_view(req: PermissionRequest, creds: StsCredentials | None = None) -
         "approved_by": req.approved_by,
         "expires_at": req.expires_at,
         "parent_request_id": req.parent_request_id,
+        # The rendered prose for the approval window. Carried on the VIEW so the
+        # agent-host re-raise after a rollout words the window exactly as the
+        # original did — it replays from this list, not from the notify payload.
+        "message": approval_message(req),
     }
     if creds is not None:
         out["credentials"] = {
