@@ -499,6 +499,15 @@ in
                   { name = "BROKER_DB_NAME"; value = "broker"; }
                   { name = "BROKER_DB_USER"; value = "broker"; }
                   { name = "BROKER_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-broker"; key = "password"; }; }
+
+                  # The agent-host relays a user's action to the broker as itself, so
+                  # core auth admits it as a non-sandbox caller and sets is_approver.
+                  # Unconditional: TWO features read that flag — aws approve/deny and
+                  # shares' cross-conversation listing — so gating the list on
+                  # aws.enable made `shares` without `aws` 403 on the UI's own list
+                  # request, with the agent-host looking like a stranger. It was
+                  # AWS_APPROVER_SERVICE_ACCOUNTS for that reason. Why: #599.
+                  { name = "APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null)
                   { name = "BROKER_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ++ lib.optional (bcfg.jiraSiteUrl != "")
@@ -605,8 +614,6 @@ in
                   { name = "AWS_ROLE_TTL_HOURS"; value = toString bcfg.aws.roleTtlHours; }
                   { name = "AWS_APPROVER_CLAIM"; value = bcfg.aws.approverClaim; }
                   { name = "AWS_AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
-                  # The agent-host SA may approve/deny (it relays the user's pick).
-                  { name = "AWS_APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
                 ] ++ lib.optionals bcfg.aws.fga.enable [
                   # OpenFGA authorization (the per-account approver gate).
                   { name = "FGA_ENABLED"; value = "true"; }
