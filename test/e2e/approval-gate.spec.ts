@@ -102,39 +102,40 @@ async function raiseApproval(
  *    GET /conversations before acting on it (suspended-recovery.spec.ts and
  *    aws-interrupt.spec.ts read it this way for the same reason).
  */
-async function currentConversationId(
+async function conversationIds(
+  request: import("@playwright/test").APIRequestContext,
+  base: string,
+): Promise<string[]> {
+  const res = await request.get(`${base}/conversations`);
+  if (!res.ok()) return [];
+  return ((await res.json()) as Array<{ id: string }>).map((r) => r.id);
+}
+
+/**
+ * The id of the conversation this test just created, from the SERVER.
+ *
+ * Deliberately not read out of the UI's localStorage. Two earlier versions of this
+ * helper did, and both were wrong about the persisted shape in a different way — one
+ * addressed a client-minted placeholder the server had never issued (404 from the
+ * approvals route), the other insisted on a `serverId` that is only recorded when it
+ * differs from the local key (so it never resolved at all). Each failure looked like
+ * a broken route or a broken UI rather than a broken test.
+ *
+ * Diffing the server's own list has no such coupling: whatever the UI stores, the
+ * conversation this send created is the id that WASN'T there before.
+ */
+async function newConversationId(
   page: import("@playwright/test").Page,
   request: import("@playwright/test").APIRequestContext,
   base: string,
+  before: readonly string[],
 ): Promise<string> {
-  for (let i = 0; i < 40; i++) {
-    const id = await page.evaluate(() => {
-      try {
-        const raw = localStorage.getItem("kubenix-agent.sessions.v1");
-        if (!raw) return "";
-        const s = JSON.parse(raw) as {
-          currentId?: string;
-          sessions?: Record<string, { serverId?: string }>;
-        };
-        const cur = s.currentId ?? "";
-        // Prefer the SERVER's id, but fall back to the local key: `serverId` is only
-        // recorded when the two DIFFER (a conversation created on its first send).
-        // Requiring it means never resolving the common case at all.
-        return (cur && s.sessions?.[cur]?.serverId) || cur;
-      } catch {
-        return "";
-      }
-    });
-    if (id) {
-      const res = await request.get(`${base}/conversations`);
-      if (res.ok()) {
-        const rows = (await res.json()) as Array<{ id: string }>;
-        if (rows.some((r) => r.id === id)) return id;
-      }
-    }
+  for (let i = 0; i < 60; i++) {
+    const fresh = (await conversationIds(request, base)).filter((id) => !before.includes(id));
+    if (fresh.length) return fresh[0];
     await page.waitForTimeout(500);
   }
-  expect(false, "the conversation never reached the server's list").toBeTruthy();
+  expect(false, "the send never produced a conversation on the server").toBeTruthy();
   return "";
 }
 
@@ -151,10 +152,11 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await serveManifest(page, { echo: ECHO_GATING });
       const asked = interceptCanApprove(page, false);
 
+      const before = await conversationIds(request, base);
       await chat.open();
       await chat.send("do something that needs approval");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page, request, base);
+      const id = await newConversationId(page, request, base, before);
       expect(id, "the conversation must exist before raising an approval").toBeTruthy();
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo would like permission.");
@@ -183,10 +185,11 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await serveManifest(page, { echo: ECHO_GATING });
       interceptCanApprove(page, true);
 
+      const before = await conversationIds(request, base);
       await chat.open();
       await chat.send("ask me again");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page, request, base);
+      const id = await newConversationId(page, request, base, before);
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo asks politely.");
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
@@ -206,10 +209,11 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await serveManifest(page, {}); // no rows at all
       interceptCanApprove(page, false); // the host says no…
 
+      const before = await conversationIds(request, base);
       await chat.open();
       await chat.send("ungated");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page, request, base);
+      const id = await newConversationId(page, request, base, before);
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo, ungated.");
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
@@ -246,10 +250,11 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       await serveManifest(page, { echo: ECHO_GATING });
       interceptCanApprove(page, true);
 
+      const before = await conversationIds(request, base);
       await chat.open();
       await chat.send("please approve");
       await chat.waitForReply(/dummy agent/i);
-      const id = await currentConversationId(page, request, base);
+      const id = await newConversationId(page, request, base, before);
 
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo needs a yes.");
       await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
